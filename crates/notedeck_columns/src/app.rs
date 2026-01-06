@@ -771,6 +771,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         }
 
         Route::Thread(_) => false,
+        Route::Publication(_) => false,
         Route::Accounts(_) => false,
         Route::Reply(_) => false,
         Route::Quote(_) => false,

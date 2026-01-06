@@ -30,7 +30,7 @@ mod timeline_units;
 mod unit;
 
 pub use cache::TimelineCache;
-pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
+pub use kind::{ColumnTitle, PubkeySource, PublicationSelection, ThreadSelection, TimelineKind};
 pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
 pub use timeline_units::{TimelineUnits, UnknownPks};
 pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit};

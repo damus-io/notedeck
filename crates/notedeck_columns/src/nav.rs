@@ -678,6 +678,18 @@ fn render_nav_body(
             ui,
             &mut note_context,
         ),
+        Route::Publication(selection) => {
+            // Minimal publication reader - just show a placeholder for now
+            ui.vertical_centered(|ui| {
+                ui.add_space(20.0);
+                ui.heading("Publication Reader");
+                ui.add_space(10.0);
+                ui.label(format!("Publication ID: {}", selection.index_id.hex()));
+                ui.add_space(20.0);
+                ui.label("Loading publication content...");
+            });
+            DragResponse::none()
+        }
         Route::Accounts(amr) => {
             let resp = render_accounts_route(
                 ui,

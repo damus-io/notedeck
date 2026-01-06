@@ -501,6 +501,7 @@ impl<'a> NavTitle<'a> {
             Route::Thread(thread_selection) => {
                 Some(self.thread_pfp(ui, thread_selection, pfp_size))
             }
+            Route::Publication(_) => None,
             Route::RepostDecision(_) => None,
             Route::Following(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
             Route::FollowedBy(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),

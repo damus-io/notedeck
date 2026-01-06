@@ -1,0 +1,314 @@
+#+TITLE: Publication Reader View Design for Notedeck
+#+AUTHOR: Claude
+#+DATE: 2026-01-06
+#+OPTIONS: toc:2
+
+* Overview
+
+This document outlines design options for the Publication Reader view in
+Notedeck's egui interface, based on analysis of the gc-alexandria Svelte
+implementation.
+
+** Key Components
+
+1. *Publication Header* - Title, author, metadata from kind 30040 index
+2. *Table of Contents (TOC)* - Navigable tree from a-tags in the index
+3. *Content Sections* - Rendered from kind 30041 events
+4. *Loading Strategy* - Lazy loading with infinite scroll
+
+* Layout Options
+
+** Option A: Split View (Recommended for Desktop)
+
+#+begin_example
++--------------------------------------------------+
+|              Column Header                       |
++--------------------------------------------------+
+| [TOC Btn]  Publication Title          [Actions]  |
++----------+---------------------------------------+
+|          |                                       |
+| Table    |     Content Area                      |
+| of       |                                       |
+| Contents |  +-------------------------------+    |
+| (sidebar)|  | Section 1: Chapter Title     |    |
+|          |  | Lorem ipsum dolor sit amet   |    |
+|          |  +-------------------------------+    |
+|  [Ch 1]  |                                       |
+|   - 1.1  |  +-------------------------------+    |
+|   - 1.2  |  | Section 2: Next Chapter      |    |
+|  [Ch 2]  |  | Consectetur adipiscing elit  |    |
+|   - 2.1  |  +-------------------------------+    |
+|          |                                       |
++----------+---------------------------------------+
+#+end_example
+
+*** Pros
+- Familiar e-reader layout
+- TOC always visible for quick navigation
+- Works well with notedeck's column-based design
+
+*** Cons
+- Reduces content width on narrow columns
+- May feel cramped on mobile
+
+*** egui Implementation Notes
+- Use ~egui::SidePanel::left()~ for TOC (collapsible)
+- Main content in ~egui::CentralPanel~ or ~ScrollArea~
+- TOC width: 200-250px (configurable)
+
+** Option B: Full-Screen Reader with Overlay TOC
+
+#+begin_example
++--------------------------------------------------+
+|              Column Header                       |
++--------------------------------------------------+
+| [TOC] [<] Publication Title            [Actions] |
++--------------------------------------------------+
+|                                                  |
+|    +---------------------------------------+     |
+|    |  Publication: Jane Eyre              |     |
+|    |  Author: Charlotte Bronte            |     |
+|    |  Sections: 40                        |     |
+|    +---------------------------------------+     |
+|                                                  |
+|    +---------------------------------------+     |
+|    |  Chapter I                           |     |
+|    |                                      |     |
+|    |  There was no possibility of taking  |     |
+|    |  a walk that day. We had been        |     |
+|    |  wandering, indeed, in the leafless  |     |
+|    |  shrubbery an hour in the morning... |     |
+|    +---------------------------------------+     |
+|                                                  |
+|    +---------------------------------------+     |
+|    |  Chapter II                          |     |
+|    |  ...                                 |     |
++--------------------------------------------------+
+
+TOC Overlay (when button pressed):
++--------------------------------------------------+
+| +-------------+                                  |
+| | TOC Drawer  |  (dimmed background)             |
+| +-------------+                                  |
+| | Beginning   |                                  |
+| | Chapter I   |  <-- highlighted = visible       |
+| |   - 1.1     |                                  |
+| |   - 1.2     |                                  |
+| | Chapter II  |                                  |
+| |   - 2.1     |                                  |
+| +-------------+                                  |
++--------------------------------------------------+
+#+end_example
+
+*** Pros
+- Maximum content width for reading
+- TOC on-demand reduces visual clutter
+- Better for mobile/single-column view
+
+*** Cons
+- Extra interaction to see TOC
+- Loses context of position in document
+
+*** egui Implementation Notes
+- Use ~egui::Window~ with ~collapsible(true)~ or custom overlay
+- Or use ~egui::SidePanel~ that toggles visibility
+- Modal overlay with dimmed background (egui::Area with painter)
+
+** Option C: Paginated Reader
+
+#+begin_example
++--------------------------------------------------+
+|              Column Header                       |
++--------------------------------------------------+
+| [TOC] [<] Chapter I              [1/40] [>] [>>] |
++--------------------------------------------------+
+|                                                  |
+|    CHAPTER I                                     |
+|                                                  |
+|    There was no possibility of taking a walk     |
+|    that day. We had been wandering, indeed,      |
+|    in the leafless shrubbery an hour in the      |
+|    morning; but since dinner (Mrs. Reed, when    |
+|    there was no company, dined early) the        |
+|    cold winter wind had brought with it clouds   |
+|    so sombre, and a rain so penetrating, that    |
+|    further outdoor exercise was now out of       |
+|    question.                                     |
+|                                                  |
+|    I was glad of it: I never liked long walks,   |
+|    especially on chilly afternoons: dreadful     |
+|    to me was the coming home in the raw          |
+|    twilight...                                   |
+|                                                  |
++--------------------------------------------------+
+|   [Previous Chapter]       [Next Chapter]        |
++--------------------------------------------------+
+#+end_example
+
+*** Pros
+- Clean, focused reading experience
+- Clear progress indication
+- Minimal loading (one section at a time)
+
+*** Cons
+- Loses context between sections
+- No infinite scroll
+- More clicks for navigation
+
+*** egui Implementation Notes
+- State machine for current section index
+- Pre-fetch adjacent sections for smooth navigation
+- Simple ~ui.horizontal()~ for navigation buttons
+
+** Option D: Inline Expansion (Timeline-style)
+
+#+begin_example
++--------------------------------------------------+
+|         Publications Timeline Column             |
++--------------------------------------------------+
+|                                                  |
+| +----------------------------------------------+ |
+| | Jane Eyre                                    | |
+| | by Charlotte Bronte | 40 sections            | |
+| | [Expand] [View Full]                        v| |
+| +----------------------------------------------+ |
+|                                                  |
+| [Expanded View - inline in timeline]             |
+| +----------------------------------------------+ |
+| | Jane Eyre - Reading View               [X]  | |
+| | +----------------------------------------+  | |
+| | | Chapter I                              |  | |
+| | | There was no possibility...            |  | |
+| | +----------------------------------------+  | |
+| | | Chapter II                             |  | |
+| | | ...                                    |  | |
+| +----------------------------------------------+ |
+|                                                  |
+| +----------------------------------------------+ |
+| | Bible - King James Version                   | |
+| | 66 books | [Expand]                         v| |
+| +----------------------------------------------+ |
+#+end_example
+
+*** Pros
+- Stays within timeline metaphor
+- Quick preview without navigation
+- Familiar notedeck pattern
+
+*** Cons
+- Limited reading space
+- Complex state management
+- May conflict with other timeline interactions
+
+* Mobile Considerations
+
+For narrower screens (< 600px or single column):
+
+1. *Always use overlay TOC* - slide-in drawer from left
+2. *Full-width content* - maximize reading space
+3. *Sticky header* - keep navigation accessible while scrolling
+4. *Touch-friendly targets* - larger tap targets for TOC items
+5. *Swipe gestures* - consider left/right for section navigation
+
+#+begin_example
+Mobile Layout:
++----------------------+
+| [=] Publication   [...] |
++----------------------+
+|                      |
+|  Publication Title   |
+|  by Author Name      |
+|                      |
+|  +-----------------+ |
+|  | Chapter I       | |
+|  |                 | |
+|  | Lorem ipsum...  | |
+|  |                 | |
+|  +-----------------+ |
+|                      |
+|  +-----------------+ |
+|  | Chapter II      | |
+|  | ...             | |
++----------------------+
+
+TOC Drawer (slide from left):
++----------------------+
+| TOC       [X]        |
++----------------------+
+| Beginning            |
+| > Chapter I          |
+|   - Section 1.1      |
+|   - Section 1.2      |
+| > Chapter II         |
++----------------------+
+#+end_example
+
+* Loading Strategy
+
+** Recommended: Infinite Scroll with Prefetch
+
+#+begin_src
+1. Load publication index (30040)
+2. Parse a-tags to get section references
+3. Load first N sections (e.g., 10)
+4. As user scrolls, load more on-demand
+5. Cache loaded sections in memory
+#+end_src
+
+** Implementation Pattern
+
+#+begin_src rust
+struct PublicationReaderState {
+    /// The publication index event
+    index: Option<Note>,
+
+    /// Parsed section addresses from a-tags
+    sections: Vec<EventAddress>,
+
+    /// Loaded section content (sparse - only loaded sections)
+    loaded_content: HashMap<String, Note>,
+
+    /// Current scroll position / visible section index
+    visible_index: usize,
+
+    /// Loading state
+    loading: LoadingState,
+}
+
+enum LoadingState {
+    Idle,
+    LoadingIndex,
+    LoadingSections { pending: Vec<String> },
+}
+#+end_src
+
+* Recommended Implementation Plan
+
+** Phase 1: Basic Reader (MVP)
+
+1. Add ~Route::Publication(PublicationSelection)~ variant
+2. Create ~PublicationReaderView~ component
+3. Load and display publication index header
+4. Load first N content sections
+5. Simple scroll-through all loaded content
+
+** Phase 2: Navigation
+
+1. Add TOC panel/overlay
+2. Implement section highlighting in TOC
+3. Add click-to-jump navigation
+4. Add prev/next section buttons
+
+** Phase 3: Polish
+
+1. Add infinite scroll loading
+2. Implement bookmarking (save position)
+3. Add loading indicators
+4. Handle errors gracefully
+
+* Questions for User
+
+1. *Primary layout preference*: Split view (A), Overlay TOC (B), or Paginated (C)?
+2. *Content rendering*: Plain text first, or support markdown/asciidoc from start?
+3. *Offline support*: Cache publications locally?
+4. *Bookmark persistence*: Store reading position across sessions?

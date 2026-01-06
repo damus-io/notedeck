@@ -167,6 +167,23 @@ impl ThreadSelection {
     }
 }
 
+/// Selection for viewing a publication (kind 30040 index with 30041 content)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PublicationSelection {
+    /// The NoteId of the publication index event (kind 30040)
+    pub index_id: NoteId,
+}
+
+impl PublicationSelection {
+    pub fn new(index_id: NoteId) -> Self {
+        Self { index_id }
+    }
+
+    pub fn from_note_id(note_id: NoteId) -> Self {
+        Self::new(note_id)
+    }
+}
+
 /// Thread selection hashing is done in a specific way. For TimelineCache
 /// lookups, we want to only let the root_id influence thread selection.
 /// This way Thread TimelineKinds always map to the same cached timeline
