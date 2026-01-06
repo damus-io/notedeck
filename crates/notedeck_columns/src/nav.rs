@@ -851,6 +851,7 @@ fn render_nav_body(
                 // says we were navigating. This means that navigating has
                 // stopped. Let's make sure to focus the input field
                 search_buffer.focus_state = FocusState::ShouldRequestFocus;
+                tracing::debug!("requesting search focus");
             }
 
             SearchView::new(&txn, app.note_options, search_buffer, &mut note_context)
