@@ -11,6 +11,14 @@ nostr = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 hex = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures-util = "0.3"
+
+[[example]]
+name = "fetch_publication"
+path = "examples/fetch_publication.rs"
