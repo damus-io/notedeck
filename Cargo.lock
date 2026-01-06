@@ -4088,6 +4088,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "notedeck_publications"
+version = "0.7.1"
+dependencies = [
+ "enostr",
+ "hex",
+ "nostr 0.37.0",
+ "nostrdb",
+ "tempfile",
+ "thiserror 2.0.12",
+ "tracing",
+]
+
+[[package]]
 name = "notedeck_ui"
 version = "0.7.1"
 dependencies = [
