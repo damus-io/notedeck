@@ -16,6 +16,12 @@ use crate::timeline::{
     CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
     TimelineTab,
 };
+use crate::ui::publication::ReaderMode;
+
+/// Get the egui ID for default publication reader mode preference (per column)
+pub fn publication_default_mode_id(col: usize) -> egui::Id {
+    egui::Id::new(("publication_default_mode", col))
+}
 use notedeck::DragResponse;
 use notedeck::{
     note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
@@ -126,6 +132,46 @@ fn timeline_ui(
         // need this for some reason??
         ui.add_space(3.0);
     };
+
+    // Publications: default mode toggle (affects how publications open)
+    if matches!(timeline_id, TimelineKind::Publications) {
+        let mode_id = publication_default_mode_id(col);
+        let current_mode: ReaderMode = ui
+            .ctx()
+            .data(|d| d.get_temp(mode_id))
+            .unwrap_or_default();
+
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Open as:")
+                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                    .color(ui.visuals().weak_text_color()),
+            );
+
+            let reader_selected = current_mode != ReaderMode::Index;
+            let index_selected = current_mode == ReaderMode::Index;
+
+            if ui
+                .selectable_label(reader_selected, "📜 Reader")
+                .on_hover_text("Open publications in reader view")
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(mode_id, ReaderMode::Continuous));
+            }
+
+            if ui
+                .selectable_label(index_selected, "📑 Index")
+                .on_hover_text("Open publications in index view")
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(mode_id, ReaderMode::Index));
+            }
+        });
+        ui.add_space(4.0);
+    }
 
     let show_top_button_id = ui.id().with((scroll_id, "at_top"));
 

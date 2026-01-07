@@ -143,8 +143,17 @@ impl<'a> PublicationView<'a> {
 
         // Get or create reader state
         let state_id = self.state_id();
-        let mut state: ReaderState =
-            ui.ctx().data_mut(|d| d.get_temp(state_id).unwrap_or_default());
+        let mut state: ReaderState = ui.ctx().data_mut(|d| {
+            d.get_temp(state_id).unwrap_or_else(|| {
+                // New state - check for default mode preference from Publications feed
+                let default_mode_id = crate::ui::timeline::publication_default_mode_id(self.col);
+                let default_mode: ReaderMode = d.get_temp(default_mode_id).unwrap_or_default();
+                ReaderState {
+                    mode: default_mode,
+                    ..Default::default()
+                }
+            })
+        });
 
         // Track actions
         let mut note_action: Option<NoteAction> = None;
