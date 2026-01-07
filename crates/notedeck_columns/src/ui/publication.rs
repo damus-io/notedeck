@@ -230,6 +230,14 @@ impl<'a> PublicationView<'a> {
                     {
                         state.mode = ReaderMode::Paginated;
                     }
+                    if ui
+                        .button("📑")
+                        .on_hover_text("Switch to index view")
+                        .clicked()
+                    {
+                        state.mode = ReaderMode::Index;
+                        state.index_view = IndexViewState::default();
+                    }
                 }
                 ReaderMode::Paginated => {
                     if ui
@@ -238,6 +246,14 @@ impl<'a> PublicationView<'a> {
                         .clicked()
                     {
                         state.mode = ReaderMode::Continuous;
+                    }
+                    if ui
+                        .button("📑")
+                        .on_hover_text("Switch to index view")
+                        .clicked()
+                    {
+                        state.mode = ReaderMode::Index;
+                        state.index_view = IndexViewState::default();
                     }
 
                     ui.separator();
@@ -267,7 +283,7 @@ impl<'a> PublicationView<'a> {
                     }
                 }
                 ReaderMode::Index => {
-                    // Index view mode toggle (switch back to continuous)
+                    // Mode toggles
                     if ui
                         .button("📜")
                         .on_hover_text("Switch to continuous view")
@@ -276,7 +292,53 @@ impl<'a> PublicationView<'a> {
                         state.mode = ReaderMode::Continuous;
                         state.index_view = IndexViewState::default();
                     }
-                    // Additional index navigation controls will be added in render_index_view
+
+                    ui.separator();
+
+                    // Index navigation controls
+                    let current_node = state.index_view.current_node;
+
+                    // Up button (when not at root)
+                    if current_node != 0 {
+                        if let Some(ps) = pub_state {
+                            if let Some(node) = ps.get_node(current_node) {
+                                if let Some(parent_idx) = node.parent {
+                                    if ui
+                                        .button("⬆")
+                                        .on_hover_text("Go up to parent")
+                                        .clicked()
+                                    {
+                                        state.index_view.current_node = parent_idx;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Sibling navigation (Prev/Next)
+                    if let Some(ps) = pub_state {
+                        let (prev_sibling, next_sibling) = ps.tree.siblings(current_node);
+
+                        if ui
+                            .add_enabled(prev_sibling.is_some(), egui::Button::new("◀"))
+                            .on_hover_text("Previous sibling")
+                            .clicked()
+                        {
+                            if let Some(prev_idx) = prev_sibling {
+                                state.index_view.current_node = prev_idx;
+                            }
+                        }
+
+                        if ui
+                            .add_enabled(next_sibling.is_some(), egui::Button::new("▶"))
+                            .on_hover_text("Next sibling")
+                            .clicked()
+                        {
+                            if let Some(next_idx) = next_sibling {
+                                state.index_view.current_node = next_idx;
+                            }
+                        }
+                    }
                 }
             }
 
