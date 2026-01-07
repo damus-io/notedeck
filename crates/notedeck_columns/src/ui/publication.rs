@@ -418,11 +418,7 @@ impl<'a> PublicationView<'a> {
                         self.render_continuous(ui, txn, &sections, is_complete)
                     }
                     ReaderMode::Paginated => self.render_paginated(ui, txn, &sections, state),
-                    ReaderMode::Index => {
-                        // Placeholder for index view - will be implemented in render_index_view
-                        ui.label("Index view mode - implementation coming soon");
-                        None
-                    }
+                    ReaderMode::Index => self.render_index_view(ui, txn, state)
                 };
             } else {
                 ui.horizontal(|ui| {
@@ -563,6 +559,243 @@ impl<'a> PublicationView<'a> {
                 }
             });
         });
+
+        action
+    }
+
+    /// Render index view - shows immediate children of current node
+    fn render_index_view(
+        &mut self,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        state: &mut ReaderState,
+    ) -> Option<NoteAction> {
+        let mut action = None;
+        let current_node = state.index_view.current_node;
+
+        let Some(pub_state) = self.publications.get(&self.selection.index_id) else {
+            ui.label("Loading publication...");
+            return None;
+        };
+
+        // Get current node info
+        let Some(node) = pub_state.get_node(current_node) else {
+            ui.label("Node not found");
+            return None;
+        };
+
+        // Show current node title
+        let title = node.display_title();
+        ui.heading(title);
+        ui.add_space(8.0);
+
+        // Render breadcrumb path within the tree
+        self.render_index_breadcrumbs(ui, pub_state, current_node);
+        ui.add_space(16.0);
+
+        // Get children of current node
+        let children: Vec<_> = pub_state
+            .children(current_node)
+            .map(|children| {
+                children
+                    .into_iter()
+                    .filter_map(|child| {
+                        pub_state.tree.get_index(&child.address).map(|idx| {
+                            (
+                                idx,
+                                child.display_title().to_string(),
+                                child.is_branch(),
+                                child.is_resolved(),
+                                child.note_key,
+                            )
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if children.is_empty() {
+            // This is a leaf node or has no children - show content instead
+            if let Some(note_key) = node.note_key {
+                if let Ok(note) = self.ndb.get_note_by_key(txn, note_key) {
+                    let content = note.content();
+                    if !content.is_empty() {
+                        Self::render_text_content(ui, content);
+                    } else {
+                        ui.label(
+                            egui::RichText::new("(empty section)")
+                                .color(Color32::GRAY)
+                                .italics(),
+                        );
+                    }
+                }
+            } else {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Loading content...");
+                });
+            }
+            return action;
+        }
+
+        // Render each child as a card
+        for (child_idx, child_title, is_branch, is_resolved, note_key) in children {
+            if let Some(a) =
+                self.render_index_child_card(ui, txn, state, child_idx, &child_title, is_branch, is_resolved, note_key)
+            {
+                action = Some(a);
+            }
+            ui.add_space(8.0);
+        }
+
+        action
+    }
+
+    /// Render breadcrumbs for index view (path within the tree)
+    fn render_index_breadcrumbs(
+        &self,
+        ui: &mut egui::Ui,
+        pub_state: &PublicationTreeState,
+        current_node: usize,
+    ) {
+        let hierarchy = pub_state.tree.hierarchy(current_node);
+
+        if hierarchy.len() <= 1 {
+            // At root, no breadcrumbs needed
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            for (i, &idx) in hierarchy.iter().enumerate() {
+                if let Some(node) = pub_state.get_node(idx) {
+                    let title = node.display_title();
+                    let display = if title.len() > 20 {
+                        format!("{}...", &title[..17])
+                    } else {
+                        title.to_string()
+                    };
+
+                    let is_current = i == hierarchy.len() - 1;
+                    let text_color = if is_current {
+                        ui.visuals().text_color()
+                    } else {
+                        ui.visuals().weak_text_color()
+                    };
+
+                    ui.label(egui::RichText::new(&display).small().color(text_color));
+
+                    if !is_current {
+                        ui.label(egui::RichText::new(" > ").small());
+                    }
+                }
+            }
+        });
+    }
+
+    /// Render a child card in index view
+    fn render_index_child_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        state: &mut ReaderState,
+        child_idx: usize,
+        title: &str,
+        is_branch: bool,
+        is_resolved: bool,
+        note_key: Option<NoteKey>,
+    ) -> Option<NoteAction> {
+        let mut action = None;
+
+        let card_frame = Frame::default()
+            .stroke(Stroke::new(
+                1.0,
+                ui.visuals().widgets.noninteractive.bg_stroke.color,
+            ))
+            .inner_margin(12.0)
+            .corner_radius(6.0);
+
+        let card_resp = card_frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Type indicator
+                let icon = if is_branch { "📁" } else { "📄" };
+                ui.label(icon);
+
+                // Title
+                let title_text = if !is_resolved {
+                    format!("{} ⏳", title)
+                } else {
+                    title.to_string()
+                };
+
+                if is_branch {
+                    // Branch: clickable to drill down
+                    if ui
+                        .add(
+                            egui::Label::new(egui::RichText::new(&title_text).strong())
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text("Click to expand")
+                        .clicked()
+                    {
+                        state.index_view.current_node = child_idx;
+                    }
+                } else {
+                    // Leaf: show title
+                    ui.label(egui::RichText::new(&title_text).strong());
+                }
+            });
+
+            // For leaf nodes, show content
+            if !is_branch {
+                ui.add_space(8.0);
+
+                if let Some(note_key) = note_key {
+                    if let Ok(note) = self.ndb.get_note_by_key(txn, note_key) {
+                        let content = note.content();
+                        if !content.is_empty() {
+                            Self::render_text_content(ui, content);
+                        } else {
+                            ui.label(
+                                egui::RichText::new("(empty section)")
+                                    .color(Color32::GRAY)
+                                    .italics(),
+                            );
+                        }
+                    } else {
+                        ui.label(egui::RichText::new("Error loading content").color(Color32::RED));
+                    }
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(
+                            egui::RichText::new("Loading...")
+                                .color(Color32::GRAY)
+                                .italics(),
+                        );
+                    });
+                }
+            }
+        });
+
+        // Add context button for leaf nodes with content
+        if !is_branch {
+            if let Some(note_key) = note_key {
+                let context_pos = {
+                    let size = NoteContextButton::max_width();
+                    let top_right = card_resp.response.rect.right_top();
+                    let min = egui::pos2(top_right.x - size - 12.0, top_right.y + 12.0);
+                    egui::Rect::from_min_size(min, egui::vec2(size, size))
+                };
+
+                let options_resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
+                if let Some(ctx_action) = NoteContextButton::menu(ui, self.i18n, options_resp) {
+                    action = Some(NoteAction::Context(ContextSelection {
+                        note_key,
+                        action: ctx_action,
+                    }));
+                }
+            }
+        }
 
         action
     }
