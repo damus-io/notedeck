@@ -20,6 +20,14 @@ pub enum PublicationNavAction {
     Back,
     /// Navigate into a nested publication
     NavigateInto(NoteId),
+    /// Index view: drill down into a child node
+    DrillDown(usize),
+    /// Index view: go up one level to parent
+    DrillUp,
+    /// Index view: navigate to previous sibling
+    PrevSibling,
+    /// Index view: navigate to next sibling
+    NextSibling,
 }
 
 /// Lightweight section data for rendering (avoids borrow conflicts)
@@ -39,6 +47,15 @@ pub enum ReaderMode {
     Continuous,
     /// One section at a time with pagination
     Paginated,
+    /// Index view - shows children of current node for drill-down navigation
+    Index,
+}
+
+/// State for index view navigation within the tree
+#[derive(Clone, Default)]
+struct IndexViewState {
+    /// Current node index being viewed (0 = root)
+    current_node: usize,
 }
 
 /// Persistent state for the publication reader (stored in egui memory)
@@ -50,6 +67,8 @@ struct ReaderState {
     toc_visible: bool,
     /// Expanded branch nodes in the TOC
     expanded_branches: HashSet<usize>,
+    /// Index view state (current position in tree for drill-down navigation)
+    index_view: IndexViewState,
 }
 
 /// A publication reader view that displays the index and content sections
@@ -247,6 +266,18 @@ impl<'a> PublicationView<'a> {
                         state.current_leaf_index += 1;
                     }
                 }
+                ReaderMode::Index => {
+                    // Index view mode toggle (switch back to continuous)
+                    if ui
+                        .button("📜")
+                        .on_hover_text("Switch to continuous view")
+                        .clicked()
+                    {
+                        state.mode = ReaderMode::Continuous;
+                        state.index_view = IndexViewState::default();
+                    }
+                    // Additional index navigation controls will be added in render_index_view
+                }
             }
 
             ui.separator();
@@ -387,6 +418,11 @@ impl<'a> PublicationView<'a> {
                         self.render_continuous(ui, txn, &sections, is_complete)
                     }
                     ReaderMode::Paginated => self.render_paginated(ui, txn, &sections, state),
+                    ReaderMode::Index => {
+                        // Placeholder for index view - will be implemented in render_index_view
+                        ui.label("Index view mode - implementation coming soon");
+                        None
+                    }
                 };
             } else {
                 ui.horizontal(|ui| {

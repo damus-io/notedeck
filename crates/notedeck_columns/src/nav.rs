@@ -619,6 +619,13 @@ fn process_render_nav_action(
                         ui::publication::PublicationNavAction::NavigateInto(note_id) => {
                             selection.navigate_into(note_id);
                         }
+                        // Index view navigation is handled locally in the UI via ReaderState
+                        // stored in egui memory - these variants are only defined for future
+                        // extensibility if we need to propagate them
+                        ui::publication::PublicationNavAction::DrillDown(_)
+                        | ui::publication::PublicationNavAction::DrillUp
+                        | ui::publication::PublicationNavAction::PrevSibling
+                        | ui::publication::PublicationNavAction::NextSibling => {}
                     }
                 }
             }
