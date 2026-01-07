@@ -588,6 +588,10 @@ impl<R: Clone> ColumnsRouter<R> {
         self.router_internal.routes()
     }
 
+    pub fn routes_mut(&mut self) -> &mut Vec<R> {
+        &mut self.router_internal.routes
+    }
+
     pub fn navigating(&self) -> bool {
         self.router_internal.navigating
     }

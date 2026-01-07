@@ -75,6 +75,7 @@ pub enum RenderNavAction {
     RepostAction(RepostAction),
     ShowFollowing(enostr::Pubkey),
     ShowFollowers(enostr::Pubkey),
+    PublicationNav(crate::ui::publication::PublicationNavAction),
 }
 
 pub enum SwitchingAction {
@@ -605,6 +606,24 @@ fn process_render_nav_action(
             crate::route::Route::FollowedBy(pubkey),
             RouterType::Stack,
         )),
+        RenderNavAction::PublicationNav(nav_action) => {
+            // Get mutable access to the current route and modify the publication selection
+            let cols =
+                get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache).column_mut(col);
+            if let Some(route) = cols.router.routes_mut().last_mut() {
+                if let crate::route::Route::Publication(ref mut selection) = route {
+                    match nav_action {
+                        ui::publication::PublicationNavAction::Back => {
+                            selection.navigate_back();
+                        }
+                        ui::publication::PublicationNavAction::NavigateInto(note_id) => {
+                            selection.navigate_into(note_id);
+                        }
+                    }
+                }
+            }
+            return None;
+        }
     };
 
     if let Some(action) = router_action {
@@ -687,9 +706,19 @@ fn render_nav_body(
                 ctx.i18n,
                 col,
             ).ui(ui);
+
+            // Extract action - prioritize nav action over note action
+            let output = resp.output.and_then(|r| {
+                if let Some(nav) = r.nav_action {
+                    Some(RenderNavAction::PublicationNav(nav))
+                } else {
+                    r.action.map(RenderNavAction::NoteAction)
+                }
+            });
+
             DragResponse {
                 drag_id: resp.drag_id,
-                output: resp.output.flatten().map(RenderNavAction::NoteAction),
+                output,
             }
         }
         Route::Accounts(amr) => {

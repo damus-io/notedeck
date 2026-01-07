@@ -3,8 +3,8 @@
 //! Uses tree-based navigation for hierarchical publications.
 
 use egui::{Area, Color32, Frame, Order, ScrollArea, Stroke, Vec2};
-use enostr::RelayPool;
-use nostrdb::{Ndb, Transaction};
+use enostr::{NoteId, RelayPool};
+use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::nav::DragResponse;
 use notedeck::{ContextSelection, Localization, NoteAction};
 use notedeck_ui::note::NoteContextButton;
@@ -12,7 +12,15 @@ use std::collections::HashSet;
 
 use crate::timeline::publication::{Publications, PublicationTreeState};
 use crate::timeline::PublicationSelection;
-use nostrdb::NoteKey;
+
+/// Navigation actions for publication reader
+#[derive(Debug, Clone)]
+pub enum PublicationNavAction {
+    /// Navigate back to previous publication in history
+    Back,
+    /// Navigate into a nested publication
+    NavigateInto(NoteId),
+}
 
 /// Lightweight section data for rendering (avoids borrow conflicts)
 #[derive(Clone)]
@@ -54,9 +62,10 @@ pub struct PublicationView<'a> {
     col: usize,
 }
 
-/// Response from rendering that may contain a note action
+/// Response from rendering that may contain actions
 pub struct PublicationViewResponse {
     pub action: Option<NoteAction>,
+    pub nav_action: Option<PublicationNavAction>,
 }
 
 impl<'a> PublicationView<'a> {
@@ -94,7 +103,7 @@ impl<'a> PublicationView<'a> {
         ))
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<Option<NoteAction>> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<PublicationViewResponse> {
         let txn = Transaction::new(self.ndb).expect("txn");
 
         // Open/get the publication state
@@ -118,13 +127,14 @@ impl<'a> PublicationView<'a> {
         let mut state: ReaderState =
             ui.ctx().data_mut(|d| d.get_temp(state_id).unwrap_or_default());
 
-        // Track any action from section context buttons
+        // Track actions
         let mut note_action: Option<NoteAction> = None;
+        let mut nav_action: Option<PublicationNavAction> = None;
 
         // Main layout
         let resp = ui.vertical(|ui| {
-            // Render header bar
-            self.render_header(ui, &txn, &mut state);
+            // Render header bar (may return navigation action)
+            nav_action = self.render_header(ui, &txn, &mut state);
 
             ui.separator();
 
@@ -146,10 +156,20 @@ impl<'a> PublicationView<'a> {
         // Save state
         ui.ctx().data_mut(|d| d.insert_temp(state_id, state));
 
-        DragResponse::output(Some(note_action)).scroll_raw(resp.response.id)
+        let response = PublicationViewResponse {
+            action: note_action,
+            nav_action,
+        };
+
+        DragResponse::output(Some(response)).scroll_raw(resp.response.id)
     }
 
-    fn render_header(&self, ui: &mut egui::Ui, _txn: &Transaction, state: &mut ReaderState) {
+    fn render_header(
+        &self,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        state: &mut ReaderState,
+    ) -> Option<PublicationNavAction> {
         let pub_state = self.publications.get(&self.selection.index_id);
         let section_count = pub_state.map(|s| s.section_count()).unwrap_or(0);
 
@@ -158,7 +178,21 @@ impl<'a> PublicationView<'a> {
             .map(|s| s.root().display_title().to_string())
             .unwrap_or_else(|| "Publication".to_string());
 
+        let mut nav_action = None;
+
         ui.horizontal(|ui| {
+            // Back button (only shown when we have history)
+            if self.selection.can_go_back() {
+                if ui
+                    .button("←")
+                    .on_hover_text("Back to previous publication")
+                    .clicked()
+                {
+                    nav_action = Some(PublicationNavAction::Back);
+                }
+                ui.separator();
+            }
+
             // TOC toggle button
             let toc_btn = if state.toc_visible { "✕ TOC" } else { "☰ TOC" };
             if ui.button(toc_btn).clicked() {
@@ -217,10 +251,48 @@ impl<'a> PublicationView<'a> {
 
             ui.separator();
 
-            // Title (truncated)
-            let _available = ui.available_width() - 20.0;
+            // Breadcrumbs (if we have history)
+            if !self.selection.breadcrumbs().is_empty() {
+                self.render_breadcrumbs(ui, txn);
+                ui.label("›");
+            }
+
+            // Current title (truncated)
             ui.add(egui::Label::new(egui::RichText::new(&title).strong()).truncate());
         });
+
+        nav_action
+    }
+
+    fn render_breadcrumbs(&self, ui: &mut egui::Ui, txn: &Transaction) {
+        let breadcrumbs = self.selection.breadcrumbs();
+
+        for (i, note_id) in breadcrumbs.iter().enumerate() {
+            // Get title for this breadcrumb
+            let crumb_title = self
+                .ndb
+                .get_note_by_id(txn, note_id.bytes())
+                .ok()
+                .and_then(|note| self.get_tag_value(&note, "title").map(|s| s.to_string()))
+                .unwrap_or_else(|| "...".to_string());
+
+            // Truncate long titles
+            let display_title = if crumb_title.len() > 15 {
+                format!("{}…", &crumb_title[..12])
+            } else {
+                crumb_title
+            };
+
+            ui.label(
+                egui::RichText::new(&display_title)
+                    .small()
+                    .color(ui.visuals().weak_text_color()),
+            );
+
+            if i < breadcrumbs.len() - 1 {
+                ui.label(egui::RichText::new("›").small());
+            }
+        }
     }
 
     fn render_content(
