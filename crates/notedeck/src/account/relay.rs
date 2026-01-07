@@ -142,6 +142,7 @@ impl RelayDefaults {
             "wss://nos.lol",
             "wss://nostr.wine",
             "wss://purplepag.es",
+            "wss://theforest.nostr1.com", // GitCitadel publications relay
         ]
         .iter()
         .map(|&url| url.to_string())
