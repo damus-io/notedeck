@@ -218,6 +218,52 @@ impl PublicationTree {
         Some(children)
     }
 
+    /// Get sibling indices for a node (previous and next in parent's child list)
+    ///
+    /// Returns (previous_sibling_index, next_sibling_index).
+    /// Root node has no siblings and returns (None, None).
+    pub fn siblings(&self, index: usize) -> (Option<usize>, Option<usize>) {
+        let node = match self.nodes.get(index) {
+            Some(n) => n,
+            None => return (None, None),
+        };
+
+        // Root has no siblings
+        let parent_idx = match node.parent {
+            Some(p) => p,
+            None => return (None, None),
+        };
+
+        // Get parent's children sorted by order
+        let parent = match self.nodes.get(parent_idx) {
+            Some(p) => p,
+            None => return (None, None),
+        };
+
+        let mut sibling_indices: Vec<usize> = parent.children.clone();
+        sibling_indices.sort_by_key(|&idx| self.nodes.get(idx).map(|n| n.order).unwrap_or(0));
+
+        // Find position of current node
+        let pos = sibling_indices.iter().position(|&i| i == index);
+
+        match pos {
+            Some(p) => {
+                let prev = if p > 0 {
+                    Some(sibling_indices[p - 1])
+                } else {
+                    None
+                };
+                let next = if p + 1 < sibling_indices.len() {
+                    Some(sibling_indices[p + 1])
+                } else {
+                    None
+                };
+                (prev, next)
+            }
+            None => (None, None),
+        }
+    }
+
     /// Set bookmark for iteration
     pub fn set_bookmark(&mut self, address: &EventAddress) {
         if let Some(&idx) = self.address_to_index.get(address) {
