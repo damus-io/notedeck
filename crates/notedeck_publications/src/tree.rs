@@ -33,6 +33,9 @@ pub struct PublicationTree {
 
     /// Bookmark for resuming iteration
     bookmark: Option<usize>,
+
+    /// Version counter that increments on each node resolution (for change detection)
+    resolved_version: u64,
 }
 
 impl PublicationTree {
@@ -58,6 +61,7 @@ impl PublicationTree {
             root_index: 0,
             cursor: None,
             bookmark: None,
+            resolved_version: 1, // Start at 1 (root is already resolved)
         };
 
         tree.address_to_index.insert(address, 0);
@@ -120,6 +124,18 @@ impl PublicationTree {
             .count()
     }
 
+    /// Get version number that increments on each node resolution
+    ///
+    /// Useful for detecting when the tree has changed (e.g., for UI updates)
+    pub fn resolved_version(&self) -> u64 {
+        self.resolved_version
+    }
+
+    /// Check if tree has any pending (unresolved) nodes
+    pub fn has_pending(&self) -> bool {
+        self.nodes.iter().any(|n| n.status == NodeStatus::Pending)
+    }
+
     /// Resolve a pending node with a fetched note
     ///
     /// Returns the node index if successful
@@ -141,6 +157,9 @@ impl PublicationTree {
 
         // Update the node
         self.nodes[idx].resolve(note_key, title, node_type);
+
+        // Increment version to signal change
+        self.resolved_version += 1;
 
         // If this is a branch, populate its children
         if node_type == NodeType::Branch {
@@ -398,6 +417,7 @@ mod tests {
             root_index: 0,
             cursor: None,
             bookmark: None,
+            resolved_version: 2,
         };
 
         assert_eq!(tree.hierarchy(0), vec![0]);
@@ -438,10 +458,13 @@ mod tests {
             root_index: 0,
             cursor: None,
             bookmark: None,
+            resolved_version: 1,
         };
 
         assert_eq!(tree.pending_count(), 1);
         assert_eq!(tree.resolved_count(), 1);
         assert_eq!(tree.node_count(), 2);
+        assert!(tree.has_pending());
+        assert_eq!(tree.resolved_version(), 1);
     }
 }

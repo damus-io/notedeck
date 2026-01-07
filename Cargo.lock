@@ -4019,6 +4019,7 @@ dependencies = [
  "ndk-context",
  "nostrdb",
  "notedeck",
+ "notedeck_publications",
  "notedeck_ui",
  "oot_bitset",
  "opener",
