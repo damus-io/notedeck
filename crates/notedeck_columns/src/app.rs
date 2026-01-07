@@ -10,7 +10,7 @@ use crate::{
     storage,
     subscriptions::{SubKind, Subscriptions},
     support::Support,
-    timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
+    timeline::{self, kind::ListKind, publication::Publications, thread::Threads, TimelineCache, TimelineKind},
     toolbar::unseen_notification,
     ui::{self, toolbar::toolbar, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
@@ -50,6 +50,7 @@ pub struct Damus {
     pub subscriptions: Subscriptions,
     pub support: Support,
     pub threads: Threads,
+    pub publications: Publications,
 
     //frame_history: crate::frame_history::FrameHistory,
 
@@ -501,6 +502,7 @@ impl Damus {
         let support = Support::new(app_context.path);
         let note_options = get_note_options(parsed_args, app_context.settings);
         let threads = Threads::default();
+        let publications = Publications::default();
 
         Self {
             subscriptions: Subscriptions::default(),
@@ -515,6 +517,7 @@ impl Damus {
             decks_cache,
             unrecognized_args,
             threads,
+            publications,
             onboarding: Onboarding::default(),
             hovered_column: None,
         }
@@ -566,6 +569,7 @@ impl Damus {
             decks_cache,
             unrecognized_args: BTreeSet::default(),
             threads: Threads::default(),
+            publications: Publications::default(),
             onboarding: Onboarding::default(),
             hovered_column: None,
         }

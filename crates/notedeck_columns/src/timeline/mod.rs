@@ -24,6 +24,7 @@ use tracing::{debug, error, info, warn};
 pub mod cache;
 pub mod kind;
 mod note_units;
+pub mod publication;
 pub mod route;
 pub mod thread;
 mod timeline_units;
@@ -119,6 +120,12 @@ impl TimelineTab {
 
     pub fn no_replies() -> Vec<Self> {
         vec![TimelineTab::new(ViewFilter::Notes)]
+    }
+
+    /// For timelines like Publications (kind 30040) where we want all events
+    /// without any kind-based filtering
+    pub fn all() -> Vec<Self> {
+        vec![TimelineTab::new(ViewFilter::All)]
     }
 
     pub fn full_tabs() -> Vec<Self> {

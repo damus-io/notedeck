@@ -106,6 +106,21 @@ fn execute_note_action(
             preview,
             scroll_offset,
         } => 'ex: {
+            // Check if this is a publication (kind 30040)
+            if let Ok(note) = ndb.get_note_by_id(txn, note_id.bytes()) {
+                if note.kind() == 30040 {
+                    // Open publication reader instead of thread
+                    let selection = crate::timeline::PublicationSelection::new(note_id);
+                    let route = Route::Publication(selection);
+                    router_action = Some(RouterAction::Overlay {
+                        route,
+                        make_new: preview,
+                    });
+                    break 'ex;
+                }
+            }
+
+            // Default: open thread view
             let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));

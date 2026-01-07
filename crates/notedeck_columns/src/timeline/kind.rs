@@ -562,7 +562,7 @@ impl TimelineKind {
             TimelineKind::Publications => Some(Timeline::new(
                 TimelineKind::Publications,
                 FilterState::ready(publications_filter()),
-                TimelineTab::no_replies(),
+                TimelineTab::all(),
             )),
 
             TimelineKind::Generic(_filter_id) => {
