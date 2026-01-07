@@ -697,10 +697,11 @@ fn render_publication_card(
     let mut action = None;
     let note_key = note.key().expect("note should have key");
 
-    // Extract title, author, and image from tags
+    // Extract title, author, image, and count sections from tags
     let mut title: Option<&str> = None;
     let mut publication_author: Option<&str> = None;
     let mut cover_image: Option<&str> = None;
+    let mut section_count: usize = 0;
 
     for tag in note.tags() {
         if tag.count() < 2 {
@@ -710,6 +711,7 @@ fn render_publication_card(
             Some("title") => title = tag.get_str(1),
             Some("author") => publication_author = tag.get_str(1),
             Some("image") => cover_image = tag.get_str(1),
+            Some("a") => section_count += 1,
             _ => {}
         }
     }
@@ -783,6 +785,23 @@ fn render_publication_card(
                     .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small)),
             );
         });
+
+        // Section count badge
+        if section_count > 0 {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let section_text = if section_count == 1 {
+                    "1 section".to_string()
+                } else {
+                    format!("{} sections", section_count)
+                };
+                ui.label(
+                    RichText::new(section_text)
+                        .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
+        }
     });
 
     // Render cover image thumbnail (right-justified, to the left of options button)
