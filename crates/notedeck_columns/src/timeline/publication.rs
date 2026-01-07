@@ -172,45 +172,6 @@ impl PublicationTreeState {
     }
 }
 
-/// Tracks navigation history when drilling into nested publications beyond depth limit
-#[derive(Debug, Clone, Default)]
-pub struct PublicationHistory {
-    /// Stack of parent publication index IDs (oldest first)
-    stack: Vec<NoteId>,
-}
-
-impl PublicationHistory {
-    /// Create new history starting at a root publication
-    pub fn new() -> Self {
-        Self { stack: Vec::new() }
-    }
-
-    /// Push a new publication onto the history (when drilling into nested)
-    pub fn push(&mut self, index_id: NoteId) {
-        self.stack.push(index_id);
-    }
-
-    /// Pop back to previous publication
-    pub fn pop(&mut self) -> Option<NoteId> {
-        self.stack.pop()
-    }
-
-    /// Check if we can go back
-    pub fn can_go_back(&self) -> bool {
-        !self.stack.is_empty()
-    }
-
-    /// Get breadcrumb trail (parent publications)
-    pub fn breadcrumbs(&self) -> &[NoteId] {
-        &self.stack
-    }
-
-    /// Get depth of history
-    pub fn depth(&self) -> usize {
-        self.stack.len()
-    }
-}
-
 /// Manages all publication views
 #[derive(Default)]
 pub struct Publications {
