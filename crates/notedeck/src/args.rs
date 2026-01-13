@@ -124,12 +124,6 @@ impl Args {
                 res.options.set(NotedeckOptions::UseKeystore, true);
             } else if arg == "--relay-debug" {
                 res.options.set(NotedeckOptions::RelayDebug, true);
-            } else if arg == "--notebook" {
-                res.options.set(NotedeckOptions::FeatureNotebook, true);
-            } else if arg == "--clndash" {
-                res.options.set(NotedeckOptions::FeatureClnDash, true);
-            } else if arg == "--messages" {
-                res.options.set(NotedeckOptions::FeatureMessages, true);
             } else {
                 unrecognized_args.insert(arg.clone());
             }
