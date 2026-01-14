@@ -3845,7 +3845,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.8.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=8148dd3cea9bc8ff0bc510c720d0c51f327a0a1a#8148dd3cea9bc8ff0bc510c720d0c51f327a0a1a"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=04702963cd9fc985976005743f06310c619428b1#04702963cd9fc985976005743f06310c619428b1"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -3938,6 +3938,7 @@ dependencies = [
  "notedeck",
  "notedeck_clndash",
  "notedeck_columns",
+ "notedeck_dashboard",
  "notedeck_dave",
  "notedeck_messages",
  "notedeck_notebook",
@@ -4031,6 +4032,19 @@ dependencies = [
  "url",
  "urlencoding",
  "uuid",
+]
+
+[[package]]
+name = "notedeck_dashboard"
+version = "0.7.1"
+dependencies = [
+ "crossbeam-channel",
+ "egui",
+ "nostrdb",
+ "notedeck",
+ "notedeck_ui",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

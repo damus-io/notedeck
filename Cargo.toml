@@ -10,13 +10,16 @@ members = [
     "crates/notedeck_notebook",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
-
-    "crates/enostr", "crates/tokenator", "crates/notedeck_dave", "crates/notedeck_ui", "crates/notedeck_clndash",
+    "crates/notedeck_dashboard",
+    "crates/tokenator",
+    "crates/enostr",
 ]
 
 [workspace.dependencies]
 opener = "0.8.2"
 chrono = "0.4.40" 
+crossbeam-channel = "0.5"
+crossbeam = "0.8.4"
 base32 = "0.4.0"
 base64 = "0.22.1"
 rmpv = "1.3.0"
@@ -52,11 +55,12 @@ md5 = "0.7.0"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip44", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "8148dd3cea9bc8ff0bc510c720d0c51f327a0a1a" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "04702963cd9fc985976005743f06310c619428b1" }
 #nostrdb = "0.6.1"
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
+notedeck_dashboard = { path = "crates/notedeck_dashboard" }
 notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }

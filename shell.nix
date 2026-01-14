@@ -14,6 +14,7 @@ mkShell ({
     #cargo-edit
     #cargo-watch
     rustup
+    gdb
     libiconv
     pkg-config
     cmake

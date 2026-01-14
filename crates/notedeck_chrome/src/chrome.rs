@@ -30,6 +30,9 @@ use notedeck_dave::{Dave, DaveAvatar};
 #[cfg(feature = "messages")]
 use notedeck_messages::MessagesApp;
 
+#[cfg(feature = "dashboard")]
+use notedeck_dashboard::Dashboard;
+
 #[cfg(feature = "clndash")]
 use notedeck_ui::expanding_button;
 
@@ -163,6 +166,9 @@ impl Chrome {
 
         #[cfg(feature = "messages")]
         chrome.add_app(NotedeckApp::Messages(Box::new(MessagesApp::new())));
+
+        #[cfg(feature = "dashboard")]
+        chrome.add_app(NotedeckApp::Dashboard(Box::new(Dashboard::default())));
 
         #[cfg(feature = "notebook")]
         chrome.add_app(NotedeckApp::Notebook(Box::default()));
@@ -787,6 +793,11 @@ fn topdown_sidebar(
                 tr!(loc, "Messaging", "Button to go to the messaging app")
             }
 
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(_) => {
+                tr!(loc, "Dashboard", "Button to go to the dashboard app")
+            }
+
             #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(_) => {
                 tr!(loc, "Notebook", "Button to go to the Notebook app")
@@ -819,6 +830,11 @@ fn topdown_sidebar(
                                             vec2(30.0, 30.0),
                                         ),
                                     );
+                                }
+
+                                #[cfg(feature = "dashboard")]
+                                NotedeckApp::Dashboard(_columns_app) => {
+                                    ui.add(app_images::algo_image());
                                 }
 
                                 #[cfg(feature = "messages")]
