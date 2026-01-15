@@ -7,7 +7,8 @@ use crate::zaps::Zaps;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, TorManager, UnknownIds,
+    DataPathType, Directory, HttpConfig, Images, NoteAction, NoteCache, RelayDebugView, TorManager,
+    UnknownIds,
 };
 use crate::{Error, JobCache};
 use crate::{JobPool, MediaJobs};
@@ -26,9 +27,9 @@ use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(not(target_arch = "wasm32"))]
 use enostr::ewebsock::{SocksOptions, Transport as WsTransport};
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 pub enum AppAction {
@@ -86,7 +87,7 @@ pub struct Notedeck {
     media_jobs: MediaJobs,
     i18n: Localization,
     tor: TorManager,
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    #[cfg(not(target_arch = "wasm32"))]
     ws_transport: WsTransport,
 
     #[cfg(target_os = "android")]
@@ -140,7 +141,7 @@ impl eframe::App for Notedeck {
         });
 
         self.tor.poll();
-        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+        #[cfg(not(target_arch = "wasm32"))]
         self.update_relay_transport(ctx);
 
         // handle account updates
@@ -236,7 +237,7 @@ impl Notedeck {
             }
         }
 
-        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+        #[cfg(not(target_arch = "wasm32"))]
         let ws_transport = WsTransport::Direct;
 
         let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
@@ -351,7 +352,7 @@ impl Notedeck {
             media_jobs: media_job_cache,
             i18n,
             tor,
-            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+            #[cfg(not(target_arch = "wasm32"))]
             ws_transport,
             #[cfg(target_os = "android")]
             android_app: None,
@@ -449,12 +450,14 @@ impl Notedeck {
         &self.unrecognized_args
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    #[cfg(not(target_arch = "wasm32"))]
     #[profiling::function]
     fn update_relay_transport(&mut self, ctx: &egui::Context) {
-        let desired = if let Some(addr) = self.tor.socks_proxy() {
+        let socks_proxy = self.tor.socks_proxy();
+
+        let desired = if let Some(ref addr) = socks_proxy {
             WsTransport::Socks(SocksOptions {
-                proxy_address: addr,
+                proxy_address: addr.clone(),
                 auth: None,
             })
         } else {
@@ -466,13 +469,27 @@ impl Notedeck {
             let repaint_ctx = ctx.clone();
             let wakeup = Arc::new(move || repaint_ctx.request_repaint());
             self.pool.configure_transport(desired, wakeup);
+
+            // Also update HTTP config for image fetching
+            self.img_cache.set_http_config(HttpConfig {
+                socks_proxy: socks_proxy.clone(),
+            });
         }
     }
 }
 
+/// Install the default crypto provider for rustls.
+/// Uses ring on all platforms for cross-compilation compatibility.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub fn install_crypto() {
-    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let provider = rustls::crypto::ring::default_provider();
     let _ = provider.install_default();
+}
+
+/// No-op on Android/WASM - crypto handled by platform or not needed
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub fn install_crypto() {
+    // Crypto not needed on mobile/web platforms
 }
 
 #[profiling::function]
