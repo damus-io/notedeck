@@ -144,8 +144,11 @@ impl eframe::App for Notedeck {
         #[cfg(not(target_arch = "wasm32"))]
         self.update_relay_transport(ctx);
 
-        // handle account updates
-        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        // Handle account updates only if connections are allowed.
+        // When Tor is bootstrapping, skip updates to prevent traffic leaks.
+        if self.tor.should_allow_connections() {
+            self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        }
 
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);

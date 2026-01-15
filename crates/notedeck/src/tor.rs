@@ -56,33 +56,37 @@ mod inner {
     }
 
     impl TorHandle {
-        /// Stop the Tor runtime thread with a timeout to prevent indefinite blocking.
+        /// Stop the Tor runtime thread without blocking.
         ///
-        /// Sends the shutdown signal and waits up to `SHUTDOWN_TIMEOUT` for the
-        /// thread to exit gracefully. If the thread doesn't respond in time, it
-        /// is abandoned to prevent blocking the main thread.
+        /// Sends the shutdown signal to the runtime. The thread will clean up
+        /// asynchronously in the background. This is non-blocking to avoid
+        /// freezing the UI thread.
         fn stop(&mut self) {
-            // Send shutdown signal
+            // Send shutdown signal - the thread will receive this and exit gracefully
             if let Some(tx) = self.shutdown.take() {
                 let _ = tx.send(());
             }
 
-            // Wait for thread with timeout to prevent indefinite blocking
+            // Detach the thread - it will clean up on its own
+            // We intentionally don't wait to avoid blocking the UI thread
             if let Some(handle) = self.thread.take() {
-                let start = Instant::now();
-                while !handle.is_finished() {
-                    if start.elapsed() >= SHUTDOWN_TIMEOUT {
-                        tracing::warn!(
-                            "Tor runtime did not shut down within {:?}, abandoning thread",
-                            SHUTDOWN_TIMEOUT
-                        );
-                        // Thread is abandoned but will eventually terminate
-                        return;
+                // Spawn a background task to join the thread after a delay
+                // This ensures resources are cleaned up eventually
+                thread::spawn(move || {
+                    let start = Instant::now();
+                    while !handle.is_finished() {
+                        if start.elapsed() >= SHUTDOWN_TIMEOUT {
+                            tracing::warn!(
+                                "Tor runtime did not shut down within {:?}, abandoning",
+                                SHUTDOWN_TIMEOUT
+                            );
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(100));
                     }
-                    thread::sleep(Duration::from_millis(50));
-                }
-                // Thread finished, join to clean up resources
-                let _ = handle.join();
+                    let _ = handle.join();
+                    tracing::debug!("Tor runtime thread joined successfully");
+                });
             }
         }
     }
@@ -158,11 +162,23 @@ mod inner {
             }
         }
 
+        /// Check if relay connections should be allowed.
+        ///
+        /// Returns `false` when Tor is bootstrapping (Starting state) to prevent
+        /// traffic from leaking over direct connections before Tor is ready.
+        /// Returns `true` when Tor is Disabled (direct is fine), Running (SOCKS ready),
+        /// Failed (user should see errors), or Unsupported.
+        pub fn should_allow_connections(&self) -> bool {
+            !matches!(self.status, TorStatus::Starting)
+        }
+
         /// Poll for status updates from the background Tor runtime.
         ///
         /// Should be called each frame to check for bootstrap completion or errors.
         /// Updates `self.status` when the runtime signals ready or fails.
+        /// Also monitors the runtime thread health after bootstrap.
         pub fn poll(&mut self) {
+            // Check for bootstrap completion signal
             if let Some(rx) = &self.ready_rx {
                 match rx.try_recv() {
                     Ok(ReadyState::Ok) => {
@@ -186,6 +202,19 @@ mod inner {
                         self.status =
                             TorStatus::Failed("Tor runtime exited unexpectedly".to_owned());
                         self.ready_rx = None;
+                        self.drop_handle();
+                    }
+                }
+                return;
+            }
+
+            // Monitor runtime health after bootstrap - detect if thread has exited
+            if matches!(self.status, TorStatus::Running { .. }) {
+                if let Some(handle) = &self.handle {
+                    if handle.thread.as_ref().is_some_and(|t| t.is_finished()) {
+                        tracing::error!("Tor runtime thread exited unexpectedly");
+                        self.status =
+                            TorStatus::Failed("Tor runtime exited unexpectedly".to_owned());
                         self.drop_handle();
                     }
                 }
@@ -393,6 +422,11 @@ mod inner {
             None
         }
 
+        /// WASM always allows connections (Tor not supported).
+        pub fn should_allow_connections(&self) -> bool {
+            true
+        }
+
         pub fn poll(&mut self) {}
     }
 
@@ -473,6 +507,13 @@ mod inner {
             } else {
                 None
             }
+        }
+
+        /// Check if relay connections should be allowed.
+        ///
+        /// Returns `false` when Tor is bootstrapping to prevent traffic leaks.
+        pub fn should_allow_connections(&self) -> bool {
+            !matches!(self.status, TorStatus::Starting)
         }
 
         pub fn poll(&mut self) {
@@ -707,6 +748,13 @@ mod tests {
         assert!(matches!(manager.status(), TorStatus::Disabled));
     }
 
+    #[test]
+    fn test_should_allow_connections_when_disabled() {
+        let (manager, _temp) = create_test_manager();
+        // When Tor is disabled, connections should be allowed (direct)
+        assert!(manager.should_allow_connections());
+    }
+
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
     mod desktop_tests {
         use super::*;
@@ -782,6 +830,29 @@ mod tests {
             // Both should be Disabled
             assert!(matches!(status1, TorStatus::Disabled));
             assert!(matches!(status2, TorStatus::Disabled));
+        }
+
+        #[test]
+        fn test_should_allow_connections_blocks_during_starting() {
+            let (mut manager, _temp) = create_test_manager();
+
+            // Enable Tor
+            let result = manager.set_enabled(true);
+
+            // If it went to Starting, connections should NOT be allowed
+            if result.is_ok() && matches!(manager.status(), TorStatus::Starting) {
+                assert!(
+                    !manager.should_allow_connections(),
+                    "Connections should be blocked during Starting state"
+                );
+            }
+
+            // After disable, connections should be allowed again
+            let _ = manager.set_enabled(false);
+            assert!(
+                manager.should_allow_connections(),
+                "Connections should be allowed after disabling Tor"
+            );
         }
     }
 
