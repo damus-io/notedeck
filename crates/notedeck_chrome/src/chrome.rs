@@ -6,8 +6,8 @@ use crate::ChromeOptions;
 use bitflags::bitflags;
 use eframe::CreationContext;
 use egui::{
-    vec2, Color32, CornerRadius, Label, Layout, Margin, Rect, RichText, Sense, ThemePreference, Ui,
-    Widget,
+    vec2, Align2, Color32, CornerRadius, Label, Layout, Margin, Order, Rect, RichText, Sense,
+    Stroke, ThemePreference, Ui, Widget,
 };
 use egui_extras::{Size, StripBuilder};
 use egui_nav::RouteResponse;
@@ -22,7 +22,7 @@ use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
     tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
-    UserAccount, WalletType,
+    TorStatus, UserAccount, WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
@@ -71,6 +71,13 @@ bitflags! {
         const Compact = 1 << 0;
     }
 }
+
+const TOR_PURPLE: Color32 = Color32::from_rgb(126, 71, 152);
+const TOR_LAVENDER: Color32 = Color32::from_rgb(209, 166, 221);
+const TOR_LEAF: Color32 = Color32::from_rgb(134, 197, 88);
+const TOR_AMBER: Color32 = Color32::from_rgb(255, 191, 94);
+const TOR_ALERT: Color32 = Color32::from_rgb(204, 76, 98);
+const TOR_SLATE: Color32 = Color32::from_rgb(110, 113, 130);
 
 impl ChromePanelAction {
     fn columns_navigate(ctx: &mut AppContext, chrome: &mut Chrome, route: notedeck_columns::Route) {
@@ -267,6 +274,9 @@ impl Chrome {
                 if let Some(action) = resp.action {
                     chrome_handle_app_action(self, app_ctx, action, ui);
                 }
+
+                let tor_status = app_ctx.tor.status();
+                show_tor_indicator(ui, tor_status, app_ctx.i18n);
 
                 RouteResponse {
                     response: None,
@@ -905,6 +915,167 @@ fn topdown_sidebar(
     ui.spacing_mut().item_spacing = previous_spacing;
 
     action
+}
+
+struct TorIndicatorStyle {
+    base: Color32,
+    accent: Color32,
+    sprout: Color32,
+    overlay: Option<OverlayStyle>,
+    tooltip: String,
+}
+
+enum OverlayStyle {
+    Slash(Color32),
+}
+
+fn blend_colors(from: Color32, to: Color32, t: f32) -> Color32 {
+    fn channel(a: u8, b: u8, t: f32) -> u8 {
+        ((a as f32) + (b as f32 - a as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    }
+
+    Color32::from_rgba_unmultiplied(
+        channel(from.r(), to.r(), t),
+        channel(from.g(), to.g(), t),
+        channel(from.b(), to.b(), t),
+        channel(from.a(), to.a(), t),
+    )
+}
+
+/// Paint the floating Tor onion badge that mirrors VPN-style indicators.
+fn show_tor_indicator(ui: &mut egui::Ui, status: TorStatus, i18n: &mut Localization) {
+    let Some(style) = tor_indicator_style(status, i18n) else {
+        return;
+    };
+
+    egui::Area::new(egui::Id::new("tor-indicator-badge"))
+        .anchor(Align2::RIGHT_TOP, vec2(-16.0, 16.0))
+        .order(Order::Tooltip)
+        .show(ui.ctx(), |area_ui| {
+            let blended = blend_colors(area_ui.visuals().panel_fill, style.base, 0.12);
+            let response = egui::Frame::new()
+                .corner_radius(CornerRadius::same(14))
+                .fill(blended)
+                .stroke(Stroke::new(1.0, style.base.gamma_multiply(0.8)))
+                .inner_margin(Margin::symmetric(10, 6))
+                .show(area_ui, |ui| {
+                    let (icon_rect, _) = ui.allocate_exact_size(vec2(26.0, 26.0), Sense::hover());
+                    let painter = ui.painter_at(icon_rect);
+                    paint_tor_onion(&painter, icon_rect, &style);
+                });
+
+            response.response.on_hover_text(style.tooltip);
+        });
+}
+
+fn tor_indicator_style(status: TorStatus, i18n: &mut Localization) -> Option<TorIndicatorStyle> {
+    match status {
+        TorStatus::Running { .. } => Some(TorIndicatorStyle {
+            base: TOR_PURPLE,
+            accent: TOR_LAVENDER,
+            sprout: TOR_LEAF,
+            overlay: None,
+            tooltip: tr!(
+                i18n,
+                "All network traffic is routed through Tor.",
+                "Tooltip explaining Tor routing indicator"
+            ),
+        }),
+        TorStatus::Starting => Some(TorIndicatorStyle {
+            base: TOR_LAVENDER,
+            accent: TOR_PURPLE,
+            sprout: TOR_LEAF,
+            overlay: None,
+            tooltip: tr!(
+                i18n,
+                "Connecting to the Tor network…",
+                "Tooltip while Tor is still connecting"
+            ),
+        }),
+        TorStatus::Failed(err) => Some(TorIndicatorStyle {
+            base: TOR_ALERT,
+            accent: TOR_AMBER,
+            sprout: TOR_AMBER,
+            overlay: Some(OverlayStyle::Slash(Color32::from_rgb(250, 226, 226))),
+            tooltip: tr!(
+                i18n,
+                "Tor routing failed: {error}",
+                "Tooltip when Tor routing has failed",
+                error = err.as_str()
+            ),
+        }),
+        TorStatus::Disabled => Some(TorIndicatorStyle {
+            base: TOR_SLATE,
+            accent: TOR_SLATE.gamma_multiply(0.8),
+            sprout: TOR_SLATE.gamma_multiply(0.6),
+            overlay: Some(OverlayStyle::Slash(Color32::from_rgb(220, 226, 236))),
+            tooltip: tr!(
+                i18n,
+                "Tor routing is disabled.",
+                "Tooltip when Tor routing is disabled"
+            ),
+        }),
+        TorStatus::Unsupported => None,
+    }
+}
+
+fn paint_tor_onion(painter: &egui::Painter, rect: Rect, style: &TorIndicatorStyle) {
+    let radius = rect.width().min(rect.height()) * 0.5;
+    let center = rect.center();
+
+    painter.circle_filled(center, radius, style.base);
+    painter.circle_stroke(center, radius * 0.75, Stroke::new(1.4, style.accent));
+    painter.circle_stroke(center, radius * 0.5, Stroke::new(1.1, style.accent));
+
+    let stem_top = center + vec2(0.0, -radius * 0.95);
+    painter.line_segment(
+        [
+            stem_top + vec2(-radius * 0.2, -radius * 0.25),
+            stem_top + vec2(0.0, -radius * 0.45),
+        ],
+        Stroke::new(1.1, style.sprout),
+    );
+    painter.line_segment(
+        [
+            stem_top + vec2(radius * 0.2, -radius * 0.25),
+            stem_top + vec2(0.0, -radius * 0.45),
+        ],
+        Stroke::new(1.1, style.sprout),
+    );
+    painter.line_segment(
+        [
+            stem_top + vec2(0.0, -radius * 0.55),
+            stem_top + vec2(0.0, -radius * 0.2),
+        ],
+        Stroke::new(1.3, style.sprout),
+    );
+
+    painter.line_segment(
+        [
+            center + vec2(-radius * 0.5, radius * 0.35),
+            center + vec2(radius * 0.5, radius * 0.35),
+        ],
+        Stroke::new(1.0, style.accent),
+    );
+    painter.line_segment(
+        [
+            center + vec2(0.0, -radius * 0.1),
+            center + vec2(0.0, radius * 0.6),
+        ],
+        Stroke::new(1.2, style.accent.gamma_multiply(0.8)),
+    );
+
+    if let Some(OverlayStyle::Slash(color)) = &style.overlay {
+        painter.line_segment(
+            [
+                center + vec2(-radius * 0.7, -radius * 0.7),
+                center + vec2(radius * 0.7, radius * 0.7),
+            ],
+            Stroke::new(2.0, *color),
+        );
+    }
 }
 
 fn drawer_item(builder: StripBuilder, icon: impl FnOnce(&mut Ui), text: String) -> egui::Response {

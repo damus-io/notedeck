@@ -23,3 +23,7 @@ scripts/macos_build_secrets.sh
 .lsp
 .idea
 local.properties
+# Local development files
+.beads/
+AGENTS.md
+AGENTS.md.local

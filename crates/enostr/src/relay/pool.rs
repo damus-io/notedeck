@@ -7,10 +7,15 @@ use std::time::{Duration, Instant};
 
 use url::Url;
 
-use ewebsock::{WsEvent, WsMessage};
+use ewebsock::{Options, WsEvent, WsMessage};
 use tracing::{debug, error, trace};
 
 use super::subs_debug::SubsDebug;
+
+#[cfg(not(target_arch = "wasm32"))]
+use ewebsock::Transport;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct PoolEvent<'a> {
@@ -124,6 +129,7 @@ pub struct RelayPool {
     pub relays: Vec<PoolRelay>,
     pub ping_rate: Duration,
     pub debug: Option<SubsDebug>,
+    ws_options: Options,
 }
 
 impl Default for RelayPool {
@@ -139,6 +145,7 @@ impl RelayPool {
             relays: vec![],
             ping_rate: Duration::from_secs(45),
             debug: None,
+            ws_options: Options::default(),
         }
     }
 
@@ -314,6 +321,7 @@ impl RelayPool {
         }
         let relay = Relay::new(
             nostr::RelayUrl::parse(url).map_err(|_| Error::InvalidRelayUrl)?,
+            self.ws_options.clone(),
             wakeup,
         )?;
         let pool_relay = PoolRelay::websocket(relay);
@@ -337,6 +345,24 @@ impl RelayPool {
     pub fn remove_urls(&mut self, urls: &BTreeSet<String>) {
         self.relays
             .retain(|pool_relay| !urls.contains(pool_relay.url()));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn configure_transport(
+        &mut self,
+        transport: Transport,
+        wakeup: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        self.ws_options.transport = transport;
+        for relay in &mut self.relays {
+            if let PoolRelay::Websocket(wsr) = relay {
+                wsr.relay.update_options(self.ws_options.clone());
+                let wake = wakeup.clone();
+                if let Err(err) = wsr.relay.connect(move || (*wake)()) {
+                    error!("failed to reconnect relay {}: {err}", wsr.relay.url);
+                }
+            }
+        }
     }
 
     // standardize the format (ie, trailing slashes)

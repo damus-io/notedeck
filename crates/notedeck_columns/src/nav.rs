@@ -39,7 +39,7 @@ use enostr::{ProfileState, RelayPool};
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
-    NoteAction, NoteCache, NoteContext, RelayAction,
+    NoteAction, NoteCache, NoteContext, RelayAction, TorManager,
 };
 use notedeck_ui::{
     contacts_list::ContactsCollection, ContactsListAction, ContactsListView, NoteOptions,
@@ -591,6 +591,7 @@ fn process_render_nav_action(
             ctx.settings,
             ctx.i18n,
             ctx.img_cache,
+            ctx.tor,
             ui.ctx(),
             ctx.accounts,
         ),
@@ -711,6 +712,8 @@ fn render_nav_body(
             ctx.settings.get_settings_mut(),
             &mut note_context,
             &mut app.note_options,
+            ctx.tor.status(),
+            TorManager::is_supported(),
         )
         .ui(ui)
         .map_output(RenderNavAction::SettingsAction),

@@ -14,6 +14,7 @@ const DEFAULT_LOCALE: &str = "en-US";
 const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
+const DEFAULT_USE_TOR: bool = false;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -40,6 +41,8 @@ pub struct Settings {
     #[serde(default = "default_animate_nav_transitions")]
     pub animate_nav_transitions: bool,
     pub max_hashtags_per_note: usize,
+    #[serde(default)]
+    pub use_tor: bool,
 }
 
 fn default_animate_nav_transitions() -> bool {
@@ -57,6 +60,7 @@ impl Default for Settings {
             note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
             animate_nav_transitions: default_animate_nav_transitions(),
             max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
+            use_tor: DEFAULT_USE_TOR,
         }
     }
 }
@@ -209,6 +213,18 @@ impl SettingsHandler {
     pub fn set_max_hashtags_per_note(&mut self, value: usize) {
         self.get_settings_mut().max_hashtags_per_note = value;
         self.try_save_settings();
+    }
+
+    pub fn set_use_tor(&mut self, value: bool) {
+        self.get_settings_mut().use_tor = value;
+        self.try_save_settings();
+    }
+
+    pub fn use_tor(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.use_tor)
+            .unwrap_or(DEFAULT_USE_TOR)
     }
 
     pub fn update_batch<F>(&mut self, update_fn: F)

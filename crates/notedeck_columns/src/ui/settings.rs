@@ -7,8 +7,8 @@ use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::richtext_small, DragResponse, Images, LanguageIdentifier, Localization, NoteContext,
-    NotedeckTextStyle, Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE,
-    DEFAULT_NOTE_BODY_FONT_SIZE,
+    NotedeckTextStyle, Settings, SettingsHandler, TorManager, TorStatus,
+    DEFAULT_MAX_HASHTAGS_PER_NOTE, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -35,15 +35,18 @@ pub enum SettingsAction {
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
+    ToggleTor(bool),
 }
 
 impl SettingsAction {
+    #[allow(clippy::too_many_arguments)]
     pub fn process_settings_action<'a>(
         self,
         app: &mut Damus,
         settings: &'a mut SettingsHandler,
         i18n: &'a mut Localization,
         img_cache: &mut Images,
+        tor: &mut TorManager,
         ctx: &egui::Context,
         accounts: &mut notedeck::Accounts,
     ) -> Option<RouterAction> {
@@ -87,7 +90,6 @@ impl SettingsAction {
 
                 settings.set_note_body_font_size(size);
             }
-
             Self::SetAnimateNavTransitions(value) => {
                 settings.set_animate_nav_transitions(value);
             }
@@ -95,6 +97,23 @@ impl SettingsAction {
             Self::SetMaxHashtagsPerNote(value) => {
                 settings.set_max_hashtags_per_note(value);
                 accounts.update_max_hashtags_per_note(value);
+            }
+
+            Self::ToggleTor(enabled) => {
+                // Check support before attempting to toggle to avoid desync
+                if !notedeck::TorManager::is_supported() {
+                    tracing::warn!("Tor toggle requested but not supported on this platform");
+                    return route_action;
+                }
+
+                // Only update settings if the toggle operation succeeds
+                match tor.set_enabled(enabled) {
+                    Ok(()) => settings.set_use_tor(enabled),
+                    Err(err) => {
+                        tracing::error!("failed to toggle tor: {err}");
+                        // Don't update settings - leave them in the previous state
+                    }
+                }
             }
         }
         route_action
@@ -105,6 +124,8 @@ pub struct SettingsView<'a> {
     settings: &'a mut Settings,
     note_context: &'a mut NoteContext<'a>,
     note_options: &'a mut NoteOptions,
+    tor_status: TorStatus,
+    tor_supported: bool,
 }
 
 fn settings_group<S>(ui: &mut egui::Ui, title: S, contents: impl FnOnce(&mut egui::Ui))
@@ -131,11 +152,15 @@ impl<'a> SettingsView<'a> {
         settings: &'a mut Settings,
         note_context: &'a mut NoteContext<'a>,
         note_options: &'a mut NoteOptions,
+        tor_status: TorStatus,
+        tor_supported: bool,
     ) -> Self {
         Self {
             settings,
             note_context,
             note_options,
+            tor_status,
+            tor_supported,
         }
     }
 
@@ -546,6 +571,74 @@ impl<'a> SettingsView<'a> {
         action
     }
 
+    fn network_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        if !self.tor_supported {
+            return None;
+        }
+
+        let mut action = None;
+        let title = tr!(
+            self.note_context.i18n,
+            "Network",
+            "Label for network settings section"
+        );
+
+        settings_group(ui, title, |ui| {
+            ui.vertical(|ui| {
+                let label = tr!(
+                    self.note_context.i18n,
+                    "Route network traffic through Tor:",
+                    "Label for Tor routing toggle in settings"
+                );
+
+                if ui
+                    .toggle_value(
+                        &mut self.settings.use_tor,
+                        RichText::new(label).text_style(NotedeckTextStyle::Small.text_style()),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::ToggleTor(self.settings.use_tor));
+                }
+
+                let status_label = match &self.tor_status {
+                    TorStatus::Disabled => tr!(
+                        self.note_context.i18n,
+                        "Tor status: Off",
+                        "Status label when Tor is disabled"
+                    ),
+                    TorStatus::Starting => tr!(
+                        self.note_context.i18n,
+                        "Tor status: Starting…",
+                        "Status label when Tor is bootstrapping"
+                    ),
+                    TorStatus::Running { .. } => tr!(
+                        self.note_context.i18n,
+                        "Tor status: Connected",
+                        "Status label when Tor is running"
+                    ),
+                    TorStatus::Failed(err) => {
+                        tracing::debug!("Tor connection failed: {err}");
+                        tr!(
+                            self.note_context.i18n,
+                            "Tor status: Connection failed",
+                            "Status label when Tor connection failed"
+                        )
+                    }
+                    TorStatus::Unsupported => tr!(
+                        self.note_context.i18n,
+                        "Tor is not available on this platform.",
+                        "Status label when Tor is unsupported"
+                    ),
+                };
+
+                ui.label(richtext_small(status_label));
+            });
+        });
+
+        action
+    }
+
     fn keys_section(&mut self, ui: &mut egui::Ui) {
         let title = tr!(
             self.note_context.i18n,
@@ -722,6 +815,12 @@ impl<'a> SettingsView<'a> {
                     ui.add_space(5.0);
 
                     if let Some(new_action) = self.storage_section(ui) {
+                        action = Some(new_action);
+                    }
+
+                    ui.add_space(5.0);
+
+                    if let Some(new_action) = self.network_section(ui) {
                         action = Some(new_action);
                     }
 

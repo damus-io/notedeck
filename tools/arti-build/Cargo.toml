@@ -1,0 +1,44 @@
+[package]
+name = "arti-android"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Arti with rustls (NOT native-tls) to avoid OpenSSL cross-compilation
+arti-client = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", default-features = false, features = [
+    "tokio",
+    "rustls",
+    "compression",
+    "static-sqlite",
+] }
+tor-rtcompat = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", default-features = false, features = [
+    "tokio",
+    "rustls",
+] }
+
+# JNI bindings
+jni = { version = "0.21", default-features = false }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+
+# Config path handling
+tor-config-path = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66" }
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

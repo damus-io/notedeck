@@ -7,7 +7,8 @@ use crate::zaps::Zaps;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
+    DataPathType, Directory, HttpConfig, Images, NoteAction, NoteCache, RelayDebugView, TorManager,
+    UnknownIds,
 };
 use crate::{Error, JobCache};
 use crate::{JobPool, MediaJobs};
@@ -25,6 +26,11 @@ use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
+
+#[cfg(not(target_arch = "wasm32"))]
+use enostr::ewebsock::{SocksOptions, Transport as WsTransport};
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Arc;
 
 pub enum AppAction {
     Note(NoteAction),
@@ -80,6 +86,9 @@ pub struct Notedeck {
     job_pool: JobPool,
     media_jobs: MediaJobs,
     i18n: Localization,
+    tor: TorManager,
+    #[cfg(not(target_arch = "wasm32"))]
+    ws_transport: WsTransport,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -131,8 +140,15 @@ impl eframe::App for Notedeck {
             crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
         });
 
-        // handle account updates
-        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        self.tor.poll();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.update_relay_transport(ctx);
+
+        // Handle account updates only if connections are allowed.
+        // When Tor is bootstrapping, skip updates to prevent traffic leaks.
+        if self.tor.should_allow_connections() {
+            self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        }
 
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
@@ -214,7 +230,18 @@ impl Notedeck {
             1024usize * 1024usize * 1024usize * 1024usize
         };
 
-        let settings = SettingsHandler::new(&path).load();
+        let mut settings = SettingsHandler::new(&path).load();
+
+        let mut tor = TorManager::new(&path);
+        if TorManager::is_supported() && settings.use_tor() {
+            if let Err(err) = tor.set_enabled(true) {
+                error!("failed to enable tor: {err}");
+                settings.set_use_tor(false);
+            }
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let ws_transport = WsTransport::Direct;
 
         let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
 
@@ -327,6 +354,9 @@ impl Notedeck {
             job_pool,
             media_jobs: media_job_cache,
             i18n,
+            tor,
+            #[cfg(not(target_arch = "wasm32"))]
+            ws_transport,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -393,6 +423,7 @@ impl Notedeck {
             job_pool: &mut self.job_pool,
             media_jobs: &mut self.media_jobs,
             i18n: &mut self.i18n,
+            tor: &mut self.tor,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }
@@ -421,11 +452,47 @@ impl Notedeck {
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {
         &self.unrecognized_args
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[profiling::function]
+    fn update_relay_transport(&mut self, ctx: &egui::Context) {
+        let socks_proxy = self.tor.socks_proxy();
+
+        let desired = if let Some(ref addr) = socks_proxy {
+            WsTransport::Socks(SocksOptions {
+                proxy_address: addr.clone(),
+                auth: None,
+            })
+        } else {
+            WsTransport::Direct
+        };
+
+        if desired != self.ws_transport {
+            self.ws_transport = desired.clone();
+            let repaint_ctx = ctx.clone();
+            let wakeup = Arc::new(move || repaint_ctx.request_repaint());
+            self.pool.configure_transport(desired, wakeup);
+
+            // Also update HTTP config for image fetching
+            self.img_cache.set_http_config(HttpConfig {
+                socks_proxy: socks_proxy.clone(),
+            });
+        }
+    }
 }
 
+/// Install the default crypto provider for rustls.
+/// Uses ring on all platforms for cross-compilation compatibility.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub fn install_crypto() {
-    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let provider = rustls::crypto::ring::default_provider();
     let _ = provider.install_default();
+}
+
+/// No-op on Android/WASM - crypto handled by platform or not needed
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub fn install_crypto() {
+    // Crypto not needed on mobile/web platforms
 }
 
 #[profiling::function]

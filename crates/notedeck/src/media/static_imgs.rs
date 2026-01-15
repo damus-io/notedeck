@@ -17,14 +17,21 @@ use crate::{
     media::{
         images::{buffer_to_color_image, parse_img_response},
         load_texture_checked,
-        network::http_req,
+        network::http_fetch,
     },
     MediaCache,
 };
 
+/// Configuration for HTTP requests, including optional SOCKS proxy.
+#[derive(Clone, Default)]
+pub struct HttpConfig {
+    pub socks_proxy: Option<String>,
+}
+
 pub struct StaticImgTexCache {
     pub(crate) cache: HashMap<String, TextureState<TextureHandle>>,
     static_img_cache_path: PathBuf,
+    http_config: HttpConfig,
 }
 
 impl StaticImgTexCache {
@@ -32,7 +39,13 @@ impl StaticImgTexCache {
         Self {
             cache: Default::default(),
             static_img_cache_path,
+            http_config: HttpConfig::default(),
         }
+    }
+
+    /// Update the HTTP configuration (e.g., SOCKS proxy for Tor).
+    pub fn set_http_config(&mut self, config: HttpConfig) {
+        self.http_config = config;
     }
 
     pub fn contains(&self, url: &str) -> bool {
@@ -84,6 +97,7 @@ impl StaticImgTexCache {
         } else {
             let url = url.to_owned();
             let ctx = ctx.clone();
+            let http_config = self.http_config.clone();
             if let Err(e) = jobs.send(JobPackage::new(
                 url.to_owned(),
                 MediaJobKind::StaticImg,
@@ -92,6 +106,7 @@ impl StaticImgTexCache {
                     ctx,
                     self.static_img_cache_path.clone(),
                     imgtype,
+                    http_config,
                 )))),
             )) {
                 tracing::error!("{e}");
@@ -133,9 +148,10 @@ async fn fetch_static_img_from_net(
     ctx: egui::Context,
     path: PathBuf,
     imgtype: ImageType,
+    http_config: HttpConfig,
 ) -> JobOutput<MediaJobResult> {
     tracing::trace!("fetch static img from net: starting job. sending http request for {url}");
-    let res = match http_req(&url).await {
+    let res = match http_fetch(&url, http_config.socks_proxy.as_deref()).await {
         Ok(r) => r,
         Err(e) => {
             return JobOutput::complete(MediaJobResult::StaticImg(Err(crate::Error::Generic(
@@ -169,4 +185,54 @@ async fn fetch_static_img_from_net(
             ),
         )
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_http_config_default() {
+        let config = HttpConfig::default();
+        assert!(config.socks_proxy.is_none());
+    }
+
+    #[test]
+    fn test_http_config_with_proxy() {
+        let config = HttpConfig {
+            socks_proxy: Some("127.0.0.1:9150".to_string()),
+        };
+        assert_eq!(config.socks_proxy, Some("127.0.0.1:9150".to_string()));
+    }
+
+    #[test]
+    fn test_http_config_clone() {
+        let config = HttpConfig {
+            socks_proxy: Some("127.0.0.1:9150".to_string()),
+        };
+        let cloned = config.clone();
+        assert_eq!(config.socks_proxy, cloned.socks_proxy);
+    }
+
+    #[test]
+    fn test_static_img_tex_cache_set_http_config() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut cache = StaticImgTexCache::new(temp_dir.path().to_path_buf());
+
+        // Initially no proxy
+        assert!(cache.http_config.socks_proxy.is_none());
+
+        // Set proxy
+        cache.set_http_config(HttpConfig {
+            socks_proxy: Some("127.0.0.1:9150".to_string()),
+        });
+        assert_eq!(
+            cache.http_config.socks_proxy,
+            Some("127.0.0.1:9150".to_string())
+        );
+
+        // Clear proxy
+        cache.set_http_config(HttpConfig::default());
+        assert!(cache.http_config.socks_proxy.is_none());
+    }
 }

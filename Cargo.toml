@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 package.version = "0.7.1"
+exclude = ["tools/arti-build"]
 members = [
     "crates/notedeck",
     "crates/notedeck_chrome",
@@ -34,11 +35,14 @@ egui_tabs = { git = "https://github.com/damus-io/egui-tabs", rev = "6eb91740577b
 #egui_virtual_list = "0.6.0"
 egui_virtual_list = { git = "https://github.com/jb55/hello_egui", rev = "a66b6794f5e707a2f4109633770e02b02fb722e1" }
 ehttp = "0.5.0"
+tokio-socks = "0.5"
 hyper = { version = "1.7.0", features = ["full"] }
 hyper-util = {version = "0.1" , features = ["tokio"]}
-hyper-rustls = "0.27.7"
+hyper-rustls = { version = "0.27.7", features = ["webpki-roots", "native-tokio", "ring"] }
 http-body-util = "0.1.3"
-rustls = "0.23.28"
+rustls = { version = "0.23.28", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
 enostr = { path = "crates/enostr" } 
 ewebsock = { version = "0.2.0", features = ["tls"] }
 fluent = "0.17.0"
@@ -99,6 +103,11 @@ blurhash = "0.2.3"
 android-activity = { git = "https://github.com/damus-io/android-activity", rev = "4ee16f1585e4a75031dc10785163d4b920f95805", features = [ "game-activity" ] }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "vendored"] }
 android-keyring = "0.2.0"
+arti = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", features = ["experimental-api"] }
+arti-client = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", package = "arti-client" }
+tor-config = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", package = "tor-config" }
+tor-config-path = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", package = "tor-config-path" }
+tor-rtcompat = { git = "https://gitlab.torproject.org/tpo/core/arti.git", rev = "624cdc9ec220124692c369f96ecb3cc72d9bbb66", package = "tor-rtcompat", features = ["tokio", "native-tls"] }
 
 [profile.small]
 inherits = 'release'
@@ -128,3 +137,5 @@ puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui",
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
 #android-activity = { git = "https://github.com/damus-io/android-activity", rev = "f56c974aa5182d5fbd361879f5899eb8f11a37ec" }
 #android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }
+ewebsock = { git = "https://github.com/alltheseas/ewebsock.git", rev = "4c26d3cb3c0ead3e853a08f694f172a0b667980a" }
+

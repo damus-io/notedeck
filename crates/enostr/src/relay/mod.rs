@@ -153,6 +153,7 @@ pub struct Relay {
     pub status: RelayStatus,
     pub sender: WsSender,
     pub receiver: WsReceiver,
+    options: Options,
 }
 
 impl fmt::Debug for Relay {
@@ -180,16 +181,21 @@ impl PartialEq for Relay {
 impl Eq for Relay {}
 
 impl Relay {
-    pub fn new(url: nostr::RelayUrl, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
+    pub fn new(
+        url: nostr::RelayUrl,
+        options: Options,
+        wakeup: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self> {
         let status = RelayStatus::Connecting;
         let (sender, receiver) =
-            ewebsock::connect_with_wakeup(url.as_str(), Options::default(), wakeup)?;
+            ewebsock::connect_with_wakeup(url.as_str(), options.clone(), wakeup)?;
 
         Ok(Self {
             url,
             sender,
             receiver,
             status,
+            options,
         })
     }
 
@@ -211,7 +217,7 @@ impl Relay {
 
     pub fn connect(&mut self, wakeup: impl Fn() + Send + Sync + 'static) -> Result<()> {
         let (sender, receiver) =
-            ewebsock::connect_with_wakeup(self.url.as_str(), Options::default(), wakeup)?;
+            ewebsock::connect_with_wakeup(self.url.as_str(), self.options.clone(), wakeup)?;
         self.status = RelayStatus::Connecting;
         self.sender = sender;
         self.receiver = receiver;
@@ -221,5 +227,9 @@ impl Relay {
     pub fn ping(&mut self) {
         let msg = WsMessage::Ping(vec![]);
         self.sender.send(msg);
+    }
+
+    pub fn update_options(&mut self, options: Options) {
+        self.options = options;
     }
 }
