@@ -4,6 +4,8 @@ import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
+import java.io.IOException;
+import java.net.ServerSocket;
 
 /**
  * Singleton manager for Tor connectivity.
@@ -11,7 +13,8 @@ import java.io.File;
  */
 public class TorManager {
     private static final String TAG = "TorManager";
-    private static final int DEFAULT_SOCKS_PORT = 9150;
+    private static final int PREFERRED_SOCKS_PORT = 9150;
+    private static final int MAX_PORT_ATTEMPTS = 100;
 
     private static TorManager instance;
 
@@ -47,12 +50,47 @@ public class TorManager {
     }
 
     /**
-     * Initialize and start Tor.
+     * Initialize and start Tor on an automatically selected available port.
      *
      * @return true if Tor started successfully
      */
     public boolean start() {
-        return start(DEFAULT_SOCKS_PORT);
+        int port = findAvailablePort(PREFERRED_SOCKS_PORT);
+        if (port < 0) {
+            Log.e(TAG, "Could not find an available port for SOCKS proxy");
+            return false;
+        }
+        return start(port);
+    }
+
+    /**
+     * Find an available port starting from the preferred port.
+     *
+     * @param startPort Port to start searching from
+     * @return Available port, or -1 if none found
+     */
+    private int findAvailablePort(int startPort) {
+        for (int port = startPort; port < startPort + MAX_PORT_ATTEMPTS; port++) {
+            if (isPortAvailable(port)) {
+                return port;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Check if a port is available for binding.
+     *
+     * @param port Port to check
+     * @return true if port is available
+     */
+    private boolean isPortAvailable(int port) {
+        try (ServerSocket socket = new ServerSocket(port)) {
+            socket.setReuseAddress(true);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     /**
