@@ -7,8 +7,8 @@ use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
     tr, ui::richtext_small, DragResponse, Images, LanguageIdentifier, Localization, NoteContext,
-    NotedeckTextStyle, Settings, SettingsHandler, TorManager, TorStatus, DEFAULT_MAX_HASHTAGS_PER_NOTE,
-    DEFAULT_NOTE_BODY_FONT_SIZE,
+    NotedeckTextStyle, Settings, SettingsHandler, TorManager, TorStatus,
+    DEFAULT_MAX_HASHTAGS_PER_NOTE, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -39,6 +39,7 @@ pub enum SettingsAction {
 }
 
 impl SettingsAction {
+    #[allow(clippy::too_many_arguments)]
     pub fn process_settings_action<'a>(
         self,
         app: &mut Damus,
@@ -99,11 +100,18 @@ impl SettingsAction {
             }
 
             Self::ToggleTor(enabled) => {
-                settings.set_use_tor(enabled);
-                if notedeck::TorManager::is_supported() {
-                    if let Err(err) = tor.set_enabled(enabled) {
+                // Check support before attempting to toggle to avoid desync
+                if !notedeck::TorManager::is_supported() {
+                    tracing::warn!("Tor toggle requested but not supported on this platform");
+                    return route_action;
+                }
+
+                // Only update settings if the toggle operation succeeds
+                match tor.set_enabled(enabled) {
+                    Ok(()) => settings.set_use_tor(enabled),
+                    Err(err) => {
                         tracing::error!("failed to toggle tor: {err}");
-                        settings.set_use_tor(!enabled);
+                        // Don't update settings - leave them in the previous state
                     }
                 }
             }
@@ -609,12 +617,14 @@ impl<'a> SettingsView<'a> {
                         "Tor status: Connected",
                         "Status label when Tor is running"
                     ),
-                    TorStatus::Failed(err) => tr!(
-                        self.note_context.i18n,
-                        "Tor status: Failed ({err})",
-                        "Status label when Tor failed",
-                        err = err.as_str()
-                    ),
+                    TorStatus::Failed(err) => {
+                        tracing::debug!("Tor connection failed: {err}");
+                        tr!(
+                            self.note_context.i18n,
+                            "Tor status: Connection failed",
+                            "Status label when Tor connection failed"
+                        )
+                    }
                     TorStatus::Unsupported => tr!(
                         self.note_context.i18n,
                         "Tor is not available on this platform.",
