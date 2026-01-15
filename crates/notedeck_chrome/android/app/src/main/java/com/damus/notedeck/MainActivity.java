@@ -31,6 +31,10 @@ public class MainActivity extends GameActivity {
   private native void nativeOnFilePickedFailed(String uri, String e);
   private native void nativeOnFilePickedWithContent(Object[] uri_info, byte[] content);
 
+  // Initialize the JNI classloader cache for Tor support.
+  // This must be called before any Rust code tries to find app classes via JNI.
+  private static native void initClassLoader(ClassLoader loader);
+
   public void openFilePicker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.setType("*/*");
@@ -155,11 +159,20 @@ public class MainActivity extends GameActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // Shrink view so it does not get covered by insets.
-
         setupInsets();
         //setupFullscreen()
 
         super.onCreate(savedInstanceState);
+
+        // Initialize JNI classloader cache for Tor support.
+        // This must happen after super.onCreate() which loads the native library,
+        // but before any Rust code tries to call Java via JNI.
+        try {
+            initClassLoader(getClassLoader());
+            Log.d("MainActivity", "JNI classloader cache initialized");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e("MainActivity", "initClassLoader failed: " + e.getMessage());
+        }
     }
 
     @Override

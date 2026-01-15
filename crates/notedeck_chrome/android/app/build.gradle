@@ -7,18 +7,34 @@ android {
     compileSdk 31
 
     defaultConfig {
-        minSdk 19
+        minSdk 21  // Required for Tor/Arti native library
         targetSdk 34
         versionCode 1
         versionName "1"
+
+        ndk {
+            // Architectures to include (must match what build-arti.sh produces)
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'
+        }
     }
 
     buildTypes {
         debug
+        release {
+            minifyEnabled false
+        }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    // Include native libraries from jniLibs directory
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
     }
 }
 
