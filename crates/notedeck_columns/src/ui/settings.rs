@@ -587,7 +587,7 @@ impl<'a> SettingsView<'a> {
             ui.vertical(|ui| {
                 let label = tr!(
                     self.note_context.i18n,
-                    "Route relay traffic through Tor:",
+                    "Route network traffic through Tor:",
                     "Label for Tor routing toggle in settings"
                 );
 

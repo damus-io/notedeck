@@ -979,7 +979,7 @@ fn tor_indicator_style(status: TorStatus, i18n: &mut Localization) -> Option<Tor
             overlay: None,
             tooltip: tr!(
                 i18n,
-                "All relay traffic is currently routed through Tor.",
+                "All network traffic is routed through Tor.",
                 "Tooltip explaining Tor routing indicator"
             ),
         }),
