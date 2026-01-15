@@ -5,6 +5,7 @@ mod inner {
         path::{Path, PathBuf},
         sync::mpsc::{self, Receiver, TryRecvError},
         thread,
+        time::{Duration, Instant},
     };
 
     use arti::proxy;
@@ -16,31 +17,71 @@ mod inner {
 
     use crate::{DataPath, DataPathType};
 
+    /// Default SOCKS proxy port for Tor connections.
+    ///
+    /// Port 9150 is the standard SOCKS port for Tor Browser. If another Tor
+    /// instance (like Tor Browser) is already using this port, startup will fail.
+    /// Future enhancement: probe for available port or provide user configuration.
     const DEFAULT_SOCKS_PORT: u16 = 9150;
 
+    /// Timeout duration for graceful shutdown of the Tor runtime thread.
+    const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Internal signaling for bootstrap completion status.
     enum ReadyState {
         Ok,
         Err(String),
     }
 
+    /// Directory paths for Tor client persistent storage.
     #[derive(Clone)]
     struct TorDirs {
+        /// Directory for cached consensus and descriptor data
         cache: PathBuf,
+        /// Directory for guard state and other persistent state
         state: PathBuf,
     }
 
+    /// Handle to the background Tor runtime thread.
+    ///
+    /// Provides shutdown signaling and thread management. When dropped,
+    /// automatically attempts graceful shutdown with timeout.
     struct TorHandle {
+        /// Channel to signal shutdown to the runtime
         shutdown: Option<oneshot::Sender<()>>,
+        /// Handle to the background thread running the Arti runtime
         thread: Option<thread::JoinHandle<()>>,
+        /// The SOCKS port this instance is listening on
         socks_port: u16,
     }
 
     impl TorHandle {
+        /// Stop the Tor runtime thread with a timeout to prevent indefinite blocking.
+        ///
+        /// Sends the shutdown signal and waits up to `SHUTDOWN_TIMEOUT` for the
+        /// thread to exit gracefully. If the thread doesn't respond in time, it
+        /// is abandoned to prevent blocking the main thread.
         fn stop(&mut self) {
+            // Send shutdown signal
             if let Some(tx) = self.shutdown.take() {
                 let _ = tx.send(());
             }
+
+            // Wait for thread with timeout to prevent indefinite blocking
             if let Some(handle) = self.thread.take() {
+                let start = Instant::now();
+                while !handle.is_finished() {
+                    if start.elapsed() >= SHUTDOWN_TIMEOUT {
+                        tracing::warn!(
+                            "Tor runtime did not shut down within {:?}, abandoning thread",
+                            SHUTDOWN_TIMEOUT
+                        );
+                        // Thread is abandoned but will eventually terminate
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                // Thread finished, join to clean up resources
                 let _ = handle.join();
             }
         }
@@ -71,6 +112,7 @@ mod inner {
     }
 
     impl TorManager {
+        /// Create a new TorManager with storage directories under the given data path.
         pub fn new(data_path: &DataPath) -> Self {
             let cache = data_path.path(DataPathType::Cache).join("tor");
             let state = data_path.path(DataPathType::Setting).join("tor");
@@ -82,14 +124,20 @@ mod inner {
             }
         }
 
+        /// Returns true if Tor is supported on this platform.
         pub const fn is_supported() -> bool {
             true
         }
 
+        /// Get the current Tor connection status.
         pub fn status(&self) -> TorStatus {
             self.status.clone()
         }
 
+        /// Enable or disable the Tor client.
+        ///
+        /// When enabling, spawns the Arti runtime in a background thread.
+        /// When disabling, signals shutdown and waits for graceful termination.
         pub fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
             if enabled {
                 self.start()
@@ -99,6 +147,9 @@ mod inner {
             }
         }
 
+        /// Get the SOCKS proxy address if Tor is running.
+        ///
+        /// Returns `Some("127.0.0.1:<port>")` when connected, `None` otherwise.
         pub fn socks_proxy(&self) -> Option<String> {
             if let TorStatus::Running { socks_port } = self.status {
                 Some(format!("127.0.0.1:{socks_port}"))
@@ -107,6 +158,10 @@ mod inner {
             }
         }
 
+        /// Poll for status updates from the background Tor runtime.
+        ///
+        /// Should be called each frame to check for bootstrap completion or errors.
+        /// Updates `self.status` when the runtime signals ready or fails.
         pub fn poll(&mut self) {
             if let Some(rx) = &self.ready_rx {
                 match rx.try_recv() {
@@ -199,6 +254,10 @@ mod inner {
     }
 
     /// Launch the blocking Arti task inside the runtime and wait for shutdown.
+    ///
+    /// Bootstraps the Tor client, starts the SOCKS proxy, verifies the port
+    /// is listening, and then signals ready. The ready signal is only sent
+    /// after confirming the proxy is accepting connections.
     fn run_tor_runtime(
         dirs: TorDirs,
         socks_port: u16,
@@ -219,11 +278,29 @@ mod inner {
                 .await
                 .map_err(|err| format!("tor bootstrap failed: {err}"))?;
 
-            let _ = ready_tx_clone.send(ReadyState::Ok);
-
             let listen = Listen::new_localhost(socks_port);
             let proxy_future = proxy::run_proxy(runtime.clone(), tor_client, listen, None);
             tokio::pin!(proxy_future);
+
+            // Give the proxy a moment to bind the socket, then verify it's listening
+            // before signaling ready. Poll once to start the proxy.
+            tokio::select! {
+                biased;
+                res = &mut proxy_future => {
+                    // Proxy exited immediately - likely a binding error
+                    return res.map_err(|err| format!("tor proxy failed: {err}"));
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Proxy is running, verify the port is actually listening
+                    if verify_port_listening(socks_port).await {
+                        let _ = ready_tx_clone.send(ReadyState::Ok);
+                    } else {
+                        return Err(format!("SOCKS port {socks_port} not accepting connections"));
+                    }
+                }
+            }
+
+            // Continue running the proxy until shutdown
             tokio::select! {
                 res = &mut proxy_future => {
                     res.map_err(|err| format!("tor proxy failed: {err}"))
@@ -239,6 +316,23 @@ mod inner {
         }
     }
 
+    /// Verify that a TCP port is accepting connections.
+    async fn verify_port_listening(port: u16) -> bool {
+        use tokio::net::TcpStream;
+        let addr = format!("127.0.0.1:{port}");
+        TcpStream::connect(&addr).await.is_ok()
+    }
+
+    /// Build the Tor client configuration with cache and state directories.
+    ///
+    /// Configures the Arti client to use notedeck's data directories for
+    /// persistent storage of consensus data, cached descriptors, and guard state.
+    ///
+    /// # Arguments
+    /// * `dirs` - The directory paths for cache and state storage
+    ///
+    /// # Returns
+    /// A configured `TorClientConfig` or an error message
     fn build_client_config(dirs: &TorDirs) -> Result<TorClientConfig, String> {
         let mut builder = TorClientConfig::builder();
         builder
@@ -250,6 +344,9 @@ mod inner {
             .map_err(|err| format!("failed to build tor config: {err}"))
     }
 
+    /// Convert a Path to a String, returning an error for non-UTF8 paths.
+    ///
+    /// Required because Arti's CfgPath expects a String, not a Path reference.
     fn path_to_string(path: &Path) -> Result<String, String> {
         path.to_str()
             .map(|s| s.to_owned())
