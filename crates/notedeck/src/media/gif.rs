@@ -14,6 +14,7 @@ use crate::{
     media::{
         images::{buffer_to_color_image, process_image},
         load_texture_checked,
+        static_imgs::HttpConfig,
     },
     Error, ImageFrame, ImageType, MediaCache, TextureFrame, TextureState,
 };
@@ -112,6 +113,7 @@ pub(crate) fn process_gif_frame<'a>(
 pub struct AnimatedImgTexCache {
     pub(crate) cache: HashMap<String, TextureState<Animation>>,
     animated_img_cache_path: PathBuf,
+    http_config: HttpConfig,
 }
 
 impl AnimatedImgTexCache {
@@ -119,7 +121,13 @@ impl AnimatedImgTexCache {
         Self {
             cache: Default::default(),
             animated_img_cache_path,
+            http_config: HttpConfig::default(),
         }
+    }
+
+    /// Update the HTTP configuration (e.g., SOCKS proxy for Tor).
+    pub fn set_http_config(&mut self, config: HttpConfig) {
+        self.http_config = config;
     }
 
     pub fn contains(&self, url: &str) -> bool {
@@ -167,11 +175,16 @@ impl AnimatedImgTexCache {
             }
         } else {
             let anim_path = self.animated_img_cache_path.clone();
+            let http_config = self.http_config.clone();
             if let Err(e) = jobs.send(JobPackage::new(
                 url.to_owned(),
                 MediaJobKind::AnimatedImg,
                 RunType::Output(JobRun::Async(Box::pin(from_net_run(
-                    ctx, url, anim_path, imgtype,
+                    ctx,
+                    url,
+                    anim_path,
+                    imgtype,
+                    http_config,
                 )))),
             )) {
                 tracing::error!("{e}");
@@ -205,15 +218,17 @@ async fn from_net_run(
     url: String,
     path: PathBuf,
     imgtype: ImageType,
+    http_config: HttpConfig,
 ) -> JobOutput<MediaJobResult> {
-    let res = match crate::media::network::http_req(&url).await {
-        Ok(r) => r,
-        Err(e) => {
-            return JobOutput::complete(MediaJobResult::Animation(Err(crate::Error::Generic(
-                format!("Http error: {e}"),
-            ))));
-        }
-    };
+    let res =
+        match crate::media::network::http_fetch(&url, http_config.socks_proxy.as_deref()).await {
+            Ok(r) => r,
+            Err(e) => {
+                return JobOutput::complete(MediaJobResult::Animation(Err(crate::Error::Generic(
+                    format!("Http error: {e}"),
+                ))));
+            }
+        };
 
     JobOutput::Next(JobRun::Sync(Box::new(move || {
         tracing::trace!("Starting animated img from net job for {url}");

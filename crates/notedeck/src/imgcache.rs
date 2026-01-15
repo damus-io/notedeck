@@ -1,7 +1,7 @@
 use crate::jobs::MediaJobSender;
 use crate::media::gif::AnimatedImgTexCache;
 use crate::media::images::ImageType;
-use crate::media::static_imgs::StaticImgTexCache;
+use crate::media::static_imgs::{HttpConfig, StaticImgTexCache};
 use crate::media::{
     AnimationMode, BlurCache, NoLoadingLatestTex, TrustedMediaLatestTex, UntrustedMediaLatestTex,
 };
@@ -44,6 +44,12 @@ impl TexturesCache {
                 base_dir.join(MediaCache::rel_dir(MediaCacheType::Gif)),
             ),
         }
+    }
+
+    /// Update the HTTP configuration for image fetching (e.g., SOCKS proxy for Tor).
+    pub fn set_http_config(&mut self, config: HttpConfig) {
+        self.static_image.set_http_config(config.clone());
+        self.animated.set_http_config(config);
     }
 }
 
@@ -296,6 +302,11 @@ impl Images {
     pub fn migrate_v0(&self) -> Result<()> {
         self.static_imgs.migrate_v0()?;
         self.gifs.migrate_v0()
+    }
+
+    /// Update the HTTP configuration for image fetching (e.g., SOCKS proxy for Tor).
+    pub fn set_http_config(&mut self, config: HttpConfig) {
+        self.textures.set_http_config(config);
     }
 
     pub fn get_renderable_media(&mut self, url: &str) -> Option<RenderableMedia> {
