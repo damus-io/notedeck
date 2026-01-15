@@ -5167,6 +5167,8 @@ dependencies = [
  "thiserror 2.0.17",
  "tokenator",
  "tokio",
+ "tokio-rustls",
+ "tokio-socks",
  "tor-config",
  "tor-config-path",
  "tor-rtcompat",
@@ -5174,6 +5176,7 @@ dependencies = [
  "unic-langid",
  "url",
  "uuid",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
