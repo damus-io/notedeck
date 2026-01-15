@@ -357,7 +357,7 @@ mod inner {
     pub use TorStatus as Status;
 }
 
-#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+#[cfg(target_arch = "wasm32")]
 mod inner {
     use crate::DataPath;
 
@@ -394,6 +394,260 @@ mod inner {
         }
 
         pub fn poll(&mut self) {}
+    }
+
+    pub use TorManager as Manager;
+    pub use TorStatus as Status;
+}
+
+#[cfg(target_os = "android")]
+mod inner {
+    use crate::jni_cache;
+    use crate::DataPath;
+    use jni::objects::JValue;
+
+    const DEFAULT_SOCKS_PORT: u16 = 9150;
+
+    #[derive(Clone, Debug)]
+    pub enum TorStatus {
+        Disabled,
+        Starting,
+        Running { socks_port: u16 },
+        Failed(String),
+        Unsupported,
+    }
+
+    pub struct TorManager {
+        status: TorStatus,
+        cache_dir: String,
+        state_dir: String,
+        initialized: bool,
+        /// Set to true if JNI calls have failed, to avoid repeated attempts
+        jni_failed: bool,
+    }
+
+    impl TorManager {
+        pub fn new(data_path: &DataPath) -> Self {
+            use crate::DataPathType;
+            let cache_dir = data_path
+                .path(DataPathType::Cache)
+                .join("tor")
+                .to_string_lossy()
+                .to_string();
+            let state_dir = data_path
+                .path(DataPathType::Setting)
+                .join("tor")
+                .to_string_lossy()
+                .to_string();
+
+            Self {
+                status: TorStatus::Disabled,
+                cache_dir,
+                state_dir,
+                initialized: false,
+                jni_failed: false,
+            }
+        }
+
+        pub fn is_supported() -> bool {
+            // Tor is supported if the JNI cache was initialized at startup
+            jni_cache::is_initialized()
+        }
+
+        pub fn status(&self) -> TorStatus {
+            self.status.clone()
+        }
+
+        pub fn set_enabled(&mut self, enabled: bool) -> Result<(), String> {
+            if enabled {
+                self.start()
+            } else {
+                self.stop();
+                Ok(())
+            }
+        }
+
+        pub fn socks_proxy(&self) -> Option<String> {
+            if let TorStatus::Running { socks_port } = self.status {
+                Some(format!("127.0.0.1:{socks_port}"))
+            } else {
+                None
+            }
+        }
+
+        pub fn poll(&mut self) {
+            // Don't poll if JNI has failed
+            if self.jni_failed {
+                return;
+            }
+
+            // Check if Tor is running via JNI
+            if matches!(self.status, TorStatus::Starting) {
+                if let Some(port) = self.get_socks_port() {
+                    if port > 0 {
+                        self.status = TorStatus::Running {
+                            socks_port: port as u16,
+                        };
+                    }
+                }
+            }
+        }
+
+        fn start(&mut self) -> Result<(), String> {
+            tracing::info!(
+                "Tor: start() called, status={:?}, initialized={}",
+                self.status,
+                self.initialized
+            );
+
+            if self.jni_failed {
+                tracing::error!("Tor: JNI previously failed, not starting");
+                return Err("JNI initialization failed previously".to_string());
+            }
+
+            if matches!(self.status, TorStatus::Starting | TorStatus::Running { .. }) {
+                tracing::info!("Tor: already starting/running, returning early");
+                return Ok(());
+            }
+
+            // Create directories
+            let _ = std::fs::create_dir_all(&self.cache_dir);
+            let _ = std::fs::create_dir_all(&self.state_dir);
+
+            // Initialize if needed
+            if !self.initialized {
+                let cache = self.cache_dir.clone();
+                let state = self.state_dir.clone();
+
+                let result = jni_cache::with_jni(|env| {
+                    tracing::info!("Tor: looking up ArtiNative class");
+                    let class = jni_cache::find_class(env, "com/damus/notedeck/tor/ArtiNative")?;
+                    tracing::info!("Tor: found ArtiNative class, calling initialize");
+
+                    let cache_str = env
+                        .new_string(&cache)
+                        .map_err(|e| format!("Failed to create cache string: {e}"))?;
+                    let state_str = env
+                        .new_string(&state)
+                        .map_err(|e| format!("Failed to create state string: {e}"))?;
+
+                    // Convert JString to JObject for JValue arguments
+                    let cache_obj: jni::objects::JObject = cache_str.into();
+                    let state_obj: jni::objects::JObject = state_str.into();
+
+                    tracing::info!("Tor: calling ArtiNative.initialize()");
+                    let result = env.call_static_method(
+                        class,
+                        "initialize",
+                        "(Ljava/lang/String;Ljava/lang/String;)Z",
+                        &[JValue::Object(&cache_obj), JValue::Object(&state_obj)],
+                    );
+
+                    match result {
+                        Ok(val) => {
+                            if val.z().unwrap_or(false) {
+                                Ok(())
+                            } else {
+                                Err("ArtiNative.initialize() returned false".to_string())
+                            }
+                        }
+                        Err(e) => {
+                            let _ = env.exception_clear();
+                            Err(format!("ArtiNative.initialize() failed: {e}"))
+                        }
+                    }
+                });
+
+                match result {
+                    Ok(()) => {
+                        tracing::info!("Tor: ArtiNative.initialize() succeeded");
+                        self.initialized = true;
+                    }
+                    Err(e) => {
+                        tracing::error!("Tor initialization failed: {}", e);
+                        self.status = TorStatus::Failed(e.clone());
+                        self.jni_failed = true;
+                        return Err(e);
+                    }
+                }
+            } else {
+                tracing::info!("Tor: already initialized, skipping initialize call");
+            }
+
+            // Start SOCKS proxy
+            tracing::info!("Tor: starting SOCKS proxy on port {}", DEFAULT_SOCKS_PORT);
+            let port = DEFAULT_SOCKS_PORT as i32;
+            let result = jni_cache::with_jni(|env| {
+                let class = jni_cache::find_class(env, "com/damus/notedeck/tor/ArtiNative")?;
+
+                tracing::info!("Tor: calling ArtiNative.startSocksProxy({})", port);
+                let result =
+                    env.call_static_method(class, "startSocksProxy", "(I)Z", &[JValue::Int(port)]);
+
+                match result {
+                    Ok(val) => {
+                        if val.z().unwrap_or(false) {
+                            tracing::info!("Tor: startSocksProxy() succeeded");
+                            Ok(())
+                        } else {
+                            Err("ArtiNative.startSocksProxy() returned false".to_string())
+                        }
+                    }
+                    Err(e) => {
+                        let _ = env.exception_clear();
+                        Err(format!("ArtiNative.startSocksProxy() failed: {e}"))
+                    }
+                }
+            });
+
+            match result {
+                Ok(()) => {
+                    tracing::info!("Tor: status set to Starting");
+                    self.status = TorStatus::Starting;
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::error!("Tor start failed: {}", e);
+                    self.status = TorStatus::Failed(e.clone());
+                    Err(e)
+                }
+            }
+        }
+
+        fn stop(&mut self) {
+            if self.jni_failed {
+                self.status = TorStatus::Disabled;
+                return;
+            }
+
+            let _ = jni_cache::with_jni(|env| {
+                let class = jni_cache::find_class(env, "com/damus/notedeck/tor/ArtiNative")?;
+                let _ = env.call_static_method(class, "stop", "()V", &[]);
+                let _ = env.exception_clear();
+                Ok(())
+            });
+            self.status = TorStatus::Disabled;
+        }
+
+        fn get_socks_port(&self) -> Option<i32> {
+            if self.jni_failed {
+                return None;
+            }
+
+            jni_cache::with_jni(|env| {
+                let class = jni_cache::find_class(env, "com/damus/notedeck/tor/ArtiNative")?;
+                let result = env
+                    .call_static_method(class, "getSocksPort", "()I", &[])
+                    .map_err(|e| {
+                        let _ = env.exception_clear();
+                        format!("getSocksPort failed: {e}")
+                    })?;
+                result
+                    .i()
+                    .map_err(|e| format!("Failed to get int value: {e}"))
+            })
+            .ok()
+        }
     }
 
     pub use TorManager as Manager;

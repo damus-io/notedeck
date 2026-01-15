@@ -13,6 +13,7 @@ pub mod fonts;
 mod frame_history;
 pub mod i18n;
 mod imgcache;
+pub mod jni_cache;
 pub mod jobs;
 pub mod media;
 mod muted;
@@ -64,8 +65,8 @@ pub use jobs::{
     MediaJobs,
 };
 pub use media::{
-    update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction, ObfuscationType,
-    PixelDimensions, PointDimensions, RenderableMedia,
+    static_imgs::HttpConfig, update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction,
+    ObfuscationType, PixelDimensions, PointDimensions, RenderableMedia,
 };
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
