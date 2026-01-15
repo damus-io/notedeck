@@ -2878,15 +2878,13 @@ dependencies = [
 [[package]]
 name = "ewebsock"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "679247b4a005c82218a5f13b713239b0b6d484ec25347a719f5b7066152a748a"
+source = "git+https://github.com/alltheseas/ewebsock.git?rev=4c26d3cb3c0ead3e853a08f694f172a0b667980a#4c26d3cb3c0ead3e853a08f694f172a0b667980a"
 dependencies = [
  "document-features",
  "js-sys",
  "log",
  "tungstenite 0.24.0",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "web-sys",
 ]
 

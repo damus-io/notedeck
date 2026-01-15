@@ -133,4 +133,4 @@ puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui",
 #winit = { path = "/home/jb55/dev/github/rust-windowing/winit" }
 #android-activity = { git = "https://github.com/damus-io/android-activity", rev = "f56c974aa5182d5fbd361879f5899eb8f11a37ec" }
 #android-activity = { path = "/home/jb55/dev/github/rust-mobile/android-activity/android-activity" }
-# ewebsock = { path = "vendor/ewebsock" } # Uncomment when vendor/ewebsock is added
+ewebsock = { git = "https://github.com/alltheseas/ewebsock.git", rev = "4c26d3cb3c0ead3e853a08f694f172a0b667980a" }
