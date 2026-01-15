@@ -656,3 +656,157 @@ mod inner {
 
 pub use inner::Manager as TorManager;
 pub use inner::Status as TorStatus;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a TorManager with a temporary data path for testing.
+    fn create_test_manager() -> (TorManager, TempDir) {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let data_path = crate::DataPath::new(temp_dir.path().to_path_buf());
+        let manager = TorManager::new(&data_path);
+        (manager, temp_dir)
+    }
+
+    #[test]
+    fn test_initial_state_is_disabled() {
+        let (manager, _temp) = create_test_manager();
+        assert!(matches!(manager.status(), TorStatus::Disabled));
+    }
+
+    #[test]
+    fn test_socks_proxy_none_when_disabled() {
+        let (manager, _temp) = create_test_manager();
+        assert!(manager.socks_proxy().is_none());
+    }
+
+    #[test]
+    fn test_is_supported_returns_consistent_value() {
+        // is_supported should be consistent across calls
+        let supported1 = TorManager::is_supported();
+        let supported2 = TorManager::is_supported();
+        assert_eq!(supported1, supported2);
+    }
+
+    #[test]
+    fn test_poll_on_disabled_is_noop() {
+        let (mut manager, _temp) = create_test_manager();
+        // Polling when disabled should not change state
+        manager.poll();
+        assert!(matches!(manager.status(), TorStatus::Disabled));
+    }
+
+    #[test]
+    fn test_disable_when_already_disabled_succeeds() {
+        let (mut manager, _temp) = create_test_manager();
+        // Disabling when already disabled should succeed
+        let result = manager.set_enabled(false);
+        assert!(result.is_ok());
+        assert!(matches!(manager.status(), TorStatus::Disabled));
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    mod desktop_tests {
+        use super::*;
+
+        #[test]
+        fn test_enable_transitions_to_starting() {
+            let (mut manager, _temp) = create_test_manager();
+
+            // Enable should transition to Starting (actual connection may fail in test env)
+            let result = manager.set_enabled(true);
+
+            // Either succeeds and goes to Starting, or fails with an error
+            match result {
+                Ok(()) => {
+                    let status = manager.status();
+                    assert!(
+                        matches!(status, TorStatus::Starting | TorStatus::Failed(_)),
+                        "Expected Starting or Failed, got {:?}",
+                        status
+                    );
+                }
+                Err(_) => {
+                    // Connection failure is acceptable in test environment
+                    assert!(matches!(manager.status(), TorStatus::Failed(_)));
+                }
+            }
+
+            // Clean up
+            let _ = manager.set_enabled(false);
+        }
+
+        #[test]
+        fn test_enable_twice_is_idempotent() {
+            let (mut manager, _temp) = create_test_manager();
+
+            // First enable
+            let _ = manager.set_enabled(true);
+            let status1 = manager.status();
+
+            // Second enable should be idempotent
+            let result = manager.set_enabled(true);
+            assert!(result.is_ok());
+
+            let status2 = manager.status();
+            assert_eq!(
+                std::mem::discriminant(&status1),
+                std::mem::discriminant(&status2)
+            );
+
+            // Clean up
+            let _ = manager.set_enabled(false);
+        }
+
+        #[test]
+        fn test_disable_from_starting_returns_to_disabled() {
+            let (mut manager, _temp) = create_test_manager();
+
+            // Enable (may go to Starting or Failed)
+            let _ = manager.set_enabled(true);
+
+            // Disable should return to Disabled
+            let result = manager.set_enabled(false);
+            assert!(result.is_ok());
+            assert!(matches!(manager.status(), TorStatus::Disabled));
+        }
+
+        #[test]
+        fn test_status_clone_is_equal() {
+            let (manager, _temp) = create_test_manager();
+            let status1 = manager.status();
+            let status2 = manager.status();
+
+            // Both should be Disabled
+            assert!(matches!(status1, TorStatus::Disabled));
+            assert!(matches!(status2, TorStatus::Disabled));
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    mod wasm_tests {
+        use super::*;
+
+        #[test]
+        fn test_wasm_is_unsupported() {
+            assert!(!TorManager::is_supported());
+        }
+
+        #[test]
+        fn test_wasm_status_is_unsupported() {
+            let (manager, _temp) = create_test_manager();
+            assert!(matches!(manager.status(), TorStatus::Unsupported));
+        }
+
+        #[test]
+        fn test_wasm_enable_is_noop() {
+            let (mut manager, _temp) = create_test_manager();
+            let result = manager.set_enabled(true);
+            assert!(result.is_ok());
+            // Status should remain Unsupported
+            assert!(matches!(manager.status(), TorStatus::Unsupported));
+        }
+    }
+}

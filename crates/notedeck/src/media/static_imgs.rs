@@ -186,3 +186,53 @@ async fn fetch_static_img_from_net(
         )
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_http_config_default() {
+        let config = HttpConfig::default();
+        assert!(config.socks_proxy.is_none());
+    }
+
+    #[test]
+    fn test_http_config_with_proxy() {
+        let config = HttpConfig {
+            socks_proxy: Some("127.0.0.1:9150".to_string()),
+        };
+        assert_eq!(config.socks_proxy, Some("127.0.0.1:9150".to_string()));
+    }
+
+    #[test]
+    fn test_http_config_clone() {
+        let config = HttpConfig {
+            socks_proxy: Some("127.0.0.1:9150".to_string()),
+        };
+        let cloned = config.clone();
+        assert_eq!(config.socks_proxy, cloned.socks_proxy);
+    }
+
+    #[test]
+    fn test_static_img_tex_cache_set_http_config() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut cache = StaticImgTexCache::new(temp_dir.path().to_path_buf());
+
+        // Initially no proxy
+        assert!(cache.http_config.socks_proxy.is_none());
+
+        // Set proxy
+        cache.set_http_config(HttpConfig {
+            socks_proxy: Some("127.0.0.1:9150".to_string()),
+        });
+        assert_eq!(
+            cache.http_config.socks_proxy,
+            Some("127.0.0.1:9150".to_string())
+        );
+
+        // Clear proxy
+        cache.set_http_config(HttpConfig::default());
+        assert!(cache.http_config.socks_proxy.is_none());
+    }
+}
