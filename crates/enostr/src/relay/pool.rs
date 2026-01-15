@@ -12,9 +12,9 @@ use tracing::{debug, error, trace};
 
 use super::subs_debug::SubsDebug;
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(not(target_arch = "wasm32"))]
 use ewebsock::Transport;
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -347,7 +347,7 @@ impl RelayPool {
             .retain(|pool_relay| !urls.contains(pool_relay.url()));
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn configure_transport(
         &mut self,
         transport: Transport,
