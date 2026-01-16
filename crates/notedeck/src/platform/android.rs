@@ -110,3 +110,116 @@ pub fn open_file_picker() -> std::result::Result<(), Box<dyn std::error::Error>>
 
     Ok(())
 }
+
+// =============================================================================
+// Notification Control API
+// =============================================================================
+
+use std::sync::atomic::AtomicBool;
+
+/// Thread-safe static for tracking permission request result
+static NOTIFICATION_PERMISSION_GRANTED: AtomicBool = AtomicBool::new(false);
+static NOTIFICATION_PERMISSION_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Called from Java when notification permission request completes.
+#[no_mangle]
+pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnNotificationPermissionResult(
+    _env: JNIEnv,
+    _class: JClass,
+    granted: jni::sys::jboolean,
+) {
+    let granted = granted != 0;
+    debug!("Notification permission result: {}", granted);
+    NOTIFICATION_PERMISSION_GRANTED.store(granted, Ordering::SeqCst);
+    NOTIFICATION_PERMISSION_PENDING.store(false, Ordering::SeqCst);
+}
+
+/// Enable push notifications for the given pubkey.
+/// Writes to SharedPreferences and starts the foreground service.
+pub fn enable_notifications(pubkey_hex: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let vm = get_jvm();
+    let mut env = vm.attach_current_thread()?;
+    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+
+    let jpubkey = env.new_string(pubkey_hex)?;
+    env.call_method(
+        context,
+        "enableNotifications",
+        "(Ljava/lang/String;)V",
+        &[jni::objects::JValue::Object(&jpubkey.into())],
+    )?;
+
+    info!("Notifications enabled for {}", &pubkey_hex[..8]);
+    Ok(())
+}
+
+/// Disable push notifications.
+/// Stops the foreground service and updates SharedPreferences.
+pub fn disable_notifications() -> Result<(), Box<dyn std::error::Error>> {
+    let vm = get_jvm();
+    let mut env = vm.attach_current_thread()?;
+    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+
+    env.call_method(context, "disableNotifications", "()V", &[])?;
+
+    info!("Notifications disabled");
+    Ok(())
+}
+
+/// Check if notification permission is granted.
+/// On Android 13+, requires POST_NOTIFICATIONS runtime permission.
+pub fn is_notification_permission_granted() -> Result<bool, Box<dyn std::error::Error>> {
+    let vm = get_jvm();
+    let mut env = vm.attach_current_thread()?;
+    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+
+    let result = env.call_method(context, "isNotificationPermissionGranted", "()Z", &[])?;
+    Ok(result.z()?)
+}
+
+/// Request notification permission from the user.
+/// On Android 13+, shows system permission dialog.
+/// Use `is_notification_permission_pending()` to check if request is in progress.
+/// Use `get_notification_permission_result()` to get the result after completion.
+pub fn request_notification_permission() -> Result<(), Box<dyn std::error::Error>> {
+    NOTIFICATION_PERMISSION_PENDING.store(true, Ordering::SeqCst);
+
+    let vm = get_jvm();
+    let mut env = vm.attach_current_thread()?;
+    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+
+    env.call_method(context, "requestNotificationPermission", "()V", &[])?;
+
+    debug!("Notification permission requested");
+    Ok(())
+}
+
+/// Check if a notification permission request is currently pending.
+pub fn is_notification_permission_pending() -> bool {
+    NOTIFICATION_PERMISSION_PENDING.load(Ordering::SeqCst)
+}
+
+/// Get the result of the last notification permission request.
+pub fn get_notification_permission_result() -> bool {
+    NOTIFICATION_PERMISSION_GRANTED.load(Ordering::SeqCst)
+}
+
+/// Check if notifications are currently enabled in preferences.
+pub fn are_notifications_enabled() -> Result<bool, Box<dyn std::error::Error>> {
+    let vm = get_jvm();
+    let mut env = vm.attach_current_thread()?;
+    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+
+    let result = env.call_method(context, "areNotificationsEnabled", "()Z", &[])?;
+    Ok(result.z()?)
+}
+
+/// Check if the notification service is currently running.
+pub fn is_notification_service_running() -> Result<bool, Box<dyn std::error::Error>> {
+    let vm = get_jvm();
+    let mut env = vm.attach_current_thread()?;
+    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+
+    let result = env.call_method(context, "isNotificationServiceRunning", "()Z", &[])?;
+    Ok(result.z()?)
+}
