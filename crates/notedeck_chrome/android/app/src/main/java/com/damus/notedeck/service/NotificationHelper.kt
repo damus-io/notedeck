@@ -14,7 +14,6 @@ import com.damus.notedeck.MainActivity
 import com.damus.notedeck.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 
@@ -29,26 +28,25 @@ object NotificationHelper {
 
     /**
      * Create and show a notification for a Nostr event.
+     * Receives structured data directly from Rust via JNI - no JSON parsing needed.
+     *
+     * @param eventId The 64-char hex event ID
+     * @param eventKind The Nostr event kind
+     * @param authorPubkey The 64-char hex pubkey of the event author
+     * @param content The event content (already extracted in Rust)
+     * @param authorName Optional display name of the author
+     * @param zapAmountSats Zap amount in satoshis (null if not a zap or amount unknown)
      */
     suspend fun showNotification(
         context: Context,
-        eventJson: String,
+        eventId: String,
         eventKind: Int,
         authorPubkey: String,
-        authorName: String?
+        content: String,
+        authorName: String?,
+        zapAmountSats: Long? = null
     ) {
         val notificationManager = context.getSystemService(NotificationManager::class.java)
-
-        // Parse event details - find the event object robustly
-        val event = try {
-            parseEventFromJson(eventJson)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to parse event JSON", e)
-            null
-        }
-
-        val eventId = event?.optString("id") ?: authorPubkey.hashCode().toString()
-        val content = event?.optString("content") ?: ""
 
         // Determine notification channel and content based on event kind
         val (channel, title, text, groupKey) = when (eventKind) {
@@ -106,12 +104,15 @@ object NotificationHelper {
             9735 -> {
                 // Zap receipt
                 val displayName = authorName ?: formatPubkey(authorPubkey)
-                val amount = parseZapAmount(event)
-                val amountText = if (amount != null) "${amount} sats" else "some sats"
+                val amountText = if (zapAmountSats != null && zapAmountSats > 0) {
+                    formatSatsAmount(zapAmountSats)
+                } else {
+                    "some sats"
+                }
                 NotificationContent(
                     NotificationsService.CHANNEL_ZAPS,
                     displayName,
-                    "Zapped you $amountText! ⚡",
+                    "Zapped you $amountText!",
                     "zaps"
                 )
             }
@@ -128,8 +129,9 @@ object NotificationHelper {
         // Create intent to open app
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("nostr_event", eventJson)
             putExtra("event_id", eventId)
+            putExtra("event_kind", eventKind)
+            putExtra("author_pubkey", authorPubkey)
         }
 
         val pendingIntent = PendingIntent.getActivity(
@@ -226,50 +228,6 @@ object NotificationHelper {
     }
 
     /**
-     * Parse the Nostr event object from various JSON formats.
-     * Handles both raw event JSON and relay message format ["EVENT", "subid", {...}]
-     */
-    private fun parseEventFromJson(eventJson: String): JSONObject? {
-        // Try direct parse first (raw event object)
-        if (eventJson.trimStart().startsWith("{")) {
-            return try {
-                JSONObject(eventJson)
-            } catch (e: Exception) {
-                null
-            }
-        }
-
-        // Try to find event object in relay message format
-        val eventStart = eventJson.indexOf("{\"")
-        if (eventStart >= 0) {
-            // Find matching closing brace
-            var depth = 0
-            var eventEnd = -1
-            for (i in eventStart until eventJson.length) {
-                when (eventJson[i]) {
-                    '{' -> depth++
-                    '}' -> {
-                        depth--
-                        if (depth == 0) {
-                            eventEnd = i + 1
-                            break
-                        }
-                    }
-                }
-            }
-            if (eventEnd > eventStart) {
-                return try {
-                    JSONObject(eventJson.substring(eventStart, eventEnd))
-                } catch (e: Exception) {
-                    null
-                }
-            }
-        }
-
-        return null
-    }
-
-    /**
      * Load a profile image from robohash (fallback) or cached.
      * Thread-safe via ConcurrentHashMap.
      */
@@ -302,48 +260,6 @@ object NotificationHelper {
     }
 
     /**
-     * Parse zap amount from a kind 9735 event.
-     */
-    private fun parseZapAmount(event: JSONObject?): Long? {
-        if (event == null) return null
-
-        try {
-            val tags = event.optJSONArray("tags") ?: return null
-            for (i in 0 until tags.length()) {
-                val tag = tags.optJSONArray(i) ?: continue
-                if (tag.length() >= 2 && tag.optString(0) == "bolt11") {
-                    val bolt11 = tag.optString(1)
-                    return parseBolt11Amount(bolt11)
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to parse zap amount", e)
-        }
-        return null
-    }
-
-    /**
-     * Parse amount from a BOLT11 invoice (simplified).
-     */
-    private fun parseBolt11Amount(bolt11: String): Long? {
-        // BOLT11 format: lnbc<amount><multiplier>...
-        // This is a simplified parser
-        val match = Regex("lnbc(\\d+)([munp]?)").find(bolt11.lowercase())
-        if (match != null) {
-            val amount = match.groupValues[1].toLongOrNull() ?: return null
-            val multiplier = when (match.groupValues[2]) {
-                "m" -> 100_000L  // milli-bitcoin = 100,000 sats
-                "u" -> 100L      // micro-bitcoin = 100 sats
-                "n" -> 0L        // nano-bitcoin = 0.1 sats (round down)
-                "p" -> 0L        // pico-bitcoin
-                else -> 100_000_000L  // assume whole bitcoin
-            }
-            return amount * multiplier / 1000  // Convert to sats
-        }
-        return null
-    }
-
-    /**
      * Format a pubkey for display (first 8 chars).
      */
     private fun formatPubkey(pubkey: String): String {
@@ -370,6 +286,19 @@ object NotificationHelper {
      */
     fun clearCache() {
         profileImageCache.clear()
+    }
+
+    /**
+     * Format satoshi amount for display.
+     * Shows "1,000 sats" for smaller amounts or "1.5M sats" for larger.
+     */
+    private fun formatSatsAmount(sats: Long): String {
+        return when {
+            sats >= 1_000_000_000 -> String.format("%.1fB sats", sats / 1_000_000_000.0)
+            sats >= 1_000_000 -> String.format("%.1fM sats", sats / 1_000_000.0)
+            sats >= 10_000 -> String.format("%,d sats", sats)
+            else -> "$sats sats"
+        }
     }
 
     private data class NotificationContent(

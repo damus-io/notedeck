@@ -22,7 +22,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import org.json.JSONObject
 
 /**
  * Foreground service that maintains WebSocket connections to Nostr relays
@@ -301,19 +300,29 @@ class NotificationsService : Service() {
 
     /**
      * Called from native code when a new Nostr event is received.
-     * This method is invoked via JNI.
+     * This method is invoked via JNI with structured data (no JSON parsing needed).
+     *
+     * @param eventId The 64-char hex event ID (for deduplication)
+     * @param eventKind The Nostr event kind (1=note, 4=DM, 7=reaction, etc.)
+     * @param authorPubkey The 64-char hex pubkey of the event author
+     * @param content The event content (already extracted from JSON in Rust)
+     * @param authorName Optional display name of the author
+     * @param zapAmountSats Zap amount in satoshis (-1 if not a zap or amount unknown)
+     * @param rawJson Full event JSON from Rust (properly escaped, includes all fields)
      */
     @Suppress("unused") // Called from JNI
-    fun onNostrEvent(eventJson: String, eventKind: Int, authorPubkey: String, authorName: String?) {
-        Log.d(TAG, "Received Nostr event kind=$eventKind from $authorPubkey")
+    fun onNostrEvent(
+        eventId: String,
+        eventKind: Int,
+        authorPubkey: String,
+        content: String,
+        authorName: String?,
+        zapAmountSats: Long,
+        rawJson: String
+    ) {
+        Log.d(TAG, "Received Nostr event kind=$eventKind id=${eventId.take(8)} from ${authorPubkey.take(8)}")
 
-        // Extract real event ID for deduplication
-        val eventId = extractEventId(eventJson) ?: run {
-            Log.w(TAG, "Could not extract event ID, using hash fallback")
-            eventJson.hashCode().toString()
-        }
-
-        // Deduplicate with synchronized access
+        // Deduplicate using event ID directly (no JSON parsing needed)
         synchronized(processedEvents) {
             if (processedEvents.containsKey(eventId)) {
                 return
@@ -325,40 +334,35 @@ class NotificationsService : Service() {
         serviceScope?.launch {
             NotificationHelper.showNotification(
                 this@NotificationsService,
-                eventJson,
+                eventId,
                 eventKind,
                 authorPubkey,
-                authorName
+                content,
+                authorName,
+                if (zapAmountSats >= 0) zapAmountSats else null
             )
         }
 
         // Broadcast to other Nostr apps (but NOT DMs for privacy)
         if (eventKind !in PRIVATE_EVENT_KINDS) {
-            broadcastEvent(eventJson)
+            broadcastEvent(eventId, eventKind, authorPubkey, rawJson)
         }
     }
 
     /**
-     * Extract the event ID from JSON for proper deduplication.
+     * Broadcast event to other Nostr apps.
+     * Uses a permission to prevent unauthorized apps from receiving events.
+     * DMs are never broadcast for privacy.
+     * Uses full event JSON from Rust (properly escaped, includes all fields).
      */
-    private fun extractEventId(eventJson: String): String? {
-        return try {
-            // Find the event object in the relay message
-            val startIdx = eventJson.indexOf("{\"id\"")
-            if (startIdx < 0) {
-                // Try alternate format where id isn't first
-                val jsonObj = JSONObject(eventJson.substring(eventJson.indexOf("{")))
-                return jsonObj.optString("id").takeIf { it.length == 64 }
-            }
-            val endIdx = eventJson.lastIndexOf("}")
-            if (endIdx > startIdx) {
-                val eventObj = JSONObject(eventJson.substring(startIdx, endIdx + 1))
-                eventObj.optString("id").takeIf { it.length == 64 }
-            } else null
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to extract event ID", e)
-            null
+    private fun broadcastEvent(eventId: String, eventKind: Int, authorPubkey: String, rawJson: String) {
+        val intent = Intent(BROADCAST_NOSTR_EVENT).apply {
+            putExtra("EVENT", rawJson)
+            putExtra("EVENT_ID", eventId)
+            putExtra("EVENT_KIND", eventKind)
+            putExtra("AUTHOR_PUBKEY", authorPubkey)
         }
+        sendBroadcast(intent, BROADCAST_PERMISSION)
     }
 
     /**
@@ -368,19 +372,5 @@ class NotificationsService : Service() {
     fun onRelayStatusChanged(connectedCount: Int) {
         connectedRelays = connectedCount
         updateServiceNotification()
-    }
-
-    /**
-     * Broadcast event to other Nostr apps.
-     * Uses a permission to prevent unauthorized apps from receiving events.
-     * DMs are never broadcast for privacy.
-     */
-    private fun broadcastEvent(eventJson: String) {
-        val intent = Intent(BROADCAST_NOSTR_EVENT).apply {
-            putExtra("EVENT", eventJson)
-            // Restrict to apps with our permission
-            setPackage(null) // Allow any app with permission
-        }
-        sendBroadcast(intent, BROADCAST_PERMISSION)
     }
 }

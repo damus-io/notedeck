@@ -282,39 +282,41 @@ fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
 
     match relay_msg {
         enostr::RelayMessage::Event(sub_id, event_json) => {
-            // Extract event ID from the JSON for deduplication
-            // The event_json is the full relay message, we need to parse the event
-            if let Some(event_id) = extract_event_id(event_json) {
-                // Check for duplicates
-                {
-                    let mut state_guard = match state.lock() {
-                        Ok(g) => g,
-                        Err(_) => return,
-                    };
-                    if state_guard.processed_events.contains(&event_id) {
-                        return;
-                    }
-                    state_guard.processed_events.insert(event_id.clone());
-
-                    // Limit cache size
-                    if state_guard.processed_events.len() > 10000 {
-                        state_guard.processed_events.clear();
-                    }
+            // Extract all event fields using proper JSON parsing
+            let event = match extract_event(event_json) {
+                Some(e) => e,
+                None => {
+                    debug!("Failed to extract event from JSON");
+                    return;
                 }
+            };
 
-                // Extract event details
-                if let Some((kind, pubkey)) = extract_event_details(event_json) {
-                    debug!(
-                        "Received event kind={} id={} sub={}",
-                        kind,
-                        &event_id[..8.min(event_id.len())],
-                        sub_id
-                    );
+            // Check for duplicates using the extracted event ID
+            {
+                let mut state_guard = match state.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                if state_guard.processed_events.contains(&event.id) {
+                    return;
+                }
+                state_guard.processed_events.insert(event.id.clone());
 
-                    // Notify Kotlin about the event
-                    notify_nostr_event(event_json, kind, &pubkey, None);
+                // Limit cache size
+                if state_guard.processed_events.len() > 10000 {
+                    state_guard.processed_events.clear();
                 }
             }
+
+            debug!(
+                "Received event kind={} id={} sub={}",
+                event.kind,
+                &event.id[..8],
+                sub_id
+            );
+
+            // Notify Kotlin about the event with structured data
+            notify_nostr_event(&event, None);
         }
         enostr::RelayMessage::OK(result) => {
             debug!("Event OK received");
@@ -328,42 +330,176 @@ fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
     }
 }
 
-/// Extract event ID from event JSON
-fn extract_event_id(event_json: &str) -> Option<String> {
-    // Simple extraction - look for "id":"<hex>"
-    let id_start = event_json.find("\"id\":\"")?;
-    let start = id_start + 6;
-    let end = start + 64; // Event IDs are 64 hex chars
-    if event_json.len() >= end {
-        Some(event_json[start..end].to_string())
-    } else {
-        None
-    }
+/// Structured event data extracted from JSON - passed to Kotlin via JNI
+/// This avoids JSON parsing in Kotlin entirely
+struct ExtractedEvent {
+    id: String,
+    kind: i32,
+    pubkey: String,
+    content: String,
+    /// Zap amount in satoshis (only for kind 9735 zap receipts)
+    zap_amount_sats: Option<i64>,
+    /// Raw event JSON for broadcast compatibility (includes tags, created_at, sig)
+    raw_json: String,
 }
 
-/// Extract event kind and pubkey from event JSON
-fn extract_event_details(event_json: &str) -> Option<(i32, String)> {
-    // Extract kind
-    let kind_start = event_json.find("\"kind\":")?;
-    let kind_value_start = kind_start + 7;
-    let kind_end = event_json[kind_value_start..]
-        .find(|c: char| !c.is_ascii_digit())
-        .map(|i| kind_value_start + i)?;
-    let kind: i32 = event_json[kind_value_start..kind_end].parse().ok()?;
+/// Extract all event fields from JSON using proper JSON parsing
+fn extract_event(event_json: &str) -> Option<ExtractedEvent> {
+    // Use serde_json for robust parsing that handles escaped strings correctly
+    let value: serde_json::Value = match serde_json::from_str(event_json) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Failed to parse event JSON: {}", e);
+            return None;
+        }
+    };
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => {
+            warn!("Event JSON is not an object");
+            return None;
+        }
+    };
 
-    // Extract pubkey
-    let pubkey_start = event_json.find("\"pubkey\":\"")?;
-    let start = pubkey_start + 10;
-    let end = start + 64; // Pubkeys are 64 hex chars
-    if event_json.len() >= end {
-        Some((kind, event_json[start..end].to_string()))
+    let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let kind = obj.get("kind").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    let pubkey = obj.get("pubkey").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+    // Validate id and pubkey are proper hex (64 chars)
+    // Log warning but don't silently drop - helps debug relay issues
+    if id.len() != 64 {
+        warn!("Dropping event with invalid id length {}: {}", id.len(), &id[..id.len().min(16)]);
+        return None;
+    }
+    if pubkey.len() != 64 {
+        warn!("Dropping event with invalid pubkey length {}: {}", pubkey.len(), &pubkey[..pubkey.len().min(16)]);
+        return None;
+    }
+
+    // Extract zap amount for kind 9735 (zap receipt) events
+    let zap_amount_sats = if kind == 9735 {
+        extract_zap_amount(obj)
     } else {
         None
-    }
+    };
+
+    // Use original JSON from relay to preserve byte-level fidelity
+    // (keeps field order, duplicate keys, exact formatting)
+    let raw_json = event_json.to_string();
+
+    Some(ExtractedEvent {
+        id,
+        kind,
+        pubkey,
+        content,
+        zap_amount_sats,
+        raw_json,
+    })
 }
 
-/// Notify Kotlin about a new Nostr event
-fn notify_nostr_event(event_json: &str, kind: i32, author_pubkey: &str, author_name: Option<&str>) {
+/// Extract zap amount from a kind 9735 event's tags
+/// Looks for bolt11 tag and parses the invoice amount
+fn extract_zap_amount(event: &serde_json::Map<String, serde_json::Value>) -> Option<i64> {
+    let tags = event.get("tags")?.as_array()?;
+
+    for tag in tags {
+        let tag_arr = tag.as_array()?;
+        if tag_arr.len() >= 2 {
+            let tag_name = tag_arr[0].as_str()?;
+            if tag_name == "bolt11" {
+                let bolt11 = tag_arr[1].as_str()?;
+                return parse_bolt11_amount(bolt11);
+            }
+        }
+    }
+    None
+}
+
+/// Parse amount from a BOLT11 invoice string
+/// BOLT11 format: ln<prefix><amount><multiplier>1<data>
+/// - prefix: bc (mainnet), tb (testnet), bs (signet)
+/// - amount: optional digits
+/// - multiplier: optional m/u/n/p
+/// - 1: separator (always present)
+/// - data: timestamp and tagged fields
+///
+/// Examples:
+/// - lnbc1... = no amount (1 is separator)
+/// - lnbc1000u1... = 1000 micro-BTC = 100,000 sats
+/// - lnbc1m1... = 1 milli-BTC = 100,000 sats
+fn parse_bolt11_amount(bolt11: &str) -> Option<i64> {
+    let lower = bolt11.to_lowercase();
+
+    // Find the amount portion after prefix
+    let after_prefix = if lower.starts_with("lnbc") {
+        &lower[4..]
+    } else if lower.starts_with("lntb") || lower.starts_with("lnbs") {
+        &lower[4..]
+    } else {
+        return None;
+    };
+
+    // BOLT11: amount is digits followed by optional multiplier, then '1' separator
+    // If first char is '1', it's the separator (no amount specified)
+    let chars: Vec<char> = after_prefix.chars().collect();
+    if chars.is_empty() {
+        return None;
+    }
+
+    // Check for no-amount invoice: first char after prefix is '1' separator
+    if chars[0] == '1' {
+        return None; // No amount specified
+    }
+
+    // Parse digits for amount
+    let mut amount_end = 0;
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_ascii_digit() {
+            amount_end = i + 1;
+        } else {
+            break;
+        }
+    }
+
+    if amount_end == 0 {
+        return None;
+    }
+
+    // Check for multiplier after digits
+    let multiplier_char = if amount_end < chars.len() {
+        let c = chars[amount_end];
+        if c == 'm' || c == 'u' || c == 'n' || c == 'p' {
+            Some(c)
+        } else if c == '1' {
+            None // '1' is separator, no multiplier means whole BTC (very rare)
+        } else {
+            return None; // Invalid character
+        }
+    } else {
+        return None; // No separator found
+    };
+
+    let amount_str: String = chars[..amount_end].iter().collect();
+    let amount: i64 = amount_str.parse().ok()?;
+
+    // Convert to millisatoshis based on multiplier, then to satoshis
+    let msats = match multiplier_char {
+        Some('m') => amount * 100_000_000,     // milli-bitcoin = 0.001 BTC = 100,000 sats
+        Some('u') => amount * 100_000,         // micro-bitcoin = 0.000001 BTC = 100 sats
+        Some('n') => amount * 100,             // nano-bitcoin = 0.000000001 BTC = 0.1 sats
+        Some('p') => amount / 10,              // pico-bitcoin = 0.000000000001 BTC
+        None => amount * 100_000_000_000,      // whole bitcoin (rare in practice)
+        _ => return None,
+    };
+
+    // Convert millisatoshis to satoshis
+    Some(msats / 1000)
+}
+
+/// Notify Kotlin about a new Nostr event with structured data
+/// This passes individual fields instead of raw JSON, eliminating JSON parsing in Kotlin
+fn notify_nostr_event(event: &ExtractedEvent, author_name: Option<&str>) {
     #[cfg(target_os = "android")]
     {
         let callback_guard = match JAVA_CALLBACK.lock() {
@@ -376,11 +512,15 @@ fn notify_nostr_event(event_json: &str, kind: i32, author_pubkey: &str, author_n
 
         if let Some(ref callback) = *callback_guard {
             if let Ok(mut env) = callback.jvm.attach_current_thread() {
-                let event_json_jstring = match env.new_string(event_json) {
+                let event_id_jstring = match env.new_string(&event.id) {
                     Ok(s) => s,
                     Err(_) => return,
                 };
-                let author_pubkey_jstring = match env.new_string(author_pubkey) {
+                let author_pubkey_jstring = match env.new_string(&event.pubkey) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let content_jstring = match env.new_string(&event.content) {
                     Ok(s) => s,
                     Err(_) => return,
                 };
@@ -391,16 +531,27 @@ fn notify_nostr_event(event_json: &str, kind: i32, author_pubkey: &str, author_n
                     },
                     None => JObject::null(),
                 };
+                let raw_json_jstring = match env.new_string(&event.raw_json) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
 
+                // Zap amount: -1 means no amount (null equivalent for primitives)
+                let zap_amount = event.zap_amount_sats.unwrap_or(-1);
+
+                // JNI signature: (eventId, eventKind, authorPubkey, content, authorName, zapAmountSats, rawJson)
                 let _ = env.call_method(
                     &callback.service_obj,
                     "onNostrEvent",
-                    "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;)V",
+                    "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;)V",
                     &[
-                        JValue::Object(&JObject::from(event_json_jstring)),
-                        JValue::Int(kind),
+                        JValue::Object(&JObject::from(event_id_jstring)),
+                        JValue::Int(event.kind),
                         JValue::Object(&JObject::from(author_pubkey_jstring)),
+                        JValue::Object(&JObject::from(content_jstring)),
                         JValue::Object(&author_name_jstring),
+                        JValue::Long(zap_amount),
+                        JValue::Object(&JObject::from(raw_json_jstring)),
                     ],
                 );
             }
@@ -409,11 +560,12 @@ fn notify_nostr_event(event_json: &str, kind: i32, author_pubkey: &str, author_n
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (event_json, author_name); // Suppress unused warnings
+        let _ = author_name; // Suppress unused warning
         debug!(
-            "Nostr event (non-Android): kind={}, author={}",
-            kind,
-            &author_pubkey[..8.min(author_pubkey.len())]
+            "Nostr event (non-Android): kind={}, author={}, zap_sats={:?}",
+            event.kind,
+            &event.pubkey[..8],
+            event.zap_amount_sats
         );
     }
 }
@@ -516,25 +668,79 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_event_id() {
-        let json = r#"["EVENT","sub",{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","kind":1}]"#;
-        let id = extract_event_id(json);
+    fn test_extract_event() {
+        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"hello world"}"#;
+        let event = extract_event(json);
+        assert!(event.is_some());
+        let event = event.unwrap();
         assert_eq!(
-            id,
-            Some("abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234".to_string())
+            event.id,
+            "abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234"
         );
+        assert_eq!(
+            event.pubkey,
+            "def0123456789012345678901234567890123456789012345678901234567890"
+        );
+        assert_eq!(event.kind, 1);
+        assert_eq!(event.content, "hello world");
+        assert_eq!(event.zap_amount_sats, None);
     }
 
     #[test]
-    fn test_extract_event_details() {
-        let json = r#"{"id":"abc","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"test"}"#;
-        let details = extract_event_details(json);
-        assert!(details.is_some());
-        let (kind, pubkey) = details.unwrap();
-        assert_eq!(kind, 1);
-        assert_eq!(
-            pubkey,
-            "def0123456789012345678901234567890123456789012345678901234567890"
-        );
+    fn test_extract_event_with_braces_in_content() {
+        // This would break manual brace-matching but works with serde_json
+        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"json example: {\"foo\": \"bar\"}"}"#;
+        let event = extract_event(json);
+        assert!(event.is_some());
+        let event = event.unwrap();
+        assert_eq!(event.content, r#"json example: {"foo": "bar"}"#);
+    }
+
+    #[test]
+    fn test_extract_event_empty_content() {
+        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":7,"content":""}"#;
+        let event = extract_event(json);
+        assert!(event.is_some());
+        let event = event.unwrap();
+        assert_eq!(event.kind, 7);
+        assert_eq!(event.content, "");
+    }
+
+    #[test]
+    fn test_bolt11_amount_parsing() {
+        // Test micro-bitcoin (u) - 1000u = 100,000 sats
+        assert_eq!(parse_bolt11_amount("lnbc1000u1pj9..."), Some(100_000));
+
+        // Test milli-bitcoin (m) - 10m = 1,000,000 sats
+        assert_eq!(parse_bolt11_amount("lnbc10m1pj9..."), Some(1_000_000));
+
+        // Test nano-bitcoin (n) - 1000000n = 100 sats
+        assert_eq!(parse_bolt11_amount("lnbc1000000n1pj9..."), Some(100));
+
+        // Test no-amount invoice (1 is separator, not amount)
+        assert_eq!(parse_bolt11_amount("lnbc1pj9..."), None);
+
+        // Test whole BTC without multiplier - 2 BTC (rare)
+        // Format: lnbc<amount>1<data> where amount=2
+        assert_eq!(parse_bolt11_amount("lnbc21pj9..."), Some(200_000_000));
+
+        // Test invalid prefix
+        assert_eq!(parse_bolt11_amount("invalid"), None);
+
+        // Test testnet prefix
+        assert_eq!(parse_bolt11_amount("lntb1000u1pj9..."), Some(100_000));
+
+        // Test signet prefix
+        assert_eq!(parse_bolt11_amount("lnbs500u1pj9..."), Some(50_000));
+    }
+
+    #[test]
+    fn test_extract_zap_event_with_amount() {
+        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":9735,"content":"","tags":[["bolt11","lnbc1000u1pj..."]]}"#;
+        let event = extract_event(json);
+        assert!(event.is_some());
+        let event = event.unwrap();
+        assert_eq!(event.kind, 9735);
+        assert_eq!(event.zap_amount_sats, Some(100_000)); // 1000 micro-BTC = 100,000 sats
     }
 }
