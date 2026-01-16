@@ -239,6 +239,8 @@ fn setup_subscriptions(pool: &mut RelayPool, pubkey: &Pubkey) {
     );
 }
 
+/// Handle a WebSocket event from the relay pool.
+/// Dispatches to appropriate handlers for connection state changes and messages.
 fn handle_pool_event(state: &Arc<Mutex<NotificationState>>, pool_event: enostr::PoolEventBuf) {
     use ewebsock::WsEvent;
 
@@ -263,6 +265,8 @@ fn handle_pool_event(state: &Arc<Mutex<NotificationState>>, pool_event: enostr::
     }
 }
 
+/// Re-establish subscriptions after a relay reconnects.
+/// Called when a WebSocket connection is opened to ensure we receive events.
 fn resubscribe_on_reconnect(state: &Arc<Mutex<NotificationState>>) {
     let mut state_guard = match state.lock() {
         Ok(g) => g,
@@ -275,6 +279,9 @@ fn resubscribe_on_reconnect(state: &Arc<Mutex<NotificationState>>) {
     setup_subscriptions(&mut state_guard.pool, &pubkey);
 }
 
+/// Process an incoming Nostr relay message.
+/// Handles EVENT messages by extracting event data, deduplicating, and notifying Kotlin.
+/// Also handles OK, NOTICE, and EOSE messages for logging.
 fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
     // Parse the relay message using enostr's parser
     let relay_msg = match enostr::RelayMessage::from_json(message) {
@@ -288,43 +295,9 @@ fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
 
     match relay_msg {
         enostr::RelayMessage::Event(sub_id, event_json) => {
-            // Extract all event fields using proper JSON parsing
-            let event = match extract_event(event_json) {
-                Some(e) => e,
-                None => {
-                    debug!("Failed to extract event from JSON");
-                    return;
-                }
-            };
-
-            // Check for duplicates using the extracted event ID
-            {
-                let mut state_guard = match state.lock() {
-                    Ok(g) => g,
-                    Err(_) => return,
-                };
-                if state_guard.processed_events.contains(&event.id) {
-                    return;
-                }
-                state_guard.processed_events.insert(event.id.clone());
-
-                // Limit cache size
-                if state_guard.processed_events.len() > 10000 {
-                    state_guard.processed_events.clear();
-                }
-            }
-
-            debug!(
-                "Received event kind={} id={} sub={}",
-                event.kind,
-                &event.id[..8],
-                sub_id
-            );
-
-            // Notify Kotlin about the event with structured data
-            notify_nostr_event(&event, None);
+            handle_event_message(state, &sub_id, event_json);
         }
-        enostr::RelayMessage::OK(result) => {
+        enostr::RelayMessage::OK(_) => {
             debug!("Event OK received");
         }
         enostr::RelayMessage::Notice(notice) => {
@@ -334,6 +307,52 @@ fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
             debug!("End of stored events for subscription: {}", sub_id);
         }
     }
+}
+
+/// Handle an EVENT message from a relay.
+/// Extracts event data, checks for duplicates, and notifies Kotlin if new.
+fn handle_event_message(state: &Arc<Mutex<NotificationState>>, sub_id: &str, event_json: &str) {
+    let event = match extract_event(event_json) {
+        Some(e) => e,
+        None => {
+            debug!("Failed to extract event from JSON");
+            return;
+        }
+    };
+
+    if !record_event_if_new(state, &event.id) {
+        return;
+    }
+
+    debug!(
+        "Received event kind={} id={} sub={}",
+        event.kind,
+        &event.id[..8],
+        sub_id
+    );
+
+    notify_nostr_event(&event, None);
+}
+
+/// Record an event ID if not already seen. Returns true if the event is new.
+/// Also prunes the cache when it exceeds 10,000 entries.
+fn record_event_if_new(state: &Arc<Mutex<NotificationState>>, event_id: &str) -> bool {
+    let mut state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+
+    if state_guard.processed_events.contains(event_id) {
+        return false;
+    }
+
+    state_guard.processed_events.insert(event_id.to_string());
+
+    if state_guard.processed_events.len() > 10000 {
+        state_guard.processed_events.clear();
+    }
+
+    true
 }
 
 /// Structured event data extracted from JSON - passed to Kotlin via JNI
@@ -654,6 +673,9 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
     }
 }
 
+/// Update the global JNI callback reference.
+/// Called on each service start to ensure we have a valid reference even after restart.
+/// Stores a global reference to the service object for later JNI calls.
 #[cfg(target_os = "android")]
 fn update_jni_callback(env: &mut JNIEnv, obj: JObject) {
     let jvm = match env.get_java_vm() {
