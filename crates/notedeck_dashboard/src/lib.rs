@@ -103,10 +103,10 @@ impl notedeck::App for Dashboard {
 
         if !self.initialized {
             self.initialized = true;
-            self.init(ctx);
+            self.init(ui.ctx().clone(), ctx);
         }
 
-        self.process_worker_msgs(ui.ctx());
+        self.process_worker_msgs();
         self.schedule_refresh();
 
         self.show(ui);
@@ -116,7 +116,7 @@ impl notedeck::App for Dashboard {
 }
 
 impl Dashboard {
-    fn init(&mut self, ctx: &mut AppContext<'_>) {
+    fn init(&mut self, egui_ctx: egui::Context, ctx: &mut AppContext<'_>) {
         // spawn single worker thread and keep it alive
         let (cmd_tx, cmd_rx) = chan::unbounded::<WorkerCmd>();
         let (msg_tx, msg_rx) = chan::unbounded::<WorkerMsg>();
@@ -127,7 +127,7 @@ impl Dashboard {
         // Clone the DB handle into the worker thread (Ndb is typically cheap/cloneable)
         let ndb = ctx.ndb.clone();
 
-        spawn_worker(ndb, cmd_rx, msg_tx);
+        spawn_worker(egui_ctx, ndb, cmd_rx, msg_tx);
 
         // kick the first run immediately
         let _ = cmd_tx.send(WorkerCmd::Refresh);
@@ -140,7 +140,7 @@ impl Dashboard {
         self.state = DashboardState::default();
     }
 
-    fn process_worker_msgs(&mut self, egui_ctx: &egui::Context) {
+    fn process_worker_msgs(&mut self) {
         let Some(rx) = &self.msg_rx else { return };
 
         let mut got_any = false;
@@ -155,9 +155,6 @@ impl Dashboard {
                     self.last_error = None;
 
                     self.state = s.state;
-
-                    // Push UI updates with no "loading screen"
-                    egui_ctx.request_repaint();
                 }
                 WorkerMsg::Finished {
                     started_at,
@@ -172,8 +169,6 @@ impl Dashboard {
                     self.last_error = None;
 
                     self.state = state;
-
-                    egui_ctx.request_repaint();
                 }
                 WorkerMsg::Failed {
                     started_at,
@@ -186,8 +181,6 @@ impl Dashboard {
                     self.last_finished = Some(finished_at);
                     self.last_duration = Some(finished_at.saturating_duration_since(started_at));
                     self.last_error = Some(error);
-
-                    egui_ctx.request_repaint();
                 }
             }
         }
@@ -271,7 +264,12 @@ impl Dashboard {
 // Worker side (single pass, periodic snapshots)
 // ----------------------
 
-fn spawn_worker(ndb: Ndb, cmd_rx: chan::Receiver<WorkerCmd>, msg_tx: chan::Sender<WorkerMsg>) {
+fn spawn_worker(
+    ctx: egui::Context,
+    ndb: Ndb,
+    cmd_rx: chan::Receiver<WorkerCmd>,
+    msg_tx: chan::Sender<WorkerMsg>,
+) {
     thread::Builder::new()
         .name("dashboard-worker".to_owned())
         .spawn(move || {
@@ -282,7 +280,7 @@ fn spawn_worker(ndb: Ndb, cmd_rx: chan::Receiver<WorkerCmd>, msg_tx: chan::Sende
                     Ok(WorkerCmd::Refresh) => {
                         let started_at = Instant::now();
 
-                        match materialize_single_pass(&ndb, &msg_tx, started_at) {
+                        match materialize_single_pass(&ctx, &ndb, &msg_tx, started_at) {
                             Ok(state) => {
                                 let _ = msg_tx.send(WorkerMsg::Finished {
                                     started_at,
@@ -309,6 +307,7 @@ fn spawn_worker(ndb: Ndb, cmd_rx: chan::Receiver<WorkerCmd>, msg_tx: chan::Sende
 }
 
 fn materialize_single_pass(
+    ctx: &egui::Context,
     ndb: &Ndb,
     msg_tx: &chan::Sender<WorkerMsg>,
     started_at: Instant,
@@ -351,6 +350,7 @@ fn materialize_single_pass(
                     top_kinds: top,
                 },
             }));
+            ctx.request_repaint();
         }
 
         acc
