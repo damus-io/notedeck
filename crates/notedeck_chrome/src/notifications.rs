@@ -52,6 +52,13 @@ unsafe impl Send for JavaCallback {}
 #[cfg(target_os = "android")]
 unsafe impl Sync for JavaCallback {}
 
+/// Cached profile information
+#[derive(Clone, Default)]
+struct CachedProfile {
+    name: Option<String>,
+    picture_url: Option<String>,
+}
+
 struct NotificationState {
     pool: RelayPool,
     pubkey: Option<Pubkey>,
@@ -59,8 +66,8 @@ struct NotificationState {
     processed_events: HashSet<String>,
     /// Handle to the event loop thread for proper shutdown
     event_loop_handle: Option<thread::JoinHandle<()>>,
-    /// Cache of author profiles: pubkey hex -> display name
-    profile_cache: std::collections::HashMap<String, String>,
+    /// Cache of author profiles: pubkey hex -> profile info
+    profile_cache: std::collections::HashMap<String, CachedProfile>,
     /// Pubkeys we've already requested profiles for
     requested_profiles: HashSet<String>,
 }
@@ -369,33 +376,41 @@ fn handle_event_message(state: &Arc<Mutex<NotificationState>>, sub_id: &str, eve
         sub_id
     );
 
-    // Look up author name from cache, request profile if not cached
-    let author_name = get_cached_author_name(state, &event.pubkey);
-    if author_name.is_none() {
+    // Look up author profile from cache, request if not cached
+    let profile = get_cached_profile(state, &event.pubkey);
+    if profile.is_none() {
         request_profile_if_needed(state, &event.pubkey);
     }
 
-    notify_nostr_event(&event, author_name.as_deref());
+    let author_name = profile.as_ref().and_then(|p| p.name.clone());
+    let picture_url = profile.as_ref().and_then(|p| p.picture_url.clone());
+
+    notify_nostr_event(&event, author_name.as_deref(), picture_url.as_deref());
 }
 
-/// Handle a kind 0 (profile metadata) event by extracting and caching the display name.
+/// Handle a kind 0 (profile metadata) event by extracting and caching profile info.
 fn handle_profile_event(state: &Arc<Mutex<NotificationState>>, event: &ExtractedEvent) {
-    // Parse the content as JSON to extract name/display_name
-    let name = extract_profile_name(&event.content);
-    if name.is_none() {
+    // Parse the content as JSON to extract name and picture
+    let profile = extract_profile_info(&event.content);
+    if profile.name.is_none() && profile.picture_url.is_none() {
         return;
     }
-    let name = name.unwrap();
 
     let mut state_guard = match state.lock() {
         Ok(g) => g,
         Err(_) => return,
     };
 
+    debug!(
+        "Cached profile for {}: name={:?}, picture={:?}",
+        &event.pubkey[..8],
+        profile.name,
+        profile.picture_url.as_ref().map(|s| &s[..s.len().min(50)])
+    );
+
     state_guard
         .profile_cache
-        .insert(event.pubkey.clone(), name.clone());
-    debug!("Cached profile name for {}: {}", &event.pubkey[..8], &name);
+        .insert(event.pubkey.clone(), profile);
 
     // Prune cache if too large
     if state_guard.profile_cache.len() > 1000 {
@@ -404,22 +419,41 @@ fn handle_profile_event(state: &Arc<Mutex<NotificationState>>, event: &Extracted
     }
 }
 
-/// Extract display name from profile content JSON.
-/// Prefers "display_name" over "name".
-fn extract_profile_name(content: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(content).ok()?;
-    let obj = value.as_object()?;
+/// Extract profile info (name and picture URL) from profile content JSON.
+/// Prefers "display_name" over "name" for the name field.
+fn extract_profile_info(content: &str) -> CachedProfile {
+    let value: serde_json::Value = match serde_json::from_str(content) {
+        Ok(v) => v,
+        Err(_) => return CachedProfile::default(),
+    };
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return CachedProfile::default(),
+    };
 
     // Prefer display_name, fall back to name
-    obj.get("display_name")
+    let name = obj
+        .get("display_name")
         .or_else(|| obj.get("name"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(|s| s.to_string());
+
+    // Get picture URL
+    let picture_url = obj
+        .get("picture")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty() && (s.starts_with("http://") || s.starts_with("https://")))
+        .map(|s| s.to_string());
+
+    CachedProfile { name, picture_url }
 }
 
-/// Get cached author name for the given pubkey.
-fn get_cached_author_name(state: &Arc<Mutex<NotificationState>>, pubkey: &str) -> Option<String> {
+/// Get cached profile info for the given pubkey.
+fn get_cached_profile(
+    state: &Arc<Mutex<NotificationState>>,
+    pubkey: &str,
+) -> Option<CachedProfile> {
     let state_guard = match state.lock() {
         Ok(g) => g,
         Err(_) => return None,
@@ -689,7 +723,11 @@ fn parse_bolt11_amount(bolt11: &str) -> Option<i64> {
 
 /// Notify Kotlin about a new Nostr event with structured data
 /// This passes individual fields instead of raw JSON, eliminating JSON parsing in Kotlin
-fn notify_nostr_event(event: &ExtractedEvent, author_name: Option<&str>) {
+fn notify_nostr_event(
+    event: &ExtractedEvent,
+    author_name: Option<&str>,
+    picture_url: Option<&str>,
+) {
     #[cfg(target_os = "android")]
     {
         let callback_guard = match JAVA_CALLBACK.lock() {
@@ -726,6 +764,10 @@ fn notify_nostr_event(event: &ExtractedEvent, author_name: Option<&str>) {
             .and_then(|name| env.new_string(name).ok())
             .map(JObject::from)
             .unwrap_or_else(JObject::null);
+        let picture_url_jstring = picture_url
+            .and_then(|url| env.new_string(url).ok())
+            .map(JObject::from)
+            .unwrap_or_else(JObject::null);
         let raw_json_jstring = match env.new_string(&event.raw_json) {
             Ok(s) => s,
             Err(_) => return,
@@ -736,13 +778,14 @@ fn notify_nostr_event(event: &ExtractedEvent, author_name: Option<&str>) {
         let _ = env.call_method(
             &callback.service_obj,
             "onNostrEvent",
-            "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;)V",
+            "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;)V",
             &[
                 JValue::Object(&JObject::from(event_id_jstring)),
                 JValue::Int(event.kind),
                 JValue::Object(&JObject::from(author_pubkey_jstring)),
                 JValue::Object(&JObject::from(content_jstring)),
                 JValue::Object(&author_name_jstring),
+                JValue::Object(&picture_url_jstring),
                 JValue::Long(zap_amount),
                 JValue::Object(&JObject::from(raw_json_jstring)),
             ],
@@ -752,6 +795,7 @@ fn notify_nostr_event(event: &ExtractedEvent, author_name: Option<&str>) {
     #[cfg(not(target_os = "android"))]
     {
         let _ = author_name;
+        let _ = picture_url;
         debug!(
             "Nostr event (non-Android): kind={}, author={}, zap_sats={:?}",
             event.kind,

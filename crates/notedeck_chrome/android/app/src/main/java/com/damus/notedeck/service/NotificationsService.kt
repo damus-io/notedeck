@@ -308,6 +308,7 @@ class NotificationsService : Service() {
      * @param authorPubkey The 64-char hex pubkey of the event author
      * @param content The event content (already extracted from JSON in Rust)
      * @param authorName Optional display name of the author
+     * @param authorPictureUrl Optional profile picture URL of the author
      * @param zapAmountSats Zap amount in satoshis (-1 if not a zap or amount unknown)
      * @param rawJson Full event JSON from Rust (properly escaped, includes all fields)
      */
@@ -318,6 +319,7 @@ class NotificationsService : Service() {
         authorPubkey: String,
         content: String,
         authorName: String?,
+        authorPictureUrl: String?,
         zapAmountSats: Long,
         rawJson: String
     ) {
@@ -340,6 +342,7 @@ class NotificationsService : Service() {
                 authorPubkey,
                 content,
                 authorName,
+                authorPictureUrl,
                 if (zapAmountSats >= 0) zapAmountSats else null
             )
         }

@@ -35,6 +35,7 @@ object NotificationHelper {
      * @param authorPubkey The 64-char hex pubkey of the event author
      * @param content The event content (already extracted in Rust)
      * @param authorName Optional display name of the author
+     * @param authorPictureUrl Optional profile picture URL of the author
      * @param zapAmountSats Zap amount in satoshis (null if not a zap or amount unknown)
      */
     suspend fun showNotification(
@@ -44,6 +45,7 @@ object NotificationHelper {
         authorPubkey: String,
         content: String,
         authorName: String?,
+        authorPictureUrl: String? = null,
         zapAmountSats: Long? = null
     ) {
         val notificationManager = context.getSystemService(NotificationManager::class.java)
@@ -141,13 +143,14 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Load profile image (use real URL if available, fall back to robohash)
+        val bitmap = loadProfileImage(authorPubkey, authorPictureUrl)
+
         // Create person for messaging style
         val person = Person.Builder()
             .setKey(authorPubkey)
             .setName(title)
             .apply {
-                // Try to load profile image
-                val bitmap = loadProfileImage(authorPubkey)
                 if (bitmap != null) {
                     setIcon(IconCompat.createWithBitmap(bitmap))
                 }
@@ -171,7 +174,6 @@ object NotificationHelper {
             )
 
         // Add profile image as large icon if available
-        val bitmap = loadProfileImage(authorPubkey)
         if (bitmap != null) {
             builder.setLargeIcon(bitmap)
         }
@@ -228,10 +230,13 @@ object NotificationHelper {
     }
 
     /**
-     * Load a profile image from robohash (fallback) or cached.
+     * Load a profile image from the provided URL or robohash (fallback).
      * Thread-safe via ConcurrentHashMap.
+     *
+     * @param pubkey The author's pubkey (used as cache key and robohash fallback)
+     * @param pictureUrl Optional real profile picture URL from the author's profile
      */
-    private suspend fun loadProfileImage(pubkey: String): Bitmap? {
+    private suspend fun loadProfileImage(pubkey: String, pictureUrl: String?): Bitmap? {
         // Check cache first (thread-safe read)
         profileImageCache[pubkey]?.let { return it }
 
@@ -240,9 +245,16 @@ object NotificationHelper {
                 // Double-check after acquiring IO context (another thread may have loaded it)
                 profileImageCache[pubkey]?.let { return@withContext it }
 
-                // Use robohash as a simple avatar generator
-                val url = URL("https://robohash.org/${pubkey}.png?size=128x128&set=set4")
-                val connection = url.openConnection()
+                // Use real picture URL if available, fall back to robohash
+                val imageUrl = if (!pictureUrl.isNullOrEmpty()) {
+                    Log.d(TAG, "Loading real profile image for ${pubkey.take(8)}: ${pictureUrl.take(50)}...")
+                    URL(pictureUrl)
+                } else {
+                    Log.d(TAG, "No profile image URL, using robohash for ${pubkey.take(8)}")
+                    URL("https://robohash.org/${pubkey}.png?size=128x128&set=set4")
+                }
+
+                val connection = imageUrl.openConnection()
                 connection.connectTimeout = 5000
                 connection.readTimeout = 5000
                 val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
@@ -254,6 +266,22 @@ object NotificationHelper {
                 bitmap
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to load profile image for $pubkey", e)
+                // Try robohash as final fallback if real URL failed
+                if (!pictureUrl.isNullOrEmpty()) {
+                    try {
+                        val fallbackUrl = URL("https://robohash.org/${pubkey}.png?size=128x128&set=set4")
+                        val connection = fallbackUrl.openConnection()
+                        connection.connectTimeout = 5000
+                        connection.readTimeout = 5000
+                        val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
+                        if (bitmap != null) {
+                            profileImageCache.putIfAbsent(pubkey, bitmap)
+                        }
+                        return@withContext bitmap
+                    } catch (e2: Exception) {
+                        Log.w(TAG, "Robohash fallback also failed for $pubkey", e2)
+                    }
+                }
                 null
             }
         }
