@@ -7,6 +7,8 @@ use crossbeam_channel as chan;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{AppContext, AppResponse, try_process_events_core};
 
+use chrono::{Datelike, TimeZone, Utc};
+
 mod chart;
 mod ui;
 
@@ -24,6 +26,7 @@ enum WorkerCmd {
 struct DashboardState {
     total_count: usize,
     top_kinds: Vec<(u32, u64)>,
+    posts_per_month: Vec<(String, u64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -235,7 +238,7 @@ impl Dashboard {
     }
 
     fn grid(&mut self, ui: &mut egui::Ui) {
-        let cols = 2;
+        let cols = 3;
         let min_card = 240.0;
 
         egui::Grid::new("dashboard_grid_single_worker")
@@ -243,11 +246,16 @@ impl Dashboard {
             .min_col_width(min_card)
             .spacing(egui::vec2(8.0, 8.0))
             .show(ui, |ui| {
-                use crate::ui::{card_ui, kinds_ui, totals_ui};
+                use crate::ui::{card_ui, kinds_ui, posts_per_month_ui, totals_ui};
 
                 // Card 1: Total notes
                 card_ui(ui, min_card, |ui| {
                     totals_ui(self, ui);
+                });
+
+                // Card 3: Posts per month (last 6 months)
+                card_ui(ui, min_card, |ui| {
+                    posts_per_month_ui(self, ui);
                 });
 
                 // Card 2: Kinds (top)
@@ -263,6 +271,48 @@ impl Dashboard {
 // ----------------------
 // Worker side (single pass, periodic snapshots)
 // ----------------------
+
+fn last_n_months_keys(n: usize) -> Vec<(i32, u32)> {
+    // oldest -> newest, includes current month
+    let now = Utc::now();
+    let mut y = now.year();
+    let mut m = now.month(); // 1..=12
+
+    // go back (n-1) months to get the oldest month
+    for _ in 0..(n.saturating_sub(1)) {
+        if m == 1 {
+            m = 12;
+            y -= 1;
+        } else {
+            m -= 1;
+        }
+    }
+
+    let mut out = Vec::with_capacity(n);
+    let mut cy = y;
+    let mut cm = m;
+    for _ in 0..n {
+        out.push((cy, cm));
+        if cm == 12 {
+            cm = 1;
+            cy += 1;
+        } else {
+            cm += 1;
+        }
+    }
+    out
+}
+
+fn month_label(year: i32, month: u32) -> String {
+    // e.g. "Jan ’26" when year differs, otherwise just "Jan" would be ambiguous across years
+    // We'll always include the year suffix to keep it clear when the range crosses years.
+    const NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let name = NAMES[(month.saturating_sub(1)) as usize];
+    let yy = (year % 100).abs();
+    format!("{name} \u{2019}{yy:02}")
+}
 
 fn spawn_worker(
     ctx: egui::Context,
@@ -306,6 +356,15 @@ fn spawn_worker(
         .expect("failed to spawn dashboard worker thread");
 }
 
+struct Acc {
+    total_count: usize,
+    kinds: HashMap<u32, u64>,
+    per_month: HashMap<(i32, u32), u64>,
+    month_keys: Vec<(i32, u32)>,
+    cutoff_ts: i64,
+    last_emit: Instant,
+}
+
 fn materialize_single_pass(
     ctx: &egui::Context,
     ndb: &Ndb,
@@ -318,36 +377,56 @@ fn materialize_single_pass(
     // all notes
     let filters = vec![Filter::new_with_capacity(1).build()];
 
-    struct Acc {
-        total_count: usize,
-        kinds: HashMap<u32, u64>,
-        last_emit: Instant,
-    }
+    let month_keys = last_n_months_keys(6);
+    let (cut_y, cut_m) = month_keys.first().copied().unwrap();
+    let cutoff_ts = Utc
+        .with_ymd_and_hms(cut_y, cut_m, 1, 0, 0, 0)
+        .single()
+        .unwrap()
+        .timestamp();
 
     let mut acc = Acc {
         total_count: 0,
         kinds: HashMap::new(),
         last_emit: Instant::now(),
+        per_month: HashMap::new(),
+        month_keys,
+        cutoff_ts,
     };
 
     let emit_every = Duration::from_millis(32);
 
     let _ = ndb.fold(&txn, &filters, &mut acc, |acc, note| {
         acc.total_count += 1;
+        let kind = note.kind();
+        *acc.kinds.entry(kind).or_default() += 1;
 
-        *acc.kinds.entry(note.kind()).or_default() += 1;
+        // kind1 posts per month (last 6 months)
+        let ts = note.created_at() as i64;
+        if kind == 1 && ts >= acc.cutoff_ts {
+            let dt = Utc.timestamp_opt(ts, 0).single();
+            if let Some(dt) = dt {
+                let key = (dt.year(), dt.month());
+                // only count if it’s in our 6-month window keys (avoids future or odd dates)
+                if acc.month_keys.iter().any(|k| *k == key) {
+                    *acc.per_month.entry(key).or_default() += 1;
+                }
+            }
+        }
 
         let now = Instant::now();
         if now.saturating_duration_since(acc.last_emit) >= emit_every {
             acc.last_emit = now;
 
             let top = top_kinds(&acc.kinds, 6);
+            let posts_per_month = materialize_posts_per_month(&acc);
             let _ = msg_tx.send(WorkerMsg::Snapshot(Snapshot {
                 started_at,
                 snapshot_at: now,
                 state: DashboardState {
                     total_count: acc.total_count,
                     top_kinds: top,
+                    posts_per_month,
                 },
             }));
             ctx.request_repaint();
@@ -359,6 +438,7 @@ fn materialize_single_pass(
     Ok(DashboardState {
         total_count: acc.total_count,
         top_kinds: top_kinds(&acc.kinds, 6),
+        posts_per_month: materialize_posts_per_month(&acc),
     })
 }
 
@@ -367,4 +447,11 @@ fn top_kinds(hmap: &HashMap<u32, u64>, limit: usize) -> Vec<(u32, u64)> {
     v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     v.truncate(limit);
     v
+}
+
+fn materialize_posts_per_month(acc: &Acc) -> Vec<(String, u64)> {
+    acc.month_keys
+        .iter()
+        .map(|&(y, m)| (month_label(y, m), *acc.per_month.get(&(y, m)).unwrap_or(&0)))
+        .collect::<Vec<_>>()
 }

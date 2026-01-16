@@ -112,6 +112,31 @@ pub fn totals_ui(dashboard: &Dashboard, ui: &mut egui::Ui) {
     });
 }
 
+pub fn posts_per_month_ui(dashboard: &Dashboard, ui: &mut egui::Ui) {
+    card_header_ui(ui, "Posts per month (last 6 months)");
+    ui.add_space(8.0);
+
+    let bars = posts_per_month_to_bars(&dashboard.state.posts_per_month);
+    if bars.is_empty() && dashboard.state.total_count == 0 && dashboard.last_error.is_none() {
+        ui.label(RichText::new("…").font(FontId::proportional(24.0)).weak());
+    } else if bars.is_empty() {
+        ui.label("No data");
+    } else {
+        let mut style = BarChartStyle::default();
+        style.value_precision = 0;
+        style.show_values = true;
+        horizontal_bar_chart(ui, None, &bars, style);
+    }
+
+    footer_status_ui(
+        ui,
+        dashboard.running,
+        dashboard.last_error.as_deref(),
+        dashboard.last_snapshot,
+        dashboard.last_duration,
+    );
+}
+
 fn kinds_to_bars(top_kinds: &[(u32, u64)]) -> Vec<Bar> {
     top_kinds
         .iter()
@@ -119,6 +144,18 @@ fn kinds_to_bars(top_kinds: &[(u32, u64)]) -> Vec<Bar> {
         .map(|(i, (k, c))| Bar {
             label: format!("{k}"),
             value: *c as f32,
+            color: palette(i),
+        })
+        .collect()
+}
+
+fn posts_per_month_to_bars(items: &[(String, u64)]) -> Vec<Bar> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, (label, count))| Bar {
+            label: label.clone(),
+            value: *count as f32,
             color: palette(i),
         })
         .collect()

@@ -4038,6 +4038,7 @@ dependencies = [
 name = "notedeck_dashboard"
 version = "0.7.1"
 dependencies = [
+ "chrono",
  "crossbeam-channel",
  "egui",
  "nostrdb",

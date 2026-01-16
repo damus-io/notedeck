@@ -6,6 +6,7 @@ version.workspace = true
 [dependencies]
 egui = { workspace = true }
 nostrdb = { workspace = true }
+chrono = { workspace = true }
 crossbeam-channel = { workspace = true }
 notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
