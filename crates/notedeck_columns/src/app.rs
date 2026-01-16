@@ -230,9 +230,48 @@ fn try_process_event(
     Ok(())
 }
 
+/// Handle pending deep links from notification taps.
+/// If a user tapped a notification while the app was closed or in background,
+/// navigate to the corresponding note thread.
+fn handle_pending_deep_link(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
+    let Some(deep_link) = notedeck::platform::take_pending_deep_link() else {
+        return;
+    };
+
+    info!(
+        "Processing deep link: event_id={}, kind={}",
+        &deep_link.event_id[..8.min(deep_link.event_id.len())],
+        deep_link.event_kind
+    );
+
+    // Convert hex event_id to NoteId
+    let note_id = match enostr::NoteId::from_hex(&deep_link.event_id) {
+        Ok(id) => id,
+        Err(e) => {
+            error!("Invalid event_id in deep link: {}", e);
+            return;
+        }
+    };
+
+    // Create a thread route for the event
+    let thread_selection = timeline::ThreadSelection::from_root_id(
+        notedeck::RootNoteIdBuf::new_unsafe(*note_id.bytes()),
+    );
+    let route = Route::Thread(thread_selection);
+
+    // Navigate to the thread in the currently selected column
+    let columns = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
+    columns.get_selected_router().route_to(route);
+
+    info!("Deep link navigation complete");
+}
+
 #[profiling::function]
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     app_ctx.img_cache.urls.cache.handle_io();
+
+    // Check for pending deep links from notification taps
+    handle_pending_deep_link(damus, app_ctx);
 
     if damus.columns(app_ctx.accounts).columns().is_empty() {
         damus

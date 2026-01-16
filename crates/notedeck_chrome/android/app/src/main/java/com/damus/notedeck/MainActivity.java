@@ -256,6 +256,9 @@ public class MainActivity extends GameActivity {
         }
     }
 
+    // Native callback for deep links from notifications
+    private native void nativeOnDeepLink(String eventId, int eventKind, String authorPubkey);
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         // Shrink view so it does not get covered by insets.
@@ -264,6 +267,38 @@ public class MainActivity extends GameActivity {
         //setupFullscreen()
 
         super.onCreate(savedInstanceState);
+
+        // Handle deep link if launched from notification
+        handleDeepLink(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        // Handle deep link when app is already running
+        handleDeepLink(intent);
+    }
+
+    /**
+     * Process intent extras from notification deep links.
+     * Passes event info to Rust for navigation.
+     */
+    private void handleDeepLink(Intent intent) {
+        if (intent == null) return;
+
+        String eventId = intent.getStringExtra("event_id");
+        if (eventId == null) return;
+
+        int eventKind = intent.getIntExtra("event_kind", -1);
+        String authorPubkey = intent.getStringExtra("author_pubkey");
+
+        Log.d(TAG, "Deep link: event_id=" + eventId.substring(0, 8) + ", kind=" + eventKind);
+
+        try {
+            nativeOnDeepLink(eventId, eventKind, authorPubkey != null ? authorPubkey : "");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e(TAG, "Native deep link handler not available", e);
+        }
     }
 
     @Override

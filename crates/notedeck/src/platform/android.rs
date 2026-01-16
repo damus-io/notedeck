@@ -238,3 +238,76 @@ pub fn is_notification_service_running() -> Result<bool, Box<dyn std::error::Err
     let result = env.call_method(context, "isNotificationServiceRunning", "()Z", &[])?;
     Ok(result.z()?)
 }
+
+// =============================================================================
+// Deep Link Handling
+// =============================================================================
+
+use std::sync::Mutex;
+
+/// Information about a deep link from a notification tap.
+#[derive(Debug, Clone)]
+pub struct DeepLinkInfo {
+    pub event_id: String,
+    pub event_kind: i32,
+    pub author_pubkey: Option<String>,
+}
+
+/// Thread-safe storage for pending deep link.
+/// Only one deep link can be pending at a time (latest wins).
+static PENDING_DEEP_LINK: Mutex<Option<DeepLinkInfo>> = Mutex::new(None);
+
+/// Called from Java when user taps a notification.
+/// Stores the deep link info for the main app to poll.
+#[no_mangle]
+pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnDeepLink(
+    mut env: JNIEnv,
+    _class: JClass,
+    event_id: JString,
+    event_kind: jni::sys::jint,
+    author_pubkey: JString,
+) {
+    let event_id: String = match env.get_string(&event_id) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("Failed to get event_id string: {}", e);
+            return;
+        }
+    };
+
+    let author_pubkey: Option<String> = {
+        let s: String = env.get_string(&author_pubkey).map(|s| s.into()).unwrap_or_default();
+        if s.is_empty() { None } else { Some(s) }
+    };
+
+    info!(
+        "Deep link received: event_id={}, kind={}, author={}",
+        &event_id[..8.min(event_id.len())],
+        event_kind,
+        author_pubkey.as_deref().map(|p| &p[..8.min(p.len())]).unwrap_or("none")
+    );
+
+    let deep_link = DeepLinkInfo {
+        event_id,
+        event_kind,
+        author_pubkey,
+    };
+
+    if let Ok(mut pending) = PENDING_DEEP_LINK.lock() {
+        *pending = Some(deep_link);
+    } else {
+        error!("Failed to acquire deep link lock");
+    }
+}
+
+/// Check if there's a pending deep link and consume it.
+/// Returns `Some(DeepLinkInfo)` if a notification was tapped, `None` otherwise.
+/// The deep link is cleared after this call.
+pub fn take_pending_deep_link() -> Option<DeepLinkInfo> {
+    PENDING_DEEP_LINK.lock().ok().and_then(|mut pending| pending.take())
+}
+
+/// Check if there's a pending deep link without consuming it.
+pub fn has_pending_deep_link() -> bool {
+    PENDING_DEEP_LINK.lock().ok().map(|pending| pending.is_some()).unwrap_or(false)
+}

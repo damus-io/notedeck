@@ -115,6 +115,46 @@ pub fn supports_notifications() -> bool {
     cfg!(target_os = "android")
 }
 
+// =============================================================================
+// Deep Link API (Android-only with stubs for other platforms)
+// =============================================================================
+
+/// Information about a deep link from a notification tap.
+#[derive(Debug, Clone)]
+pub struct DeepLinkInfo {
+    pub event_id: String,
+    pub event_kind: i32,
+    pub author_pubkey: Option<String>,
+}
+
+/// Check if there's a pending deep link and consume it.
+/// Returns `Some(DeepLinkInfo)` if a notification was tapped, `None` otherwise.
+/// The deep link is cleared after this call.
+#[cfg(target_os = "android")]
+pub fn take_pending_deep_link() -> Option<DeepLinkInfo> {
+    android::take_pending_deep_link().map(|dl| DeepLinkInfo {
+        event_id: dl.event_id,
+        event_kind: dl.event_kind,
+        author_pubkey: dl.author_pubkey,
+    })
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn take_pending_deep_link() -> Option<DeepLinkInfo> {
+    None
+}
+
+/// Check if there's a pending deep link without consuming it.
+#[cfg(target_os = "android")]
+pub fn has_pending_deep_link() -> bool {
+    android::has_pending_deep_link()
+}
+
+#[cfg(not(target_os = "android"))]
+pub fn has_pending_deep_link() -> bool {
+    false
+}
+
 pub fn get_next_selected_file() -> Option<Result<SelectedMedia, Error>> {
     file::get_next_selected_file()
 }
