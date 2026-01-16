@@ -134,22 +134,37 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnNotificationPermi
     NOTIFICATION_PERMISSION_PENDING.store(false, Ordering::SeqCst);
 }
 
-/// Enable push notifications for the given pubkey.
+/// Enable push notifications for the given pubkey and relay URLs.
 /// Writes to SharedPreferences and starts the foreground service.
-pub fn enable_notifications(pubkey_hex: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn enable_notifications(
+    pubkey_hex: &str,
+    relay_urls: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
     let vm = get_jvm();
     let mut env = vm.attach_current_thread()?;
     let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
 
     let jpubkey = env.new_string(pubkey_hex)?;
+
+    // Serialize relay URLs as JSON array
+    let relays_json = serde_json::to_string(relay_urls)?;
+    let jrelays = env.new_string(&relays_json)?;
+
     env.call_method(
         context,
         "enableNotifications",
-        "(Ljava/lang/String;)V",
-        &[jni::objects::JValue::Object(&jpubkey.into())],
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        &[
+            jni::objects::JValue::Object(&jpubkey.into()),
+            jni::objects::JValue::Object(&jrelays.into()),
+        ],
     )?;
 
-    info!("Notifications enabled for {}", &pubkey_hex[..8]);
+    info!(
+        "Notifications enabled for {} with {} relays",
+        &pubkey_hex[..8],
+        relay_urls.len()
+    );
     Ok(())
 }
 

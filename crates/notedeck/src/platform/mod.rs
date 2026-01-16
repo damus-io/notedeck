@@ -8,15 +8,21 @@ pub mod file;
 // Notification API (Android-only with stubs for other platforms)
 // =============================================================================
 
-/// Enable push notifications for the given pubkey.
+/// Enable push notifications for the given pubkey and relay URLs.
 /// On non-Android platforms, this is a no-op.
 #[cfg(target_os = "android")]
-pub fn enable_notifications(pubkey_hex: &str) -> Result<(), Box<dyn std::error::Error>> {
-    android::enable_notifications(pubkey_hex)
+pub fn enable_notifications(
+    pubkey_hex: &str,
+    relay_urls: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    android::enable_notifications(pubkey_hex, relay_urls)
 }
 
 #[cfg(not(target_os = "android"))]
-pub fn enable_notifications(_pubkey_hex: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn enable_notifications(
+    _pubkey_hex: &str,
+    _relay_urls: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 

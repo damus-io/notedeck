@@ -102,7 +102,7 @@ class NotificationsService : Service() {
     private var connectedRelays = 0
 
     // Native methods - implemented in Rust via JNI
-    private external fun nativeStartSubscriptions(pubkeyHex: String)
+    private external fun nativeStartSubscriptions(pubkeyHex: String, relayUrlsJson: String)
     private external fun nativeStopSubscriptions()
     private external fun nativeGetConnectedRelayCount(): Int
 
@@ -260,9 +260,10 @@ class NotificationsService : Service() {
     }
 
     private fun startNostrSubscriptions() {
-        // Get pubkey from preferences
+        // Get pubkey and relay URLs from preferences
         val prefs = getSharedPreferences("notedeck_prefs", Context.MODE_PRIVATE)
         val pubkeyHex = prefs.getString("active_pubkey", null)
+        val relayUrlsJson = prefs.getString("relay_urls", "[]") ?: "[]"
 
         if (pubkeyHex.isNullOrEmpty()) {
             Log.w(TAG, "No active pubkey configured, cannot start subscriptions")
@@ -270,8 +271,8 @@ class NotificationsService : Service() {
         }
 
         try {
-            nativeStartSubscriptions(pubkeyHex)
-            Log.d(TAG, "Started Nostr subscriptions for $pubkeyHex")
+            nativeStartSubscriptions(pubkeyHex, relayUrlsJson)
+            Log.d(TAG, "Started Nostr subscriptions for $pubkeyHex with relays: $relayUrlsJson")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start native subscriptions", e)
         }

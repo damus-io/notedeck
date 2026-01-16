@@ -101,7 +101,10 @@ impl SettingsAction {
             }
             Self::EnableNotifications => {
                 if let Some(pubkey) = accounts.selected_account_pubkey() {
-                    if let Err(e) = notedeck::platform::enable_notifications(&pubkey.hex()) {
+                    let relay_urls = accounts.get_selected_account_relay_urls();
+                    if let Err(e) =
+                        notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls)
+                    {
                         tracing::error!("Failed to enable notifications: {}", e);
                     }
                 }

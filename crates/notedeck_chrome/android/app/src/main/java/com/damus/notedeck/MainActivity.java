@@ -38,6 +38,7 @@ public class MainActivity extends GameActivity {
     private static final String PREFS_NAME = "notedeck_prefs";
     private static final String PREF_NOTIFICATIONS_ENABLED = "notifications_enabled";
     private static final String PREF_ACTIVE_PUBKEY = "active_pubkey";
+    private static final String PREF_RELAY_URLS = "relay_urls";
     private static final int REQUEST_CODE_PICK_FILE = 420;
     private static final int REQUEST_CODE_NOTIFICATION_PERMISSION = 421;
 
@@ -53,16 +54,19 @@ public class MainActivity extends GameActivity {
     // =========================================================================
 
     /**
-     * Enable push notifications for the given pubkey.
+     * Enable push notifications for the given pubkey and relay URLs.
      * Writes settings to SharedPreferences and starts the notification service.
+     * @param pubkeyHex The user's public key in hex format
+     * @param relaysJson JSON array of relay URLs (e.g., ["wss://relay.damus.io", "wss://nos.lol"])
      */
-    public void enableNotifications(String pubkeyHex) {
+    public void enableNotifications(String pubkeyHex, String relaysJson) {
         Log.d(TAG, "Enabling notifications for pubkey: " + pubkeyHex.substring(0, 8) + "...");
 
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         prefs.edit()
             .putBoolean(PREF_NOTIFICATIONS_ENABLED, true)
             .putString(PREF_ACTIVE_PUBKEY, pubkeyHex)
+            .putString(PREF_RELAY_URLS, relaysJson)
             .apply();
 
         NotificationsService.start(this);

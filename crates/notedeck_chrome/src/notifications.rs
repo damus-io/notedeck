@@ -79,8 +79,9 @@ fn get_state() -> Arc<Mutex<NotificationState>> {
         .clone()
 }
 
-/// Start notification subscriptions for the given pubkey
-pub fn start_subscriptions(pubkey_hex: &str) -> Result<(), String> {
+/// Start notification subscriptions for the given pubkey and relay URLs.
+/// If relay_urls is empty, falls back to DEFAULT_RELAYS.
+pub fn start_subscriptions(pubkey_hex: &str, relay_urls: &[String]) -> Result<(), String> {
     let pubkey = Pubkey::from_hex(pubkey_hex).map_err(|e| format!("Invalid pubkey: {e}"))?;
 
     let state = get_state();
@@ -109,8 +110,16 @@ pub fn start_subscriptions(pubkey_hex: &str) -> Result<(), String> {
     state_guard.pubkey = Some(pubkey.clone());
     state_guard.running = true;
 
-    // Add default relays
-    for relay_url in DEFAULT_RELAYS {
+    // Use provided relay URLs, or fall back to defaults if empty
+    let relays_to_use: Vec<&str> = if relay_urls.is_empty() {
+        info!("No relay URLs provided, using defaults");
+        DEFAULT_RELAYS.to_vec()
+    } else {
+        info!("Using {} user-configured relays", relay_urls.len());
+        relay_urls.iter().map(|s| s.as_str()).collect()
+    };
+
+    for relay_url in relays_to_use {
         if let Err(e) = state_guard.pool.add_url(relay_url.to_string(), || {}) {
             warn!("Failed to add relay {}: {}", relay_url, e);
         }
@@ -690,6 +699,7 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
     mut env: JNIEnv,
     obj: JObject,
     pubkey_hex: JString,
+    relay_urls_json: JString,
 ) {
     // Always refresh the callback reference on each start
     // This ensures we have a valid reference even after service restart
@@ -703,7 +713,18 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
         }
     };
 
-    if let Err(e) = start_subscriptions(&pubkey) {
+    let relay_urls: Vec<String> = match env.get_string(&relay_urls_json) {
+        Ok(s) => {
+            let json_str: String = s.into();
+            serde_json::from_str(&json_str).unwrap_or_default()
+        }
+        Err(e) => {
+            warn!("Failed to get relay URLs, using defaults: {}", e);
+            Vec::new()
+        }
+    };
+
+    if let Err(e) = start_subscriptions(&pubkey, &relay_urls) {
         error!("Failed to start subscriptions: {}", e);
     }
 }
