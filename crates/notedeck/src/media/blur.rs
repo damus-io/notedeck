@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use base64::prelude::*;
 use egui::TextureHandle;
 use nostrdb::Note;
 
@@ -12,10 +13,23 @@ use crate::{
     TextureState,
 };
 
-#[derive(Clone)]
+/// Represents the type of placeholder hash available for an image.
+/// Thumbhash is preferred when available as it provides better quality
+/// and includes embedded aspect ratio information.
+#[derive(Clone, Debug)]
+pub enum PlaceholderHash {
+    /// Thumbhash binary data (more modern, better quality)
+    ThumbHash(Vec<u8>),
+    /// Blurhash string (widely supported fallback)
+    BlurHash(String),
+}
+
+#[derive(Clone, Debug)]
 pub struct ImageMetadata {
-    pub blurhash: String,
-    pub dimensions: Option<PixelDimensions>, // width and height in pixels
+    /// The placeholder hash for this image (thumbhash or blurhash)
+    pub hash: PlaceholderHash,
+    /// Original image dimensions in pixels (used for aspect ratio)
+    pub dimensions: Option<PixelDimensions>,
 }
 
 #[derive(Clone, Debug)]
@@ -96,80 +110,94 @@ impl ImageMetadata {
     }
 }
 
-/// Find blurhashes in image metadata and update our cache
-pub fn update_imeta_blurhashes(note: &Note, blurs: &mut HashMap<String, ImageMetadata>) {
+/// Extract placeholder hashes (thumbhash or blurhash) from note imeta tags.
+/// Thumbhash is preferred over blurhash when both are present.
+pub fn update_imeta_placeholders(note: &Note, metadata: &mut HashMap<String, ImageMetadata>) {
     for tag in note.tags() {
         let mut tag_iter = tag.into_iter();
-        if tag_iter
+
+        // Check if this is an imeta tag
+        let is_imeta = tag_iter
             .next()
             .and_then(|s| s.str())
-            .filter(|s| *s == "imeta")
-            .is_none()
-        {
+            .is_some_and(|s| s == "imeta");
+
+        if !is_imeta {
             continue;
         }
 
-        let Some((url, blur)) = find_blur(tag_iter) else {
+        let Some((url, meta)) = find_placeholder(tag_iter) else {
             continue;
         };
 
-        blurs.insert(url.to_string(), blur);
+        metadata.insert(url, meta);
     }
 }
 
-fn find_blur(tag_iter: nostrdb::TagIter<'_>) -> Option<(String, ImageMetadata)> {
+/// Parse an imeta tag to extract URL and placeholder hash.
+/// Prefers thumbhash over blurhash when both are available.
+fn find_placeholder(tag_iter: nostrdb::TagIter<'_>) -> Option<(String, ImageMetadata)> {
     let mut url = None;
     let mut blurhash = None;
+    let mut thumbhash = None;
     let mut dims = None;
 
     for tag_elem in tag_iter {
         let Some(s) = tag_elem.str() else { continue };
         let mut split = s.split_whitespace();
 
-        let Some(first) = split.next() else { continue };
-        let Some(second) = split.next() else { continue };
+        let Some(key) = split.next() else { continue };
+        let Some(value) = split.next() else { continue };
 
-        match first {
-            "url" => url = Some(second),
-            "blurhash" => blurhash = Some(second),
-            "dim" => dims = Some(second),
+        match key {
+            "url" => url = Some(value.to_string()),
+            "blurhash" => blurhash = Some(value.to_string()),
+            "thumbhash" => thumbhash = Some(value.to_string()),
+            "dim" => dims = Some(value),
             _ => {}
-        }
-
-        if url.is_some() && blurhash.is_some() && dims.is_some() {
-            break;
         }
     }
 
     let url = url?;
-    let blurhash = blurhash?;
+
+    // Prefer thumbhash over blurhash (better quality, includes aspect ratio)
+    let hash = if let Some(th) = thumbhash {
+        // Thumbhash in imeta tags is base64 encoded
+        let decoded = BASE64_STANDARD.decode(th).ok()?;
+        PlaceholderHash::ThumbHash(decoded)
+    } else if let Some(bh) = blurhash {
+        PlaceholderHash::BlurHash(bh)
+    } else {
+        // No placeholder hash available
+        return None;
+    };
 
     let dimensions = dims.and_then(|d| {
         let mut split = d.split('x');
         let width = split.next()?.parse::<u32>().ok()?;
         let height = split.next()?.parse::<u32>().ok()?;
-
         Some(PixelDimensions {
             x: width,
             y: height,
         })
     });
 
-    Some((
-        url.to_string(),
-        ImageMetadata {
-            blurhash: blurhash.to_string(),
-            dimensions,
-        },
-    ))
+    Some((url, ImageMetadata { hash, dimensions }))
 }
 
+/// Specifies how an image should be obfuscated while loading or for untrusted content.
+/// ThumbHash is preferred over Blurhash when available.
 #[derive(Clone)]
 pub enum ObfuscationType {
+    /// Use thumbhash placeholder (preferred - better quality)
+    ThumbHash(ImageMetadata),
+    /// Use blurhash placeholder (fallback for compatibility)
     Blurhash(ImageMetadata),
+    /// Use default solid color placeholder
     Default,
 }
 
+/// Decode a blurhash string into an egui texture at the specified dimensions.
 fn generate_blurhash_texturehandle(
     ctx: &egui::Context,
     blurhash: &str,
@@ -181,6 +209,20 @@ fn generate_blurhash_texturehandle(
         .map_err(|e| crate::Error::Generic(e.to_string()))?;
 
     let img = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &bytes);
+    Ok(load_texture_checked(ctx, url, img, Default::default()))
+}
+
+/// Decode a thumbhash into an egui texture.
+/// Thumbhash automatically determines output dimensions from the hash itself.
+fn generate_thumbhash_texturehandle(
+    ctx: &egui::Context,
+    thumbhash: &[u8],
+    url: &str,
+) -> Result<egui::TextureHandle, crate::Error> {
+    let (width, height, rgba) = thumbhash::thumb_hash_to_rgba(thumbhash)
+        .map_err(|_| crate::Error::Generic("thumbhash decode failed".to_string()))?;
+
+    let img = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba);
     Ok(load_texture_checked(ctx, url, img, Default::default()))
 }
 
@@ -208,35 +250,88 @@ impl BlurCache {
         self.cache.get(url)
     }
 
+    /// Get a cached blur texture or request its generation.
+    /// Handles both thumbhash and blurhash placeholder types.
     pub fn get_or_request(
         &self,
         jobs: &MediaJobSender,
         ui: &egui::Ui,
         url: &str,
-        blurhash: &ImageMetadata,
+        metadata: &ImageMetadata,
         size: egui::Vec2,
     ) -> &BlurState {
         if let Some(res) = self.cache.get(url) {
             return res;
         }
 
-        let available_points = PointDimensions {
-            x: size.x,
-            y: size.y,
-        };
-        let pixel_sizes = blurhash.scaled_pixel_dimensions(ui, available_points);
-        let blurhash = blurhash.blurhash.to_owned();
-        let url = url.to_owned();
+        let url_owned = url.to_owned();
         let ctx = ui.ctx().clone();
 
+        // Dispatch based on placeholder hash type
+        match &metadata.hash {
+            PlaceholderHash::ThumbHash(data) => {
+                self.request_thumbhash_job(jobs, &ctx, &url_owned, data.clone());
+            }
+            PlaceholderHash::BlurHash(hash) => {
+                let available_points = PointDimensions {
+                    x: size.x,
+                    y: size.y,
+                };
+                let pixel_sizes = metadata.scaled_pixel_dimensions(ui, available_points);
+                self.request_blurhash_job(jobs, &ctx, &url_owned, hash.clone(), pixel_sizes);
+            }
+        }
+
+        &BlurState {
+            tex_state: TextureState::Pending,
+            finished_transitioning: false,
+        }
+    }
+
+    /// Request a thumbhash decoding job.
+    fn request_thumbhash_job(
+        &self,
+        jobs: &MediaJobSender,
+        ctx: &egui::Context,
+        url: &str,
+        data: Vec<u8>,
+    ) {
+        let url = url.to_owned();
+        let ctx = ctx.clone();
+
         if let Err(e) = jobs.send(JobPackage::new(
-            url.to_owned(),
+            url.clone(),
+            MediaJobKind::ThumbHash,
+            RunType::Output(JobRun::Sync(Box::new(move || {
+                tracing::trace!("Starting thumbhash job for {url}");
+                let res = generate_thumbhash_texturehandle(&ctx, &data, &url);
+                JobOutput::Complete(CompleteResponse::new(MediaJobResult::ThumbHash(res)))
+            }))),
+        )) {
+            tracing::error!("{e}");
+        }
+    }
+
+    /// Request a blurhash decoding job.
+    fn request_blurhash_job(
+        &self,
+        jobs: &MediaJobSender,
+        ctx: &egui::Context,
+        url: &str,
+        hash: String,
+        pixel_sizes: PixelDimensions,
+    ) {
+        let url = url.to_owned();
+        let ctx = ctx.clone();
+
+        if let Err(e) = jobs.send(JobPackage::new(
+            url.clone(),
             MediaJobKind::Blurhash,
             RunType::Output(JobRun::Sync(Box::new(move || {
-                tracing::trace!("Starting blur job for {url}");
+                tracing::trace!("Starting blurhash job for {url}");
                 let res = generate_blurhash_texturehandle(
                     &ctx,
-                    &blurhash,
+                    &hash,
                     &url,
                     pixel_sizes.x,
                     pixel_sizes.y,
@@ -246,11 +341,6 @@ impl BlurCache {
         )) {
             tracing::error!("{e}");
         }
-
-        &BlurState {
-            tex_state: TextureState::Pending,
-            finished_transitioning: false,
-        }
     }
 
     pub fn finished_transitioning(&mut self, url: &str) {
@@ -259,5 +349,82 @@ impl BlurCache {
         };
 
         state.finished_transitioning = true;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test thumbhash decoding produces valid RGBA data
+    #[test]
+    fn test_thumbhash_decode() {
+        // A valid thumbhash (base64 encoded, then decoded to bytes)
+        // This is a simple test image thumbhash
+        let thumbhash_base64 = "1QcSHQRnh493V4dIh4eXh1h4kJUI";
+        let thumbhash_bytes = BASE64_STANDARD.decode(thumbhash_base64).unwrap();
+
+        let result = thumbhash::thumb_hash_to_rgba(&thumbhash_bytes);
+        assert!(result.is_ok());
+
+        let (width, height, rgba) = result.unwrap();
+        assert!(width > 0);
+        assert!(height > 0);
+        assert!(!rgba.is_empty());
+        // RGBA means 4 bytes per pixel
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+    }
+
+    /// Test blurhash decoding produces valid RGBA data
+    #[test]
+    fn test_blurhash_decode() {
+        // A valid blurhash string
+        let blurhash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+
+        let result = blurhash::decode(blurhash, 32, 32, 1.0);
+        assert!(result.is_ok());
+
+        let rgba = result.unwrap();
+        // 32x32 pixels * 4 bytes per pixel
+        assert_eq!(rgba.len(), 32 * 32 * 4);
+    }
+
+    /// Test PlaceholderHash enum can store both types
+    #[test]
+    fn test_placeholder_hash_variants() {
+        let thumbhash = PlaceholderHash::ThumbHash(vec![1, 2, 3, 4]);
+        let blurhash = PlaceholderHash::BlurHash("LEHV6nWB2yk8".to_string());
+
+        match thumbhash {
+            PlaceholderHash::ThumbHash(data) => assert_eq!(data.len(), 4),
+            _ => panic!("Expected ThumbHash variant"),
+        }
+
+        match blurhash {
+            PlaceholderHash::BlurHash(hash) => assert!(!hash.is_empty()),
+            _ => panic!("Expected BlurHash variant"),
+        }
+    }
+
+    /// Test ImageMetadata construction with different hash types
+    #[test]
+    fn test_image_metadata_construction() {
+        let meta_with_thumbhash = ImageMetadata {
+            hash: PlaceholderHash::ThumbHash(vec![1, 2, 3]),
+            dimensions: Some(PixelDimensions { x: 100, y: 100 }),
+        };
+
+        let meta_with_blurhash = ImageMetadata {
+            hash: PlaceholderHash::BlurHash("test".to_string()),
+            dimensions: None,
+        };
+
+        assert!(meta_with_thumbhash.dimensions.is_some());
+        assert!(meta_with_blurhash.dimensions.is_none());
+
+        match &meta_with_thumbhash.hash {
+            PlaceholderHash::ThumbHash(_) => {}
+            _ => panic!("Expected ThumbHash"),
+        }
     }
 }

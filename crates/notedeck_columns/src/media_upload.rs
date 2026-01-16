@@ -1,7 +1,7 @@
 #![cfg_attr(target_os = "android", allow(dead_code, unused_variables))]
 
 use crate::Error;
-use base64::{prelude::BASE64_URL_SAFE, Engine};
+use base64::{prelude::BASE64_STANDARD, prelude::BASE64_URL_SAFE, Engine};
 use ehttp::Request;
 use nostrdb::{Note, NoteBuilder};
 use notedeck::{
@@ -130,6 +130,43 @@ fn sha256_hex(contents: &Vec<u8>) -> String {
     hex::encode(hash)
 }
 
+/// Generate a thumbhash from image bytes.
+/// Returns base64-encoded thumbhash string suitable for imeta tags.
+/// Returns None if the image cannot be decoded.
+fn generate_thumbhash(image_bytes: &[u8]) -> Option<String> {
+    let img = image::load_from_memory(image_bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = (rgba.width() as usize, rgba.height() as usize);
+    let hash = thumbhash::rgba_to_thumb_hash(width, height, rgba.as_raw());
+    Some(BASE64_STANDARD.encode(&hash))
+}
+
+/// Generate a blurhash from image bytes.
+/// Returns blurhash string suitable for imeta tags.
+/// Returns None if the image cannot be decoded.
+fn generate_blurhash(image_bytes: &[u8]) -> Option<String> {
+    let img = image::load_from_memory(image_bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+    // Use 4x3 components (standard configuration)
+    blurhash::encode(4, 3, width, height, rgba.as_raw()).ok()
+}
+
+/// Holds client-generated placeholder hashes for an image.
+struct ClientHashes {
+    thumbhash: Option<String>,
+    blurhash: Option<String>,
+}
+
+/// Generate both thumbhash and blurhash from image bytes.
+/// Both are generated for maximum compatibility with other Nostr clients.
+fn generate_placeholder_hashes(image_bytes: &[u8]) -> ClientHashes {
+    ClientHashes {
+        thumbhash: generate_thumbhash(image_bytes),
+        blurhash: generate_blurhash(image_bytes),
+    }
+}
+
 pub fn nip96_upload(
     seckey: [u8; 32],
     upload_url: String,
@@ -178,6 +215,10 @@ fn internal_nip96_upload(
         }
     };
 
+    // Generate placeholder hashes client-side before upload.
+    // Both thumbhash and blurhash are generated for maximum compatibility.
+    let client_hashes = generate_placeholder_hashes(&file_contents);
+
     let file_hash = sha256_hex(&file_contents);
     let nip98_note = create_nip98_note(&seckey, upload_url.to_owned(), file_hash);
 
@@ -201,7 +242,19 @@ fn internal_nip96_upload(
             Ok(response) => {
                 if response.ok {
                     match String::from_utf8(response.bytes.clone()) {
-                        Ok(str_response) => find_nip94_ev_in_json(str_response),
+                        Ok(str_response) => {
+                            // Parse server response and merge with client-generated hashes
+                            find_nip94_ev_in_json(str_response).map(|mut nip94| {
+                                // Use client-generated hashes if server didn't provide them
+                                if nip94.thumbhash.is_none() {
+                                    nip94.thumbhash = client_hashes.thumbhash.clone();
+                                }
+                                if nip94.blurhash.is_none() {
+                                    nip94.blurhash = client_hashes.blurhash.clone();
+                                }
+                                nip94
+                            })
+                        }
                         Err(e) => Err(Error::Generic(e.to_string())),
                     }
                 } else {
@@ -245,6 +298,9 @@ pub fn bytes_from_media(media: MediaFrom) -> Result<Vec<u8>, notedeck::Error> {
     }
 }
 
+/// NIP-94 event containing metadata about an uploaded file.
+/// When uploading images, both thumbhash and blurhash are generated client-side
+/// for maximum compatibility with other Nostr clients.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct Nip94Event {
     pub url: String,
@@ -252,6 +308,9 @@ pub struct Nip94Event {
     pub x: Option<String>,
     pub media_type: Option<String>,
     pub dimensions: Option<(u32, u32)>,
+    /// Thumbhash placeholder (base64 encoded, preferred when available)
+    pub thumbhash: Option<String>,
+    /// Blurhash placeholder (for compatibility with clients without thumbhash)
     pub blurhash: Option<String>,
     pub thumb: Option<String>,
     pub content: String,
@@ -265,6 +324,7 @@ impl Nip94Event {
             x: None,
             media_type: None,
             dimensions: Some((width, height)),
+            thumbhash: None,
             blurhash: None,
             thumb: None,
             content: String::new(),
@@ -277,6 +337,7 @@ const OX: &str = "ox";
 const X: &str = "x";
 const M: &str = "m";
 const DIM: &str = "dim";
+const THUMBHASH: &str = "thumbhash";
 const BLURHASH: &str = "blurhash";
 const THUMB: &str = "thumb";
 
@@ -290,6 +351,7 @@ impl Nip94Event {
         let mut x = None;
         let mut media_type = None;
         let mut dimensions = None;
+        let mut thumbhash = None;
         let mut blurhash = None;
         let mut thumb = None;
 
@@ -306,6 +368,7 @@ impl Nip94Event {
                         }
                     }
                 }
+                [key, value] if key == THUMBHASH => thumbhash = Some(value.to_string()),
                 [key, value] if key == BLURHASH => blurhash = Some(value.to_string()),
                 [key, value] if key == THUMB => thumb = Some(value.to_string()),
                 _ => {}
@@ -318,6 +381,7 @@ impl Nip94Event {
             x,
             media_type,
             dimensions,
+            thumbhash,
             blurhash,
             thumb,
             content,
@@ -329,13 +393,86 @@ impl Nip94Event {
 mod tests {
     use std::{fs, path::PathBuf, str::FromStr};
 
+    use base64::Engine;
     use enostr::FullKeypair;
 
     use crate::media_upload::{
+        generate_blurhash, generate_placeholder_hashes, generate_thumbhash,
         get_upload_url_from_provider, nostrbuild_nip96_upload, SelectedMedia, NOSTR_BUILD_URL,
     };
 
     use super::internal_nip96_upload;
+
+    /// Test thumbhash encoding produces valid base64 output
+    #[test]
+    fn test_generate_thumbhash() {
+        // Load test image
+        let image_path = PathBuf::from_str("../../assets/damus_rounded_80.png").unwrap();
+        let image_bytes = fs::read(&image_path).expect("Test image should exist");
+
+        let result = generate_thumbhash(&image_bytes);
+        assert!(result.is_some(), "Thumbhash generation should succeed");
+
+        let thumbhash = result.unwrap();
+        // Thumbhash should be base64 encoded
+        assert!(!thumbhash.is_empty());
+        // Should be decodable as base64
+        let decoded = base64::prelude::BASE64_STANDARD.decode(&thumbhash);
+        assert!(decoded.is_ok(), "Thumbhash should be valid base64");
+    }
+
+    /// Test blurhash encoding produces valid output
+    #[test]
+    fn test_generate_blurhash() {
+        // Load test image
+        let image_path = PathBuf::from_str("../../assets/damus_rounded_80.png").unwrap();
+        let image_bytes = fs::read(&image_path).expect("Test image should exist");
+
+        let result = generate_blurhash(&image_bytes);
+        assert!(result.is_some(), "Blurhash generation should succeed");
+
+        let blurhash = result.unwrap();
+        // Blurhash should not be empty and should be decodable
+        assert!(!blurhash.is_empty());
+        // Verify it can be decoded
+        let decode_result = blurhash::decode(&blurhash, 32, 32, 1.0);
+        assert!(
+            decode_result.is_ok(),
+            "Generated blurhash should be decodable"
+        );
+    }
+
+    /// Test that both hashes are generated together
+    #[test]
+    fn test_generate_placeholder_hashes() {
+        // Load test image
+        let image_path = PathBuf::from_str("../../assets/damus_rounded_80.png").unwrap();
+        let image_bytes = fs::read(&image_path).expect("Test image should exist");
+
+        let hashes = generate_placeholder_hashes(&image_bytes);
+
+        // Both should be present for a valid image
+        assert!(hashes.thumbhash.is_some(), "Thumbhash should be generated");
+        assert!(hashes.blurhash.is_some(), "Blurhash should be generated");
+    }
+
+    /// Test invalid image data returns None for both hashes
+    #[test]
+    fn test_invalid_image_returns_none() {
+        let invalid_bytes = vec![0, 1, 2, 3, 4, 5];
+
+        let thumbhash = generate_thumbhash(&invalid_bytes);
+        let blurhash = generate_blurhash(&invalid_bytes);
+
+        assert!(
+            thumbhash.is_none(),
+            "Invalid image should return None for thumbhash"
+        );
+        assert!(
+            blurhash.is_none(),
+            "Invalid image should return None for blurhash"
+        );
+    }
 
     #[test]
     fn test_nostrbuild_upload_url() {
