@@ -35,6 +35,9 @@ pub enum SettingsAction {
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
+    EnableNotifications,
+    DisableNotifications,
+    RequestNotificationPermission,
 }
 
 impl SettingsAction {
@@ -95,6 +98,23 @@ impl SettingsAction {
             Self::SetMaxHashtagsPerNote(value) => {
                 settings.set_max_hashtags_per_note(value);
                 accounts.update_max_hashtags_per_note(value);
+            }
+            Self::EnableNotifications => {
+                if let Some(pubkey) = accounts.selected_account_pubkey() {
+                    if let Err(e) = notedeck::platform::enable_notifications(&pubkey.hex()) {
+                        tracing::error!("Failed to enable notifications: {}", e);
+                    }
+                }
+            }
+            Self::DisableNotifications => {
+                if let Err(e) = notedeck::platform::disable_notifications() {
+                    tracing::error!("Failed to disable notifications: {}", e);
+                }
+            }
+            Self::RequestNotificationPermission => {
+                if let Err(e) = notedeck::platform::request_notification_permission() {
+                    tracing::error!("Failed to request notification permission: {}", e);
+                }
             }
         }
         route_action
@@ -546,6 +566,129 @@ impl<'a> SettingsView<'a> {
         action
     }
 
+    /// Notifications section - only shown on Android.
+    fn notifications_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        // Only show notifications on supported platforms (Android)
+        if !notedeck::platform::supports_notifications() {
+            return None;
+        }
+
+        let mut action = None;
+
+        let title = tr!(
+            self.note_context.i18n,
+            "Notifications",
+            "Label for notifications settings section"
+        );
+
+        settings_group(ui, title, |ui| {
+            // Check current notification state
+            let notifications_enabled =
+                notedeck::platform::are_notifications_enabled().unwrap_or(false);
+            let permission_granted =
+                notedeck::platform::is_notification_permission_granted().unwrap_or(false);
+            let permission_pending = notedeck::platform::is_notification_permission_pending();
+
+            // Show permission request button if permission not granted
+            if !permission_granted {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(richtext_small(tr!(
+                        self.note_context.i18n,
+                        "Permission required:",
+                        "Label for notification permission request, notifications settings section",
+                    )));
+
+                    if permission_pending {
+                        ui.label(richtext_small(tr!(
+                            self.note_context.i18n,
+                            "Waiting for response...",
+                            "Status text while waiting for notification permission response",
+                        )));
+                    } else if ui
+                        .button(richtext_small(tr!(
+                            self.note_context.i18n,
+                            "Grant permission",
+                            "Button to request notification permission",
+                        )))
+                        .clicked()
+                    {
+                        action = Some(SettingsAction::RequestNotificationPermission);
+                    }
+                });
+
+                ui.separator();
+            }
+
+            // Show enable/disable toggle
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
+                    "Push notifications:",
+                    "Label for push notifications toggle, notifications settings section",
+                )));
+
+                let mut enabled = notifications_enabled;
+
+                let toggle_enabled = permission_granted && !permission_pending;
+
+                if ui
+                    .add_enabled(
+                        toggle_enabled,
+                        egui::widgets::SelectableLabel::new(
+                            enabled,
+                            RichText::new(if enabled {
+                                tr!(self.note_context.i18n, "On", "Notifications enabled state")
+                            } else {
+                                tr!(
+                                    self.note_context.i18n,
+                                    "Off",
+                                    "Notifications disabled state"
+                                )
+                            })
+                            .text_style(NotedeckTextStyle::Small.text_style()),
+                        ),
+                    )
+                    .clicked()
+                {
+                    enabled = !enabled;
+                    action = if enabled {
+                        Some(SettingsAction::EnableNotifications)
+                    } else {
+                        Some(SettingsAction::DisableNotifications)
+                    };
+                }
+            });
+
+            // Show helpful description
+            ui.horizontal_wrapped(|ui| {
+                let text = if !permission_granted {
+                    tr!(
+                        self.note_context.i18n,
+                        "Grant notification permission to enable push notifications",
+                        "Help text when permission not granted"
+                    )
+                } else if notifications_enabled {
+                    tr!(
+                        self.note_context.i18n,
+                        "You will receive notifications for new mentions and zaps",
+                        "Help text when notifications enabled"
+                    )
+                } else {
+                    tr!(
+                        self.note_context.i18n,
+                        "Enable to receive notifications even when the app is closed",
+                        "Help text when notifications disabled"
+                    )
+                };
+                ui.label(
+                    richtext_small(&text).color(ui.visuals().gray_out(ui.visuals().text_color())),
+                );
+            });
+        });
+
+        action
+    }
+
     fn keys_section(&mut self, ui: &mut egui::Ui) {
         let title = tr!(
             self.note_context.i18n,
@@ -732,6 +875,12 @@ impl<'a> SettingsView<'a> {
                     ui.add_space(5.0);
 
                     if let Some(new_action) = self.other_options_section(ui) {
+                        action = Some(new_action);
+                    }
+
+                    ui.add_space(5.0);
+
+                    if let Some(new_action) = self.notifications_section(ui) {
                         action = Some(new_action);
                     }
 
