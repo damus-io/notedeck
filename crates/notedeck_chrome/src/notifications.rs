@@ -31,6 +31,7 @@ const DEFAULT_RELAYS: &[&str] = &[
 const SUB_NOTIFICATIONS: &str = "notedeck_notifications";
 const SUB_DMS: &str = "notedeck_dms";
 const SUB_RELAY_LIST: &str = "notedeck_relay_list";
+const SUB_PROFILES: &str = "notedeck_profiles";
 
 /// Global state for the notification service
 static NOTIFICATION_STATE: OnceLock<Arc<Mutex<NotificationState>>> = OnceLock::new();
@@ -58,6 +59,10 @@ struct NotificationState {
     processed_events: HashSet<String>,
     /// Handle to the event loop thread for proper shutdown
     event_loop_handle: Option<thread::JoinHandle<()>>,
+    /// Cache of author profiles: pubkey hex -> display name
+    profile_cache: std::collections::HashMap<String, String>,
+    /// Pubkeys we've already requested profiles for
+    requested_profiles: HashSet<String>,
 }
 
 impl Default for NotificationState {
@@ -68,6 +73,8 @@ impl Default for NotificationState {
             running: false,
             processed_events: HashSet::new(),
             event_loop_handle: None,
+            profile_cache: std::collections::HashMap::new(),
+            requested_profiles: HashSet::new(),
         }
     }
 }
@@ -335,6 +342,7 @@ fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
 
 /// Handle an EVENT message from a relay.
 /// Extracts event data, checks for duplicates, and notifies Kotlin if new.
+/// Also handles kind 0 (profile) events to cache author names.
 fn handle_event_message(state: &Arc<Mutex<NotificationState>>, sub_id: &str, event_json: &str) {
     let event = match extract_event(event_json) {
         Some(e) => e,
@@ -343,6 +351,12 @@ fn handle_event_message(state: &Arc<Mutex<NotificationState>>, sub_id: &str, eve
             return;
         }
     };
+
+    // Handle kind 0 (profile metadata) events - extract and cache the name
+    if event.kind == 0 {
+        handle_profile_event(state, &event);
+        return;
+    }
 
     if !record_event_if_new(state, &event.id) {
         return;
@@ -355,7 +369,103 @@ fn handle_event_message(state: &Arc<Mutex<NotificationState>>, sub_id: &str, eve
         sub_id
     );
 
-    notify_nostr_event(&event, None);
+    // Look up author name from cache, request profile if not cached
+    let author_name = get_cached_author_name(state, &event.pubkey);
+    if author_name.is_none() {
+        request_profile_if_needed(state, &event.pubkey);
+    }
+
+    notify_nostr_event(&event, author_name.as_deref());
+}
+
+/// Handle a kind 0 (profile metadata) event by extracting and caching the display name.
+fn handle_profile_event(state: &Arc<Mutex<NotificationState>>, event: &ExtractedEvent) {
+    // Parse the content as JSON to extract name/display_name
+    let name = extract_profile_name(&event.content);
+    if name.is_none() {
+        return;
+    }
+    let name = name.unwrap();
+
+    let mut state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    state_guard
+        .profile_cache
+        .insert(event.pubkey.clone(), name.clone());
+    debug!("Cached profile name for {}: {}", &event.pubkey[..8], &name);
+
+    // Prune cache if too large
+    if state_guard.profile_cache.len() > 1000 {
+        state_guard.profile_cache.clear();
+        debug!("Pruned profile cache");
+    }
+}
+
+/// Extract display name from profile content JSON.
+/// Prefers "display_name" over "name".
+fn extract_profile_name(content: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let obj = value.as_object()?;
+
+    // Prefer display_name, fall back to name
+    obj.get("display_name")
+        .or_else(|| obj.get("name"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Get cached author name for the given pubkey.
+fn get_cached_author_name(state: &Arc<Mutex<NotificationState>>, pubkey: &str) -> Option<String> {
+    let state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return None,
+    };
+    state_guard.profile_cache.get(pubkey).cloned()
+}
+
+/// Request profile for the given pubkey if not already requested.
+fn request_profile_if_needed(state: &Arc<Mutex<NotificationState>>, pubkey: &str) {
+    let mut state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    // Don't request if already requested or cached
+    if state_guard.requested_profiles.contains(pubkey) {
+        return;
+    }
+    if state_guard.profile_cache.contains_key(pubkey) {
+        return;
+    }
+
+    state_guard.requested_profiles.insert(pubkey.to_string());
+
+    // Parse pubkey and subscribe to profile
+    let pubkey_bytes = match Pubkey::from_hex(pubkey) {
+        Ok(pk) => pk,
+        Err(_) => return,
+    };
+
+    let profile_filter = Filter::new()
+        .kinds([0])
+        .authors([pubkey_bytes.bytes()])
+        .limit(1)
+        .build();
+
+    state_guard
+        .pool
+        .subscribe(SUB_PROFILES.to_string(), vec![profile_filter]);
+    debug!("Requested profile for {}", &pubkey[..8]);
+
+    // Prune requested set if too large
+    if state_guard.requested_profiles.len() > 1000 {
+        state_guard.requested_profiles.clear();
+        debug!("Pruned requested profiles set");
+    }
 }
 
 /// Record an event ID if not already seen. Returns true if the event is new.
