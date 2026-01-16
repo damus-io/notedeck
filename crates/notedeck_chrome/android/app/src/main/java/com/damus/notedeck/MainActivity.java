@@ -1,9 +1,14 @@
 package com.damus.notedeck;
 
+import android.Manifest;
 import android.content.ClipData;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.provider.OpenableColumns;
@@ -12,12 +17,15 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 
+import com.damus.notedeck.service.NotificationsService;
 import com.google.androidgamesdk.GameActivity;
 
 import java.io.ByteArrayOutputStream;
@@ -26,10 +34,102 @@ import java.io.IOException;
 import java.io.InputStream;
 
 public class MainActivity extends GameActivity {
-    static final int REQUEST_CODE_PICK_FILE = 420;
+    private static final String TAG = "MainActivity";
+    private static final String PREFS_NAME = "notedeck_prefs";
+    private static final String PREF_NOTIFICATIONS_ENABLED = "notifications_enabled";
+    private static final String PREF_ACTIVE_PUBKEY = "active_pubkey";
+    private static final int REQUEST_CODE_PICK_FILE = 420;
+    private static final int REQUEST_CODE_NOTIFICATION_PERMISSION = 421;
 
-  private native void nativeOnFilePickedFailed(String uri, String e);
-  private native void nativeOnFilePickedWithContent(Object[] uri_info, byte[] content);
+    // Native callbacks for file picker
+    private native void nativeOnFilePickedFailed(String uri, String e);
+    private native void nativeOnFilePickedWithContent(Object[] uri_info, byte[] content);
+
+    // Native callback for notification permission result
+    private native void nativeOnNotificationPermissionResult(boolean granted);
+
+    // =========================================================================
+    // Notification Control Methods (called from Rust via JNI)
+    // =========================================================================
+
+    /**
+     * Enable push notifications for the given pubkey.
+     * Writes settings to SharedPreferences and starts the notification service.
+     */
+    public void enableNotifications(String pubkeyHex) {
+        Log.d(TAG, "Enabling notifications for pubkey: " + pubkeyHex.substring(0, 8) + "...");
+
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        prefs.edit()
+            .putBoolean(PREF_NOTIFICATIONS_ENABLED, true)
+            .putString(PREF_ACTIVE_PUBKEY, pubkeyHex)
+            .apply();
+
+        NotificationsService.start(this);
+    }
+
+    /**
+     * Disable push notifications.
+     * Stops the notification service and updates SharedPreferences.
+     */
+    public void disableNotifications() {
+        Log.d(TAG, "Disabling notifications");
+
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        prefs.edit()
+            .putBoolean(PREF_NOTIFICATIONS_ENABLED, false)
+            .apply();
+
+        NotificationsService.stop(this);
+    }
+
+    /**
+     * Check if notification permission is granted.
+     * On Android 13+, requires POST_NOTIFICATIONS permission.
+     */
+    public boolean isNotificationPermissionGranted() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED;
+        }
+        return true; // Permission not required on older Android versions
+    }
+
+    /**
+     * Request notification permission from the user.
+     * On Android 13+, shows the system permission dialog.
+     * Result is delivered via nativeOnNotificationPermissionResult callback.
+     */
+    public void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (!isNotificationPermissionGranted()) {
+                Log.d(TAG, "Requesting POST_NOTIFICATIONS permission");
+                ActivityCompat.requestPermissions(
+                    this,
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    REQUEST_CODE_NOTIFICATION_PERMISSION
+                );
+                return;
+            }
+        }
+        // Already granted or not needed
+        nativeOnNotificationPermissionResult(true);
+    }
+
+    /**
+     * Check if notifications are currently enabled in preferences.
+     */
+    public boolean areNotificationsEnabled() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        return prefs.getBoolean(PREF_NOTIFICATIONS_ENABLED, false);
+    }
+
+    /**
+     * Check if the notification service is currently running.
+     */
+    public boolean isNotificationServiceRunning() {
+        return NotificationsService.isServiceRunning();
+    }
 
   public void openFilePicker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -160,6 +260,18 @@ public class MainActivity extends GameActivity {
         //setupFullscreen()
 
         super.onCreate(savedInstanceState);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == REQUEST_CODE_NOTIFICATION_PERMISSION) {
+            boolean granted = grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            Log.d(TAG, "Notification permission " + (granted ? "granted" : "denied"));
+            nativeOnNotificationPermissionResult(granted);
+        }
     }
 
     @Override
