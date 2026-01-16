@@ -51,6 +51,7 @@ This document captures the current architecture, coding conventions, and design 
   - Profile widgets (`ProfilePic`, `ProfilePreview`), media viewers, mention chips, and timeline helpers keep rendering consistent.
 - **Columns-specific layout**: `Damus` app (`crates/notedeck_columns/src/app.rs`) manages decks, per-column routers, timeline hydration, and keyboard navigation. It uses `StripBuilder` and custom panels for multi-column flows.
 - **Chrome** handles responsive breakpoints (e.g., `ui::is_narrow`) to switch layouts for mobile widths.
+- **Consider using shadCN-egui UI** elements: https://github.com/alltheseas/shadcn-egui-notedeck
 
 ### Async & Background Work
 
