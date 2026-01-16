@@ -72,6 +72,7 @@ impl Default for NotificationState {
     }
 }
 
+/// Get or initialize the global notification state singleton.
 fn get_state() -> Arc<Mutex<NotificationState>> {
     NOTIFICATION_STATE
         .get_or_init(|| Arc::new(Mutex::new(NotificationState::default())))
@@ -128,80 +129,93 @@ pub fn start_subscriptions(pubkey_hex: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Stop notification subscriptions
+/// Stop notification subscriptions and signal the event loop to exit.
 pub fn stop_subscriptions() {
     let state = get_state();
-    if let Ok(mut state_guard) = state.lock() {
-        state_guard.running = false;
-        state_guard.pool.unsubscribe(SUB_NOTIFICATIONS.to_string());
-        state_guard.pool.unsubscribe(SUB_DMS.to_string());
-        state_guard.pool.unsubscribe(SUB_RELAY_LIST.to_string());
-        info!("Stopped notification subscriptions");
-    }
+    let mut state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    state_guard.running = false;
+    state_guard.pool.unsubscribe(SUB_NOTIFICATIONS.to_string());
+    state_guard.pool.unsubscribe(SUB_DMS.to_string());
+    state_guard.pool.unsubscribe(SUB_RELAY_LIST.to_string());
+    info!("Stopped notification subscriptions");
 }
 
-/// Get the number of connected relays
+/// Get the number of currently connected relays.
 pub fn get_connected_relay_count() -> i32 {
     let state = get_state();
-    if let Ok(state_guard) = state.lock() {
-        state_guard
-            .pool
-            .relays
-            .iter()
-            .filter(|r| matches!(r.status(), RelayStatus::Connected))
-            .count() as i32
-    } else {
-        0
-    }
+    let state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return 0,
+    };
+    state_guard
+        .pool
+        .relays
+        .iter()
+        .filter(|r| matches!(r.status(), RelayStatus::Connected))
+        .count() as i32
 }
 
-/// Main event loop for processing relay events
+/// Main event loop for processing relay events.
+/// Polls the relay pool for incoming messages and dispatches them for processing.
 fn notification_event_loop(state: Arc<Mutex<NotificationState>>) {
     info!("Notification event loop started");
 
-    // Initial subscription setup
-    if let Ok(mut state_guard) = state.lock() {
-        if let Some(ref pubkey) = state_guard.pubkey.clone() {
-            setup_subscriptions(&mut state_guard.pool, &pubkey);
-        }
-    }
+    setup_initial_subscriptions(&state);
 
     loop {
-        // Check if we should stop
-        {
-            let state_guard = match state.lock() {
-                Ok(g) => g,
-                Err(_) => break,
-            };
-            if !state_guard.running {
-                break;
-            }
+        if !is_running(&state) {
+            break;
         }
 
-        // Process events
-        let event = {
-            let mut state_guard = match state.lock() {
-                Ok(g) => g,
-                Err(_) => break,
-            };
-
-            // Keep connections alive
-            state_guard.pool.keepalive_ping(|| {});
-
-            state_guard.pool.try_recv().map(|e| e.into_owned())
-        };
-
-        if let Some(pool_event) = event {
-            handle_pool_event(&state, pool_event);
-        } else {
-            // No events, sleep a bit
+        let event = poll_next_event(&state);
+        if event.is_none() {
             thread::sleep(std::time::Duration::from_millis(100));
+            continue;
         }
+
+        handle_pool_event(&state, event.unwrap());
     }
 
     info!("Notification event loop stopped");
 }
 
+/// Set up subscriptions when the event loop first starts.
+fn setup_initial_subscriptions(state: &Arc<Mutex<NotificationState>>) {
+    let mut state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let pubkey = match state_guard.pubkey.clone() {
+        Some(p) => p,
+        None => return,
+    };
+    setup_subscriptions(&mut state_guard.pool, &pubkey);
+}
+
+/// Check if the notification service is still running.
+fn is_running(state: &Arc<Mutex<NotificationState>>) -> bool {
+    let state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    state_guard.running
+}
+
+/// Poll for the next event from the relay pool, sending keepalive pings.
+fn poll_next_event(state: &Arc<Mutex<NotificationState>>) -> Option<enostr::PoolEventBuf> {
+    let mut state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return None,
+    };
+    state_guard.pool.keepalive_ping(|| {});
+    state_guard.pool.try_recv().map(|e| e.into_owned())
+}
+
+/// Configure Nostr subscriptions for notifications, DMs, and relay lists.
+/// Sets up filters for mentions, reactions, reposts, zaps, and direct messages.
 fn setup_subscriptions(pool: &mut RelayPool, pubkey: &Pubkey) {
     let pubkey_hex = pubkey.hex();
 
