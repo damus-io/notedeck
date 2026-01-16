@@ -245,12 +245,7 @@ fn handle_pool_event(state: &Arc<Mutex<NotificationState>>, pool_event: enostr::
     match pool_event.event {
         WsEvent::Opened => {
             debug!("Connected to relay: {}", pool_event.relay);
-            // Re-subscribe on reconnect
-            if let Ok(mut state_guard) = state.lock() {
-                if let Some(ref pubkey) = state_guard.pubkey.clone() {
-                    setup_subscriptions(&mut state_guard.pool, &pubkey);
-                }
-            }
+            resubscribe_on_reconnect(state);
             notify_relay_status_changed();
         }
         WsEvent::Closed => {
@@ -261,12 +256,23 @@ fn handle_pool_event(state: &Arc<Mutex<NotificationState>>, pool_event: enostr::
             error!("Relay error {}: {:?}", pool_event.relay, err);
             notify_relay_status_changed();
         }
-        WsEvent::Message(ref msg) => {
-            if let ewebsock::WsMessage::Text(ref text) = msg {
-                handle_relay_message(state, text);
-            }
+        WsEvent::Message(ewebsock::WsMessage::Text(ref text)) => {
+            handle_relay_message(state, text);
         }
+        WsEvent::Message(_) => {}
     }
+}
+
+fn resubscribe_on_reconnect(state: &Arc<Mutex<NotificationState>>) {
+    let mut state_guard = match state.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let pubkey = match state_guard.pubkey.clone() {
+        Some(p) => p,
+        None => return,
+    };
+    setup_subscriptions(&mut state_guard.pool, &pubkey);
 }
 
 fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
@@ -404,14 +410,25 @@ fn extract_zap_amount(event: &serde_json::Map<String, serde_json::Value>) -> Opt
     let tags = event.get("tags")?.as_array()?;
 
     for tag in tags {
-        let tag_arr = tag.as_array()?;
-        if tag_arr.len() >= 2 {
-            let tag_name = tag_arr[0].as_str()?;
-            if tag_name == "bolt11" {
-                let bolt11 = tag_arr[1].as_str()?;
-                return parse_bolt11_amount(bolt11);
-            }
+        let tag_arr = match tag.as_array() {
+            Some(arr) => arr,
+            None => continue,
+        };
+        if tag_arr.len() < 2 {
+            continue;
         }
+        let tag_name = match tag_arr[0].as_str() {
+            Some(name) => name,
+            None => continue,
+        };
+        if tag_name != "bolt11" {
+            continue;
+        }
+        let bolt11 = match tag_arr[1].as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        return parse_bolt11_amount(bolt11);
     }
     None
 }
@@ -510,57 +527,58 @@ fn notify_nostr_event(event: &ExtractedEvent, author_name: Option<&str>) {
             }
         };
 
-        if let Some(ref callback) = *callback_guard {
-            if let Ok(mut env) = callback.jvm.attach_current_thread() {
-                let event_id_jstring = match env.new_string(&event.id) {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
-                let author_pubkey_jstring = match env.new_string(&event.pubkey) {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
-                let content_jstring = match env.new_string(&event.content) {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
-                let author_name_jstring = match author_name {
-                    Some(name) => match env.new_string(name) {
-                        Ok(s) => JObject::from(s),
-                        Err(_) => JObject::null(),
-                    },
-                    None => JObject::null(),
-                };
-                let raw_json_jstring = match env.new_string(&event.raw_json) {
-                    Ok(s) => s,
-                    Err(_) => return,
-                };
+        let callback = match *callback_guard {
+            Some(ref cb) => cb,
+            None => return,
+        };
 
-                // Zap amount: -1 means no amount (null equivalent for primitives)
-                let zap_amount = event.zap_amount_sats.unwrap_or(-1);
+        let mut env = match callback.jvm.attach_current_thread() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
 
-                // JNI signature: (eventId, eventKind, authorPubkey, content, authorName, zapAmountSats, rawJson)
-                let _ = env.call_method(
-                    &callback.service_obj,
-                    "onNostrEvent",
-                    "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;)V",
-                    &[
-                        JValue::Object(&JObject::from(event_id_jstring)),
-                        JValue::Int(event.kind),
-                        JValue::Object(&JObject::from(author_pubkey_jstring)),
-                        JValue::Object(&JObject::from(content_jstring)),
-                        JValue::Object(&author_name_jstring),
-                        JValue::Long(zap_amount),
-                        JValue::Object(&JObject::from(raw_json_jstring)),
-                    ],
-                );
-            }
-        }
+        let event_id_jstring = match env.new_string(&event.id) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let author_pubkey_jstring = match env.new_string(&event.pubkey) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let content_jstring = match env.new_string(&event.content) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let author_name_jstring = author_name
+            .and_then(|name| env.new_string(name).ok())
+            .map(JObject::from)
+            .unwrap_or_else(JObject::null);
+        let raw_json_jstring = match env.new_string(&event.raw_json) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+
+        let zap_amount = event.zap_amount_sats.unwrap_or(-1);
+
+        let _ = env.call_method(
+            &callback.service_obj,
+            "onNostrEvent",
+            "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;)V",
+            &[
+                JValue::Object(&JObject::from(event_id_jstring)),
+                JValue::Int(event.kind),
+                JValue::Object(&JObject::from(author_pubkey_jstring)),
+                JValue::Object(&JObject::from(content_jstring)),
+                JValue::Object(&author_name_jstring),
+                JValue::Long(zap_amount),
+                JValue::Object(&JObject::from(raw_json_jstring)),
+            ],
+        );
     }
 
     #[cfg(not(target_os = "android"))]
     {
-        let _ = author_name; // Suppress unused warning
+        let _ = author_name;
         debug!(
             "Nostr event (non-Android): kind={}, author={}, zap_sats={:?}",
             event.kind,
@@ -584,16 +602,22 @@ fn notify_relay_status_changed() {
             }
         };
 
-        if let Some(ref callback) = *callback_guard {
-            if let Ok(mut env) = callback.jvm.attach_current_thread() {
-                let _ = env.call_method(
-                    &callback.service_obj,
-                    "onRelayStatusChanged",
-                    "(I)V",
-                    &[JValue::Int(connected_count)],
-                );
-            }
-        }
+        let callback = match *callback_guard {
+            Some(ref cb) => cb,
+            None => return,
+        };
+
+        let mut env = match callback.jvm.attach_current_thread() {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let _ = env.call_method(
+            &callback.service_obj,
+            "onRelayStatusChanged",
+            "(I)V",
+            &[JValue::Int(connected_count)],
+        );
     }
 
     #[cfg(not(target_os = "android"))]
@@ -615,22 +639,7 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
 ) {
     // Always refresh the callback reference on each start
     // This ensures we have a valid reference even after service restart
-    if let Ok(jvm) = env.get_java_vm() {
-        if let Ok(global_ref) = env.new_global_ref(obj) {
-            match JAVA_CALLBACK.lock() {
-                Ok(mut guard) => {
-                    *guard = Some(JavaCallback {
-                        jvm,
-                        service_obj: global_ref,
-                    });
-                    info!("JNI callback reference updated");
-                }
-                Err(e) => {
-                    error!("Failed to lock JAVA_CALLBACK for update: {}", e);
-                }
-            }
-        }
-    }
+    update_jni_callback(&mut env, obj);
 
     let pubkey: String = match env.get_string(&pubkey_hex) {
         Ok(s) => s.into(),
@@ -643,6 +652,30 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
     if let Err(e) = start_subscriptions(&pubkey) {
         error!("Failed to start subscriptions: {}", e);
     }
+}
+
+#[cfg(target_os = "android")]
+fn update_jni_callback(env: &mut JNIEnv, obj: JObject) {
+    let jvm = match env.get_java_vm() {
+        Ok(jvm) => jvm,
+        Err(_) => return,
+    };
+    let global_ref = match env.new_global_ref(obj) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let mut guard = match JAVA_CALLBACK.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            error!("Failed to lock JAVA_CALLBACK for update: {}", e);
+            return;
+        }
+    };
+    *guard = Some(JavaCallback {
+        jvm,
+        service_obj: global_ref,
+    });
+    info!("JNI callback reference updated");
 }
 
 #[cfg(target_os = "android")]
