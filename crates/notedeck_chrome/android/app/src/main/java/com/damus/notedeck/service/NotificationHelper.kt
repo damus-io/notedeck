@@ -159,7 +159,7 @@ object NotificationHelper {
 
         // Build notification
         val builder = NotificationCompat.Builder(context, channel)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.mipmap.damusfg)
             .setContentTitle(title)
             .setContentText(text)
             .setContentIntent(pendingIntent)
@@ -219,7 +219,7 @@ object NotificationHelper {
         }
 
         val summary = NotificationCompat.Builder(context, channel)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.mipmap.damusfg)
             .setContentTitle(summaryTitle)
             .setGroup(groupKey)
             .setGroupSummary(true)
@@ -247,10 +247,10 @@ object NotificationHelper {
 
                 // Use real picture URL if available, fall back to robohash
                 val imageUrl = if (!pictureUrl.isNullOrEmpty()) {
-                    Log.d(TAG, "Loading real profile image for ${pubkey.take(8)}: ${pictureUrl.take(50)}...")
+                    Log.i(TAG, "Loading real profile image for ${pubkey.take(8)}: ${pictureUrl.take(50)}...")
                     URL(pictureUrl)
                 } else {
-                    Log.d(TAG, "No profile image URL, using robohash for ${pubkey.take(8)}")
+                    Log.i(TAG, "No profile image URL, using robohash for ${pubkey.take(8)}")
                     URL("https://robohash.org/${pubkey}.png?size=128x128&set=set4")
                 }
 

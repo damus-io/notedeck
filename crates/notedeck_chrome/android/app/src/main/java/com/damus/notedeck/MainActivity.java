@@ -270,6 +270,26 @@ public class MainActivity extends GameActivity {
 
         // Handle deep link if launched from notification
         handleDeepLink(getIntent());
+
+        // Start notification service if enabled in preferences (e.g., after force-stop or app restart)
+        restartNotificationServiceIfEnabled();
+    }
+
+    /**
+     * Restart notification service if it was enabled but not running.
+     * This handles cases where the service was stopped (force-stop, crash) but preferences say enabled.
+     */
+    private void restartNotificationServiceIfEnabled() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        boolean enabled = prefs.getBoolean(PREF_NOTIFICATIONS_ENABLED, false);
+        String pubkey = prefs.getString(PREF_ACTIVE_PUBKEY, null);
+
+        if (enabled && pubkey != null && !pubkey.isEmpty()) {
+            if (!NotificationsService.isServiceRunning()) {
+                Log.i(TAG, "Restarting notification service (was enabled but not running)");
+                NotificationsService.start(this);
+            }
+        }
     }
 
     @Override

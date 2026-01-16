@@ -3,17 +3,21 @@
 //! This module provides the Rust side of the Pokey-style push notification
 //! system. It manages relay connections and event subscriptions for the
 //! Android foreground service.
+//!
+//! Architecture: Uses a worker thread that owns all non-Send types (RelayPool, etc.)
+//! Communication happens via atomic flags and the worker thread handles all relay I/O.
 
 #[cfg(target_os = "android")]
-use jni::objects::{JClass, JObject, JString, JValue};
+use jni::objects::{JObject, JString, JValue};
 #[cfg(target_os = "android")]
 use jni::sys::jint;
 #[cfg(target_os = "android")]
 use jni::JNIEnv;
 
-use enostr::{ClientMessage, Pubkey, RelayPool, RelayStatus};
+use enostr::{Pubkey, RelayPool, RelayStatus};
 use nostrdb::Filter;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use tracing::{debug, error, info, warn};
@@ -33,8 +37,34 @@ const SUB_DMS: &str = "notedeck_dms";
 const SUB_RELAY_LIST: &str = "notedeck_relay_list";
 const SUB_PROFILES: &str = "notedeck_profiles";
 
-/// Global state for the notification service
-static NOTIFICATION_STATE: OnceLock<Arc<Mutex<NotificationState>>> = OnceLock::new();
+/// Global shared state - only contains Send+Sync types
+struct SharedState {
+    /// Flag to signal worker thread to stop
+    running: AtomicBool,
+    /// Current count of connected relays (updated by worker thread)
+    connected_count: AtomicI32,
+    /// Handle to the worker thread
+    thread_handle: Mutex<Option<thread::JoinHandle<()>>>,
+}
+
+impl Default for SharedState {
+    fn default() -> Self {
+        Self {
+            running: AtomicBool::new(false),
+            connected_count: AtomicI32::new(0),
+            thread_handle: Mutex::new(None),
+        }
+    }
+}
+
+/// Global shared state singleton
+static SHARED_STATE: OnceLock<Arc<SharedState>> = OnceLock::new();
+
+fn get_shared_state() -> Arc<SharedState> {
+    SHARED_STATE
+        .get_or_init(|| Arc::new(SharedState::default()))
+        .clone()
+}
 
 /// Callback interface for sending events back to Kotlin
 /// Uses Mutex<Option<>> instead of OnceLock to allow refreshing on service restart
@@ -59,183 +89,162 @@ struct CachedProfile {
     picture_url: Option<String>,
 }
 
-struct NotificationState {
+/// Thread-local state owned entirely by the worker thread (contains non-Send types)
+struct WorkerState {
     pool: RelayPool,
-    pubkey: Option<Pubkey>,
-    running: bool,
+    pubkey: Pubkey,
     processed_events: HashSet<String>,
-    /// Handle to the event loop thread for proper shutdown
-    event_loop_handle: Option<thread::JoinHandle<()>>,
-    /// Cache of author profiles: pubkey hex -> profile info
     profile_cache: std::collections::HashMap<String, CachedProfile>,
-    /// Pubkeys we've already requested profiles for
     requested_profiles: HashSet<String>,
 }
 
-impl Default for NotificationState {
-    fn default() -> Self {
+impl WorkerState {
+    fn new(pubkey: Pubkey, relay_urls: Vec<String>) -> Self {
+        let mut pool = RelayPool::new();
+
+        // Use provided relay URLs, or fall back to defaults if empty
+        let relays_to_use: Vec<&str> = if relay_urls.is_empty() {
+            info!("No relay URLs provided, using defaults");
+            DEFAULT_RELAYS.to_vec()
+        } else {
+            info!("Using {} user-configured relays", relay_urls.len());
+            relay_urls.iter().map(|s| s.as_str()).collect()
+        };
+
+        for relay_url in relays_to_use {
+            if let Err(e) = pool.add_url(relay_url.to_string(), || {}) {
+                warn!("Failed to add relay {}: {}", relay_url, e);
+            }
+        }
+
         Self {
-            pool: RelayPool::new(),
-            pubkey: None,
-            running: false,
+            pool,
+            pubkey,
             processed_events: HashSet::new(),
-            event_loop_handle: None,
             profile_cache: std::collections::HashMap::new(),
             requested_profiles: HashSet::new(),
         }
     }
 }
 
-/// Get or initialize the global notification state singleton.
-fn get_state() -> Arc<Mutex<NotificationState>> {
-    NOTIFICATION_STATE
-        .get_or_init(|| Arc::new(Mutex::new(NotificationState::default())))
-        .clone()
-}
-
 /// Start notification subscriptions for the given pubkey and relay URLs.
 /// If relay_urls is empty, falls back to DEFAULT_RELAYS.
 pub fn start_subscriptions(pubkey_hex: &str, relay_urls: &[String]) -> Result<(), String> {
     let pubkey = Pubkey::from_hex(pubkey_hex).map_err(|e| format!("Invalid pubkey: {e}"))?;
+    let shared = get_shared_state();
 
-    let state = get_state();
-    let mut state_guard = state.lock().map_err(|e| format!("Lock error: {e}"))?;
-
-    if state_guard.running {
+    // Check if already running
+    if shared.running.load(Ordering::SeqCst) {
         info!("Notification subscriptions already running");
         return Ok(());
     }
 
-    // Wait for any previous event loop thread to finish before starting a new one
-    // This prevents duplicate threads on quick stop/start cycles
-    if let Some(handle) = state_guard.event_loop_handle.take() {
-        info!("Waiting for previous event loop thread to finish...");
-        drop(state_guard); // Release lock while waiting
-        let _ = handle.join(); // Wait for thread to finish
-        state_guard = state.lock().map_err(|e| format!("Lock error: {e}"))?;
-
-        // Double-check running state after reacquiring lock
-        if state_guard.running {
-            info!("Notification subscriptions already running (race condition avoided)");
-            return Ok(());
+    // Signal any previous thread to stop (don't wait - it will exit on its own)
+    // This avoids blocking on join() which can cause ANR
+    {
+        let mut handle_guard = shared
+            .thread_handle
+            .lock()
+            .map_err(|e| format!("Lock error: {e}"))?;
+        if handle_guard.is_some() {
+            info!("Previous worker thread exists, will be replaced");
+            // Don't join - just drop the handle, the thread will exit when it checks running flag
+            let _ = handle_guard.take();
         }
     }
 
-    state_guard.pubkey = Some(pubkey.clone());
-    state_guard.running = true;
+    // Set running flag before spawning thread
+    shared.running.store(true, Ordering::SeqCst);
 
-    // Use provided relay URLs, or fall back to defaults if empty
-    let relays_to_use: Vec<&str> = if relay_urls.is_empty() {
-        info!("No relay URLs provided, using defaults");
-        DEFAULT_RELAYS.to_vec()
-    } else {
-        info!("Using {} user-configured relays", relay_urls.len());
-        relay_urls.iter().map(|s| s.as_str()).collect()
-    };
+    // Clone data needed by worker thread
+    let relay_urls_owned = relay_urls.to_vec();
+    let shared_clone = shared.clone();
 
-    for relay_url in relays_to_use {
-        if let Err(e) = state_guard.pool.add_url(relay_url.to_string(), || {}) {
-            warn!("Failed to add relay {}: {}", relay_url, e);
-        }
-    }
-
-    // Start the event loop in a background thread and store the handle
-    let state_clone = state.clone();
+    // Spawn worker thread that owns all non-Send state
     let handle = thread::spawn(move || {
-        notification_event_loop(state_clone);
+        notification_worker(shared_clone, pubkey, relay_urls_owned);
     });
-    state_guard.event_loop_handle = Some(handle);
 
-    drop(state_guard);
+    // Store thread handle
+    if let Ok(mut handle_guard) = shared.thread_handle.lock() {
+        *handle_guard = Some(handle);
+    }
 
     info!("Started notification subscriptions for {}", pubkey_hex);
     Ok(())
 }
 
-/// Stop notification subscriptions and signal the event loop to exit.
+/// Stop notification subscriptions and signal the worker thread to exit.
 pub fn stop_subscriptions() {
-    let state = get_state();
-    let mut state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    state_guard.running = false;
-    state_guard.pool.unsubscribe(SUB_NOTIFICATIONS.to_string());
-    state_guard.pool.unsubscribe(SUB_DMS.to_string());
-    state_guard.pool.unsubscribe(SUB_RELAY_LIST.to_string());
-    info!("Stopped notification subscriptions");
+    let shared = get_shared_state();
+    shared.running.store(false, Ordering::SeqCst);
+    info!("Signaled notification subscriptions to stop");
 }
 
 /// Get the number of currently connected relays.
 pub fn get_connected_relay_count() -> i32 {
-    let state = get_state();
-    let state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return 0,
-    };
-    state_guard
-        .pool
-        .relays
-        .iter()
-        .filter(|r| matches!(r.status(), RelayStatus::Connected))
-        .count() as i32
+    get_shared_state().connected_count.load(Ordering::SeqCst)
 }
 
-/// Main event loop for processing relay events.
-/// Polls the relay pool for incoming messages and dispatches them for processing.
-fn notification_event_loop(state: Arc<Mutex<NotificationState>>) {
-    info!("Notification event loop started");
+/// Worker thread that owns all non-Send state and handles relay I/O.
+fn notification_worker(shared: Arc<SharedState>, pubkey: Pubkey, relay_urls: Vec<String>) {
+    info!("Notification worker thread started");
 
-    setup_initial_subscriptions(&state);
+    // Create all state inside the worker thread
+    let mut state = WorkerState::new(pubkey.clone(), relay_urls);
 
-    loop {
-        if !is_running(&state) {
-            break;
+    // Set up initial subscriptions
+    setup_subscriptions(&mut state.pool, &pubkey);
+
+    let mut loop_count: u64 = 0;
+
+    // Main event loop
+    while shared.running.load(Ordering::SeqCst) {
+        loop_count += 1;
+
+        // Log heartbeat every 30 iterations (~30 seconds)
+        if loop_count % 30 == 0 {
+            let connected = state
+                .pool
+                .relays
+                .iter()
+                .filter(|r| matches!(r.status(), RelayStatus::Connected))
+                .count();
+            info!("Worker heartbeat: loop={}, connected={} relays", loop_count, connected);
         }
 
-        let event = poll_next_event(&state);
-        if event.is_none() {
-            // 1 second idle sleep balances battery life vs notification latency
-            thread::sleep(std::time::Duration::from_secs(1));
-            continue;
-        }
+        // Send keepalive pings
+        state.pool.keepalive_ping(|| {});
 
-        handle_pool_event(&state, event.unwrap());
+        // Update connected relay count
+        let connected = state
+            .pool
+            .relays
+            .iter()
+            .filter(|r| matches!(r.status(), RelayStatus::Connected))
+            .count() as i32;
+        shared.connected_count.store(connected, Ordering::SeqCst);
+
+        // Poll for events
+        match state.pool.try_recv() {
+            Some(pool_event) => {
+                let event = pool_event.into_owned();
+                handle_pool_event(&mut state, event);
+            }
+            None => {
+                // 1 second idle sleep balances battery life vs notification latency
+                thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
     }
 
-    info!("Notification event loop stopped");
-}
+    // Cleanup subscriptions
+    state.pool.unsubscribe(SUB_NOTIFICATIONS.to_string());
+    state.pool.unsubscribe(SUB_DMS.to_string());
+    state.pool.unsubscribe(SUB_RELAY_LIST.to_string());
+    state.pool.unsubscribe(SUB_PROFILES.to_string());
 
-/// Set up subscriptions when the event loop first starts.
-fn setup_initial_subscriptions(state: &Arc<Mutex<NotificationState>>) {
-    let mut state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    let pubkey = match state_guard.pubkey.clone() {
-        Some(p) => p,
-        None => return,
-    };
-    setup_subscriptions(&mut state_guard.pool, &pubkey);
-}
-
-/// Check if the notification service is still running.
-fn is_running(state: &Arc<Mutex<NotificationState>>) -> bool {
-    let state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return false,
-    };
-    state_guard.running
-}
-
-/// Poll for the next event from the relay pool, sending keepalive pings.
-fn poll_next_event(state: &Arc<Mutex<NotificationState>>) -> Option<enostr::PoolEventBuf> {
-    let mut state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return None,
-    };
-    state_guard.pool.keepalive_ping(|| {});
-    state_guard.pool.try_recv().map(|e| e.into_owned())
+    info!("Notification worker thread stopped");
 }
 
 /// Configure Nostr subscriptions for notifications, DMs, and relay lists.
@@ -243,21 +252,28 @@ fn poll_next_event(state: &Arc<Mutex<NotificationState>>) -> Option<enostr::Pool
 fn setup_subscriptions(pool: &mut RelayPool, pubkey: &Pubkey) {
     let pubkey_hex = pubkey.hex();
 
+    // Use current timestamp to only receive new events (not historical)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
     // Subscribe to mentions, replies, reactions, reposts, zaps
     // kinds: 1 (text), 6 (repost), 7 (reaction), 9735 (zap receipt)
     let notification_filter = Filter::new()
         .kinds([1, 6, 7, 9735])
-        .pubkey_tag(pubkey.bytes())
-        .limit(100)
+        .pubkey([pubkey.bytes()])
+        .since(now)
         .build();
 
+    info!("Subscribing to notifications since timestamp {}", now);
     pool.subscribe(SUB_NOTIFICATIONS.to_string(), vec![notification_filter]);
 
     // Subscribe to DMs (kind 4 legacy, kind 1059 gift wrap)
     let dm_filter = Filter::new()
         .kinds([4, 1059])
-        .pubkey_tag(pubkey.bytes())
-        .limit(50)
+        .pubkey([pubkey.bytes()])
+        .since(now)
         .build();
 
     pool.subscribe(SUB_DMS.to_string(), vec![dm_filter]);
@@ -279,13 +295,14 @@ fn setup_subscriptions(pool: &mut RelayPool, pubkey: &Pubkey) {
 
 /// Handle a WebSocket event from the relay pool.
 /// Dispatches to appropriate handlers for connection state changes and messages.
-fn handle_pool_event(state: &Arc<Mutex<NotificationState>>, pool_event: enostr::PoolEventBuf) {
-    use ewebsock::WsEvent;
+fn handle_pool_event(state: &mut WorkerState, pool_event: enostr::PoolEventBuf) {
+    use enostr::ewebsock::{WsEvent, WsMessage};
 
     match pool_event.event {
         WsEvent::Opened => {
             debug!("Connected to relay: {}", pool_event.relay);
-            resubscribe_on_reconnect(state);
+            // Re-subscribe on reconnect
+            setup_subscriptions(&mut state.pool, &state.pubkey);
             notify_relay_status_changed();
         }
         WsEvent::Closed => {
@@ -296,31 +313,17 @@ fn handle_pool_event(state: &Arc<Mutex<NotificationState>>, pool_event: enostr::
             error!("Relay error {}: {:?}", pool_event.relay, err);
             notify_relay_status_changed();
         }
-        WsEvent::Message(ewebsock::WsMessage::Text(ref text)) => {
+        WsEvent::Message(WsMessage::Text(ref text)) => {
             handle_relay_message(state, text);
         }
         WsEvent::Message(_) => {}
     }
 }
 
-/// Re-establish subscriptions after a relay reconnects.
-/// Called when a WebSocket connection is opened to ensure we receive events.
-fn resubscribe_on_reconnect(state: &Arc<Mutex<NotificationState>>) {
-    let mut state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    let pubkey = match state_guard.pubkey.clone() {
-        Some(p) => p,
-        None => return,
-    };
-    setup_subscriptions(&mut state_guard.pool, &pubkey);
-}
-
 /// Process an incoming Nostr relay message.
 /// Handles EVENT messages by extracting event data, deduplicating, and notifying Kotlin.
 /// Also handles OK, NOTICE, and EOSE messages for logging.
-fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
+fn handle_relay_message(state: &mut WorkerState, message: &str) {
     // Parse the relay message using enostr's parser
     let relay_msg = match enostr::RelayMessage::from_json(message) {
         Ok(msg) => msg,
@@ -350,7 +353,7 @@ fn handle_relay_message(state: &Arc<Mutex<NotificationState>>, message: &str) {
 /// Handle an EVENT message from a relay.
 /// Extracts event data, checks for duplicates, and notifies Kotlin if new.
 /// Also handles kind 0 (profile) events to cache author names.
-fn handle_event_message(state: &Arc<Mutex<NotificationState>>, sub_id: &str, event_json: &str) {
+fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str) {
     let event = match extract_event(event_json) {
         Some(e) => e,
         None => {
@@ -366,18 +369,20 @@ fn handle_event_message(state: &Arc<Mutex<NotificationState>>, sub_id: &str, eve
     }
 
     if !record_event_if_new(state, &event.id) {
+        debug!("Skipping duplicate event id={}", &event.id[..8]);
         return;
     }
 
-    debug!(
-        "Received event kind={} id={} sub={}",
+    info!(
+        "NEW EVENT: kind={} id={} from={} sub={}",
         event.kind,
         &event.id[..8],
+        &event.pubkey[..8],
         sub_id
     );
 
     // Look up author profile from cache, request if not cached
-    let profile = get_cached_profile(state, &event.pubkey);
+    let profile = state.profile_cache.get(&event.pubkey).cloned();
     if profile.is_none() {
         request_profile_if_needed(state, &event.pubkey);
     }
@@ -389,17 +394,12 @@ fn handle_event_message(state: &Arc<Mutex<NotificationState>>, sub_id: &str, eve
 }
 
 /// Handle a kind 0 (profile metadata) event by extracting and caching profile info.
-fn handle_profile_event(state: &Arc<Mutex<NotificationState>>, event: &ExtractedEvent) {
+fn handle_profile_event(state: &mut WorkerState, event: &ExtractedEvent) {
     // Parse the content as JSON to extract name and picture
     let profile = extract_profile_info(&event.content);
     if profile.name.is_none() && profile.picture_url.is_none() {
         return;
     }
-
-    let mut state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
 
     debug!(
         "Cached profile for {}: name={:?}, picture={:?}",
@@ -408,14 +408,15 @@ fn handle_profile_event(state: &Arc<Mutex<NotificationState>>, event: &Extracted
         profile.picture_url.as_ref().map(|s| &s[..s.len().min(50)])
     );
 
-    state_guard
-        .profile_cache
-        .insert(event.pubkey.clone(), profile);
+    // Remove from requested set since we now have the profile
+    state.requested_profiles.remove(&event.pubkey);
+    state.profile_cache.insert(event.pubkey.clone(), profile);
 
-    // Prune cache if too large
-    if state_guard.profile_cache.len() > 1000 {
-        state_guard.profile_cache.clear();
-        debug!("Pruned profile cache");
+    // Prune cache if too large - also clear requested_profiles to allow re-requests
+    if state.profile_cache.len() > 1000 {
+        state.profile_cache.clear();
+        state.requested_profiles.clear();
+        debug!("Pruned profile cache and requested set");
     }
 }
 
@@ -449,34 +450,24 @@ fn extract_profile_info(content: &str) -> CachedProfile {
     CachedProfile { name, picture_url }
 }
 
-/// Get cached profile info for the given pubkey.
-fn get_cached_profile(
-    state: &Arc<Mutex<NotificationState>>,
-    pubkey: &str,
-) -> Option<CachedProfile> {
-    let state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return None,
-    };
-    state_guard.profile_cache.get(pubkey).cloned()
-}
-
 /// Request profile for the given pubkey if not already requested.
-fn request_profile_if_needed(state: &Arc<Mutex<NotificationState>>, pubkey: &str) {
-    let mut state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-
+/// Uses unique subscription IDs per pubkey to avoid overwriting previous requests.
+fn request_profile_if_needed(state: &mut WorkerState, pubkey: &str) {
     // Don't request if already requested or cached
-    if state_guard.requested_profiles.contains(pubkey) {
+    if state.requested_profiles.contains(pubkey) {
         return;
     }
-    if state_guard.profile_cache.contains_key(pubkey) {
+    if state.profile_cache.contains_key(pubkey) {
         return;
     }
 
-    state_guard.requested_profiles.insert(pubkey.to_string());
+    // Limit pending requests to avoid too many open subscriptions
+    if state.requested_profiles.len() >= 50 {
+        debug!("Too many pending profile requests, skipping {}", &pubkey[..8]);
+        return;
+    }
+
+    state.requested_profiles.insert(pubkey.to_string());
 
     // Parse pubkey and subscribe to profile
     let pubkey_bytes = match Pubkey::from_hex(pubkey) {
@@ -490,34 +481,23 @@ fn request_profile_if_needed(state: &Arc<Mutex<NotificationState>>, pubkey: &str
         .limit(1)
         .build();
 
-    state_guard
-        .pool
-        .subscribe(SUB_PROFILES.to_string(), vec![profile_filter]);
+    // Use unique subscription ID per pubkey to avoid overwriting previous requests
+    let sub_id = format!("{}_{}", SUB_PROFILES, &pubkey[..16]);
+    state.pool.subscribe(sub_id, vec![profile_filter]);
     debug!("Requested profile for {}", &pubkey[..8]);
-
-    // Prune requested set if too large
-    if state_guard.requested_profiles.len() > 1000 {
-        state_guard.requested_profiles.clear();
-        debug!("Pruned requested profiles set");
-    }
 }
 
 /// Record an event ID if not already seen. Returns true if the event is new.
 /// Also prunes the cache when it exceeds 10,000 entries.
-fn record_event_if_new(state: &Arc<Mutex<NotificationState>>, event_id: &str) -> bool {
-    let mut state_guard = match state.lock() {
-        Ok(g) => g,
-        Err(_) => return false,
-    };
-
-    if state_guard.processed_events.contains(event_id) {
+fn record_event_if_new(state: &mut WorkerState, event_id: &str) -> bool {
+    if state.processed_events.contains(event_id) {
         return false;
     }
 
-    state_guard.processed_events.insert(event_id.to_string());
+    state.processed_events.insert(event_id.to_string());
 
-    if state_guard.processed_events.len() > 10000 {
-        state_guard.processed_events.clear();
+    if state.processed_events.len() > 10000 {
+        state.processed_events.clear();
     }
 
     true
@@ -537,21 +517,38 @@ struct ExtractedEvent {
 }
 
 /// Extract all event fields from JSON using proper JSON parsing
-fn extract_event(event_json: &str) -> Option<ExtractedEvent> {
+/// Note: enostr RelayMessage::Event passes the ENTIRE relay message ["EVENT", "sub_id", {...}]
+/// not just the event object, so we need to extract the third element.
+fn extract_event(relay_message: &str) -> Option<ExtractedEvent> {
     // Use serde_json for robust parsing that handles escaped strings correctly
-    let value: serde_json::Value = match serde_json::from_str(event_json) {
+    let value: serde_json::Value = match serde_json::from_str(relay_message) {
         Ok(v) => v,
         Err(e) => {
-            warn!("Failed to parse event JSON: {}", e);
+            warn!("Failed to parse relay message JSON: {}", e);
             return None;
         }
     };
-    let obj = match value.as_object() {
-        Some(o) => o,
-        None => {
-            warn!("Event JSON is not an object");
+
+    // The relay message is ["EVENT", "sub_id", {event}] - extract the event object (index 2)
+    let obj = if let Some(arr) = value.as_array() {
+        // This is the expected format from enostr: ["EVENT", "sub_id", {event}]
+        if arr.len() < 3 {
+            warn!("EVENT message array too short: {} elements", arr.len());
             return None;
         }
+        match arr[2].as_object() {
+            Some(o) => o,
+            None => {
+                warn!("Third element of EVENT message is not an object");
+                return None;
+            }
+        }
+    } else if let Some(o) = value.as_object() {
+        // Direct event object (shouldn't happen with enostr but handle it anyway)
+        o
+    } else {
+        warn!("Relay message is neither array nor object");
+        return None;
     };
 
     let id = obj
@@ -597,9 +594,8 @@ fn extract_event(event_json: &str) -> Option<ExtractedEvent> {
         None
     };
 
-    // Use original JSON from relay to preserve byte-level fidelity
-    // (keeps field order, duplicate keys, exact formatting)
-    let raw_json = event_json.to_string();
+    // Serialize just the event object for broadcast (not the full relay message)
+    let raw_json = serde_json::to_string(obj).unwrap_or_default();
 
     Some(ExtractedEvent {
         id,
@@ -728,6 +724,12 @@ fn notify_nostr_event(
     author_name: Option<&str>,
     picture_url: Option<&str>,
 ) {
+    info!(
+        "notify_nostr_event called: kind={}, id={}",
+        event.kind,
+        &event.id[..8]
+    );
+
     #[cfg(target_os = "android")]
     {
         let callback_guard = match JAVA_CALLBACK.lock() {
@@ -740,13 +742,21 @@ fn notify_nostr_event(
 
         let callback = match *callback_guard {
             Some(ref cb) => cb,
-            None => return,
+            None => {
+                warn!("JAVA_CALLBACK is None - JNI callback not set up");
+                return;
+            }
         };
 
         let mut env = match callback.jvm.attach_current_thread() {
             Ok(e) => e,
-            Err(_) => return,
+            Err(e) => {
+                error!("Failed to attach JNI thread: {:?}", e);
+                return;
+            }
         };
+
+        info!("JNI thread attached, calling onNostrEvent");
 
         let event_id_jstring = match env.new_string(&event.id) {
             Ok(s) => s,
@@ -760,14 +770,20 @@ fn notify_nostr_event(
             Ok(s) => s,
             Err(_) => return,
         };
-        let author_name_jstring = author_name
-            .and_then(|name| env.new_string(name).ok())
-            .map(JObject::from)
-            .unwrap_or_else(JObject::null);
-        let picture_url_jstring = picture_url
-            .and_then(|url| env.new_string(url).ok())
-            .map(JObject::from)
-            .unwrap_or_else(JObject::null);
+        let author_name_jstring = match author_name {
+            Some(name) => match env.new_string(name) {
+                Ok(s) => JObject::from(s),
+                Err(_) => JObject::null(),
+            },
+            None => JObject::null(),
+        };
+        let picture_url_jstring = match picture_url {
+            Some(url) => match env.new_string(url) {
+                Ok(s) => JObject::from(s),
+                Err(_) => JObject::null(),
+            },
+            None => JObject::null(),
+        };
         let raw_json_jstring = match env.new_string(&event.raw_json) {
             Ok(s) => s,
             Err(_) => return,
@@ -775,7 +791,7 @@ fn notify_nostr_event(
 
         let zap_amount = event.zap_amount_sats.unwrap_or(-1);
 
-        let _ = env.call_method(
+        match env.call_method(
             &callback.service_obj,
             "onNostrEvent",
             "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;)V",
@@ -789,7 +805,10 @@ fn notify_nostr_event(
                 JValue::Long(zap_amount),
                 JValue::Object(&JObject::from(raw_json_jstring)),
             ],
-        );
+        ) {
+            Ok(_) => info!("JNI onNostrEvent call succeeded"),
+            Err(e) => error!("JNI onNostrEvent call failed: {:?}", e),
+        }
     }
 
     #[cfg(not(target_os = "android"))]
@@ -934,8 +953,9 @@ mod tests {
 
     #[test]
     fn test_extract_event() {
-        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"hello world"}"#;
-        let event = extract_event(json);
+        // Note: enostr passes full relay message ["EVENT", "sub_id", {...}], not just event object
+        let relay_msg = r#"["EVENT","sub_id",{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"hello world"}]"#;
+        let event = extract_event(relay_msg);
         assert!(event.is_some());
         let event = event.unwrap();
         assert_eq!(
@@ -954,8 +974,8 @@ mod tests {
     #[test]
     fn test_extract_event_with_braces_in_content() {
         // This would break manual brace-matching but works with serde_json
-        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"json example: {\"foo\": \"bar\"}"}"#;
-        let event = extract_event(json);
+        let relay_msg = r#"["EVENT","sub_id",{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"json example: {\"foo\": \"bar\"}"}]"#;
+        let event = extract_event(relay_msg);
         assert!(event.is_some());
         let event = event.unwrap();
         assert_eq!(event.content, r#"json example: {"foo": "bar"}"#);
@@ -963,12 +983,21 @@ mod tests {
 
     #[test]
     fn test_extract_event_empty_content() {
-        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":7,"content":""}"#;
-        let event = extract_event(json);
+        let relay_msg = r#"["EVENT","sub_id",{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":7,"content":""}]"#;
+        let event = extract_event(relay_msg);
         assert!(event.is_some());
         let event = event.unwrap();
         assert_eq!(event.kind, 7);
         assert_eq!(event.content, "");
+    }
+
+    #[test]
+    fn test_extract_event_direct_object() {
+        // Also handle direct event object format (fallback case)
+        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"hello"}"#;
+        let event = extract_event(json);
+        assert!(event.is_some());
+        assert_eq!(event.unwrap().kind, 1);
     }
 
     #[test]
@@ -1001,8 +1030,8 @@ mod tests {
 
     #[test]
     fn test_extract_zap_event_with_amount() {
-        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":9735,"content":"","tags":[["bolt11","lnbc1000u1pj..."]]}"#;
-        let event = extract_event(json);
+        let relay_msg = r#"["EVENT","sub_id",{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":9735,"content":"","tags":[["bolt11","lnbc1000u1pj..."]]}]"#;
+        let event = extract_event(relay_msg);
         assert!(event.is_some());
         let event = event.unwrap();
         assert_eq!(event.kind, 9735);

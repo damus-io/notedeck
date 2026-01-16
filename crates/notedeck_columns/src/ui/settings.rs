@@ -100,13 +100,12 @@ impl SettingsAction {
                 accounts.update_max_hashtags_per_note(value);
             }
             Self::EnableNotifications => {
-                if let Some(pubkey) = accounts.selected_account_pubkey() {
-                    let relay_urls = accounts.get_selected_account_relay_urls();
-                    if let Err(e) =
-                        notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls)
-                    {
-                        tracing::error!("Failed to enable notifications: {}", e);
-                    }
+                let pubkey = accounts.selected_account_pubkey();
+                let relay_urls = accounts.get_selected_account_relay_urls();
+                if let Err(e) =
+                    notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls)
+                {
+                    tracing::error!("Failed to enable notifications: {}", e);
                 }
             }
             Self::DisableNotifications => {
@@ -147,6 +146,169 @@ where
                 contents(ui)
             });
         });
+}
+
+// =============================================================================
+// Shadcn-inspired notification UI components
+// =============================================================================
+
+/// Alert component - displays informational message with icon.
+/// Follows shadcn Alert design with rounded corners and subtle background.
+fn notification_alert(ui: &mut egui::Ui, i18n: &mut Localization) {
+    let alert_bg = if ui.visuals().dark_mode {
+        Color32::from_rgb(30, 41, 59) // slate-800
+    } else {
+        Color32::from_rgb(241, 245, 249) // slate-100
+    };
+
+    let alert_border = if ui.visuals().dark_mode {
+        Color32::from_rgb(51, 65, 85) // slate-700
+    } else {
+        Color32::from_rgb(203, 213, 225) // slate-300
+    };
+
+    Frame::new()
+        .fill(alert_bg)
+        .stroke(egui::Stroke::new(1.0, alert_border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Info icon (using text for now, could use an image)
+                ui.label(RichText::new("ℹ").size(16.0));
+
+                ui.add_space(8.0);
+
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(tr!(
+                            i18n,
+                            "Stay connected",
+                            "Alert title for notifications"
+                        ))
+                        .text_style(NotedeckTextStyle::Body.text_style())
+                        .strong(),
+                    );
+                    ui.label(richtext_small(tr!(
+                        i18n,
+                        "Get notified about mentions, replies, reactions, and zaps even when the app is closed.",
+                        "Alert description for notifications"
+                    )));
+                });
+            });
+        });
+}
+
+/// Badge component - displays status with colored background.
+/// Follows shadcn Badge design: pill shape, colored background.
+fn notification_badge(ui: &mut egui::Ui, text: &str, color: Color32) {
+    let text_color = if color.r() as u16 + color.g() as u16 + color.b() as u16 > 382 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+
+    Frame::new()
+        .fill(color)
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(text)
+                    .text_style(NotedeckTextStyle::Small.text_style())
+                    .color(text_color),
+            );
+        });
+}
+
+/// Toggle switch component - follows shadcn Switch design.
+/// 44px touch target with animated track and thumb.
+fn notification_toggle(
+    ui: &mut egui::Ui,
+    is_on: bool,
+    enabled: bool,
+    i18n: &mut Localization,
+) -> egui::Response {
+    let desired_size = vec2(52.0, 28.0);
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let animation_progress = ui
+            .ctx()
+            .animate_bool_responsive(response.id, is_on);
+
+        // Track colors
+        let (track_off, track_on) = if ui.visuals().dark_mode {
+            (
+                Color32::from_rgb(51, 65, 85),   // slate-700
+                Color32::from_rgb(139, 92, 246), // violet-500
+            )
+        } else {
+            (
+                Color32::from_rgb(203, 213, 225), // slate-300
+                Color32::from_rgb(124, 58, 237),  // violet-600
+            )
+        };
+
+        let track_color = if !enabled {
+            ui.visuals().gray_out(track_off)
+        } else {
+            Color32::from_rgba_unmultiplied(
+                (track_off.r() as f32 + (track_on.r() as f32 - track_off.r() as f32) * animation_progress) as u8,
+                (track_off.g() as f32 + (track_on.g() as f32 - track_off.g() as f32) * animation_progress) as u8,
+                (track_off.b() as f32 + (track_on.b() as f32 - track_off.b() as f32) * animation_progress) as u8,
+                255,
+            )
+        };
+
+        // Draw track (rounded rect)
+        let track_radius = (rect.height() / 2.0) as u8;
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(track_radius),
+            track_color,
+        );
+
+        // Draw thumb (circle)
+        let thumb_radius = (rect.height() - 4.0) / 2.0;
+        let thumb_x = egui::lerp(
+            rect.left() + thumb_radius + 2.0..=rect.right() - thumb_radius - 2.0,
+            animation_progress,
+        );
+        let thumb_center = egui::pos2(thumb_x, rect.center().y);
+        let thumb_color = if enabled {
+            Color32::WHITE
+        } else {
+            Color32::from_gray(200)
+        };
+
+        ui.painter()
+            .circle_filled(thumb_center, thumb_radius, thumb_color);
+
+        // Add subtle shadow to thumb
+        if enabled {
+            ui.painter().circle_stroke(
+                thumb_center,
+                thumb_radius,
+                egui::Stroke::new(1.0, Color32::from_black_alpha(20)),
+            );
+        }
+    }
+
+    // Accessibility: add tooltip
+    response.on_hover_text(if is_on {
+        tr!(
+            i18n,
+            "Click to disable notifications",
+            "Toggle tooltip when on"
+        )
+    } else {
+        tr!(
+            i18n,
+            "Click to enable notifications",
+            "Toggle tooltip when off"
+        )
+    })
 }
 
 impl<'a> SettingsView<'a> {
@@ -570,6 +732,7 @@ impl<'a> SettingsView<'a> {
     }
 
     /// Notifications section - only shown on Android.
+    /// Uses shadcn-inspired design: 44px touch targets, card containers, badges.
     fn notifications_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         // Only show notifications on supported platforms (Android)
         if !notedeck::platform::supports_notifications() {
@@ -592,101 +755,133 @@ impl<'a> SettingsView<'a> {
                 notedeck::platform::is_notification_permission_granted().unwrap_or(false);
             let permission_pending = notedeck::platform::is_notification_permission_pending();
 
-            // Show permission request button if permission not granted
-            if !permission_granted {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(richtext_small(tr!(
-                        self.note_context.i18n,
-                        "Permission required:",
-                        "Label for notification permission request, notifications settings section",
-                    )));
+            // Info alert explaining the feature
+            notification_alert(ui, self.note_context.i18n);
 
-                    if permission_pending {
-                        ui.label(richtext_small(tr!(
-                            self.note_context.i18n,
-                            "Waiting for response...",
-                            "Status text while waiting for notification permission response",
-                        )));
-                    } else if ui
-                        .button(richtext_small(tr!(
-                            self.note_context.i18n,
-                            "Grant permission",
-                            "Button to request notification permission",
-                        )))
-                        .clicked()
-                    {
-                        action = Some(SettingsAction::RequestNotificationPermission);
-                    }
-                });
+            ui.add_space(8.0);
 
-                ui.separator();
-            }
-
-            // Show enable/disable toggle
-            ui.horizontal_wrapped(|ui| {
+            // Permission status with badge
+            ui.horizontal(|ui| {
                 ui.label(richtext_small(tr!(
                     self.note_context.i18n,
-                    "Push notifications:",
-                    "Label for push notifications toggle, notifications settings section",
+                    "Permission:",
+                    "Label for notification permission status",
                 )));
 
-                let mut enabled = notifications_enabled;
-
-                let toggle_enabled = permission_granted && !permission_pending;
-
-                if ui
-                    .add_enabled(
-                        toggle_enabled,
-                        egui::widgets::SelectableLabel::new(
-                            enabled,
-                            RichText::new(if enabled {
-                                tr!(self.note_context.i18n, "On", "Notifications enabled state")
-                            } else {
-                                tr!(
-                                    self.note_context.i18n,
-                                    "Off",
-                                    "Notifications disabled state"
-                                )
-                            })
-                            .text_style(NotedeckTextStyle::Small.text_style()),
+                // Badge-style permission indicator
+                let (badge_text, badge_color) = if permission_granted {
+                    (
+                        tr!(
+                            self.note_context.i18n,
+                            "Granted",
+                            "Badge text when permission granted"
                         ),
+                        Color32::from_rgb(34, 197, 94), // Green
                     )
-                    .clicked()
-                {
-                    enabled = !enabled;
-                    action = if enabled {
-                        Some(SettingsAction::EnableNotifications)
-                    } else {
-                        Some(SettingsAction::DisableNotifications)
-                    };
-                }
-            });
-
-            // Show helpful description
-            ui.horizontal_wrapped(|ui| {
-                let text = if !permission_granted {
-                    tr!(
-                        self.note_context.i18n,
-                        "Grant notification permission to enable push notifications",
-                        "Help text when permission not granted"
-                    )
-                } else if notifications_enabled {
-                    tr!(
-                        self.note_context.i18n,
-                        "You will receive notifications for new mentions and zaps",
-                        "Help text when notifications enabled"
+                } else if permission_pending {
+                    (
+                        tr!(
+                            self.note_context.i18n,
+                            "Pending",
+                            "Badge text when permission pending"
+                        ),
+                        Color32::from_rgb(234, 179, 8), // Yellow
                     )
                 } else {
-                    tr!(
-                        self.note_context.i18n,
-                        "Enable to receive notifications even when the app is closed",
-                        "Help text when notifications disabled"
+                    (
+                        tr!(
+                            self.note_context.i18n,
+                            "Required",
+                            "Badge text when permission required"
+                        ),
+                        Color32::from_rgb(239, 68, 68), // Red
                     )
                 };
-                ui.label(
-                    richtext_small(&text).color(ui.visuals().gray_out(ui.visuals().text_color())),
-                );
+
+                notification_badge(ui, &badge_text, badge_color);
             });
+
+            ui.add_space(8.0);
+
+            // Permission request button - 44px min touch target
+            if !permission_granted && !permission_pending {
+                let btn_resp = ui.add_sized(
+                    [ui.available_width(), 44.0],
+                    Button::new(
+                        RichText::new(tr!(
+                            self.note_context.i18n,
+                            "Grant Notification Permission",
+                            "Button to request notification permission",
+                        ))
+                        .text_style(NotedeckTextStyle::Body.text_style()),
+                    ),
+                );
+
+                if btn_resp.clicked() {
+                    action = Some(SettingsAction::RequestNotificationPermission);
+                }
+
+                ui.add_space(8.0);
+            }
+
+            // Toggle switch row - 44px min touch target
+            ui.horizontal(|ui| {
+                ui.set_min_height(44.0);
+
+                ui.label(
+                    RichText::new(tr!(
+                        self.note_context.i18n,
+                        "Push notifications",
+                        "Label for push notifications toggle",
+                    ))
+                    .text_style(NotedeckTextStyle::Body.text_style()),
+                );
+
+                ui.with_layout(Layout::right_to_left(egui::Align::Center), |ui| {
+                    let toggle_enabled = permission_granted && !permission_pending;
+
+                    // Custom toggle switch styled like shadcn Switch
+                    let resp = notification_toggle(
+                        ui,
+                        notifications_enabled,
+                        toggle_enabled,
+                        self.note_context.i18n,
+                    );
+
+                    if resp.clicked() && toggle_enabled {
+                        action = if notifications_enabled {
+                            Some(SettingsAction::DisableNotifications)
+                        } else {
+                            Some(SettingsAction::EnableNotifications)
+                        };
+                    }
+                });
+            });
+
+            // Status description
+            ui.add_space(4.0);
+            let status_text = if !permission_granted {
+                tr!(
+                    self.note_context.i18n,
+                    "Grant permission to enable notifications",
+                    "Help text when permission not granted"
+                )
+            } else if notifications_enabled {
+                tr!(
+                    self.note_context.i18n,
+                    "Receiving mentions, replies, reactions, and zaps",
+                    "Help text when notifications enabled"
+                )
+            } else {
+                tr!(
+                    self.note_context.i18n,
+                    "Notifications are disabled",
+                    "Help text when notifications disabled"
+                )
+            };
+            ui.label(
+                richtext_small(&status_text).color(ui.visuals().gray_out(ui.visuals().text_color())),
+            );
         });
 
         action

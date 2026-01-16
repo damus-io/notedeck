@@ -424,7 +424,7 @@ impl Notedeck {
 }
 
 pub fn install_crypto() {
-    let provider = rustls::crypto::aws_lc_rs::default_provider();
+    let provider = rustls::crypto::ring::default_provider();
     let _ = provider.install_default();
 }
 
