@@ -16,12 +16,13 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.damus.notedeck.MainActivity
 import com.damus.notedeck.R
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 /**
  * Foreground service that maintains WebSocket connections to Nostr relays
@@ -49,8 +50,16 @@ class NotificationsService : Service() {
         const val ACTION_START = "com.damus.notedeck.START_NOTIFICATIONS"
         const val ACTION_STOP = "com.damus.notedeck.STOP_NOTIFICATIONS"
 
-        // Broadcast action for other Nostr apps
-        const val BROADCAST_NOSTR_EVENT = "com.shared.NOSTR"
+        // Broadcast action for other Nostr apps (non-DM events only)
+        const val BROADCAST_NOSTR_EVENT = "com.damus.notedeck.NOSTR_EVENT"
+        // Permission required to receive broadcasts
+        const val BROADCAST_PERMISSION = "com.damus.notedeck.permission.RECEIVE_NOSTR_EVENTS"
+
+        // Event kinds that should NOT be broadcast (privacy-sensitive)
+        private val PRIVATE_EVENT_KINDS = setOf(4, 1059) // Legacy DM, Gift-wrapped DM
+
+        // Max size for dedup cache (LRU eviction)
+        private const val MAX_DEDUP_CACHE = 1000
 
         // Service state
         private val isRunning = AtomicBoolean(false)
@@ -77,10 +86,15 @@ class NotificationsService : Service() {
     }
 
     // Coroutine scope for async operations
-    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var serviceScope: CoroutineScope? = null
 
-    // Event deduplication
-    private val processedEvents = ConcurrentHashMap<String, Boolean>()
+    // Event deduplication - bounded LRU cache to prevent memory leaks
+    // Synchronized access required since it's accessed from JNI callback thread
+    private val processedEvents = object : LinkedHashMap<String, Boolean>(100, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
+            return size > MAX_DEDUP_CACHE
+        }
+    }
 
     // Wake lock to keep CPU running for WebSocket connections
     private var wakeLock: PowerManager.WakeLock? = null
@@ -104,6 +118,7 @@ class NotificationsService : Service() {
             Log.e(TAG, "Failed to load native library", e)
         }
 
+        serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
         createNotificationChannels()
         acquireWakeLock()
     }
@@ -137,7 +152,14 @@ class NotificationsService : Service() {
             Log.e(TAG, "Error stopping native subscriptions", e)
         }
 
+        serviceScope?.cancel()
+        serviceScope = null
         releaseWakeLock()
+
+        synchronized(processedEvents) {
+            processedEvents.clear()
+        }
+
         super.onDestroy()
     }
 
@@ -285,14 +307,22 @@ class NotificationsService : Service() {
     fun onNostrEvent(eventJson: String, eventKind: Int, authorPubkey: String, authorName: String?) {
         Log.d(TAG, "Received Nostr event kind=$eventKind from $authorPubkey")
 
-        // Deduplicate
-        val eventId = eventJson.hashCode().toString() // TODO: Parse actual event ID
-        if (processedEvents.putIfAbsent(eventId, true) != null) {
-            return
+        // Extract real event ID for deduplication
+        val eventId = extractEventId(eventJson) ?: run {
+            Log.w(TAG, "Could not extract event ID, using hash fallback")
+            eventJson.hashCode().toString()
+        }
+
+        // Deduplicate with synchronized access
+        synchronized(processedEvents) {
+            if (processedEvents.containsKey(eventId)) {
+                return
+            }
+            processedEvents[eventId] = true
         }
 
         // Show notification using the helper (async for image loading)
-        serviceScope.launch {
+        serviceScope?.launch {
             NotificationHelper.showNotification(
                 this@NotificationsService,
                 eventJson,
@@ -302,8 +332,33 @@ class NotificationsService : Service() {
             )
         }
 
-        // Broadcast to other Nostr apps
-        broadcastEvent(eventJson)
+        // Broadcast to other Nostr apps (but NOT DMs for privacy)
+        if (eventKind !in PRIVATE_EVENT_KINDS) {
+            broadcastEvent(eventJson)
+        }
+    }
+
+    /**
+     * Extract the event ID from JSON for proper deduplication.
+     */
+    private fun extractEventId(eventJson: String): String? {
+        return try {
+            // Find the event object in the relay message
+            val startIdx = eventJson.indexOf("{\"id\"")
+            if (startIdx < 0) {
+                // Try alternate format where id isn't first
+                val jsonObj = JSONObject(eventJson.substring(eventJson.indexOf("{")))
+                return jsonObj.optString("id").takeIf { it.length == 64 }
+            }
+            val endIdx = eventJson.lastIndexOf("}")
+            if (endIdx > startIdx) {
+                val eventObj = JSONObject(eventJson.substring(startIdx, endIdx + 1))
+                eventObj.optString("id").takeIf { it.length == 64 }
+            } else null
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to extract event ID", e)
+            null
+        }
     }
 
     /**
@@ -315,10 +370,17 @@ class NotificationsService : Service() {
         updateServiceNotification()
     }
 
+    /**
+     * Broadcast event to other Nostr apps.
+     * Uses a permission to prevent unauthorized apps from receiving events.
+     * DMs are never broadcast for privacy.
+     */
     private fun broadcastEvent(eventJson: String) {
         val intent = Intent(BROADCAST_NOSTR_EVENT).apply {
             putExtra("EVENT", eventJson)
+            // Restrict to apps with our permission
+            setPackage(null) // Allow any app with permission
         }
-        sendBroadcast(intent)
+        sendBroadcast(intent, BROADCAST_PERMISSION)
     }
 }

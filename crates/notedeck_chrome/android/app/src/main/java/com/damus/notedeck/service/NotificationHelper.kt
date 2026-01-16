@@ -16,7 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.URL
-import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Helper class for creating rich Android notifications from Nostr events.
@@ -24,8 +24,8 @@ import java.security.MessageDigest
 object NotificationHelper {
     private const val TAG = "NotificationHelper"
 
-    // Cache for profile images
-    private val profileImageCache = mutableMapOf<String, Bitmap?>()
+    // Cache for profile images - thread-safe for concurrent access
+    private val profileImageCache = ConcurrentHashMap<String, Bitmap>()
 
     /**
      * Create and show a notification for a Nostr event.
@@ -39,9 +39,9 @@ object NotificationHelper {
     ) {
         val notificationManager = context.getSystemService(NotificationManager::class.java)
 
-        // Parse event details
+        // Parse event details - find the event object robustly
         val event = try {
-            JSONObject(eventJson.substringAfter("{").let { "{$it" })
+            parseEventFromJson(eventJson)
         } catch (e: Exception) {
             Log.w(TAG, "Failed to parse event JSON", e)
             null
@@ -226,14 +226,62 @@ object NotificationHelper {
     }
 
     /**
+     * Parse the Nostr event object from various JSON formats.
+     * Handles both raw event JSON and relay message format ["EVENT", "subid", {...}]
+     */
+    private fun parseEventFromJson(eventJson: String): JSONObject? {
+        // Try direct parse first (raw event object)
+        if (eventJson.trimStart().startsWith("{")) {
+            return try {
+                JSONObject(eventJson)
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        // Try to find event object in relay message format
+        val eventStart = eventJson.indexOf("{\"")
+        if (eventStart >= 0) {
+            // Find matching closing brace
+            var depth = 0
+            var eventEnd = -1
+            for (i in eventStart until eventJson.length) {
+                when (eventJson[i]) {
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) {
+                            eventEnd = i + 1
+                            break
+                        }
+                    }
+                }
+            }
+            if (eventEnd > eventStart) {
+                return try {
+                    JSONObject(eventJson.substring(eventStart, eventEnd))
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+
+        return null
+    }
+
+    /**
      * Load a profile image from robohash (fallback) or cached.
+     * Thread-safe via ConcurrentHashMap.
      */
     private suspend fun loadProfileImage(pubkey: String): Bitmap? {
-        // Check cache first
+        // Check cache first (thread-safe read)
         profileImageCache[pubkey]?.let { return it }
 
         return withContext(Dispatchers.IO) {
             try {
+                // Double-check after acquiring IO context (another thread may have loaded it)
+                profileImageCache[pubkey]?.let { return@withContext it }
+
                 // Use robohash as a simple avatar generator
                 val url = URL("https://robohash.org/${pubkey}.png?size=128x128&set=set4")
                 val connection = url.openConnection()
@@ -241,9 +289,9 @@ object NotificationHelper {
                 connection.readTimeout = 5000
                 val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
 
-                // Cache the result
+                // Cache the result (thread-safe write via putIfAbsent)
                 if (bitmap != null) {
-                    profileImageCache[pubkey] = bitmap
+                    profileImageCache.putIfAbsent(pubkey, bitmap)
                 }
                 bitmap
             } catch (e: Exception) {

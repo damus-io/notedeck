@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Custom permission for receiving Nostr event broadcasts (signature-level) -->
+    <permission
+        android:name="com.damus.notedeck.permission.RECEIVE_NOSTR_EVENTS"
+        android:protectionLevel="signature"
+        android:label="Receive Nostr Events"
+        android:description="@string/permission_receive_nostr_events" />
+
     <application
         android:allowBackup="true"
         android:label="Damus"
