@@ -172,7 +172,8 @@ fn notification_event_loop(state: Arc<Mutex<NotificationState>>) {
 
         let event = poll_next_event(&state);
         if event.is_none() {
-            thread::sleep(std::time::Duration::from_millis(100));
+            // 1 second idle sleep balances battery life vs notification latency
+            thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
 
@@ -400,19 +401,39 @@ fn extract_event(event_json: &str) -> Option<ExtractedEvent> {
         }
     };
 
-    let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = obj
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let kind = obj.get("kind").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-    let pubkey = obj.get("pubkey").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let content = obj.get("content").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let pubkey = obj
+        .get("pubkey")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let content = obj
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     // Validate id and pubkey are proper hex (64 chars)
     // Log warning but don't silently drop - helps debug relay issues
     if id.len() != 64 {
-        warn!("Dropping event with invalid id length {}: {}", id.len(), &id[..id.len().min(16)]);
+        warn!(
+            "Dropping event with invalid id length {}: {}",
+            id.len(),
+            &id[..id.len().min(16)]
+        );
         return None;
     }
     if pubkey.len() != 64 {
-        warn!("Dropping event with invalid pubkey length {}: {}", pubkey.len(), &pubkey[..pubkey.len().min(16)]);
+        warn!(
+            "Dropping event with invalid pubkey length {}: {}",
+            pubkey.len(),
+            &pubkey[..pubkey.len().min(16)]
+        );
         return None;
     }
 
@@ -535,11 +556,11 @@ fn parse_bolt11_amount(bolt11: &str) -> Option<i64> {
 
     // Convert to millisatoshis based on multiplier, then to satoshis
     let msats = match multiplier_char {
-        Some('m') => amount * 100_000_000,     // milli-bitcoin = 0.001 BTC = 100,000 sats
-        Some('u') => amount * 100_000,         // micro-bitcoin = 0.000001 BTC = 100 sats
-        Some('n') => amount * 100,             // nano-bitcoin = 0.000000001 BTC = 0.1 sats
-        Some('p') => amount / 10,              // pico-bitcoin = 0.000000000001 BTC
-        None => amount * 100_000_000_000,      // whole bitcoin (rare in practice)
+        Some('m') => amount * 100_000_000, // milli-bitcoin = 0.001 BTC = 100,000 sats
+        Some('u') => amount * 100_000,     // micro-bitcoin = 0.000001 BTC = 100 sats
+        Some('n') => amount * 100,         // nano-bitcoin = 0.000000001 BTC = 0.1 sats
+        Some('p') => amount / 10,          // pico-bitcoin = 0.000000000001 BTC
+        None => amount * 100_000_000_000,  // whole bitcoin (rare in practice)
         _ => return None,
     };
 
