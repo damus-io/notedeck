@@ -81,9 +81,12 @@ fn card_header_ui(ui: &mut egui::Ui, title: &str) {
     });
 }
 
-pub fn card_ui(ui: &mut egui::Ui, min_card: f32, content: impl FnOnce(&mut egui::Ui)) {
+pub fn card_ui(
+    ui: &mut egui::Ui,
+    min_card: f32,
+    content: impl FnOnce(&mut egui::Ui),
+) -> egui::Response {
     let visuals = ui.visuals().clone();
-
     egui::Frame::group(ui.style())
         .fill(visuals.extreme_bg_color)
         .corner_radius(egui::CornerRadius::same(12))
@@ -95,8 +98,11 @@ pub fn card_ui(ui: &mut egui::Ui, min_card: f32, content: impl FnOnce(&mut egui:
         .show(ui, |ui| {
             ui.set_min_width(min_card);
             ui.set_min_height(min_card * 0.5);
-            ui.vertical(|ui| content(ui));
-        });
+            ui.vertical(|ui| {
+                content(ui);
+            });
+        })
+        .response
 }
 
 pub fn kinds_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
@@ -172,10 +178,7 @@ pub fn posts_per_period_ui(dashboard: &Dashboard, ui: &mut egui::Ui) {
     } else if bars.is_empty() {
         ui.label("No data");
     } else {
-        let mut style = BarChartStyle::default();
-        style.value_precision = 0;
-        style.show_values = true;
-        horizontal_bar_chart(ui, None, &bars, style);
+        horizontal_bar_chart(ui, None, &bars, BarChartStyle::default());
     }
 
     footer_status_ui(
@@ -257,44 +260,36 @@ fn total_over(cache: &RollingCache) -> u64 {
     cache.buckets.iter().map(|b| b.total).sum()
 }
 
-fn grid_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
-    let cols = 3;
-    let min_card = 240.0;
-
-    egui::Grid::new("dashboard_grid_single_worker")
-        .num_columns(cols)
-        .min_col_width(min_card)
-        .spacing(egui::vec2(8.0, 8.0))
-        .show(ui, |ui| {
-            use crate::ui::{card_ui, kinds_ui, posts_per_period_ui, totals_ui};
-
-            // Card 1: Total notes
-            card_ui(ui, min_card, |ui| {
-                totals_ui(dashboard, ui);
-            });
-
-            // Card 3: Posts per period
-            card_ui(ui, min_card, |ui| {
-                posts_per_period_ui(dashboard, ui);
-            });
-
-            // Card 2: Kinds (top)
-            card_ui(ui, min_card, |ui| {
-                kinds_ui(dashboard, ui);
-            });
-
-            ui.end_row();
-        });
-}
-
 pub fn dashboard_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     egui::Frame::new()
         .inner_margin(egui::Margin::same(20))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                dashboard_controls_ui(dashboard, ui);
-                ui.add_space(10.0);
-                grid_ui(dashboard, ui);
+                dashboard_ui_inner(dashboard, ui);
             });
         });
+}
+
+fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
+    let min_card = 240.0;
+    let gap = 8.0;
+
+    dashboard_controls_ui(dashboard, ui);
+
+    ui.with_layout(
+        egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+        |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+            let size = [min_card, min_card];
+            ui.add_sized(size, |ui: &mut egui::Ui| {
+                card_ui(ui, min_card, |ui| totals_ui(dashboard, ui))
+            });
+            ui.add_sized(size, |ui: &mut egui::Ui| {
+                card_ui(ui, min_card, |ui| posts_per_period_ui(dashboard, ui))
+            });
+            ui.add_sized(size, |ui: &mut egui::Ui| {
+                card_ui(ui, min_card, |ui| kinds_ui(dashboard, ui))
+            });
+        },
+    );
 }
