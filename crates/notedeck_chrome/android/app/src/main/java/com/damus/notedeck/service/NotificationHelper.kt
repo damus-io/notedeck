@@ -15,6 +15,7 @@ import com.damus.notedeck.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URL
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -48,9 +49,13 @@ object NotificationHelper {
         authorPictureUrl: String? = null,
         zapAmountSats: Long? = null
     ) {
+        Log.i(TAG, "showNotification: eventKind=$eventKind eventId=${eventId.take(8)} authorPubkey=${authorPubkey.take(8)}")
+        Log.i(TAG, "showNotification: authorName=$authorName pictureUrl=${authorPictureUrl?.take(50)}")
+
         val notificationManager = context.getSystemService(NotificationManager::class.java)
 
         // Determine notification channel and content based on event kind
+        Log.i(TAG, "Matching eventKind=$eventKind against known kinds (1,4,6,7,1059,9735)")
         val (channel, title, text, groupKey) = when (eventKind) {
             1 -> {
                 // Text note mention
@@ -119,6 +124,7 @@ object NotificationHelper {
                 )
             }
             else -> {
+                Log.w(TAG, "Unknown eventKind=$eventKind, using fallback notification")
                 NotificationContent(
                     NotificationsService.CHANNEL_NOTIFICATIONS,
                     "Nostr",
@@ -127,6 +133,8 @@ object NotificationHelper {
                 )
             }
         }
+
+        Log.i(TAG, "Notification content: channel=$channel title=$title text=$text groupKey=$groupKey")
 
         // Create intent to open app
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -302,11 +310,29 @@ object NotificationHelper {
      * Truncate content to a maximum length.
      */
     private fun truncateContent(content: String, maxLength: Int): String {
-        return if (content.length > maxLength) {
-            "${content.substring(0, maxLength)}..."
+        val cleaned = cleanContent(content)
+        return if (cleaned.length > maxLength) {
+            "${cleaned.substring(0, maxLength)}..."
         } else {
-            content
+            cleaned
         }
+    }
+
+    /**
+     * Clean up content for notification display.
+     * - Removes "nostr:" prefix from mentions (nostr:npub... -> @npub...)
+     * - Shortens long npub/note references
+     */
+    private fun cleanContent(content: String): String {
+        // Replace nostr:npub1... with @npub1... (shortened)
+        // Replace nostr:note1... with [note]
+        // Replace nostr:nevent1... with [note]
+        return content
+            .replace(Regex("nostr:(npub1[a-z0-9]{8})[a-z0-9]*")) { match ->
+                "@${match.groupValues[1]}..."
+            }
+            .replace(Regex("nostr:(note1|nevent1)[a-z0-9]+"), "[note]")
+            .replace(Regex("nostr:(nprofile1)[a-z0-9]+"), "@[profile]")
     }
 
     /**
@@ -322,9 +348,9 @@ object NotificationHelper {
      */
     private fun formatSatsAmount(sats: Long): String {
         return when {
-            sats >= 1_000_000_000 -> String.format("%.1fB sats", sats / 1_000_000_000.0)
-            sats >= 1_000_000 -> String.format("%.1fM sats", sats / 1_000_000.0)
-            sats >= 10_000 -> String.format("%,d sats", sats)
+            sats >= 1_000_000_000 -> String.format(Locale.US, "%.1fB sats", sats / 1_000_000_000.0)
+            sats >= 1_000_000 -> String.format(Locale.US, "%.1fM sats", sats / 1_000_000.0)
+            sats >= 10_000 -> String.format(Locale.US, "%,d sats", sats)
             else -> "$sats sats"
         }
     }

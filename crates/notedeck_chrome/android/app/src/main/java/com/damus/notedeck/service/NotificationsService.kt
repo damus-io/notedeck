@@ -37,7 +37,7 @@ class NotificationsService : Service() {
 
         // Notification channels
         const val CHANNEL_SERVICE = "notedeck_service"
-        const val CHANNEL_NOTIFICATIONS = "notedeck_notifications"
+        const val CHANNEL_NOTIFICATIONS = "notedeck_notifications_v2"  // v2: IMPORTANCE_HIGH for heads-up
         const val CHANNEL_DMS = "notedeck_dms"
         const val CHANNEL_ZAPS = "notedeck_zaps"
 
@@ -113,11 +113,13 @@ class NotificationsService : Service() {
         super.onCreate()
         Log.i(TAG, "Service onCreate")
 
-        // Load native library
+        // Load native library - required for JNI calls
         try {
             System.loadLibrary("notedeck_chrome")
         } catch (e: UnsatisfiedLinkError) {
-            Log.e(TAG, "Failed to load native library", e)
+            Log.e(TAG, "Failed to load native library - stopping service", e)
+            stopSelf()
+            return
         }
 
         serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -179,11 +181,14 @@ class NotificationsService : Service() {
                 setShowBadge(false)
             }
 
-            // Notifications channel (mentions, replies, reactions)
+            // Delete old v1 channel (had IMPORTANCE_DEFAULT, no heads-up)
+            notificationManager.deleteNotificationChannel("notedeck_notifications")
+
+            // Notifications channel (mentions, replies, reactions) - HIGH for heads-up
             val notificationsChannel = NotificationChannel(
                 CHANNEL_NOTIFICATIONS,
                 "Notifications",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Mentions, replies, and reactions"
             }

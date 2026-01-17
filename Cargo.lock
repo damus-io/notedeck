@@ -3920,6 +3920,7 @@ name = "notedeck_chrome"
 version = "0.7.1"
 dependencies = [
  "android-keyring",
+ "bech32",
  "bitflags 2.9.1",
  "eframe",
  "egui",
@@ -3929,6 +3930,7 @@ dependencies = [
  "egui_tabs",
  "enostr",
  "ewebsock 0.2.0",
+ "hex",
  "jni 0.21.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "nostrdb",
  "notedeck",

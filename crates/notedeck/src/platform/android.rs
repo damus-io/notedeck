@@ -276,15 +276,25 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnDeepLink(
     };
 
     let author_pubkey: Option<String> = {
-        let s: String = env.get_string(&author_pubkey).map(|s| s.into()).unwrap_or_default();
-        if s.is_empty() { None } else { Some(s) }
+        let s: String = env
+            .get_string(&author_pubkey)
+            .map(|s| s.into())
+            .unwrap_or_default();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     };
 
     info!(
         "Deep link received: event_id={}, kind={}, author={}",
         &event_id[..8.min(event_id.len())],
         event_kind,
-        author_pubkey.as_deref().map(|p| &p[..8.min(p.len())]).unwrap_or("none")
+        author_pubkey
+            .as_deref()
+            .map(|p| &p[..8.min(p.len())])
+            .unwrap_or("none")
     );
 
     let deep_link = DeepLinkInfo {
@@ -304,10 +314,17 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnDeepLink(
 /// Returns `Some(DeepLinkInfo)` if a notification was tapped, `None` otherwise.
 /// The deep link is cleared after this call.
 pub fn take_pending_deep_link() -> Option<DeepLinkInfo> {
-    PENDING_DEEP_LINK.lock().ok().and_then(|mut pending| pending.take())
+    PENDING_DEEP_LINK
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take())
 }
 
 /// Check if there's a pending deep link without consuming it.
 pub fn has_pending_deep_link() -> bool {
-    PENDING_DEEP_LINK.lock().ok().map(|pending| pending.is_some()).unwrap_or(false)
+    PENDING_DEEP_LINK
+        .lock()
+        .ok()
+        .map(|pending| pending.is_some())
+        .unwrap_or(false)
 }

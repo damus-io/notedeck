@@ -67,6 +67,8 @@ android-keyring = { workspace = true }
 jni = "0.21"
 enostr = { workspace = true }
 ewebsock = { workspace = true }
+bech32 = { workspace = true }
+hex = { workspace = true }
 
 # Fix debug mode crash on macOS: objc2-foundation 0.2.2 has incorrect type
 # encoding for NSFastEnumeration. The relax-sign-encoding feature allows

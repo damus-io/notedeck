@@ -22,6 +22,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use tracing::{debug, error, info, warn};
 
+#[cfg(target_os = "android")]
+use bech32::Bech32;
+#[cfg(target_os = "android")]
+use std::collections::HashMap;
+
 /// Default relays to connect to if user hasn't configured inbox relays
 const DEFAULT_RELAYS: &[&str] = &[
     "wss://relay.damus.io",
@@ -210,7 +215,10 @@ fn notification_worker(shared: Arc<SharedState>, pubkey: Pubkey, relay_urls: Vec
                 .iter()
                 .filter(|r| matches!(r.status(), RelayStatus::Connected))
                 .count();
-            info!("Worker heartbeat: loop={}, connected={} relays", loop_count, connected);
+            info!(
+                "Worker heartbeat: loop={}, connected={} relays",
+                loop_count, connected
+            );
         }
 
         // Send keepalive pings
@@ -368,6 +376,17 @@ fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str)
         return;
     }
 
+    // Only notify for relevant event kinds
+    // 1=text note, 4=legacy DM, 6=repost, 7=reaction, 1059=gift-wrapped DM, 9735=zap
+    const NOTIFICATION_KINDS: &[i32] = &[1, 4, 6, 7, 1059, 9735];
+    if !NOTIFICATION_KINDS.contains(&event.kind) {
+        debug!(
+            "Ignoring event kind {} (not a notification kind)",
+            event.kind
+        );
+        return;
+    }
+
     if !record_event_if_new(state, &event.id) {
         debug!("Skipping duplicate event id={}", &event.id[..8]);
         return;
@@ -382,15 +401,121 @@ fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str)
     );
 
     // Look up author profile from cache, request if not cached
-    let profile = state.profile_cache.get(&event.pubkey).cloned();
+    let mut profile = state.profile_cache.get(&event.pubkey).cloned();
     if profile.is_none() {
         request_profile_if_needed(state, &event.pubkey);
+
+        // Brief wait for profile to arrive - poll relay messages
+        // This gives relays a chance to respond with the profile before we show the notification
+        for _ in 0..20 {
+            // Process any pending messages (including potential profile response)
+            while let Some(ev) = state.pool.try_recv() {
+                // Only process text messages that might be profile responses
+                if let enostr::ewebsock::WsEvent::Message(enostr::ewebsock::WsMessage::Text(
+                    ref text,
+                )) = ev.event
+                {
+                    // Try to parse as relay message and handle kind 0 events
+                    if let Ok(enostr::RelayMessage::Event(_sub, event_json)) =
+                        enostr::RelayMessage::from_json(text)
+                    {
+                        if let Some(evt) = extract_event(event_json) {
+                            if evt.kind == 0 {
+                                handle_profile_event(state, &evt);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check if profile arrived
+            if let Some(p) = state.profile_cache.get(&event.pubkey) {
+                profile = Some(p.clone());
+                info!(
+                    "Profile fetched for {}: name={:?}",
+                    &event.pubkey[..8],
+                    p.name
+                );
+                break;
+            }
+
+            // Brief sleep before next poll
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     let author_name = profile.as_ref().and_then(|p| p.name.clone());
     let picture_url = profile.as_ref().and_then(|p| p.picture_url.clone());
 
-    notify_nostr_event(&event, author_name.as_deref(), picture_url.as_deref());
+    // Request profiles for mentioned users, then resolve mentions
+    #[cfg(target_os = "android")]
+    let resolved_content = {
+        // Extract mentioned npubs and request their profiles
+        let mentioned_pubkeys = extract_mentioned_pubkeys(&event.content);
+        for pubkey in &mentioned_pubkeys {
+            request_profile_if_needed(state, pubkey);
+        }
+
+        // Brief wait for mentioned profiles to arrive
+        if !mentioned_pubkeys.is_empty() {
+            for _ in 0..10 {
+                while let Some(ev) = state.pool.try_recv() {
+                    if let enostr::ewebsock::WsEvent::Message(enostr::ewebsock::WsMessage::Text(
+                        ref text,
+                    )) = ev.event
+                    {
+                        if let Ok(enostr::RelayMessage::Event(_sub, event_json)) =
+                            enostr::RelayMessage::from_json(text)
+                        {
+                            if let Some(evt) = extract_event(event_json) {
+                                if evt.kind == 0 {
+                                    handle_profile_event(state, &evt);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Check if all mentioned profiles are cached
+                if mentioned_pubkeys
+                    .iter()
+                    .all(|pk| state.profile_cache.contains_key(pk))
+                {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+        }
+
+        resolve_mentions(&event.content, &state.profile_cache)
+    };
+    #[cfg(not(target_os = "android"))]
+    let resolved_content = event.content.clone();
+
+    info!(
+        "Notifying with profile: name={:?}, picture={:?}",
+        author_name,
+        picture_url.as_ref().map(|s| &s[..s.len().min(50)])
+    );
+    info!(
+        "Resolved content: {}",
+        &resolved_content[..resolved_content.len().min(100)]
+    );
+
+    // Create event with resolved content for notification
+    let resolved_event = ExtractedEvent {
+        id: event.id.clone(),
+        kind: event.kind,
+        pubkey: event.pubkey.clone(),
+        content: resolved_content,
+        zap_amount_sats: event.zap_amount_sats,
+        raw_json: event.raw_json.clone(),
+    };
+
+    notify_nostr_event(
+        &resolved_event,
+        author_name.as_deref(),
+        picture_url.as_deref(),
+    );
 }
 
 /// Handle a kind 0 (profile metadata) event by extracting and caching profile info.
@@ -423,22 +548,44 @@ fn handle_profile_event(state: &mut WorkerState, event: &ExtractedEvent) {
 /// Extract profile info (name and picture URL) from profile content JSON.
 /// Prefers "display_name" over "name" for the name field.
 fn extract_profile_info(content: &str) -> CachedProfile {
+    // Log first 200 chars of profile content for debugging
+    info!(
+        "Parsing profile content: {}",
+        &content[..content.len().min(200)]
+    );
+
     let value: serde_json::Value = match serde_json::from_str(content) {
         Ok(v) => v,
-        Err(_) => return CachedProfile::default(),
+        Err(e) => {
+            warn!("Failed to parse profile JSON: {}", e);
+            return CachedProfile::default();
+        }
     };
     let obj = match value.as_object() {
         Some(o) => o,
-        None => return CachedProfile::default(),
+        None => {
+            warn!("Profile content is not a JSON object");
+            return CachedProfile::default();
+        }
     };
 
-    // Prefer display_name, fall back to name
-    let name = obj
+    // Log available keys
+    let keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+    info!("Profile has keys: {:?}", keys);
+
+    // Prefer display_name, fall back to name (handle empty strings properly)
+    let display_name_str = obj
         .get("display_name")
-        .or_else(|| obj.get("name"))
         .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
+        .filter(|s| !s.is_empty());
+    let name_str = obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+    info!("display_name={:?}, name={:?}", display_name_str, name_str);
+
+    let name = display_name_str.or(name_str).map(|s| s.to_string());
 
     // Get picture URL
     let picture_url = obj
@@ -448,6 +595,109 @@ fn extract_profile_info(content: &str) -> CachedProfile {
         .map(|s| s.to_string());
 
     CachedProfile { name, picture_url }
+}
+
+/// Decode a bech32 npub to hex pubkey.
+/// Returns None if decoding fails.
+#[cfg(target_os = "android")]
+fn decode_npub(npub: &str) -> Option<String> {
+    use bech32::primitives::decode::CheckedHrpstring;
+
+    // npub must start with "npub1"
+    if !npub.starts_with("npub1") {
+        return None;
+    }
+
+    let checked = CheckedHrpstring::new::<Bech32>(npub).ok()?;
+    if checked.hrp().as_str() != "npub" {
+        return None;
+    }
+
+    let data: Vec<u8> = checked.byte_iter().collect();
+    if data.len() != 32 {
+        return None;
+    }
+
+    Some(hex::encode(data))
+}
+
+/// Extract hex pubkeys from nostr:npub mentions in content.
+#[cfg(target_os = "android")]
+fn extract_mentioned_pubkeys(content: &str) -> Vec<String> {
+    let mut pubkeys = Vec::new();
+    let mut search_start = 0;
+
+    while let Some(pos) = content[search_start..].find("nostr:npub1") {
+        let abs_pos = search_start + pos;
+        let after_prefix = abs_pos + 11;
+
+        let npub_end = content[after_prefix..]
+            .find(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit())
+            .map(|p| after_prefix + p)
+            .unwrap_or(content.len());
+
+        let npub = &content[abs_pos + 6..npub_end];
+
+        if let Some(hex_pubkey) = decode_npub(npub) {
+            pubkeys.push(hex_pubkey);
+        }
+
+        search_start = npub_end;
+    }
+
+    pubkeys
+}
+
+/// Resolve nostr:npub mentions in content to display names.
+/// Looks up profiles from cache and replaces npub references with @name.
+#[cfg(target_os = "android")]
+fn resolve_mentions(
+    content: &str,
+    profile_cache: &std::collections::HashMap<String, CachedProfile>,
+) -> String {
+    let mut result = content.to_string();
+    let mut search_start = 0;
+
+    // Find all nostr:npub1... patterns
+    while let Some(pos) = result[search_start..].find("nostr:npub1") {
+        let abs_pos = search_start + pos;
+        let after_prefix = abs_pos + 11; // length of "nostr:npub1"
+
+        // Find end of npub (bech32 chars are lowercase alphanumeric)
+        let npub_end = result[after_prefix..]
+            .find(|c: char| !c.is_ascii_lowercase() && !c.is_ascii_digit())
+            .map(|p| after_prefix + p)
+            .unwrap_or(result.len());
+
+        let full_match = &result[abs_pos..npub_end];
+        let npub = &result[abs_pos + 6..npub_end]; // skip "nostr:"
+
+        // Decode npub to hex pubkey and look up profile
+        let replacement = if let Some(hex_pubkey) = decode_npub(npub) {
+            if let Some(profile) = profile_cache.get(&hex_pubkey) {
+                if let Some(name) = &profile.name {
+                    format!("@{}", name)
+                } else {
+                    // Fallback: shorten npub
+                    format!("@{}...", &npub[..npub.len().min(12)])
+                }
+            } else {
+                format!("@{}...", &npub[..npub.len().min(12)])
+            }
+        } else {
+            format!("@{}...", &npub[..npub.len().min(12)])
+        };
+
+        result = format!(
+            "{}{}{}",
+            &result[..abs_pos],
+            replacement,
+            &result[npub_end..]
+        );
+        search_start = abs_pos + replacement.len();
+    }
+
+    result
 }
 
 /// Request profile for the given pubkey if not already requested.
@@ -463,7 +713,10 @@ fn request_profile_if_needed(state: &mut WorkerState, pubkey: &str) {
 
     // Limit pending requests to avoid too many open subscriptions
     if state.requested_profiles.len() >= 50 {
-        debug!("Too many pending profile requests, skipping {}", &pubkey[..8]);
+        debug!(
+            "Too many pending profile requests, skipping {}",
+            &pubkey[..8]
+        );
         return;
     }
 
@@ -703,17 +956,26 @@ fn parse_bolt11_amount(bolt11: &str) -> Option<i64> {
     let amount_str: String = chars[..amount_end].iter().collect();
     let amount: i64 = amount_str.parse().ok()?;
 
-    // Convert to millisatoshis based on multiplier, then to satoshis
-    let msats = match multiplier_char {
-        Some('m') => amount * 100_000_000, // milli-bitcoin = 0.001 BTC = 100,000 sats
-        Some('u') => amount * 100_000,     // micro-bitcoin = 0.000001 BTC = 100 sats
-        Some('n') => amount * 100,         // nano-bitcoin = 0.000000001 BTC = 0.1 sats
-        Some('p') => amount / 10,          // pico-bitcoin = 0.000000000001 BTC
-        None => amount * 100_000_000_000,  // whole bitcoin (rare in practice)
+    // Convert to millisatoshis based on multiplier using checked arithmetic to avoid overflow.
+    // Multipliers: (numerator, denominator) to compute msats = amount * numerator / denominator
+    // - None (whole BTC): 1 BTC = 100,000,000,000 msats
+    // - 'm' (milli): 1 mBTC = 100,000,000 msats
+    // - 'u' (micro): 1 uBTC = 100,000 msats
+    // - 'n' (nano): 1 nBTC = 100 msats
+    // - 'p' (pico): 1 pBTC = 0.1 msats, so we use numerator=1, denom=10
+    let (numerator, denominator): (i64, i64) = match multiplier_char {
+        Some('m') => (100_000_000, 1),
+        Some('u') => (100_000, 1),
+        Some('n') => (100, 1),
+        Some('p') => (1, 10),
+        None => (100_000_000_000, 1),
         _ => return None,
     };
 
-    // Convert millisatoshis to satoshis
+    // Use checked arithmetic to detect overflow
+    let msats = amount.checked_mul(numerator)?.checked_div(denominator)?;
+
+    // Convert millisatoshis to satoshis (floors sub-satoshi amounts)
     Some(msats / 1000)
 }
 

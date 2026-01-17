@@ -100,12 +100,19 @@ impl SettingsAction {
                 accounts.update_max_hashtags_per_note(value);
             }
             Self::EnableNotifications => {
-                let pubkey = accounts.selected_account_pubkey();
+                // Get relay URLs first - if empty, user hasn't configured relays yet
                 let relay_urls = accounts.get_selected_account_relay_urls();
-                if let Err(e) =
-                    notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls)
-                {
-                    tracing::error!("Failed to enable notifications: {}", e);
+                if relay_urls.is_empty() {
+                    tracing::warn!(
+                        "Cannot enable notifications: no relay URLs configured for selected account"
+                    );
+                } else {
+                    let pubkey = accounts.selected_account_pubkey();
+                    if let Err(e) =
+                        notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls)
+                    {
+                        tracing::error!("Failed to enable notifications: {}", e);
+                    }
                 }
             }
             Self::DisableNotifications => {
@@ -233,9 +240,7 @@ fn notification_toggle(
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
     if ui.is_rect_visible(rect) {
-        let animation_progress = ui
-            .ctx()
-            .animate_bool_responsive(response.id, is_on);
+        let animation_progress = ui.ctx().animate_bool_responsive(response.id, is_on);
 
         // Track colors
         let (track_off, track_on) = if ui.visuals().dark_mode {
@@ -254,20 +259,23 @@ fn notification_toggle(
             ui.visuals().gray_out(track_off)
         } else {
             Color32::from_rgba_unmultiplied(
-                (track_off.r() as f32 + (track_on.r() as f32 - track_off.r() as f32) * animation_progress) as u8,
-                (track_off.g() as f32 + (track_on.g() as f32 - track_off.g() as f32) * animation_progress) as u8,
-                (track_off.b() as f32 + (track_on.b() as f32 - track_off.b() as f32) * animation_progress) as u8,
+                (track_off.r() as f32
+                    + (track_on.r() as f32 - track_off.r() as f32) * animation_progress)
+                    as u8,
+                (track_off.g() as f32
+                    + (track_on.g() as f32 - track_off.g() as f32) * animation_progress)
+                    as u8,
+                (track_off.b() as f32
+                    + (track_on.b() as f32 - track_off.b() as f32) * animation_progress)
+                    as u8,
                 255,
             )
         };
 
         // Draw track (rounded rect)
         let track_radius = (rect.height() / 2.0) as u8;
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(track_radius),
-            track_color,
-        );
+        ui.painter()
+            .rect_filled(rect, CornerRadius::same(track_radius), track_color);
 
         // Draw thumb (circle)
         let thumb_radius = (rect.height() - 4.0) / 2.0;
@@ -880,7 +888,8 @@ impl<'a> SettingsView<'a> {
                 )
             };
             ui.label(
-                richtext_small(&status_text).color(ui.visuals().gray_out(ui.visuals().text_color())),
+                richtext_small(&status_text)
+                    .color(ui.visuals().gray_out(ui.visuals().text_color())),
             );
         });
 
