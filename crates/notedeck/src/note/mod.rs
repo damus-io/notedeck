@@ -29,6 +29,7 @@ pub struct NoteContext<'d> {
     pub pool: &'d mut RelayPool,
     pub jobs: &'d MediaJobSender,
     pub unknown_ids: &'d mut UnknownIds,
+    pub renderer: Option<renderbud::egui::EguiRenderer>,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
 }
 

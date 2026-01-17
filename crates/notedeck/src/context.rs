@@ -30,6 +30,7 @@ pub struct AppContext<'a> {
     pub job_pool: &'a mut JobPool,
     pub media_jobs: &'a mut MediaJobs,
     pub i18n: &'a mut Localization,
+    pub renderer: Option<renderbud::egui::EguiRenderer>,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

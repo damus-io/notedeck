@@ -81,6 +81,10 @@ pub struct Notedeck {
     media_jobs: MediaJobs,
     i18n: Localization,
 
+    /// A physically based renderer for rendering
+    /// 3d objects within notedeck
+    renderbud: Option<renderbud::egui::EguiRenderer>,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -180,6 +184,10 @@ impl Notedeck {
     #[cfg(target_os = "android")]
     pub fn set_android_context(&mut self, context: AndroidApp) {
         self.android_app = Some(context);
+    }
+
+    pub fn set_renderer(&mut self, renderer: renderbud::egui::EguiRenderer) {
+        self.renderbud = Some(renderer)
     }
 
     pub fn new<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
@@ -306,8 +314,10 @@ impl Notedeck {
 
         let (send_new_jobs, receive_new_jobs) = std::sync::mpsc::channel();
         let media_job_cache = JobCache::new(receive_new_jobs, send_new_jobs);
+        let renderbud: Option<renderbud::egui::EguiRenderer> = None;
 
         Self {
+            renderbud,
             ndb,
             img_cache,
             unknown_ids,
@@ -378,6 +388,7 @@ impl Notedeck {
     pub fn app_context(&mut self) -> AppContext<'_> {
         AppContext {
             ndb: &mut self.ndb,
+            renderer: self.renderbud.clone(),
             img_cache: &mut self.img_cache,
             unknown_ids: &mut self.unknown_ids,
             pool: &mut self.pool,

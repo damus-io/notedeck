@@ -1,0 +1,3 @@
+[submodule "crates/renderbud"]
+	path = crates/renderbud
+	url = https://github.com/jb55/renderbud

@@ -151,6 +151,35 @@ impl Chrome {
     ) -> Result<Self, Error> {
         stop_debug_mode(notedeck.options());
 
+        /* TODO(jb55): update this to .content_rect when we update egui */
+
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            let screen = cc.egui_ctx.screen_rect();
+            let mut width = screen.width() as u32;
+            let mut height = screen.height() as u32;
+            if width >= 8192 {
+                width = 1920;
+            }
+            if height >= 8192 {
+                height = 1080;
+            }
+            let renderer = renderbud::egui::EguiRenderer::new(rs, (width, height));
+
+            /*
+            renderer
+                .renderer
+                .lock()
+                .unwrap()
+                .load_gltf_model(
+                    &rs.device,
+                    &rs.queue,
+                    "crates/renderbud/examples/assets/ironwood.glb",
+                );
+            */
+
+            notedeck.set_renderer(renderer);
+        }
+
         let context = &mut notedeck.app_context();
         let dave = Dave::new(cc.wgpu_render_state.as_ref());
         let columns = Damus::new(context, app_args);

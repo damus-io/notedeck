@@ -11,6 +11,7 @@ url = { workspace = true }
 strum = { workspace = true }
 blurhash = { workspace = true }
 strum_macros = { workspace = true }
+renderbud = { workspace = true }
 dirs = { workspace = true }
 enostr = { workspace = true }
 nostr = { workspace = true }
