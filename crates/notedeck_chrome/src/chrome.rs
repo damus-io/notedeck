@@ -404,7 +404,7 @@ fn milestone_name<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {
 
 #[cfg(feature = "clndash")]
 fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
-    expanding_button(
+    notedeck_ui::expanding_button(
         "clndash-button",
         24.0,
         app_images::cln_image(),
@@ -416,7 +416,7 @@ fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
 
 #[cfg(feature = "notebook")]
 fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
-    expanding_button(
+    notedeck_ui::expanding_button(
         "notebook-button",
         40.0,
         app_images::algo_image(),
