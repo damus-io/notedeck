@@ -70,7 +70,7 @@ impl<'a, 'd> SearchView<'a, 'd> {
             self.note_context.clipboard,
         );
 
-        search_resp.process(self.query);
+        search_resp.process_search_response(self.query);
 
         let keyboard_resp = handle_keyboard_navigation(
             ui,
@@ -444,11 +444,10 @@ struct SearchResponse {
 }
 
 impl SearchResponse {
-    fn process(self, state: &mut SearchQueryState) {
+    fn process_search_response(self, state: &mut SearchQueryState) {
         if self.requested_focus {
             state.focus_state = FocusState::RequestedFocus;
-        } else if state.focus_state == FocusState::RequestedFocus && !self.input_changed {
-            state.focus_state = FocusState::Navigating;
+            tracing::debug!("search response: requesting focus");
         }
 
         if self.input_changed {

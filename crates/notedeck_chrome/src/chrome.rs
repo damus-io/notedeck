@@ -26,8 +26,14 @@ use notedeck::{
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
+
+#[cfg(feature = "messages")]
 use notedeck_messages::MessagesApp;
-use notedeck_ui::{app_images, expanding_button, galley_centered_pos, ProfilePic};
+
+#[cfg(feature = "clndash")]
+use notedeck_ui::expanding_button;
+
+use notedeck_ui::{app_images, galley_centered_pos, ProfilePic};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -155,15 +161,14 @@ impl Chrome {
         chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
+        #[cfg(feature = "messages")]
         chrome.add_app(NotedeckApp::Messages(Box::new(MessagesApp::new())));
 
-        if notedeck.has_option(NotedeckOptions::FeatureNotebook) {
-            chrome.add_app(NotedeckApp::Notebook(Box::default()));
-        }
+        #[cfg(feature = "notebook")]
+        chrome.add_app(NotedeckApp::Notebook(Box::default()));
 
-        if notedeck.has_option(NotedeckOptions::FeatureClnDash) {
-            chrome.add_app(NotedeckApp::ClnDash(Box::default()));
-        }
+        #[cfg(feature = "clndash")]
+        chrome.add_app(NotedeckApp::ClnDash(Box::default()));
 
         chrome.set_active(0);
 
@@ -397,6 +402,7 @@ fn milestone_name<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {
     }
 }
 
+#[cfg(feature = "clndash")]
 fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "clndash-button",
@@ -408,6 +414,7 @@ fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
+#[cfg(feature = "notebook")]
 fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
     expanding_button(
         "notebook-button",
@@ -774,12 +781,18 @@ fn topdown_sidebar(
         let text = match &app {
             NotedeckApp::Dave(_) => tr!(loc, "Dave", "Button to go to the Dave app"),
             NotedeckApp::Columns(_) => tr!(loc, "Columns", "Button to go to the Columns app"),
+
+            #[cfg(feature = "messages")]
             NotedeckApp::Messages(_) => {
                 tr!(loc, "Messaging", "Button to go to the messaging app")
             }
+
+            #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(_) => {
                 tr!(loc, "Notebook", "Button to go to the Notebook app")
             }
+
+            #[cfg(feature = "clndash")]
             NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
             NotedeckApp::Other(_) => tr!(loc, "Other", "Button to go to the Other app"),
         };
@@ -808,14 +821,17 @@ fn topdown_sidebar(
                                     );
                                 }
 
+                                #[cfg(feature = "messages")]
                                 NotedeckApp::Messages(_dms) => {
                                     ui.add(app_images::new_message_image());
                                 }
 
+                                #[cfg(feature = "clndash")]
                                 NotedeckApp::ClnDash(_clndash) => {
                                     clndash_button(ui);
                                 }
 
+                                #[cfg(feature = "notebook")]
                                 NotedeckApp::Notebook(_notebook) => {
                                     notebook_button(ui);
                                 }

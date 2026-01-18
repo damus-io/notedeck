@@ -22,16 +22,6 @@ bitflags! {
 
         /// Simulate is_compiled_as_mobile ?
         const Mobile = 1 << 6;
-
-        // ===== Feature Flags ======
-        /// Is notebook enabled?
-        const FeatureNotebook = 1 << 32;
-
-        /// Is clndash enabled?
-        const FeatureClnDash = 1 << 33;
-
-        /// Is the Notedeck DMs app enabled?
-        const FeatureMessages = 1 << 34;
     }
 }
 

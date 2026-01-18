@@ -72,6 +72,7 @@ fn handle_egui_events(
     input: &egui::InputState,
     columns: &mut Columns,
     hovered_column: Option<usize>,
+    wants_keyboard_input: bool,
 ) {
     for event in &input.raw.events {
         match event {
@@ -82,7 +83,11 @@ fn handle_egui_events(
                 ..
             } if *pressed => {
                 // Browser-like navigation: Cmd+Arrow (macOS) / Ctrl+Arrow (others)
-                if (modifiers.ctrl || modifiers.command) && !modifiers.shift && !modifiers.alt {
+                if !wants_keyboard_input
+                    && (modifiers.ctrl || modifiers.command)
+                    && !modifiers.shift
+                    && !modifiers.alt
+                {
                     match key {
                         egui::Key::ArrowLeft | egui::Key::H => {
                             columns.get_selected_router().go_back();
@@ -160,7 +165,15 @@ fn try_process_event(
 ) -> Result<()> {
     let current_columns =
         get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
-    ctx.input(|i| handle_egui_events(i, current_columns, damus.hovered_column));
+    let wants_keyboard_input = ctx.wants_keyboard_input();
+    ctx.input(|i| {
+        handle_egui_events(
+            i,
+            current_columns,
+            damus.hovered_column,
+            wants_keyboard_input,
+        )
+    });
 
     try_process_events_core(app_ctx, ctx, |app_ctx, ev| match (&ev.event).into() {
         RelayEvent::Opened => {

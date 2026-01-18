@@ -612,7 +612,7 @@ pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, Merg
 #[allow(clippy::too_many_arguments)]
 pub fn setup_new_timeline(
     timeline: &mut Timeline,
-    ndb: &mut Ndb,
+    ndb: &Ndb,
     txn: &Transaction,
     subs: &mut Subscriptions,
     pool: &mut RelayPool,
@@ -841,64 +841,22 @@ fn setup_timeline_nostrdb_sub(
     Ok(())
 }
 
-/// Check if the contact list has changed since the filter was built.
-///
-/// Returns `Some(timestamp)` if the contact list has a newer timestamp
-/// than when the filter was built, indicating the filter needs rebuilding.
-/// Returns `None` if the filter is up-to-date or this isn't a contact timeline.
-fn contact_list_needs_rebuild(timeline: &Timeline, accounts: &Accounts) -> Option<u64> {
-    if !timeline.kind.is_contacts() {
-        return None;
-    }
-
-    let ContactState::Received {
-        contacts: _,
-        note_key: _,
-        timestamp,
-    } = accounts.get_selected_account().data.contacts.get_state()
-    else {
-        return None;
-    };
-
-    if timeline.contact_list_timestamp == Some(*timestamp) {
-        return None;
-    }
-
-    Some(*timestamp)
-}
-
 /// Check our timeline filter and see if we have any filter data ready.
-///
 /// Our timelines may require additional data before it is functional. For
 /// example, when we have to fetch a contact list before we do the actual
 /// following list query.
-///
-/// For contact list timelines, this also detects when the contact list has
-/// changed (e.g., after follow/unfollow) and triggers a filter rebuild.
-#[profiling::function]
 pub fn is_timeline_ready(
-    ndb: &mut Ndb,
+    ndb: &Ndb,
     pool: &mut RelayPool,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
     accounts: &Accounts,
     unknown_ids: &mut UnknownIds,
 ) -> bool {
-    // Check if filter is ready and contact list hasn't changed
-    if timeline.filter.get_any_ready().is_some() {
-        let Some(new_timestamp) = contact_list_needs_rebuild(timeline, accounts) else {
-            return true;
-        };
-
-        // Contact list changed - invalidate and rebuild
-        info!(
-            "Contact list changed (old: {:?}, new: {}), rebuilding timeline filter",
-            timeline.contact_list_timestamp, new_timestamp
-        );
-        timeline.invalidate();
-        timeline.reset_views();
-        timeline.subscription.reset(ndb, pool);
-        // Fall through to rebuild
+    // TODO: we should debounce the filter states a bit to make sure we have
+    // seen all of the different contact lists from each relay
+    if let Some(_f) = timeline.filter.get_any_ready() {
+        return true;
     }
 
     let Some(res) = timeline.filter.get_any_gotremote() else {
@@ -938,16 +896,12 @@ pub fn is_timeline_ready(
 
     let with_hashtags = false;
 
-    let (filter, contact_timestamp) = {
+    let filter = {
         let txn = Transaction::new(ndb).expect("txn");
         let note = ndb.get_note_by_key(&txn, note_key).expect("note");
         let add_pk = timeline.kind.pubkey().map(|pk| pk.bytes());
-        let timestamp = note.created_at();
 
-        (
-            hybrid_contacts_filter(&note, add_pk, with_hashtags),
-            timestamp,
-        )
+        hybrid_contacts_filter(&note, add_pk, with_hashtags)
     };
 
     // TODO: into_follow_filter is hardcoded to contact lists, let's generalize
@@ -977,9 +931,8 @@ pub fn is_timeline_ready(
                 .filter
                 .set_relay_state(relay_id, FilterState::ready_hybrid(filter.clone()));
 
-            // Store timestamp so we can detect when contact list changes
-            timeline.contact_list_timestamp = Some(contact_timestamp);
-
+            //let ck = &timeline.kind;
+            //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
             timeline.subscription.try_add_remote(pool, &filter);
             true
         }
