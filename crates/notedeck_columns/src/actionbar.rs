@@ -220,6 +220,46 @@ fn execute_note_action(
 
             media_action.process_default_media_actions(images, jobs, ui.ctx())
         }
+
+        NoteAction::LoadMore(until) => {
+            // Load more publications (older than `until` timestamp)
+            tracing::info!("LoadMore action triggered with until={}", until);
+
+            let kind = TimelineKind::Publications;
+            if timeline_cache.get(&kind).is_some() {
+                // Create filter for older publications
+                let filters =
+                    crate::timeline::kind::publications_load_more_filter(until);
+
+                // Query nostrdb for older publications
+                let limit = filters.first().and_then(|f| f.limit()).unwrap_or(500) as i32;
+                match ndb.query(txn, &filters, limit) {
+                    Ok(results) => {
+                        let note_refs: Vec<notedeck::NoteRef> = results
+                            .into_iter()
+                            .map(notedeck::NoteRef::from_query_result)
+                            .collect();
+
+                        tracing::info!(
+                            "LoadMore: found {} older publications",
+                            note_refs.len()
+                        );
+
+                        if !note_refs.is_empty() {
+                            // Insert the notes into the timeline
+                            let note_keys: Vec<NoteKey> =
+                                note_refs.iter().map(|nr| nr.key).collect();
+                            timeline_res = Some(NotesOpenResult::Timeline(
+                                TimelineOpenResult::new_notes(note_keys, kind),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        error!("LoadMore: failed to query older publications: {:?}", e);
+                    }
+                }
+            }
+        }
     }
 
     NoteActionResponse {

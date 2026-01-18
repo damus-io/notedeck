@@ -26,6 +26,7 @@ mod persist;
 pub mod platform;
 pub mod profile;
 pub mod relay_debug;
+pub mod relay_info;
 pub mod relayspec;
 mod result;
 mod route;
@@ -79,6 +80,10 @@ pub use options::NotedeckOptions;
 pub use persist::*;
 pub use profile::*;
 pub use relay_debug::RelayDebugView;
+pub use relay_info::{
+    fetch_relay_info, RelayInfo, RelayInfoCache, RelayInfoError, RelayLimitation,
+    DEFAULT_MAX_EVENT_TAGS, DEFAULT_MAX_LIMIT, DEFAULT_MAX_SUBSCRIPTIONS,
+};
 pub use relayspec::RelaySpec;
 pub use result::Result;
 pub use route::{DrawerRouter, ReplacementType, Router};

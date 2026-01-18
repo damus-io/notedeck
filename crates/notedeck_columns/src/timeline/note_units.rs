@@ -245,6 +245,17 @@ impl NoteUnits {
         }
         .map(NoteUnit::get_latest_ref)
     }
+
+    /// Get the oldest NoteRef in the timeline (opposite end from latest_ref)
+    /// Used for "load more" queries to fetch events older than what's currently loaded
+    pub fn oldest_ref(&self) -> Option<&NoteRef> {
+        if self.reversed {
+            self.order.first().map(|&i| &self.storage[i])
+        } else {
+            self.order.last().map(|&i| &self.storage[i])
+        }
+        .map(NoteUnit::get_latest_ref)
+    }
 }
 
 #[derive(Hash, PartialEq, Eq, Debug)]

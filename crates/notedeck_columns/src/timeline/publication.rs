@@ -47,11 +47,16 @@ impl PublicationTreeState {
     }
 
     /// Get addresses that need to be fetched from relays
-    pub fn needs_fetch(&self) -> Vec<EventAddress> {
+    ///
+    /// Returns up to `batch_size` addresses to avoid overwhelming relays.
+    /// Use `RelayInfoCache::min_max_event_tags()` to determine the batch size
+    /// based on connected relay limits.
+    pub fn needs_fetch(&self, batch_size: usize) -> Vec<EventAddress> {
         self.tree
             .pending_addresses()
             .into_iter()
             .filter(|addr| !self.pending_fetch.contains(addr))
+            .take(batch_size)
             .cloned()
             .collect()
     }
@@ -182,13 +187,17 @@ pub struct Publications {
 impl Publications {
     /// Open a publication for viewing
     ///
-    /// Creates the tree structure and subscribes to fetch pending sections
+    /// Creates the tree structure and subscribes to fetch pending sections.
+    ///
+    /// `batch_size` controls how many addresses to fetch per subscription.
+    /// Use `RelayInfoCache::min_max_event_tags()` to get this value based on relay limits.
     pub fn open(
         &mut self,
         ndb: &Ndb,
         pool: &mut RelayPool,
         txn: &Transaction,
         index_id: &NoteId,
+        batch_size: usize,
     ) -> Option<&mut PublicationTreeState> {
         // Check if already open
         if self.publications.contains_key(index_id) {
@@ -257,11 +266,16 @@ impl Publications {
         }
 
         // Subscribe to fetch remaining pending sections
-        self.subscribe_pending(pool, &mut state);
+        self.subscribe_pending(pool, &mut state, batch_size);
 
         // Log subscription status
         if let Some(ref sub_id) = state.sub_id {
-            info!("Subscription created: {}, pending_fetch count: {}", sub_id, state.pending_fetch.len());
+            info!(
+                "Subscription created: {}, fetching {} of {} total pending",
+                sub_id,
+                state.pending_fetch.len(),
+                state.tree.pending_count()
+            );
         } else {
             info!("No subscription created (no pending addresses or all resolved)");
         }
@@ -272,6 +286,9 @@ impl Publications {
 
     /// Poll for updates - resolves pending nodes from nostrdb
     ///
+    /// `batch_size` controls how many addresses to fetch per subscription.
+    /// Use `RelayInfoCache::min_max_event_tags()` to get this value based on relay limits.
+    ///
     /// Returns true if any nodes were resolved
     pub fn poll_updates(
         &mut self,
@@ -279,6 +296,7 @@ impl Publications {
         pool: &mut RelayPool,
         txn: &Transaction,
         index_id: &NoteId,
+        batch_size: usize,
     ) -> bool {
         let Some(state) = self.publications.get_mut(index_id) else {
             return false;
@@ -289,11 +307,12 @@ impl Publications {
         // Check if there are pending addresses that need to be subscribed for
         // This handles both: newly discovered children from resolved branches,
         // and addresses that weren't subscribed for initially
-        let pending = state.needs_fetch();
+        let pending = state.needs_fetch(batch_size);
         if !pending.is_empty() {
             debug!(
-                "poll_updates: {} pending addresses need fetching",
-                pending.len()
+                "poll_updates: {} pending addresses need fetching (batch_size={})",
+                pending.len(),
+                batch_size
             );
 
             let filters = build_filters_for_addresses(&pending);
@@ -393,25 +412,37 @@ impl Publications {
     }
 
     /// Subscribe to fetch pending addresses
-    fn subscribe_pending(&mut self, pool: &mut RelayPool, state: &mut PublicationTreeState) {
-        self.subscribe_pending_internal(pool, state);
+    ///
+    /// `batch_size` controls how many addresses to fetch per subscription.
+    fn subscribe_pending(
+        &mut self,
+        pool: &mut RelayPool,
+        state: &mut PublicationTreeState,
+        batch_size: usize,
+    ) {
+        self.subscribe_pending_internal(pool, state, batch_size);
     }
 
     fn subscribe_pending_internal(
         &self,
         pool: &mut RelayPool,
         state: &mut PublicationTreeState,
+        batch_size: usize,
     ) {
-        let pending = state.needs_fetch();
+        let pending = state.needs_fetch(batch_size);
         if pending.is_empty() {
             debug!("subscribe_pending_internal: no pending addresses to fetch");
             return;
         }
 
         info!(
-            "Subscribing for {} pending addresses: {:?}",
+            "Subscribing for {} pending addresses (batch_size={})",
             pending.len(),
-            pending.iter().map(|a| format!("{}:{}", a.kind, &a.dtag)).collect::<Vec<_>>()
+            batch_size
+        );
+        debug!(
+            "Addresses: {:?}",
+            pending.iter().take(5).map(|a| format!("{}:{}", a.kind, &a.dtag)).collect::<Vec<_>>()
         );
 
         // Build filters grouped by (kind, author) - each address has its own pubkey from the a-tag

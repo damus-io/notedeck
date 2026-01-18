@@ -73,6 +73,12 @@ impl TimelineUnits {
         self.units.latest_ref()
     }
 
+    /// Get the oldest note in the timeline
+    /// Used for "load more" queries to fetch events older than what's currently loaded
+    pub fn oldest(&self) -> Option<&NoteRef> {
+        self.units.oldest_ref()
+    }
+
     pub fn merge_single_note(&mut self, note_ref: NoteRef) {
         self.units.merge_single_unit(note_ref);
     }

@@ -228,7 +228,11 @@ fn timeline_ui(
             note_options.set(NoteOptions::Notification, true)
         }
 
-        TimelineTabView::new(timeline.current_view(), note_options, &txn, note_context).show(ui)
+        // Enable load more for Publications timeline
+        let enable_load_more = matches!(timeline_id, TimelineKind::Publications);
+
+        TimelineTabView::new(timeline.current_view(), note_options, &txn, note_context)
+            .show_with_load_more(ui, enable_load_more)
     });
 
     let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
@@ -433,6 +437,14 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+        self.show_with_load_more(ui, false)
+    }
+
+    pub fn show_with_load_more(
+        &mut self,
+        ui: &mut egui::Ui,
+        enable_load_more: bool,
+    ) -> Option<NoteAction> {
         let mut action: Option<NoteAction> = None;
         let len = self.tab.units.len();
 
@@ -462,6 +474,22 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 1
             });
+
+        // Show "Load More" button if enabled and there are notes
+        if enable_load_more && !self.tab.units.is_empty() {
+            if let Some(oldest) = self.tab.units.oldest() {
+                ui.add_space(16.0);
+                ui.vertical_centered(|ui| {
+                    let load_more_text = RichText::new("Load More")
+                        .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Body));
+                    if ui.button(load_more_text).clicked() {
+                        // Use the oldest note's created_at - 1 as the "until" parameter
+                        action = Some(NoteAction::LoadMore(oldest.created_at.saturating_sub(1)));
+                    }
+                });
+                ui.add_space(16.0);
+            }
+        }
 
         action
     }

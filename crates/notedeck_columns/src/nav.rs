@@ -711,6 +711,7 @@ fn render_nav_body(
                 ctx.pool,
                 &mut app.publications,
                 ctx.i18n,
+                ctx.relay_info_cache,
                 col,
             ).ui(ui);
 

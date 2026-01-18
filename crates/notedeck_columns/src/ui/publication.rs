@@ -6,7 +6,7 @@ use egui::{Area, Color32, Frame, Order, ScrollArea, Stroke, Vec2};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::nav::DragResponse;
-use notedeck::{ContextSelection, Localization, NoteAction};
+use notedeck::{ContextSelection, Localization, NoteAction, RelayInfoCache};
 use notedeck_ui::note::NoteContextButton;
 use std::collections::HashSet;
 
@@ -78,6 +78,7 @@ pub struct PublicationView<'a> {
     pool: &'a mut RelayPool,
     publications: &'a mut Publications,
     i18n: &'a mut Localization,
+    relay_info_cache: &'a RelayInfoCache,
     col: usize,
 }
 
@@ -94,6 +95,7 @@ impl<'a> PublicationView<'a> {
         pool: &'a mut RelayPool,
         publications: &'a mut Publications,
         i18n: &'a mut Localization,
+        relay_info_cache: &'a RelayInfoCache,
         col: usize,
     ) -> Self {
         Self {
@@ -102,8 +104,21 @@ impl<'a> PublicationView<'a> {
             pool,
             publications,
             i18n,
+            relay_info_cache,
             col,
         }
+    }
+
+    /// Get the batch size for fetching based on relay limits
+    fn get_batch_size(&self) -> usize {
+        // Get relay URLs from the pool
+        let relay_urls: Vec<&str> = self.pool.relays.iter().map(|r| r.url()).collect();
+
+        // Ensure NIP-11 info is being fetched for connected relays
+        self.relay_info_cache.ensure_fetched(&relay_urls);
+
+        // Get the minimum max_event_tags across relays
+        self.relay_info_cache.min_max_event_tags(&relay_urls)
     }
 
     fn state_id(&self) -> egui::Id {
@@ -125,12 +140,16 @@ impl<'a> PublicationView<'a> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<PublicationViewResponse> {
         let txn = Transaction::new(self.ndb).expect("txn");
 
+        // Get batch size from relay limits
+        let batch_size = self.get_batch_size();
+
         // Open/get the publication state
         let _state = self.publications.open(
             self.ndb,
             self.pool,
             &txn,
             &self.selection.index_id,
+            batch_size,
         );
 
         // Poll for any newly fetched sections
@@ -139,6 +158,7 @@ impl<'a> PublicationView<'a> {
             self.pool,
             &txn,
             &self.selection.index_id,
+            batch_size,
         );
 
         // Get or create reader state

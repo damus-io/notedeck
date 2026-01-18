@@ -875,3 +875,12 @@ fn universe_filter() -> Vec<Filter> {
 fn publications_filter() -> Vec<Filter> {
     vec![Filter::new().kinds([30040]).limit(default_limit()).build()]
 }
+
+/// Filter for loading more publications (older than the given timestamp)
+pub fn publications_load_more_filter(until: u64) -> Vec<Filter> {
+    vec![Filter::new()
+        .kinds([30040])
+        .until(until)
+        .limit(default_limit())
+        .build()]
+}

@@ -7,7 +7,8 @@ use crate::zaps::Zaps;
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, RelayInfoCache,
+    UnknownIds,
 };
 use crate::{Error, JobCache};
 use crate::{JobPool, MediaJobs};
@@ -80,6 +81,7 @@ pub struct Notedeck {
     job_pool: JobPool,
     media_jobs: MediaJobs,
     i18n: Localization,
+    relay_info_cache: RelayInfoCache,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -327,6 +329,7 @@ impl Notedeck {
             job_pool,
             media_jobs: media_job_cache,
             i18n,
+            relay_info_cache: RelayInfoCache::new(),
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -393,6 +396,7 @@ impl Notedeck {
             job_pool: &mut self.job_pool,
             media_jobs: &mut self.media_jobs,
             i18n: &mut self.i18n,
+            relay_info_cache: &self.relay_info_cache,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }
