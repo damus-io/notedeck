@@ -190,6 +190,7 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-22.04
     needs: [build-android, build-linux, build-macos, build-windows]
+    if: always() && needs.build-android.result == 'success'
     permissions:
       contents: write
     steps:
