@@ -70,6 +70,8 @@ struct ReaderState {
     expanded_branches: HashSet<usize>,
     /// Outline view state (current position in tree for drill-down navigation)
     outline_view: OutlineViewState,
+    /// Nodes that were rendered this frame (for lazy loading visibility tracking)
+    rendered_nodes: Vec<usize>,
 }
 
 /// A publication reader view that displays the index and content sections
@@ -187,6 +189,9 @@ impl<'a> PublicationView<'a> {
         let mut note_action: Option<NoteAction> = None;
         let mut nav_action: Option<PublicationNavAction> = None;
 
+        // Clear rendered nodes tracking for this frame
+        state.rendered_nodes.clear();
+
         // Main layout
         let resp = ui.vertical(|ui| {
             // Render header bar (may return navigation action)
@@ -207,6 +212,12 @@ impl<'a> PublicationView<'a> {
         // Render TOC overlay if visible
         if state.toc_visible {
             self.render_toc_overlay(ui, &txn, &mut state);
+        }
+
+        // Update visibility tracking for lazy loading
+        // Pass rendered nodes to the publication state
+        if let Some(pub_state) = self.publications.get_mut(&self.selection.index_id) {
+            pub_state.set_visible_nodes(state.rendered_nodes.iter().copied());
         }
 
         // Save state
@@ -514,7 +525,7 @@ impl<'a> PublicationView<'a> {
             if let Some((sections, is_complete)) = section_data {
                 action = match state.mode {
                     ReaderMode::Continuous => {
-                        self.render_continuous(ui, txn, &sections, is_complete)
+                        self.render_continuous(ui, txn, &sections, is_complete, state)
                     }
                     ReaderMode::Paginated => self.render_paginated(ui, txn, &sections, state),
                     ReaderMode::Outline => self.render_outline_view(ui, txn, state)
@@ -536,6 +547,7 @@ impl<'a> PublicationView<'a> {
         txn: &Transaction,
         sections: &[SectionData],
         is_complete: bool,
+        state: &mut ReaderState,
     ) -> Option<NoteAction> {
         let mut action = None;
 
@@ -545,6 +557,9 @@ impl<'a> PublicationView<'a> {
         }
 
         for section in sections.iter() {
+            // Track this section as visible
+            state.rendered_nodes.push(section.index);
+
             if let Some(a) = self.render_section_card(ui, txn, section) {
                 action = Some(a);
             }
@@ -583,6 +598,9 @@ impl<'a> PublicationView<'a> {
 
         let section = &sections[state.current_leaf_index];
         let section_title = &section.title;
+
+        // Track current section as visible
+        state.rendered_nodes.push(section.index);
 
         // Section header
         let header_resp = ui.horizontal(|ui| {
@@ -713,6 +731,9 @@ impl<'a> PublicationView<'a> {
             })
             .unwrap_or_default();
 
+        // Track current node as visible
+        state.rendered_nodes.push(current_node);
+
         if children.is_empty() {
             // This is a leaf node or has no children - show content instead
             if let Some(note_key) = node.note_key {
@@ -739,6 +760,9 @@ impl<'a> PublicationView<'a> {
 
         // Render each child as a card
         for (child_idx, child_title, is_branch, is_resolved, note_key) in children {
+            // Track this child as visible
+            state.rendered_nodes.push(child_idx);
+
             if let Some(a) =
                 self.render_outline_child_card(ui, txn, state, child_idx, &child_title, is_branch, is_resolved, note_key)
             {

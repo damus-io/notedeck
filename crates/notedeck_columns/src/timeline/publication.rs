@@ -49,6 +49,9 @@ impl Default for PublicationConfig {
     }
 }
 
+/// Number of nodes to prefetch beyond visible area for smooth scrolling
+const VISIBILITY_PREFETCH_BUFFER: usize = 5;
+
 /// State for a single publication being viewed (tree-based)
 #[derive(Debug)]
 pub struct PublicationTreeState {
@@ -63,6 +66,9 @@ pub struct PublicationTreeState {
 
     /// Addresses currently being fetched (to avoid duplicate subscriptions)
     pending_fetch: HashSet<EventAddress>,
+
+    /// Node indices currently visible on screen (for lazy resolution)
+    visible_nodes: HashSet<usize>,
 }
 
 impl PublicationTreeState {
@@ -76,7 +82,83 @@ impl PublicationTreeState {
             sub_id: None,
             last_version,
             pending_fetch: HashSet::new(),
+            visible_nodes: HashSet::new(),
         })
+    }
+
+    /// Set the currently visible node indices (for lazy resolution)
+    ///
+    /// Call this from the UI layer to inform which nodes are on screen.
+    /// The resolution system will prioritize these nodes and prefetch nearby ones.
+    pub fn set_visible_nodes(&mut self, nodes: impl IntoIterator<Item = usize>) {
+        self.visible_nodes.clear();
+        self.visible_nodes.extend(nodes);
+    }
+
+    /// Get pending addresses that are visible or near visible nodes
+    ///
+    /// Returns addresses for visible pending nodes plus a prefetch buffer.
+    /// Used when `LazyOnDemand` strategy is active.
+    pub fn visible_pending_addresses(&self) -> Vec<EventAddress> {
+        if self.visible_nodes.is_empty() {
+            // No visibility info - return first few pending addresses
+            return self
+                .tree
+                .pending_addresses()
+                .into_iter()
+                .take(VISIBILITY_PREFETCH_BUFFER)
+                .cloned()
+                .collect();
+        }
+
+        // Collect addresses for visible nodes and their children (for prefetch)
+        let mut addresses = Vec::new();
+        let mut visited = HashSet::new();
+
+        for &node_idx in &self.visible_nodes {
+            self.collect_node_addresses(node_idx, &mut addresses, &mut visited);
+
+            // Also prefetch children if this is a branch node
+            if let Some(children) = self.tree.children(node_idx) {
+                for child in children {
+                    if let Some(child_idx) = self.tree.get_index(&child.address) {
+                        self.collect_node_addresses(child_idx, &mut addresses, &mut visited);
+                    }
+                }
+            }
+        }
+
+        // Add some buffer from siblings of visible nodes
+        for &node_idx in &self.visible_nodes {
+            let (prev, next) = self.tree.siblings(node_idx);
+            if let Some(prev_idx) = prev {
+                self.collect_node_addresses(prev_idx, &mut addresses, &mut visited);
+            }
+            if let Some(next_idx) = next {
+                self.collect_node_addresses(next_idx, &mut addresses, &mut visited);
+            }
+        }
+
+        addresses
+    }
+
+    /// Helper to collect pending address for a node if it's not already fetching
+    fn collect_node_addresses(
+        &self,
+        node_idx: usize,
+        addresses: &mut Vec<EventAddress>,
+        visited: &mut HashSet<usize>,
+    ) {
+        if visited.contains(&node_idx) {
+            return;
+        }
+        visited.insert(node_idx);
+
+        if let Some(node) = self.tree.get_node(node_idx) {
+            if !node.is_resolved() && !self.pending_fetch.contains(&node.address) {
+                addresses.push(node.address.clone());
+            }
+        }
     }
 
     /// Get addresses that need to be fetched from relays
@@ -361,26 +443,56 @@ impl Publications {
         // Process notes that were fetched from subscriptions (pending_fetch)
         let mut resolved = state.process_notes(ndb, txn);
 
-        // For Incremental strategy, also try to resolve more nodes from cache each frame
-        // This continues the work started in open() and handles nodes that may have
-        // arrived since the subscription was created
-        if resolution_strategy == ResolutionStrategy::Incremental && state.tree.has_pending() {
-            let cache_resolved =
-                Self::try_resolve_existing_on_state(ndb, txn, state, max_nodes_per_frame);
-            if cache_resolved > 0 {
-                debug!(
-                    "poll_updates: incrementally resolved {} nodes from cache, {} pending remain",
-                    cache_resolved,
-                    state.tree.pending_count()
-                );
-                resolved = true;
+        // Resolution behavior depends on strategy
+        match resolution_strategy {
+            ResolutionStrategy::Incremental => {
+                // Try to resolve more nodes from cache each frame
+                if state.tree.has_pending() {
+                    let cache_resolved =
+                        Self::try_resolve_existing_on_state(ndb, txn, state, max_nodes_per_frame);
+                    if cache_resolved > 0 {
+                        debug!(
+                            "poll_updates: incrementally resolved {} nodes from cache, {} pending remain",
+                            cache_resolved,
+                            state.tree.pending_count()
+                        );
+                        resolved = true;
+                    }
+                }
+            }
+            ResolutionStrategy::LazyOnDemand => {
+                // Only resolve visible nodes from cache
+                let visible_addrs = state.visible_pending_addresses();
+                if !visible_addrs.is_empty() {
+                    for addr in &visible_addrs {
+                        if let Some(note) = find_note_by_address(ndb, txn, addr) {
+                            if state.tree.resolve_node(addr, note).is_some() {
+                                debug!("poll_updates: lazy-resolved visible node {}:{}", addr.kind, addr.dtag);
+                                resolved = true;
+                            }
+                        }
+                    }
+                }
+            }
+            ResolutionStrategy::AllAtOnce => {
+                // AllAtOnce resolved everything in open(), nothing to do here
             }
         }
 
         // Check if there are pending addresses that need to be subscribed for
-        // This handles both: newly discovered children from resolved branches,
-        // and addresses that weren't subscribed for initially
-        let pending = state.needs_fetch(batch_size);
+        // For LazyOnDemand, only subscribe for visible nodes
+        // For others, subscribe for any pending addresses
+        let pending = if resolution_strategy == ResolutionStrategy::LazyOnDemand {
+            let visible = state.visible_pending_addresses();
+            // Filter to those not already being fetched and limit by batch_size
+            visible
+                .into_iter()
+                .filter(|addr| !state.pending_fetch.contains(addr))
+                .take(batch_size)
+                .collect()
+        } else {
+            state.needs_fetch(batch_size)
+        };
         if !pending.is_empty() {
             debug!(
                 "poll_updates: {} pending addresses need fetching (batch_size={})",
