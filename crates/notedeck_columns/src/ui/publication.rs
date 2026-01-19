@@ -165,19 +165,11 @@ impl<'a> PublicationView<'a> {
             batch_size,
         );
 
-        // Get or create reader state
+        // Get or create reader state (defaults to Outline mode)
         let state_id = self.state_id();
-        let mut state: ReaderState = ui.ctx().data_mut(|d| {
-            d.get_temp(state_id).unwrap_or_else(|| {
-                // New state - use mode preference from Publications feed toggle (defaults to Outline)
-                let default_mode_id = crate::ui::timeline::publication_default_mode_id(self.col);
-                let default_mode = d.get_temp(default_mode_id).unwrap_or_default();
-                ReaderState {
-                    mode: default_mode,
-                    ..Default::default()
-                }
-            })
-        });
+        let mut state: ReaderState = ui
+            .ctx()
+            .data_mut(|d| d.get_temp(state_id).unwrap_or_default());
 
         // Track actions
         let mut note_action: Option<NoteAction> = None;
@@ -592,9 +584,16 @@ impl<'a> PublicationView<'a> {
 
         let section = &sections[state.current_leaf_index];
         let section_title = &section.title;
+        let section_index = section.index;
 
         // Track current section as visible
-        state.rendered_nodes.push(section.index);
+        state.rendered_nodes.push(section_index);
+
+        // Render breadcrumbs for current section
+        if let Some(pub_state) = self.publications.get(&self.selection.index_id) {
+            self.render_outline_breadcrumbs(ui, pub_state, section_index);
+            ui.add_space(8.0);
+        }
 
         // Section header
         let header_resp = ui.horizontal(|ui| {
