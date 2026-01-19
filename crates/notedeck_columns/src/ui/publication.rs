@@ -148,14 +148,6 @@ impl<'a> PublicationView<'a> {
         // Get batch size from relay limits
         let batch_size = self.get_batch_size();
 
-        // Apply resolution strategy preference from Publications feed toggle
-        let strategy_id = crate::ui::timeline::publication_resolution_strategy_id(self.col);
-        let strategy: crate::timeline::publication::ResolutionStrategy = ui
-            .ctx()
-            .data(|d| d.get_temp(strategy_id))
-            .unwrap_or_default();
-        self.publications.config.resolution_strategy = strategy;
-
         // Open/get the publication state
         let _state = self.publications.open(
             self.ndb,
