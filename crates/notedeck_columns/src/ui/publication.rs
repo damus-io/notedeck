@@ -741,6 +741,47 @@ impl<'a> PublicationView<'a> {
             })
             .unwrap_or_default();
 
+        // Collect leaf indices for expand/collapse all
+        let leaf_indices: Vec<usize> = children
+            .iter()
+            .filter(|(_, _, is_branch, _, _)| !is_branch)
+            .map(|(idx, _, _, _, _)| *idx)
+            .collect();
+
+        // Show expand/collapse all button if there are leaves
+        if !leaf_indices.is_empty() {
+            let all_expanded = leaf_indices
+                .iter()
+                .all(|idx| state.outline_view.expanded_leaves.contains(idx));
+
+            ui.horizontal(|ui| {
+                let (icon, label, hover) = if all_expanded {
+                    ("▼", "Collapse All", "Collapse all sections")
+                } else {
+                    ("▶", "Expand All", "Expand all sections")
+                };
+
+                if ui
+                    .button(format!("{} {}", icon, label))
+                    .on_hover_text(hover)
+                    .clicked()
+                {
+                    if all_expanded {
+                        // Collapse all
+                        for idx in &leaf_indices {
+                            state.outline_view.expanded_leaves.remove(idx);
+                        }
+                    } else {
+                        // Expand all
+                        for idx in &leaf_indices {
+                            state.outline_view.expanded_leaves.insert(*idx);
+                        }
+                    }
+                }
+            });
+            ui.add_space(8.0);
+        }
+
         // Track current node as visible
         state.rendered_nodes.push(current_node);
 

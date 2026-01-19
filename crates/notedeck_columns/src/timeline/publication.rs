@@ -22,12 +22,12 @@ const DEFAULT_MAX_NODES_PER_FRAME: usize = 10;
 /// Strategy for resolving pending nodes in publications
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum ResolutionStrategy {
-    /// Resolve N nodes per frame, spreading work across frames (default, prevents freezing)
-    #[default]
+    /// Resolve N nodes per frame, spreading work across frames (prevents freezing)
     Incremental,
     /// Resolve all pending nodes at once (may cause UI freezing for large publications)
     AllAtOnce,
-    /// Only resolve nodes as they become visible (requires visibility tracking)
+    /// Only resolve nodes as they become visible (default, best performance)
+    #[default]
     LazyOnDemand,
 }
 
