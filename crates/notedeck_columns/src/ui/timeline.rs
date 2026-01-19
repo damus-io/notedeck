@@ -12,6 +12,7 @@ use notedeck_ui::{ProfilePic, ProfilePreview};
 use std::f32::consts::PI;
 use tracing::{error, warn};
 
+use crate::timeline::publication::ResolutionStrategy;
 use crate::timeline::{
     CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
     TimelineTab,
@@ -21,6 +22,11 @@ use crate::ui::publication::ReaderMode;
 /// Get the egui ID for default publication reader mode preference (per column)
 pub fn publication_default_mode_id(col: usize) -> egui::Id {
     egui::Id::new(("publication_default_mode", col))
+}
+
+/// Get the egui ID for publication resolution strategy preference (per column)
+pub fn publication_resolution_strategy_id(col: usize) -> egui::Id {
+    egui::Id::new(("publication_resolution_strategy", col))
 }
 use notedeck::DragResponse;
 use notedeck::{
@@ -168,6 +174,58 @@ fn timeline_ui(
             {
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(mode_id, ReaderMode::Outline));
+            }
+        });
+
+        // Resolution strategy toggle
+        let strategy_id = publication_resolution_strategy_id(col);
+        let current_strategy: ResolutionStrategy = ui
+            .ctx()
+            .data(|d| d.get_temp(strategy_id))
+            .unwrap_or_default();
+
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Loading:")
+                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                    .color(ui.visuals().weak_text_color()),
+            );
+
+            if ui
+                .selectable_label(
+                    current_strategy == ResolutionStrategy::Incremental,
+                    "Incremental",
+                )
+                .on_hover_text("Load 10 sections per frame (smooth, recommended)")
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(strategy_id, ResolutionStrategy::Incremental));
+            }
+
+            if ui
+                .selectable_label(
+                    current_strategy == ResolutionStrategy::LazyOnDemand,
+                    "Lazy",
+                )
+                .on_hover_text("Only load visible sections (best for huge publications)")
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(strategy_id, ResolutionStrategy::LazyOnDemand));
+            }
+
+            if ui
+                .selectable_label(
+                    current_strategy == ResolutionStrategy::AllAtOnce,
+                    "All at Once",
+                )
+                .on_hover_text("Load everything immediately (may freeze on large publications)")
+                .clicked()
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(strategy_id, ResolutionStrategy::AllAtOnce));
             }
         });
         ui.add_space(4.0);
