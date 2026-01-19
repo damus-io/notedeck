@@ -149,8 +149,8 @@ fn timeline_ui(
                     .color(ui.visuals().weak_text_color()),
             );
 
-            let reader_selected = current_mode != ReaderMode::Index;
-            let index_selected = current_mode == ReaderMode::Index;
+            let reader_selected = current_mode != ReaderMode::Outline;
+            let outline_selected = current_mode == ReaderMode::Outline;
 
             if ui
                 .selectable_label(reader_selected, "📜 Reader")
@@ -162,12 +162,12 @@ fn timeline_ui(
             }
 
             if ui
-                .selectable_label(index_selected, "📑 Index")
-                .on_hover_text("Open publications in index view")
+                .selectable_label(outline_selected, "📑 Outline")
+                .on_hover_text("Open publications in outline view")
                 .clicked()
             {
                 ui.ctx()
-                    .data_mut(|d| d.insert_temp(mode_id, ReaderMode::Index));
+                    .data_mut(|d| d.insert_temp(mode_id, ReaderMode::Outline));
             }
         });
         ui.add_space(4.0);

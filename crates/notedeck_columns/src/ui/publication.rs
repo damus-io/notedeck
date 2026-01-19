@@ -20,13 +20,13 @@ pub enum PublicationNavAction {
     Back,
     /// Navigate into a nested publication
     NavigateInto(NoteId),
-    /// Index view: drill down into a child node
+    /// Outline view: drill down into a child node
     DrillDown(usize),
-    /// Index view: go up one level to parent
+    /// Outline view: go up one level to parent
     DrillUp,
-    /// Index view: navigate to previous sibling
+    /// Outline view: navigate to previous sibling
     PrevSibling,
-    /// Index view: navigate to next sibling
+    /// Outline view: navigate to next sibling
     NextSibling,
 }
 
@@ -47,13 +47,13 @@ pub enum ReaderMode {
     Continuous,
     /// One section at a time with pagination
     Paginated,
-    /// Index view - shows children of current node for drill-down navigation
-    Index,
+    /// Outline view - shows children of current node for drill-down navigation
+    Outline,
 }
 
-/// State for index view navigation within the tree
+/// State for outline view navigation within the tree
 #[derive(Clone, Default)]
-struct IndexViewState {
+struct OutlineViewState {
     /// Current node index being viewed (0 = root)
     current_node: usize,
 }
@@ -67,8 +67,8 @@ struct ReaderState {
     toc_visible: bool,
     /// Expanded branch nodes in the TOC
     expanded_branches: HashSet<usize>,
-    /// Index view state (current position in tree for drill-down navigation)
-    index_view: IndexViewState,
+    /// Outline view state (current position in tree for drill-down navigation)
+    outline_view: OutlineViewState,
 }
 
 /// A publication reader view that displays the index and content sections
@@ -261,11 +261,11 @@ impl<'a> PublicationView<'a> {
                     }
                     if ui
                         .button("📑")
-                        .on_hover_text("Switch to index view")
+                        .on_hover_text("Switch to outline view")
                         .clicked()
                     {
-                        state.mode = ReaderMode::Index;
-                        state.index_view = IndexViewState::default();
+                        state.mode = ReaderMode::Outline;
+                        state.outline_view = OutlineViewState::default();
                     }
                 }
                 ReaderMode::Paginated => {
@@ -278,11 +278,11 @@ impl<'a> PublicationView<'a> {
                     }
                     if ui
                         .button("📑")
-                        .on_hover_text("Switch to index view")
+                        .on_hover_text("Switch to outline view")
                         .clicked()
                     {
-                        state.mode = ReaderMode::Index;
-                        state.index_view = IndexViewState::default();
+                        state.mode = ReaderMode::Outline;
+                        state.outline_view = OutlineViewState::default();
                     }
 
                     ui.separator();
@@ -311,7 +311,7 @@ impl<'a> PublicationView<'a> {
                         state.current_leaf_index += 1;
                     }
                 }
-                ReaderMode::Index => {
+                ReaderMode::Outline => {
                     // Mode toggles
                     if ui
                         .button("📜")
@@ -319,13 +319,13 @@ impl<'a> PublicationView<'a> {
                         .clicked()
                     {
                         state.mode = ReaderMode::Continuous;
-                        state.index_view = IndexViewState::default();
+                        state.outline_view = OutlineViewState::default();
                     }
 
                     ui.separator();
 
-                    // Index navigation controls
-                    let current_node = state.index_view.current_node;
+                    // Outline navigation controls
+                    let current_node = state.outline_view.current_node;
 
                     // Up button (when not at root)
                     if current_node != 0 {
@@ -337,7 +337,7 @@ impl<'a> PublicationView<'a> {
                                         .on_hover_text("Go up to parent")
                                         .clicked()
                                     {
-                                        state.index_view.current_node = parent_idx;
+                                        state.outline_view.current_node = parent_idx;
                                     }
                                 }
                             }
@@ -354,7 +354,7 @@ impl<'a> PublicationView<'a> {
                             .clicked()
                         {
                             if let Some(prev_idx) = prev_sibling {
-                                state.index_view.current_node = prev_idx;
+                                state.outline_view.current_node = prev_idx;
                             }
                         }
 
@@ -364,7 +364,7 @@ impl<'a> PublicationView<'a> {
                             .clicked()
                         {
                             if let Some(next_idx) = next_sibling {
-                                state.index_view.current_node = next_idx;
+                                state.outline_view.current_node = next_idx;
                             }
                         }
                     }
@@ -509,7 +509,7 @@ impl<'a> PublicationView<'a> {
                         self.render_continuous(ui, txn, &sections, is_complete)
                     }
                     ReaderMode::Paginated => self.render_paginated(ui, txn, &sections, state),
-                    ReaderMode::Index => self.render_index_view(ui, txn, state)
+                    ReaderMode::Outline => self.render_outline_view(ui, txn, state)
                 };
             } else {
                 ui.horizontal(|ui| {
@@ -654,15 +654,15 @@ impl<'a> PublicationView<'a> {
         action
     }
 
-    /// Render index view - shows immediate children of current node
-    fn render_index_view(
+    /// Render outline view - shows immediate children of current node
+    fn render_outline_view(
         &mut self,
         ui: &mut egui::Ui,
         txn: &Transaction,
         state: &mut ReaderState,
     ) -> Option<NoteAction> {
         let mut action = None;
-        let current_node = state.index_view.current_node;
+        let current_node = state.outline_view.current_node;
 
         let Some(pub_state) = self.publications.get(&self.selection.index_id) else {
             ui.label("Loading publication...");
@@ -681,7 +681,7 @@ impl<'a> PublicationView<'a> {
         ui.add_space(8.0);
 
         // Render breadcrumb path within the tree
-        self.render_index_breadcrumbs(ui, pub_state, current_node);
+        self.render_outline_breadcrumbs(ui, pub_state, current_node);
         ui.add_space(16.0);
 
         // Get children of current node
@@ -732,7 +732,7 @@ impl<'a> PublicationView<'a> {
         // Render each child as a card
         for (child_idx, child_title, is_branch, is_resolved, note_key) in children {
             if let Some(a) =
-                self.render_index_child_card(ui, txn, state, child_idx, &child_title, is_branch, is_resolved, note_key)
+                self.render_outline_child_card(ui, txn, state, child_idx, &child_title, is_branch, is_resolved, note_key)
             {
                 action = Some(a);
             }
@@ -742,8 +742,8 @@ impl<'a> PublicationView<'a> {
         action
     }
 
-    /// Render breadcrumbs for index view (path within the tree)
-    fn render_index_breadcrumbs(
+    /// Render breadcrumbs for outline view (path within the tree)
+    fn render_outline_breadcrumbs(
         &self,
         ui: &mut egui::Ui,
         pub_state: &PublicationTreeState,
@@ -783,8 +783,8 @@ impl<'a> PublicationView<'a> {
         });
     }
 
-    /// Render a child card in index view
-    fn render_index_child_card(
+    /// Render a child card in outline view
+    fn render_outline_child_card(
         &mut self,
         ui: &mut egui::Ui,
         txn: &Transaction,
@@ -828,7 +828,7 @@ impl<'a> PublicationView<'a> {
                         .on_hover_text("Click to expand")
                         .clicked()
                     {
-                        state.index_view.current_node = child_idx;
+                        state.outline_view.current_node = child_idx;
                     }
                 } else {
                     // Leaf: show title
