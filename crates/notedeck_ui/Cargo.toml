@@ -8,6 +8,8 @@ eframe = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 egui-winit = { workspace = true }
+egui-wgpu = { workspace = true }
+renderbud = { workspace = true }
 strum_macros = { workspace = true }
 strum = { workspace = true }
 ehttp = { workspace = true }

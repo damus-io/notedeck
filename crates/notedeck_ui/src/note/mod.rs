@@ -564,6 +564,28 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                 note_action = contents.action.or(note_action);
 
+                /*
+                if let Some(renderer) = self.note_context.renderer.as_ref() {
+                    let mut rect = ui.available_rect_before_wrap();
+                    let size: (u32, u32) = (300, 300);
+                    rect.set_width(size.0 as f32);
+                    rect.set_height(size.1 as f32);
+
+                    let mut r = renderer.renderer.lock().unwrap();
+
+                    r.set_target_size(size);
+                    r.update();
+
+                    ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+                        rect,
+                        renderbud::Model { id: 1 },
+                    ));
+
+                    ui.ctx().request_repaint();
+                    ui.advance_cursor_after_rect(rect);
+                }
+                */
+
                 if self.options().contains(NoteOptions::ActionBar) {
                     let counts = self
                         .note_context

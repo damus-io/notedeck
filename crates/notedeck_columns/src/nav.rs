@@ -640,6 +640,7 @@ fn render_nav_body(
         clipboard: ctx.clipboard,
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
+        renderer: ctx.renderer.clone(),
     };
     match top {
         Route::Timeline(kind) => {
