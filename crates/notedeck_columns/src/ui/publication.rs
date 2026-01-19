@@ -836,7 +836,7 @@ impl<'a> PublicationView<'a> {
                 }
             });
 
-            // For leaf nodes, show content
+            // For leaf nodes, show preview snippet (not full content)
             if !is_branch {
                 ui.add_space(8.0);
 
@@ -844,7 +844,11 @@ impl<'a> PublicationView<'a> {
                     if let Ok(note) = self.ndb.get_note_by_key(txn, note_key) {
                         let content = note.content();
                         if !content.is_empty() {
-                            Self::render_text_content(ui, content);
+                            let preview = Self::truncate_to_preview(content, 100);
+                            ui.label(
+                                egui::RichText::new(preview)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
                         } else {
                             ui.label(
                                 egui::RichText::new("(empty section)")
@@ -980,6 +984,28 @@ impl<'a> PublicationView<'a> {
             }
 
             ui.add(egui::Label::new(trimmed).wrap());
+        }
+    }
+
+    /// Truncate content to a preview snippet with ellipsis
+    fn truncate_to_preview(content: &str, max_chars: usize) -> String {
+        // Collapse whitespace and normalize
+        let trimmed: String = content
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if trimmed.chars().count() <= max_chars {
+            trimmed
+        } else {
+            format!(
+                "{}...",
+                trimmed
+                    .chars()
+                    .take(max_chars)
+                    .collect::<String>()
+                    .trim_end()
+            )
         }
     }
 
