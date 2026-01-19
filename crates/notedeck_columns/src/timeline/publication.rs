@@ -16,6 +16,39 @@ use crate::subscriptions;
 /// Maximum inline nesting depth before opening a new publication view
 pub const MAX_INLINE_DEPTH: usize = 5;
 
+/// Default maximum nodes to resolve from cache per frame (to avoid UI freezing)
+const DEFAULT_MAX_NODES_PER_FRAME: usize = 10;
+
+/// Strategy for resolving pending nodes in publications
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum ResolutionStrategy {
+    /// Resolve N nodes per frame, spreading work across frames (default, prevents freezing)
+    #[default]
+    Incremental,
+    /// Resolve all pending nodes at once (may cause UI freezing for large publications)
+    AllAtOnce,
+    /// Only resolve nodes as they become visible (requires visibility tracking)
+    LazyOnDemand,
+}
+
+/// Configuration for publication loading behavior
+#[derive(Clone, Debug)]
+pub struct PublicationConfig {
+    /// Strategy for resolving pending nodes
+    pub resolution_strategy: ResolutionStrategy,
+    /// Maximum nodes to resolve per frame (for Incremental strategy)
+    pub max_nodes_per_frame: usize,
+}
+
+impl Default for PublicationConfig {
+    fn default() -> Self {
+        Self {
+            resolution_strategy: ResolutionStrategy::Incremental,
+            max_nodes_per_frame: DEFAULT_MAX_NODES_PER_FRAME,
+        }
+    }
+}
+
 /// State for a single publication being viewed (tree-based)
 #[derive(Debug)]
 pub struct PublicationTreeState {
@@ -178,10 +211,20 @@ impl PublicationTreeState {
 }
 
 /// Manages all publication views
-#[derive(Default)]
 pub struct Publications {
     /// Tree-based publication states
     pub publications: HashMap<NoteId, PublicationTreeState>,
+    /// Configuration for loading behavior
+    pub config: PublicationConfig,
+}
+
+impl Default for Publications {
+    fn default() -> Self {
+        Self {
+            publications: HashMap::new(),
+            config: PublicationConfig::default(),
+        }
+    }
 }
 
 impl Publications {
@@ -243,12 +286,21 @@ impl Publications {
             }
         }
 
-        // Try to resolve any pending nodes that are already in nostrdb
+        // Try to resolve pending nodes that are already in nostrdb
         // This handles the case where sections were fetched in a previous session
-        let pre_resolved = self.try_resolve_existing(ndb, txn, &mut state);
+        // Behavior depends on resolution strategy:
+        // - AllAtOnce: resolve everything (may freeze UI for large publications)
+        // - Incremental: resolve limited per frame (remaining resolved via poll_updates)
+        // - LazyOnDemand: don't pre-resolve (resolved when visible)
+        let max_to_resolve = match self.config.resolution_strategy {
+            ResolutionStrategy::AllAtOnce => usize::MAX,
+            ResolutionStrategy::Incremental => self.config.max_nodes_per_frame,
+            ResolutionStrategy::LazyOnDemand => 0,
+        };
+        let pre_resolved = self.try_resolve_existing(ndb, txn, &mut state, max_to_resolve);
         if pre_resolved > 0 {
             info!(
-                "Pre-resolved {} nodes from existing nostrdb data, {} still pending",
+                "Pre-resolved {} nodes from existing nostrdb data, {} still pending (incremental resolution continues)",
                 pre_resolved,
                 state.tree.pending_count()
             );
@@ -298,11 +350,32 @@ impl Publications {
         index_id: &NoteId,
         batch_size: usize,
     ) -> bool {
+        // Copy config values to avoid borrow conflicts
+        let resolution_strategy = self.config.resolution_strategy;
+        let max_nodes_per_frame = self.config.max_nodes_per_frame;
+
         let Some(state) = self.publications.get_mut(index_id) else {
             return false;
         };
 
-        let resolved = state.process_notes(ndb, txn);
+        // Process notes that were fetched from subscriptions (pending_fetch)
+        let mut resolved = state.process_notes(ndb, txn);
+
+        // For Incremental strategy, also try to resolve more nodes from cache each frame
+        // This continues the work started in open() and handles nodes that may have
+        // arrived since the subscription was created
+        if resolution_strategy == ResolutionStrategy::Incremental && state.tree.has_pending() {
+            let cache_resolved =
+                Self::try_resolve_existing_on_state(ndb, txn, state, max_nodes_per_frame);
+            if cache_resolved > 0 {
+                debug!(
+                    "poll_updates: incrementally resolved {} nodes from cache, {} pending remain",
+                    cache_resolved,
+                    state.tree.pending_count()
+                );
+                resolved = true;
+            }
+        }
 
         // Check if there are pending addresses that need to be subscribed for
         // This handles both: newly discovered children from resolved branches,
@@ -362,8 +435,8 @@ impl Publications {
 
     /// Try to resolve pending nodes that already exist in nostrdb
     ///
-    /// Iteratively resolves nodes until no more can be found (handles cascading
-    /// resolution when branch nodes reveal new children that are also in nostrdb).
+    /// Resolves up to `max_nodes` pending nodes per call to avoid UI freezing.
+    /// Handles cascading resolution when branch nodes reveal new children.
     ///
     /// Returns the number of nodes resolved
     fn try_resolve_existing(
@@ -371,13 +444,41 @@ impl Publications {
         ndb: &Ndb,
         txn: &Transaction,
         state: &mut PublicationTreeState,
+        max_nodes: usize,
+    ) -> usize {
+        Self::try_resolve_existing_on_state(ndb, txn, state, max_nodes)
+    }
+
+    /// Static helper to resolve pending nodes from cache
+    /// Used by both try_resolve_existing and poll_updates
+    fn try_resolve_existing_on_state(
+        ndb: &Ndb,
+        txn: &Transaction,
+        state: &mut PublicationTreeState,
+        max_nodes: usize,
     ) -> usize {
         let mut total_resolved = 0;
 
-        // Keep resolving until no more nodes can be found
+        // Keep resolving until we hit the limit or no more nodes can be found
         // This handles cascading: resolving a 30040 adds children, which might also exist
         loop {
-            let pending: Vec<_> = state.tree.pending_addresses().into_iter().cloned().collect();
+            if total_resolved >= max_nodes {
+                debug!(
+                    "try_resolve_existing: hit limit of {} nodes, {} pending remain",
+                    max_nodes,
+                    state.tree.pending_count()
+                );
+                break;
+            }
+
+            let remaining = max_nodes - total_resolved;
+            let pending: Vec<_> = state
+                .tree
+                .pending_addresses()
+                .into_iter()
+                .take(remaining)
+                .cloned()
+                .collect();
             if pending.is_empty() {
                 break;
             }
