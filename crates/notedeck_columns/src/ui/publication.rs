@@ -6,7 +6,6 @@ use egui::{Area, Color32, Frame, Order, ScrollArea, Stroke, Vec2};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::nav::DragResponse;
-use notedeck::ui::is_narrow;
 use notedeck::{ContextSelection, Localization, NoteAction, RelayInfoCache};
 use notedeck_ui::note::NoteContextButton;
 use std::collections::HashSet;
@@ -44,11 +43,11 @@ struct SectionData {
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum ReaderMode {
     /// Continuous scrolling through all sections
-    #[default]
     Continuous,
     /// One section at a time with pagination
     Paginated,
     /// Outline view - shows children of current node for drill-down navigation
+    #[default]
     Outline,
 }
 
@@ -168,18 +167,11 @@ impl<'a> PublicationView<'a> {
 
         // Get or create reader state
         let state_id = self.state_id();
-        let is_narrow_screen = is_narrow(ui.ctx());
         let mut state: ReaderState = ui.ctx().data_mut(|d| {
             d.get_temp(state_id).unwrap_or_else(|| {
-                // New state - determine default mode
-                // On narrow screens (mobile), default to Outline for easier navigation
-                // Otherwise, use the mode preference from Publications feed toggle
-                let default_mode = if is_narrow_screen {
-                    ReaderMode::Outline
-                } else {
-                    let default_mode_id = crate::ui::timeline::publication_default_mode_id(self.col);
-                    d.get_temp(default_mode_id).unwrap_or_default()
-                };
+                // New state - use mode preference from Publications feed toggle (defaults to Outline)
+                let default_mode_id = crate::ui::timeline::publication_default_mode_id(self.col);
+                let default_mode = d.get_temp(default_mode_id).unwrap_or_default();
                 ReaderState {
                     mode: default_mode,
                     ..Default::default()
