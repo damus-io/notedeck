@@ -57,6 +57,8 @@ pub enum ReaderMode {
 struct OutlineViewState {
     /// Current node index being viewed (0 = root)
     current_node: usize,
+    /// Expanded leaf nodes (show full content instead of collapsed)
+    expanded_leaves: HashSet<usize>,
 }
 
 /// Persistent state for the publication reader (stored in egui memory)
@@ -828,6 +830,7 @@ impl<'a> PublicationView<'a> {
         note_key: Option<NoteKey>,
     ) -> Option<NoteAction> {
         let mut action = None;
+        let is_expanded = state.outline_view.expanded_leaves.contains(&child_idx);
 
         let card_frame = Frame::default()
             .stroke(Stroke::new(
@@ -839,9 +842,23 @@ impl<'a> PublicationView<'a> {
 
         let card_resp = card_frame.show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Type indicator
-                let icon = if is_branch { "📁" } else { "📄" };
-                ui.label(icon);
+                // Type/expand indicator
+                if is_branch {
+                    ui.label("📁");
+                } else {
+                    // Leaf: show expand/collapse indicator
+                    let expand_icon = if is_expanded { "▼" } else { "▶" };
+                    if ui
+                        .add(egui::Label::new(expand_icon).sense(egui::Sense::click()))
+                        .clicked()
+                    {
+                        if is_expanded {
+                            state.outline_view.expanded_leaves.remove(&child_idx);
+                        } else {
+                            state.outline_view.expanded_leaves.insert(child_idx);
+                        }
+                    }
+                }
 
                 // Title
                 let title_text = if !is_resolved {
@@ -863,24 +880,33 @@ impl<'a> PublicationView<'a> {
                         state.outline_view.current_node = child_idx;
                     }
                 } else {
-                    // Leaf: show title
-                    ui.label(egui::RichText::new(&title_text).strong());
+                    // Leaf: title is also clickable to toggle expansion
+                    if ui
+                        .add(
+                            egui::Label::new(egui::RichText::new(&title_text).strong())
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text(if is_expanded { "Click to collapse" } else { "Click to expand" })
+                        .clicked()
+                    {
+                        if is_expanded {
+                            state.outline_view.expanded_leaves.remove(&child_idx);
+                        } else {
+                            state.outline_view.expanded_leaves.insert(child_idx);
+                        }
+                    }
                 }
             });
 
-            // For leaf nodes, show preview snippet (not full content)
-            if !is_branch {
+            // For leaf nodes, show content only when expanded
+            if !is_branch && is_expanded {
                 ui.add_space(8.0);
 
                 if let Some(note_key) = note_key {
                     if let Ok(note) = self.ndb.get_note_by_key(txn, note_key) {
                         let content = note.content();
                         if !content.is_empty() {
-                            let preview = Self::truncate_to_preview(content, 100);
-                            ui.label(
-                                egui::RichText::new(preview)
-                                    .color(ui.visuals().weak_text_color()),
-                            );
+                            Self::render_text_content(ui, content);
                         } else {
                             ui.label(
                                 egui::RichText::new("(empty section)")
@@ -1016,28 +1042,6 @@ impl<'a> PublicationView<'a> {
             }
 
             ui.add(egui::Label::new(trimmed).wrap());
-        }
-    }
-
-    /// Truncate content to a preview snippet with ellipsis
-    fn truncate_to_preview(content: &str, max_chars: usize) -> String {
-        // Collapse whitespace and normalize
-        let trimmed: String = content
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        if trimmed.chars().count() <= max_chars {
-            trimmed
-        } else {
-            format!(
-                "{}...",
-                trimmed
-                    .chars()
-                    .take(max_chars)
-                    .collect::<String>()
-                    .trim_end()
-            )
         }
     }
 
