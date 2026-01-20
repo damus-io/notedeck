@@ -4044,6 +4044,7 @@ dependencies = [
  "nostrdb",
  "notedeck",
  "notedeck_ui",
+ "rustc-hash 2.1.1",
  "tokio",
  "tracing",
 ]

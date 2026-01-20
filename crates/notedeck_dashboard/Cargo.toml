@@ -4,6 +4,8 @@ edition = "2024"
 version.workspace = true
 
 [dependencies]
+rustc-hash = "2.1.1"
+
 egui = { workspace = true }
 nostrdb = { workspace = true }
 chrono = { workspace = true }
