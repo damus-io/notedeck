@@ -1049,7 +1049,7 @@ fn like_button(
         if ui.visuals().dark_mode {
             img.tint(ui.visuals().text_color())
         } else {
-            img
+            img.tint(egui::Color32::BLACK)
         }
     };
 
