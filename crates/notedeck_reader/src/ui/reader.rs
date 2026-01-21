@@ -341,45 +341,46 @@ impl<'a> PublicationView<'a> {
                     // Outline navigation controls
                     let current_node = state.outline_view.current_node;
 
-                    // Up button (when not at root)
-                    if current_node != 0 {
-                        if let Some(ps) = pub_state {
-                            if let Some(node) = ps.get_node(current_node) {
-                                if let Some(parent_idx) = node.parent {
-                                    if ui
-                                        .button("\u{2B06}")
-                                        .on_hover_text("Go up to parent")
-                                        .clicked()
-                                    {
-                                        state.outline_view.current_node = parent_idx;
-                                    }
-                                }
-                            }
+                    // Up button (when not at root) - flatten nested conditionals
+                    let parent_idx = (current_node != 0)
+                        .then_some(pub_state)
+                        .flatten()
+                        .and_then(|ps| ps.get_node(current_node))
+                        .and_then(|node| node.parent);
+
+                    if let Some(parent_idx) = parent_idx {
+                        if ui
+                            .button("\u{2B06}")
+                            .on_hover_text("Go up to parent")
+                            .clicked()
+                        {
+                            state.outline_view.current_node = parent_idx;
                         }
                     }
 
                     // Sibling navigation (Prev/Next)
-                    if let Some(ps) = pub_state {
-                        let (prev_sibling, next_sibling) = ps.tree.siblings(current_node);
+                    let Some(ps) = pub_state else {
+                        return;
+                    };
+                    let (prev_sibling, next_sibling) = ps.tree.siblings(current_node);
 
-                        if ui
-                            .add_enabled(prev_sibling.is_some(), egui::Button::new("\u{25C0}"))
-                            .on_hover_text("Previous sibling")
-                            .clicked()
-                        {
-                            if let Some(prev_idx) = prev_sibling {
-                                state.outline_view.current_node = prev_idx;
-                            }
+                    if ui
+                        .add_enabled(prev_sibling.is_some(), egui::Button::new("\u{25C0}"))
+                        .on_hover_text("Previous sibling")
+                        .clicked()
+                    {
+                        if let Some(prev_idx) = prev_sibling {
+                            state.outline_view.current_node = prev_idx;
                         }
+                    }
 
-                        if ui
-                            .add_enabled(next_sibling.is_some(), egui::Button::new("\u{25B6}"))
-                            .on_hover_text("Next sibling")
-                            .clicked()
-                        {
-                            if let Some(next_idx) = next_sibling {
-                                state.outline_view.current_node = next_idx;
-                            }
+                    if ui
+                        .add_enabled(next_sibling.is_some(), egui::Button::new("\u{25B6}"))
+                        .on_hover_text("Next sibling")
+                        .clicked()
+                    {
+                        if let Some(next_idx) = next_sibling {
+                            state.outline_view.current_node = next_idx;
                         }
                     }
                 }
@@ -966,55 +967,64 @@ impl<'a> PublicationView<'a> {
             });
 
             // For leaf nodes, show content only when expanded
-            if !is_branch && is_expanded {
-                ui.add_space(8.0);
-
-                if let Some(note_key) = note_key {
-                    if let Ok(note) = self.ndb.get_note_by_key(txn, note_key) {
-                        let content = note.content();
-                        if !content.is_empty() {
-                            Self::render_text_content(ui, content);
-                        } else {
-                            ui.label(
-                                egui::RichText::new("(empty section)")
-                                    .color(Color32::GRAY)
-                                    .italics(),
-                            );
-                        }
-                    } else {
-                        ui.label(egui::RichText::new("Error loading content").color(Color32::RED));
-                    }
-                } else {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(
-                            egui::RichText::new("Loading...")
-                                .color(Color32::GRAY)
-                                .italics(),
-                        );
-                    });
-                }
+            if is_branch || !is_expanded {
+                return;
             }
+
+            ui.add_space(8.0);
+
+            let Some(note_key) = note_key else {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new("Loading...")
+                            .color(Color32::GRAY)
+                            .italics(),
+                    );
+                });
+                return;
+            };
+
+            let Ok(note) = self.ndb.get_note_by_key(txn, note_key) else {
+                ui.label(egui::RichText::new("Error loading content").color(Color32::RED));
+                return;
+            };
+
+            let content = note.content();
+            if content.is_empty() {
+                ui.label(
+                    egui::RichText::new("(empty section)")
+                        .color(Color32::GRAY)
+                        .italics(),
+                );
+                return;
+            }
+
+            Self::render_text_content(ui, content);
         });
 
         // Add context button for leaf nodes with content
-        if !is_branch {
-            if let Some(note_key) = note_key {
-                let context_pos = {
-                    let size = NoteContextButton::max_width();
-                    let top_right = card_resp.response.rect.right_top();
-                    let min = egui::pos2(top_right.x - size - 12.0, top_right.y + 12.0);
-                    egui::Rect::from_min_size(min, egui::vec2(size, size))
-                };
+        if is_branch {
+            return action;
+        }
 
-                let options_resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
-                if let Some(ctx_action) = NoteContextButton::menu(ui, self.i18n, options_resp) {
-                    action = Some(NoteAction::Context(ContextSelection {
-                        note_key,
-                        action: ctx_action,
-                    }));
-                }
-            }
+        let Some(note_key) = note_key else {
+            return action;
+        };
+
+        let context_pos = {
+            let size = NoteContextButton::max_width();
+            let top_right = card_resp.response.rect.right_top();
+            let min = egui::pos2(top_right.x - size - 12.0, top_right.y + 12.0);
+            egui::Rect::from_min_size(min, egui::vec2(size, size))
+        };
+
+        let options_resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
+        if let Some(ctx_action) = NoteContextButton::menu(ui, self.i18n, options_resp) {
+            action = Some(NoteAction::Context(ContextSelection {
+                note_key,
+                action: ctx_action,
+            }));
         }
 
         action
@@ -1045,23 +1055,8 @@ impl<'a> PublicationView<'a> {
 
             ui.add_space(8.0);
 
-            // Section content
-            if let Some(note_key) = section.note_key {
-                if let Ok(section_note) = self.ndb.get_note_by_key(txn, note_key) {
-                    let content = section_note.content();
-                    if !content.is_empty() {
-                        Self::render_text_content(ui, content);
-                    } else {
-                        ui.label(
-                            egui::RichText::new("(empty section)")
-                                .color(Color32::GRAY)
-                                .italics(),
-                        );
-                    }
-                } else {
-                    ui.label(egui::RichText::new("Error loading section").color(Color32::RED));
-                }
-            } else {
+            // Section content - flatten nested conditionals
+            let Some(note_key) = section.note_key else {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(
@@ -1070,25 +1065,45 @@ impl<'a> PublicationView<'a> {
                             .italics(),
                     );
                 });
+                return;
+            };
+
+            let Ok(section_note) = self.ndb.get_note_by_key(txn, note_key) else {
+                ui.label(egui::RichText::new("Error loading section").color(Color32::RED));
+                return;
+            };
+
+            let content = section_note.content();
+            if content.is_empty() {
+                ui.label(
+                    egui::RichText::new("(empty section)")
+                        .color(Color32::GRAY)
+                        .italics(),
+                );
+                return;
             }
+
+            Self::render_text_content(ui, content);
         });
 
         // Add options button at top-right of card (if we have the note)
-        if let Some(note_key) = section.note_key {
-            let context_pos = {
-                let size = NoteContextButton::max_width();
-                let top_right = card_resp.response.rect.right_top();
-                let min = egui::pos2(top_right.x - size - 12.0, top_right.y + 12.0);
-                egui::Rect::from_min_size(min, egui::vec2(size, size))
-            };
+        let Some(note_key) = section.note_key else {
+            return action;
+        };
 
-            let options_resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
-            if let Some(ctx_action) = NoteContextButton::menu(ui, self.i18n, options_resp) {
-                action = Some(NoteAction::Context(ContextSelection {
-                    note_key,
-                    action: ctx_action,
-                }));
-            }
+        let context_pos = {
+            let size = NoteContextButton::max_width();
+            let top_right = card_resp.response.rect.right_top();
+            let min = egui::pos2(top_right.x - size - 12.0, top_right.y + 12.0);
+            egui::Rect::from_min_size(min, egui::vec2(size, size))
+        };
+
+        let options_resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
+        if let Some(ctx_action) = NoteContextButton::menu(ui, self.i18n, options_resp) {
+            action = Some(NoteAction::Context(ContextSelection {
+                note_key,
+                action: ctx_action,
+            }));
         }
 
         action
