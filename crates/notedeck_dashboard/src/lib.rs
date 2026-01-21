@@ -1,3 +1,4 @@
+use nostrdb::Note;
 use rustc_hash::FxHashMap;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,6 +11,7 @@ use notedeck::{AppContext, AppResponse, try_process_events_core};
 use chrono::{Datelike, TimeZone, Utc};
 
 mod chart;
+mod sparkline;
 mod ui;
 
 // ----------------------
@@ -46,14 +48,36 @@ impl Period {
 #[derive(Default, Clone, Debug)]
 struct Bucket {
     pub total: u64,
-    pub kinds: rustc_hash::FxHashMap<u64, u64>,
+    pub kinds: rustc_hash::FxHashMap<u64, u32>,
+    pub clients: rustc_hash::FxHashMap<String, u32>,
+}
+
+fn note_client_tag<'a>(note: &Note<'a>) -> Option<&'a str> {
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        let Some("client") = tag.get_str(0) else {
+            continue;
+        };
+
+        return tag.get_str(1);
+    }
+
+    None
 }
 
 impl Bucket {
     #[inline(always)]
-    pub fn bump(&mut self, kind: u64) {
+    pub fn bump(&mut self, note: &Note<'_>) {
         self.total += 1;
-        *self.kinds.entry(kind).or_default() += 1;
+        *self.kinds.entry(note.kind() as u64).or_default() += 1;
+        if let Some(client) = note_client_tag(note) {
+            *self.clients.entry(client.to_string()).or_default() += 1;
+        } else {
+            // TODO(jb55): client fingerprinting ?
+        }
     }
 }
 
@@ -104,7 +128,9 @@ impl RollingCache {
     }
 
     #[inline(always)]
-    pub fn bump(&mut self, ts: i64, kind: u64) {
+    pub fn bump(&mut self, note: &Note<'_>) {
+        let ts = note.created_at() as i64;
+
         // bucket windows are [end-(i+1)*size, end-i*size)
         // so treat `end` itself as "future"
         let delta = (self.anchor_end_ts - 1) - ts;
@@ -118,7 +144,7 @@ impl RollingCache {
             return; // outside window
         }
 
-        self.buckets[idx].bump(kind);
+        self.buckets[idx].bump(note);
     }
 }
 
@@ -431,13 +457,10 @@ fn materialize_single_pass(
     let emit_every = Duration::from_millis(32);
 
     let _ = ndb.fold(&txn, &filters, &mut acc, |acc, note| {
-        let ts = note.created_at() as i64;
-        let kind = note.kind() as u64;
-
-        acc.state.total.bump(kind);
-        acc.state.daily.bump(ts, kind);
-        acc.state.weekly.bump(ts, kind);
-        acc.state.monthly.bump(ts, kind);
+        acc.state.total.bump(&note);
+        acc.state.daily.bump(&note);
+        acc.state.weekly.bump(&note);
+        acc.state.monthly.bump(&note);
 
         let now = Instant::now();
         if now.saturating_duration_since(acc.last_emit) >= emit_every {
@@ -505,7 +528,7 @@ fn top_kinds_over(cache: &RollingCache, limit: usize) -> Vec<(u64, u64)> {
 
     for b in &cache.buckets {
         for (kind, count) in &b.kinds {
-            *agg.entry(*kind).or_default() += count;
+            *agg.entry(*kind).or_default() += *count as u64;
         }
     }
 

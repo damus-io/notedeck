@@ -184,3 +184,71 @@ pub fn horizontal_bar_chart(
 
     outer_resp
 }
+
+pub fn stacked_bars(
+    ui: &mut Ui,
+    size: Vec2,
+    buckets: &[Vec<(Color32, f32)>], // each bucket: vec of (color, value)
+) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    painter.rect_filled(rect, 6.0, ui.visuals().faint_bg_color);
+
+    if buckets.is_empty() {
+        return resp;
+    }
+
+    // find max total per bucket for scaling
+    let mut max_total = 0.0_f32;
+    for b in buckets {
+        let t: f32 = b.iter().map(|(_, v)| v.max(0.0)).sum();
+        max_total = max_total.max(t);
+    }
+    if max_total <= 0.0 {
+        return resp;
+    }
+
+    let n = buckets.len();
+    let bw = rect.width() / n as f32;
+
+    for (i, b) in buckets.iter().enumerate() {
+        let x0 = rect.left() + i as f32 * bw;
+        let x1 = x0 + bw;
+
+        let total: f32 = b.iter().map(|(_, v)| v.max(0.0)).sum();
+        let h_total = rect.height() * (total / max_total);
+
+        // Optional: center bars if you want; simplest is fill from bottom with total scaling:
+        let mut y0 = rect.bottom();
+        let y_min = rect.bottom() - h_total;
+
+        for (color, v) in b {
+            let v = v.max(0.0);
+            if v <= 0.0 {
+                continue;
+            }
+            let seg_h = h_total * (v / total.max(1.0));
+            let seg_rect = Rect::from_min_max(
+                Pos2::new(x0 + 1.0, (y0 - seg_h).max(y_min)),
+                Pos2::new(x1 - 1.0, y0),
+            );
+            painter.rect_filled(seg_rect, 0.0, *color);
+            y0 -= seg_h;
+        }
+
+        // faint outline
+        let outline = Rect::from_min_max(
+            Pos2::new(x0 + 1.0, y_min),
+            Pos2::new(x1 - 1.0, rect.bottom()),
+        );
+        painter.rect_stroke(
+            outline,
+            0.0,
+            Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color),
+            StrokeKind::Middle,
+        );
+    }
+
+    resp
+}

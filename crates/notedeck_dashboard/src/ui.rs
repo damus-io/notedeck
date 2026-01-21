@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::Dashboard;
+use crate::FxHashMap;
 use crate::Period;
 use crate::RollingCache;
 use crate::chart::Bar;
@@ -290,6 +291,159 @@ fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
             ui.add_sized(size, |ui: &mut egui::Ui| {
                 card_ui(ui, min_card, |ui| kinds_ui(dashboard, ui))
             });
+            ui.add_sized(size, |ui: &mut egui::Ui| {
+                card_ui(ui, min_card, |ui| clients_stack_ui(dashboard, ui))
+            });
+            ui.add_sized(size, |ui: &mut egui::Ui| {
+                card_ui(ui, min_card, |ui| clients_trends_ui(dashboard, ui))
+            });
         },
     );
+}
+
+fn client_series(cache: &RollingCache, client: &str) -> Vec<f32> {
+    // left=oldest, right=newest like your series_bars_for_kind does
+    let n = cache.buckets.len();
+    let mut out = Vec::with_capacity(n);
+    for i in (0..n).rev() {
+        let v = *cache.buckets[i].clients.get(client).unwrap_or(&0) as f32;
+        out.push(v);
+    }
+    out
+}
+
+pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
+    card_header_ui(ui, "Clients (trend)");
+    ui.add_space(8.0);
+
+    let limit = 10;
+
+    let cache = match dashboard.period {
+        Period::Daily => &dashboard.state.daily,
+        Period::Weekly => &dashboard.state.weekly,
+        Period::Monthly => &dashboard.state.monthly,
+    };
+
+    let top = top_clients_over(cache, limit); // your existing “top N” is fine as a selector
+    if top.is_empty() && dashboard.last_error.is_none() {
+        ui.label(RichText::new("…").font(FontId::proportional(24.0)).weak());
+        return;
+    }
+    if top.is_empty() {
+        ui.label("No client tags");
+        return;
+    }
+
+    let spark_w = (ui.available_width() - 140.0).max(80.0);
+    let spark_h = 18.0;
+
+    for (row_i, (client, total)) in top.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(client).small());
+            ui.add_space(6.0);
+
+            let series = client_series(cache, client);
+
+            let resp = crate::sparkline::sparkline(
+                ui,
+                egui::vec2(spark_w, spark_h),
+                &series,
+                palette(row_i),
+                crate::sparkline::SparkStyle::default(),
+            );
+
+            // tooltip: last bucket + total
+            if resp.hovered() {
+                let last = series.last().copied().unwrap_or(0.0);
+                resp.on_hover_text(format!("total: {total}\nlatest bucket: {:.0}", last));
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(total.to_string()).small().strong());
+            });
+        });
+        ui.add_space(4.0);
+    }
+
+    footer_status_ui(
+        ui,
+        dashboard.running,
+        dashboard.last_error.as_deref(),
+        dashboard.last_snapshot,
+        dashboard.last_duration,
+    );
+}
+
+fn stacked_clients_over_time(
+    cache: &RollingCache,
+    top: &[(String, u64)],
+) -> Vec<Vec<(egui::Color32, f32)>> {
+    let n = cache.buckets.len();
+    let mut out = Vec::with_capacity(n);
+
+    // oldest -> newest
+    for i in (0..n).rev() {
+        let mut segs = Vec::with_capacity(top.len());
+        for (idx, (name, _)) in top.iter().enumerate() {
+            let v = *cache.buckets[i].clients.get(name).unwrap_or(&0) as f32;
+            segs.push((palette(idx), v));
+        }
+        out.push(segs);
+    }
+    out
+}
+
+pub fn clients_stack_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
+    card_header_ui(ui, "Clients (stacked over time)");
+    ui.add_space(8.0);
+
+    let limit = 6; // stacked charts get noisy fast; 5–7 is usually sweet spot
+
+    let cache = dashboard.selected_cache();
+    let top = top_clients_over(cache, limit);
+
+    if top.is_empty() && dashboard.last_error.is_none() {
+        ui.label(RichText::new("…").font(FontId::proportional(24.0)).weak());
+    } else if top.is_empty() {
+        ui.label("No client tags");
+    } else {
+        let buckets = stacked_clients_over_time(cache, &top);
+        let w = ui.available_width().max(120.0);
+        let h = 70.0;
+
+        let resp = crate::chart::stacked_bars(ui, egui::vec2(w, h), &buckets);
+
+        // legend
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            for (i, (name, _)) in top.iter().enumerate() {
+                ui.label(RichText::new("■").color(palette(i)));
+                ui.label(RichText::new(name).small());
+                ui.add_space(10.0);
+            }
+        });
+
+        // you can also attach hover-to-bucket tooltip later if you want (based on pointer x -> bucket index)
+        let _ = resp;
+    }
+}
+
+fn top_clients_over(cache: &RollingCache, limit: usize) -> Vec<(String, u64)> {
+    let mut agg: FxHashMap<String, u64> = FxHashMap::default();
+
+    for b in &cache.buckets {
+        for (client, count) in &b.clients {
+            *agg.entry(client.clone()).or_default() += *count as u64;
+        }
+    }
+
+    let mut out: Vec<(String, u64)> = agg.into_iter().collect();
+
+    // sort desc by count; tie-break by name for stability
+    out.sort_by(|(a_name, a_cnt), (b_name, b_cnt)| {
+        b_cnt.cmp(a_cnt).then_with(|| a_name.cmp(b_name))
+    });
+
+    out.truncate(limit);
+    out
 }
