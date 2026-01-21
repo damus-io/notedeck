@@ -10,7 +10,10 @@ use crate::{
     storage,
     subscriptions::{SubKind, Subscriptions},
     support::Support,
-    timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
+    timeline::{
+        self, kind::ListKind, publication::Publications, thread::Threads, TimelineCache,
+        TimelineKind,
+    },
     toolbar::unseen_notification,
     ui::{self, toolbar::toolbar, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
@@ -50,6 +53,7 @@ pub struct Damus {
     pub subscriptions: Subscriptions,
     pub support: Support,
     pub threads: Threads,
+    pub publications: Publications,
 
     //frame_history: crate::frame_history::FrameHistory,
 
@@ -514,6 +518,7 @@ impl Damus {
         let support = Support::new(app_context.path);
         let note_options = get_note_options(parsed_args, app_context.settings);
         let threads = Threads::default();
+        let publications = Publications::default();
 
         Self {
             subscriptions: Subscriptions::default(),
@@ -528,6 +533,7 @@ impl Damus {
             decks_cache,
             unrecognized_args,
             threads,
+            publications,
             onboarding: Onboarding::default(),
             hovered_column: None,
         }
@@ -579,6 +585,7 @@ impl Damus {
             decks_cache,
             unrecognized_args: BTreeSet::default(),
             threads: Threads::default(),
+            publications: Publications::default(),
             onboarding: Onboarding::default(),
             hovered_column: None,
         }
@@ -672,7 +679,7 @@ fn render_damus_mobile(
                     can_take_drag_from.extend(resp.can_take_drag_from());
 
                     let r = resp.process_render_nav_response(app, app_ctx, ui);
-                    if let Some(r) = &r {
+                    if let Some(r) = r {
                         match r {
                             ProcessNavResult::SwitchOccurred => {
                                 if !app.options.contains(AppOptions::TmpColumns) {
@@ -686,17 +693,21 @@ fn render_damus_mobile(
 
                             ProcessNavResult::SwitchAccount(pubkey) => {
                                 // Add as pubkey-only account if not already present
-                                let kp = enostr::Keypair::only_pubkey(*pubkey);
+                                let kp = enostr::Keypair::only_pubkey(pubkey);
                                 let _ = app_ctx.accounts.add_account(kp);
 
                                 let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
                                 app_ctx.accounts.select_account(
-                                    pubkey,
+                                    &pubkey,
                                     app_ctx.ndb,
                                     &txn,
                                     app_ctx.pool,
                                     ui.ctx(),
                                 );
+                            }
+
+                            ProcessNavResult::AppAction(action) => {
+                                app_action = Some(action);
                             }
                         }
                     }
@@ -775,6 +786,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
                 TimelineKind::Universe => true,
                 TimelineKind::Generic(_) => true,
                 TimelineKind::Hashtag(_) => true,
+                TimelineKind::Publications => true,
 
                 // no!
                 TimelineKind::Search(_) => false,
@@ -783,6 +795,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         }
 
         Route::Thread(_) => false,
+        Route::Publication(_) => false,
         Route::Accounts(_) => false,
         Route::Reply(_) => false,
         Route::Quote(_) => false,
@@ -946,7 +959,7 @@ fn timelines_view(
     for response in responses {
         let nav_result = response.process_render_nav_response(app, ctx, ui);
 
-        if let Some(nr) = &nav_result {
+        if let Some(nr) = nav_result {
             match nr {
                 ProcessNavResult::SwitchOccurred => save_cols = true,
 
@@ -956,12 +969,16 @@ fn timelines_view(
 
                 ProcessNavResult::SwitchAccount(pubkey) => {
                     // Add as pubkey-only account if not already present
-                    let kp = enostr::Keypair::only_pubkey(*pubkey);
+                    let kp = enostr::Keypair::only_pubkey(pubkey);
                     let _ = ctx.accounts.add_account(kp);
 
                     let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
                     ctx.accounts
-                        .select_account(pubkey, ctx.ndb, &txn, ctx.pool, ui.ctx());
+                        .select_account(&pubkey, ctx.ndb, &txn, ctx.pool, ui.ctx());
+                }
+
+                ProcessNavResult::AppAction(action) => {
+                    app_action = Some(action);
                 }
             }
         }

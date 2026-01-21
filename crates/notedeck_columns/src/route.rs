@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use crate::{
     accounts::AccountsRoute,
-    timeline::{kind::ColumnTitle, ThreadSelection, TimelineKind},
+    timeline::{kind::ColumnTitle, PublicationSelection, ThreadSelection, TimelineKind},
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
 };
 
@@ -18,6 +18,7 @@ use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 pub enum Route {
     Timeline(TimelineKind),
     Thread(ThreadSelection),
+    Publication(PublicationSelection),
     Accounts(AccountsRoute),
     Reply(NoteId),
     Quote(NoteId),
@@ -62,6 +63,10 @@ impl Route {
         Route::Thread(thread_selection)
     }
 
+    pub fn publication(selection: PublicationSelection) -> Self {
+        Route::Publication(selection)
+    }
+
     pub fn profile(pubkey: Pubkey) -> Self {
         Route::Timeline(TimelineKind::profile(pubkey))
     }
@@ -96,6 +101,10 @@ impl Route {
                 } else {
                     writer.write_token(&NoteId::new(*selection.root_id.bytes()).hex());
                 }
+            }
+            Route::Publication(selection) => {
+                writer.write_token("publication");
+                writer.write_token(&selection.index_id.hex());
             }
             Route::Accounts(routes) => routes.serialize_tokens(writer),
             Route::AddColumn(routes) => routes.serialize_tokens(writer),
@@ -273,6 +282,14 @@ impl Route {
                 },
                 |p| {
                     p.parse_all(|p| {
+                        p.parse_token("publication")?;
+                        let note_id = NoteId::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        Ok(Route::Publication(PublicationSelection::new(note_id)))
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
                         p.parse_token("following")?;
                         let pubkey = Pubkey::from_hex(p.pull_token()?)
                             .map_err(|_| ParseError::HexDecodeFailed)?;
@@ -297,6 +314,11 @@ impl Route {
             Route::Thread(_) => {
                 ColumnTitle::formatted(tr!(i18n, "Thread", "Column title for note thread view"))
             }
+            Route::Publication(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Publication",
+                "Column title for publication reader"
+            )),
             Route::Reply(_id) => {
                 ColumnTitle::formatted(tr!(i18n, "Reply", "Column title for reply composition"))
             }
@@ -566,6 +588,10 @@ impl<R: Clone> ColumnsRouter<R> {
 
     pub fn routes(&self) -> &Vec<R> {
         self.router_internal.routes()
+    }
+
+    pub fn routes_mut(&mut self) -> &mut Vec<R> {
+        &mut self.router_internal.routes
     }
 
     pub fn navigating(&self) -> bool {

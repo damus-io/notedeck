@@ -30,6 +30,9 @@ use notedeck_dave::{Dave, DaveAvatar};
 #[cfg(feature = "messages")]
 use notedeck_messages::MessagesApp;
 
+#[cfg(feature = "reader")]
+use notedeck_reader::ReaderApp;
+
 #[cfg(feature = "clndash")]
 use notedeck_ui::expanding_button;
 
@@ -170,6 +173,9 @@ impl Chrome {
         #[cfg(feature = "clndash")]
         chrome.add_app(NotedeckApp::ClnDash(Box::default()));
 
+        #[cfg(feature = "reader")]
+        chrome.add_app(NotedeckApp::Reader(Box::new(ReaderApp::new())));
+
         chrome.set_active(0);
 
         Ok(chrome)
@@ -201,6 +207,18 @@ impl Chrome {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Columns(_) = app {
                 self.active = i as i32;
+            }
+        }
+    }
+
+    /// Open a publication in the Reader app
+    #[cfg(feature = "reader")]
+    fn open_publication(&mut self, note_id: notedeck::enostr::NoteId) {
+        for (i, app) in self.apps.iter_mut().enumerate() {
+            if let NotedeckApp::Reader(reader) = app {
+                reader.open(note_id);
+                self.active = i as i32;
+                return;
             }
         }
     }
@@ -468,41 +486,81 @@ fn chrome_handle_app_action(
 
         AppAction::Note(note_action) => {
             chrome.switch_to_columns();
-            let Some(columns) = chrome.get_columns_app() else {
-                return;
+
+            // We need to handle note actions and potentially extract an app_action
+            // Process in a scope to avoid borrow conflicts
+            let pending_app_action = {
+                let Some(columns) = chrome.get_columns_app() else {
+                    return;
+                };
+
+                let txn = Transaction::new(ctx.ndb).unwrap();
+
+                let cols = columns
+                    .decks_cache
+                    .active_columns_mut(ctx.i18n, ctx.accounts)
+                    .unwrap();
+                let m_result = notedeck_columns::actionbar::execute_and_process_note_action(
+                    note_action,
+                    ctx.ndb,
+                    cols,
+                    0,
+                    &mut columns.timeline_cache,
+                    &mut columns.threads,
+                    ctx.note_cache,
+                    ctx.pool,
+                    &txn,
+                    ctx.unknown_ids,
+                    ctx.accounts,
+                    ctx.global_wallet,
+                    ctx.zaps,
+                    ctx.img_cache,
+                    &mut columns.view_state,
+                    ctx.media_jobs.sender(),
+                    ui,
+                );
+
+                let mut app_action_to_handle = None;
+
+                if let Some(result) = m_result {
+                    // Extract fields from the result
+                    let notedeck_columns::actionbar::NoteActionResult {
+                        router_action,
+                        app_action,
+                    } = result;
+
+                    // Save app_action for later handling
+                    app_action_to_handle = app_action;
+
+                    // Process router action within columns
+                    if let Some(router_action) = router_action {
+                        let col = cols.selected_mut();
+                        router_action.process_router_action(&mut col.router, &mut col.sheet_router);
+                    }
+                }
+
+                app_action_to_handle
             };
 
-            let txn = Transaction::new(ctx.ndb).unwrap();
-
-            let cols = columns
-                .decks_cache
-                .active_columns_mut(ctx.i18n, ctx.accounts)
-                .unwrap();
-            let m_action = notedeck_columns::actionbar::execute_and_process_note_action(
-                note_action,
-                ctx.ndb,
-                cols,
-                0,
-                &mut columns.timeline_cache,
-                &mut columns.threads,
-                ctx.note_cache,
-                ctx.pool,
-                &txn,
-                ctx.unknown_ids,
-                ctx.accounts,
-                ctx.global_wallet,
-                ctx.zaps,
-                ctx.img_cache,
-                &mut columns.view_state,
-                ctx.media_jobs.sender(),
-                ui,
-            );
-
-            if let Some(action) = m_action {
-                let col = cols.selected_mut();
-
-                action.process_router_action(&mut col.router, &mut col.sheet_router);
+            // Handle any app-level action after releasing the columns borrow
+            if let Some(action) = pending_app_action {
+                chrome_handle_app_action(chrome, ctx, action, ui);
             }
+        }
+
+        #[cfg(feature = "reader")]
+        AppAction::OpenPublication(note_id) => {
+            chrome.open_publication(note_id);
+        }
+
+        #[cfg(not(feature = "reader"))]
+        AppAction::OpenPublication(_) => {
+            // Reader feature not enabled, do nothing
+            tracing::warn!("OpenPublication action received but reader feature is disabled");
+        }
+
+        AppAction::SwitchToColumns => {
+            chrome.switch_to_columns();
         }
     }
 }
@@ -535,7 +593,7 @@ fn columns_route_to_profile(
     }
 
     let txn = Transaction::new(ctx.ndb).unwrap();
-    let m_action = notedeck_columns::actionbar::execute_and_process_note_action(
+    let m_result = notedeck_columns::actionbar::execute_and_process_note_action(
         notedeck::NoteAction::Profile(*pk),
         ctx.ndb,
         cols,
@@ -555,10 +613,11 @@ fn columns_route_to_profile(
         ui,
     );
 
-    if let Some(action) = m_action {
+    if let Some(result) = m_result {
+        // Note: app_action is not expected for profile navigation
+        // but we handle it for consistency
         let col = cols.selected_mut();
-
-        action.process_router_action(&mut col.router, &mut col.sheet_router);
+        result.process_router_action(&mut col.router, &mut col.sheet_router);
     }
 }
 
@@ -794,6 +853,10 @@ fn topdown_sidebar(
 
             #[cfg(feature = "clndash")]
             NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
+
+            #[cfg(feature = "reader")]
+            NotedeckApp::Reader(_) => tr!(loc, "Reader", "Button to go to the Reader app"),
+
             NotedeckApp::Other(_) => tr!(loc, "Other", "Button to go to the Other app"),
         };
 
@@ -834,6 +897,12 @@ fn topdown_sidebar(
                                 #[cfg(feature = "notebook")]
                                 NotedeckApp::Notebook(_notebook) => {
                                     notebook_button(ui);
+                                }
+
+                                #[cfg(feature = "reader")]
+                                NotedeckApp::Reader(_reader) => {
+                                    // Use a book icon for Reader
+                                    ui.label("\u{1F4D6}");
                                 }
 
                                 NotedeckApp::Other(_other) => {

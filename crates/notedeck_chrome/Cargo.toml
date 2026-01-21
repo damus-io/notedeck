@@ -21,6 +21,7 @@ notedeck_dave = { workspace = true }
 notedeck_messages = { workspace = true, optional = true }
 notedeck_notebook = { workspace = true, optional = true }
 notedeck_clndash = { workspace = true, optional = true }
+notedeck_reader = { workspace = true, optional = true }
 notedeck = { workspace = true }
 nostrdb = { workspace = true }
 puffin = { workspace = true, optional = true }
@@ -57,6 +58,7 @@ tracy = ["profiling/profile-with-tracy"]
 messages = ["notedeck_messages"]
 notebook = ["notedeck_notebook"]
 clndash = ["notedeck_clndash"]
+reader = ["notedeck_reader"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-logcat = "0.1.0"

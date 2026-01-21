@@ -1,0 +1,214 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4.5.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Add android rust target
+        run: rustup target add aarch64-linux-android
+      - name: Install Cargo NDK
+        run: cargo install cargo-ndk
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Build JNI library
+        run: make jni
+      - name: Build APK
+        run: make apk
+      - name: Rename APK with version
+        run: |
+          mkdir -p packages
+          cp crates/notedeck_chrome/android/app/build/outputs/apk/debug/app-debug.apk packages/notedeck-${{ github.ref_name }}-arm64.apk
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: packages/notedeck-*.apk
+
+  build-linux:
+    name: Build Linux Packages
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
+          if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
+            sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu g++-aarch64-linux-gnu
+            rustup target add ${{ matrix.arch }}-unknown-linux-gnu
+          fi
+          cargo install cargo-generate-rpm cargo-deb
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Build (Cross)
+        if: matrix.arch != 'x86_64'
+        run: cargo build --release --target=${{ matrix.arch }}-unknown-linux-gnu
+      - name: Build (Native)
+        if: matrix.arch == 'x86_64'
+        run: cargo build --release
+      - name: Build RPM
+        run: |
+          if [ "${{ matrix.arch }}" != "x86_64" ]; then
+            cargo generate-rpm -p crates/notedeck_chrome --target=${{ matrix.arch }}-unknown-linux-gnu
+          else
+            cargo generate-rpm -p crates/notedeck_chrome
+          fi
+      - name: Build deb
+        run: |
+          if [ "${{ matrix.arch }}" != "x86_64" ]; then
+            cargo deb -p notedeck_chrome --target=${{ matrix.arch }}-unknown-linux-gnu
+          else
+            cargo deb -p notedeck_chrome
+          fi
+      - name: Collect packages
+        run: |
+          mkdir -p packages
+          if [ "${{ matrix.arch }}" == "x86_64" ]; then
+            cp target/release/generate-rpm/*.rpm packages/ || true
+            cp target/release/debian/*.deb packages/ || true
+          else
+            cp target/${{ matrix.arch }}-unknown-linux-gnu/generate-rpm/*.rpm packages/ || true
+            cp target/${{ matrix.arch }}-unknown-linux-gnu/debian/*.deb packages/ || true
+          fi
+      - name: Upload packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: packages/*
+
+  build-macos:
+    name: Build macOS DMG
+    runs-on: macos-latest
+    env:
+      NOTEDECK_APPLE_RELEASE_CERT_ID: ${{ secrets.NOTEDECK_APPLE_RELEASE_CERT_ID }}
+      NOTEDECK_RELEASE_APPLE_ID: ${{ secrets.NOTEDECK_RELEASE_APPLE_ID }}
+      NOTEDECK_APPLE_APP_SPECIFIC_PW: ${{ secrets.NOTEDECK_APPLE_APP_SPECIFIC_PW }}
+      NOTEDECK_APPLE_TEAM_ID: ${{ secrets.NOTEDECK_APPLE_TEAM_ID }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Required Tools
+        run: |
+          brew install create-dmg
+          cargo install cargo-bundle
+          rustup target add ${{ matrix.arch }}-apple-darwin
+      - name: Import apple codesign cert
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.CERTIFICATES_P12 }}
+          p12-password: ${{ secrets.CERTIFICATES_P12_PASSWORD }}
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run macOS DMG Build Script
+        run: ARCH=${{ matrix.arch }} ./scripts/macos_build.sh
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: packages/*.dmg
+
+  build-windows:
+    name: Build Windows Installer
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.arch }}-pc-windows-msvc
+      - name: Build
+        run: cargo build --release --target=${{ matrix.arch }}-pc-windows-msvc
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
+      - name: Generate Inno Setup Script
+        shell: pwsh
+        run: |
+          $arch = "${{ matrix.arch }}"
+          $issContent = @"
+          [Setup]
+          AppName=Damus Notedeck
+          AppVersion=${{ github.ref_name }}
+          DefaultDirName={pf}\Notedeck
+          DefaultGroupName=Damus Notedeck
+          OutputDir=..\packages
+          OutputBaseFilename=notedeck-${{ github.ref_name }}-$arch-installer
+          Compression=lzma
+          SolidCompression=yes
+
+          [Files]
+          Source: "..\target\$arch-pc-windows-msvc\release\notedeck.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{group}\Damus Notedeck"; Filename: "{app}\notedeck.exe"
+
+          [Run]
+          Filename: "{app}\notedeck.exe"; Description: "Launch Damus Notedeck"; Flags: nowait postinstall skipifsilent
+          "@
+          New-Item -ItemType Directory -Force -Path scripts
+          Set-Content -Path "scripts/windows-installer.iss" -Value $issContent
+      - name: Create packages directory
+        run: New-Item -ItemType Directory -Force -Path packages
+      - name: Build Installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "scripts\windows-installer.iss"
+      - name: Upload Installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: packages/*.exe
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [build-android, build-linux, build-macos, build-windows]
+    if: always() && needs.build-android.result == 'success'
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Display artifacts
+        run: find artifacts -type f
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*.apk
+            artifacts/**/*.rpm
+            artifacts/**/*.deb
+            artifacts/**/*.dmg
+            artifacts/**/*.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}

@@ -167,6 +167,77 @@ impl ThreadSelection {
     }
 }
 
+/// Selection for viewing a publication (kind 30040 index with 30041 content)
+#[derive(Debug, Clone)]
+pub struct PublicationSelection {
+    /// The NoteId of the current publication index event (kind 30040)
+    pub index_id: NoteId,
+
+    /// Navigation history for nested publications (parent publications)
+    history: Vec<NoteId>,
+}
+
+impl PublicationSelection {
+    pub fn new(index_id: NoteId) -> Self {
+        Self {
+            index_id,
+            history: Vec::new(),
+        }
+    }
+
+    pub fn from_note_id(note_id: NoteId) -> Self {
+        Self::new(note_id)
+    }
+
+    /// Navigate into a nested publication, pushing current to history
+    pub fn navigate_into(&mut self, new_index_id: NoteId) {
+        self.history.push(self.index_id);
+        self.index_id = new_index_id;
+    }
+
+    /// Navigate back to the previous publication
+    /// Returns the new current index_id if navigation succeeded
+    pub fn navigate_back(&mut self) -> Option<NoteId> {
+        if let Some(prev_id) = self.history.pop() {
+            self.index_id = prev_id;
+            Some(prev_id)
+        } else {
+            None
+        }
+    }
+
+    /// Check if we can navigate back
+    pub fn can_go_back(&self) -> bool {
+        !self.history.is_empty()
+    }
+
+    /// Get the breadcrumb trail (parent publication IDs, oldest first)
+    pub fn breadcrumbs(&self) -> &[NoteId] {
+        &self.history
+    }
+
+    /// Get the navigation depth (0 = root publication)
+    pub fn depth(&self) -> usize {
+        self.history.len()
+    }
+}
+
+/// Hash only by current index_id for timeline cache lookups
+impl Hash for PublicationSelection {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.index_id.hash(state)
+    }
+}
+
+/// Equality only checks current index_id for hash lookups
+impl PartialEq for PublicationSelection {
+    fn eq(&self, other: &Self) -> bool {
+        self.index_id == other.index_id
+    }
+}
+
+impl Eq for PublicationSelection {}
+
 /// Thread selection hashing is done in a specific way. For TimelineCache
 /// lookups, we want to only let the root_id influence thread selection.
 /// This way Thread TimelineKinds always map to the same cached timeline
@@ -215,6 +286,9 @@ pub enum TimelineKind {
     Generic(u64),
 
     Hashtag(Vec<String>),
+
+    /// NKBIP-01 Publications feed (kind 30040)
+    Publications,
 }
 
 const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
@@ -290,6 +364,11 @@ impl Display for TimelineKind {
                 "{}",
                 tr!("Universe", "Timeline kind label for universe feed")
             ),
+            TimelineKind::Publications => write!(
+                f,
+                "{}",
+                tr!("Publications", "Timeline kind label for publications feed")
+            ),
             TimelineKind::Hashtag(_) => write!(
                 f,
                 "{}",
@@ -316,6 +395,7 @@ impl TimelineKind {
             TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
             TimelineKind::Search(query) => query.author(),
+            TimelineKind::Publications => None,
         }
     }
 
@@ -331,6 +411,7 @@ impl TimelineKind {
             TimelineKind::Generic(_) => true,
             TimelineKind::Hashtag(_ht) => true,
             TimelineKind::Search(_q) => true,
+            TimelineKind::Publications => true,
         }
     }
 
@@ -354,6 +435,9 @@ impl TimelineKind {
             }
             TimelineKind::Universe => {
                 writer.write_token("universe");
+            }
+            TimelineKind::Publications => {
+                writer.write_token("publications");
             }
             TimelineKind::Generic(_usize) => {
                 // TODO: lookup filter and then serialize
@@ -407,6 +491,10 @@ impl TimelineKind {
                 |p| {
                     p.parse_token("universe")?;
                     Ok(TimelineKind::Universe)
+                },
+                |p| {
+                    p.parse_token("publications")?;
+                    Ok(TimelineKind::Publications)
                 },
                 |p| {
                     p.parse_token("generic")?;
@@ -503,6 +591,8 @@ impl TimelineKind {
             }
 
             TimelineKind::Profile(pk) => FilterState::ready_hybrid(profile_filter(pk.bytes())),
+
+            TimelineKind::Publications => FilterState::ready(publications_filter()),
         }
     }
 
@@ -521,6 +611,12 @@ impl TimelineKind {
                 TimelineKind::Universe,
                 FilterState::ready(universe_filter()),
                 TimelineTab::full_tabs(),
+            )),
+
+            TimelineKind::Publications => Some(Timeline::new(
+                TimelineKind::Publications,
+                FilterState::ready(publications_filter()),
+                TimelineTab::all(),
             )),
 
             TimelineKind::Generic(_filter_id) => {
@@ -618,6 +714,11 @@ impl TimelineKind {
             TimelineKind::Universe => {
                 ColumnTitle::formatted(tr!(i18n, "Universe", "Column title for universe feed"))
             }
+            TimelineKind::Publications => ColumnTitle::formatted(tr!(
+                i18n,
+                "Publications",
+                "Column title for publications feed"
+            )),
             TimelineKind::Generic(_) => {
                 ColumnTitle::formatted(tr!(i18n, "Custom", "Column title for custom timelines"))
             }
@@ -770,4 +871,18 @@ fn search_filter(s: &SearchQuery) -> Vec<Filter> {
 
 fn universe_filter() -> Vec<Filter> {
     vec![Filter::new().kinds([1]).limit(default_limit()).build()]
+}
+
+/// Filter for NKBIP-01 publication indices (kind 30040)
+fn publications_filter() -> Vec<Filter> {
+    vec![Filter::new().kinds([30040]).limit(default_limit()).build()]
+}
+
+/// Filter for loading more publications (older than the given timestamp)
+pub fn publications_load_more_filter(until: u64) -> Vec<Filter> {
+    vec![Filter::new()
+        .kinds([30040])
+        .until(until)
+        .limit(default_limit())
+        .build()]
 }

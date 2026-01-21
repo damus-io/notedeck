@@ -44,6 +44,10 @@ pub enum NoteAction {
 
     /// User scrolled the timeline
     Scroll(ScrollInfo),
+
+    /// User wants to load more notes (older) in the current timeline
+    /// Contains the "until" timestamp for the query
+    LoadMore(u64),
 }
 
 impl NoteAction {

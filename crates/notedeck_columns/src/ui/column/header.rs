@@ -481,6 +481,7 @@ impl<'a> NavTitle<'a> {
                 | TimelineKind::Algo(_)
                 | TimelineKind::Notifications(_)
                 | TimelineKind::Generic(_)
+                | TimelineKind::Publications
                 | TimelineKind::List(_) => Some(self.timeline_pfp(ui, kind, pfp_size)),
             },
             Route::Reply(_) => None,
@@ -500,6 +501,7 @@ impl<'a> NavTitle<'a> {
             Route::Thread(thread_selection) => {
                 Some(self.thread_pfp(ui, thread_selection, pfp_size))
             }
+            Route::Publication(_) => None,
             Route::RepostDecision(_) => None,
             Route::Following(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
             Route::FollowedBy(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),

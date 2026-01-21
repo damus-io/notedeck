@@ -24,13 +24,14 @@ use tracing::{debug, error, info, warn};
 pub mod cache;
 pub mod kind;
 mod note_units;
+pub mod publication;
 pub mod route;
 pub mod thread;
 mod timeline_units;
 mod unit;
 
 pub use cache::TimelineCache;
-pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
+pub use kind::{ColumnTitle, PubkeySource, PublicationSelection, ThreadSelection, TimelineKind};
 pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
 pub use timeline_units::{TimelineUnits, UnknownPks};
 pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit};
@@ -119,6 +120,12 @@ impl TimelineTab {
 
     pub fn no_replies() -> Vec<Self> {
         vec![TimelineTab::new(ViewFilter::Notes)]
+    }
+
+    /// For timelines like Publications (kind 30040) where we want all events
+    /// without any kind-based filtering
+    pub fn all() -> Vec<Self> {
+        vec![TimelineTab::new(ViewFilter::All)]
     }
 
     pub fn full_tabs() -> Vec<Self> {

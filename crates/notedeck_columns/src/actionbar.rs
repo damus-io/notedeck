@@ -28,6 +28,26 @@ pub struct NewNotes {
     pub notes: Vec<NoteKey>,
 }
 
+/// Result of processing a note action
+pub struct NoteActionResult {
+    /// Router action to execute within columns
+    pub router_action: Option<RouterAction>,
+    /// App-level action to bubble up to Chrome
+    pub app_action: Option<notedeck::AppAction>,
+}
+
+impl NoteActionResult {
+    pub fn process_router_action(
+        self,
+        router: &mut crate::route::ColumnsRouter<crate::route::Route>,
+        sheet_router: &mut crate::route::SingletonRouter<crate::route::Route>,
+    ) {
+        if let Some(action) = self.router_action {
+            action.process_router_action(router, sheet_router);
+        }
+    }
+}
+
 pub enum NotesOpenResult {
     Timeline(TimelineOpenResult),
     Thread(NewThreadNotes),
@@ -41,6 +61,8 @@ pub struct TimelineOpenResult {
 struct NoteActionResponse {
     timeline_res: Option<NotesOpenResult>,
     router_action: Option<RouterAction>,
+    /// App-level action to bubble up (e.g., open publication in Reader app)
+    app_action: Option<notedeck::AppAction>,
 }
 
 /// The note action executor for notedeck_columns
@@ -65,6 +87,7 @@ fn execute_note_action(
 ) -> NoteActionResponse {
     let mut timeline_res = None;
     let mut router_action = None;
+    let mut app_action = None;
     let can_post = accounts.get_selected_account().key.secret_key.is_some();
 
     match action {
@@ -106,6 +129,17 @@ fn execute_note_action(
             preview,
             scroll_offset,
         } => 'ex: {
+            // Check if this is a publication (kind 30040)
+            if let Ok(note) = ndb.get_note_by_id(txn, note_id.bytes()) {
+                if note.kind() == 30040 {
+                    // Request Chrome to open the publication in Reader app
+                    app_action = Some(notedeck::AppAction::OpenPublication(note_id));
+                    let _ = preview; // publication opening doesn't use preview
+                    break 'ex;
+                }
+            }
+
+            // Default: open thread view
             let Ok(thread_selection) = ThreadSelection::from_note_id(ndb, note_cache, txn, note_id)
             else {
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));
@@ -205,11 +239,48 @@ fn execute_note_action(
 
             media_action.process_default_media_actions(images, jobs, ui.ctx())
         }
+
+        NoteAction::LoadMore(until) => {
+            // Load more publications (older than `until` timestamp)
+            tracing::info!("LoadMore action triggered with until={}", until);
+
+            let kind = TimelineKind::Publications;
+            if timeline_cache.get(&kind).is_some() {
+                // Create filter for older publications
+                let filters = crate::timeline::kind::publications_load_more_filter(until);
+
+                // Query nostrdb for older publications
+                let limit = filters.first().and_then(|f| f.limit()).unwrap_or(500) as i32;
+                match ndb.query(txn, &filters, limit) {
+                    Ok(results) => {
+                        let note_refs: Vec<notedeck::NoteRef> = results
+                            .into_iter()
+                            .map(notedeck::NoteRef::from_query_result)
+                            .collect();
+
+                        tracing::info!("LoadMore: found {} older publications", note_refs.len());
+
+                        if !note_refs.is_empty() {
+                            // Insert the notes into the timeline
+                            let note_keys: Vec<NoteKey> =
+                                note_refs.iter().map(|nr| nr.key).collect();
+                            timeline_res = Some(NotesOpenResult::Timeline(
+                                TimelineOpenResult::new_notes(note_keys, kind),
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        error!("LoadMore: failed to query older publications: {:?}", e);
+                    }
+                }
+            }
+        }
     }
 
     NoteActionResponse {
         timeline_res,
         router_action,
+        app_action,
     }
 }
 
@@ -233,7 +304,7 @@ pub fn execute_and_process_note_action(
     view_state: &mut ViewState,
     jobs: &MediaJobSender,
     ui: &mut egui::Ui,
-) -> Option<RouterAction> {
+) -> Option<NoteActionResult> {
     let router_type = {
         let sheet_router = &mut columns.column_mut(col).sheet_router;
 
@@ -274,7 +345,15 @@ pub fn execute_and_process_note_action(
         }
     }
 
-    resp.router_action
+    // Return result if we have any action to perform
+    if resp.router_action.is_some() || resp.app_action.is_some() {
+        Some(NoteActionResult {
+            router_action: resp.router_action,
+            app_action: resp.app_action,
+        })
+    } else {
+        None
+    }
 }
 
 fn send_reaction_event(

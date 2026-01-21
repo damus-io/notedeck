@@ -73,6 +73,12 @@ impl TimelineUnits {
         self.units.latest_ref()
     }
 
+    /// Get the oldest note in the timeline
+    /// Used for "load more" queries to fetch events older than what's currently loaded
+    pub fn oldest(&self) -> Option<&NoteRef> {
+        self.units.oldest_ref()
+    }
+
     pub fn merge_single_note(&mut self, note_ref: NoteRef) {
         self.units.merge_single_unit(note_ref);
     }
@@ -117,6 +123,7 @@ fn to_fragment<'a>(
     txn: &Transaction,
 ) -> Option<NoteUnitFragmentResponse<'a>> {
     match payload.note.kind() {
+        // Standard short text notes
         1 => Some(NoteUnitFragmentResponse {
             fragment: NoteUnitFragment::Single(NoteRef {
                 key: payload.key,
@@ -124,11 +131,40 @@ fn to_fragment<'a>(
             }),
             unknown_pk: None,
         }),
+        // Reactions
         7 => to_reaction(payload, ndb, txn).map(|r| NoteUnitFragmentResponse {
             fragment: NoteUnitFragment::Composite(CompositeFragment::Reaction(r.fragment)),
             unknown_pk: Some(r.pk),
         }),
+        // Reposts
         6 => to_repost(payload, ndb, txn).map(RepostResponse::into),
+        // NKBIP-01 Publication index (kind 30040)
+        // Filter: must have title tag and no content (defensive programming)
+        30040 => {
+            // Reject 30040 events with content (index notes should be empty)
+            let content = payload.note.content();
+            if !content.is_empty() && !content.chars().all(|c| c.is_whitespace()) {
+                return None;
+            }
+
+            // Require a title tag
+            let has_title = payload
+                .note
+                .tags()
+                .iter()
+                .any(|tag| tag.count() >= 2 && tag.get_str(0) == Some("title"));
+            if !has_title {
+                return None;
+            }
+
+            Some(NoteUnitFragmentResponse {
+                fragment: NoteUnitFragment::Single(NoteRef {
+                    key: payload.key,
+                    created_at: payload.note.created_at(),
+                }),
+                unknown_pk: None,
+            })
+        }
         _ => None,
     }
 }

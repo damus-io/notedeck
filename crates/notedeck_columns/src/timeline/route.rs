@@ -27,7 +27,8 @@ pub fn render_timeline_route(
         | TimelineKind::Notifications(_)
         | TimelineKind::Universe
         | TimelineKind::Hashtag(_)
-        | TimelineKind::Generic(_) => {
+        | TimelineKind::Generic(_)
+        | TimelineKind::Publications => {
             let resp =
                 ui::TimelineView::new(kind, timeline_cache, note_context, note_options, col).ui(ui);
 

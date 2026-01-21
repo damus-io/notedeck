@@ -16,12 +16,14 @@ use crate::timeline::{
     CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
     TimelineTab,
 };
+use notedeck::ContextSelection;
 use notedeck::DragResponse;
 use notedeck::{
     note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
 };
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
+    note::NoteContextButton,
     NoteOptions, NoteView,
 };
 
@@ -180,7 +182,11 @@ fn timeline_ui(
             note_options.set(NoteOptions::Notification, true)
         }
 
-        TimelineTabView::new(timeline.current_view(), note_options, &txn, note_context).show(ui)
+        // Enable load more for Publications timeline
+        let enable_load_more = matches!(timeline_id, TimelineKind::Publications);
+
+        TimelineTabView::new(timeline.current_view(), note_options, &txn, note_context)
+            .show_with_load_more(ui, enable_load_more)
     });
 
     let at_top_after_scroll = scroll_output.state.offset.y == 0.0;
@@ -385,6 +391,14 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<NoteAction> {
+        self.show_with_load_more(ui, false)
+    }
+
+    pub fn show_with_load_more(
+        &mut self,
+        ui: &mut egui::Ui,
+        enable_load_more: bool,
+    ) -> Option<NoteAction> {
         let mut action: Option<NoteAction> = None;
         let len = self.tab.units.len();
 
@@ -414,6 +428,22 @@ impl<'a, 'd> TimelineTabView<'a, 'd> {
 
                 1
             });
+
+        // Show "Load More" button if enabled and there are notes
+        if enable_load_more && !self.tab.units.is_empty() {
+            if let Some(oldest) = self.tab.units.oldest() {
+                ui.add_space(16.0);
+                ui.vertical_centered(|ui| {
+                    let load_more_text = RichText::new("Load More")
+                        .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Body));
+                    if ui.button(load_more_text).clicked() {
+                        // Use the oldest note's created_at - 1 as the "until" parameter
+                        action = Some(NoteAction::LoadMore(oldest.created_at.saturating_sub(1)));
+                    }
+                });
+                ui.add_space(16.0);
+            }
+        }
 
         action
     }
@@ -662,6 +692,11 @@ fn render_note(
     note_options: NoteOptions,
     note: &Note,
 ) -> RenderEntryResponse {
+    // Check for kind 30040 (publication index) and render differently
+    if note.kind() == 30040 {
+        return render_publication_card(ui, note_context, note);
+    }
+
     let mut action = None;
     notedeck_ui::padding(8.0, ui, |ui| {
         let resp = NoteView::new(note_context, note, note_options).show(ui);
@@ -670,6 +705,205 @@ fn render_note(
             action = Some(note_action);
         }
     });
+
+    notedeck_ui::hline(ui);
+
+    RenderEntryResponse::Success(action)
+}
+
+/// Render a publication card for kind 30040 events
+/// Shows: title, publication author (from "author" tag), and index author (pubkey)
+#[profiling::function]
+fn render_publication_card(
+    ui: &mut egui::Ui,
+    note_context: &mut NoteContext,
+    note: &Note,
+) -> RenderEntryResponse {
+    use notedeck::media::images::ImageType;
+    use notedeck::media::AnimationMode;
+
+    let mut action = None;
+    let note_key = note.key().expect("note should have key");
+
+    // Extract title, author, image, and count sections from tags
+    let mut title: Option<&str> = None;
+    let mut publication_author: Option<&str> = None;
+    let mut cover_image: Option<&str> = None;
+    let mut section_count: usize = 0;
+
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+        match tag.get_str(0) {
+            Some("title") => title = tag.get_str(1),
+            Some("author") => publication_author = tag.get_str(1),
+            Some("image") => cover_image = tag.get_str(1),
+            Some("a") => section_count += 1,
+            _ => {}
+        }
+    }
+
+    let title = title.unwrap_or("Untitled Publication");
+
+    // Get the index author's profile (the pubkey who published the event)
+    let txn = note.txn().expect("note should have txn");
+    let index_author_profile = note_context.ndb.get_profile_by_pubkey(txn, note.pubkey());
+    let index_author_name = get_display_name(index_author_profile.as_ref().ok()).name();
+
+    // Set up hitbox for whole-card click detection (same pattern as NoteView)
+    let hitbox_id = egui::Id::new(("pub_card_hitbox", note_key));
+    let maybe_hitbox: Option<egui::Response> =
+        ui.ctx()
+            .data_mut(|d| d.get_temp(hitbox_id))
+            .map(|note_size: egui::Vec2| {
+                let container_rect = ui.max_rect();
+                let rect = egui::Rect {
+                    min: egui::pos2(container_rect.min.x, container_rect.min.y),
+                    max: egui::pos2(container_rect.max.x, container_rect.min.y + note_size.y),
+                };
+                ui.interact(rect, ui.id().with(hitbox_id), Sense::click())
+            });
+
+    // Calculate thumbnail size and position before rendering content
+    let thumbnail_size = 64.0;
+    let right_edge = ui.max_rect().right();
+    let options_button_width = NoteContextButton::max_width();
+
+    let response = notedeck_ui::padding(8.0, ui, |ui| {
+        // Publication title - large and prominent
+        ui.add(
+            egui::Label::new(
+                RichText::new(title)
+                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Heading3))
+                    .strong(),
+            )
+            .wrap(),
+        );
+
+        ui.add_space(4.0);
+
+        // Publication author (from "author" tag)
+        if let Some(author) = publication_author {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("by ")
+                        .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                        .color(ui.visuals().weak_text_color()),
+                );
+                ui.label(
+                    RichText::new(author)
+                        .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                        .strong(),
+                );
+            });
+        }
+
+        ui.add_space(4.0);
+
+        // Index author (who published this to nostr)
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("published by ")
+                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                    .color(ui.visuals().weak_text_color()),
+            );
+            ui.label(
+                RichText::new(index_author_name)
+                    .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small)),
+            );
+        });
+
+        // Section count badge
+        if section_count > 0 {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let section_text = if section_count == 1 {
+                    "1 section".to_string()
+                } else {
+                    format!("{} sections", section_count)
+                };
+                ui.label(
+                    RichText::new(section_text)
+                        .size(get_font_size(ui.ctx(), &NotedeckTextStyle::Small))
+                        .color(ui.visuals().weak_text_color()),
+                );
+            });
+        }
+    });
+
+    // Render cover image thumbnail (right-justified, to the left of options button)
+    if let Some(image_url) = cover_image {
+        let top = response.response.rect.top();
+        // Position: right edge - options button - padding - thumbnail
+        let img_x = right_edge - options_button_width - 16.0 - thumbnail_size;
+        let img_rect = egui::Rect::from_min_size(
+            Pos2::new(img_x, top + 8.0),
+            vec2(thumbnail_size, thumbnail_size),
+        );
+
+        // Try to load and render the image
+        let cache_type =
+            notedeck::supported_mime_hosted_at_url(&mut note_context.img_cache.urls, image_url)
+                .unwrap_or(notedeck::MediaCacheType::Image);
+
+        let cur_state = note_context
+            .img_cache
+            .no_img_loading_tex_loader()
+            .latest_state(
+                note_context.jobs,
+                ui.ctx(),
+                image_url,
+                cache_type,
+                ImageType::Content(Some((128, 128))),
+                AnimationMode::NoAnimation,
+            );
+
+        match cur_state {
+            notedeck::media::latest::LatestImageTex::Loaded(texture) => {
+                let img = egui::Image::new(texture)
+                    .fit_to_exact_size(vec2(thumbnail_size, thumbnail_size))
+                    .corner_radius(4.0);
+                ui.put(img_rect, img);
+            }
+            notedeck::media::latest::LatestImageTex::Pending => {
+                // Show a placeholder while loading
+                ui.painter()
+                    .rect_filled(img_rect, 4.0, ui.visuals().faint_bg_color);
+            }
+            notedeck::media::latest::LatestImageTex::Error(_) => {
+                // Don't show anything on error
+            }
+        }
+    }
+
+    // Add the options button (top right of the full column width)
+    let context_pos = {
+        let size = NoteContextButton::max_width();
+        let top = response.response.rect.top();
+        let min = Pos2::new(right_edge - size - 8.0, top + 8.0); // 8px padding from edges
+        egui::Rect::from_min_size(min, egui::vec2(size, size))
+    };
+
+    let options_resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
+    if let Some(ctx_action) = NoteContextButton::menu(ui, note_context.i18n, options_resp) {
+        action = Some(NoteAction::Context(ContextSelection {
+            note_key,
+            action: ctx_action,
+        }));
+    }
+
+    // Store the card size for next frame's hitbox
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(hitbox_id, response.response.rect.size());
+    });
+
+    // Check if hitbox was clicked
+    if let Some(hitbox) = maybe_hitbox {
+        if hitbox.clicked() {
+            action = Some(NoteAction::note(enostr::NoteId::new(*note.id())));
+        }
+    }
 
     notedeck_ui::hline(ui);
 

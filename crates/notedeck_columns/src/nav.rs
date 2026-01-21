@@ -51,6 +51,8 @@ pub enum ProcessNavResult {
     SwitchOccurred,
     PfpClicked,
     SwitchAccount(enostr::Pubkey),
+    /// App-level action to bubble up to Chrome
+    AppAction(notedeck::AppAction),
 }
 
 impl ProcessNavResult {
@@ -75,6 +77,7 @@ pub enum RenderNavAction {
     RepostAction(RepostAction),
     ShowFollowing(enostr::Pubkey),
     ShowFollowers(enostr::Pubkey),
+    PublicationNav(crate::ui::publication::PublicationNavAction),
 }
 
 pub enum SwitchingAction {
@@ -536,7 +539,7 @@ fn process_render_nav_action(
         RenderNavAction::NoteAction(note_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
-            crate::actionbar::execute_and_process_note_action(
+            let result = crate::actionbar::execute_and_process_note_action(
                 note_action,
                 ctx.ndb,
                 get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
@@ -554,7 +557,19 @@ fn process_render_nav_action(
                 &mut app.view_state,
                 ctx.media_jobs.sender(),
                 ui,
-            )
+            );
+
+            match result {
+                Some(res) => {
+                    // If there's an app_action, return it immediately
+                    if let Some(app_action) = res.app_action {
+                        return Some(ProcessNavResult::AppAction(app_action));
+                    }
+                    // Otherwise, return the router_action
+                    res.router_action
+                }
+                None => None,
+            }
         }
         RenderNavAction::SwitchingAction(switching_action) => {
             if switching_action.process(
@@ -605,6 +620,31 @@ fn process_render_nav_action(
             crate::route::Route::FollowedBy(pubkey),
             RouterType::Stack,
         )),
+        RenderNavAction::PublicationNav(nav_action) => {
+            // Get mutable access to the current route and modify the publication selection
+            let cols = get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
+                .column_mut(col);
+            if let Some(route) = cols.router.routes_mut().last_mut() {
+                if let crate::route::Route::Publication(ref mut selection) = route {
+                    match nav_action {
+                        ui::publication::PublicationNavAction::Back => {
+                            selection.navigate_back();
+                        }
+                        ui::publication::PublicationNavAction::NavigateInto(note_id) => {
+                            selection.navigate_into(note_id);
+                        }
+                        // Index view navigation is handled locally in the UI via ReaderState
+                        // stored in egui memory - these variants are only defined for future
+                        // extensibility if we need to propagate them
+                        ui::publication::PublicationNavAction::DrillDown(_)
+                        | ui::publication::PublicationNavAction::DrillUp
+                        | ui::publication::PublicationNavAction::PrevSibling
+                        | ui::publication::PublicationNavAction::NextSibling => {}
+                    }
+                }
+            }
+            return None;
+        }
     };
 
     if let Some(action) = router_action {
@@ -678,6 +718,32 @@ fn render_nav_body(
             ui,
             &mut note_context,
         ),
+        Route::Publication(selection) => {
+            let resp = ui::PublicationView::new(
+                selection,
+                ctx.ndb,
+                ctx.pool,
+                &mut app.publications,
+                ctx.i18n,
+                ctx.relay_info_cache,
+                col,
+            )
+            .ui(ui);
+
+            // Extract action - prioritize nav action over note action
+            let output = resp.output.and_then(|r| {
+                if let Some(nav) = r.nav_action {
+                    Some(RenderNavAction::PublicationNav(nav))
+                } else {
+                    r.action.map(RenderNavAction::NoteAction)
+                }
+            });
+
+            DragResponse {
+                drag_id: resp.drag_id,
+                output,
+            }
+        }
         Route::Accounts(amr) => {
             let resp = render_accounts_route(
                 ui,
