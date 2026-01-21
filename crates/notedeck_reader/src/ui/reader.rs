@@ -135,6 +135,7 @@ impl<'a> PublicationView<'a> {
         egui::Id::new(("publication_scroll", self.selection.index_id.bytes()))
     }
 
+    #[profiling::function]
     fn ui(&mut self, ui: &mut egui::Ui) -> PublicationViewResponse {
         let txn = Transaction::new(self.ndb).expect("txn");
 
@@ -209,6 +210,7 @@ impl<'a> PublicationView<'a> {
         }
     }
 
+    #[profiling::function]
     fn render_header(
         &self,
         ui: &mut egui::Ui,
@@ -429,6 +431,7 @@ impl<'a> PublicationView<'a> {
         }
     }
 
+    #[profiling::function]
     fn render_content(
         &mut self,
         ui: &mut egui::Ui,
@@ -453,6 +456,7 @@ impl<'a> PublicationView<'a> {
         }
     }
 
+    #[profiling::function]
     fn render_publication(
         &mut self,
         ui: &mut egui::Ui,
@@ -539,6 +543,7 @@ impl<'a> PublicationView<'a> {
         action
     }
 
+    #[profiling::function]
     fn render_continuous(
         &mut self,
         ui: &mut egui::Ui,
@@ -579,6 +584,7 @@ impl<'a> PublicationView<'a> {
         action
     }
 
+    #[profiling::function]
     fn render_paginated(
         &mut self,
         ui: &mut egui::Ui,
@@ -690,6 +696,7 @@ impl<'a> PublicationView<'a> {
     }
 
     /// Render outline view - shows immediate children of current node
+    #[profiling::function]
     fn render_outline_view(
         &mut self,
         ui: &mut egui::Ui,
@@ -1013,6 +1020,7 @@ impl<'a> PublicationView<'a> {
         action
     }
 
+    #[profiling::function]
     fn render_section_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -1105,6 +1113,7 @@ impl<'a> PublicationView<'a> {
         }
     }
 
+    #[profiling::function]
     fn render_toc_overlay(&self, ui: &mut egui::Ui, _txn: &Transaction, state: &mut ReaderState) {
         let screen_rect = ui.ctx().screen_rect();
 
