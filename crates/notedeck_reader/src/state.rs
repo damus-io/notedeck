@@ -9,8 +9,6 @@ use notedeck_publications::{EventAddress, NodeType, PublicationTree, Publication
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info};
 
-use crate::subscriptions;
-
 /// Maximum inline nesting depth before opening a new publication view
 pub const MAX_INLINE_DEPTH: usize = 5;
 
@@ -265,20 +263,12 @@ impl PublicationTreeState {
 }
 
 /// Manages all publication views
+#[derive(Default)]
 pub struct Publications {
     /// Tree-based publication states
     pub publications: HashMap<NoteId, PublicationTreeState>,
     /// Configuration for loading behavior
     pub config: PublicationConfig,
-}
-
-impl Default for Publications {
-    fn default() -> Self {
-        Self {
-            publications: HashMap::new(),
-            config: PublicationConfig::default(),
-        }
-    }
 }
 
 impl Publications {
@@ -440,7 +430,7 @@ impl Publications {
                     pool.unsubscribe(old_sub);
                 }
 
-                let sub_id = subscriptions::new_sub_id();
+                let sub_id = new_sub_id();
                 info!(
                     "poll_updates: creating subscription {} for {} addresses",
                     sub_id,
@@ -538,7 +528,7 @@ impl Publications {
             pool.unsubscribe(old_sub);
         }
 
-        let sub_id = subscriptions::new_sub_id();
+        let sub_id = new_sub_id();
         pool.subscribe(sub_id.clone(), filters);
         state.sub_id = Some(sub_id.clone());
         info!("Created subscription: {}", sub_id);
@@ -546,6 +536,11 @@ impl Publications {
         // Mark these as being fetched
         state.mark_fetching(&pending);
     }
+}
+
+/// Generate a new subscription ID
+fn new_sub_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Build nostrdb filters for a set of addresses, grouped by (kind, pubkey)

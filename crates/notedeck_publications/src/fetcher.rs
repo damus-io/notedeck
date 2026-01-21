@@ -148,7 +148,10 @@ impl PublicationFetcher {
     pub fn start_fetch(&mut self, subscription_id: String) {
         self.state = FetchState::Fetching;
         self.subscription_id = Some(subscription_id);
-        debug!("Started fetch with subscription: {:?}", self.subscription_id);
+        debug!(
+            "Started fetch with subscription: {:?}",
+            self.subscription_id
+        );
     }
 
     /// Record that an event was received
@@ -286,9 +289,7 @@ mod tests {
     #[test]
     fn test_publication_request() {
         let addr = EventAddress::new(30040, [0xaa; 32], "my-book".to_string());
-        let request = PublicationRequest::new(addr)
-            .max_depth(2)
-            .batch_size(50);
+        let request = PublicationRequest::new(addr).max_depth(2).batch_size(50);
 
         assert_eq!(request.max_depth, Some(2));
         assert_eq!(request.batch_size, 50);

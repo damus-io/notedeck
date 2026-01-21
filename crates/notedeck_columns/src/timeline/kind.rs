@@ -714,9 +714,11 @@ impl TimelineKind {
             TimelineKind::Universe => {
                 ColumnTitle::formatted(tr!(i18n, "Universe", "Column title for universe feed"))
             }
-            TimelineKind::Publications => {
-                ColumnTitle::formatted(tr!(i18n, "Publications", "Column title for publications feed"))
-            }
+            TimelineKind::Publications => ColumnTitle::formatted(tr!(
+                i18n,
+                "Publications",
+                "Column title for publications feed"
+            )),
             TimelineKind::Generic(_) => {
                 ColumnTitle::formatted(tr!(i18n, "Custom", "Column title for custom timelines"))
             }

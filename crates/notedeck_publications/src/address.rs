@@ -96,17 +96,22 @@ mod tests {
 
     #[test]
     fn test_parse_valid_address() {
-        let addr_str = "30040:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef:my-publication";
+        let addr_str =
+            "30040:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef:my-publication";
         let addr = EventAddress::from_a_tag(addr_str).unwrap();
 
         assert_eq!(addr.kind, 30040);
         assert_eq!(addr.dtag, "my-publication");
-        assert_eq!(addr.pubkey_hex(), "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+        assert_eq!(
+            addr.pubkey_hex(),
+            "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        );
     }
 
     #[test]
     fn test_roundtrip() {
-        let original = "30041:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:chapter-1";
+        let original =
+            "30041:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:chapter-1";
         let addr = EventAddress::from_a_tag(original).unwrap();
         assert_eq!(addr.to_string_format(), original);
     }

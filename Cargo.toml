@@ -9,6 +9,7 @@ members = [
     "crates/notedeck_messages",
     "crates/notedeck_notebook",
     "crates/notedeck_publications",
+    "crates/notedeck_reader",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
 
@@ -63,6 +64,7 @@ notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_publications = { path = "crates/notedeck_publications" }
+notedeck_reader = { path = "crates/notedeck_reader" }
 notedeck_ui = { path = "crates/notedeck_ui" }
 tokenator = { path = "crates/tokenator" }
 once_cell = "1.19.0"

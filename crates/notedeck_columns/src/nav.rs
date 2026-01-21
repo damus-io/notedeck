@@ -51,6 +51,8 @@ pub enum ProcessNavResult {
     SwitchOccurred,
     PfpClicked,
     SwitchAccount(enostr::Pubkey),
+    /// App-level action to bubble up to Chrome
+    AppAction(notedeck::AppAction),
 }
 
 impl ProcessNavResult {
@@ -537,7 +539,7 @@ fn process_render_nav_action(
         RenderNavAction::NoteAction(note_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
-            crate::actionbar::execute_and_process_note_action(
+            let result = crate::actionbar::execute_and_process_note_action(
                 note_action,
                 ctx.ndb,
                 get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
@@ -555,7 +557,19 @@ fn process_render_nav_action(
                 &mut app.view_state,
                 ctx.media_jobs.sender(),
                 ui,
-            )
+            );
+
+            match result {
+                Some(res) => {
+                    // If there's an app_action, return it immediately
+                    if let Some(app_action) = res.app_action {
+                        return Some(ProcessNavResult::AppAction(app_action));
+                    }
+                    // Otherwise, return the router_action
+                    res.router_action
+                }
+                None => None,
+            }
         }
         RenderNavAction::SwitchingAction(switching_action) => {
             if switching_action.process(
@@ -608,8 +622,8 @@ fn process_render_nav_action(
         )),
         RenderNavAction::PublicationNav(nav_action) => {
             // Get mutable access to the current route and modify the publication selection
-            let cols =
-                get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache).column_mut(col);
+            let cols = get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache)
+                .column_mut(col);
             if let Some(route) = cols.router.routes_mut().last_mut() {
                 if let crate::route::Route::Publication(ref mut selection) = route {
                     match nav_action {
@@ -713,7 +727,8 @@ fn render_nav_body(
                 ctx.i18n,
                 ctx.relay_info_cache,
                 col,
-            ).ui(ui);
+            )
+            .ui(ui);
 
             // Extract action - prioritize nav action over note action
             let output = resp.output.and_then(|r| {

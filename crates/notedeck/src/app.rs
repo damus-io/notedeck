@@ -30,6 +30,10 @@ use android_activity::AndroidApp;
 pub enum AppAction {
     Note(NoteAction),
     ToggleChrome,
+    /// Open a publication in the Reader app
+    OpenPublication(enostr::NoteId),
+    /// Switch back to the Columns app
+    SwitchToColumns,
 }
 
 pub trait App {

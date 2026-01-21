@@ -135,19 +135,31 @@ impl RelayInfoCache {
     ///
     /// Returns DEFAULT_MAX_EVENT_TAGS if no relays are cached or all have None
     pub fn min_max_event_tags(&self, relay_urls: &[&str]) -> usize {
-        self.min_limit(relay_urls, |info| info.limitation.max_event_tags, DEFAULT_MAX_EVENT_TAGS)
+        self.min_limit(
+            relay_urls,
+            |info| info.limitation.max_event_tags,
+            DEFAULT_MAX_EVENT_TAGS,
+        )
     }
 
     /// Get the minimum max_limit across specified relays
     ///
     /// Returns DEFAULT_MAX_LIMIT if no relays are cached or all have None
     pub fn min_max_limit(&self, relay_urls: &[&str]) -> usize {
-        self.min_limit(relay_urls, |info| info.limitation.max_limit, DEFAULT_MAX_LIMIT)
+        self.min_limit(
+            relay_urls,
+            |info| info.limitation.max_limit,
+            DEFAULT_MAX_LIMIT,
+        )
     }
 
     /// Get the minimum max_subscriptions across specified relays
     pub fn min_max_subscriptions(&self, relay_urls: &[&str]) -> usize {
-        self.min_limit(relay_urls, |info| info.limitation.max_subscriptions, DEFAULT_MAX_SUBSCRIPTIONS)
+        self.min_limit(
+            relay_urls,
+            |info| info.limitation.max_subscriptions,
+            DEFAULT_MAX_SUBSCRIPTIONS,
+        )
     }
 
     /// Generic helper to get minimum of a limit field across relays
@@ -191,6 +203,10 @@ impl RelayInfoCache {
         relay_urls
             .iter()
             .filter(|url| {
+                // Skip non-websocket URLs (e.g., "multicast")
+                if !url.starts_with("ws://") && !url.starts_with("wss://") {
+                    return false;
+                }
                 let normalized = normalize_relay_url(url);
                 if in_flight.contains(&normalized) {
                     return false;
@@ -236,9 +252,7 @@ impl RelayInfoCache {
                     Ok(info) => {
                         info!(
                             "NIP-11 fetched for {}: max_event_tags={:?}, max_limit={:?}",
-                            url_for_task,
-                            info.limitation.max_event_tags,
-                            info.limitation.max_limit
+                            url_for_task, info.limitation.max_event_tags, info.limitation.max_limit
                         );
                         if let Ok(mut cache) = cache.write() {
                             let normalized = normalize_relay_url(&url_for_task);
@@ -303,10 +317,7 @@ pub async fn fetch_relay_info(relay_url: &str) -> Result<RelayInfo, RelayInfoErr
 
     let client: Client<_, Empty<Bytes>> = Client::builder(TokioExecutor::new()).build(https);
 
-    let authority = uri
-        .authority()
-        .ok_or(RelayInfoError::InvalidUrl)?
-        .clone();
+    let authority = uri.authority().ok_or(RelayInfoError::InvalidUrl)?.clone();
 
     let req = Request::builder()
         .uri(&uri)
@@ -336,7 +347,8 @@ pub async fn fetch_relay_info(relay_url: &str) -> Result<RelayInfo, RelayInfoErr
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    if !content_type.contains("application/nostr+json") && !content_type.contains("application/json")
+    if !content_type.contains("application/nostr+json")
+        && !content_type.contains("application/json")
     {
         warn!(
             "Relay {} returned unexpected content type: {}",
@@ -395,10 +407,7 @@ mod tests {
             normalize_relay_url("wss://relay.damus.io/"),
             "https://relay.damus.io"
         );
-        assert_eq!(
-            normalize_relay_url("wss://nos.lol"),
-            "https://nos.lol"
-        );
+        assert_eq!(normalize_relay_url("wss://nos.lol"), "https://nos.lol");
         assert_eq!(
             normalize_relay_url("ws://localhost:8080/"),
             "http://localhost:8080"

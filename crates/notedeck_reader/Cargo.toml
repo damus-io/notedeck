@@ -1,0 +1,18 @@
+[package]
+name = "notedeck_reader"
+version = { workspace = true }
+edition = "2021"
+description = "NKBIP-01 publications reader app for Notedeck"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+egui = { workspace = true }
+enostr = { workspace = true }
+nostrdb = { workspace = true }
+notedeck = { workspace = true }
+notedeck_publications = { workspace = true }
+notedeck_ui = { workspace = true }
+tracing = { workspace = true }
+profiling = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }

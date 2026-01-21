@@ -41,9 +41,7 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
         let res = client
             .request(req)
             .await
-            .map_err(|e: hyper_util::client::legacy::Error| {
-                HyperHttpError::Hyper(Box::new(e))
-            })?;
+            .map_err(|e: hyper_util::client::legacy::Error| HyperHttpError::Hyper(Box::new(e)))?;
 
         if res.status().is_redirection() {
             if redirects >= MAX_REDIRECTS {

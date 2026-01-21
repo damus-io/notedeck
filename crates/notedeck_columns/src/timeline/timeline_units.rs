@@ -148,9 +148,11 @@ fn to_fragment<'a>(
             }
 
             // Require a title tag
-            let has_title = payload.note.tags().iter().any(|tag| {
-                tag.count() >= 2 && tag.get_str(0) == Some("title")
-            });
+            let has_title = payload
+                .note
+                .tags()
+                .iter()
+                .any(|tag| tag.count() >= 2 && tag.get_str(0) == Some("title"));
             if !has_title {
                 return None;
             }

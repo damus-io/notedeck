@@ -12,6 +12,9 @@ use notedeck_messages::MessagesApp;
 #[cfg(feature = "notebook")]
 use notedeck_notebook::Notebook;
 
+#[cfg(feature = "reader")]
+use notedeck_reader::ReaderApp;
+
 #[allow(clippy::large_enum_variant)]
 pub enum NotedeckApp {
     Dave(Box<Dave>),
@@ -22,6 +25,8 @@ pub enum NotedeckApp {
     ClnDash(Box<ClnDash>),
     #[cfg(feature = "messages")]
     Messages(Box<MessagesApp>),
+    #[cfg(feature = "reader")]
+    Reader(Box<ReaderApp>),
     Other(Box<dyn notedeck::App>),
 }
 
@@ -40,6 +45,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "messages")]
             NotedeckApp::Messages(dms) => dms.update(ctx, ui),
+
+            #[cfg(feature = "reader")]
+            NotedeckApp::Reader(reader) => reader.update(ctx, ui),
 
             NotedeckApp::Other(other) => other.update(ctx, ui),
         }

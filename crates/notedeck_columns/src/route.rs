@@ -314,9 +314,11 @@ impl Route {
             Route::Thread(_) => {
                 ColumnTitle::formatted(tr!(i18n, "Thread", "Column title for note thread view"))
             }
-            Route::Publication(_) => {
-                ColumnTitle::formatted(tr!(i18n, "Publication", "Column title for publication reader"))
-            }
+            Route::Publication(_) => ColumnTitle::formatted(tr!(
+                i18n,
+                "Publication",
+                "Column title for publication reader"
+            )),
             Route::Reply(_id) => {
                 ColumnTitle::formatted(tr!(i18n, "Reply", "Column title for reply composition"))
             }

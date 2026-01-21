@@ -16,11 +16,11 @@ use crate::timeline::{
     CompositeType, CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, TimelineCache, TimelineKind,
     TimelineTab,
 };
+use notedeck::ContextSelection;
 use notedeck::DragResponse;
 use notedeck::{
     note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
 };
-use notedeck::ContextSelection;
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     note::NoteContextButton,
@@ -126,7 +126,6 @@ fn timeline_ui(
         // need this for some reason??
         ui.add_space(3.0);
     };
-
 
     let show_top_button_id = ui.id().with((scroll_id, "at_top"));
 
@@ -754,17 +753,17 @@ fn render_publication_card(
 
     // Set up hitbox for whole-card click detection (same pattern as NoteView)
     let hitbox_id = egui::Id::new(("pub_card_hitbox", note_key));
-    let maybe_hitbox: Option<egui::Response> = ui
-        .ctx()
-        .data_mut(|d| d.get_temp(hitbox_id))
-        .map(|note_size: egui::Vec2| {
-            let container_rect = ui.max_rect();
-            let rect = egui::Rect {
-                min: egui::pos2(container_rect.min.x, container_rect.min.y),
-                max: egui::pos2(container_rect.max.x, container_rect.min.y + note_size.y),
-            };
-            ui.interact(rect, ui.id().with(hitbox_id), Sense::click())
-        });
+    let maybe_hitbox: Option<egui::Response> =
+        ui.ctx()
+            .data_mut(|d| d.get_temp(hitbox_id))
+            .map(|note_size: egui::Vec2| {
+                let container_rect = ui.max_rect();
+                let rect = egui::Rect {
+                    min: egui::pos2(container_rect.min.x, container_rect.min.y),
+                    max: egui::pos2(container_rect.max.x, container_rect.min.y + note_size.y),
+                };
+                ui.interact(rect, ui.id().with(hitbox_id), Sense::click())
+            });
 
     // Calculate thumbnail size and position before rendering content
     let thumbnail_size = 64.0;
@@ -844,19 +843,21 @@ fn render_publication_card(
         );
 
         // Try to load and render the image
-        let cache_type = notedeck::supported_mime_hosted_at_url(
-            &mut note_context.img_cache.urls,
-            image_url,
-        ).unwrap_or(notedeck::MediaCacheType::Image);
+        let cache_type =
+            notedeck::supported_mime_hosted_at_url(&mut note_context.img_cache.urls, image_url)
+                .unwrap_or(notedeck::MediaCacheType::Image);
 
-        let cur_state = note_context.img_cache.no_img_loading_tex_loader().latest_state(
-            note_context.jobs,
-            ui.ctx(),
-            image_url,
-            cache_type,
-            ImageType::Content(Some((128, 128))),
-            AnimationMode::NoAnimation,
-        );
+        let cur_state = note_context
+            .img_cache
+            .no_img_loading_tex_loader()
+            .latest_state(
+                note_context.jobs,
+                ui.ctx(),
+                image_url,
+                cache_type,
+                ImageType::Content(Some((128, 128))),
+                AnimationMode::NoAnimation,
+            );
 
         match cur_state {
             notedeck::media::latest::LatestImageTex::Loaded(texture) => {
@@ -867,11 +868,8 @@ fn render_publication_card(
             }
             notedeck::media::latest::LatestImageTex::Pending => {
                 // Show a placeholder while loading
-                ui.painter().rect_filled(
-                    img_rect,
-                    4.0,
-                    ui.visuals().faint_bg_color,
-                );
+                ui.painter()
+                    .rect_filled(img_rect, 4.0, ui.visuals().faint_bg_color);
             }
             notedeck::media::latest::LatestImageTex::Error(_) => {
                 // Don't show anything on error

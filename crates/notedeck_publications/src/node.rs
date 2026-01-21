@@ -123,12 +123,7 @@ impl PublicationTreeNode {
     }
 
     /// Mark this node as resolved
-    pub fn resolve(
-        &mut self,
-        note_key: NoteKey,
-        title: Option<String>,
-        node_type: NodeType,
-    ) {
+    pub fn resolve(&mut self, note_key: NoteKey, title: Option<String>, node_type: NodeType) {
         self.status = NodeStatus::Resolved;
         self.note_key = Some(note_key);
         self.title = title;
@@ -151,11 +146,7 @@ mod tests {
     use super::*;
 
     fn test_address() -> EventAddress {
-        EventAddress::new(
-            30041,
-            [0xaa; 32],
-            "test-section".to_string(),
-        )
+        EventAddress::new(30041, [0xaa; 32], "test-section".to_string())
     }
 
     #[test]

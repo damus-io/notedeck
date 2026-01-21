@@ -61,13 +61,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if let Some(tags) = tags {
                                     for tag in tags {
                                         if let Some(tag_arr) = tag.as_array() {
-                                            let tag_name =
-                                                tag_arr.first().and_then(|v| v.as_str());
-                                            let tag_value =
-                                                tag_arr.get(1).and_then(|v| v.as_str());
+                                            let tag_name = tag_arr.first().and_then(|v| v.as_str());
+                                            let tag_value = tag_arr.get(1).and_then(|v| v.as_str());
 
                                             match tag_name {
-                                                Some("title") => title = tag_value.map(String::from),
+                                                Some("title") => {
+                                                    title = tag_value.map(String::from)
+                                                }
                                                 Some("d") => dtag = tag_value.map(String::from),
                                                 Some("a") => {
                                                     if let Some(v) = tag_value {
@@ -82,13 +82,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 if kind == KIND_PUBLICATION_INDEX as u64 {
                                     println!("📚 Publication Index Found:");
-                                    println!("   Title: {}", title.as_deref().unwrap_or("(untitled)"));
+                                    println!(
+                                        "   Title: {}",
+                                        title.as_deref().unwrap_or("(untitled)")
+                                    );
                                     println!("   D-tag: {}", dtag.as_deref().unwrap_or("(none)"));
                                     println!("   Author: {}...", &pubkey[..16]);
                                     println!("   Sections: {} referenced", a_tags.len());
 
                                     if let Some(dt) = &dtag {
-                                        publications_found.push((pubkey.to_string(), dt.clone(), a_tags.clone()));
+                                        publications_found.push((
+                                            pubkey.to_string(),
+                                            dt.clone(),
+                                            a_tags.clone(),
+                                        ));
                                     }
 
                                     // Show first few section references
@@ -103,7 +110,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     println!();
                                 } else if kind == KIND_PUBLICATION_CONTENT as u64 {
                                     println!("📄 Content Section:");
-                                    println!("   Title: {}", title.as_deref().unwrap_or("(untitled)"));
+                                    println!(
+                                        "   Title: {}",
+                                        title.as_deref().unwrap_or("(untitled)")
+                                    );
                                     println!(
                                         "   Content preview: {}...",
                                         &content.chars().take(100).collect::<String>()
@@ -175,56 +185,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 // Read content events
                 let mut content_count = 0;
-                let timeout = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    async {
-                        while let Some(msg) = read.next().await {
-                            match msg {
-                                Ok(Message::Text(text)) => {
-                                    let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-                                    if let Some(arr) = parsed.as_array() {
-                                        match arr.first().and_then(|v| v.as_str()) {
-                                            Some("EVENT") => {
-                                                if let Some(event) = arr.get(2) {
-                                                    let title = event["tags"]
-                                                        .as_array()
-                                                        .and_then(|tags| {
-                                                            tags.iter().find_map(|t| {
-                                                                let arr = t.as_array()?;
-                                                                if arr.first()?.as_str()? == "title" {
-                                                                    arr.get(1)?.as_str().map(String::from)
-                                                                } else {
-                                                                    None
-                                                                }
-                                                            })
-                                                        });
-                                                    let content = event["content"].as_str().unwrap_or("");
+                let timeout = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    while let Some(msg) = read.next().await {
+                        match msg {
+                            Ok(Message::Text(text)) => {
+                                let parsed: Value =
+                                    serde_json::from_str(&text).unwrap_or(Value::Null);
+                                if let Some(arr) = parsed.as_array() {
+                                    match arr.first().and_then(|v| v.as_str()) {
+                                        Some("EVENT") => {
+                                            if let Some(event) = arr.get(2) {
+                                                let title =
+                                                    event["tags"].as_array().and_then(|tags| {
+                                                        tags.iter().find_map(|t| {
+                                                            let arr = t.as_array()?;
+                                                            if arr.first()?.as_str()? == "title" {
+                                                                arr.get(1)?
+                                                                    .as_str()
+                                                                    .map(String::from)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        })
+                                                    });
+                                                let content =
+                                                    event["content"].as_str().unwrap_or("");
 
-                                                    println!("📄 Section: {}", title.unwrap_or_else(|| "(untitled)".into()));
-                                                    println!("   Content ({} chars):", content.len());
-                                                    // Show first 300 chars
-                                                    let preview: String = content.chars().take(300).collect();
-                                                    for line in preview.lines().take(5) {
-                                                        println!("   | {}", line);
-                                                    }
-                                                    println!();
-                                                    content_count += 1;
+                                                println!(
+                                                    "📄 Section: {}",
+                                                    title.unwrap_or_else(|| "(untitled)".into())
+                                                );
+                                                println!("   Content ({} chars):", content.len());
+                                                // Show first 300 chars
+                                                let preview: String =
+                                                    content.chars().take(300).collect();
+                                                for line in preview.lines().take(5) {
+                                                    println!("   | {}", line);
                                                 }
+                                                println!();
+                                                content_count += 1;
                                             }
-                                            Some("EOSE") => {
-                                                if content_count >= 3 {
-                                                    return;
-                                                }
-                                            }
-                                            _ => {}
                                         }
+                                        Some("EOSE") => {
+                                            if content_count >= 3 {
+                                                return;
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
-                                _ => {}
                             }
+                            _ => {}
                         }
                     }
-                );
+                });
 
                 let _ = timeout.await;
                 println!("Fetched {} content section(s)", content_count);

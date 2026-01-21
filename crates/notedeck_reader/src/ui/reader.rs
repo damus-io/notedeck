@@ -2,16 +2,14 @@
 //!
 //! Uses tree-based navigation for hierarchical publications.
 
+use crate::nav::PublicationSelection;
+use crate::state::{PublicationTreeState, Publications};
 use egui::{Area, Color32, Frame, Order, ScrollArea, Stroke, Vec2};
 use enostr::{NoteId, RelayPool};
 use nostrdb::{Ndb, NoteKey, Transaction};
-use notedeck::nav::DragResponse;
 use notedeck::{ContextSelection, Localization, NoteAction, RelayInfoCache};
 use notedeck_ui::note::NoteContextButton;
 use std::collections::HashSet;
-
-use crate::timeline::publication::{PublicationTreeState, Publications};
-use crate::timeline::PublicationSelection;
 
 /// Navigation actions for publication reader
 #[derive(Debug, Clone)]
@@ -28,6 +26,8 @@ pub enum PublicationNavAction {
     PrevSibling,
     /// Outline view: navigate to next sibling
     NextSibling,
+    /// Close the reader and return to Columns
+    Close,
 }
 
 /// Lightweight section data for rendering (avoids borrow conflicts)
@@ -83,7 +83,6 @@ pub struct PublicationView<'a> {
     publications: &'a mut Publications,
     i18n: &'a mut Localization,
     relay_info_cache: &'a RelayInfoCache,
-    col: usize,
 }
 
 /// Response from rendering that may contain actions
@@ -92,27 +91,30 @@ pub struct PublicationViewResponse {
     pub nav_action: Option<PublicationNavAction>,
 }
 
-impl<'a> PublicationView<'a> {
-    pub fn new(
-        selection: &'a PublicationSelection,
-        ndb: &'a Ndb,
-        pool: &'a mut RelayPool,
-        publications: &'a mut Publications,
-        i18n: &'a mut Localization,
-        relay_info_cache: &'a RelayInfoCache,
-        col: usize,
-    ) -> Self {
-        Self {
-            selection,
-            ndb,
-            pool,
-            publications,
-            i18n,
-            relay_info_cache,
-            col,
-        }
-    }
+/// Render a publication view
+///
+/// This is the main entry point for rendering a publication.
+pub fn render_publication(
+    selection: &mut PublicationSelection,
+    ndb: &Ndb,
+    pool: &mut RelayPool,
+    publications: &mut Publications,
+    i18n: &mut Localization,
+    relay_info_cache: &RelayInfoCache,
+    ui: &mut egui::Ui,
+) -> PublicationViewResponse {
+    let mut view = PublicationView {
+        selection,
+        ndb,
+        pool,
+        publications,
+        i18n,
+        relay_info_cache,
+    };
+    view.ui(ui)
+}
 
+impl<'a> PublicationView<'a> {
     /// Get the batch size for fetching based on relay limits
     fn get_batch_size(&self) -> usize {
         // Get relay URLs from the pool
@@ -126,22 +128,14 @@ impl<'a> PublicationView<'a> {
     }
 
     fn state_id(&self) -> egui::Id {
-        egui::Id::new((
-            "publication_reader_state",
-            self.selection.index_id.bytes(),
-            self.col,
-        ))
+        egui::Id::new(("publication_reader_state", self.selection.index_id.bytes()))
     }
 
     fn scroll_id(&self) -> egui::Id {
-        egui::Id::new((
-            "publication_scroll",
-            self.selection.index_id.bytes(),
-            self.col,
-        ))
+        egui::Id::new(("publication_scroll", self.selection.index_id.bytes()))
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<PublicationViewResponse> {
+    fn ui(&mut self, ui: &mut egui::Ui) -> PublicationViewResponse {
         let txn = Transaction::new(self.ndb).expect("txn");
 
         // Get batch size from relay limits
@@ -179,7 +173,7 @@ impl<'a> PublicationView<'a> {
         state.rendered_nodes.clear();
 
         // Main layout
-        let resp = ui.vertical(|ui| {
+        ui.vertical(|ui| {
             // Render header bar (may return navigation action)
             nav_action = self.render_header(ui, &txn, &mut state);
 
@@ -209,12 +203,10 @@ impl<'a> PublicationView<'a> {
         // Save state
         ui.ctx().data_mut(|d| d.insert_temp(state_id, state));
 
-        let response = PublicationViewResponse {
+        PublicationViewResponse {
             action: note_action,
             nav_action,
-        };
-
-        DragResponse::output(Some(response)).scroll_raw(resp.response.id)
+        }
     }
 
     fn render_header(
@@ -234,10 +226,21 @@ impl<'a> PublicationView<'a> {
         let mut nav_action = None;
 
         ui.horizontal(|ui| {
+            // Close button - return to Columns
+            if ui
+                .button("\u{2715}")
+                .on_hover_text("Close and return to timeline")
+                .clicked()
+            {
+                nav_action = Some(PublicationNavAction::Close);
+            }
+
+            ui.separator();
+
             // Back button (only shown when we have history)
             if self.selection.can_go_back() {
                 if ui
-                    .button("←")
+                    .button("\u{2190}")
                     .on_hover_text("Back to previous publication")
                     .clicked()
                 {
@@ -248,9 +251,9 @@ impl<'a> PublicationView<'a> {
 
             // TOC toggle button
             let toc_btn = if state.toc_visible {
-                "✕ TOC"
+                "\u{2715} TOC"
             } else {
-                "☰ TOC"
+                "\u{2630} TOC"
             };
             if ui.button(toc_btn).clicked() {
                 state.toc_visible = !state.toc_visible;
@@ -262,14 +265,14 @@ impl<'a> PublicationView<'a> {
             match state.mode {
                 ReaderMode::Continuous => {
                     if ui
-                        .button("📖")
+                        .button("\u{1F4D6}")
                         .on_hover_text("Switch to paginated view")
                         .clicked()
                     {
                         state.mode = ReaderMode::Paginated;
                     }
                     if ui
-                        .button("📑")
+                        .button("\u{1F4D1}")
                         .on_hover_text("Switch to outline view")
                         .clicked()
                     {
@@ -279,14 +282,14 @@ impl<'a> PublicationView<'a> {
                 }
                 ReaderMode::Paginated => {
                     if ui
-                        .button("📜")
+                        .button("\u{1F4DC}")
                         .on_hover_text("Switch to continuous view")
                         .clicked()
                     {
                         state.mode = ReaderMode::Continuous;
                     }
                     if ui
-                        .button("📑")
+                        .button("\u{1F4D1}")
                         .on_hover_text("Switch to outline view")
                         .clicked()
                     {
@@ -298,7 +301,7 @@ impl<'a> PublicationView<'a> {
 
                     // Navigation for paginated mode
                     if ui
-                        .add_enabled(state.current_leaf_index > 0, egui::Button::new("◀"))
+                        .add_enabled(state.current_leaf_index > 0, egui::Button::new("\u{25C0}"))
                         .clicked()
                     {
                         state.current_leaf_index = state.current_leaf_index.saturating_sub(1);
@@ -313,7 +316,7 @@ impl<'a> PublicationView<'a> {
                     if ui
                         .add_enabled(
                             state.current_leaf_index + 1 < section_count,
-                            egui::Button::new("▶"),
+                            egui::Button::new("\u{25B6}"),
                         )
                         .clicked()
                     {
@@ -323,7 +326,7 @@ impl<'a> PublicationView<'a> {
                 ReaderMode::Outline => {
                     // Mode toggles
                     if ui
-                        .button("📜")
+                        .button("\u{1F4DC}")
                         .on_hover_text("Switch to continuous view")
                         .clicked()
                     {
@@ -341,7 +344,11 @@ impl<'a> PublicationView<'a> {
                         if let Some(ps) = pub_state {
                             if let Some(node) = ps.get_node(current_node) {
                                 if let Some(parent_idx) = node.parent {
-                                    if ui.button("⬆").on_hover_text("Go up to parent").clicked() {
+                                    if ui
+                                        .button("\u{2B06}")
+                                        .on_hover_text("Go up to parent")
+                                        .clicked()
+                                    {
                                         state.outline_view.current_node = parent_idx;
                                     }
                                 }
@@ -354,7 +361,7 @@ impl<'a> PublicationView<'a> {
                         let (prev_sibling, next_sibling) = ps.tree.siblings(current_node);
 
                         if ui
-                            .add_enabled(prev_sibling.is_some(), egui::Button::new("◀"))
+                            .add_enabled(prev_sibling.is_some(), egui::Button::new("\u{25C0}"))
                             .on_hover_text("Previous sibling")
                             .clicked()
                         {
@@ -364,7 +371,7 @@ impl<'a> PublicationView<'a> {
                         }
 
                         if ui
-                            .add_enabled(next_sibling.is_some(), egui::Button::new("▶"))
+                            .add_enabled(next_sibling.is_some(), egui::Button::new("\u{25B6}"))
                             .on_hover_text("Next sibling")
                             .clicked()
                         {
@@ -381,7 +388,7 @@ impl<'a> PublicationView<'a> {
             // Breadcrumbs (if we have history)
             if !self.selection.breadcrumbs().is_empty() {
                 self.render_breadcrumbs(ui, txn);
-                ui.label("›");
+                ui.label("\u{203A}");
             }
 
             // Current title (truncated)
@@ -405,7 +412,7 @@ impl<'a> PublicationView<'a> {
 
             // Truncate long titles
             let display_title = if crumb_title.len() > 15 {
-                format!("{}…", &crumb_title[..12])
+                format!("{}...", &crumb_title[..12])
             } else {
                 crumb_title
             };
@@ -417,7 +424,7 @@ impl<'a> PublicationView<'a> {
             );
 
             if i < breadcrumbs.len() - 1 {
-                ui.label(egui::RichText::new("›").small());
+                ui.label(egui::RichText::new("\u{203A}").small());
             }
         }
     }
@@ -663,7 +670,7 @@ impl<'a> PublicationView<'a> {
             let has_next = state.current_leaf_index + 1 < sections.len();
 
             if ui
-                .add_enabled(has_prev, egui::Button::new("← Previous Chapter"))
+                .add_enabled(has_prev, egui::Button::new("\u{2190} Previous Chapter"))
                 .clicked()
             {
                 state.current_leaf_index = state.current_leaf_index.saturating_sub(1);
@@ -671,7 +678,7 @@ impl<'a> PublicationView<'a> {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add_enabled(has_next, egui::Button::new("Next Chapter →"))
+                    .add_enabled(has_next, egui::Button::new("Next Chapter \u{2192}"))
                     .clicked()
                 {
                     state.current_leaf_index += 1;
@@ -748,9 +755,9 @@ impl<'a> PublicationView<'a> {
 
             ui.horizontal(|ui| {
                 let (icon, label, hover) = if all_expanded {
-                    ("▼", "Collapse All", "Collapse all sections")
+                    ("\u{25BC}", "Collapse All", "Collapse all sections")
                 } else {
-                    ("▶", "Expand All", "Expand all sections")
+                    ("\u{25B6}", "Expand All", "Expand all sections")
                 };
 
                 if ui
@@ -866,6 +873,7 @@ impl<'a> PublicationView<'a> {
     }
 
     /// Render a child card in outline view
+    #[allow(clippy::too_many_arguments)]
     fn render_outline_child_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -892,10 +900,10 @@ impl<'a> PublicationView<'a> {
             ui.horizontal(|ui| {
                 // Type/expand indicator
                 if is_branch {
-                    ui.label("📁");
+                    ui.label("\u{1F4C1}");
                 } else {
                     // Leaf: show expand/collapse indicator
-                    let expand_icon = if is_expanded { "▼" } else { "▶" };
+                    let expand_icon = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
                     if ui
                         .add(egui::Label::new(expand_icon).sense(egui::Sense::click()))
                         .clicked()
@@ -910,7 +918,7 @@ impl<'a> PublicationView<'a> {
 
                 // Title
                 let title_text = if !is_resolved {
-                    format!("{} ⏳", title)
+                    format!("{} \u{231B}", title)
                 } else {
                     title.to_string()
                 };
@@ -1141,7 +1149,7 @@ impl<'a> PublicationView<'a> {
                     ui.horizontal(|ui| {
                         ui.heading("Table of Contents");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("✕").clicked() {
+                            if ui.button("\u{2715}").clicked() {
                                 state.toc_visible = false;
                             }
                         });
@@ -1196,7 +1204,7 @@ impl<'a> PublicationView<'a> {
 
             // Expand/collapse button for branches
             if is_branch {
-                let btn_text = if is_expanded { "▼" } else { "▶" };
+                let btn_text = if is_expanded { "\u{25BC}" } else { "\u{25B6}" };
                 if ui.small_button(btn_text).clicked() {
                     if is_expanded {
                         state.expanded_branches.remove(&node_index);
@@ -1209,7 +1217,7 @@ impl<'a> PublicationView<'a> {
             }
 
             // Status indicator
-            let status = if is_resolved { "" } else { " ⏳" };
+            let status = if is_resolved { "" } else { " \u{231B}" };
             let text = format!("{}{}", title, status);
 
             // Find which leaf index this corresponds to (for navigation)

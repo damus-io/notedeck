@@ -456,10 +456,7 @@ mod tests {
                     order: 0,
                 },
             ],
-            address_to_index: HashMap::from([
-                (root_addr, 0),
-                (child_addr, 1),
-            ]),
+            address_to_index: HashMap::from([(root_addr, 0), (child_addr, 1)]),
             root_index: 0,
             cursor: None,
             bookmark: None,

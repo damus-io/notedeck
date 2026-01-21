@@ -3958,6 +3958,7 @@ dependencies = [
  "notedeck_dave",
  "notedeck_messages",
  "notedeck_notebook",
+ "notedeck_reader",
  "notedeck_ui",
  "objc2 0.5.2",
  "profiling",
@@ -4121,6 +4122,22 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.21.0",
  "tracing",
+]
+
+[[package]]
+name = "notedeck_reader"
+version = "0.7.1"
+dependencies = [
+ "egui",
+ "enostr",
+ "hex",
+ "nostrdb",
+ "notedeck",
+ "notedeck_publications",
+ "notedeck_ui",
+ "profiling",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
