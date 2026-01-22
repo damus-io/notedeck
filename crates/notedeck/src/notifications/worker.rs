@@ -11,7 +11,7 @@
 //! This worker just receives the ready-to-display NotificationData and shows it.
 
 use super::backend::NotificationBackend;
-use super::types::{NotificationData, NotificationAccount, WorkerState};
+use super::types::{NotificationAccount, NotificationData, WorkerState};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -58,7 +58,7 @@ pub fn notification_worker<B: NotificationBackend>(
         loop_count += 1;
 
         // Log heartbeat every 60 iterations (~60 seconds with 1s timeout)
-        if loop_count % 60 == 0 {
+        if loop_count.is_multiple_of(60) {
             info!("Notification worker heartbeat: loop={}", loop_count);
         }
 
@@ -91,7 +91,10 @@ fn process_notification<B: NotificationBackend>(
 ) {
     // Check for duplicate events
     if !record_event_if_new(state, &data.event.id) {
-        debug!("Skipping duplicate event id={}", &data.event.id[..8.min(data.event.id.len())]);
+        debug!(
+            "Skipping duplicate event id={}",
+            &data.event.id[..8.min(data.event.id.len())]
+        );
         return;
     }
 
@@ -134,16 +137,29 @@ fn process_notification<B: NotificationBackend>(
 }
 
 /// Record an event ID if not already seen. Returns true if the event is new.
+/// Maximum number of event IDs to track for deduplication.
+/// When exceeded, oldest entries are evicted to maintain bounded memory usage.
+const MAX_PROCESSED_EVENTS: usize = 10_000;
+
 fn record_event_if_new(state: &mut WorkerState, event_id: &str) -> bool {
     if state.processed_events.contains(event_id) {
         return false;
     }
 
-    state.processed_events.insert(event_id.to_string());
+    // Add to both the set (for O(1) lookups) and queue (for insertion order)
+    let event_id_owned = event_id.to_string();
+    state.processed_events.insert(event_id_owned.clone());
+    state.processed_events_order.push_back(event_id_owned);
 
-    // Prune cache when it exceeds 10,000 entries
-    if state.processed_events.len() > 10000 {
-        state.processed_events.clear();
+    // Bounded eviction: remove oldest entries until size <= MAX_PROCESSED_EVENTS
+    while state.processed_events.len() > MAX_PROCESSED_EVENTS {
+        if let Some(oldest) = state.processed_events_order.pop_front() {
+            state.processed_events.remove(&oldest);
+        } else {
+            // Queue is empty but set is not - shouldn't happen, but clear set to recover
+            state.processed_events.clear();
+            break;
+        }
     }
 
     true

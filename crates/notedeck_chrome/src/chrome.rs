@@ -208,6 +208,7 @@ impl Chrome {
         }
 
         let pubkey_hex = context.accounts.selected_account_pubkey().hex();
+        #[cfg(target_os = "android")]
         let relay_urls = context.accounts.get_selected_account_relay_urls();
 
         tracing::info!(
@@ -220,11 +221,7 @@ impl Chrome {
         #[cfg(not(target_os = "android"))]
         let result = {
             let context = notedeck.app_context();
-            notedeck::platform::enable_notifications(
-                context.notification_manager,
-                &pubkey_hex,
-                &relay_urls,
-            )
+            notedeck::platform::enable_notifications(context.notification_manager, &pubkey_hex)
         };
         if let Err(e) = result {
             tracing::error!("Failed to auto-enable notifications: {}", e);

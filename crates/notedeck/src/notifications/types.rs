@@ -3,7 +3,7 @@
 //! These types are platform-agnostic and shared between Android and desktop backends.
 
 use enostr::Pubkey;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
 
 /// Cached profile information for notification display.
@@ -80,8 +80,10 @@ pub struct NotificationData {
 pub struct WorkerState {
     /// Map of pubkey hex -> account for O(1) lookups when attributing events
     pub accounts: HashMap<String, NotificationAccount>,
-    /// Set of processed event IDs for deduplication
+    /// Set of processed event IDs for O(1) deduplication lookups
     pub processed_events: HashSet<String>,
+    /// Queue tracking insertion order for bounded eviction (oldest at front)
+    pub processed_events_order: VecDeque<String>,
     /// Channel receiver for notification data from main loop
     pub event_receiver: mpsc::Receiver<NotificationData>,
     /// Image cache for profile pictures (macOS notifications require local files)
@@ -105,6 +107,7 @@ impl WorkerState {
         Self {
             accounts,
             processed_events: HashSet::new(),
+            processed_events_order: VecDeque::new(),
             event_receiver,
             #[cfg(target_os = "macos")]
             image_cache: super::image_cache::NotificationImageCache::new(),

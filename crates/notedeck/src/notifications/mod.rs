@@ -160,10 +160,7 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
             sender,
         });
 
-        info!(
-            "Started notification worker for {} accounts",
-            account_count
-        );
+        info!("Started notification worker for {} accounts", account_count);
         Ok(())
     }
 
@@ -244,3 +241,129 @@ pub fn start_desktop_notifications(
     service.start(PlatformBackend::new, pubkey_hexes)?;
     Ok(service)
 }
+
+// =============================================================================
+// Main Event Loop Integration
+// =============================================================================
+
+use nostrdb::{Ndb, Transaction};
+use tracing::debug;
+
+/// Process a relay message and forward to notifications if relevant.
+///
+/// Call this from the main event loop's relay message handler.
+/// This function:
+/// 1. Extracts event data from the relay message
+/// 2. Checks if the event kind is notification-relevant
+/// 3. Checks if any monitored account is mentioned in p-tags
+/// 4. Looks up author profile from nostrdb
+/// 5. Sends NotificationData to the notification worker
+///
+/// # Arguments
+/// * `relay_message` - Raw JSON relay message (["EVENT", "sub_id", {...}])
+/// * `ndb` - Reference to nostrdb for profile lookups
+/// * `manager` - Reference to the notification manager
+/// * `monitored_pubkeys` - List of pubkey hex strings to monitor for mentions
+#[cfg(not(target_os = "android"))]
+#[profiling::function]
+pub fn process_relay_message_for_notifications(
+    relay_message: &str,
+    ndb: &Ndb,
+    manager: &Option<NotificationManager>,
+    monitored_pubkeys: &[String],
+) {
+    // Skip if notifications aren't running
+    let Some(mgr) = manager.as_ref() else {
+        return;
+    };
+    if !mgr.is_running() {
+        return;
+    }
+
+    // Extract event from relay message
+    let Some(event) = extraction::extract_event(relay_message) else {
+        return;
+    };
+
+    // Check if event kind is notification-relevant
+    if !is_notification_kind(event.kind) {
+        return;
+    }
+
+    // Find which monitored account(s) are mentioned in p-tags
+    let target_pubkey_hex = event
+        .p_tags
+        .iter()
+        .find(|p| monitored_pubkeys.contains(p))
+        .cloned();
+
+    let Some(target_pubkey_hex) = target_pubkey_hex else {
+        return; // Event doesn't mention any monitored account
+    };
+
+    // Don't notify for our own events
+    if monitored_pubkeys.contains(&event.pubkey) {
+        return;
+    }
+
+    debug!(
+        "Notification-relevant event: kind={} id={} target={}",
+        event.kind,
+        &event.id[..8.min(event.id.len())],
+        &target_pubkey_hex[..8.min(target_pubkey_hex.len())]
+    );
+
+    // Look up author profile from nostrdb
+    let (author_name, author_picture_url) = lookup_profile(ndb, &event.pubkey);
+
+    // Create notification data
+    let notification_data = NotificationData {
+        event,
+        author_name,
+        author_picture_url,
+        target_pubkey_hex,
+    };
+
+    // Send to worker
+    if let Err(e) = mgr.send(notification_data) {
+        debug!("Failed to send notification: {}", e);
+    }
+}
+
+/// Look up a profile from nostrdb.
+///
+/// Returns (display_name, picture_url) if found.
+#[cfg(not(target_os = "android"))]
+fn lookup_profile(ndb: &Ndb, pubkey_hex: &str) -> (Option<String>, Option<String>) {
+    let Ok(pubkey_bytes) = hex::decode(pubkey_hex) else {
+        return (None, None);
+    };
+    if pubkey_bytes.len() != 32 {
+        return (None, None);
+    }
+
+    let Ok(txn) = Transaction::new(ndb) else {
+        return (None, None);
+    };
+
+    let pubkey_arr: [u8; 32] = pubkey_bytes.try_into().unwrap();
+    let Ok(profile) = ndb.get_profile_by_pubkey(&txn, &pubkey_arr) else {
+        return (None, None);
+    };
+
+    let record = profile.record();
+    let name = record
+        .profile()
+        .and_then(|p| p.display_name().or_else(|| p.name()))
+        .map(|s| s.to_string());
+
+    let picture = record
+        .profile()
+        .and_then(|p| p.picture())
+        .map(|s| s.to_string());
+
+    (name, picture)
+}
+
+/// Re-export extraction for use in tests
+pub use extraction::extract_event;
