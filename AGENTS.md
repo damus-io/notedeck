@@ -120,10 +120,10 @@ This document captures the current architecture, coding conventions, and design 
 15. **Per-frame UI constraints** — the UI runs every frame; never block the render loop. Use `Promise::ready()` for non-blocking result checks. Offload CPU-heavy work to `JobPool` or `tokio::spawn()`, returning results via channels or Promises.
 16. **Cherry-pick commits** — when incorporating work from other branches or contributors, use `git cherry-pick` to preserve original authorship rather than copying code manually.
 17. **Frame-aware animations** — for animations (GIFs, video), track `repaint_at` timestamps and only request repaints when necessary; avoid spinning every frame.
-18. Rebase: **squash self-referential fix/refactor commits** for cleaner human dev review.
-19. **Verify that existing code that can do the job is not ignored** (in lieu of creating code that performs the same function of existing code).
-20. **Do not accrue duplicate code.** Always revisit how existing code can be applied and/or refactored in solving new issues.
-21. **Always prefer simplicity** One line of code is better than ten. Ten is better than a hundred. A commit with ten thousand lines of code is not reviewable by a human developer.
+18. Commits which have code which contain fixes or refactors which were introduced in the same PR should be **rebased such that the fixes are added to the original code history**.
+20. **Verify that existing code that can do the job is not ignored** (in lieu of creating code that performs the same function of existing code).
+21. **Do not accrue duplicate code.** Always revisit how existing code can be applied and/or refactored in solving new issues.
+22. **Always prefer simplicity** One line of code is better than ten. Ten is better than a hundred. A commit with ten thousand lines of code is not reviewable by a human developer.
 
 
 
