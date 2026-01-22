@@ -22,4 +22,4 @@ scripts/macos_build_secrets.sh
 .zed
 .lsp
 .idea
-local.properties
+local.propertiesFCM/

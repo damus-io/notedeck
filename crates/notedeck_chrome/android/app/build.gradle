@@ -1,13 +1,15 @@
 plugins {
     id "com.android.application"
+    id "org.jetbrains.kotlin.android"
+    id "com.google.gms.google-services"
 }
 
 android {
     namespace "com.damus.notedeck"
-    compileSdk 31
+    compileSdk 34
 
     defaultConfig {
-        minSdk 19
+        minSdk 21
         targetSdk 34
         versionCode 1
         versionName "1"
@@ -15,14 +17,33 @@ android {
 
     buildTypes {
         debug
+        release {
+            minifyEnabled false
+        }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        buildConfig = true
+    }
+    kotlinOptions {
+        jvmTarget = "17"
     }
 }
 
 dependencies {
-    implementation "com.google.android.material:material:1.5.0"
+    implementation "com.google.android.material:material:1.11.0"
     implementation "androidx.games:games-activity:4.0.0"
+
+    // Firebase
+    implementation platform("com.google.firebase:firebase-bom:32.7.0")
+    implementation "com.google.firebase:firebase-messaging-ktx"
+
+    // Kotlin coroutines for async HTTP
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+
+    // OkHttp for API calls
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
 }
