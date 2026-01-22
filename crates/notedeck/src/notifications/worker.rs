@@ -135,17 +135,18 @@ fn setup_subscriptions(state: &mut WorkerState) {
     // Build all filters first (before any mutable borrows of state.pool)
     // Subscribe to mentions, replies, reactions, reposts, zaps
     // kinds: 1 (text), 6 (repost), 7 (reaction), 9735 (zap receipt)
-    // Uses p-tag filter (.pubkey) to match events referencing any of our accounts
+    // Uses #p tag filter (.pubkeys) to match events referencing any of our accounts
+    // NOTE: .pubkey() filters by author, .pubkeys() filters by #p tag
     let notification_filter = Filter::new()
         .kinds([1, 6, 7, 9735])
-        .pubkey(pubkey_bytes.iter())
+        .pubkeys(pubkey_bytes.iter())
         .since(now)
         .build();
 
     // Subscribe to DMs (kind 4 legacy, kind 1059 gift wrap)
     let dm_filter = Filter::new()
         .kinds([4, 1059])
-        .pubkey(pubkey_bytes.iter())
+        .pubkeys(pubkey_bytes.iter())
         .since(now)
         .build();
 
@@ -366,6 +367,26 @@ fn handle_event_message<B: NotificationBackend>(
     let author_name = profile.as_ref().and_then(|p| p.name.clone());
     let picture_url = profile.as_ref().and_then(|p| p.picture_url.clone());
 
+    // On macOS, download and cache the profile picture locally
+    // (UNNotificationAttachment only accepts local file URLs)
+    #[cfg(target_os = "macos")]
+    let picture_path: Option<String> = {
+        if let Some(ref url) = picture_url {
+            if let Some(ref cache) = state.image_cache {
+                cache
+                    .fetch_and_cache_blocking(url)
+                    .map(|p| p.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    #[cfg(not(target_os = "macos"))]
+    let picture_path: Option<String> = picture_url.clone();
+
     // Request profiles for mentioned users, then resolve mentions
     let resolved_content = {
         let mentioned_pubkeys = extract_mentioned_pubkeys(&event.content);
@@ -409,9 +430,9 @@ fn handle_event_message<B: NotificationBackend>(
     };
 
     info!(
-        "Notifying with profile: name={:?}, picture={:?}",
+        "Notifying with profile: name={:?}, picture_path={:?}",
         author_name,
-        picture_url.as_ref().map(|s| &s[..s.len().min(50)])
+        picture_path.as_ref().map(|s| &s[..s.len().min(60)])
     );
 
     // Create event with resolved content for notification
@@ -425,11 +446,12 @@ fn handle_event_message<B: NotificationBackend>(
         raw_json: event.raw_json.clone(),
     };
 
+    // On macOS, picture_path is a local file path; on other platforms it's a URL
     backend.send_notification(
         &resolved_event,
         &target_account,
         author_name.as_deref(),
-        picture_url.as_deref(),
+        picture_path.as_deref(),
     );
 }
 

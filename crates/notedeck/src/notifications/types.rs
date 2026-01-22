@@ -70,6 +70,9 @@ pub struct WorkerState {
     pub requested_profiles: HashSet<String>,
     /// Buffer for events received during profile fetch wait loops
     pub pending_events: Vec<String>,
+    /// Image cache for profile pictures (macOS notifications require local files)
+    #[cfg(target_os = "macos")]
+    pub image_cache: Option<super::image_cache::NotificationImageCache>,
 }
 
 impl WorkerState {
@@ -103,6 +106,8 @@ impl WorkerState {
             profile_cache: HashMap::new(),
             requested_profiles: HashSet::new(),
             pending_events: Vec::new(),
+            #[cfg(target_os = "macos")]
+            image_cache: super::image_cache::NotificationImageCache::new(),
         }
     }
 
