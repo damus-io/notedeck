@@ -22,6 +22,7 @@ pub mod nip05;
 mod nip51_set;
 pub mod note;
 mod notecache;
+pub mod notifications;
 mod options;
 mod persist;
 pub mod platform;
