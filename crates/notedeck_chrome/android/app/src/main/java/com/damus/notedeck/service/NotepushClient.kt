@@ -3,6 +3,7 @@ package com.damus.notedeck.service
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,6 +31,27 @@ class NotepushClient(
         .build()
 
     /**
+     * Builds a properly URL-encoded path for the notepush API.
+     * Uses HttpUrl.Builder to safely encode path segments.
+     */
+    private fun buildUrl(
+        pubkeyHex: String,
+        fcmToken: String,
+        suffix: String? = null,
+        backend: String? = null
+    ): String {
+        val builder = baseUrl.toHttpUrl().newBuilder()
+            .addPathSegment("user-info")
+            .addPathSegment(pubkeyHex)
+            .addPathSegment(fcmToken)
+
+        suffix?.let { builder.addPathSegment(it) }
+        backend?.let { builder.addQueryParameter("backend", it) }
+
+        return builder.build().toString()
+    }
+
+    /**
      * Register a device token with the notepush server for FCM notifications.
      *
      * @param pubkeyHex The user's public key in hex format
@@ -39,7 +61,7 @@ class NotepushClient(
     suspend fun registerDevice(pubkeyHex: String, fcmToken: String): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                val url = "$baseUrl/user-info/$pubkeyHex/$fcmToken?backend=fcm"
+                val url = buildUrl(pubkeyHex, fcmToken, backend = "fcm")
                 val authHeader = nativeSignNip98Auth(url, "PUT", null)
 
                 if (authHeader == null) {
@@ -53,16 +75,14 @@ class NotepushClient(
                     .addHeader("Authorization", "Nostr $authHeader")
                     .build()
 
-                val response = client.newCall(request).execute()
-                val success = response.isSuccessful
-
-                if (!success) {
-                    Log.e(TAG, "Register failed: ${response.code} ${response.body?.string()}")
-                } else {
-                    Log.d(TAG, "Device registered successfully")
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.e(TAG, "Register failed: ${response.code} ${response.body?.string()}")
+                    } else {
+                        Log.d(TAG, "Device registered successfully")
+                    }
+                    response.isSuccessful
                 }
-
-                success
             } catch (e: Exception) {
                 Log.e(TAG, "Register error", e)
                 false
@@ -80,7 +100,7 @@ class NotepushClient(
     suspend fun unregisterDevice(pubkeyHex: String, fcmToken: String): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                val url = "$baseUrl/user-info/$pubkeyHex/$fcmToken"
+                val url = buildUrl(pubkeyHex, fcmToken)
                 val authHeader = nativeSignNip98Auth(url, "DELETE", null)
 
                 if (authHeader == null) {
@@ -94,16 +114,14 @@ class NotepushClient(
                     .addHeader("Authorization", "Nostr $authHeader")
                     .build()
 
-                val response = client.newCall(request).execute()
-                val success = response.isSuccessful
-
-                if (!success) {
-                    Log.e(TAG, "Unregister failed: ${response.code} ${response.body?.string()}")
-                } else {
-                    Log.d(TAG, "Device unregistered successfully")
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.e(TAG, "Unregister failed: ${response.code} ${response.body?.string()}")
+                    } else {
+                        Log.d(TAG, "Device unregistered successfully")
+                    }
+                    response.isSuccessful
                 }
-
-                success
             } catch (e: Exception) {
                 Log.e(TAG, "Unregister error", e)
                 false
@@ -121,7 +139,7 @@ class NotepushClient(
     suspend fun getPreferences(pubkeyHex: String, fcmToken: String): String? {
         return withContext(Dispatchers.IO) {
             try {
-                val url = "$baseUrl/user-info/$pubkeyHex/$fcmToken/preferences"
+                val url = buildUrl(pubkeyHex, fcmToken, suffix = "preferences")
                 val authHeader = nativeSignNip98Auth(url, "GET", null)
 
                 if (authHeader == null) {
@@ -135,13 +153,13 @@ class NotepushClient(
                     .addHeader("Authorization", "Nostr $authHeader")
                     .build()
 
-                val response = client.newCall(request).execute()
-
-                if (response.isSuccessful) {
-                    response.body?.string()
-                } else {
-                    Log.e(TAG, "Get preferences failed: ${response.code}")
-                    null
+                client.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        response.body?.string()
+                    } else {
+                        Log.e(TAG, "Get preferences failed: ${response.code}")
+                        null
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Get preferences error", e)
@@ -161,7 +179,7 @@ class NotepushClient(
     suspend fun setPreferences(pubkeyHex: String, fcmToken: String, preferencesJson: String): Boolean {
         return withContext(Dispatchers.IO) {
             try {
-                val url = "$baseUrl/user-info/$pubkeyHex/$fcmToken/preferences"
+                val url = buildUrl(pubkeyHex, fcmToken, suffix = "preferences")
                 val authHeader = nativeSignNip98Auth(url, "PUT", preferencesJson)
 
                 if (authHeader == null) {
@@ -175,16 +193,14 @@ class NotepushClient(
                     .addHeader("Authorization", "Nostr $authHeader")
                     .build()
 
-                val response = client.newCall(request).execute()
-                val success = response.isSuccessful
-
-                if (!success) {
-                    Log.e(TAG, "Set preferences failed: ${response.code} ${response.body?.string()}")
-                } else {
-                    Log.d(TAG, "Preferences updated successfully")
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        Log.e(TAG, "Set preferences failed: ${response.code} ${response.body?.string()}")
+                    } else {
+                        Log.d(TAG, "Preferences updated successfully")
+                    }
+                    response.isSuccessful
                 }
-
-                success
             } catch (e: Exception) {
                 Log.e(TAG, "Set preferences error", e)
                 false

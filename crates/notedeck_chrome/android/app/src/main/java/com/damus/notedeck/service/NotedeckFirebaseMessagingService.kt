@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.damus.notedeck.BuildConfig
 import com.damus.notedeck.MainActivity
 import com.damus.notedeck.R
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -40,7 +41,11 @@ class NotedeckFirebaseMessagingService : FirebaseMessagingService() {
      */
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        Log.d(TAG, "New FCM token: $token")
+        // Redact token in logs to avoid exposing sensitive credentials
+        if (BuildConfig.DEBUG) {
+            val redacted = if (token.length > 8) "...${token.takeLast(4)}" else "[redacted]"
+            Log.d(TAG, "New FCM token (${token.length} chars): $redacted")
+        }
 
         // Store token locally
         getSharedPreferences("notedeck_fcm", Context.MODE_PRIVATE)
@@ -63,7 +68,10 @@ class NotedeckFirebaseMessagingService : FirebaseMessagingService() {
         // Extract Nostr event from data payload
         val nostrEventJson = message.data["nostr_event"]
         if (nostrEventJson != null) {
-            Log.d(TAG, "Received Nostr event: ${nostrEventJson.take(100)}...")
+            // Only log event content in debug builds to avoid leaking user PII
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "Received Nostr event: ${nostrEventJson.take(100)}...")
+            }
             handleNostrEvent(nostrEventJson)
         } else {
             // Fallback: show notification from FCM notification payload
