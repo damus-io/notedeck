@@ -2,14 +2,15 @@ use crate::{platform::file::SelectedMedia, Error};
 
 #[cfg(target_os = "android")]
 pub mod android;
+#[cfg(not(target_os = "android"))]
+mod desktop_notifications;
 pub mod file;
 
 // =============================================================================
-// Notification API (Android-only with stubs for other platforms)
+// Notification API
 // =============================================================================
 
 /// Enable push notifications for the given pubkey and relay URLs.
-/// On non-Android platforms, this is a no-op.
 #[cfg(target_os = "android")]
 pub fn enable_notifications(
     pubkey_hex: &str,
@@ -20,14 +21,13 @@ pub fn enable_notifications(
 
 #[cfg(not(target_os = "android"))]
 pub fn enable_notifications(
-    _pubkey_hex: &str,
-    _relay_urls: &[String],
+    pubkey_hex: &str,
+    relay_urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
+    desktop_notifications::enable_notifications(pubkey_hex, relay_urls)
 }
 
 /// Disable push notifications.
-/// On non-Android platforms, this is a no-op.
 #[cfg(target_os = "android")]
 pub fn disable_notifications() -> Result<(), Box<dyn std::error::Error>> {
     android::disable_notifications()
@@ -35,11 +35,11 @@ pub fn disable_notifications() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(not(target_os = "android"))]
 pub fn disable_notifications() -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
+    desktop_notifications::disable_notifications()
 }
 
 /// Check if notification permission is granted.
-/// On non-Android platforms, always returns true.
+/// On desktop platforms, always returns true (no permission system like Android).
 #[cfg(target_os = "android")]
 pub fn is_notification_permission_granted() -> Result<bool, Box<dyn std::error::Error>> {
     android::is_notification_permission_granted()
@@ -47,11 +47,11 @@ pub fn is_notification_permission_granted() -> Result<bool, Box<dyn std::error::
 
 #[cfg(not(target_os = "android"))]
 pub fn is_notification_permission_granted() -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(true)
+    desktop_notifications::is_notification_permission_granted()
 }
 
 /// Request notification permission from the user.
-/// On non-Android platforms, this is a no-op.
+/// On desktop platforms, this is a no-op.
 #[cfg(target_os = "android")]
 pub fn request_notification_permission() -> Result<(), Box<dyn std::error::Error>> {
     android::request_notification_permission()
@@ -59,11 +59,11 @@ pub fn request_notification_permission() -> Result<(), Box<dyn std::error::Error
 
 #[cfg(not(target_os = "android"))]
 pub fn request_notification_permission() -> Result<(), Box<dyn std::error::Error>> {
-    Ok(())
+    desktop_notifications::request_notification_permission()
 }
 
 /// Check if a notification permission request is currently pending.
-/// On non-Android platforms, always returns false.
+/// On desktop platforms, always returns false.
 #[cfg(target_os = "android")]
 pub fn is_notification_permission_pending() -> bool {
     android::is_notification_permission_pending()
@@ -71,11 +71,11 @@ pub fn is_notification_permission_pending() -> bool {
 
 #[cfg(not(target_os = "android"))]
 pub fn is_notification_permission_pending() -> bool {
-    false
+    desktop_notifications::is_notification_permission_pending()
 }
 
 /// Get the result of the last notification permission request.
-/// On non-Android platforms, always returns true.
+/// On desktop platforms, always returns true.
 #[cfg(target_os = "android")]
 pub fn get_notification_permission_result() -> bool {
     android::get_notification_permission_result()
@@ -83,11 +83,10 @@ pub fn get_notification_permission_result() -> bool {
 
 #[cfg(not(target_os = "android"))]
 pub fn get_notification_permission_result() -> bool {
-    true
+    desktop_notifications::get_notification_permission_result()
 }
 
-/// Check if notifications are currently enabled in preferences.
-/// On non-Android platforms, always returns false.
+/// Check if notifications are currently enabled.
 #[cfg(target_os = "android")]
 pub fn are_notifications_enabled() -> Result<bool, Box<dyn std::error::Error>> {
     android::are_notifications_enabled()
@@ -95,11 +94,10 @@ pub fn are_notifications_enabled() -> Result<bool, Box<dyn std::error::Error>> {
 
 #[cfg(not(target_os = "android"))]
 pub fn are_notifications_enabled() -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(false)
+    desktop_notifications::are_notifications_enabled()
 }
 
 /// Check if the notification service is currently running.
-/// On non-Android platforms, always returns false.
 #[cfg(target_os = "android")]
 pub fn is_notification_service_running() -> Result<bool, Box<dyn std::error::Error>> {
     android::is_notification_service_running()
@@ -107,12 +105,16 @@ pub fn is_notification_service_running() -> Result<bool, Box<dyn std::error::Err
 
 #[cfg(not(target_os = "android"))]
 pub fn is_notification_service_running() -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(false)
+    desktop_notifications::is_notification_service_running()
 }
 
 /// Returns true if the current platform supports push notifications.
 pub fn supports_notifications() -> bool {
-    cfg!(target_os = "android")
+    cfg!(any(
+        target_os = "android",
+        target_os = "macos",
+        target_os = "linux"
+    ))
 }
 
 // =============================================================================
