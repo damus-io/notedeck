@@ -76,8 +76,13 @@ objc2 = { version = "0.5.2", features = ["relax-sign-encoding"] }
 [package.metadata.bundle]
 name = "Notedeck"
 short_description = "The nostr browser"
+long_description = "A nostr browser and client for the decentralized social network"
 identifier = "com.damus.notedeck"
 icon = ["assets/app_icon.icns"]
+version = "0.7.1"
+copyright = "Copyright © 2024 Damus, Nostr Inc."
+category = "Social Networking"
+osx_minimum_system_version = "10.15"
 
 [package.metadata.android.manifest.queries]
 intent = [
