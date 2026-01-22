@@ -184,6 +184,9 @@ impl Chrome {
 
         chrome.set_active(0);
 
+        // Auto-enable notifications if the setting was persisted from a previous session
+        Self::auto_enable_notifications(notedeck);
+
         Ok(chrome)
     }
 

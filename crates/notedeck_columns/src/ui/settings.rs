@@ -55,7 +55,9 @@ impl SettingsAction {
         ctx: &egui::Context,
         accounts: &mut notedeck::Accounts,
     ) -> Option<RouterAction> {
-        Self::process_settings_action_impl(self, app, settings, i18n, img_cache, ctx, accounts, None)
+        Self::process_settings_action_impl(
+            self, app, settings, i18n, img_cache, ctx, accounts, None,
+        )
     }
 
     /// Process a settings action on desktop (requires NotificationManager).
@@ -154,11 +156,15 @@ impl SettingsAction {
                 let result = notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls);
                 #[cfg(not(target_os = "android"))]
                 let result = {
-                    let mgr = notification_manager.expect("notification_manager required on desktop");
+                    let mgr =
+                        notification_manager.expect("notification_manager required on desktop");
                     notedeck::platform::enable_notifications(mgr, &pubkey.hex(), &relay_urls)
                 };
                 if let Err(e) = result {
                     tracing::error!("Failed to enable notifications: {}", e);
+                } else {
+                    // Persist the setting so notifications auto-start on app launch
+                    settings.set_notifications_enabled(true);
                 }
             }
             Self::DisableNotifications => {
@@ -166,11 +172,15 @@ impl SettingsAction {
                 let result = notedeck::platform::disable_notifications();
                 #[cfg(not(target_os = "android"))]
                 let result = {
-                    let mgr = notification_manager.expect("notification_manager required on desktop");
+                    let mgr =
+                        notification_manager.expect("notification_manager required on desktop");
                     notedeck::platform::disable_notifications(mgr)
                 };
                 if let Err(e) = result {
                     tracing::error!("Failed to disable notifications: {}", e);
+                } else {
+                    // Persist the setting
+                    settings.set_notifications_enabled(false);
                 }
             }
             Self::RequestNotificationPermission => {

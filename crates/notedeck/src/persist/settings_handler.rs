@@ -20,6 +20,7 @@ pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 16.0;
 pub const DEFAULT_MAX_HASHTAGS_PER_NOTE: usize = 3;
+const DEFAULT_NOTIFICATIONS_ENABLED: bool = false;
 
 fn deserialize_theme(serialized_theme: &str) -> Option<ThemePreference> {
     match serialized_theme {
@@ -49,6 +50,10 @@ pub struct Settings {
     pub tos_version: String,
     #[serde(default)]
     pub age_verified: bool,
+    /// Whether push notifications are enabled.
+    /// Persisted so notifications auto-start on app launch.
+    #[serde(default = "default_notifications_enabled")]
+    pub notifications_enabled: bool,
 }
 
 fn default_animate_nav_transitions() -> bool {
@@ -57,6 +62,10 @@ fn default_animate_nav_transitions() -> bool {
 
 fn default_tos_version() -> String {
     DEFAULT_TOS_VERSION.to_string()
+}
+
+fn default_notifications_enabled() -> bool {
+    DEFAULT_NOTIFICATIONS_ENABLED
 }
 
 impl Default for Settings {
@@ -74,6 +83,7 @@ impl Default for Settings {
             tos_accepted_at: None,
             tos_version: default_tos_version(),
             age_verified: false,
+            notifications_enabled: DEFAULT_NOTIFICATIONS_ENABLED,
         }
     }
 }
@@ -307,6 +317,22 @@ impl SettingsHandler {
         settings.tos_accepted = true;
         settings.tos_accepted_at = Some(crate::time::unix_time_secs());
         settings.age_verified = true;
+        self.try_save_settings();
+    }
+
+    /// Get whether push notifications are enabled.
+    pub fn notifications_enabled(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.notifications_enabled)
+            .unwrap_or(DEFAULT_NOTIFICATIONS_ENABLED)
+    }
+
+    /// Set whether push notifications are enabled.
+    ///
+    /// This persists the setting so notifications can auto-start on app launch.
+    pub fn set_notifications_enabled(&mut self, enabled: bool) {
+        self.get_settings_mut().notifications_enabled = enabled;
         self.try_save_settings();
     }
 }
