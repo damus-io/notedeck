@@ -22,16 +22,16 @@ pub fn enable_notifications(
     android::enable_notifications(pubkey_hex, relay_urls)
 }
 
-/// Enable push notifications for the given pubkey and relay URLs.
+/// Enable push notifications for the given pubkey.
 ///
 /// On desktop, requires a mutable reference to the `NotificationManager`.
+/// Events are forwarded from the main event loop via channel (no separate relay connection).
 #[cfg(not(target_os = "android"))]
 pub fn enable_notifications(
     manager: &mut Option<NotificationManager>,
     pubkey_hex: &str,
-    relay_urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    desktop_notifications::enable_notifications(manager, pubkey_hex, relay_urls)
+    desktop_notifications::enable_notifications(manager, pubkey_hex)
 }
 
 /// Disable push notifications.

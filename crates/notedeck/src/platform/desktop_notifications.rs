@@ -1,30 +1,20 @@
 //! Desktop notification service management.
 //!
 //! Provides notification control functions that delegate to `NotificationManager`.
-//! This module maintains API parity with the Android implementation while using
-//! the manager-based architecture that avoids global state.
-//!
-//! # Platform Backends
-//!
-//! - **macOS**: Uses `MacOSBackend` (UNUserNotificationCenter) for native notifications
-//!   with profile picture support. Requires `.app` bundle to function.
-//! - **Linux**: Uses `DesktopBackend` (notify-rust/libnotify) which supports images.
 
 use crate::notifications::NotificationManager;
 use tracing::info;
 
-/// Enable push notifications for the given pubkey and relay URLs.
+/// Enable push notifications for the given pubkey.
 ///
 /// Delegates to `NotificationManager::start()`.
 pub fn enable_notifications(
     manager: &mut Option<NotificationManager>,
     pubkey_hex: &str,
-    relay_urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize manager if not already created
     let mgr = manager.get_or_insert_with(NotificationManager::new);
 
-    mgr.start(&[pubkey_hex], relay_urls)
+    mgr.start(&[pubkey_hex])
         .map_err(|e| Box::new(std::io::Error::other(e)) as Box<dyn std::error::Error>)?;
 
     info!(
@@ -35,8 +25,6 @@ pub fn enable_notifications(
 }
 
 /// Disable push notifications.
-///
-/// Delegates to `NotificationManager::stop()`.
 pub fn disable_notifications(
     manager: &mut Option<NotificationManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -68,7 +56,7 @@ pub fn is_notification_permission_granted() -> Result<bool, Box<dyn std::error::
 }
 
 /// Request notification permission.
-/// On desktop, this is a no-op (no permission system like Android).
+/// On desktop, this is a no-op.
 pub fn request_notification_permission() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }

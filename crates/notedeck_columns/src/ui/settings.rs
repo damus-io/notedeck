@@ -151,14 +151,17 @@ impl SettingsAction {
             }
             Self::EnableNotifications => {
                 let pubkey = accounts.selected_account_pubkey();
-                let relay_urls = accounts.get_selected_account_relay_urls();
                 #[cfg(target_os = "android")]
-                let result = notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls);
+                let result = {
+                    let relay_urls = accounts.get_selected_account_relay_urls();
+                    notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls)
+                };
                 #[cfg(not(target_os = "android"))]
                 let result = {
                     let mgr =
                         notification_manager.expect("notification_manager required on desktop");
-                    notedeck::platform::enable_notifications(mgr, &pubkey.hex(), &relay_urls)
+                    // Desktop: events forwarded from main loop via channel (no relay_urls needed)
+                    notedeck::platform::enable_notifications(mgr, &pubkey.hex())
                 };
                 if let Err(e) = result {
                     tracing::error!("Failed to enable notifications: {}", e);

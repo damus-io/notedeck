@@ -5,45 +5,33 @@
 //!
 //! # Architecture
 //!
-//! The notification system is built around these core components:
+//! The notification system receives events from the main event loop via a channel.
+//! This avoids duplicating the RelayPool and uses the existing nostrdb for profiles.
 //!
-//! - **Types** (`types.rs`): Core data structures like `ExtractedEvent`, `CachedProfile`,
-//!   `NotificationAccount`, and `WorkerState`.
+//! **Main Event Loop** (in app.rs):
+//! 1. Receives events from RelayPool
+//! 2. Checks if event is notification-relevant (mentions monitored account)
+//! 3. Looks up author profile from nostrdb
+//! 4. Sends `NotificationData` to notification channel
 //!
-//! - **Backend trait** (`backend.rs`): The `NotificationBackend` trait abstracts over
-//!   platform-specific notification delivery.
+//! **Notification Worker** (this module):
+//! 1. Receives `NotificationData` from channel
+//! 2. Deduplicates by event ID
+//! 3. Displays via platform-specific backend
 //!
-//! - **Worker** (`worker.rs`): The main notification worker thread that maintains
-//!   relay connections, processes events, and delivers notifications.
+//! # Components
 //!
-//! - **Profiles** (`profiles.rs`): Profile caching and mention resolution.
-//!
-//! - **Desktop** (`desktop.rs`): Desktop-specific backend using notify-rust.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! use notedeck::notifications::{
-//!     NotificationService, NotificationBackend, DesktopBackend,
-//! };
-//!
-//! // Create a desktop backend
-//! let backend = Arc::new(DesktopBackend::new());
-//!
-//! // Create and start the notification service
-//! let service = NotificationService::new(backend);
-//! service.start(&["<pubkey_hex>"], &["wss://relay.damus.io"])?;
-//!
-//! // Later, stop the service
-//! service.stop();
-//! ```
+//! - **Types** (`types.rs`): Core data structures
+//! - **Backend** (`backend.rs`): Platform notification delivery trait
+//! - **Worker** (`worker.rs`): Background thread that displays notifications
+//! - **Desktop** (`desktop.rs`): Linux backend using notify-rust
+//! - **macOS** (`macos.rs`): macOS backend using UNUserNotificationCenter
 //!
 //! # Platform Support
 //!
-//! - **macOS**: Full support with App Nap prevention
+//! - **macOS**: Full support with App Nap prevention and profile pictures
 //! - **Linux**: Full support via libnotify
 //! - **Android**: Uses JNI backend (implemented in notedeck_chrome)
-//! - **Windows**: Partial support via notify-rust (notifications work, no action buttons)
 
 mod backend;
 mod bolt11;
@@ -62,15 +50,13 @@ pub use desktop::DesktopBackend;
 #[cfg(target_os = "macos")]
 pub use macos::{initialize_on_main_thread as macos_init, MacOSBackend};
 pub use manager::NotificationManager;
-pub use types::{CachedProfile, ExtractedEvent, NotificationAccount, WorkerState, DEFAULT_RELAYS};
+pub use profiles::{decode_npub, extract_mentioned_pubkeys, resolve_mentions};
+pub use types::{
+    is_notification_kind, CachedProfile, ExtractedEvent, NotificationAccount, NotificationData,
+    WorkerState, NOTIFICATION_KINDS,
+};
 
 /// Type alias for the platform-appropriate notification backend.
-///
-/// - **macOS**: Uses `MacOSBackend` (UNUserNotificationCenter) for native notifications
-///   with profile picture support. Requires `.app` bundle.
-/// - **Linux**: Uses `DesktopBackend` (notify-rust/libnotify) which works well and
-///   supports images.
-/// - **Other**: Uses `DesktopBackend` as fallback.
 #[cfg(target_os = "macos")]
 pub type PlatformBackend = MacOSBackend;
 
@@ -81,7 +67,7 @@ use enostr::Pubkey;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{mpsc, Arc, RwLock};
 use std::thread::{self, JoinHandle};
 use tracing::info;
 
@@ -91,19 +77,14 @@ struct WorkerHandle {
     running: Arc<AtomicBool>,
     /// Handle to the worker thread (Option to allow taking for join)
     thread: Option<JoinHandle<()>>,
+    /// Channel sender for notification data
+    sender: mpsc::Sender<NotificationData>,
 }
 
 /// Notification service that manages the background worker thread.
 ///
-/// This is the main entry point for the notification system. It manages
-/// the lifecycle of the worker thread and provides methods to start/stop
-/// notifications.
-///
-/// # Backend Construction
-///
-/// Backends are constructed inside the worker thread via a factory function.
-/// This allows non-Send types (like macOS's `Retained<AnyObject>`) to be used
-/// safely, as they never cross thread boundaries.
+/// Events are sent to the worker via a channel from the main event loop.
+/// The worker just displays them - no relay connections or profile fetching.
 pub struct NotificationService<B: NotificationBackend + 'static> {
     /// Worker thread handle
     worker: RwLock<Option<WorkerHandle>>,
@@ -113,8 +94,6 @@ pub struct NotificationService<B: NotificationBackend + 'static> {
 
 impl<B: NotificationBackend + 'static> NotificationService<B> {
     /// Create a new notification service.
-    ///
-    /// The backend is not created until `start()` is called.
     pub fn new() -> Self {
         Self {
             worker: RwLock::new(None),
@@ -122,22 +101,17 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
         }
     }
 
-    /// Start notification subscriptions for multiple accounts.
+    /// Start the notification worker for the given accounts.
     ///
     /// The backend is constructed inside the worker thread using the provided factory.
-    /// This allows backends with non-Send types to be used safely.
-    ///
-    /// If relay_urls is empty, falls back to DEFAULT_RELAYS.
     ///
     /// # Arguments
-    /// * `backend_factory` - Factory function to create the backend (called inside worker thread)
+    /// * `backend_factory` - Factory function to create the backend
     /// * `pubkey_hexes` - Hex-encoded pubkeys of accounts to monitor
-    /// * `relay_urls` - List of relay URLs to connect to
     pub fn start(
         &self,
         backend_factory: impl FnOnce() -> B + Send + 'static,
         pubkey_hexes: &[impl AsRef<str>],
-        relay_urls: &[String],
     ) -> Result<(), String> {
         // Parse and validate all pubkeys
         let mut accounts = HashMap::new();
@@ -153,54 +127,63 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
             return Err("No valid pubkeys provided".to_string());
         }
 
-        // Acquire write lock for the entire check-stop-start sequence to avoid TOCTOU race
         let mut guard = self
             .worker
             .write()
             .map_err(|e| format!("Lock error: {e}"))?;
 
-        // Check if already running and stop if so
-        if let Some(ref handle) = *guard {
-            if handle.running.load(Ordering::SeqCst) {
-                info!("Notification subscriptions already running, restarting");
-            }
-        }
-
-        // Stop any previous worker (while still holding the write lock)
+        // Stop any previous worker
         if let Some(mut old_handle) = guard.take() {
             old_handle.running.store(false, Ordering::SeqCst);
             if let Some(thread) = old_handle.thread.take() {
-                // Wait with timeout to avoid blocking forever
                 let _ = thread.join();
             }
         }
 
-        // Create running flag for new worker
+        // Create channel for notification data
+        let (sender, receiver) = mpsc::channel();
+
+        // Create running flag
         let running = Arc::new(AtomicBool::new(true));
         let running_clone = running.clone();
-        let relay_urls_owned = relay_urls.to_vec();
         let account_count = accounts.len();
 
-        // Spawn worker thread - backend is constructed inside the thread
+        // Spawn worker thread
         let thread = thread::spawn(move || {
             let backend = backend_factory();
-            worker::notification_worker(running_clone, accounts, relay_urls_owned, backend);
+            worker::notification_worker(running_clone, accounts, receiver, backend);
         });
 
-        // Store handle (we already hold the write lock)
         *guard = Some(WorkerHandle {
             running,
             thread: Some(thread),
+            sender,
         });
 
         info!(
-            "Started notification subscriptions for {} accounts",
+            "Started notification worker for {} accounts",
             account_count
         );
         Ok(())
     }
 
-    /// Stop notification subscriptions and wait for worker to finish.
+    /// Send notification data to the worker for display.
+    ///
+    /// Call this from the main event loop when a notification-relevant event is received.
+    pub fn send(&self, data: NotificationData) -> Result<(), String> {
+        let guard = self.worker.read().map_err(|e| format!("Lock error: {e}"))?;
+        if let Some(ref handle) = *guard {
+            handle
+                .sender
+                .send(data)
+                .map_err(|e| format!("Channel send error: {e}"))?;
+            Ok(())
+        } else {
+            Err("Notification service not running".to_string())
+        }
+    }
+
+    /// Stop the notification worker.
     pub fn stop(&self) {
         let handle = {
             if let Ok(mut guard) = self.worker.write() {
@@ -211,13 +194,10 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
         };
 
         if let Some(mut handle) = handle {
-            // Signal worker to stop
             handle.running.store(false, Ordering::SeqCst);
-            info!("Signaled notification subscriptions to stop");
+            info!("Signaled notification worker to stop");
 
-            // Wait for worker thread to finish (with timeout)
             if let Some(thread) = handle.thread.take() {
-                // Give worker time to finish (max 2 seconds)
                 let start = std::time::Instant::now();
                 while !thread.is_finished() && start.elapsed().as_secs() < 2 {
                     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -233,7 +213,7 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
         }
     }
 
-    /// Check if notification subscriptions are currently running.
+    /// Check if the notification worker is running.
     pub fn is_running(&self) -> bool {
         self.worker
             .read()
@@ -255,22 +235,12 @@ impl<B: NotificationBackend + 'static> Drop for NotificationService<B> {
     }
 }
 
-/// Start notification subscriptions using the desktop backend.
-///
-/// Convenience function for quick setup on desktop platforms.
-///
-/// # Arguments
-/// * `pubkey_hexes` - Hex-encoded pubkeys of accounts to monitor
-/// * `relay_urls` - List of relay URLs to connect to (empty = use defaults)
-///
-/// # Returns
-/// A NotificationService that will stop when dropped.
+/// Start notification service using the desktop backend.
 #[cfg(not(target_os = "android"))]
 pub fn start_desktop_notifications(
     pubkey_hexes: &[impl AsRef<str>],
-    relay_urls: &[String],
 ) -> Result<NotificationService<PlatformBackend>, String> {
     let service = NotificationService::new();
-    service.start(PlatformBackend::new, pubkey_hexes, relay_urls)?;
+    service.start(PlatformBackend::new, pubkey_hexes)?;
     Ok(service)
 }

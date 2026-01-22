@@ -4,6 +4,7 @@
 
 use enostr::Pubkey;
 use std::collections::{HashMap, HashSet};
+use std::sync::mpsc;
 
 /// Cached profile information for notification display.
 #[derive(Clone, Default, Debug)]
@@ -53,70 +54,72 @@ pub struct ExtractedEvent {
     pub raw_json: String,
 }
 
+/// A notification ready to be displayed.
+///
+/// Contains all the data needed to show a notification, including
+/// pre-resolved profile information. This is sent from the main
+/// event loop to the notification worker.
+#[derive(Clone, Debug)]
+pub struct NotificationData {
+    /// The extracted event data
+    pub event: ExtractedEvent,
+    /// Author's display name (from nostrdb profile lookup)
+    pub author_name: Option<String>,
+    /// Author's profile picture URL (from nostrdb profile lookup)
+    pub author_picture_url: Option<String>,
+    /// Which of our accounts this notification is for
+    pub target_pubkey_hex: String,
+}
+
 /// Thread-local state owned entirely by the worker thread.
 ///
-/// This struct contains all non-Send types and is only accessed from the worker thread.
-/// It manages relay connections, event deduplication, and profile caching.
+/// This struct receives notification data from the main event loop
+/// via a channel. It no longer maintains its own relay connections
+/// or profile cache - that's handled by the main loop using the
+/// existing RelayPool and nostrdb.
 pub struct WorkerState {
-    /// Relay pool for WebSocket connections
-    pub pool: enostr::RelayPool,
     /// Map of pubkey hex -> account for O(1) lookups when attributing events
     pub accounts: HashMap<String, NotificationAccount>,
     /// Set of processed event IDs for deduplication
     pub processed_events: HashSet<String>,
-    /// Cache of pubkey hex -> profile info
-    pub profile_cache: HashMap<String, CachedProfile>,
-    /// Set of pubkeys for which profile requests are in flight
-    pub requested_profiles: HashSet<String>,
-    /// Buffer for events received during profile fetch wait loops
-    pub pending_events: Vec<String>,
+    /// Channel receiver for notification data from main loop
+    pub event_receiver: mpsc::Receiver<NotificationData>,
     /// Image cache for profile pictures (macOS notifications require local files)
     #[cfg(target_os = "macos")]
     pub image_cache: Option<super::image_cache::NotificationImageCache>,
 }
 
 impl WorkerState {
-    /// Create new worker state with multiple accounts.
-    pub fn new(accounts: HashMap<String, NotificationAccount>, relay_urls: Vec<String>) -> Self {
-        use tracing::{info, warn};
-
-        let mut pool = enostr::RelayPool::new();
-
-        // Use provided relay URLs, or fall back to defaults if empty
-        let relays_to_use: Vec<&str> = if relay_urls.is_empty() {
-            info!("No relay URLs provided, using defaults");
-            DEFAULT_RELAYS.to_vec()
-        } else {
-            info!("Using {} user-configured relays", relay_urls.len());
-            relay_urls.iter().map(|s| s.as_str()).collect()
-        };
-
-        for relay_url in relays_to_use {
-            if let Err(e) = pool.add_url(relay_url.to_string(), || {}) {
-                warn!("Failed to add relay {}: {}", relay_url, e);
-            }
-        }
+    /// Create new worker state with an event receiver channel.
+    ///
+    /// The worker receives pre-processed notification data from the main
+    /// event loop, which has already done profile lookups via nostrdb.
+    pub fn new(
+        accounts: HashMap<String, NotificationAccount>,
+        event_receiver: mpsc::Receiver<NotificationData>,
+    ) -> Self {
+        use tracing::info;
 
         info!("WorkerState created with {} accounts", accounts.len());
 
         Self {
-            pool,
             accounts,
             processed_events: HashSet::new(),
-            profile_cache: HashMap::new(),
-            requested_profiles: HashSet::new(),
-            pending_events: Vec::new(),
+            event_receiver,
             #[cfg(target_os = "macos")]
             image_cache: super::image_cache::NotificationImageCache::new(),
         }
     }
 
     /// Create worker state for a single account.
-    pub fn for_single_account(pubkey: Pubkey, relay_urls: Vec<String>) -> Self {
+    pub fn for_single_account(
+        pubkey: Pubkey,
+        event_receiver: mpsc::Receiver<NotificationData>,
+    ) -> Self {
         let mut accounts = HashMap::new();
         let account = NotificationAccount::new(pubkey);
         accounts.insert(account.pubkey_hex.clone(), account);
-        Self::new(accounts, relay_urls)
+        Self::new(accounts, event_receiver)
     }
 
     /// Get all account pubkeys as bytes for filter building.
@@ -124,15 +127,6 @@ impl WorkerState {
         self.accounts.values().map(|a| a.pubkey.bytes()).collect()
     }
 }
-
-/// Default relays to connect to if user hasn't configured inbox relays.
-pub const DEFAULT_RELAYS: &[&str] = &[
-    "wss://relay.damus.io",
-    "wss://nos.lol",
-    "wss://relay.nostr.band",
-    "wss://relay.snort.social",
-    "wss://offchain.pub",
-];
 
 /// Event kinds that should trigger notifications.
 pub const NOTIFICATION_KINDS: &[i32] = &[
@@ -143,3 +137,8 @@ pub const NOTIFICATION_KINDS: &[i32] = &[
     1059, // gift-wrapped DM
     9735, // zap receipt
 ];
+
+/// Check if an event kind is notification-relevant.
+pub fn is_notification_kind(kind: i32) -> bool {
+    NOTIFICATION_KINDS.contains(&kind)
+}
