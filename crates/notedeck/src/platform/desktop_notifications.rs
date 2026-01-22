@@ -1,86 +1,64 @@
 //! Desktop notification service management.
 //!
-//! Manages the lifecycle of the desktop NotificationService, providing
-//! platform functions similar to the Android implementation.
+//! Provides notification control functions that delegate to `NotificationManager`.
+//! This module maintains API parity with the Android implementation while using
+//! the manager-based architecture that avoids global state.
+//!
+//! # Platform Backends
+//!
+//! - **macOS**: Uses `MacOSBackend` (UNUserNotificationCenter) for native notifications
+//!   with profile picture support. Requires `.app` bundle to function.
+//! - **Linux**: Uses `DesktopBackend` (notify-rust/libnotify) which supports images.
 
-use crate::notifications::{DesktopBackend, NotificationService};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
-use tracing::{error, info};
-
-/// Global notification service instance.
-///
-/// NOTE: This global exists because the platform API functions are stateless
-/// (they don't receive app state as a parameter). This mirrors how Android
-/// manages notification state via JNI globals. The alternative would require
-/// significant refactoring to pass the service through all UI layers.
-static NOTIFICATION_SERVICE: RwLock<Option<NotificationService<DesktopBackend>>> =
-    RwLock::new(None);
-
-/// Tracks whether notifications are enabled (persisted preference).
-static NOTIFICATIONS_ENABLED: AtomicBool = AtomicBool::new(false);
+use crate::notifications::NotificationManager;
+use tracing::info;
 
 /// Enable push notifications for the given pubkey and relay URLs.
+///
+/// Delegates to `NotificationManager::start()`.
 pub fn enable_notifications(
+    manager: &mut Option<NotificationManager>,
     pubkey_hex: &str,
     relay_urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Create the backend and service
-    let backend = Arc::new(DesktopBackend::new("Notedeck"));
-    let service = NotificationService::new(backend);
+    // Initialize manager if not already created
+    let mgr = manager.get_or_insert_with(NotificationManager::new);
 
-    // Start the service
-    service
-        .start(&[pubkey_hex], relay_urls)
+    mgr.start(&[pubkey_hex], relay_urls)
         .map_err(|e| Box::new(std::io::Error::other(e)) as Box<dyn std::error::Error>)?;
 
-    // Store the service
-    match NOTIFICATION_SERVICE.write() {
-        Ok(mut guard) => {
-            *guard = Some(service);
-            NOTIFICATIONS_ENABLED.store(true, Ordering::SeqCst);
-            info!(
-                "Desktop notifications enabled for pubkey {}",
-                &pubkey_hex[..8]
-            );
-            Ok(())
-        }
-        Err(e) => {
-            error!("Failed to store notification service: {}", e);
-            Err(Box::new(std::io::Error::other("Lock error")))
-        }
-    }
+    info!(
+        "Desktop notifications enabled for pubkey {}",
+        &pubkey_hex[..8.min(pubkey_hex.len())]
+    );
+    Ok(())
 }
 
 /// Disable push notifications.
-pub fn disable_notifications() -> Result<(), Box<dyn std::error::Error>> {
-    match NOTIFICATION_SERVICE.write() {
-        Ok(mut guard) => {
-            if let Some(service) = guard.take() {
-                service.stop();
-            }
-            NOTIFICATIONS_ENABLED.store(false, Ordering::SeqCst);
-            info!("Desktop notifications disabled");
-            Ok(())
-        }
-        Err(e) => {
-            error!("Failed to disable notification service: {}", e);
-            Err(Box::new(std::io::Error::other("Lock error")))
-        }
+///
+/// Delegates to `NotificationManager::stop()`.
+pub fn disable_notifications(
+    manager: &mut Option<NotificationManager>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(mgr) = manager.as_mut() {
+        mgr.stop();
+        info!("Desktop notifications disabled");
     }
+    Ok(())
 }
 
-/// Check if notifications are currently enabled.
-pub fn are_notifications_enabled() -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(NOTIFICATIONS_ENABLED.load(Ordering::SeqCst))
+/// Check if notifications are currently enabled (service is running).
+pub fn are_notifications_enabled(
+    manager: &Option<NotificationManager>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(manager.as_ref().map(|m| m.is_running()).unwrap_or(false))
 }
 
 /// Check if the notification service is currently running.
-pub fn is_notification_service_running() -> Result<bool, Box<dyn std::error::Error>> {
-    match NOTIFICATION_SERVICE.read() {
-        Ok(guard) => Ok(guard.as_ref().map(|s| s.is_running()).unwrap_or(false)),
-        Err(_) => Ok(false),
-    }
+pub fn is_notification_service_running(
+    manager: &Option<NotificationManager>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(manager.as_ref().map(|m| m.is_running()).unwrap_or(false))
 }
 
 /// Check if notification permission is granted.

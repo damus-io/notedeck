@@ -64,6 +64,12 @@ keyring = { workspace = true }
 [target.'cfg(not(target_os = "android"))'.dependencies]
 notify-rust = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-user-notifications = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2 = "0.6.1"
+block2 = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }

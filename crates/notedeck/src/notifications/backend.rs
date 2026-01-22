@@ -11,7 +11,12 @@ use super::types::ExtractedEvent;
 /// Implementations handle platform-specific notification delivery:
 /// - Android uses JNI to call Kotlin code
 /// - Desktop uses notify-rust for native notifications
-pub trait NotificationBackend: Send + Sync {
+///
+/// # Thread Safety
+///
+/// Backends do NOT need to implement `Send` or `Sync`. They are constructed
+/// inside the worker thread via a factory function and never leave that thread.
+pub trait NotificationBackend {
     /// Send a notification for a Nostr event.
     ///
     /// # Arguments

@@ -10,6 +10,9 @@ use notedeck::{
     NotedeckTextStyle, Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE,
     DEFAULT_NOTE_BODY_FONT_SIZE,
 };
+
+#[cfg(not(target_os = "android"))]
+use notedeck::notifications::NotificationManager;
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
     AnimationHelper, NoteOptions, NoteView,
@@ -41,6 +44,8 @@ pub enum SettingsAction {
 }
 
 impl SettingsAction {
+    /// Process a settings action on Android.
+    #[cfg(target_os = "android")]
     pub fn process_settings_action<'a>(
         self,
         app: &mut Damus,
@@ -49,6 +54,49 @@ impl SettingsAction {
         img_cache: &mut Images,
         ctx: &egui::Context,
         accounts: &mut notedeck::Accounts,
+    ) -> Option<RouterAction> {
+        Self::process_settings_action_impl(self, app, settings, i18n, img_cache, ctx, accounts, None)
+    }
+
+    /// Process a settings action on desktop (requires NotificationManager).
+    #[cfg(not(target_os = "android"))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_settings_action<'a>(
+        self,
+        app: &mut Damus,
+        settings: &'a mut SettingsHandler,
+        i18n: &'a mut Localization,
+        img_cache: &mut Images,
+        ctx: &egui::Context,
+        accounts: &mut notedeck::Accounts,
+        notification_manager: &mut Option<NotificationManager>,
+    ) -> Option<RouterAction> {
+        Self::process_settings_action_impl(
+            self,
+            app,
+            settings,
+            i18n,
+            img_cache,
+            ctx,
+            accounts,
+            Some(notification_manager),
+        )
+    }
+
+    /// Internal implementation shared between platforms.
+    #[allow(clippy::too_many_arguments)]
+    fn process_settings_action_impl<'a>(
+        self,
+        app: &mut Damus,
+        settings: &'a mut SettingsHandler,
+        i18n: &'a mut Localization,
+        img_cache: &mut Images,
+        ctx: &egui::Context,
+        accounts: &mut notedeck::Accounts,
+        #[cfg(not(target_os = "android"))] notification_manager: Option<
+            &mut Option<NotificationManager>,
+        >,
+        #[cfg(target_os = "android")] _notification_manager: Option<()>,
     ) -> Option<RouterAction> {
         let mut route_action: Option<RouterAction> = None;
 
@@ -102,13 +150,26 @@ impl SettingsAction {
             Self::EnableNotifications => {
                 let pubkey = accounts.selected_account_pubkey();
                 let relay_urls = accounts.get_selected_account_relay_urls();
-                if let Err(e) = notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls)
-                {
+                #[cfg(target_os = "android")]
+                let result = notedeck::platform::enable_notifications(&pubkey.hex(), &relay_urls);
+                #[cfg(not(target_os = "android"))]
+                let result = {
+                    let mgr = notification_manager.expect("notification_manager required on desktop");
+                    notedeck::platform::enable_notifications(mgr, &pubkey.hex(), &relay_urls)
+                };
+                if let Err(e) = result {
                     tracing::error!("Failed to enable notifications: {}", e);
                 }
             }
             Self::DisableNotifications => {
-                if let Err(e) = notedeck::platform::disable_notifications() {
+                #[cfg(target_os = "android")]
+                let result = notedeck::platform::disable_notifications();
+                #[cfg(not(target_os = "android"))]
+                let result = {
+                    let mgr = notification_manager.expect("notification_manager required on desktop");
+                    notedeck::platform::disable_notifications(mgr)
+                };
+                if let Err(e) = result {
                     tracing::error!("Failed to disable notifications: {}", e);
                 }
             }
@@ -126,6 +187,10 @@ pub struct SettingsView<'a> {
     settings: &'a mut Settings,
     note_context: &'a mut NoteContext<'a>,
     note_options: &'a mut NoteOptions,
+    /// Whether the notification service is actually running (desktop only).
+    /// Used to show accurate UI state even if persisted setting differs.
+    #[cfg(not(target_os = "android"))]
+    notifications_running: bool,
 }
 
 fn settings_group<S>(ui: &mut egui::Ui, title: S, contents: impl FnOnce(&mut egui::Ui))
@@ -312,6 +377,7 @@ fn notification_toggle(
 }
 
 impl<'a> SettingsView<'a> {
+    #[cfg(target_os = "android")]
     pub fn new(
         settings: &'a mut Settings,
         note_context: &'a mut NoteContext<'a>,
@@ -321,6 +387,21 @@ impl<'a> SettingsView<'a> {
             settings,
             note_context,
             note_options,
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    pub fn new(
+        settings: &'a mut Settings,
+        note_context: &'a mut NoteContext<'a>,
+        note_options: &'a mut NoteOptions,
+        notifications_running: bool,
+    ) -> Self {
+        Self {
+            settings,
+            note_context,
+            note_options,
+            notifications_running,
         }
     }
 
@@ -731,15 +812,21 @@ impl<'a> SettingsView<'a> {
         action
     }
 
-    /// Notifications section - only shown on Android.
+    /// Notifications section - only shown on supported platforms.
     /// Uses shadcn-inspired design: 44px touch targets, card containers, badges.
     fn notifications_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
-        // Only show notifications on supported platforms (Android)
+        // Only show notifications on supported platforms
         if !notedeck::platform::supports_notifications() {
             return None;
         }
 
         let mut action = None;
+
+        // On desktop, use actual running state; on Android, use persisted setting
+        #[cfg(not(target_os = "android"))]
+        let notifications_enabled = self.notifications_running;
+        #[cfg(target_os = "android")]
+        let notifications_enabled = self.settings.notifications_enabled;
 
         let title = tr!(
             self.note_context.i18n,
@@ -748,9 +835,7 @@ impl<'a> SettingsView<'a> {
         );
 
         settings_group(ui, title, |ui| {
-            // Check current notification state
-            let notifications_enabled =
-                notedeck::platform::are_notifications_enabled().unwrap_or(false);
+            // Check current notification permission state
             let permission_granted =
                 notedeck::platform::is_notification_permission_granted().unwrap_or(false);
             let permission_pending = notedeck::platform::is_notification_permission_pending();

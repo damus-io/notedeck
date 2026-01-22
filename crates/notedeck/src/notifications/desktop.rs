@@ -11,7 +11,8 @@ use tracing::{debug, error, info};
 /// Displays native system notifications on macOS and Linux.
 /// On macOS, also handles App Nap prevention to keep relay connections alive.
 pub struct DesktopBackend {
-    /// App name shown in notifications
+    /// App name shown in notifications (used on Linux)
+    #[allow(dead_code)]
     app_name: String,
 }
 
@@ -20,12 +21,27 @@ impl DesktopBackend {
     ///
     /// # Arguments
     /// * `app_name` - Application name to show in notifications
-    pub fn new(app_name: impl Into<String>) -> Self {
+    pub fn with_app_name(app_name: impl Into<String>) -> Self {
         Self {
             app_name: app_name.into(),
         }
     }
 
+    /// Create a new desktop notification backend with default app name "Notedeck".
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl Default for DesktopBackend {
+    fn default() -> Self {
+        Self {
+            app_name: "Notedeck".to_string(),
+        }
+    }
+}
+
+impl DesktopBackend {
     /// Format notification title based on event kind.
     fn format_title(&self, event: &ExtractedEvent, author_name: Option<&str>) -> String {
         let author = author_name.unwrap_or(&event.pubkey[..8]);
@@ -54,10 +70,11 @@ impl DesktopBackend {
             return "Tap to view".to_string();
         }
 
-        // Truncate long content
-        let max_len = 200;
-        if event.content.len() > max_len {
-            format!("{}...", &event.content[..max_len])
+        // Truncate long content (UTF-8 safe)
+        let max_chars = 200;
+        if event.content.chars().count() > max_chars {
+            let truncated: String = event.content.chars().take(max_chars).collect();
+            format!("{}...", truncated)
         } else if event.content.is_empty() {
             // Reactions often have empty content or just an emoji
             if event.kind == 7 {
@@ -89,32 +106,31 @@ impl NotificationBackend for DesktopBackend {
         let title = self.format_title(event, author_name);
         let body = self.format_body(event);
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "linux")]
         {
-            use notify_rust::Notification;
+            use notify_rust::{Notification, Urgency};
 
-            let mut notification = Notification::new();
-            notification
+            let urgency = match event.kind {
+                4 | 1059 => Urgency::Critical, // DMs are high priority
+                9735 => Urgency::Normal,       // Zaps
+                _ => Urgency::Normal,
+            };
+
+            match Notification::new()
                 .appname(&self.app_name)
                 .summary(&title)
-                .body(&body);
-
-            // Set urgency based on event kind
-            #[cfg(target_os = "linux")]
+                .body(&body)
+                .urgency(urgency)
+                .show()
             {
-                use notify_rust::Urgency;
-                let urgency = match event.kind {
-                    4 | 1059 => Urgency::Critical, // DMs are high priority
-                    9735 => Urgency::Normal,       // Zaps
-                    _ => Urgency::Normal,
-                };
-                notification.urgency(urgency);
-            }
-
-            match notification.show() {
                 Ok(_) => debug!("Desktop notification displayed"),
                 Err(e) => error!("Failed to show desktop notification: {}", e),
             }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            show_macos_notification(&title, &body, _picture_url);
         }
 
         #[cfg(target_os = "android")]
@@ -127,6 +143,40 @@ impl NotificationBackend for DesktopBackend {
     fn on_relay_status_changed(&self, connected_count: i32) {
         debug!("Relay status: {} connected", connected_count);
         // Desktop doesn't need to update a service notification like Android does
+    }
+}
+
+/// Show a native macOS notification using osascript.
+///
+/// We use osascript instead of notify-rust because notify-rust's macOS
+/// implementation (mac-notification-sys) sets up action handlers that cause
+/// a "Where is use_default?" dialog when clicked outside of a proper .app bundle.
+/// osascript works reliably in all scenarios.
+#[cfg(target_os = "macos")]
+fn show_macos_notification(title: &str, body: &str, _picture_url: Option<&str>) {
+    use std::process::Command;
+
+    // Escape special characters for AppleScript string
+    let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
+
+    let script = format!(
+        r#"display notification "{}" with title "{}""#,
+        escaped_body, escaped_title
+    );
+
+    match Command::new("osascript").args(["-e", &script]).output() {
+        Ok(output) => {
+            if output.status.success() {
+                debug!("macOS notification displayed");
+            } else {
+                error!(
+                    "osascript failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+        Err(e) => error!("Failed to show macOS notification: {}", e),
     }
 }
 

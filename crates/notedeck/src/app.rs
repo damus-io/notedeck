@@ -83,6 +83,11 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
+    /// Desktop notification manager (macOS/Linux only).
+    /// Owns the notification service lifecycle.
+    #[cfg(not(target_os = "android"))]
+    notification_manager: Option<crate::notifications::NotificationManager>,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -332,6 +337,8 @@ impl Notedeck {
             media_jobs: media_job_cache,
             nip05_cache: Nip05Cache::new(),
             i18n,
+            #[cfg(not(target_os = "android"))]
+            notification_manager: None,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -399,6 +406,8 @@ impl Notedeck {
             media_jobs: &mut self.media_jobs,
             nip05_cache: &mut self.nip05_cache,
             i18n: &mut self.i18n,
+            #[cfg(not(target_os = "android"))]
+            notification_manager: &mut self.notification_manager,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }
@@ -429,17 +438,15 @@ impl Notedeck {
     }
 }
 
-/// Installs the default TLS crypto provider for rustls.
+/// Install the rustls crypto provider for TLS support.
 ///
-/// This function selects the crypto provider based on the target platform:
-/// - **Windows**: Uses `ring` because `aws-lc-rs` requires cmake and NASM,
-///   which adds significant friction for Windows developers.
-/// - **Other platforms**: Uses `aws-lc-rs` for optimal performance.
-///
-/// Must be called once at application startup before any TLS operations.
+/// Uses the ring crypto backend. Logs an error if installation fails,
+/// which can happen if a provider was already installed.
 pub fn install_crypto() {
     let provider = rustls::crypto::ring::default_provider();
-    let _ = provider.install_default();
+    if let Err(e) = provider.install_default() {
+        tracing::error!("Failed to install rustls crypto provider: {:?}", e);
+    }
 }
 
 #[profiling::function]

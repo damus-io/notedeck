@@ -36,13 +36,13 @@ const SUB_PROFILES: &str = "notedeck_profiles";
 /// * `running` - Shared flag to signal when the worker should stop
 /// * `accounts` - Map of pubkey hex -> account for O(1) lookups when attributing events
 /// * `relay_urls` - List of relay URLs to connect to
-/// * `backend` - Notification backend for delivering notifications
+/// * `backend` - Notification backend for delivering notifications (owned, constructed in worker thread)
 #[profiling::function]
 pub fn notification_worker<B: NotificationBackend>(
     running: Arc<AtomicBool>,
     accounts: HashMap<String, NotificationAccount>,
     relay_urls: Vec<String>,
-    backend: Arc<B>,
+    backend: B,
 ) {
     info!(
         "Notification worker thread started with {} accounts",
@@ -183,7 +183,7 @@ fn setup_subscriptions(state: &mut WorkerState) {
 fn handle_pool_event<B: NotificationBackend>(
     state: &mut WorkerState,
     pool_event: enostr::PoolEventBuf,
-    backend: &Arc<B>,
+    backend: &B,
 ) {
     use enostr::ewebsock::{WsEvent, WsMessage};
 
@@ -220,7 +220,7 @@ fn count_connected_relays(pool: &enostr::RelayPool) -> i32 {
 fn handle_relay_message<B: NotificationBackend>(
     state: &mut WorkerState,
     message: &str,
-    backend: &Arc<B>,
+    backend: &B,
 ) {
     // Parse the relay message using enostr's parser
     let relay_msg = match enostr::RelayMessage::from_json(message) {
@@ -248,7 +248,7 @@ fn handle_relay_message<B: NotificationBackend>(
 }
 
 /// Process events that were buffered during profile fetch wait loops.
-fn process_pending_events<B: NotificationBackend>(state: &mut WorkerState, backend: &Arc<B>) {
+fn process_pending_events<B: NotificationBackend>(state: &mut WorkerState, backend: &B) {
     if state.pending_events.is_empty() {
         return;
     }
@@ -270,7 +270,7 @@ fn handle_event_message<B: NotificationBackend>(
     state: &mut WorkerState,
     sub_id: &str,
     event_json: &str,
-    backend: &Arc<B>,
+    backend: &B,
 ) {
     let event = match extract_event(event_json) {
         Some(e) => e,

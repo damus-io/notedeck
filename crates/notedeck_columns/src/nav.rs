@@ -592,14 +592,31 @@ fn process_render_nav_action(
                 .process_relay_action(ui.ctx(), ctx.pool, action);
             None
         }
-        RenderNavAction::SettingsAction(action) => action.process_settings_action(
-            app,
-            ctx.settings,
-            ctx.i18n,
-            ctx.img_cache,
-            ui.ctx(),
-            ctx.accounts,
-        ),
+        RenderNavAction::SettingsAction(action) => {
+            #[cfg(target_os = "android")]
+            {
+                action.process_settings_action(
+                    app,
+                    ctx.settings,
+                    ctx.i18n,
+                    ctx.img_cache,
+                    ui.ctx(),
+                    ctx.accounts,
+                )
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                action.process_settings_action(
+                    app,
+                    ctx.settings,
+                    ctx.i18n,
+                    ctx.img_cache,
+                    ui.ctx(),
+                    ctx.accounts,
+                    ctx.notification_manager,
+                )
+            }
+        }
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
         }
@@ -714,13 +731,29 @@ fn render_nav_body(
             .ui(ui)
             .map_output(RenderNavAction::RelayAction),
 
-        Route::Settings => SettingsView::new(
-            ctx.settings.get_settings_mut(),
-            &mut note_context,
-            &mut app.note_options,
-        )
-        .ui(ui)
-        .map_output(RenderNavAction::SettingsAction),
+        Route::Settings => {
+            #[cfg(target_os = "android")]
+            let mut view = SettingsView::new(
+                ctx.settings.get_settings_mut(),
+                &mut note_context,
+                &mut app.note_options,
+            );
+            #[cfg(not(target_os = "android"))]
+            let mut view = {
+                let notifications_running = ctx
+                    .notification_manager
+                    .as_ref()
+                    .map(|m| m.is_running())
+                    .unwrap_or(false);
+                SettingsView::new(
+                    ctx.settings.get_settings_mut(),
+                    &mut note_context,
+                    &mut app.note_options,
+                    notifications_running,
+                )
+            };
+            view.ui(ui).map_output(RenderNavAction::SettingsAction)
+        }
 
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {

@@ -28,7 +28,7 @@
 //! };
 //!
 //! // Create a desktop backend
-//! let backend = Arc::new(DesktopBackend::new("Notedeck"));
+//! let backend = Arc::new(DesktopBackend::new());
 //!
 //! // Create and start the notification service
 //! let service = NotificationService::new(backend);
@@ -49,16 +49,37 @@ mod backend;
 mod bolt11;
 mod desktop;
 mod extraction;
+pub mod image_cache;
+#[cfg(target_os = "macos")]
+mod macos;
+mod manager;
 mod profiles;
 mod types;
 mod worker;
 
 pub use backend::{LoggingBackend, NoopBackend, NotificationBackend};
 pub use desktop::DesktopBackend;
+#[cfg(target_os = "macos")]
+pub use macos::{initialize_on_main_thread as macos_init, MacOSBackend};
+pub use manager::NotificationManager;
 pub use types::{CachedProfile, ExtractedEvent, NotificationAccount, WorkerState, DEFAULT_RELAYS};
+
+/// Type alias for the platform-appropriate notification backend.
+///
+/// - **macOS**: Uses `MacOSBackend` (UNUserNotificationCenter) for native notifications
+///   with profile picture support. Requires `.app` bundle.
+/// - **Linux**: Uses `DesktopBackend` (notify-rust/libnotify) which works well and
+///   supports images.
+/// - **Other**: Uses `DesktopBackend` as fallback.
+#[cfg(target_os = "macos")]
+pub type PlatformBackend = MacOSBackend;
+
+#[cfg(not(target_os = "macos"))]
+pub type PlatformBackend = DesktopBackend;
 
 use enostr::Pubkey;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread::{self, JoinHandle};
@@ -77,31 +98,44 @@ struct WorkerHandle {
 /// This is the main entry point for the notification system. It manages
 /// the lifecycle of the worker thread and provides methods to start/stop
 /// notifications.
+///
+/// # Backend Construction
+///
+/// Backends are constructed inside the worker thread via a factory function.
+/// This allows non-Send types (like macOS's `Retained<AnyObject>`) to be used
+/// safely, as they never cross thread boundaries.
 pub struct NotificationService<B: NotificationBackend + 'static> {
-    /// The notification backend
-    backend: Arc<B>,
     /// Worker thread handle
     worker: RwLock<Option<WorkerHandle>>,
+    /// Marker for the backend type
+    _phantom: PhantomData<fn() -> B>,
 }
 
 impl<B: NotificationBackend + 'static> NotificationService<B> {
-    /// Create a new notification service with the given backend.
-    pub fn new(backend: Arc<B>) -> Self {
+    /// Create a new notification service.
+    ///
+    /// The backend is not created until `start()` is called.
+    pub fn new() -> Self {
         Self {
-            backend,
             worker: RwLock::new(None),
+            _phantom: PhantomData,
         }
     }
 
     /// Start notification subscriptions for multiple accounts.
     ///
+    /// The backend is constructed inside the worker thread using the provided factory.
+    /// This allows backends with non-Send types to be used safely.
+    ///
     /// If relay_urls is empty, falls back to DEFAULT_RELAYS.
     ///
     /// # Arguments
+    /// * `backend_factory` - Factory function to create the backend (called inside worker thread)
     /// * `pubkey_hexes` - Hex-encoded pubkeys of accounts to monitor
     /// * `relay_urls` - List of relay URLs to connect to
     pub fn start(
         &self,
+        backend_factory: impl FnOnce() -> B + Send + 'static,
         pubkey_hexes: &[impl AsRef<str>],
         relay_urls: &[String],
     ) -> Result<(), String> {
@@ -146,10 +180,10 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
         let running_clone = running.clone();
         let relay_urls_owned = relay_urls.to_vec();
         let account_count = accounts.len();
-        let backend = self.backend.clone();
 
-        // Spawn worker thread
+        // Spawn worker thread - backend is constructed inside the thread
         let thread = thread::spawn(move || {
+            let backend = backend_factory();
             worker::notification_worker(running_clone, accounts, relay_urls_owned, backend);
         });
 
@@ -207,10 +241,11 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
             .and_then(|guard| guard.as_ref().map(|h| h.running.load(Ordering::SeqCst)))
             .unwrap_or(false)
     }
+}
 
-    /// Get a reference to the backend.
-    pub fn backend(&self) -> &B {
-        &self.backend
+impl<B: NotificationBackend + 'static> Default for NotificationService<B> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -234,9 +269,8 @@ impl<B: NotificationBackend + 'static> Drop for NotificationService<B> {
 pub fn start_desktop_notifications(
     pubkey_hexes: &[impl AsRef<str>],
     relay_urls: &[String],
-) -> Result<NotificationService<DesktopBackend>, String> {
-    let backend = Arc::new(DesktopBackend::new("Notedeck"));
-    let service = NotificationService::new(backend);
-    service.start(pubkey_hexes, relay_urls)?;
+) -> Result<NotificationService<PlatformBackend>, String> {
+    let service = NotificationService::new();
+    service.start(PlatformBackend::new, pubkey_hexes, relay_urls)?;
     Ok(service)
 }
