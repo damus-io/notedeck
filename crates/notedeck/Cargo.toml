@@ -57,8 +57,8 @@ crossbeam = "0.8.4"
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }
-hyper-rustls = { workspace = true }
-rustls = { workspace = true }
+# rustls and hyper-rustls are specified in platform-specific sections below
+# (Windows uses ring, others use aws-lc-rs)
 keyring = { workspace = true }
 
 [dev-dependencies]
@@ -74,3 +74,16 @@ ndk-context = "0.1"
 puffin = ["puffin_egui", "dep:puffin"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []
+
+# Use ring on Windows (fewer build dependencies than aws-lc-rs which requires cmake/NASM)
+[target.'cfg(windows)'.dependencies]
+ring = { workspace = true }
+# Override rustls to use ring crypto provider on Windows
+rustls = { version = "0.23.28", default-features = false, features = ["std", "tls12", "logging", "ring"] }
+# Override hyper-rustls to use ring on Windows
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio", "ring"] }
+
+# Use aws-lc-rs on non-Windows platforms for better performance
+[target.'cfg(not(windows))'.dependencies]
+rustls = { version = "0.23.28", default-features = false, features = ["std", "tls12", "logging", "aws_lc_rs"] }
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio", "aws-lc-rs"] }

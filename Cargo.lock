@@ -3905,6 +3905,7 @@ dependencies = [
  "puffin_egui",
  "rand 0.9.2",
  "regex",
+ "ring",
  "rustls",
  "secp256k1 0.30.0",
  "serde",

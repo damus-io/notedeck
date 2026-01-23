@@ -36,9 +36,16 @@ egui_virtual_list = { git = "https://github.com/jb55/hello_egui", rev = "a66b679
 ehttp = "0.5.0"
 hyper = { version = "1.7.0", features = ["full"] }
 hyper-util = {version = "0.1" , features = ["tokio"]}
-hyper-rustls = "0.27.7"
+# hyper-rustls with NO default crypto provider (aws-lc-rs is default and requires cmake on Windows)
+# Crates add platform-specific features: ring on Windows, aws-lc-rs elsewhere
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio"] }
 http-body-util = "0.1.3"
-rustls = "0.23.28"
+# rustls with NO default crypto provider at workspace level.
+# Crates use platform-specific dependencies to select:
+# - Windows: ring (no cmake/NASM needed)
+# - Other platforms: aws-lc-rs (better performance)
+rustls = { version = "0.23.28", default-features = false, features = ["std", "tls12", "logging"] }
+ring = "0.17"
 enostr = { path = "crates/enostr" } 
 ewebsock = { version = "0.2.0", features = ["tls"] }
 fluent = "0.17.0"
