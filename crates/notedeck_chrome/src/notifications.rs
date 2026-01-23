@@ -134,6 +134,7 @@ impl WorkerState {
 
 /// Start notification subscriptions for the given pubkey and relay URLs.
 /// If relay_urls is empty, falls back to DEFAULT_RELAYS.
+#[profiling::function]
 pub fn start_subscriptions(pubkey_hex: &str, relay_urls: &[String]) -> Result<(), String> {
     let pubkey = Pubkey::from_hex(pubkey_hex).map_err(|e| format!("Invalid pubkey: {e}"))?;
     let shared = get_shared_state();
@@ -180,6 +181,7 @@ pub fn start_subscriptions(pubkey_hex: &str, relay_urls: &[String]) -> Result<()
 }
 
 /// Stop notification subscriptions and signal the worker thread to exit.
+#[profiling::function]
 pub fn stop_subscriptions() {
     let shared = get_shared_state();
     shared.running.store(false, Ordering::SeqCst);
@@ -192,6 +194,7 @@ pub fn get_connected_relay_count() -> i32 {
 }
 
 /// Worker thread that owns all non-Send state and handles relay I/O.
+#[profiling::function]
 fn notification_worker(shared: Arc<SharedState>, pubkey: Pubkey, relay_urls: Vec<String>) {
     info!("Notification worker thread started");
 
