@@ -3844,8 +3844,9 @@ dependencies = [
 
 [[package]]
 name = "nostrdb"
-version = "0.8.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=8148dd3cea9bc8ff0bc510c720d0c51f327a0a1a#8148dd3cea9bc8ff0bc510c720d0c51f327a0a1a"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05b2685d093dca579807150b6fafab4dcb974fc6e31017d273ae32d42795d41b"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
