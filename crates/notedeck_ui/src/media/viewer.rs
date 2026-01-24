@@ -18,6 +18,24 @@ bitflags! {
     }
 }
 
+/// Zoom state for the media viewer
+#[derive(Default, Clone, Copy, PartialEq)]
+pub enum ZoomState {
+    #[default]
+    FitToScreen,
+    /// 100% zoom (native image size)
+    NativeSize,
+    /// Custom zoom scale (multiplier relative to fit-to-screen)
+    Custom(f32),
+}
+
+impl ZoomState {
+    /// Check if we're at fit-to-screen zoom level
+    pub fn is_fit_to_screen(&self) -> bool {
+        matches!(self, ZoomState::FitToScreen)
+    }
+}
+
 /// State used in the MediaViewer ui widget.
 pub struct MediaViewerState {
     /// When
@@ -28,6 +46,24 @@ pub struct MediaViewerState {
 
     /// Current displayed image index
     pub current_index: usize,
+
+    /// Zoom state
+    pub zoom_state: ZoomState,
+
+    /// Pan offset when zoomed (in screen coordinates)
+    pub pan_offset: egui::Vec2,
+
+    /// Double-tap detection: time of last tap
+    pub last_tap_time: Option<f64>,
+
+    /// Double-tap detection: position of last tap
+    pub last_tap_pos: Option<egui::Pos2>,
+
+    /// Accumulated drag for swipe detection
+    pub drag_accumulator: egui::Vec2,
+
+    /// Native size of current image (for zoom calculations)
+    pub current_image_size: Option<egui::Vec2>,
 }
 
 impl Default for MediaViewerState {
@@ -38,6 +74,12 @@ impl Default for MediaViewerState {
             scene_rect: None,
             flags: MediaViewerFlags::Transition | MediaViewerFlags::Fullscreen,
             current_index: 0,
+            zoom_state: ZoomState::default(),
+            pan_offset: egui::Vec2::ZERO,
+            last_tap_time: None,
+            last_tap_pos: None,
+            drag_accumulator: egui::Vec2::ZERO,
+            current_image_size: None,
         }
     }
 }
@@ -75,12 +117,24 @@ impl MediaViewerState {
     pub fn set_media_info(&mut self, media_info: ViewMediaInfo) {
         self.current_index = media_info.clicked_index;
         self.media_info = media_info;
+        self.reset_view();
+    }
+
+    /// Reset zoom and pan state to defaults
+    fn reset_view(&mut self) {
+        self.zoom_state = ZoomState::FitToScreen;
+        self.pan_offset = egui::Vec2::ZERO;
+        self.last_tap_time = None;
+        self.last_tap_pos = None;
+        self.drag_accumulator = egui::Vec2::ZERO;
+        self.current_image_size = None;
     }
 
     /// Navigate to the next image
     pub fn next_image(&mut self) {
         if self.current_index + 1 < self.media_info.medias.len() {
             self.current_index += 1;
+            self.reset_view();
         }
     }
 
@@ -88,6 +142,7 @@ impl MediaViewerState {
     pub fn prev_image(&mut self) {
         if self.current_index > 0 {
             self.current_index -= 1;
+            self.reset_view();
         }
     }
 
@@ -184,9 +239,9 @@ impl<'a> MediaViewer<'a> {
         // Create an interactive area for the entire viewer
         let response = ui.allocate_rect(avail_rect, egui::Sense::click_and_drag());
 
-        // Handle input (keyboard, clicks) - but not during transition
+        // Handle input (keyboard, scroll, clicks) - but not during transition
         if !transitioning {
-            self.handle_input(ui, &response);
+            self.handle_input(ui, &response, &avail_rect);
         }
 
         // Render the current image
@@ -211,7 +266,7 @@ impl<'a> MediaViewer<'a> {
     }
 
     /// Handle all input: keyboard, mouse, touch
-    fn handle_input(&mut self, ui: &mut egui::Ui, _response: &egui::Response) {
+    fn handle_input(&mut self, ui: &mut egui::Ui, response: &egui::Response, avail_rect: &Rect) {
         let ctx = ui.ctx();
 
         // Keyboard navigation
@@ -231,11 +286,144 @@ impl<'a> MediaViewer<'a> {
         if ctx.input(|i| i.viewport().close_requested()) {
             self.close();
         }
+
+        // Double-tap/click detection for zoom toggle
+        if response.clicked() {
+            self.handle_tap(ui, response.interact_pointer_pos());
+        }
+
+        // Scroll wheel zoom
+        let scroll_delta = ctx.input(|i| i.raw_scroll_delta.y);
+        if scroll_delta != 0.0 && response.hovered() {
+            let fit_scale = self
+                .state
+                .current_image_size
+                .map(|img_size| {
+                    let viewport_size = avail_rect.size();
+                    (viewport_size.x / img_size.x).min(viewport_size.y / img_size.y)
+                })
+                .unwrap_or(1.0);
+            self.handle_scroll_zoom(scroll_delta, fit_scale);
+        }
+
+        // Handle dragging
+        if response.dragged() {
+            let drag_delta = response.drag_delta();
+            if self.state.zoom_state.is_fit_to_screen() {
+                // Accumulate drag for swipe detection
+                self.state.drag_accumulator += drag_delta;
+            } else {
+                // Pan when zoomed
+                self.state.pan_offset += drag_delta;
+                self.constrain_pan();
+            }
+        }
+
+        // Swipe navigation and close when at fit-to-screen
+        if response.drag_stopped() && self.state.zoom_state.is_fit_to_screen() {
+            let drag = self.state.drag_accumulator;
+            // Horizontal swipe threshold for image navigation
+            if drag.x.abs() > 50.0 && drag.x.abs() > drag.y.abs() * 2.0 {
+                if drag.x < 0.0 {
+                    self.state.next_image();
+                } else {
+                    self.state.prev_image();
+                }
+            }
+            // Vertical swipe-down to close
+            else if drag.y > 100.0 && drag.y > drag.x.abs() * 2.0 {
+                self.close();
+            }
+            // Reset accumulator after swipe check
+            self.state.drag_accumulator = egui::Vec2::ZERO;
+        }
+
+        // Reset accumulator when drag starts
+        if response.drag_started() {
+            self.state.drag_accumulator = egui::Vec2::ZERO;
+        }
+    }
+
+    /// Handle tap for double-tap zoom detection
+    fn handle_tap(&mut self, ui: &egui::Ui, pos: Option<egui::Pos2>) {
+        let now = ui.ctx().input(|i| i.time);
+        let double_tap_threshold = 0.3; // seconds
+        let double_tap_distance = 30.0; // pixels
+
+        if let (Some(last_time), Some(last_pos), Some(current_pos)) =
+            (self.state.last_tap_time, self.state.last_tap_pos, pos)
+        {
+            let time_diff = now - last_time;
+            let dist = (current_pos - last_pos).length();
+
+            if time_diff < double_tap_threshold && dist < double_tap_distance {
+                // Double tap detected - toggle zoom
+                self.toggle_zoom();
+                self.state.last_tap_time = None;
+                self.state.last_tap_pos = None;
+                return;
+            }
+        }
+
+        self.state.last_tap_time = Some(now);
+        self.state.last_tap_pos = pos;
     }
 
     /// Close the media viewer
     fn close(&mut self) {
         self.state.flags.remove(MediaViewerFlags::Open);
+    }
+
+    /// Toggle between fit-to-screen and native size
+    fn toggle_zoom(&mut self) {
+        self.state.zoom_state = match self.state.zoom_state {
+            ZoomState::FitToScreen => ZoomState::NativeSize,
+            _ => ZoomState::FitToScreen,
+        };
+        // Reset pan when going back to fit-to-screen
+        if self.state.zoom_state.is_fit_to_screen() {
+            self.state.pan_offset = egui::Vec2::ZERO;
+        }
+    }
+
+    /// Handle scroll wheel zoom
+    fn handle_scroll_zoom(&mut self, delta: f32, fit_scale: f32) {
+        let zoom_speed = 0.002;
+
+        // Calculate VISUAL scale (what user sees on screen)
+        let current_visual_scale = match self.state.zoom_state {
+            ZoomState::FitToScreen => fit_scale,
+            ZoomState::NativeSize => 1.0,
+            ZoomState::Custom(s) => fit_scale * s,
+        };
+
+        let new_visual_scale = (current_visual_scale + delta * zoom_speed).clamp(0.1, 10.0);
+
+        // Snap to native size when visual scale is near 1.0
+        if (new_visual_scale - 1.0).abs() < 0.05 {
+            self.state.zoom_state = ZoomState::NativeSize;
+        }
+        // Snap to fit-to-screen when visual scale is near fit_scale
+        else if fit_scale < 1.0 && (new_visual_scale - fit_scale).abs() < 0.02 * fit_scale {
+            self.state.zoom_state = ZoomState::FitToScreen;
+        } else {
+            // Convert visual scale back to multiplier: visual = fit_scale * multiplier
+            let multiplier = new_visual_scale / fit_scale;
+            self.state.zoom_state = ZoomState::Custom(multiplier);
+        }
+
+        // Reset pan when zoomed out to fit-to-screen or smaller
+        if new_visual_scale <= fit_scale {
+            self.state.pan_offset = egui::Vec2::ZERO;
+        }
+    }
+
+    /// Constrain pan offset to keep image visible
+    fn constrain_pan(&mut self) {
+        // Simple constraint - don't let pan go too far
+        let max_pan = 2000.0;
+        self.state.pan_offset.x = self.state.pan_offset.x.clamp(-max_pan, max_pan);
+        self.state.pan_offset.y = self.state.pan_offset.y.clamp(-max_pan, max_pan);
     }
 
     /// Render the current single image fitted to screen
@@ -267,6 +455,7 @@ impl<'a> MediaViewer<'a> {
         let original_position = self.state.media_info.medias[index].original_position;
 
         let img_size = texture.size_vec2();
+        self.state.current_image_size = Some(img_size);
         let viewport_size = avail_rect.size();
 
         // Calculate fit-to-screen scale
@@ -279,19 +468,23 @@ impl<'a> MediaViewer<'a> {
                 .min(original_position.height() / img_size.y);
             egui::lerp(src_scale..=fit_scale, open_amount)
         } else {
-            fit_scale
+            match self.state.zoom_state {
+                ZoomState::FitToScreen => fit_scale,
+                ZoomState::NativeSize => 1.0,
+                ZoomState::Custom(s) => fit_scale * s,
+            }
         };
 
         let scaled_size = img_size * scale;
 
-        // Calculate position (centered)
+        // Calculate position (centered, with pan offset if zoomed)
         let center = if transitioning {
             let src_center = original_position.center().to_vec2();
             let dst_center = avail_rect.center().to_vec2();
             let lerped = src_center + (dst_center - src_center) * open_amount;
             lerped.to_pos2()
         } else {
-            avail_rect.center()
+            avail_rect.center() + self.state.pan_offset
         };
 
         let img_rect = Rect::from_center_size(center, scaled_size);
