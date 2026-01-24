@@ -195,7 +195,7 @@ fn execute_note_action(
         },
         NoteAction::Media(media_action) => {
             media_action.on_view_media(|medias| {
-                view_state.media_viewer.media_info = medias.clone();
+                view_state.media_viewer.set_media_info(medias.clone());
                 tracing::debug!("on_view_media {:?}", &medias);
                 view_state
                     .media_viewer

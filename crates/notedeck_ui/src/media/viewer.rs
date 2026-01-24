@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use egui::{emath::TSTransform, pos2, Color32, Rangef, Rect};
+use egui::{pos2, Color32, Rect};
 use notedeck::media::{AnimationMode, MediaInfo, ViewMediaInfo};
 use notedeck::{ImageType, Images, MediaJobSender};
 
@@ -25,6 +25,9 @@ pub struct MediaViewerState {
     pub scene_rect: Option<Rect>,
     pub flags: MediaViewerFlags,
     pub anim_id: egui::Id,
+
+    /// Current displayed image index
+    pub current_index: usize,
 }
 
 impl Default for MediaViewerState {
@@ -34,6 +37,7 @@ impl Default for MediaViewerState {
             media_info: Default::default(),
             scene_rect: None,
             flags: MediaViewerFlags::Transition | MediaViewerFlags::Fullscreen,
+            current_index: 0,
         }
     }
 }
@@ -65,6 +69,46 @@ impl MediaViewerState {
 
         // we are closing
         self.open_amount(ui) > 0.0
+    }
+
+    /// Set media info and initialize viewer state
+    pub fn set_media_info(&mut self, media_info: ViewMediaInfo) {
+        self.current_index = media_info.clicked_index;
+        self.media_info = media_info;
+    }
+
+    /// Navigate to the next image
+    pub fn next_image(&mut self) {
+        if self.current_index + 1 < self.media_info.medias.len() {
+            self.current_index += 1;
+        }
+    }
+
+    /// Navigate to the previous image
+    pub fn prev_image(&mut self) {
+        if self.current_index > 0 {
+            self.current_index -= 1;
+        }
+    }
+
+    /// Get the current media info
+    pub fn current_media(&self) -> Option<&MediaInfo> {
+        self.media_info.medias.get(self.current_index)
+    }
+
+    /// Check if there's a next image
+    pub fn has_next(&self) -> bool {
+        self.current_index + 1 < self.media_info.medias.len()
+    }
+
+    /// Check if there's a previous image
+    pub fn has_prev(&self) -> bool {
+        self.current_index > 0
+    }
+
+    /// Total number of images
+    pub fn image_count(&self) -> usize {
+        self.media_info.medias.len()
     }
 }
 
@@ -119,15 +163,6 @@ impl<'a> MediaViewer<'a> {
     ) -> egui::Response {
         let avail_rect = ui.available_rect_before_wrap();
 
-        let scene_rect = if let Some(scene_rect) = self.state.scene_rect {
-            scene_rect
-        } else {
-            self.state.scene_rect = Some(avail_rect);
-            avail_rect
-        };
-
-        let zoom_range: egui::Rangef = (0.0..=10.0).into();
-
         let is_open = self.state.flags.contains(MediaViewerFlags::Open);
         let can_transition = self.state.flags.contains(MediaViewerFlags::Transition);
         let open_amount = self.state.open_amount(ui);
@@ -139,21 +174,6 @@ impl<'a> MediaViewer<'a> {
             open_amount > 0.0
         };
 
-        let mut trans_rect = if transitioning {
-            let clicked_img = &self.state.media_info.clicked_media();
-            let src_pos = &clicked_img.original_position;
-            let in_scene_pos = Self::first_image_rect(ui, clicked_img, images, jobs);
-            transition_scene_rect(
-                &avail_rect,
-                &zoom_range,
-                &in_scene_pos,
-                src_pos,
-                open_amount,
-            )
-        } else {
-            scene_rect
-        };
-
         // Draw background
         ui.painter().rect_filled(
             avail_rect,
@@ -161,176 +181,312 @@ impl<'a> MediaViewer<'a> {
             egui::Color32::from_black_alpha((200.0 * open_amount) as u8),
         );
 
-        let scene = egui::Scene::new().zoom_range(zoom_range);
+        // Create an interactive area for the entire viewer
+        let response = ui.allocate_rect(avail_rect, egui::Sense::click_and_drag());
 
-        // We are opening, so lock controls
-        /* TODO(jb55): 0.32
-        if transitioning {
-            scene = scene.sense(egui::Sense::hover());
+        // Handle input (keyboard, clicks) - but not during transition
+        if !transitioning {
+            self.handle_input(ui, &response);
         }
-        */
 
-        let resp = scene.show(ui, &mut trans_rect, |ui| {
-            Self::render_image_tiles(&self.state.media_info.medias, images, jobs, ui, open_amount);
-        });
+        // Render the current image
+        self.render_single_image(images, jobs, ui, &avail_rect, open_amount, transitioning);
 
-        self.state.scene_rect = Some(trans_rect);
+        // Render navigation arrows (only if multiple images and not transitioning)
+        if self.state.image_count() > 1 && !transitioning {
+            self.render_nav_arrows(ui, &avail_rect);
+        }
 
-        resp.response
+        // Render position indicator (only if multiple images)
+        if self.state.image_count() > 1 {
+            self.render_position_indicator(ui, &avail_rect, open_amount);
+        }
+
+        // Render close button when fullscreen (touch-friendly affordance)
+        if self.state.flags.contains(MediaViewerFlags::Fullscreen) && !transitioning {
+            self.render_close_button(ui, &avail_rect, open_amount);
+        }
+
+        response
     }
 
-    /// The rect of the first image to be placed.
-    /// This is mainly used for the transition animation
-    ///
-    /// TODO(jb55): replace this with a "placed" variant once
-    /// we have image layouts
-    fn first_image_rect(
-        ui: &mut egui::Ui,
-        media: &MediaInfo,
+    /// Handle all input: keyboard, mouse, touch
+    fn handle_input(&mut self, ui: &mut egui::Ui, _response: &egui::Response) {
+        let ctx = ui.ctx();
+
+        // Keyboard navigation
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+            self.state.next_image();
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+            self.state.prev_image();
+        }
+
+        // Escape to close
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.close();
+        }
+
+        // Android back button / browser back
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.close();
+        }
+    }
+
+    /// Close the media viewer
+    fn close(&mut self) {
+        self.state.flags.remove(MediaViewerFlags::Open);
+    }
+
+    /// Render the current single image fitted to screen
+    fn render_single_image(
+        &mut self,
         images: &mut Images,
         jobs: &MediaJobSender,
-    ) -> Rect {
-        // fetch image texture
+        ui: &mut egui::Ui,
+        avail_rect: &Rect,
+        open_amount: f32,
+        transitioning: bool,
+    ) {
+        let index = self.state.current_index;
+        let Some(media) = self.state.media_info.medias.get(index) else {
+            return;
+        };
+
         let Some(texture) = images.latest_texture(
             jobs,
             ui,
             &media.url,
             ImageType::Content(None),
-            AnimationMode::NoAnimation,
+            AnimationMode::Continuous { fps: None },
         ) else {
-            tracing::error!("could not get latest texture in first_image_rect");
-            return Rect::ZERO;
+            return;
         };
 
-        // the area the next image will be put in.
-        let mut img_rect = ui.available_rect_before_wrap();
+        // Get original_position before mutable borrow (only needed for transitioning)
+        let original_position = self.state.media_info.medias[index].original_position;
 
-        let size = texture.size_vec2();
-        img_rect.set_height(size.y);
-        img_rect.set_width(size.x);
-        img_rect
+        let img_size = texture.size_vec2();
+        let viewport_size = avail_rect.size();
+
+        // Calculate fit-to-screen scale
+        let fit_scale = (viewport_size.x / img_size.x).min(viewport_size.y / img_size.y);
+
+        // Determine actual scale based on zoom state
+        let scale = if transitioning {
+            // During transition, interpolate from original position
+            let src_scale = (original_position.width() / img_size.x)
+                .min(original_position.height() / img_size.y);
+            egui::lerp(src_scale..=fit_scale, open_amount)
+        } else {
+            fit_scale
+        };
+
+        let scaled_size = img_size * scale;
+
+        // Calculate position (centered)
+        let center = if transitioning {
+            let src_center = original_position.center().to_vec2();
+            let dst_center = avail_rect.center().to_vec2();
+            let lerped = src_center + (dst_center - src_center) * open_amount;
+            lerped.to_pos2()
+        } else {
+            avail_rect.center()
+        };
+
+        let img_rect = Rect::from_center_size(center, scaled_size);
+
+        // Paint the image
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        ui.painter().image(
+            texture.id(),
+            img_rect,
+            uv,
+            Color32::from_white_alpha((open_amount * 255.0) as u8),
+        );
     }
 
-    ///
-    /// Tile a scene with images.
-    ///
-    /// TODO(jb55): Let's improve image tiling over time, spiraling outward. We
-    /// should have a way to click "next" and have the scene smoothly transition and
-    /// focus on the next image
-    fn render_image_tiles(
-        infos: &[MediaInfo],
-        images: &mut Images,
-        jobs: &MediaJobSender,
-        ui: &mut egui::Ui,
-        open_amount: f32,
-    ) {
-        for info in infos {
-            let url = &info.url;
+    /// Render navigation arrows and handle clicks
+    fn render_nav_arrows(&mut self, ui: &mut egui::Ui, avail_rect: &Rect) {
+        let arrow_size = egui::vec2(60.0, 120.0);
+        let margin = 20.0;
 
-            // fetch image texture
+        // Only show arrows on hover (desktop behavior)
+        let pointer_pos = ui.ctx().pointer_hover_pos();
+        let show_arrows = pointer_pos.is_some_and(|p| avail_rect.contains(p));
 
-            // we want to continually redraw things in the gallery
-            let Some(texture) = images.latest_texture(
-                jobs,
-                ui,
-                url,
-                ImageType::Content(None),
-                AnimationMode::Continuous { fps: None }, // media viewer has continuous rendering
-            ) else {
-                continue;
+        if !show_arrows {
+            return;
+        }
+
+        let arrow_color = Color32::from_white_alpha(180);
+        let hover_color = Color32::from_white_alpha(255);
+
+        // Left arrow
+        if self.state.has_prev() {
+            let left_rect = Rect::from_min_size(
+                pos2(
+                    avail_rect.left() + margin,
+                    avail_rect.center().y - arrow_size.y / 2.0,
+                ),
+                arrow_size,
+            );
+
+            let left_response =
+                ui.interact(left_rect, ui.id().with("nav_left"), egui::Sense::click());
+
+            let color = if left_response.hovered() {
+                hover_color
+            } else {
+                arrow_color
             };
 
-            // the area the next image will be put in.
-            let mut img_rect = ui.available_rect_before_wrap();
-            /*
-            if !ui.is_rect_visible(img_rect) {
-                // just stop rendering images if we're going out of the scene
-                // basic culling when we have lots of images
-                break;
+            // Draw left chevron
+            Self::draw_chevron(ui, left_rect.center(), true, color);
+
+            if left_response.clicked() {
+                self.state.prev_image();
             }
-            */
+        }
 
-            {
-                let size = texture.size_vec2();
-                img_rect.set_height(size.y);
-                img_rect.set_width(size.x);
-                let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        // Right arrow
+        if self.state.has_next() {
+            let right_rect = Rect::from_min_size(
+                pos2(
+                    avail_rect.right() - margin - arrow_size.x,
+                    avail_rect.center().y - arrow_size.y / 2.0,
+                ),
+                arrow_size,
+            );
 
-                // image actions
-                //let response = ui.interact(render_rect, carousel_id.with("img"), Sense::click());
+            let right_response =
+                ui.interact(right_rect, ui.id().with("nav_right"), egui::Sense::click());
 
-                /*
-                if response.clicked() {
-                } else if background_response.clicked() {
-                }
-                */
+            let color = if right_response.hovered() {
+                hover_color
+            } else {
+                arrow_color
+            };
 
-                // Paint image
-                ui.painter().image(
-                    texture.id(),
-                    img_rect,
-                    uv,
-                    Color32::from_white_alpha((open_amount * 255.0) as u8),
-                );
+            // Draw right chevron
+            Self::draw_chevron(ui, right_rect.center(), false, color);
 
-                ui.advance_cursor_after_rect(img_rect);
+            if right_response.clicked() {
+                self.state.next_image();
             }
         }
     }
-}
 
-/// Helper: lerp a TSTransform (uniform scale + translation)
-fn lerp_ts(a: TSTransform, b: TSTransform, t: f32) -> TSTransform {
-    let s = egui::lerp(a.scaling..=b.scaling, t);
-    let p = a.translation + (b.translation - a.translation) * t;
-    TSTransform {
-        scaling: s,
-        translation: p,
+    /// Draw a chevron arrow
+    fn draw_chevron(ui: &mut egui::Ui, center: egui::Pos2, left: bool, color: Color32) {
+        let size = 20.0;
+        let stroke = egui::Stroke::new(3.0, color);
+
+        let (p1, p2, p3) = if left {
+            (
+                pos2(center.x + size * 0.5, center.y - size),
+                pos2(center.x - size * 0.5, center.y),
+                pos2(center.x + size * 0.5, center.y + size),
+            )
+        } else {
+            (
+                pos2(center.x - size * 0.5, center.y - size),
+                pos2(center.x + size * 0.5, center.y),
+                pos2(center.x - size * 0.5, center.y + size),
+            )
+        };
+
+        ui.painter().line_segment([p1, p2], stroke);
+        ui.painter().line_segment([p2, p3], stroke);
     }
-}
 
-/// Calculate the open/close amount and transition rect
-pub fn transition_scene_rect(
-    outer_rect: &Rect,
-    zoom_range: &Rangef,
-    image_rect_in_scene: &Rect, // e.g. Rect::from_min_size(Pos2::ZERO, image_size)
-    timeline_global_rect: &Rect, // saved from timeline Response.rect
-    open_amt: f32,              // stable ID per media item
-) -> Rect {
-    // Compute the two endpoints:
-    let from = fit_to_rect_in_scene(timeline_global_rect, image_rect_in_scene, zoom_range);
-    let to = fit_to_rect_in_scene(outer_rect, image_rect_in_scene, zoom_range);
+    /// Render position indicator (e.g., "2/5")
+    fn render_position_indicator(&self, ui: &mut egui::Ui, avail_rect: &Rect, open_amount: f32) {
+        let text = format!(
+            "{}/{}",
+            self.state.current_index + 1,
+            self.state.image_count()
+        );
 
-    // Interpolate transform and convert to scene_rect expected by Scene::show:
-    let lerped = lerp_ts(from, to, open_amt);
+        let font_id = egui::FontId::proportional(14.0);
+        let text_color = Color32::from_white_alpha((open_amount * 220.0) as u8);
 
-    lerped.inverse() * (*outer_rect)
-}
+        let galley = ui.painter().layout_no_wrap(text, font_id, text_color);
 
-/// Creates a transformation that fits a given scene rectangle into the available screen size.
-///
-/// The resulting visual scene bounds can be larger, due to letterboxing.
-///
-/// Returns the transformation from `scene` to `global` coordinates.
-fn fit_to_rect_in_scene(
-    rect_in_global: &Rect,
-    rect_in_scene: &Rect,
-    zoom_range: &Rangef,
-) -> TSTransform {
-    // Compute the scale factor to fit the bounding rectangle into the available screen size:
-    let scale = rect_in_global.size() / rect_in_scene.size();
+        // Position at bottom center with padding
+        let padding = egui::vec2(12.0, 6.0);
+        let pill_size = galley.size() + padding * 2.0;
+        let pill_pos = pos2(
+            avail_rect.center().x - pill_size.x / 2.0,
+            avail_rect.bottom() - 50.0 - pill_size.y,
+        );
+        let pill_rect = Rect::from_min_size(pill_pos, pill_size);
 
-    // Use the smaller of the two scales to ensure the whole rectangle fits on the screen:
-    let scale = scale.min_elem();
+        // Draw pill background
+        ui.painter().rect_filled(
+            pill_rect,
+            pill_size.y / 2.0,
+            Color32::from_black_alpha((open_amount * 150.0) as u8),
+        );
 
-    // Clamp scale to what is allowed
-    let scale = zoom_range.clamp(scale);
+        // Draw text
+        let text_pos = pill_rect.min + padding;
+        ui.painter().galley(text_pos, galley, text_color);
+    }
 
-    // Compute the translation to center the bounding rect in the screen:
-    let center_in_global = rect_in_global.center().to_vec2();
-    let center_scene = rect_in_scene.center().to_vec2();
+    /// Render a close button in the top-right corner (touch-friendly)
+    fn render_close_button(&mut self, ui: &mut egui::Ui, avail_rect: &Rect, open_amount: f32) {
+        let button_size = 44.0; // Touch-friendly size
+        let margin = 16.0;
 
-    // Set the transformation to scale and then translate to center.
-    TSTransform::from_translation(center_in_global - scale * center_scene)
-        * TSTransform::from_scaling(scale)
+        let button_rect = Rect::from_min_size(
+            pos2(
+                avail_rect.right() - margin - button_size,
+                avail_rect.top() + margin,
+            ),
+            egui::vec2(button_size, button_size),
+        );
+
+        let response = ui.interact(
+            button_rect,
+            ui.id().with("close_button"),
+            egui::Sense::click(),
+        );
+
+        // Draw button background (pill/circle)
+        let bg_alpha = if response.hovered() { 180 } else { 120 };
+        ui.painter().circle_filled(
+            button_rect.center(),
+            button_size / 2.0,
+            Color32::from_black_alpha((open_amount * bg_alpha as f32) as u8),
+        );
+
+        // Draw X icon
+        let icon_size = 12.0;
+        let center = button_rect.center();
+        let stroke_alpha = if response.hovered() { 255 } else { 220 };
+        let stroke = egui::Stroke::new(
+            2.5,
+            Color32::from_white_alpha((open_amount * stroke_alpha as f32) as u8),
+        );
+
+        ui.painter().line_segment(
+            [
+                pos2(center.x - icon_size, center.y - icon_size),
+                pos2(center.x + icon_size, center.y + icon_size),
+            ],
+            stroke,
+        );
+        ui.painter().line_segment(
+            [
+                pos2(center.x + icon_size, center.y - icon_size),
+                pos2(center.x - icon_size, center.y + icon_size),
+            ],
+            stroke,
+        );
+
+        if response.clicked() {
+            self.close();
+        }
+    }
 }

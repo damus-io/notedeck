@@ -25,7 +25,7 @@ use notedeck::{
     SettingsHandler,
 };
 use notedeck_ui::{
-    media::{MediaViewer, MediaViewerFlags, MediaViewerState},
+    media::{MediaViewer, MediaViewerState},
     NoteOptions,
 };
 use std::collections::{BTreeSet, HashMap};
@@ -411,18 +411,12 @@ fn fullscreen_media_viewer_ui(
         return;
     }
 
-    let resp = MediaViewer::new(state)
+    let _resp = MediaViewer::new(state)
         .fullscreen(true)
         .ui(img_cache, jobs, ui);
 
-    if resp.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        fullscreen_media_close(state);
-    }
-}
-
-/// Close the fullscreen media player. This also resets the scene_rect state
-fn fullscreen_media_close(state: &mut MediaViewerState) {
-    state.flags.set(MediaViewerFlags::Open, false);
+    // Close handling is done inside MediaViewer::handle_input() (Escape key)
+    // Click-to-close removed to support double-tap-to-zoom gesture
 }
 
 /*
