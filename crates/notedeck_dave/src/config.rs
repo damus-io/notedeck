@@ -1,5 +1,126 @@
 use async_openai::config::OpenAIConfig;
 
+/// Available AI providers for Dave
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AiProvider {
+    #[default]
+    OpenAI,
+    Anthropic,
+    Ollama,
+}
+
+impl AiProvider {
+    pub const ALL: [AiProvider; 3] = [
+        AiProvider::OpenAI,
+        AiProvider::Anthropic,
+        AiProvider::Ollama,
+    ];
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            AiProvider::OpenAI => "OpenAI",
+            AiProvider::Anthropic => "Anthropic",
+            AiProvider::Ollama => "Ollama",
+        }
+    }
+
+    pub fn default_model(&self) -> &'static str {
+        match self {
+            AiProvider::OpenAI => "gpt-4o",
+            AiProvider::Anthropic => "claude-sonnet-4-20250514",
+            AiProvider::Ollama => "hhao/qwen2.5-coder-tools:latest",
+        }
+    }
+
+    pub fn default_endpoint(&self) -> Option<&'static str> {
+        match self {
+            AiProvider::OpenAI => None,
+            AiProvider::Anthropic => Some("https://api.anthropic.com/v1"),
+            AiProvider::Ollama => Some("http://localhost:11434/v1"),
+        }
+    }
+
+    pub fn requires_api_key(&self) -> bool {
+        match self {
+            AiProvider::OpenAI | AiProvider::Anthropic => true,
+            AiProvider::Ollama => false,
+        }
+    }
+
+    pub fn available_models(&self) -> &'static [&'static str] {
+        match self {
+            AiProvider::OpenAI => &["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+            AiProvider::Anthropic => &[
+                "claude-sonnet-4-20250514",
+                "claude-opus-4-20250514",
+                "claude-3-5-sonnet-20241022",
+                "claude-3-5-haiku-20241022",
+            ],
+            AiProvider::Ollama => &[
+                "hhao/qwen2.5-coder-tools:latest",
+                "llama3.2:latest",
+                "mistral:latest",
+                "codellama:latest",
+            ],
+        }
+    }
+}
+
+/// User-configurable settings for Dave AI
+#[derive(Debug, Clone)]
+pub struct DaveSettings {
+    pub provider: AiProvider,
+    pub model: String,
+    pub endpoint: Option<String>,
+    pub api_key: Option<String>,
+}
+
+impl Default for DaveSettings {
+    fn default() -> Self {
+        DaveSettings {
+            provider: AiProvider::default(),
+            model: AiProvider::default().default_model().to_string(),
+            endpoint: None,
+            api_key: None,
+        }
+    }
+}
+
+impl DaveSettings {
+    /// Create settings with provider defaults applied
+    pub fn with_provider(provider: AiProvider) -> Self {
+        DaveSettings {
+            provider,
+            model: provider.default_model().to_string(),
+            endpoint: provider.default_endpoint().map(|s| s.to_string()),
+            api_key: None,
+        }
+    }
+
+    /// Create settings from an existing ModelConfig (preserves env var values)
+    pub fn from_model_config(config: &ModelConfig) -> Self {
+        let provider = match config.backend {
+            BackendType::OpenAI => AiProvider::OpenAI,
+            BackendType::Claude => AiProvider::Anthropic,
+        };
+
+        let api_key = match provider {
+            AiProvider::Anthropic => config.anthropic_api_key.clone(),
+            _ => config.api_key().map(|s| s.to_string()),
+        };
+
+        DaveSettings {
+            provider,
+            model: config.model().to_string(),
+            endpoint: config
+                .endpoint()
+                .map(|s| s.to_string())
+                .or_else(|| provider.default_endpoint().map(|s| s.to_string())),
+            api_key,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ModelConfig {
     pub trial: bool,
@@ -51,12 +172,53 @@ impl ModelConfig {
         &self.model
     }
 
+    pub fn endpoint(&self) -> Option<&str> {
+        self.endpoint.as_deref()
+    }
+
+    pub fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
+    }
+
     pub fn ollama() -> Self {
         ModelConfig {
             trial: false,
             endpoint: std::env::var("OLLAMA_HOST").ok().map(|h| h + "/v1"),
             model: "hhao/qwen2.5-coder-tools:latest".to_string(),
             api_key: None,
+        }
+    }
+
+    /// Create a ModelConfig from DaveSettings
+    pub fn from_settings(settings: &DaveSettings) -> Self {
+        // If settings have an API key, we're not in trial mode
+        // For Ollama, trial is always false since no key is required
+        let trial = settings.provider.requires_api_key() && settings.api_key.is_none();
+
+        let backend = match settings.provider {
+            AiProvider::OpenAI | AiProvider::Ollama => BackendType::OpenAI,
+            AiProvider::Anthropic => BackendType::Claude,
+        };
+
+        let anthropic_api_key = if settings.provider == AiProvider::Anthropic {
+            settings.api_key.clone()
+        } else {
+            None
+        };
+
+        let api_key = if settings.provider != AiProvider::Anthropic {
+            settings.api_key.clone()
+        } else {
+            None
+        };
+
+        ModelConfig {
+            trial,
+            backend,
+            endpoint: settings.endpoint.clone(),
+            model: settings.model.clone(),
+            api_key,
+            anthropic_api_key,
         }
     }
 

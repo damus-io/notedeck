@@ -25,7 +25,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 pub use avatar::DaveAvatar;
-pub use config::ModelConfig;
+pub use config::{AiProvider, DaveSettings, ModelConfig};
 pub use messages::{DaveApiResponse, Message};
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -33,7 +33,10 @@ pub use tools::{
     PartialToolCall, QueryCall, QueryResponse, Tool, ToolCall, ToolCalls, ToolResponse,
     ToolResponses,
 };
-pub use ui::{DaveAction, DaveResponse, DaveUi, SessionListAction, SessionListUi};
+pub use ui::{
+    DaveAction, DaveResponse, DaveSettingsPanel, DaveUi, SessionListAction, SessionListUi,
+    SettingsPanelAction,
+};
 pub use vec3::Vec3;
 
 pub struct Dave {
@@ -49,6 +52,10 @@ pub struct Dave {
     model_config: ModelConfig,
     /// Whether to show session list on mobile
     show_session_list: bool,
+    /// User settings
+    settings: DaveSettings,
+    /// Settings panel UI state
+    settings_panel: DaveSettingsPanel,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -104,6 +111,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools.insert(tool.name().to_string(), tool);
         }
 
+        let settings = DaveSettings::from_model_config(&model_config);
+
         Dave {
             client,
             avatar,
@@ -111,7 +120,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools: Arc::new(tools),
             model_config,
             show_session_list: false,
+            settings,
+            settings_panel: DaveSettingsPanel::new(),
         }
+    }
+
+    /// Get current settings for persistence
+    pub fn settings(&self) -> &DaveSettings {
+        &self.settings
+    }
+
+    /// Apply new settings. Note: Provider changes require app restart to take effect.
+    pub fn apply_settings(&mut self, settings: DaveSettings) {
+        self.model_config = ModelConfig::from_settings(&settings);
+        self.settings = settings;
     }
 
     /// Process incoming tokens from the ai backend
@@ -450,11 +472,25 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut app_action: Option<AppAction> = None;
+        let mut dave_action: Option<DaveAction> = None;
 
         // always insert system prompt if we have no context in active session
         if let Some(session) = self.session_manager.get_active_mut() {
             if session.chat.is_empty() {
                 session.chat.push(Dave::system_prompt());
+            }
+        }
+
+        // Render settings panel and handle its actions
+        if let Some(settings_action) = self.settings_panel.ui(ui.ctx()) {
+            match settings_action {
+                SettingsPanelAction::Save(new_settings) => {
+                    self.apply_settings(new_settings.clone());
+                    dave_action = Some(DaveAction::UpdateSettings(new_settings));
+                }
+                SettingsPanelAction::Cancel => {
+                    // Panel closed, nothing to do
+                }
             }
         }
 
@@ -477,12 +513,22 @@ impl notedeck::App for Dave {
                 DaveAction::ShowSessionList => {
                     self.show_session_list = !self.show_session_list;
                 }
+                DaveAction::OpenSettings => {
+                    self.settings_panel.open(&self.settings);
+                }
+                DaveAction::UpdateSettings(settings) => {
+                    dave_action = Some(DaveAction::UpdateSettings(settings));
+                }
             }
         }
 
         if should_send {
             self.send_user_message(ctx, ui.ctx());
         }
+
+        // If we have a dave action that needs to bubble up, we can't return it
+        // through AppResponse directly, but parent apps can check settings()
+        let _ = dave_action; // Parent app can poll settings() after update
 
         AppResponse::action(app_action)
     }

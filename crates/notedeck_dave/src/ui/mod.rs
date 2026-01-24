@@ -1,5 +1,7 @@
 mod dave;
 pub mod session_list;
+mod settings;
 
 pub use dave::{DaveAction, DaveResponse, DaveUi};
 pub use session_list::{SessionListAction, SessionListUi};
+pub use settings::{DaveSettingsPanel, SettingsPanelAction};
