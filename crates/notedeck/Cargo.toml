@@ -81,9 +81,9 @@ ring = { workspace = true }
 # Override rustls to use ring crypto provider on Windows
 rustls = { version = "0.23.28", default-features = false, features = ["std", "tls12", "logging", "ring"] }
 # Override hyper-rustls to use ring on Windows
-hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio", "ring"] }
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio", "ring", "webpki-roots"] }
 
 # Use aws-lc-rs on non-Windows platforms for better performance
 [target.'cfg(not(windows))'.dependencies]
 rustls = { version = "0.23.28", default-features = false, features = ["std", "tls12", "logging", "aws_lc_rs"] }
-hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio", "aws-lc-rs"] }
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio", "aws-lc-rs", "webpki-roots"] }
