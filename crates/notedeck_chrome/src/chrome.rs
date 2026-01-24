@@ -153,12 +153,14 @@ impl Chrome {
 
         let context = &mut notedeck.app_context();
         let dave = Dave::new(cc.wgpu_render_state.as_ref());
-        let columns = Damus::new(context, app_args);
         let mut chrome = Chrome::default();
 
-        notedeck.check_args(columns.unrecognized_args())?;
+        if !app_args.iter().any(|arg| arg == "--no-columns-app") {
+            let columns = Damus::new(context, app_args);
+            notedeck.check_args(columns.unrecognized_args())?;
+            chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+        }
 
-        chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
         #[cfg(feature = "messages")]
