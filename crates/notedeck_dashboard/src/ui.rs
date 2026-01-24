@@ -4,6 +4,10 @@ use egui::RichText;
 use std::time::Duration;
 use std::time::Instant;
 
+use nostrdb::Transaction;
+use notedeck::{abbrev::floor_char_boundary, name::get_display_name, profile::get_profile_url, AppContext};
+use notedeck_ui::ProfilePic;
+
 use crate::Dashboard;
 use crate::FxHashMap;
 use crate::Period;
@@ -12,6 +16,7 @@ use crate::chart::Bar;
 use crate::chart::BarChartStyle;
 use crate::chart::horizontal_bar_chart;
 use crate::chart::palette;
+use crate::top_kind1_authors_over;
 use crate::top_kinds_over;
 
 pub fn period_picker_ui(ui: &mut egui::Ui, period: &mut Period) {
@@ -261,17 +266,17 @@ fn total_over(cache: &RollingCache) -> u64 {
     cache.buckets.iter().map(|b| b.total).sum()
 }
 
-pub fn dashboard_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
+pub fn dashboard_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
     egui::Frame::new()
         .inner_margin(egui::Margin::same(20))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                dashboard_ui_inner(dashboard, ui);
+                dashboard_ui_inner(dashboard, ui, ctx);
             });
         });
 }
 
-fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
+fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
     let min_card = 240.0;
     let gap = 8.0;
 
@@ -296,6 +301,9 @@ fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
             });
             ui.add_sized(size, |ui: &mut egui::Ui| {
                 card_ui(ui, min_card, |ui| clients_trends_ui(dashboard, ui))
+            });
+            ui.add_sized(size, |ui: &mut egui::Ui| {
+                card_ui(ui, min_card, |ui| top_posters_ui(dashboard, ui, ctx))
             });
         },
     );
@@ -446,4 +454,67 @@ fn top_clients_over(cache: &RollingCache, limit: usize) -> Vec<(String, u64)> {
 
     out.truncate(limit);
     out
+}
+
+pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
+    let cache = dashboard.selected_cache();
+    let n = cache.buckets.len();
+    let unit = dashboard.period.label();
+    let header = format!("Top Posters ({n} {unit}s)");
+    card_header_ui(ui, &header);
+    ui.add_space(8.0);
+
+    let limit = 10;
+    let top = top_kind1_authors_over(cache, limit);
+
+    if top.is_empty() && dashboard.last_error.is_none() {
+        ui.label(RichText::new("...").font(FontId::proportional(24.0)).weak());
+        return;
+    }
+
+    let txn = match Transaction::new(ctx.ndb) {
+        Ok(t) => t,
+        Err(_) => {
+            ui.label("DB error");
+            return;
+        }
+    };
+
+    let pfp_size = ProfilePic::small_size() as f32;
+
+    for (pubkey, count) in &top {
+        let profile = ctx.ndb.get_profile_by_pubkey(&txn, pubkey.bytes()).ok();
+        let name = get_display_name(profile.as_ref());
+        let pfp_url = get_profile_url(profile.as_ref());
+
+        ui.horizontal(|ui| {
+            ui.add(
+                &mut ProfilePic::new(ctx.img_cache, ctx.media_jobs.sender(), pfp_url)
+                    .size(pfp_size),
+            );
+            ui.add_space(6.0);
+
+            let display = name.name();
+            let truncated = if display.len() > 16 {
+                let end = floor_char_boundary(display, 16);
+                format!("{}...", &display[..end])
+            } else {
+                display.to_string()
+            };
+            ui.label(RichText::new(truncated).small());
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(count.to_string()).small().strong());
+            });
+        });
+        ui.add_space(4.0);
+    }
+
+    footer_status_ui(
+        ui,
+        dashboard.running,
+        dashboard.last_error.as_deref(),
+        dashboard.last_snapshot,
+        dashboard.last_duration,
+    );
 }

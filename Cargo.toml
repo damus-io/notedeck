@@ -39,7 +39,7 @@ egui_virtual_list = { git = "https://github.com/jb55/hello_egui", rev = "a66b679
 ehttp = "0.5.0"
 hyper = { version = "1.7.0", features = ["full"] }
 hyper-util = {version = "0.1" , features = ["tokio"]}
-hyper-rustls = "0.27.7"
+hyper-rustls = { version = "0.27.7", features = ["webpki-roots"] }
 http-body-util = "0.1.3"
 rustls = "0.23.28"
 enostr = { path = "crates/enostr" } 

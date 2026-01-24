@@ -1,3 +1,4 @@
+use enostr::Pubkey;
 use nostrdb::Note;
 use rustc_hash::FxHashMap;
 use std::thread;
@@ -50,6 +51,7 @@ struct Bucket {
     pub total: u64,
     pub kinds: rustc_hash::FxHashMap<u64, u32>,
     pub clients: rustc_hash::FxHashMap<String, u32>,
+    pub kind1_authors: rustc_hash::FxHashMap<Pubkey, u32>,
 }
 
 fn note_client_tag<'a>(note: &Note<'a>) -> Option<&'a str> {
@@ -72,7 +74,15 @@ impl Bucket {
     #[inline(always)]
     pub fn bump(&mut self, note: &Note<'_>) {
         self.total += 1;
-        *self.kinds.entry(note.kind() as u64).or_default() += 1;
+        let kind = note.kind();
+        *self.kinds.entry(kind as u64).or_default() += 1;
+
+        // Track kind1 authors
+        if kind == 1 {
+            let pk = Pubkey::new(*note.pubkey());
+            *self.kind1_authors.entry(pk).or_default() += 1;
+        }
+
         if let Some(client) = note_client_tag(note) {
             *self.clients.entry(client.to_string()).or_default() += 1;
         } else {
@@ -245,7 +255,7 @@ impl notedeck::App for Dashboard {
         self.process_worker_msgs();
         self.schedule_refresh();
 
-        self.show(ui);
+        self.show(ui, ctx);
 
         AppResponse::none()
     }
@@ -368,8 +378,8 @@ impl Dashboard {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) {
-        crate::ui::dashboard_ui(self, ui);
+    fn show(&mut self, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
+        crate::ui::dashboard_ui(self, ui, ctx);
     }
 }
 
@@ -534,6 +544,19 @@ fn top_kinds_over(cache: &RollingCache, limit: usize) -> Vec<(u64, u64)> {
 
     let mut v: Vec<_> = agg.into_iter().collect();
     v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v.truncate(limit);
+    v
+}
+
+pub(crate) fn top_kind1_authors_over(cache: &RollingCache, limit: usize) -> Vec<(Pubkey, u64)> {
+    let mut agg: FxHashMap<Pubkey, u64> = Default::default();
+    for b in &cache.buckets {
+        for (pubkey, count) in &b.kind1_authors {
+            *agg.entry(*pubkey).or_default() += *count as u64;
+        }
+    }
+    let mut v: Vec<_> = agg.into_iter().collect();
+    v.sort_unstable_by(|a, b| b.1.cmp(&a.1));
     v.truncate(limit);
     v
 }
