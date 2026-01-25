@@ -24,13 +24,11 @@ This document captures the current architecture, coding conventions, and design 
 
 - **Chrome shell** (`crates/notedeck_chrome/src/chrome.rs`): wraps multiple `App` instances, draws sidebar navigation, and forwards egui `update` passes to the active app.
 - **`NotedeckApp` enum** (`crates/notedeck_chrome/src/app.rs`) defines the shipping app roster (Columns/Damus, Dave, others) and provides constructors for wiring new apps.
-- **Preview system & theming** (`crates/notedeck_chrome/src/preview.rs`, `crates/notedeck_chrome/src/theme.rs`) centralize look-and-feel, font loading, and debug previews.
 
 ### Concurrency & Thread Safety
 
 - **No Mutexes in UI paths**: The render loop must never block. All UI code operates on owned data or uses `Rc<RefCell<>>` for single-threaded interior mutability.
-- **Cross-thread sharing**: When truly needed, prefer `Arc<tokio::sync::RwLock<>>` over `Arc<Mutex<>>`. The codebase has only 3 Mutex instances total (image cache size tracking, JobPool internals, test-only code).
-- **Promise pattern**: Wrap async work in `poll_promise::Promise`, check with `promise.ready()` or `promise.ready_mut()` each frame—no blocking.
+- **Cross-thread sharing**: Prefer share-nothing channels over Mutex-based shared state when building concurrent application features.
 
 ### Nostr Data & Networking
 
