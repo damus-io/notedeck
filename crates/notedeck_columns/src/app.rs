@@ -632,6 +632,42 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 }
 */
 
+/// Logic that handles toolbar visibility
+fn toolbar_visibility_height(skb_rect: Option<egui::Rect>, ui: &mut egui::Ui) -> f32 {
+    // Auto-hide toolbar when scrolling down
+    let toolbar_visible_id = egui::Id::new("toolbar_visible");
+
+    // Detect scroll direction using egui input state
+    let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+    let velocity_threshold = 1.0;
+
+    // Update toolbar visibility based on scroll direction
+    if scroll_delta > velocity_threshold {
+        // Scrolling up (content moving down) - show toolbar
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+    } else if scroll_delta < -velocity_threshold {
+        // Scrolling down (content moving up) - hide toolbar
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(toolbar_visible_id, false));
+    }
+
+    let toolbar_visible = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(toolbar_visible_id))
+        .unwrap_or(true); // Default to visible
+
+    let toolbar_anim = ui
+        .ctx()
+        .animate_bool_responsive(toolbar_visible_id.with("anim"), toolbar_visible);
+
+    if skb_rect.is_none() {
+        Damus::toolbar_height() * toolbar_anim
+    } else {
+        0.0
+    }
+}
+
 #[profiling::function]
 fn render_damus_mobile(
     app: &mut Damus,
@@ -648,12 +684,8 @@ fn render_damus_mobile(
         ui.ctx().screen_rect(),
         notedeck::SoftKeyboardContext::platform(ui.ctx()),
     );
-    let toolbar_height = if skb_rect.is_none() {
-        Damus::toolbar_height()
-    } else {
-        0.0
-    };
 
+    let toolbar_height = toolbar_visibility_height(skb_rect, ui);
     StripBuilder::new(ui)
         .size(Size::remainder()) // top cell
         .size(Size::exact(toolbar_height)) // bottom cell

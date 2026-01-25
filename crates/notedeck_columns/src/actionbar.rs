@@ -69,7 +69,21 @@ fn execute_note_action(
 
     match action {
         NoteAction::Scroll(ref scroll_info) => {
-            tracing::trace!("timeline scroll {scroll_info:?}")
+            tracing::trace!("timeline scroll {scroll_info:?}");
+
+            // Update toolbar visibility based on scroll velocity
+            let toolbar_visible_id = egui::Id::new("toolbar_visible");
+            let velocity_threshold = 50.0; // pixels per second
+
+            // velocity.y > 0 means scrolling up (content moving down) - show toolbar
+            // velocity.y < 0 means scrolling down (content moving up) - hide toolbar
+            if scroll_info.velocity.y > velocity_threshold {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+            } else if scroll_info.velocity.y < -velocity_threshold {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(toolbar_visible_id, false));
+            }
         }
 
         NoteAction::Reply(note_id) => {
