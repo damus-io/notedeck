@@ -74,12 +74,12 @@ This document captures the current architecture, coding conventions, and design 
 
 ## Coding Conventions & Practices
 
+- Run `cargo lint` when you're done your work, ensure that all lints are fixed before committing.
 - Rust 2021, edition-lints are strict; clippy `disallowed_methods` is denied at crate root to enforce API hygiene (`crates/notedeck/src/lib.rs`).
 - Prefer module-level organization over monolithic files; each feature (accounts, decks, timelines, media) lives in its own module tree.
 - Use `tracing` macros for structured logging and `profiling` scopes where hot paths exist (Columns' relay/event loop).
 - Mark performance-critical functions with `#[profiling::function]` for visibility in the puffin profiler.
 - UI code embraces egui idioms: builder chains, closures returning `Response`, `ui.vertical`/`horizontal` for layout.
-- Persist state via `TimedSerializer::try_save` to avoid blocking the frame; batch mutations with `SettingsHandler::update_batch`.
 - Tests live alongside modules (e.g., `JobPool`), often using `#[tokio::test]` when async behavior is involved.
 - Localization updates: run `python3 scripts/export_source_strings.py` after changing user-facing strings; translators rely on the generated Fluent files.
 
