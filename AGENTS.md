@@ -108,11 +108,11 @@ This document captures the current architecture, coding conventions, and design 
 3. Scaffold logically distinct commits that are standalone, before you start adding code.
 4. Related to logically distinct code, and standalone commits care must be taken for all **code to be human-readable, and reviewable by human developers**.
 5. Please set up code for **performance profiling utilizing puffin** (e.g. `cargo run --release --features puffin`).
-6. Related to **Puffin & performance profiling**, for code suspected of impacting performance, carefully consider adding performance profiling attributes such as e.g. profiling::function in order to see functions performance in the profiler.
+6. Related to **Puffin & performance profiling**, for code suspected of impacting performance, carefully consider adding performance profiling attributes such as e.g. profiling::function to see function performance in the profiler.
 7. **Global variables are not allowed** in this codebase, even if they are thread local. State should be managed in an struct that is passed in as reference.
 8. **Inspect notedeck code for reusable components, elements, patterns** etc. before creating new code for both A) notedeck updates, and B) apps built on notedeck.
 9.  **Nevernesting** — favor early returns and guard clauses over deeply nested conditionals; simplify control flow by exiting early instead of wrapping logic in multiple layers of `if` statements.
-10.  **Do not fudge CI tests**, in order to get a commit or PR to pass. Instead identify the underlying root cause of CI failure, and address that.
+10.  **Do not fudge CI tests**, to get a commit or PR to pass. Instead identify the underlying root cause of CI failure, and address that.
 11. Before proposing changes, please **review and analyze if a change or upgrade to nostrdb** is beneficial to the change at hand.
 12. **Ensure docstring coverage** for any code added, or modified.
 13. Run **cargo fmt, cargo clippy, cargo test**.
