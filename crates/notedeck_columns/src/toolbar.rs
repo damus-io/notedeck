@@ -1,3 +1,4 @@
+use egui_nav::ReturnType;
 use notedeck::AppContext;
 
 use crate::{
@@ -55,8 +56,14 @@ impl ToolbarAction {
             return;
         };
 
-        match cols.select_by_route(route) {
-            crate::column::SelectionResult::AlreadySelected(_) => {} // great! no need to go to top yet
+        let selection_result = cols.select_by_route(route);
+
+        match selection_result {
+            crate::column::SelectionResult::AlreadySelected(col_index) => {
+                // We're already on this toolbar view, so pop all routes to go to top
+                go_to_top_of_column(app, ctx, col_index);
+                app.scroll_to_top();
+            }
             crate::column::SelectionResult::NewSelection(_) => {
                 // we already selected this, so scroll to top
                 app.scroll_to_top();
@@ -64,6 +71,49 @@ impl ToolbarAction {
             crate::column::SelectionResult::Failed => {
                 // oh no, something went wrong
                 // TODO(jb55): handle tab selection failure
+            }
+        }
+    }
+}
+
+/// Pop all routes in the column until we're back at depth 1 (the base route).
+/// This is used when clicking a toolbar button for a view we're already on
+/// to immediately return to the top level regardless of navigation depth.
+fn go_to_top_of_column(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
+    let Some(cols) = app.decks_cache.active_columns_mut(ctx.i18n, ctx.accounts) else {
+        return;
+    };
+
+    let column = cols.column_mut(col_index);
+
+    // Close any open sheets first
+    if column.sheet_router.route().is_some() {
+        column.sheet_router.go_back();
+    }
+
+    // Pop all routes except the base route
+    while column.router().routes().len() > 1 {
+        if let Some(popped) = column.router_mut().pop() {
+            // TODO(jb55): centralize this resource cleanup logic into a shared
+            // pop_and_cleanup function. This same pattern exists in nav.rs.
+            // Clean up resources for popped route
+            match popped {
+                Route::Timeline(timeline_kind) => {
+                    if let Err(err) = app.timeline_cache.pop(&timeline_kind, ctx.ndb, ctx.pool) {
+                        tracing::error!(
+                            "popping timeline had an error: {err} for {:?}",
+                            timeline_kind
+                        );
+                    }
+                }
+                Route::Thread(selection) => {
+                    app.threads
+                        .close(ctx.ndb, ctx.pool, &selection, ReturnType::Click, col_index);
+                }
+                Route::EditProfile(pk) => {
+                    app.view_state.pubkey_to_profile_state.remove(&pk);
+                }
+                _ => {}
             }
         }
     }
