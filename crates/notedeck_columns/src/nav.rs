@@ -7,7 +7,7 @@ use crate::{
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
-    route::{ColumnsRouter, Route, SingletonRouter},
+    route::{cleanup_popped_route, ColumnsRouter, Route, SingletonRouter},
     subscriptions::Subscriptions,
     timeline::{
         kind::ListKind,
@@ -288,20 +288,18 @@ fn process_nav_resp(
                     .router_mut()
                     .pop();
 
-                if let Some(Route::Timeline(kind)) = &r {
-                    if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
-                        error!("popping timeline had an error: {err} for {:?}", kind);
-                    }
-                };
-
-                if let Some(Route::Thread(selection)) = &r {
-                    app.threads
-                        .close(ctx.ndb, ctx.pool, selection, return_type, col);
-                }
-
-                // we should remove profile state once we've returned
-                if let Some(Route::EditProfile(pk)) = &r {
-                    app.view_state.pubkey_to_profile_state.remove(pk);
+                // Clean up resources for the popped route
+                if let Some(route) = &r {
+                    cleanup_popped_route(
+                        route,
+                        &mut app.timeline_cache,
+                        &mut app.threads,
+                        &mut app.view_state,
+                        ctx.ndb,
+                        ctx.pool,
+                        return_type,
+                        col,
+                    );
                 }
 
                 process_result = Some(ProcessNavResult::SwitchOccurred);

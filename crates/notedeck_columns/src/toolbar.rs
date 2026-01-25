@@ -2,6 +2,7 @@ use egui_nav::ReturnType;
 use notedeck::AppContext;
 
 use crate::{
+    route::cleanup_popped_route,
     timeline::{kind::ListKind, TimelineKind},
     Damus, Route,
 };
@@ -94,27 +95,17 @@ fn go_to_top_of_column(app: &mut Damus, ctx: &mut AppContext, col_index: usize) 
     // Pop all routes except the base route
     while column.router().routes().len() > 1 {
         if let Some(popped) = column.router_mut().pop() {
-            // TODO(jb55): centralize this resource cleanup logic into a shared
-            // pop_and_cleanup function. This same pattern exists in nav.rs.
-            // Clean up resources for popped route
-            match popped {
-                Route::Timeline(timeline_kind) => {
-                    if let Err(err) = app.timeline_cache.pop(&timeline_kind, ctx.ndb, ctx.pool) {
-                        tracing::error!(
-                            "popping timeline had an error: {err} for {:?}",
-                            timeline_kind
-                        );
-                    }
-                }
-                Route::Thread(selection) => {
-                    app.threads
-                        .close(ctx.ndb, ctx.pool, &selection, ReturnType::Click, col_index);
-                }
-                Route::EditProfile(pk) => {
-                    app.view_state.pubkey_to_profile_state.remove(&pk);
-                }
-                _ => {}
-            }
+            // Clean up resources for the popped route
+            cleanup_popped_route(
+                &popped,
+                &mut app.timeline_cache,
+                &mut app.threads,
+                &mut app.view_state,
+                ctx.ndb,
+                ctx.pool,
+                ReturnType::Click,
+                col_index,
+            );
         }
     }
 }
