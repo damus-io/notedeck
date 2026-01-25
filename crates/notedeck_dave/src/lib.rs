@@ -1,4 +1,5 @@
 mod avatar;
+mod backend;
 mod config;
 pub(crate) mod mesh;
 mod messages;
@@ -8,20 +9,14 @@ mod tools;
 mod ui;
 mod vec3;
 
-use async_openai::{
-    config::OpenAIConfig,
-    types::{ChatCompletionRequestMessage, CreateChatCompletionRequest},
-    Client,
-};
+use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend};
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
-use futures::StreamExt;
 use nostrdb::Transaction;
 use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::HashMap;
 use std::string::ToString;
-use std::sync::mpsc;
 use std::sync::Arc;
 
 pub use avatar::DaveAvatar;
@@ -46,8 +41,8 @@ pub struct Dave {
     avatar: Option<DaveAvatar>,
     /// Shared tools available to all sessions
     tools: Arc<HashMap<String, Tool>>,
-    /// Shared API client
-    client: async_openai::Client<OpenAIConfig>,
+    /// AI backend (OpenAI, Claude, etc.)
+    backend: Box<dyn AiBackend>,
     /// Model configuration
     model_config: ModelConfig,
     /// Whether to show session list on mobile
@@ -100,10 +95,25 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ))
     }
 
-    pub fn new(render_state: Option<&RenderState>) -> Self {
+    pub fn new(render_state: Option<&RenderState>, ndb: nostrdb::Ndb) -> Self {
         let model_config = ModelConfig::default();
         //let model_config = ModelConfig::ollama();
-        let client = Client::with_config(model_config.to_api());
+
+        // Create backend based on configuration
+        let backend: Box<dyn AiBackend> = match model_config.backend {
+            BackendType::OpenAI => {
+                use async_openai::Client;
+                let client = Client::with_config(model_config.to_api());
+                Box::new(OpenAiBackend::new(client, ndb.clone()))
+            }
+            BackendType::Claude => {
+                let api_key = model_config
+                    .anthropic_api_key
+                    .as_ref()
+                    .expect("Claude backend requires ANTHROPIC_API_KEY or CLAUDE_API_KEY");
+                Box::new(ClaudeBackend::new(api_key.clone()))
+            }
+        };
 
         let avatar = render_state.map(DaveAvatar::new);
         let mut tools: HashMap<String, Tool> = HashMap::new();
@@ -114,7 +124,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let settings = DaveSettings::from_model_config(&model_config);
 
         Dave {
-            client,
+            backend,
             avatar,
             session_manager: SessionManager::new(),
             tools: Arc::new(tools),
@@ -335,137 +345,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         };
 
-        let messages: Vec<ChatCompletionRequestMessage> = {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            session
-                .chat
-                .iter()
-                .filter_map(|c| c.to_api_msg(&txn, app_ctx.ndb))
-                .collect()
-        };
-        tracing::debug!("sending messages, latest: {:?}", messages.last().unwrap());
-
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
-
-        let ctx = ctx.clone();
-        let client = self.client.clone();
+        let messages = session.chat.clone();
         let tools = self.tools.clone();
         let model_name = self.model_config.model().to_owned();
+        let ctx = ctx.clone();
 
-        let (tx, rx) = mpsc::channel();
+        // Use backend to stream request
+        let rx = self
+            .backend
+            .stream_request(messages, tools, model_name, user_id, ctx);
         session.incoming_tokens = Some(rx);
-
-        tokio::spawn(async move {
-            let mut token_stream = match client
-                .chat()
-                .create_stream(CreateChatCompletionRequest {
-                    model: model_name,
-                    stream: Some(true),
-                    messages,
-                    tools: Some(tools::dave_tools().iter().map(|t| t.to_api()).collect()),
-                    user: Some(user_id),
-                    ..Default::default()
-                })
-                .await
-            {
-                Err(err) => {
-                    tracing::error!("openai chat error: {err}");
-                    return;
-                }
-
-                Ok(stream) => stream,
-            };
-
-            let mut all_tool_calls: HashMap<u32, PartialToolCall> = HashMap::new();
-
-            while let Some(token) = token_stream.next().await {
-                let token = match token {
-                    Ok(token) => token,
-                    Err(err) => {
-                        tracing::error!("failed to get token: {err}");
-                        let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
-                        return;
-                    }
-                };
-
-                for choice in &token.choices {
-                    let resp = &choice.delta;
-
-                    // if we have tool call arg chunks, collect them here
-                    if let Some(tool_calls) = &resp.tool_calls {
-                        for tool in tool_calls {
-                            let entry = all_tool_calls.entry(tool.index).or_default();
-
-                            if let Some(id) = &tool.id {
-                                entry.id_mut().get_or_insert(id.clone());
-                            }
-
-                            if let Some(name) = tool.function.as_ref().and_then(|f| f.name.as_ref())
-                            {
-                                entry.name_mut().get_or_insert(name.to_string());
-                            }
-
-                            if let Some(argchunk) =
-                                tool.function.as_ref().and_then(|f| f.arguments.as_ref())
-                            {
-                                entry
-                                    .arguments_mut()
-                                    .get_or_insert_with(String::new)
-                                    .push_str(argchunk);
-                            }
-                        }
-                    }
-
-                    if let Some(content) = &resp.content {
-                        if let Err(err) = tx.send(DaveApiResponse::Token(content.to_owned())) {
-                            tracing::error!("failed to send dave response token to ui: {err}");
-                        }
-                        ctx.request_repaint();
-                    }
-                }
-            }
-
-            let mut parsed_tool_calls = vec![];
-            for (_index, partial) in all_tool_calls {
-                let Some(unknown_tool_call) = partial.complete() else {
-                    tracing::error!("could not complete partial tool call: {:?}", partial);
-                    continue;
-                };
-
-                match unknown_tool_call.parse(&tools) {
-                    Ok(tool_call) => {
-                        parsed_tool_calls.push(tool_call);
-                    }
-                    Err(err) => {
-                        // TODO: we should be
-                        tracing::error!(
-                            "failed to parse tool call {:?}: {}",
-                            unknown_tool_call,
-                            err,
-                        );
-
-                        if let Some(id) = partial.id() {
-                            // we have an id, so we can communicate the error
-                            // back to the ai
-                            parsed_tool_calls.push(ToolCall::invalid(
-                                id.to_string(),
-                                partial.name,
-                                partial.arguments,
-                                err.to_string(),
-                            ));
-                        }
-                    }
-                };
-            }
-
-            if !parsed_tool_calls.is_empty() {
-                tx.send(DaveApiResponse::ToolCalls(parsed_tool_calls))
-                    .unwrap();
-                ctx.request_repaint();
-            }
-
-            tracing::debug!("stream closed");
-        });
     }
 }
 

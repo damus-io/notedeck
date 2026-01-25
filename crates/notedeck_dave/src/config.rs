@@ -1,3 +1,4 @@
+use crate::backend::BackendType;
 use async_openai::config::OpenAIConfig;
 
 /// Available AI providers for Dave
@@ -124,9 +125,11 @@ impl DaveSettings {
 #[derive(Debug)]
 pub struct ModelConfig {
     pub trial: bool,
+    pub backend: BackendType,
     endpoint: Option<String>,
     model: String,
     api_key: Option<String>,
+    pub anthropic_api_key: Option<String>,
 }
 
 // short-term trial key for testing
@@ -152,17 +155,54 @@ impl Default for ModelConfig {
             .ok()
             .or(std::env::var("OPENAI_API_KEY").ok());
 
+        let anthropic_api_key = std::env::var("ANTHROPIC_API_KEY")
+            .ok()
+            .or(std::env::var("CLAUDE_API_KEY").ok());
+
+        // Determine backend: explicit env var takes precedence, otherwise auto-detect
+        let backend = if let Ok(backend_str) = std::env::var("DAVE_BACKEND") {
+            match backend_str.to_lowercase().as_str() {
+                "claude" | "anthropic" => BackendType::Claude,
+                "openai" => BackendType::OpenAI,
+                _ => {
+                    tracing::warn!(
+                        "Unknown DAVE_BACKEND value: {}, defaulting to OpenAI",
+                        backend_str
+                    );
+                    BackendType::OpenAI
+                }
+            }
+        } else {
+            // Auto-detect: prefer Claude if key is available, otherwise OpenAI
+            if anthropic_api_key.is_some() {
+                BackendType::Claude
+            } else {
+                BackendType::OpenAI
+            }
+        };
+
         // trial mode?
-        let trial = api_key.is_none();
-        let api_key = api_key.or(Some(DAVE_TRIAL.to_string()));
+        let trial = api_key.is_none() && backend == BackendType::OpenAI;
+        let api_key = if backend == BackendType::OpenAI {
+            api_key.or(Some(DAVE_TRIAL.to_string()))
+        } else {
+            api_key
+        };
+
+        let model = std::env::var("DAVE_MODEL")
+            .ok()
+            .unwrap_or_else(|| match backend {
+                BackendType::OpenAI => "gpt-4o".to_string(),
+                BackendType::Claude => "claude-sonnet-4.5".to_string(),
+            });
 
         ModelConfig {
             trial,
+            backend,
             endpoint: std::env::var("DAVE_ENDPOINT").ok(),
-            model: std::env::var("DAVE_MODEL")
-                .ok()
-                .unwrap_or("gpt-4o".to_string()),
+            model,
             api_key,
+            anthropic_api_key,
         }
     }
 }
@@ -183,9 +223,11 @@ impl ModelConfig {
     pub fn ollama() -> Self {
         ModelConfig {
             trial: false,
+            backend: BackendType::OpenAI, // Ollama uses OpenAI-compatible API
             endpoint: std::env::var("OLLAMA_HOST").ok().map(|h| h + "/v1"),
             model: "hhao/qwen2.5-coder-tools:latest".to_string(),
             api_key: None,
+            anthropic_api_key: None,
         }
     }
 
