@@ -1,3 +1,13 @@
+mod avatar;
+mod config;
+pub(crate) mod mesh;
+mod messages;
+mod quaternion;
+pub mod session;
+mod tools;
+mod ui;
+mod vec3;
+
 use async_openai::{
     config::OpenAIConfig,
     types::{ChatCompletionRequestMessage, CreateChatCompletionRequest},
@@ -8,41 +18,37 @@ use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
 use futures::StreamExt;
 use nostrdb::Transaction;
-use notedeck::{AppAction, AppContext, AppResponse};
+use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::HashMap;
 use std::string::ToString;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc;
 use std::sync::Arc;
 
 pub use avatar::DaveAvatar;
 pub use config::ModelConfig;
 pub use messages::{DaveApiResponse, Message};
 pub use quaternion::Quaternion;
+pub use session::{ChatSession, SessionId, SessionManager};
 pub use tools::{
     PartialToolCall, QueryCall, QueryResponse, Tool, ToolCall, ToolCalls, ToolResponse,
     ToolResponses,
 };
-pub use ui::{DaveAction, DaveResponse, DaveUi};
+pub use ui::{DaveAction, DaveResponse, DaveUi, SessionListAction, SessionListUi};
 pub use vec3::Vec3;
 
-mod avatar;
-mod config;
-pub(crate) mod mesh;
-mod messages;
-mod quaternion;
-mod tools;
-mod ui;
-mod vec3;
-
 pub struct Dave {
-    chat: Vec<Message>,
+    /// Manages multiple chat sessions
+    session_manager: SessionManager,
     /// A 3d representation of dave.
     avatar: Option<DaveAvatar>,
-    input: String,
+    /// Shared tools available to all sessions
     tools: Arc<HashMap<String, Tool>>,
+    /// Shared API client
     client: async_openai::Client<OpenAIConfig>,
-    incoming_tokens: Option<Receiver<DaveApiResponse>>,
+    /// Model configuration
     model_config: ModelConfig,
+    /// Whether to show session list on mobile
+    show_session_list: bool,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -92,7 +98,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         //let model_config = ModelConfig::ollama();
         let client = Client::with_config(model_config.to_api());
 
-        let input = "".to_string();
         let avatar = render_state.map(DaveAvatar::new);
         let mut tools: HashMap<String, Tool> = HashMap::new();
         for tool in tools::dave_tools() {
@@ -102,11 +107,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         Dave {
             client,
             avatar,
-            incoming_tokens: None,
+            session_manager: SessionManager::new(),
             tools: Arc::new(tools),
-            input,
             model_config,
-            chat: vec![],
+            show_session_list: false,
         }
     }
 
@@ -116,7 +120,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // we have tool responses to send back to the ai
         let mut should_send = false;
 
-        let Some(recvr) = &self.incoming_tokens else {
+        // Take the receiver out to avoid borrow conflicts
+        let recvr = {
+            let Some(session) = self.session_manager.get_active_mut() else {
+                return should_send;
+            };
+            session.incoming_tokens.take()
+        };
+
+        let Some(recvr) = recvr else {
             return should_send;
         };
 
@@ -124,25 +136,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if let Some(avatar) = &mut self.avatar {
                 avatar.random_nudge();
             }
-            match res {
-                DaveApiResponse::Failed(err) => self.chat.push(Message::Error(err)),
 
-                DaveApiResponse::Token(token) => match self.chat.last_mut() {
+            let Some(session) = self.session_manager.get_active_mut() else {
+                break;
+            };
+
+            match res {
+                DaveApiResponse::Failed(err) => session.chat.push(Message::Error(err)),
+
+                DaveApiResponse::Token(token) => match session.chat.last_mut() {
                     Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
-                    Some(_) => self.chat.push(Message::Assistant(token)),
+                    Some(_) => session.chat.push(Message::Assistant(token)),
                     None => {}
                 },
 
                 DaveApiResponse::ToolCalls(toolcalls) => {
                     tracing::info!("got tool calls: {:?}", toolcalls);
-                    self.chat.push(Message::ToolCalls(toolcalls.clone()));
+                    session.chat.push(Message::ToolCalls(toolcalls.clone()));
 
                     let txn = Transaction::new(app_ctx.ndb).unwrap();
                     for call in &toolcalls {
                         // execute toolcall
                         match call.calls() {
                             ToolCalls::PresentNotes(present) => {
-                                self.chat.push(Message::ToolResponse(ToolResponse::new(
+                                session.chat.push(Message::ToolResponse(ToolResponse::new(
                                     call.id().to_owned(),
                                     ToolResponses::PresentNotes(present.note_ids.len() as i32),
                                 )));
@@ -153,7 +170,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             ToolCalls::Invalid(invalid) => {
                                 should_send = true;
 
-                                self.chat.push(Message::tool_error(
+                                session.chat.push(Message::tool_error(
                                     call.id().to_string(),
                                     invalid.error.clone(),
                                 ));
@@ -163,7 +180,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 should_send = true;
 
                                 let resp = search_call.execute(&txn, app_ctx.ndb);
-                                self.chat.push(Message::ToolResponse(ToolResponse::new(
+                                session.chat.push(Message::ToolResponse(ToolResponse::new(
                                     call.id().to_owned(),
                                     ToolResponses::Query(resp),
                                 )))
@@ -174,38 +191,132 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
+        // Put the receiver back
+        if let Some(session) = self.session_manager.get_active_mut() {
+            session.incoming_tokens = Some(recvr);
+        }
+
         should_send
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        /*
-        let rect = ui.available_rect_before_wrap();
-        if let Some(av) = self.avatar.as_mut() {
-            av.render(rect, ui);
-            ui.ctx().request_repaint();
+        if is_narrow(ui.ctx()) {
+            self.narrow_ui(app_ctx, ui)
+        } else {
+            self.desktop_ui(app_ctx, ui)
         }
-        DaveResponse::default()
-            */
+    }
 
-        DaveUi::new(self.model_config.trial, &self.chat, &mut self.input).ui(app_ctx, ui)
+    /// Desktop layout with sidebar for session list
+    fn desktop_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let available = ui.available_rect_before_wrap();
+        let sidebar_width = 280.0;
+
+        let sidebar_rect =
+            egui::Rect::from_min_size(available.min, egui::vec2(sidebar_width, available.height()));
+        let chat_rect = egui::Rect::from_min_size(
+            egui::pos2(available.min.x + sidebar_width, available.min.y),
+            egui::vec2(available.width() - sidebar_width, available.height()),
+        );
+
+        // Render sidebar first - borrow released after this
+        let session_action = ui
+            .allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+                egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::symmetric(8, 12))
+                    .show(ui, |ui| SessionListUi::new(&self.session_manager).ui(ui))
+                    .inner
+            })
+            .inner;
+
+        // Now we can mutably borrow for chat
+        let chat_response = ui
+            .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
+                if let Some(session) = self.session_manager.get_active_mut() {
+                    DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
+                        .ui(app_ctx, ui)
+                } else {
+                    DaveResponse::default()
+                }
+            })
+            .inner;
+
+        // Handle actions after rendering
+        if let Some(action) = session_action {
+            match action {
+                SessionListAction::NewSession => return DaveResponse::new(DaveAction::NewChat),
+                SessionListAction::SwitchTo(id) => {
+                    self.session_manager.switch_to(id);
+                }
+                SessionListAction::Delete(id) => {
+                    self.session_manager.delete_session(id);
+                }
+            }
+        }
+
+        chat_response
+    }
+
+    /// Narrow/mobile layout - shows either session list or chat
+    fn narrow_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        if self.show_session_list {
+            // Show session list
+            let session_action = egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .inner_margin(egui::Margin::symmetric(8, 12))
+                .show(ui, |ui| SessionListUi::new(&self.session_manager).ui(ui))
+                .inner;
+            if let Some(action) = session_action {
+                match action {
+                    SessionListAction::NewSession => {
+                        self.session_manager.new_session();
+                        self.show_session_list = false;
+                    }
+                    SessionListAction::SwitchTo(id) => {
+                        self.session_manager.switch_to(id);
+                        self.show_session_list = false;
+                    }
+                    SessionListAction::Delete(id) => {
+                        self.session_manager.delete_session(id);
+                    }
+                }
+            }
+            DaveResponse::default()
+        } else {
+            // Show chat
+            if let Some(session) = self.session_manager.get_active_mut() {
+                DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
+                    .ui(app_ctx, ui)
+            } else {
+                DaveResponse::default()
+            }
+        }
     }
 
     fn handle_new_chat(&mut self) {
-        self.chat = vec![];
-        self.input.clear();
+        self.session_manager.new_session();
     }
 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
-        self.chat.push(Message::User(self.input.clone()));
+        if let Some(session) = self.session_manager.get_active_mut() {
+            session.chat.push(Message::User(session.input.clone()));
+            session.input.clear();
+            session.update_title_from_first_message();
+        }
         self.send_user_message(app_ctx, ui.ctx());
-        self.input.clear();
     }
 
     fn send_user_message(&mut self, app_ctx: &AppContext, ctx: &egui::Context) {
+        let Some(session) = self.session_manager.get_active_mut() else {
+            return;
+        };
+
         let messages: Vec<ChatCompletionRequestMessage> = {
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            self.chat
+            session
+                .chat
                 .iter()
                 .filter_map(|c| c.to_api_msg(&txn, app_ctx.ndb))
                 .collect()
@@ -220,7 +331,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let model_name = self.model_config.model().to_owned();
 
         let (tx, rx) = mpsc::channel();
-        self.incoming_tokens = Some(rx);
+        session.incoming_tokens = Some(rx);
 
         tokio::spawn(async move {
             let mut token_stream = match client
@@ -340,9 +451,11 @@ impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut app_action: Option<AppAction> = None;
 
-        // always insert system prompt if we have no context
-        if self.chat.is_empty() {
-            self.chat.push(Dave::system_prompt());
+        // always insert system prompt if we have no context in active session
+        if let Some(session) = self.session_manager.get_active_mut() {
+            if session.chat.is_empty() {
+                session.chat.push(Dave::system_prompt());
+            }
         }
 
         //update_dave(self, ctx, ui.ctx());
@@ -360,6 +473,9 @@ impl notedeck::App for Dave {
                 }
                 DaveAction::Send => {
                     self.handle_user_send(ctx, ui);
+                }
+                DaveAction::ShowSessionList => {
+                    self.show_session_list = !self.show_session_list;
                 }
             }
         }

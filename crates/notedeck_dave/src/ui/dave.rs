@@ -7,7 +7,7 @@ use nostrdb::{Ndb, Transaction};
 use notedeck::{
     tr, Accounts, AppContext, Images, Localization, MediaJobSender, NoteAction, NoteContext,
 };
-use notedeck_ui::{app_images, icons::search_icon, NoteOptions, ProfilePic};
+use notedeck_ui::{icons::search_icon, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -24,7 +24,7 @@ pub struct DaveResponse {
 }
 
 impl DaveResponse {
-    fn new(action: DaveAction) -> Self {
+    pub fn new(action: DaveAction) -> Self {
         DaveResponse {
             action: Some(action),
         }
@@ -34,7 +34,7 @@ impl DaveResponse {
         Self::new(DaveAction::Note(action))
     }
 
-    fn or(self, r: DaveResponse) -> DaveResponse {
+    pub fn or(self, r: DaveResponse) -> DaveResponse {
         DaveResponse {
             action: self.action.or(r.action),
         }
@@ -60,6 +60,8 @@ pub enum DaveAction {
     NewChat,
     ToggleChrome,
     Note(NoteAction),
+    /// Toggle showing the session list (for mobile navigation)
+    ShowSessionList,
 }
 
 impl<'a> DaveUi<'a> {
@@ -367,31 +369,6 @@ impl<'a> DaveUi<'a> {
     }
 }
 
-fn new_chat_button() -> impl egui::Widget {
-    move |ui: &mut egui::Ui| {
-        let img_size = 24.0;
-        let max_size = 32.0;
-
-        let img = app_images::new_message_image().max_width(img_size);
-
-        let helper = notedeck_ui::anim::AnimationHelper::new(
-            ui,
-            "new-chat-button",
-            egui::vec2(max_size, max_size),
-        );
-
-        let cur_img_size = helper.scale_1d_pos(img_size);
-        img.paint_at(
-            ui,
-            helper
-                .get_animation_rect()
-                .shrink((max_size - cur_img_size) / 2.0),
-        );
-
-        helper.take_animation_response()
-    }
-}
-
 fn query_call_ui(
     cache: &mut notedeck::Images,
     ndb: &Ndb,
@@ -485,6 +462,20 @@ fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAct
     rect.set_height(32.0);
     rect.set_width(32.0);
 
+    // Show session list button on mobile/narrow screens
+    if notedeck::ui::is_narrow(ui.ctx()) {
+        let r = ui
+            .put(rect, egui::Button::new("\u{2630}").frame(false))
+            .on_hover_text("Show chats")
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        if r.clicked() {
+            action = Some(DaveAction::ShowSessionList);
+        }
+
+        rect = rect.translate(egui::vec2(30.0, 0.0));
+    }
+
     let txn = Transaction::new(app_ctx.ndb).unwrap();
     let r = ui
         .put(
@@ -501,13 +492,6 @@ fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAct
 
     if r.clicked() {
         action = Some(DaveAction::ToggleChrome);
-    }
-
-    rect = rect.translate(egui::vec2(30.0, 0.0));
-    let r = ui.put(rect, new_chat_button());
-
-    if r.clicked() {
-        action = Some(DaveAction::NewChat);
     }
 
     action
