@@ -7,7 +7,7 @@ use nostrdb::{Ndb, Transaction};
 use notedeck::{
     tr, Accounts, AppContext, Images, Localization, MediaJobSender, NoteAction, NoteContext,
 };
-use notedeck_ui::{app_images, icons::search_icon, NoteOptions, ProfilePic};
+use notedeck_ui::{icons::search_icon, NoteOptions, ProfilePic};
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -369,31 +369,6 @@ impl<'a> DaveUi<'a> {
     }
 }
 
-fn new_chat_button() -> impl egui::Widget {
-    move |ui: &mut egui::Ui| {
-        let img_size = 24.0;
-        let max_size = 32.0;
-
-        let img = app_images::new_message_image().max_width(img_size);
-
-        let helper = notedeck_ui::anim::AnimationHelper::new(
-            ui,
-            "new-chat-button",
-            egui::vec2(max_size, max_size),
-        );
-
-        let cur_img_size = helper.scale_1d_pos(img_size);
-        img.paint_at(
-            ui,
-            helper
-                .get_animation_rect()
-                .shrink((max_size - cur_img_size) / 2.0),
-        );
-
-        helper.take_animation_response()
-    }
-}
-
 fn query_call_ui(
     cache: &mut notedeck::Images,
     ndb: &Ndb,
@@ -517,13 +492,6 @@ fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAct
 
     if r.clicked() {
         action = Some(DaveAction::ToggleChrome);
-    }
-
-    rect = rect.translate(egui::vec2(30.0, 0.0));
-    let r = ui.put(rect, new_chat_button());
-
-    if r.clicked() {
-        action = Some(DaveAction::NewChat);
     }
 
     action

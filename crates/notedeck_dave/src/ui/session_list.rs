@@ -1,4 +1,5 @@
 use egui::{Align, Layout, Sense};
+use notedeck_ui::app_images;
 
 use crate::session::{SessionId, SessionManager};
 
@@ -50,9 +51,13 @@ impl<'a> SessionListUi<'a> {
             ui.label(egui::RichText::new("Chats").size(18.0).strong());
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(4.0);
+                let icon = app_images::new_message_image()
+                    .max_height(20.0)
+                    .sense(Sense::click());
+
                 if ui
-                    .button(egui::RichText::new("+").size(18.0))
+                    .add(icon)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text("New Chat")
                     .clicked()
                 {
