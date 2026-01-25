@@ -24,7 +24,7 @@ pub struct DaveResponse {
 }
 
 impl DaveResponse {
-    fn new(action: DaveAction) -> Self {
+    pub fn new(action: DaveAction) -> Self {
         DaveResponse {
             action: Some(action),
         }
@@ -34,7 +34,7 @@ impl DaveResponse {
         Self::new(DaveAction::Note(action))
     }
 
-    fn or(self, r: DaveResponse) -> DaveResponse {
+    pub fn or(self, r: DaveResponse) -> DaveResponse {
         DaveResponse {
             action: self.action.or(r.action),
         }
@@ -60,6 +60,8 @@ pub enum DaveAction {
     NewChat,
     ToggleChrome,
     Note(NoteAction),
+    /// Toggle showing the session list (for mobile navigation)
+    ShowSessionList,
 }
 
 impl<'a> DaveUi<'a> {
@@ -484,6 +486,20 @@ fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAct
     rect = rect.translate(egui::vec2(20.0, 20.0));
     rect.set_height(32.0);
     rect.set_width(32.0);
+
+    // Show session list button on mobile/narrow screens
+    if notedeck::ui::is_narrow(ui.ctx()) {
+        let r = ui
+            .put(rect, egui::Button::new("\u{2630}").frame(false))
+            .on_hover_text("Show chats")
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        if r.clicked() {
+            action = Some(DaveAction::ShowSessionList);
+        }
+
+        rect = rect.translate(egui::vec2(30.0, 0.0));
+    }
 
     let txn = Transaction::new(app_ctx.ndb).unwrap();
     let r = ui
