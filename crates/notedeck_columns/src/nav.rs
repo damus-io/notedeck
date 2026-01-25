@@ -277,6 +277,11 @@ fn process_nav_resp(
     if let Some(action) = response.action {
         match action {
             NavAction::Returned(return_type) => {
+                // Reset toolbar visibility when returning from a route
+                let toolbar_visible_id = egui::Id::new("toolbar_visible");
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+
                 let r = app
                     .columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
@@ -303,6 +308,11 @@ fn process_nav_resp(
             }
 
             NavAction::Navigated => {
+                // Reset toolbar visibility when navigating to a new route
+                let toolbar_visible_id = egui::Id::new("toolbar_visible");
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
                 handle_navigating_timeline(
                     ctx.ndb,
