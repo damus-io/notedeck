@@ -105,22 +105,23 @@ This document captures the current architecture, coding conventions, and design 
 
 1. Please make all **commits logically distinct**.
 2. Please make all **commits standalone** (i.e. so that they can be readily removed tens of commits later without impact the rest of the code).
-3. Related to logically distinct code, and standalone commits care must be taken for all **code to be human readable, and reviewable by human developers**.
-4. Please set up code for **performance profiling utilizing puffin** (e.g. `cargo run --release --features puffin`).
-5. Related to **Puffin & performance profiling**, for code suspected of impacting performance, carefully consider adding performance profiling attributes such as e.g. profiling::function in order to see functions performance in the profiler.
-6. **Global variables are not allowed** in this codebase, even if they are thread local. State should be managed in an struct that is passed in as reference.
-7. **Inspect notedeck code for reusable components, elements, patterns** etc. before creating new code for both A) notedeck updates, and B) apps built on notedeck.
-8.  **Nevernesting** — favor early returns and guard clauses over deeply nested conditionals; simplify control flow by exiting early instead of wrapping logic in multiple layers of `if` statements.
-9.  **Do not fudge CI tests**, in order to get a commit or PR to pass. Instead identify the underlying root cause of CI failure, and address that.
-10. Before proposing changes, please **review and analyze if a change or upgrade to nostrdb** is beneficial to the change at hand.
-11. **Ensure docstring coverage** for any code added, or modified.
-12. Run **cargo fmt, cargo clippy, cargo test**.
-13. **Do not vendor code**. In cargo.toml replace the existing url with the fork that includes the new code. If vendoring is absolutely necessary you must present the case why no other options are feasible.
-14. **Avoid Mutexes** — prefer `poll_promise::Promise` for async results, `Rc<RefCell<>>` for single-threaded interior mutability, or `tokio::sync::RwLock` when cross-thread sharing is truly necessary. Mutexes can cause UI stalls if held across frames.
-15. **Per-frame UI constraints** — the UI runs every frame; never block the render loop. Use `Promise::ready()` for non-blocking result checks. Offload CPU-heavy work to `JobPool` or `tokio::spawn()`, returning results via channels or Promises.
-16. **Cherry-pick commits** — when incorporating work from other branches or contributors, use `git cherry-pick` to preserve original authorship rather than copying code manually.
-17. **Frame-aware animations** — for animations (GIFs, video), track `repaint_at` timestamps and only request repaints when necessary; avoid spinning every frame.
-18. Commits which have code which contain fixes or refactors which were introduced in the same PR should be **rebased such that the fixes are added to the original code history**.
+3. Scaffold logically distinct commits that are standalone, before you start adding code.
+4. Related to logically distinct code, and standalone commits care must be taken for all **code to be human readable, and reviewable by human developers**.
+5. Please set up code for **performance profiling utilizing puffin** (e.g. `cargo run --release --features puffin`).
+6. Related to **Puffin & performance profiling**, for code suspected of impacting performance, carefully consider adding performance profiling attributes such as e.g. profiling::function in order to see functions performance in the profiler.
+7. **Global variables are not allowed** in this codebase, even if they are thread local. State should be managed in an struct that is passed in as reference.
+8. **Inspect notedeck code for reusable components, elements, patterns** etc. before creating new code for both A) notedeck updates, and B) apps built on notedeck.
+9.  **Nevernesting** — favor early returns and guard clauses over deeply nested conditionals; simplify control flow by exiting early instead of wrapping logic in multiple layers of `if` statements.
+10.  **Do not fudge CI tests**, in order to get a commit or PR to pass. Instead identify the underlying root cause of CI failure, and address that.
+11. Before proposing changes, please **review and analyze if a change or upgrade to nostrdb** is beneficial to the change at hand.
+12. **Ensure docstring coverage** for any code added, or modified.
+13. Run **cargo fmt, cargo clippy, cargo test**.
+14. **Do not vendor code**. In cargo.toml replace the existing url with the fork that includes the new code. If vendoring is absolutely necessary you must present the case why no other options are feasible.
+15. **Avoid Mutexes** — prefer `poll_promise::Promise` for async results, `Rc<RefCell<>>` for single-threaded interior mutability, or `tokio::sync::RwLock` when cross-thread sharing is truly necessary. Mutexes can cause UI stalls if held across frames.
+16. **Per-frame UI constraints** — the UI runs every frame; never block the render loop. Use `Promise::ready()` for non-blocking result checks. Offload CPU-heavy work to `JobPool` or `tokio::spawn()`, returning results via channels or Promises.
+17. **Cherry-pick commits** — when incorporating work from other branches or contributors, use `git cherry-pick` to preserve original authorship rather than copying code manually.
+18. **Frame-aware animations** — for animations (GIFs, video), track `repaint_at` timestamps and only request repaints when necessary; avoid spinning every frame.
+19. Commits which have code which contain fixes or refactors which were introduced in the same PR should be **rebased such that the fixes are added to the original code history**.
 20. **Verify that existing code that can do the job is not ignored** (in lieu of creating code that performs the same function of existing code).
 21. **Do not accrue duplicate code.** Always revisit how existing code can be applied and/or refactored in solving new issues.
 22. **Always prefer simplicity** One line of code is better than ten. Ten is better than a hundred. A commit with ten thousand lines of code is not reviewable by a human developer.
