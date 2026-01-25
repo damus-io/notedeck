@@ -222,7 +222,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Render sidebar first - borrow released after this
         let session_action = ui
             .allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-                SessionListUi::new(&self.session_manager).ui(ui)
+                egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::symmetric(8, 12))
+                    .show(ui, |ui| SessionListUi::new(&self.session_manager).ui(ui))
+                    .inner
             })
             .inner;
 
@@ -258,7 +262,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn narrow_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         if self.show_session_list {
             // Show session list
-            if let Some(action) = SessionListUi::new(&self.session_manager).ui(ui) {
+            let session_action = egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .inner_margin(egui::Margin::symmetric(8, 12))
+                .show(ui, |ui| SessionListUi::new(&self.session_manager).ui(ui))
+                .inner;
+            if let Some(action) = session_action {
                 match action {
                     SessionListAction::NewSession => {
                         self.session_manager.new_session();

@@ -1,7 +1,6 @@
 use egui::{Align, Layout, Sense};
 
 use crate::session::{SessionId, SessionManager};
-use crate::Message;
 
 /// Actions that can be triggered from the session list UI
 #[derive(Debug, Clone)]
@@ -29,8 +28,6 @@ impl<'a> SessionListUi<'a> {
             action = self.header_ui(ui);
 
             ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(8.0);
 
             // Scrollable list of sessions
             egui::ScrollArea::vertical()
@@ -49,13 +46,13 @@ impl<'a> SessionListUi<'a> {
         let mut action = None;
 
         ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            ui.heading("Chats");
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("Chats").size(18.0).strong());
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(12.0);
+                ui.add_space(4.0);
                 if ui
-                    .button("+")
+                    .button(egui::RichText::new("+").size(18.0))
                     .on_hover_text("New Chat")
                     .clicked()
                 {
@@ -74,7 +71,7 @@ impl<'a> SessionListUi<'a> {
         for session in self.session_manager.sessions_ordered() {
             let is_active = Some(session.id) == active_id;
 
-            let response = self.session_item_ui(ui, &session.title, Self::get_preview(&session.chat), is_active);
+            let response = self.session_item_ui(ui, &session.title, is_active);
 
             if response.clicked() {
                 action = Some(SessionListAction::SwitchTo(session.id));
@@ -92,72 +89,33 @@ impl<'a> SessionListUi<'a> {
         action
     }
 
-    fn session_item_ui(
-        &self,
-        ui: &mut egui::Ui,
-        title: &str,
-        preview: Option<String>,
-        is_active: bool,
-    ) -> egui::Response {
+    fn session_item_ui(&self, ui: &mut egui::Ui, title: &str, is_active: bool) -> egui::Response {
+        let desired_size = egui::vec2(ui.available_width(), 36.0);
+        let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        // Paint background: active > hovered > transparent
         let fill = if is_active {
             ui.visuals().widgets.active.bg_fill
+        } else if response.hovered() {
+            ui.visuals().widgets.hovered.weak_bg_fill
         } else {
             egui::Color32::TRANSPARENT
         };
 
-        let frame = egui::Frame::new()
-            .fill(fill)
-            .inner_margin(egui::Margin::symmetric(12, 8))
-            .corner_radius(8.0);
+        let corner_radius = 8.0;
+        ui.painter().rect_filled(rect, corner_radius, fill);
 
-        frame
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
+        // Draw title text (left-aligned, vertically centered)
+        let text_pos = rect.left_center() + egui::vec2(8.0, 0.0);
+        ui.painter().text(
+            text_pos,
+            egui::Align2::LEFT_CENTER,
+            title,
+            egui::FontId::proportional(14.0),
+            ui.visuals().text_color(),
+        );
 
-                ui.vertical(|ui| {
-                    // Title
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(title)
-                                .strong()
-                                .size(14.0),
-                        )
-                        .truncate(),
-                    );
-
-                    // Preview of last message
-                    if let Some(preview) = preview {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(preview)
-                                    .weak()
-                                    .size(12.0),
-                            )
-                            .truncate(),
-                        );
-                    }
-                });
-            })
-            .response
-            .interact(Sense::click())
-    }
-
-    /// Get a preview string from the chat history
-    fn get_preview(chat: &[Message]) -> Option<String> {
-        // Find the last user or assistant message
-        for msg in chat.iter().rev() {
-            match msg {
-                Message::User(text) | Message::Assistant(text) => {
-                    let preview: String = text.chars().take(50).collect();
-                    return Some(if text.len() > 50 {
-                        format!("{}...", preview)
-                    } else {
-                        preview
-                    });
-                }
-                _ => continue,
-            }
-        }
-        None
+        response
     }
 }
