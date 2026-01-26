@@ -17,9 +17,24 @@ use std::collections::HashSet;
 use uuid::Uuid;
 
 use crate::comment::{CachedComment, Comment, KIND_COMMENT};
-use crate::subscription::{calendar_comments_filter, calendar_events_filter};
+use crate::forms::{
+    build_calendar_note, build_event_note, build_rsvp_note, CalendarFormState, EventFormState,
+};
+use crate::rsvp::{Rsvp, RsvpStatus};
+use crate::subscription::{calendar_comments_filter, calendar_events_filter, rsvps_by_author};
 use crate::timezone::format_time;
-use crate::{CalendarEvent, CalendarTime, KIND_DATE_CALENDAR_EVENT, KIND_TIME_CALENDAR_EVENT};
+use crate::{
+    CalendarEvent, CalendarTime, KIND_DATE_CALENDAR_EVENT, KIND_RSVP, KIND_TIME_CALENDAR_EVENT,
+};
+
+/// Types of modals that can be shown in the calendar app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModalType {
+    /// Create a new calendar event.
+    CreateEvent,
+    /// Create a new calendar (kind 31924).
+    CreateCalendar,
+}
 
 /// Extract a country flag emoji from a location string.
 ///
@@ -590,6 +605,26 @@ pub struct CalendarApp {
     comments_needs_refresh: bool,
     /// Whether the comments section is expanded in the detail view.
     comments_expanded: bool,
+    /// Local nostrdb subscription for user's RSVPs (kind 31925).
+    rsvp_subscription: Option<Subscription>,
+    /// Remote relay subscription ID for RSVPs.
+    rsvp_remote_sub_id: Option<String>,
+    /// User's RSVPs indexed by event coordinates.
+    user_rsvps: std::collections::HashMap<String, RsvpStatus>,
+    /// Whether we need to refresh RSVPs from nostrdb.
+    rsvps_needs_refresh: bool,
+    /// Pending RSVP to publish (event_coordinates, status).
+    pending_rsvp: Option<(String, RsvpStatus)>,
+    /// Currently active modal (if any).
+    active_modal: Option<ModalType>,
+    /// Event form state for create/edit.
+    event_form: EventFormState,
+    /// Flag to publish event on next update (set by modal, handled in update).
+    pending_event_publish: bool,
+    /// Calendar form state for create/edit.
+    calendar_form: CalendarFormState,
+    /// Flag to publish calendar on next update.
+    pending_calendar_publish: bool,
 }
 
 impl Default for CalendarApp {
@@ -623,6 +658,16 @@ impl CalendarApp {
             comments: std::collections::HashMap::new(),
             comments_needs_refresh: true,
             comments_expanded: false,
+            rsvp_subscription: None,
+            rsvp_remote_sub_id: None,
+            user_rsvps: std::collections::HashMap::new(),
+            rsvps_needs_refresh: true,
+            pending_rsvp: None,
+            active_modal: None,
+            event_form: EventFormState::new(),
+            pending_event_publish: false,
+            calendar_form: CalendarFormState::new(),
+            pending_calendar_publish: false,
         }
     }
 
@@ -1027,6 +1072,82 @@ impl CalendarApp {
         }
     }
 
+    /// Ensure RSVP subscription is active for user's RSVPs.
+    fn ensure_rsvp_subscription(&mut self, ctx: &mut AppContext<'_>) {
+        // Need user's pubkey to subscribe to their RSVPs
+        let user_pubkey = ctx.accounts.selected_account_pubkey();
+
+        // Create local nostrdb subscription for RSVPs if not already done
+        if self.rsvp_subscription.is_none() {
+            let filter = rsvps_by_author(user_pubkey.bytes(), 100);
+            match ctx.ndb.subscribe(std::slice::from_ref(&filter)) {
+                Ok(sub) => {
+                    self.rsvp_subscription = Some(sub);
+                    tracing::info!("Calendar: RSVP subscription created for user");
+                }
+                Err(e) => {
+                    tracing::error!("Calendar: Failed to create RSVP subscription: {}", e);
+                    return;
+                }
+            }
+
+            // Generate subscription ID for remote relays
+            let subid = Uuid::new_v4().to_string();
+            self.rsvp_remote_sub_id = Some(subid.clone());
+            tracing::info!("Calendar: Generated RSVP relay subscription ID: {}", subid);
+        }
+
+        // Send subscription to any connected relays we haven't subscribed to yet
+        let Some(subid) = &self.rsvp_remote_sub_id else {
+            return;
+        };
+        let filter = rsvps_by_author(user_pubkey.bytes(), 100);
+
+        for relay in &mut ctx.pool.relays {
+            let relay_url = relay.url().to_string();
+
+            // Skip if we've already subscribed to this relay
+            if self.subscribed_relays.contains(&relay_url) {
+                continue;
+            }
+
+            // Only send to connected relays
+            let is_connected = matches!(relay.status(), notedeck::enostr::RelayStatus::Connected);
+            if !is_connected {
+                continue;
+            }
+
+            // Send RSVP subscription to this relay
+            let msg = ClientMessage::req(subid.clone(), vec![filter.clone()]);
+            if let Err(e) = relay.send(&msg) {
+                tracing::error!(
+                    "Calendar: Failed to send RSVP subscription to {}: {}",
+                    relay_url,
+                    e
+                );
+            } else {
+                tracing::info!("Calendar: Sent RSVP subscription to relay {}", relay_url);
+            }
+        }
+    }
+
+    /// Poll for new RSVPs.
+    fn poll_rsvps(&mut self, ctx: &mut AppContext<'_>) {
+        let Some(sub) = self.rsvp_subscription else {
+            return;
+        };
+
+        // Poll for new RSVP note keys
+        let new_keys = ctx.ndb.poll_for_notes(sub, 100);
+        if !new_keys.is_empty() {
+            self.rsvps_needs_refresh = true;
+            tracing::info!(
+                "Calendar: poll_for_notes returned {} new RSVP keys!",
+                new_keys.len()
+            );
+        }
+    }
+
     /// Refresh the comments cache from nostrdb.
     fn refresh_comments(&mut self, ctx: &mut AppContext<'_>) {
         if !self.comments_needs_refresh {
@@ -1118,6 +1239,471 @@ impl CalendarApp {
     /// Get comments for an event.
     fn get_comments(&self, event_coordinates: &str) -> Option<&Vec<CachedComment>> {
         self.comments.get(event_coordinates)
+    }
+
+    /// Refresh user's RSVPs from nostrdb.
+    fn refresh_rsvps(&mut self, ctx: &mut AppContext<'_>) {
+        if !self.rsvps_needs_refresh {
+            return;
+        }
+        self.rsvps_needs_refresh = false;
+
+        // Need user's pubkey to query their RSVPs
+        let user_pubkey = ctx.accounts.selected_account_pubkey();
+
+        let Ok(txn) = Transaction::new(ctx.ndb) else {
+            tracing::error!("Failed to create transaction for RSVPs");
+            return;
+        };
+
+        // Query RSVPs by this user
+        let filter = rsvps_by_author(user_pubkey.bytes(), 100);
+        let results = match ctx.ndb.query(&txn, &[filter], 100) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("Failed to query user RSVPs: {}", e);
+                return;
+            }
+        };
+
+        if !results.is_empty() {
+            tracing::info!("Calendar: Found {} user RSVPs", results.len());
+        }
+
+        // Clear and rebuild RSVPs map
+        self.user_rsvps.clear();
+
+        for result in results {
+            let Ok(note) = ctx.ndb.get_note_by_key(&txn, result.note_key) else {
+                continue;
+            };
+
+            if note.kind() != KIND_RSVP {
+                continue;
+            }
+
+            let Some(rsvp) = Rsvp::from_note(&note) else {
+                continue;
+            };
+
+            // Index by event reference (a-tag value = event coordinates)
+            self.user_rsvps.insert(rsvp.event_ref.clone(), rsvp.status);
+        }
+
+        tracing::info!("Calendar: Indexed {} RSVPs for user", self.user_rsvps.len());
+    }
+
+    /// Get user's RSVP status for an event.
+    fn get_user_rsvp(&self, event_coordinates: &str) -> Option<RsvpStatus> {
+        self.user_rsvps.get(event_coordinates).copied()
+    }
+
+    /// Show the create event modal.
+    fn show_create_event_modal(&mut self, date: Option<NaiveDate>) {
+        // Reset form with optional pre-filled date
+        if let Some(d) = date {
+            self.event_form = EventFormState::with_date(d);
+        } else {
+            self.event_form = EventFormState::new();
+        }
+        self.active_modal = Some(ModalType::CreateEvent);
+    }
+
+    /// Close any active modal.
+    fn close_modal(&mut self) {
+        self.active_modal = None;
+    }
+
+    /// Render the currently active modal (if any).
+    /// Returns true if a modal is open.
+    fn render_modal(&mut self, ctx: &egui::Context) -> bool {
+        let Some(modal_type) = self.active_modal else {
+            return false;
+        };
+
+        match modal_type {
+            ModalType::CreateEvent => {
+                self.render_create_event_modal(ctx);
+            }
+            ModalType::CreateCalendar => {
+                self.render_create_calendar_modal(ctx);
+            }
+        }
+
+        true
+    }
+
+    /// Show the create calendar modal.
+    fn show_create_calendar_modal(&mut self) {
+        self.calendar_form = CalendarFormState::new();
+        self.active_modal = Some(ModalType::CreateCalendar);
+    }
+
+    /// Render the create event modal.
+    fn render_create_event_modal(&mut self, ctx: &egui::Context) {
+        let mut should_close = false;
+        let mut should_submit = false;
+
+        egui::Window::new("Create Event")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(400.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.set_min_width(380.0);
+
+                    // Title (required)
+                    ui.horizontal(|ui| {
+                        ui.label("Title:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.event_form.title)
+                                .hint_text("Event title *")
+                                .desired_width(280.0),
+                        );
+                    });
+
+                    ui.add_space(8.0);
+
+                    // All-day toggle
+                    ui.horizontal(|ui| {
+                        ui.label("All-day event:");
+                        ui.checkbox(&mut self.event_form.is_all_day, "");
+                    });
+
+                    ui.add_space(8.0);
+
+                    // Start date (required)
+                    ui.horizontal(|ui| {
+                        ui.label("Start date:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.event_form.start_date)
+                                .hint_text("YYYY-MM-DD *")
+                                .desired_width(120.0),
+                        );
+                    });
+
+                    // Start time (only for timed events)
+                    if !self.event_form.is_all_day {
+                        ui.horizontal(|ui| {
+                            ui.label("Start time:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.event_form.start_time)
+                                    .hint_text("HH:MM")
+                                    .desired_width(80.0),
+                            );
+                        });
+                    }
+
+                    ui.add_space(8.0);
+
+                    // End date
+                    ui.horizontal(|ui| {
+                        ui.label("End date:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.event_form.end_date)
+                                .hint_text("YYYY-MM-DD")
+                                .desired_width(120.0),
+                        );
+                    });
+
+                    // End time (only for timed events)
+                    if !self.event_form.is_all_day {
+                        ui.horizontal(|ui| {
+                            ui.label("End time:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.event_form.end_time)
+                                    .hint_text("HH:MM")
+                                    .desired_width(80.0),
+                            );
+                        });
+
+                        ui.add_space(8.0);
+
+                        // Timezone (only for timed events)
+                        ui.horizontal(|ui| {
+                            ui.label("Timezone:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.event_form.timezone)
+                                    .hint_text("e.g., America/New_York")
+                                    .desired_width(200.0),
+                            );
+                        });
+                    }
+
+                    ui.add_space(8.0);
+
+                    // Location
+                    ui.horizontal(|ui| {
+                        ui.label("Location:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.event_form.location)
+                                .hint_text("Event location")
+                                .desired_width(280.0),
+                        );
+                    });
+
+                    ui.add_space(8.0);
+
+                    // Summary
+                    ui.horizontal(|ui| {
+                        ui.label("Summary:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.event_form.summary)
+                                .hint_text("Brief summary")
+                                .desired_width(280.0),
+                        );
+                    });
+
+                    ui.add_space(8.0);
+
+                    // Description
+                    ui.label("Description:");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut self.event_form.content)
+                            .hint_text("Full event description...")
+                            .desired_width(380.0)
+                            .desired_rows(4),
+                    );
+
+                    ui.add_space(8.0);
+
+                    // Image URL
+                    ui.horizontal(|ui| {
+                        ui.label("Image URL:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.event_form.image_url)
+                                .hint_text("https://...")
+                                .desired_width(280.0),
+                        );
+                    });
+
+                    ui.add_space(8.0);
+
+                    // Hashtags
+                    ui.horizontal(|ui| {
+                        ui.label("Hashtags:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.event_form.hashtags)
+                                .hint_text("bitcoin, nostr, meetup")
+                                .desired_width(280.0),
+                        );
+                    });
+
+                    ui.add_space(16.0);
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            should_close = true;
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let can_submit = self.event_form.is_valid();
+                            if ui
+                                .add_enabled(can_submit, egui::Button::new("Create Event"))
+                                .clicked()
+                            {
+                                should_submit = true;
+                            }
+                        });
+                    });
+                });
+            });
+
+        if should_close {
+            self.close_modal();
+        }
+
+        if should_submit {
+            // Mark that we need to publish the event
+            // The actual publishing happens in update() where we have AppContext
+            self.pending_event_publish = true;
+        }
+    }
+
+    /// Publish a pending event from the form.
+    fn publish_event(&mut self, ctx: &mut AppContext<'_>) -> bool {
+        if !self.event_form.is_valid() {
+            return false;
+        }
+
+        let Some(keypair) = ctx.accounts.selected_filled() else {
+            tracing::error!("Calendar: No keypair available for event signing");
+            return false;
+        };
+
+        // Build the event note
+        let note = match build_event_note(&self.event_form, &keypair.secret_key.secret_bytes()) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::error!("Calendar: Failed to build event note: {}", e);
+                return false;
+            }
+        };
+
+        // Send to relays
+        let Ok(msg) = ClientMessage::event(&note) else {
+            tracing::error!("Calendar: Failed to create client message for event");
+            return false;
+        };
+
+        ctx.pool.send(&msg);
+        tracing::info!("Calendar: Published event '{}'", self.event_form.title);
+
+        // Clear form and close modal
+        self.event_form.clear();
+        self.close_modal();
+
+        // Trigger refresh to show the new event
+        self.needs_refresh = true;
+
+        true
+    }
+
+    /// Render the create calendar modal.
+    fn render_create_calendar_modal(&mut self, ctx: &egui::Context) {
+        let mut should_close = false;
+        let mut should_submit = false;
+
+        egui::Window::new("Create Calendar")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(350.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(330.0);
+
+                // Title (required)
+                ui.horizontal(|ui| {
+                    ui.label("Title:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.calendar_form.title)
+                            .hint_text("Calendar name *")
+                            .desired_width(220.0),
+                    );
+                });
+
+                ui.add_space(8.0);
+
+                // Description
+                ui.label("Description:");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.calendar_form.description)
+                        .hint_text("Calendar description...")
+                        .desired_width(330.0)
+                        .desired_rows(3),
+                );
+
+                ui.add_space(16.0);
+
+                // Buttons
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        should_close = true;
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let can_submit = self.calendar_form.is_valid();
+                        if ui
+                            .add_enabled(can_submit, egui::Button::new("Create Calendar"))
+                            .clicked()
+                        {
+                            should_submit = true;
+                        }
+                    });
+                });
+            });
+
+        if should_close {
+            self.close_modal();
+        }
+
+        if should_submit {
+            self.pending_calendar_publish = true;
+        }
+    }
+
+    /// Publish a pending calendar from the form.
+    fn publish_calendar(&mut self, ctx: &mut AppContext<'_>) -> bool {
+        if !self.calendar_form.is_valid() {
+            return false;
+        }
+
+        let Some(keypair) = ctx.accounts.selected_filled() else {
+            tracing::error!("Calendar: No keypair available for calendar signing");
+            return false;
+        };
+
+        // Build the calendar note
+        let note =
+            match build_calendar_note(&self.calendar_form, &keypair.secret_key.secret_bytes()) {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::error!("Calendar: Failed to build calendar note: {}", e);
+                    return false;
+                }
+            };
+
+        // Send to relays
+        let Ok(msg) = ClientMessage::event(&note) else {
+            tracing::error!("Calendar: Failed to create client message for calendar");
+            return false;
+        };
+
+        ctx.pool.send(&msg);
+        tracing::info!(
+            "Calendar: Published calendar '{}'",
+            self.calendar_form.title
+        );
+
+        // Clear form and close modal
+        self.calendar_form.clear();
+        self.close_modal();
+
+        true
+    }
+
+    /// Publish a pending RSVP.
+    fn publish_rsvp(&mut self, ctx: &mut AppContext<'_>) {
+        let Some((event_coordinates, status)) = self.pending_rsvp.take() else {
+            return;
+        };
+
+        let Some(keypair) = ctx.accounts.selected_filled() else {
+            tracing::error!("Calendar: No keypair available for RSVP signing");
+            return;
+        };
+
+        // Build the RSVP note
+        let note = match build_rsvp_note(
+            &event_coordinates,
+            status,
+            None,
+            &keypair.secret_key.secret_bytes(),
+        ) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::error!("Calendar: Failed to build RSVP note: {}", e);
+                return;
+            }
+        };
+
+        // Send to relays
+        let Ok(msg) = ClientMessage::event(&note) else {
+            tracing::error!("Calendar: Failed to create client message for RSVP");
+            return;
+        };
+
+        ctx.pool.send(&msg);
+        tracing::info!(
+            "Calendar: Published RSVP ({}) for event {}",
+            status.as_str(),
+            event_coordinates
+        );
+
+        // Update local state immediately
+        self.user_rsvps.insert(event_coordinates, status);
     }
 
     /// Refresh the event cache from nostrdb.
@@ -1311,6 +1897,22 @@ impl CalendarApp {
             ui.heading(&month_year);
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Create menu (dropdown with Event and Calendar options)
+                egui::menu::menu_button(ui, RichText::new("+").size(18.0).strong(), |ui| {
+                    if ui.button("New Event").clicked() {
+                        self.show_create_event_modal(None);
+                        ui.close_menu();
+                    }
+                    if ui.button("New Calendar").clicked() {
+                        self.show_create_calendar_modal();
+                        ui.close_menu();
+                    }
+                })
+                .response
+                .on_hover_text("Create");
+
+                ui.add_space(8.0);
+
                 // View mode selector with spacing
                 ui.spacing_mut().item_spacing.x = 4.0;
                 ui.selectable_value(&mut self.view_mode, CalendarViewMode::Agenda, "Agenda");
@@ -1709,6 +2311,77 @@ impl CalendarApp {
 
             ui.add_space(8.0);
             ui.label(RichText::new(format!("Posted by {}", author_name)).size(13.0));
+        });
+
+        // RSVP section
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        ui.label(RichText::new("RSVP").size(14.0).strong());
+        ui.add_space(8.0);
+
+        let current_rsvp = self.get_user_rsvp(&event.coordinates);
+        let event_coords = event.coordinates.clone();
+
+        ui.horizontal(|ui| {
+            // Accept button
+            let accept_selected = current_rsvp == Some(RsvpStatus::Accepted);
+            let accept_text = if accept_selected {
+                "✓ Going"
+            } else {
+                "Going"
+            };
+            let accept_btn = egui::Button::new(RichText::new(accept_text).size(13.0))
+                .fill(if accept_selected {
+                    Color32::from_rgb(76, 175, 80) // Green when selected
+                } else {
+                    Color32::from_gray(60)
+                })
+                .min_size(Vec2::new(70.0, 32.0));
+            if ui.add(accept_btn).clicked() && !accept_selected {
+                self.pending_rsvp = Some((event_coords.clone(), RsvpStatus::Accepted));
+            }
+
+            ui.add_space(4.0);
+
+            // Tentative button
+            let tentative_selected = current_rsvp == Some(RsvpStatus::Tentative);
+            let tentative_text = if tentative_selected {
+                "✓ Maybe"
+            } else {
+                "Maybe"
+            };
+            let tentative_btn = egui::Button::new(RichText::new(tentative_text).size(13.0))
+                .fill(if tentative_selected {
+                    Color32::from_rgb(255, 193, 7) // Yellow/amber when selected
+                } else {
+                    Color32::from_gray(60)
+                })
+                .min_size(Vec2::new(70.0, 32.0));
+            if ui.add(tentative_btn).clicked() && !tentative_selected {
+                self.pending_rsvp = Some((event_coords.clone(), RsvpStatus::Tentative));
+            }
+
+            ui.add_space(4.0);
+
+            // Decline button
+            let decline_selected = current_rsvp == Some(RsvpStatus::Declined);
+            let decline_text = if decline_selected {
+                "✓ Can't go"
+            } else {
+                "Can't go"
+            };
+            let decline_btn = egui::Button::new(RichText::new(decline_text).size(13.0))
+                .fill(if decline_selected {
+                    Color32::from_rgb(244, 67, 54) // Red when selected
+                } else {
+                    Color32::from_gray(60)
+                })
+                .min_size(Vec2::new(80.0, 32.0));
+            if ui.add(decline_btn).clicked() && !decline_selected {
+                self.pending_rsvp = Some((event_coords, RsvpStatus::Declined));
+            }
         });
 
         // Comments section
@@ -2429,14 +3102,36 @@ impl App for CalendarApp {
         // Ensure we have subscriptions and send to any newly connected relays
         self.ensure_subscription(ctx);
         self.ensure_comments_subscription(ctx);
+        self.ensure_rsvp_subscription(ctx);
 
-        // Poll for new events and comments
+        // Poll for new events, comments, and RSVPs
         self.poll_events(ctx);
         self.poll_comments(ctx);
+        self.poll_rsvps(ctx);
 
         // Refresh caches if needed
         self.refresh_events(ctx);
         self.refresh_comments(ctx);
+        self.refresh_rsvps(ctx);
+
+        // Publish any pending RSVP
+        self.publish_rsvp(ctx);
+
+        // Publish pending event if flagged
+        if self.pending_event_publish {
+            self.pending_event_publish = false;
+            self.publish_event(ctx);
+        }
+
+        // Publish pending calendar if flagged
+        if self.pending_calendar_publish {
+            self.pending_calendar_publish = false;
+            self.publish_calendar(ctx);
+        }
+
+        // Render modal if active (must be done before main UI to ensure it's on top)
+        let egui_ctx = ui.ctx().clone();
+        self.render_modal(&egui_ctx);
 
         // Handle swipe gestures for back navigation (mobile)
         let is_mobile = ui.available_width() < 700.0;
