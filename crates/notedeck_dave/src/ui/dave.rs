@@ -200,13 +200,19 @@ impl<'a> DaveUi<'a> {
     fn permission_request_ui(request: &PermissionRequest, ui: &mut egui::Ui) -> Option<DaveAction> {
         let mut action = None;
 
+        let inner_margin = 8.0;
+        let corner_radius = 6.0;
+        let spacing_x = 8.0;
+
+        ui.spacing_mut().item_spacing.x = spacing_x;
+
         match request.response {
             Some(PermissionResponseType::Allowed) => {
                 // Responded state: Allowed
                 egui::Frame::new()
                     .fill(ui.visuals().widgets.noninteractive.bg_fill)
-                    .inner_margin(8.0)
-                    .corner_radius(6.0)
+                    .inner_margin(inner_margin)
+                    .corner_radius(corner_radius)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
@@ -225,8 +231,8 @@ impl<'a> DaveUi<'a> {
                 // Responded state: Denied
                 egui::Frame::new()
                     .fill(ui.visuals().widgets.noninteractive.bg_fill)
-                    .inner_margin(8.0)
-                    .corner_radius(6.0)
+                    .inner_margin(inner_margin)
+                    .corner_radius(corner_radius)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
@@ -256,17 +262,15 @@ impl<'a> DaveUi<'a> {
                 // Pending state: Show Allow/Deny buttons
                 egui::Frame::new()
                     .fill(ui.visuals().widgets.noninteractive.bg_fill)
-                    .inner_margin(8.0)
-                    .corner_radius(6.0)
+                    .inner_margin(inner_margin)
+                    .corner_radius(corner_radius)
                     .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
                     .show(ui, |ui| {
                         // Tool info display
                         if let Some(desc) = description {
                             // Format: ToolName: description
                             ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{}:", request.tool_name)).strong(),
-                                );
+                                ui.label(egui::RichText::new(&request.tool_name).strong());
                                 ui.label(desc);
 
                                 Self::permission_buttons(request, ui, &mut action);
