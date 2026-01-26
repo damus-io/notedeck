@@ -117,6 +117,7 @@ impl AiBackend for ClaudeBackend {
                             id: Uuid::new_v4(),
                             tool_name: tool_name.clone(),
                             tool_input: tool_input.clone(),
+                            response: None,
                         };
 
                         let pending = PendingPermission {

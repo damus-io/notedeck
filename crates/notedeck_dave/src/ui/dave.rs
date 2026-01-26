@@ -1,6 +1,6 @@
 use crate::{
     config::DaveSettings,
-    messages::{Message, PermissionRequest, PermissionResponse},
+    messages::{Message, PermissionRequest, PermissionResponse, PermissionResponseType},
     tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
@@ -196,91 +196,162 @@ impl<'a> DaveUi<'a> {
         //ui.label(format!("tool_response: {:?}", tool_response));
     }
 
-    /// Render a permission request with Allow/Deny buttons
+    /// Render a permission request with Allow/Deny buttons or response state
     fn permission_request_ui(request: &PermissionRequest, ui: &mut egui::Ui) -> Option<DaveAction> {
         let mut action = None;
 
-        egui::Frame::new()
-            .fill(ui.visuals().widgets.noninteractive.bg_fill)
-            .inner_margin(12.0)
-            .corner_radius(8.0)
-            .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
-            .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    // Header
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("🔐").size(18.0));
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Claude wants to use: {}",
-                                request.tool_name
-                            ))
-                            .strong(),
-                        );
+        match request.response {
+            Some(PermissionResponseType::Allowed) => {
+                // Responded state: Allowed
+                egui::Frame::new()
+                    .fill(ui.visuals().widgets.noninteractive.bg_fill)
+                    .inner_margin(8.0)
+                    .corner_radius(6.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Allowed")
+                                    .color(egui::Color32::from_rgb(100, 180, 100))
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new(&request.tool_name)
+                                    .color(ui.visuals().text_color()),
+                            );
+                        });
                     });
+            }
+            Some(PermissionResponseType::Denied) => {
+                // Responded state: Denied
+                egui::Frame::new()
+                    .fill(ui.visuals().widgets.noninteractive.bg_fill)
+                    .inner_margin(8.0)
+                    .corner_radius(6.0)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Denied")
+                                    .color(egui::Color32::from_rgb(200, 100, 100))
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new(&request.tool_name)
+                                    .color(ui.visuals().text_color()),
+                            );
+                        });
+                    });
+            }
+            None => {
+                // Parse tool input for display
+                let obj = request.tool_input.as_object();
+                let description = obj
+                    .and_then(|o| o.get("description"))
+                    .and_then(|v| v.as_str());
+                let command = obj.and_then(|o| o.get("command")).and_then(|v| v.as_str());
+                let single_value = obj
+                    .filter(|o| o.len() == 1)
+                    .and_then(|o| o.values().next())
+                    .and_then(|v| v.as_str());
 
-                    ui.add_space(8.0);
+                // Pending state: Show Allow/Deny buttons
+                egui::Frame::new()
+                    .fill(ui.visuals().widgets.noninteractive.bg_fill)
+                    .inner_margin(8.0)
+                    .corner_radius(6.0)
+                    .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
+                    .show(ui, |ui| {
+                        // Tool info display
+                        if let Some(desc) = description {
+                            // Format: ToolName: description
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{}:", request.tool_name)).strong(),
+                                );
+                                ui.label(desc);
 
-                    // Tool arguments in a code-like box
-                    egui::Frame::new()
-                        .fill(ui.visuals().extreme_bg_color)
-                        .inner_margin(8.0)
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
+                                Self::permission_buttons(request, ui, &mut action);
+                            });
+                            // Command on next line if present
+                            if let Some(cmd) = command {
+                                ui.add(
+                                    egui::Label::new(egui::RichText::new(cmd).monospace())
+                                        .wrap_mode(egui::TextWrapMode::Wrap),
+                                );
+                            }
+                        } else if let Some(value) = single_value {
+                            // Format: ToolName `value`
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&request.tool_name).strong());
+                                ui.label(egui::RichText::new(value).monospace());
+
+                                Self::permission_buttons(request, ui, &mut action);
+                            });
+                        } else {
+                            // Fallback: show JSON
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&request.tool_name).strong());
+
+                                Self::permission_buttons(request, ui, &mut action);
+                            });
                             let formatted = serde_json::to_string_pretty(&request.tool_input)
                                 .unwrap_or_else(|_| request.tool_input.to_string());
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(formatted).monospace().size(12.0),
+                                    egui::RichText::new(formatted).monospace().size(11.0),
                                 )
                                 .wrap_mode(egui::TextWrapMode::Wrap),
                             );
-                        });
-
-                    ui.add_space(12.0);
-
-                    // Buttons
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Allow")
-                                        .color(ui.visuals().widgets.active.fg_stroke.color),
-                                )
-                                .fill(egui::Color32::from_rgb(34, 139, 34)), // Forest green
-                            )
-                            .clicked()
-                        {
-                            action = Some(DaveAction::PermissionResponse {
-                                request_id: request.id,
-                                response: PermissionResponse::Allow,
-                            });
-                        }
-
-                        ui.add_space(8.0);
-
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Deny")
-                                        .color(ui.visuals().widgets.active.fg_stroke.color),
-                                )
-                                .fill(egui::Color32::from_rgb(178, 34, 34)), // Firebrick red
-                            )
-                            .clicked()
-                        {
-                            action = Some(DaveAction::PermissionResponse {
-                                request_id: request.id,
-                                response: PermissionResponse::Deny {
-                                    reason: "User denied".to_string(),
-                                },
-                            });
                         }
                     });
-                });
-            });
+            }
+        }
 
         action
+    }
+
+    /// Render Allow/Deny buttons aligned to the right
+    fn permission_buttons(
+        request: &PermissionRequest,
+        ui: &mut egui::Ui,
+        action: &mut Option<DaveAction>,
+    ) {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Deny button (red)
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Deny")
+                            .color(ui.visuals().widgets.active.fg_stroke.color),
+                    )
+                    .fill(egui::Color32::from_rgb(178, 34, 34)),
+                )
+                .clicked()
+            {
+                *action = Some(DaveAction::PermissionResponse {
+                    request_id: request.id,
+                    response: PermissionResponse::Deny {
+                        reason: "User denied".into(),
+                    },
+                });
+            }
+
+            // Allow button (green)
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Allow")
+                            .color(ui.visuals().widgets.active.fg_stroke.color),
+                    )
+                    .fill(egui::Color32::from_rgb(34, 139, 34)),
+                )
+                .clicked()
+            {
+                *action = Some(DaveAction::PermissionResponse {
+                    request_id: request.id,
+                    response: PermissionResponse::Allow,
+                });
+            }
+        });
     }
 
     fn search_call_ui(ctx: &mut AppContext, query_call: &QueryCall, ui: &mut egui::Ui) {

@@ -13,6 +13,8 @@ pub struct PermissionRequest {
     pub tool_name: String,
     /// The arguments the tool will be called with
     pub tool_input: serde_json::Value,
+    /// The user's response (None if still pending)
+    pub response: Option<PermissionResponseType>,
 }
 
 /// A permission request with the response channel (for channel communication)
@@ -30,6 +32,13 @@ pub enum PermissionResponse {
     Allow,
     /// Deny the tool execution with an optional reason
     Deny { reason: String },
+}
+
+/// The recorded response type for display purposes (without channel details)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionResponseType {
+    Allowed,
+    Denied,
 }
 
 #[derive(Debug, Clone)]

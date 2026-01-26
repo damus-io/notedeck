@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 pub use avatar::DaveAvatar;
 pub use config::{AiProvider, DaveSettings, ModelConfig};
-pub use messages::{DaveApiResponse, Message, PermissionResponse};
+pub use messages::{DaveApiResponse, Message, PermissionResponse, PermissionResponseType};
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
 pub use tools::{
@@ -433,6 +433,23 @@ impl notedeck::App for Dave {
                 } => {
                     // Send the permission response back to the callback
                     if let Some(session) = self.session_manager.get_active_mut() {
+                        // Record the response type in the message for UI display
+                        let response_type = match &response {
+                            PermissionResponse::Allow => messages::PermissionResponseType::Allowed,
+                            PermissionResponse::Deny { .. } => {
+                                messages::PermissionResponseType::Denied
+                            }
+                        };
+
+                        for msg in &mut session.chat {
+                            if let Message::PermissionRequest(req) = msg {
+                                if req.id == request_id {
+                                    req.response = Some(response_type);
+                                    break;
+                                }
+                            }
+                        }
+
                         if let Some(sender) = session.pending_permissions.remove(&request_id) {
                             if sender.send(response).is_err() {
                                 tracing::error!(
