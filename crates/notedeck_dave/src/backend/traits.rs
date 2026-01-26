@@ -15,7 +15,8 @@ pub enum BackendType {
 pub trait AiBackend: Send + Sync {
     /// Stream a request to the AI backend
     ///
-    /// Returns a receiver that will receive tokens and tool calls as they arrive
+    /// Returns a receiver that will receive tokens and tool calls as they arrive,
+    /// plus an optional JoinHandle to the spawned task for cleanup on session deletion.
     fn stream_request(
         &self,
         messages: Vec<crate::Message>,
@@ -24,5 +25,8 @@ pub trait AiBackend: Send + Sync {
         user_id: String,
         session_id: String,
         ctx: egui::Context,
-    ) -> mpsc::Receiver<DaveApiResponse>;
+    ) -> (
+        mpsc::Receiver<DaveApiResponse>,
+        Option<tokio::task::JoinHandle<()>>,
+    );
 }

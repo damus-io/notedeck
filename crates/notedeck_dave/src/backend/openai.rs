@@ -33,7 +33,10 @@ impl AiBackend for OpenAiBackend {
         user_id: String,
         _session_id: String,
         ctx: egui::Context,
-    ) -> mpsc::Receiver<DaveApiResponse> {
+    ) -> (
+        mpsc::Receiver<DaveApiResponse>,
+        Option<tokio::task::JoinHandle<()>>,
+    ) {
         let (tx, rx) = mpsc::channel();
 
         let api_messages: Vec<ChatCompletionRequestMessage> = {
@@ -47,7 +50,7 @@ impl AiBackend for OpenAiBackend {
         let client = self.client.clone();
         let tool_list: Vec<_> = tools.values().map(|t| t.to_api()).collect();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut token_stream = match client
                 .chat()
                 .create_stream(CreateChatCompletionRequest {
@@ -156,6 +159,6 @@ impl AiBackend for OpenAiBackend {
             tracing::debug!("stream closed");
         });
 
-        rx
+        (rx, Some(handle))
     }
 }

@@ -17,6 +17,17 @@ pub struct ChatSession {
     pub incoming_tokens: Option<Receiver<DaveApiResponse>>,
     /// Pending permission requests waiting for user response
     pub pending_permissions: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
+    /// Handle to the background task processing this session's AI requests.
+    /// Aborted on drop to clean up the subprocess.
+    pub task_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for ChatSession {
+    fn drop(&mut self) {
+        if let Some(handle) = self.task_handle.take() {
+            handle.abort();
+        }
+    }
 }
 
 impl ChatSession {
@@ -28,6 +39,7 @@ impl ChatSession {
             input: String::new(),
             incoming_tokens: None,
             pending_permissions: HashMap::new(),
+            task_handle: None,
         }
     }
 

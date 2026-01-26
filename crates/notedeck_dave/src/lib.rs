@@ -371,10 +371,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let ctx = ctx.clone();
 
         // Use backend to stream request
-        let rx = self
+        let (rx, task_handle) = self
             .backend
             .stream_request(messages, tools, model_name, user_id, session_id, ctx);
         session.incoming_tokens = Some(rx);
+        session.task_handle = task_handle;
     }
 }
 

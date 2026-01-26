@@ -84,7 +84,10 @@ impl AiBackend for ClaudeBackend {
         _user_id: String,
         _session_id: String, // TODO: Currently unused - --continue resumes last conversation globally
         ctx: egui::Context,
-    ) -> mpsc::Receiver<DaveApiResponse> {
+    ) -> (
+        mpsc::Receiver<DaveApiResponse>,
+        Option<tokio::task::JoinHandle<()>>,
+    ) {
         let (tx, rx) = mpsc::channel();
         let _api_key = self.api_key.clone();
 
@@ -102,7 +105,7 @@ impl AiBackend for ClaudeBackend {
             .count()
             == 1;
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             // For first message, send full prompt; for continuation, just the latest message
             let prompt = if is_first_message {
                 Self::messages_to_prompt(&messages)
@@ -270,6 +273,6 @@ impl AiBackend for ClaudeBackend {
             tracing::debug!("Claude stream closed");
         });
 
-        rx
+        (rx, Some(handle))
     }
 }
