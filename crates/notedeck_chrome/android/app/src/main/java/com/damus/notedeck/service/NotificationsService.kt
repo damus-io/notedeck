@@ -295,9 +295,11 @@ class NotificationsService : Service() {
             PowerManager.PARTIAL_WAKE_LOCK,
             "notedeck:NotificationsService"
         ).apply {
-            acquire()
+            // Use timeout to prevent battery drain if service hangs.
+            // 10 minutes is generous; the worker thread's poll loop will keep the service alive.
+            acquire(10 * 60 * 1000L)
         }
-        Log.i(TAG, "Wake lock acquired")
+        Log.i(TAG, "Wake lock acquired with 10-minute timeout")
     }
 
     private fun releaseWakeLock() {
