@@ -8,10 +8,25 @@
 
 use claude_agent_sdk_rs::{
     get_claude_code_version, query_stream, ClaudeAgentOptions, ContentBlock,
-    Message as ClaudeMessage, PermissionMode, TextBlock,
+    Message as ClaudeMessage, PermissionMode, PermissionResult, PermissionResultAllow,
+    PermissionResultDeny, TextBlock, ToolPermissionContext,
 };
+use futures::future::BoxFuture;
 use futures::StreamExt;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+
+// NOTE: SDK v0.6.3 Limitation
+// ===========================
+// The SDK defines `can_use_tool` callback in ClaudeAgentOptions but does NOT implement
+// the control protocol to invoke it. In query_full.rs, handle_control_request only
+// handles "hook_callback" and "mcp_message" subtypes - there's no handler for
+// tool permission requests.
+//
+// For interactive permission handling, either:
+// 1. Wait for a new SDK version that implements the permission callback
+// 2. Fork the SDK and add the missing control protocol handler
+// 3. Use hooks (PreToolUse) for non-interactive permission logic
 
 /// Check if Claude CLI is available
 fn cli_available() -> bool {
@@ -183,4 +198,155 @@ fn test_prompt_formatting_is_substantial() {
         prompt.contains("Human: Hi"),
         "Prompt should contain formatted user message"
     );
+}
+
+/// Test that the can_use_tool callback is invoked when Claude tries to use a tool.
+///
+/// NOTE: As of SDK v0.6.3, the can_use_tool callback is defined in ClaudeAgentOptions
+/// but the control protocol to invoke it is NOT implemented. The SDK's handle_control_request
+/// only handles "hook_callback" and "mcp_message" subtypes - there's no handler for
+/// tool permission requests.
+///
+/// This test documents this limitation - it will FAIL until the SDK implements the
+/// permission callback control protocol.
+#[tokio::test]
+#[ignore = "SDK v0.6.3 does not implement can_use_tool callback - see test documentation"]
+async fn test_can_use_tool_callback_invoked() {
+    if !cli_available() {
+        println!("Skipping: Claude CLI not available");
+        return;
+    }
+
+    let callback_count = Arc::new(AtomicUsize::new(0));
+    let callback_count_clone = callback_count.clone();
+
+    // Create a callback that counts invocations and always allows
+    let can_use_tool: Arc<
+        dyn Fn(
+                String,
+                serde_json::Value,
+                ToolPermissionContext,
+            ) -> BoxFuture<'static, PermissionResult>
+            + Send
+            + Sync,
+    > = Arc::new(move |tool_name: String, _tool_input, _context| {
+        let count = callback_count_clone.clone();
+        Box::pin(async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            println!("Permission requested for tool: {}", tool_name);
+            PermissionResult::Allow(PermissionResultAllow::default())
+        })
+    });
+
+    let stderr_callback = |_msg: String| {};
+
+    let options = ClaudeAgentOptions::builder()
+        .max_turns(1)
+        .skip_version_check(true)
+        .stderr_callback(Arc::new(stderr_callback))
+        .can_use_tool(can_use_tool)
+        .build();
+
+    // Ask Claude to read a file - this should trigger the Read tool
+    let prompt = "Read the file /etc/hostname and tell me what it contains";
+
+    let mut stream = match query_stream(prompt.to_string(), Some(options)).await {
+        Ok(s) => s,
+        Err(e) => {
+            panic!("Failed to create stream: {}", e);
+        }
+    };
+
+    // Consume the stream
+    while let Some(result) = stream.next().await {
+        if let Err(e) = result {
+            // Some errors are expected if the tool is denied or file doesn't exist
+            println!("Stream message: {:?}", e);
+        }
+    }
+
+    let count = callback_count.load(Ordering::SeqCst);
+    assert!(
+        count > 0,
+        "can_use_tool callback should have been invoked at least once, but was invoked {} times. \
+         NOTE: SDK v0.6.3 doesn't implement the permission callback protocol - \
+         see handle_control_request in query_full.rs which only handles 'hook_callback' and 'mcp_message'",
+        count
+    );
+    println!("can_use_tool callback was invoked {} time(s)", count);
+}
+
+/// Test that denying a tool permission prevents the tool from executing.
+///
+/// NOTE: See test_can_use_tool_callback_invoked for SDK limitation details.
+#[tokio::test]
+#[ignore = "SDK v0.6.3 does not implement can_use_tool callback"]
+async fn test_can_use_tool_deny_prevents_execution() {
+    if !cli_available() {
+        println!("Skipping: Claude CLI not available");
+        return;
+    }
+
+    let was_denied = Arc::new(AtomicBool::new(false));
+    let was_denied_clone = was_denied.clone();
+
+    // Create a callback that always denies
+    let can_use_tool: Arc<
+        dyn Fn(
+                String,
+                serde_json::Value,
+                ToolPermissionContext,
+            ) -> BoxFuture<'static, PermissionResult>
+            + Send
+            + Sync,
+    > = Arc::new(move |tool_name: String, _tool_input, _context| {
+        let denied = was_denied_clone.clone();
+        Box::pin(async move {
+            denied.store(true, Ordering::SeqCst);
+            println!("Denying permission for tool: {}", tool_name);
+            PermissionResult::Deny(PermissionResultDeny {
+                message: "Test denial - permission not granted".to_string(),
+                interrupt: false,
+            })
+        })
+    });
+
+    let stderr_callback = |_msg: String| {};
+
+    let options = ClaudeAgentOptions::builder()
+        .max_turns(2) // Allow a retry turn for Claude to respond to denial
+        .skip_version_check(true)
+        .stderr_callback(Arc::new(stderr_callback))
+        .can_use_tool(can_use_tool)
+        .build();
+
+    // Ask Claude to read a file
+    let prompt = "Read the file /etc/hostname";
+
+    let mut stream = match query_stream(prompt.to_string(), Some(options)).await {
+        Ok(s) => s,
+        Err(e) => {
+            panic!("Failed to create stream: {}", e);
+        }
+    };
+
+    let mut response_text = String::new();
+    while let Some(result) = stream.next().await {
+        match result {
+            Ok(ClaudeMessage::Assistant(msg)) => {
+                for block in &msg.message.content {
+                    if let ContentBlock::Text(TextBlock { text }) = block {
+                        response_text.push_str(text);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        was_denied.load(Ordering::SeqCst),
+        "The can_use_tool callback should have been invoked and denied"
+    );
+    println!("Response after denial: {}", response_text);
 }
