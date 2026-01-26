@@ -48,25 +48,28 @@ fn toolbar_visibility_amount(ui: &mut egui::Ui) -> f32 {
         .animate_bool_responsive(toolbar_visible_id.with("anim"), toolbar_visible)
 }
 
-fn header_anim(ui: &mut egui::Ui) -> HeaderAnim {
+fn header_anim(ui: &mut egui::Ui) -> Option<HeaderAnim> {
     let base_padding = 8.0;
     let base_height = 48.0;
 
     let navbar_anim = toolbar_visibility_amount(ui);
     let is_wide = !notedeck::ui::is_narrow(ui.ctx());
-    let anim_is_negligible = navbar_anim < 0.01;
-    let skip_animation = is_wide || anim_is_negligible;
 
-    if skip_animation {
-        HeaderAnim {
+    if is_wide {
+        // Wide mode: no animation, always show full header
+        Some(HeaderAnim {
             padding: base_padding,
             height: base_height,
-        }
+        })
+    } else if navbar_anim < 0.01 {
+        // Narrow mode with negligible visibility: don't render
+        None
     } else {
+        // Narrow mode: animate
         let height = base_height * navbar_anim;
         let padding = base_padding * navbar_anim;
 
-        HeaderAnim { padding, height }
+        Some(HeaderAnim { padding, height })
     }
 }
 
@@ -101,7 +104,7 @@ impl<'a> NavTitle<'a> {
         // On mobile, animate navbar visibility in sync with the toolbar
         // (toolbar_visible is set in render_damus_mobile based on scroll direction)
 
-        let anim = header_anim(ui);
+        let anim = header_anim(ui)?;
 
         notedeck_ui::padding(anim.padding, ui, |ui| {
             let mut rect = ui.available_rect_before_wrap();
