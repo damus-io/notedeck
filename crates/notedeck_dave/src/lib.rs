@@ -367,7 +367,7 @@ impl notedeck::App for Dave {
         // always insert system prompt if we have no context in active session
         if let Some(session) = self.session_manager.get_active_mut() {
             if session.chat.is_empty() {
-                session.chat.push(Dave::system_prompt());
+                //session.chat.push(Dave::system_prompt());
             }
         }
 

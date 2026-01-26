@@ -2,7 +2,9 @@ use crate::backend::traits::AiBackend;
 use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
 use crate::Message;
-use claude_agent_sdk_rs::{query_stream, ContentBlock, Message as ClaudeMessage, TextBlock};
+use claude_agent_sdk_rs::{
+    query_stream, ClaudeAgentOptions, ContentBlock, Message as ClaudeMessage, TextBlock,
+};
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -50,16 +52,7 @@ impl ClaudeBackend {
             }
         }
 
-        // Get the last user message as the actual query
-        if let Some(Message::User(user_msg)) = messages
-            .iter()
-            .rev()
-            .find(|m| matches!(m, Message::User(_)))
-        {
-            user_msg.clone()
-        } else {
-            prompt
-        }
+        prompt
     }
 }
 
@@ -79,11 +72,22 @@ impl AiBackend for ClaudeBackend {
             let prompt = ClaudeBackend::messages_to_prompt(&messages);
 
             tracing::debug!(
-                "Sending request to Claude Code: prompt length: {}",
-                prompt.len()
+                "Sending request to Claude Code: prompt length: {}, preview: {:?}",
+                prompt.len(),
+                &prompt[..prompt.len().min(100)]
             );
 
-            let mut stream = match query_stream(prompt, None).await {
+            // A stderr callback is needed to prevent the subprocess from blocking
+            // when stderr buffer fills up. We log the output for debugging.
+            let stderr_callback = |msg: String| {
+                tracing::trace!("Claude CLI stderr: {}", msg);
+            };
+
+            let options = ClaudeAgentOptions::builder()
+                .stderr_callback(Arc::new(stderr_callback))
+                .build();
+
+            let mut stream = match query_stream(prompt, Some(options)).await {
                 Ok(stream) => stream,
                 Err(err) => {
                     tracing::error!("Claude Code error: {}", err);
