@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 pub use avatar::DaveAvatar;
 pub use config::{AiProvider, DaveSettings, ModelConfig};
-pub use messages::{DaveApiResponse, Message};
+pub use messages::{DaveApiResponse, Message, PermissionResponse};
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
 pub use tools::{
@@ -71,7 +71,7 @@ impl Dave {
         self.avatar.as_mut()
     }
 
-    fn system_prompt() -> Message {
+    fn _system_prompt() -> Message {
         let now = Local::now();
         let yesterday = now - Duration::hours(24);
         let date = now.format("%Y-%m-%d %H:%M:%S");
@@ -219,6 +219,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             }
                         }
                     }
+                }
+
+                DaveApiResponse::PermissionRequest(pending) => {
+                    tracing::info!(
+                        "Permission request for tool '{}': {:?}",
+                        pending.request.tool_name,
+                        pending.request.tool_input
+                    );
+
+                    // Store the response sender for later
+                    session
+                        .pending_permissions
+                        .insert(pending.request.id, pending.response_tx);
+
+                    // Add the request to chat for UI display
+                    session
+                        .chat
+                        .push(Message::PermissionRequest(pending.request));
                 }
             }
         }
@@ -408,6 +426,27 @@ impl notedeck::App for Dave {
                 }
                 DaveAction::UpdateSettings(settings) => {
                     dave_action = Some(DaveAction::UpdateSettings(settings));
+                }
+                DaveAction::PermissionResponse {
+                    request_id,
+                    response,
+                } => {
+                    // Send the permission response back to the callback
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        if let Some(sender) = session.pending_permissions.remove(&request_id) {
+                            if sender.send(response).is_err() {
+                                tracing::error!(
+                                    "Failed to send permission response for request {}",
+                                    request_id
+                                );
+                            }
+                        } else {
+                            tracing::warn!(
+                                "No pending permission found for request {}",
+                                request_id
+                            );
+                        }
+                    }
                 }
             }
         }

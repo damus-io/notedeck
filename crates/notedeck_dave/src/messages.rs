@@ -1,6 +1,36 @@
 use crate::tools::{ToolCall, ToolResponse};
 use async_openai::types::*;
 use nostrdb::{Ndb, Transaction};
+use tokio::sync::oneshot;
+use uuid::Uuid;
+
+/// A request for user permission to use a tool (displayable data only)
+#[derive(Debug, Clone)]
+pub struct PermissionRequest {
+    /// Unique identifier for this permission request
+    pub id: Uuid,
+    /// The tool that wants to be used
+    pub tool_name: String,
+    /// The arguments the tool will be called with
+    pub tool_input: serde_json::Value,
+}
+
+/// A permission request with the response channel (for channel communication)
+pub struct PendingPermission {
+    /// The displayable request data
+    pub request: PermissionRequest,
+    /// Channel to send the user's response back
+    pub response_tx: oneshot::Sender<PermissionResponse>,
+}
+
+/// The user's response to a permission request
+#[derive(Debug, Clone)]
+pub enum PermissionResponse {
+    /// Allow the tool to execute
+    Allow,
+    /// Deny the tool execution with an optional reason
+    Deny { reason: String },
+}
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -10,6 +40,8 @@ pub enum Message {
     Assistant(String),
     ToolCalls(Vec<ToolCall>),
     ToolResponse(ToolResponse),
+    /// A permission request from the AI that needs user response
+    PermissionRequest(PermissionRequest),
 }
 
 /// The ai backends response. Since we are using streaming APIs these are
@@ -18,6 +50,8 @@ pub enum DaveApiResponse {
     ToolCalls(Vec<ToolCall>),
     Token(String),
     Failed(String),
+    /// A permission request that needs to be displayed to the user
+    PermissionRequest(PendingPermission),
 }
 
 impl Message {
@@ -69,6 +103,9 @@ impl Message {
                     },
                 ))
             }
+
+            // Permission requests are UI-only, not sent to the API
+            Message::PermissionRequest(_) => None,
         }
     }
 }

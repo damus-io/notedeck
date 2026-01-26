@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 
+use crate::messages::PermissionResponse;
 use crate::{DaveApiResponse, Message};
+use tokio::sync::oneshot;
+use uuid::Uuid;
 
 pub type SessionId = u32;
 
@@ -12,6 +15,8 @@ pub struct ChatSession {
     pub chat: Vec<Message>,
     pub input: String,
     pub incoming_tokens: Option<Receiver<DaveApiResponse>>,
+    /// Pending permission requests waiting for user response
+    pub pending_permissions: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
 }
 
 impl ChatSession {
@@ -22,6 +27,7 @@ impl ChatSession {
             chat: vec![],
             input: String::new(),
             incoming_tokens: None,
+            pending_permissions: HashMap::new(),
         }
     }
 

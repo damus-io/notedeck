@@ -1,6 +1,6 @@
 use crate::{
     config::DaveSettings,
-    messages::Message,
+    messages::{Message, PermissionRequest, PermissionResponse},
     tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
@@ -9,6 +9,7 @@ use notedeck::{
     tr, Accounts, AppContext, Images, Localization, MediaJobSender, NoteAction, NoteContext,
 };
 use notedeck_ui::{app_images, icons::search_icon, NoteOptions, ProfilePic};
+use uuid::Uuid;
 
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
@@ -67,6 +68,11 @@ pub enum DaveAction {
     OpenSettings,
     /// Settings were updated and should be persisted
     UpdateSettings(DaveSettings),
+    /// User responded to a permission request
+    PermissionResponse {
+        request_id: Uuid,
+        response: PermissionResponse,
+    },
 }
 
 impl<'a> DaveUi<'a> {
@@ -114,7 +120,7 @@ impl<'a> DaveUi<'a> {
                         .show(ui, |ui| self.inputbox(app_ctx.i18n, ui))
                         .inner;
 
-                    let note_action = egui::ScrollArea::vertical()
+                    let chat_response = egui::ScrollArea::vertical()
                         .stick_to_bottom(true)
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
@@ -126,11 +132,7 @@ impl<'a> DaveUi<'a> {
                         })
                         .inner;
 
-                    if let Some(action) = note_action {
-                        DaveResponse::note(action)
-                    } else {
-                        r
-                    }
+                    chat_response.or(r)
                 })
                 .inner
             })
@@ -154,44 +156,131 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Render a chat message (user, assistant, tool call/response, etc)
-    fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<NoteAction> {
-        let mut action: Option<NoteAction> = None;
+    fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let mut response = DaveResponse::default();
         for message in self.chat {
-            let r = match message {
+            match message {
                 Message::Error(err) => {
                     self.error_chat(ctx.i18n, err, ui);
-                    None
                 }
                 Message::User(msg) => {
                     self.user_chat(msg, ui);
-                    None
                 }
                 Message::Assistant(msg) => {
                     self.assistant_chat(msg, ui);
-                    None
                 }
                 Message::ToolResponse(msg) => {
                     Self::tool_response_ui(msg, ui);
-                    None
                 }
                 Message::System(_msg) => {
                     // system prompt is not rendered. Maybe we could
                     // have a debug option to show this
-                    None
                 }
-                Message::ToolCalls(toolcalls) => Self::tool_calls_ui(ctx, toolcalls, ui),
+                Message::ToolCalls(toolcalls) => {
+                    if let Some(note_action) = Self::tool_calls_ui(ctx, toolcalls, ui) {
+                        response = DaveResponse::note(note_action);
+                    }
+                }
+                Message::PermissionRequest(request) => {
+                    if let Some(action) = Self::permission_request_ui(request, ui) {
+                        response = DaveResponse::new(action);
+                    }
+                }
             };
-
-            if r.is_some() {
-                action = r;
-            }
         }
 
-        action
+        response
     }
 
     fn tool_response_ui(_tool_response: &ToolResponse, _ui: &mut egui::Ui) {
         //ui.label(format!("tool_response: {:?}", tool_response));
+    }
+
+    /// Render a permission request with Allow/Deny buttons
+    fn permission_request_ui(request: &PermissionRequest, ui: &mut egui::Ui) -> Option<DaveAction> {
+        let mut action = None;
+
+        egui::Frame::new()
+            .fill(ui.visuals().widgets.noninteractive.bg_fill)
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    // Header
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("🔐").size(18.0));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Claude wants to use: {}",
+                                request.tool_name
+                            ))
+                            .strong(),
+                        );
+                    });
+
+                    ui.add_space(8.0);
+
+                    // Tool arguments in a code-like box
+                    egui::Frame::new()
+                        .fill(ui.visuals().extreme_bg_color)
+                        .inner_margin(8.0)
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            let formatted = serde_json::to_string_pretty(&request.tool_input)
+                                .unwrap_or_else(|_| request.tool_input.to_string());
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(formatted).monospace().size(12.0),
+                                )
+                                .wrap_mode(egui::TextWrapMode::Wrap),
+                            );
+                        });
+
+                    ui.add_space(12.0);
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Allow")
+                                        .color(ui.visuals().widgets.active.fg_stroke.color),
+                                )
+                                .fill(egui::Color32::from_rgb(34, 139, 34)), // Forest green
+                            )
+                            .clicked()
+                        {
+                            action = Some(DaveAction::PermissionResponse {
+                                request_id: request.id,
+                                response: PermissionResponse::Allow,
+                            });
+                        }
+
+                        ui.add_space(8.0);
+
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Deny")
+                                        .color(ui.visuals().widgets.active.fg_stroke.color),
+                                )
+                                .fill(egui::Color32::from_rgb(178, 34, 34)), // Firebrick red
+                            )
+                            .clicked()
+                        {
+                            action = Some(DaveAction::PermissionResponse {
+                                request_id: request.id,
+                                response: PermissionResponse::Deny {
+                                    reason: "User denied".to_string(),
+                                },
+                            });
+                        }
+                    });
+                });
+            });
+
+        action
     }
 
     fn search_call_ui(ctx: &mut AppContext, query_call: &QueryCall, ui: &mut egui::Ui) {

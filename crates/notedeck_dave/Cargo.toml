@@ -21,6 +21,7 @@ nostrdb = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 rand = "0.9.0"
+uuid = { version = "1", features = ["v4"] }
 bytemuck = "1.22.0"
 futures = "0.3.31"
 #reqwest = "0.12.15"

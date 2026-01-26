@@ -1,14 +1,18 @@
 use crate::backend::traits::AiBackend;
-use crate::messages::DaveApiResponse;
+use crate::messages::{DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse};
 use crate::tools::Tool;
 use crate::Message;
 use claude_agent_sdk_rs::{
-    query_stream, ClaudeAgentOptions, ContentBlock, Message as ClaudeMessage, TextBlock,
+    query_stream, ClaudeAgentOptions, ContentBlock, Message as ClaudeMessage, PermissionResult,
+    PermissionResultAllow, PermissionResultDeny, TextBlock,
 };
+use futures::future::BoxFuture;
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::Arc;
+use tokio::sync::oneshot;
+use uuid::Uuid;
 
 pub struct ClaudeBackend {
     api_key: String,
@@ -46,8 +50,11 @@ impl ClaudeBackend {
                     prompt.push_str(content);
                     prompt.push_str("\n\n");
                 }
-                Message::ToolCalls(_) | Message::ToolResponse(_) | Message::Error(_) => {
-                    // Skip tool-related and error messages
+                Message::ToolCalls(_)
+                | Message::ToolResponse(_)
+                | Message::Error(_)
+                | Message::PermissionRequest(_) => {
+                    // Skip tool-related, error, and permission messages
                 }
             }
         }
@@ -68,6 +75,9 @@ impl AiBackend for ClaudeBackend {
         let (tx, rx) = mpsc::channel();
         let _api_key = self.api_key.clone();
 
+        let tx_for_callback = tx.clone();
+        let ctx_for_callback = ctx.clone();
+
         tokio::spawn(async move {
             let prompt = ClaudeBackend::messages_to_prompt(&messages);
 
@@ -83,8 +93,79 @@ impl AiBackend for ClaudeBackend {
                 tracing::trace!("Claude CLI stderr: {}", msg);
             };
 
+            // Permission callback - sends requests to UI and waits for user response
+            let can_use_tool: Arc<
+                dyn Fn(
+                        String,
+                        serde_json::Value,
+                        claude_agent_sdk_rs::ToolPermissionContext,
+                    ) -> BoxFuture<'static, PermissionResult>
+                    + Send
+                    + Sync,
+            > = Arc::new({
+                let tx = tx_for_callback;
+                let ctx = ctx_for_callback;
+                move |tool_name: String,
+                      tool_input: serde_json::Value,
+                      _context: claude_agent_sdk_rs::ToolPermissionContext| {
+                    let tx = tx.clone();
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        let (response_tx, response_rx) = oneshot::channel();
+
+                        let request = PermissionRequest {
+                            id: Uuid::new_v4(),
+                            tool_name: tool_name.clone(),
+                            tool_input: tool_input.clone(),
+                        };
+
+                        let pending = PendingPermission {
+                            request,
+                            response_tx,
+                        };
+
+                        // Send permission request to UI
+                        if tx
+                            .send(DaveApiResponse::PermissionRequest(pending))
+                            .is_err()
+                        {
+                            tracing::error!("Failed to send permission request to UI");
+                            return PermissionResult::Deny(PermissionResultDeny {
+                                message: "UI channel closed".to_string(),
+                                interrupt: true,
+                            });
+                        }
+
+                        ctx.request_repaint();
+
+                        // Wait for user response
+                        match response_rx.await {
+                            Ok(PermissionResponse::Allow) => {
+                                tracing::debug!("User allowed tool: {}", tool_name);
+                                PermissionResult::Allow(PermissionResultAllow::default())
+                            }
+                            Ok(PermissionResponse::Deny { reason }) => {
+                                tracing::debug!("User denied tool {}: {}", tool_name, reason);
+                                PermissionResult::Deny(PermissionResultDeny {
+                                    message: reason,
+                                    interrupt: false,
+                                })
+                            }
+                            Err(_) => {
+                                tracing::error!("Permission response channel closed");
+                                PermissionResult::Deny(PermissionResultDeny {
+                                    message: "Permission request cancelled".to_string(),
+                                    interrupt: true,
+                                })
+                            }
+                        }
+                    })
+                }
+            });
+
             let options = ClaudeAgentOptions::builder()
                 .stderr_callback(Arc::new(stderr_callback))
+                .can_use_tool(can_use_tool)
                 .build();
 
             let mut stream = match query_stream(prompt, Some(options)).await {
