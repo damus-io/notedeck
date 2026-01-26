@@ -50,6 +50,19 @@ public class MainActivity extends GameActivity {
     private native void nativeOnNotificationPermissionResult(boolean granted);
 
     // =========================================================================
+    // Utility Methods
+    // =========================================================================
+
+    /**
+     * Safely get a display prefix from a hex string for logging.
+     * Returns first 8 chars if available, the whole string if shorter, or "<null>" if null.
+     */
+    private static String safeHexPrefix(String hex) {
+        if (hex == null) return "<null>";
+        return hex.length() >= 8 ? hex.substring(0, 8) : hex;
+    }
+
+    // =========================================================================
     // Notification Control Methods (called from Rust via JNI)
     // =========================================================================
 
@@ -60,7 +73,7 @@ public class MainActivity extends GameActivity {
      * @param relaysJson JSON array of relay URLs (e.g., ["wss://relay.damus.io", "wss://nos.lol"])
      */
     public void enableNotifications(String pubkeyHex, String relaysJson) {
-        Log.d(TAG, "Enabling notifications for pubkey: " + pubkeyHex.substring(0, 8) + "...");
+        Log.d(TAG, "Enabling notifications for pubkey: " + safeHexPrefix(pubkeyHex) + "...");
 
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         prefs.edit()
@@ -315,7 +328,7 @@ public class MainActivity extends GameActivity {
         int eventKind = intent.getIntExtra("event_kind", -1);
         String authorPubkey = intent.getStringExtra("author_pubkey");
 
-        Log.d(TAG, "Deep link: event_id=" + eventId.substring(0, 8) + ", kind=" + eventKind);
+        Log.d(TAG, "Deep link: event_id=" + safeHexPrefix(eventId) + ", kind=" + eventKind);
 
         try {
             nativeOnDeepLink(eventId, eventKind, authorPubkey != null ? authorPubkey : "");
