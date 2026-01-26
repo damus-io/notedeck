@@ -6,7 +6,7 @@ use crate::tools::Tool;
 use crate::Message;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
-    PermissionResult, PermissionResultAllow, PermissionResultDeny, TextBlock, ToolUseBlock,
+    PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolUseBlock,
 };
 use futures::future::BoxFuture;
 use futures::StreamExt;
@@ -210,12 +210,14 @@ impl AiBackend for ClaudeBackend {
                     .permission_mode(PermissionMode::Default)
                     .stderr_callback(stderr_callback.clone())
                     .can_use_tool(can_use_tool)
+                    .include_partial_messages(true)
                     .build()
             } else {
                 ClaudeAgentOptions::builder()
                     .permission_mode(PermissionMode::Default)
                     .stderr_callback(stderr_callback.clone())
                     .can_use_tool(can_use_tool)
+                    .include_partial_messages(true)
                     .continue_conversation(true)
                     .build()
             };
@@ -241,11 +243,29 @@ impl AiBackend for ClaudeBackend {
                 match result {
                     Ok(message) => match message {
                         ClaudeMessage::Assistant(assistant_msg) => {
+                            // Text is handled by StreamEvent for incremental display
                             for block in &assistant_msg.message.content {
-                                match block {
-                                    ContentBlock::Text(TextBlock { text }) => {
+                                if let ContentBlock::ToolUse(ToolUseBlock { id, name, input }) =
+                                    block
+                                {
+                                    // Store for later correlation with tool result
+                                    pending_tools.insert(id.clone(), (name.clone(), input.clone()));
+                                }
+                            }
+                        }
+                        ClaudeMessage::StreamEvent(event) => {
+                            if let Some(event_type) =
+                                event.event.get("type").and_then(|v| v.as_str())
+                            {
+                                if event_type == "content_block_delta" {
+                                    if let Some(text) = event
+                                        .event
+                                        .get("delta")
+                                        .and_then(|d| d.get("text"))
+                                        .and_then(|t| t.as_str())
+                                    {
                                         if let Err(err) =
-                                            tx.send(DaveApiResponse::Token(text.clone()))
+                                            tx.send(DaveApiResponse::Token(text.to_string()))
                                         {
                                             tracing::error!("Failed to send token to UI: {}", err);
                                             drop(stream);
@@ -254,12 +274,6 @@ impl AiBackend for ClaudeBackend {
                                         }
                                         ctx.request_repaint();
                                     }
-                                    ContentBlock::ToolUse(ToolUseBlock { id, name, input }) => {
-                                        // Store for later correlation with tool result
-                                        pending_tools
-                                            .insert(id.clone(), (name.clone(), input.clone()));
-                                    }
-                                    _ => {}
                                 }
                             }
                         }
