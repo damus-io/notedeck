@@ -273,7 +273,8 @@ fn notification_toggle(
         };
 
         // Draw track (rounded rect)
-        let track_radius = (rect.height() / 2.0) as u8;
+        // Clamp to u8 max to prevent overflow on large UI scales
+        let track_radius = (rect.height() / 2.0).min(255.0) as u8;
         ui.painter()
             .rect_filled(rect, CornerRadius::same(track_radius), track_color);
 

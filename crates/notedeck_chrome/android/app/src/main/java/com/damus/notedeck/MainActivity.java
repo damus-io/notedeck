@@ -278,6 +278,9 @@ public class MainActivity extends GameActivity {
     /**
      * Restart notification service if it was enabled but not running.
      * This handles cases where the service was stopped (force-stop, crash) but preferences say enabled.
+     *
+     * Known limitation: Only supports single active account (PREF_ACTIVE_PUBKEY).
+     * See BootReceiver for full documentation of multi-account limitation.
      */
     private void restartNotificationServiceIfEnabled() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
