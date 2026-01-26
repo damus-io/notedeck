@@ -8,6 +8,18 @@ import android.util.Log
 /**
  * Broadcast receiver that starts the NotificationsService when the device boots
  * or when the app is updated.
+ *
+ * ## Known Limitation: Single-Account Only
+ *
+ * Currently only supports notifications for one account (the `active_pubkey` in preferences).
+ * Multi-account users will only receive notifications for their last-active account after reboot.
+ *
+ * Full multi-account support would require:
+ * 1. Storing a set of pubkeys with notifications enabled (not just active_pubkey)
+ * 2. NotificationsService subscribing to events for all enabled accounts
+ * 3. Rust backend handling multiple subscription filters
+ *
+ * See: notedeck-e12 for tracking this limitation.
  */
 class BootReceiver : BroadcastReceiver() {
 
