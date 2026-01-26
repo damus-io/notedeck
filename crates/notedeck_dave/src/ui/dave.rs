@@ -124,9 +124,7 @@ impl<'a> DaveUi<'a> {
             .show(ui, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     let margin = self.chat_margin(ui.ctx());
-
-                    // Reduce bottom margin in compact mode to prevent overflow
-                    let bottom_margin = if self.compact { 20 } else { 100 };
+                    let bottom_margin = 100;
 
                     let r = egui::Frame::new()
                         .outer_margin(egui::Margin {
