@@ -3,8 +3,8 @@ use crate::messages::{DaveApiResponse, PendingPermission, PermissionRequest, Per
 use crate::tools::Tool;
 use crate::Message;
 use claude_agent_sdk_rs::{
-    query_stream, ClaudeAgentOptions, ContentBlock, Message as ClaudeMessage, PermissionResult,
-    PermissionResultAllow, PermissionResultDeny, TextBlock,
+    ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
+    PermissionResult, PermissionResultAllow, PermissionResultDeny, TextBlock,
 };
 use futures::future::BoxFuture;
 use futures::StreamExt;
@@ -164,18 +164,25 @@ impl AiBackend for ClaudeBackend {
             });
 
             let options = ClaudeAgentOptions::builder()
+                .permission_mode(PermissionMode::Default)
                 .stderr_callback(Arc::new(stderr_callback))
                 .can_use_tool(can_use_tool)
                 .build();
 
-            let mut stream = match query_stream(prompt, Some(options)).await {
-                Ok(stream) => stream,
-                Err(err) => {
-                    tracing::error!("Claude Code error: {}", err);
-                    let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
-                    return;
-                }
-            };
+            // Use ClaudeClient instead of query_stream to enable control protocol
+            // for can_use_tool callbacks
+            let mut client = ClaudeClient::new(options);
+            if let Err(err) = client.connect().await {
+                tracing::error!("Claude Code connection error: {}", err);
+                let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
+                return;
+            }
+            if let Err(err) = client.query(&prompt).await {
+                tracing::error!("Claude Code query error: {}", err);
+                let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
+                return;
+            }
+            let mut stream = client.receive_response();
 
             while let Some(result) = stream.next().await {
                 match result {
