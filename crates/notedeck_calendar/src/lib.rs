@@ -24,6 +24,7 @@
 //! let app = CalendarApp::new();
 //! ```
 
+mod app;
 mod calendar;
 pub mod comment;
 mod event;
@@ -32,6 +33,7 @@ mod rsvp;
 pub mod subscription;
 pub mod timezone;
 
+pub use app::{CalendarApp, CalendarViewMode};
 pub use calendar::{Calendar, EventRef};
 pub use comment::{CachedComment, Comment, KIND_COMMENT};
 pub use event::{CalendarEvent, CalendarTime, Participant};
