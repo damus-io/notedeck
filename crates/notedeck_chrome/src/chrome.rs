@@ -153,12 +153,14 @@ impl Chrome {
 
         let context = &mut notedeck.app_context();
         let dave = Dave::new(cc.wgpu_render_state.as_ref());
-        let columns = Damus::new(context, app_args);
         let mut chrome = Chrome::default();
 
-        notedeck.check_args(columns.unrecognized_args())?;
+        if !app_args.iter().any(|arg| arg == "--no-columns-app") {
+            let columns = Damus::new(context, app_args);
+            notedeck.check_args(columns.unrecognized_args())?;
+            chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+        }
 
-        chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
         #[cfg(feature = "messages")]
@@ -404,7 +406,7 @@ fn milestone_name<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {
 
 #[cfg(feature = "clndash")]
 fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
-    expanding_button(
+    notedeck_ui::expanding_button(
         "clndash-button",
         24.0,
         app_images::cln_image(),
@@ -416,7 +418,7 @@ fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
 
 #[cfg(feature = "notebook")]
 fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
-    expanding_button(
+    notedeck_ui::expanding_button(
         "notebook-button",
         40.0,
         app_images::algo_image(),

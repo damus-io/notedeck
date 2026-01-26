@@ -14,6 +14,8 @@ mkShell ({
     #cargo-edit
     #cargo-watch
     rustup
+    sccache
+    gdb
     libiconv
     pkg-config
     cmake
@@ -41,6 +43,7 @@ mkShell ({
 
 } // (
   lib.optionalAttrs (!stdenv.isDarwin) {
+    RUSTC_WRAPPER="${sccache}/bin/sccache";
     LD_LIBRARY_PATH = "${x11libs}";
     #XDG_DATA_DIRS = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
   }

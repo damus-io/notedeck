@@ -33,6 +33,46 @@ pub struct NavTitle<'a> {
     jobs: &'a MediaJobSender,
 }
 
+struct HeaderAnim {
+    padding: f32,
+    height: f32,
+}
+
+fn toolbar_visibility_amount(ui: &mut egui::Ui) -> f32 {
+    let toolbar_visible_id = egui::Id::new("toolbar_visible");
+    let toolbar_visible = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(toolbar_visible_id))
+        .unwrap_or(true);
+    ui.ctx()
+        .animate_bool_responsive(toolbar_visible_id.with("anim"), toolbar_visible)
+}
+
+fn header_anim(ui: &mut egui::Ui) -> Option<HeaderAnim> {
+    let base_padding = 8.0;
+    let base_height = 48.0;
+
+    let navbar_anim = toolbar_visibility_amount(ui);
+    let is_wide = !notedeck::ui::is_narrow(ui.ctx());
+
+    if is_wide {
+        // Wide mode: no animation, always show full header
+        Some(HeaderAnim {
+            padding: base_padding,
+            height: base_height,
+        })
+    } else if navbar_anim < 0.01 {
+        // Narrow mode with negligible visibility: don't render
+        None
+    } else {
+        // Narrow mode: animate
+        let height = base_height * navbar_anim;
+        let padding = base_padding * navbar_anim;
+
+        Some(HeaderAnim { padding, height })
+    }
+}
+
 impl<'a> NavTitle<'a> {
     // options
     const SHOW_MOVE: u32 = 1 << 0;
@@ -61,9 +101,14 @@ impl<'a> NavTitle<'a> {
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
-        notedeck_ui::padding(8.0, ui, |ui| {
+        // On mobile, animate navbar visibility in sync with the toolbar
+        // (toolbar_visible is set in render_damus_mobile based on scroll direction)
+
+        let anim = header_anim(ui)?;
+
+        notedeck_ui::padding(anim.padding, ui, |ui| {
             let mut rect = ui.available_rect_before_wrap();
-            rect.set_height(48.0);
+            rect.set_height(anim.height);
 
             let mut child_ui = ui.new_child(
                 UiBuilder::new()

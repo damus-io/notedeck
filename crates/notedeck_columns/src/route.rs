@@ -1,5 +1,6 @@
-use egui_nav::Percent;
-use enostr::{NoteId, Pubkey};
+use egui_nav::{Percent, ReturnType};
+use enostr::{NoteId, Pubkey, RelayPool};
+use nostrdb::Ndb;
 use notedeck::{
     tr, Localization, NoteZapTargetOwned, ReplacementType, RootNoteIdBuf, Router, WalletType,
 };
@@ -7,8 +8,9 @@ use std::ops::Range;
 
 use crate::{
     accounts::AccountsRoute,
-    timeline::{kind::ColumnTitle, ThreadSelection, TimelineKind},
+    timeline::{kind::ColumnTitle, thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
+    view_state::ViewState,
 };
 
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
@@ -726,6 +728,35 @@ impl<R: Clone> Default for SingletonRouter<R> {
             after_action: None,
             split: egui_nav::Split::PercentFromTop(Percent::new(35).expect("35 <= 100")),
         }
+    }
+}
+
+/// Centralized resource cleanup for popped routes.
+/// This handles cleanup for Timeline, Thread, and EditProfile routes.
+#[allow(clippy::too_many_arguments)]
+pub fn cleanup_popped_route(
+    route: &Route,
+    timeline_cache: &mut TimelineCache,
+    threads: &mut Threads,
+    view_state: &mut ViewState,
+    ndb: &mut Ndb,
+    pool: &mut RelayPool,
+    return_type: ReturnType,
+    col_index: usize,
+) {
+    match route {
+        Route::Timeline(kind) => {
+            if let Err(err) = timeline_cache.pop(kind, ndb, pool) {
+                tracing::error!("popping timeline had an error: {err} for {:?}", kind);
+            }
+        }
+        Route::Thread(selection) => {
+            threads.close(ndb, pool, selection, return_type, col_index);
+        }
+        Route::EditProfile(pk) => {
+            view_state.pubkey_to_profile_state.remove(pk);
+        }
+        _ => {}
     }
 }
 

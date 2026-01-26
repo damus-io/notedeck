@@ -1,5 +1,6 @@
 .DS_Store
 .buildcmd
+.claude/
 TODO.bak
 android-config.json
 logcat.txt
