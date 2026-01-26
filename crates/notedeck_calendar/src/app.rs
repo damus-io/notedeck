@@ -1069,6 +1069,10 @@ impl CalendarApp {
                 continue;
             };
 
+            // Request profile fetch for comment author if not cached
+            ctx.unknown_ids
+                .add_pubkey_if_missing(ctx.ndb, &txn, &comment.pubkey);
+
             // Index by root A tag (event coordinates)
             if let Some(root_a) = comment.root_a_tag.clone() {
                 // Get author display name
@@ -1174,6 +1178,10 @@ impl CalendarApp {
                 failed_parse += 1;
                 continue;
             };
+
+            // Request profile fetch for author if not cached
+            ctx.unknown_ids
+                .add_pubkey_if_missing(ctx.ndb, &txn, &event.pubkey);
 
             // Extract start date and time info
             let (start_date, start_time) = match &event.start {
