@@ -233,6 +233,13 @@ fn try_process_event(
 /// Handle pending deep links from notification taps.
 /// If a user tapped a notification while the app was closed or in background,
 /// navigate to the corresponding note thread.
+///
+/// ## Timing Note
+///
+/// Called early in `update_damus` before other processing. If no columns exist yet,
+/// `get_selected_router()` will create a column picker first, then navigate.
+/// This ensures deep links are never dropped, though navigation happens within
+/// the newly created column.
 fn handle_pending_deep_link(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
     let Some(deep_link) = notedeck::platform::take_pending_deep_link() else {
         return;

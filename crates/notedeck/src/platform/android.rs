@@ -255,6 +255,16 @@ pub struct DeepLinkInfo {
 
 /// Thread-safe storage for pending deep link.
 /// Only one deep link can be pending at a time (latest wins).
+///
+/// ## Architecture Note: Global Static Exception
+///
+/// This uses a global static instead of app-owned state because:
+/// 1. JNI callbacks (`nativeOnDeepLink`) cannot access Rust app state directly
+/// 2. The callback happens before the main event loop can poll
+/// 3. The lifecycle is: JNI writes → main loop reads → state cleared
+///
+/// This is a documented exception to the "no global variables" rule
+/// due to JNI bridging constraints. The Mutex ensures thread safety.
 static PENDING_DEEP_LINK: Mutex<Option<DeepLinkInfo>> = Mutex::new(None);
 
 /// Called from Java when user taps a notification.
