@@ -1723,21 +1723,20 @@ impl CalendarApp {
             "Comments".to_string()
         };
 
-        // Collapsible header
-        let header_response = ui.horizontal(|ui| {
-            let arrow = if self.comments_expanded {
-                "\u{25BC}"
-            } else {
-                "\u{25B6}"
-            }; // down/right arrow
-            ui.add(egui::Label::new(RichText::new(arrow).size(12.0)).sense(egui::Sense::click()));
-            ui.add(
-                egui::Label::new(RichText::new(&comments_header).size(14.0).strong())
-                    .sense(egui::Sense::click()),
-            )
-        });
+        // Collapsible header - make entire row clickable
+        let arrow = if self.comments_expanded {
+            "\u{25BC}"
+        } else {
+            "\u{25B6}"
+        }; // down/right arrow
 
-        if header_response.response.clicked() {
+        let header_text = format!("{} {}", arrow, comments_header);
+        let header_response = ui.add(
+            egui::Label::new(RichText::new(header_text).size(14.0).strong())
+                .sense(egui::Sense::click()),
+        );
+
+        if header_response.clicked() {
             self.comments_expanded = !self.comments_expanded;
         }
 
