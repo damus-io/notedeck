@@ -176,11 +176,13 @@ impl AiBackend for ClaudeBackend {
             if let Err(err) = client.connect().await {
                 tracing::error!("Claude Code connection error: {}", err);
                 let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
+                let _ = client.disconnect().await;
                 return;
             }
             if let Err(err) = client.query(&prompt).await {
                 tracing::error!("Claude Code query error: {}", err);
                 let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
+                let _ = client.disconnect().await;
                 return;
             }
             let mut stream = client.receive_response();
@@ -194,6 +196,8 @@ impl AiBackend for ClaudeBackend {
                                     if let Err(err) = tx.send(DaveApiResponse::Token(text.clone()))
                                     {
                                         tracing::error!("Failed to send token to UI: {}", err);
+                                        drop(stream);
+                                        let _ = client.disconnect().await;
                                         return;
                                     }
                                     ctx.request_repaint();
@@ -214,11 +218,15 @@ impl AiBackend for ClaudeBackend {
                     Err(err) => {
                         tracing::error!("Claude stream error: {}", err);
                         let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
+                        drop(stream);
+                        let _ = client.disconnect().await;
                         return;
                     }
                 }
             }
 
+            drop(stream);
+            let _ = client.disconnect().await;
             tracing::debug!("Claude stream closed");
         });
 
