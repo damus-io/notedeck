@@ -587,7 +587,10 @@ fn extract_profile_info(content: &str) -> CachedProfile {
         .filter(|s| !s.is_empty());
 
     // Use debug level to avoid logging PII (profile names) in production
-    debug!("profile: display_name={:?}, name={:?}", display_name_str, name_str);
+    debug!(
+        "profile: display_name={:?}, name={:?}",
+        display_name_str, name_str
+    );
 
     let name = display_name_str.or(name_str).map(|s| s.to_string());
 
