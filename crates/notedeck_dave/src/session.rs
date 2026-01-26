@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 
+use crate::agent_status::AgentStatus;
 use crate::messages::PermissionResponse;
 use crate::{DaveApiResponse, Message};
 use tokio::sync::oneshot;
@@ -20,6 +21,10 @@ pub struct ChatSession {
     /// Handle to the background task processing this session's AI requests.
     /// Aborted on drop to clean up the subprocess.
     pub task_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Position in the RTS scene (in scene coordinates)
+    pub scene_position: egui::Vec2,
+    /// Cached status for the agent (derived from session state)
+    cached_status: AgentStatus,
 }
 
 impl Drop for ChatSession {
@@ -32,6 +37,12 @@ impl Drop for ChatSession {
 
 impl ChatSession {
     pub fn new(id: SessionId) -> Self {
+        // Arrange sessions in a grid pattern
+        let col = (id as i32 - 1) % 4;
+        let row = (id as i32 - 1) / 4;
+        let x = col as f32 * 150.0 - 225.0; // Center around origin
+        let y = row as f32 * 150.0 - 75.0;
+
         ChatSession {
             id,
             title: "New Chat".to_string(),
@@ -40,6 +51,8 @@ impl ChatSession {
             incoming_tokens: None,
             pending_permissions: HashMap::new(),
             task_handle: None,
+            scene_position: egui::Vec2::new(x, y),
+            cached_status: AgentStatus::Idle,
         }
     }
 
@@ -57,6 +70,49 @@ impl ChatSession {
                 break;
             }
         }
+    }
+
+    /// Get the current status of this session/agent
+    pub fn status(&self) -> AgentStatus {
+        self.cached_status
+    }
+
+    /// Update the cached status based on current session state
+    pub fn update_status(&mut self) {
+        self.cached_status = self.derive_status();
+    }
+
+    /// Derive status from the current session state
+    fn derive_status(&self) -> AgentStatus {
+        // Check for pending permission requests (needs input)
+        if !self.pending_permissions.is_empty() {
+            return AgentStatus::NeedsInput;
+        }
+
+        // Check for error in last message
+        if let Some(Message::Error(_)) = self.chat.last() {
+            return AgentStatus::Error;
+        }
+
+        // Check if actively working (has task handle and receiving tokens)
+        if self.task_handle.is_some() && self.incoming_tokens.is_some() {
+            return AgentStatus::Working;
+        }
+
+        // Check if done (has messages and no active task)
+        if !self.chat.is_empty() && self.task_handle.is_none() {
+            // Check if the last meaningful message was from assistant
+            for msg in self.chat.iter().rev() {
+                match msg {
+                    Message::Assistant(_) => return AgentStatus::Done,
+                    Message::User(_) => return AgentStatus::Idle, // Waiting for response
+                    Message::Error(_) => return AgentStatus::Error,
+                    _ => continue,
+                }
+            }
+        }
+
+        AgentStatus::Idle
     }
 }
 
@@ -169,5 +225,47 @@ impl SessionManager {
     /// Check if there are no sessions
     pub fn is_empty(&self) -> bool {
         self.sessions.is_empty()
+    }
+
+    /// Get a reference to a session by ID
+    pub fn get(&self, id: SessionId) -> Option<&ChatSession> {
+        self.sessions.get(&id)
+    }
+
+    /// Get a mutable reference to a session by ID
+    pub fn get_mut(&mut self, id: SessionId) -> Option<&mut ChatSession> {
+        self.sessions.get_mut(&id)
+    }
+
+    /// Iterate over all sessions
+    pub fn iter(&self) -> impl Iterator<Item = &ChatSession> {
+        self.sessions.values()
+    }
+
+    /// Iterate over all sessions mutably
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ChatSession> {
+        self.sessions.values_mut()
+    }
+
+    /// Update status for all sessions
+    pub fn update_all_statuses(&mut self) {
+        for session in self.sessions.values_mut() {
+            session.update_status();
+        }
+    }
+
+    /// Get the first session that needs attention (NeedsInput status)
+    pub fn find_needs_attention(&self) -> Option<SessionId> {
+        for session in self.sessions.values() {
+            if session.status() == AgentStatus::NeedsInput {
+                return Some(session.id);
+            }
+        }
+        None
+    }
+
+    /// Get all session IDs
+    pub fn session_ids(&self) -> Vec<SessionId> {
+        self.order.clone()
     }
 }

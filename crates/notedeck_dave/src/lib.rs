@@ -1,3 +1,4 @@
+mod agent_status;
 mod avatar;
 mod backend;
 mod config;
@@ -31,8 +32,8 @@ pub use tools::{
     ToolResponses,
 };
 pub use ui::{
-    DaveAction, DaveResponse, DaveSettingsPanel, DaveUi, SessionListAction, SessionListUi,
-    SettingsPanelAction,
+    AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi, SceneAction, SceneResponse,
+    SessionListAction, SessionListUi, SettingsPanelAction,
 };
 pub use vec3::Vec3;
 
@@ -53,6 +54,10 @@ pub struct Dave {
     settings: DaveSettings,
     /// Settings panel UI state
     settings_panel: DaveSettingsPanel,
+    /// RTS-style scene view
+    scene: AgentScene,
+    /// Whether to show scene view (vs classic chat view)
+    show_scene: bool,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -134,6 +139,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             show_session_list: false,
             settings,
             settings_panel: DaveSettingsPanel::new(),
+            scene: AgentScene::new(),
+            show_scene: true, // Default to scene view
         }
     }
 
@@ -259,9 +266,120 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         if is_narrow(ui.ctx()) {
             self.narrow_ui(app_ctx, ui)
+        } else if self.show_scene {
+            self.scene_ui(app_ctx, ui)
         } else {
             self.desktop_ui(app_ctx, ui)
         }
+    }
+
+    /// Scene view with RTS-style agent visualization and chat side panel
+    fn scene_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let mut dave_response = DaveResponse::default();
+        let available = ui.available_rect_before_wrap();
+        let panel_width = 400.0;
+
+        // Scene area (main)
+        let scene_rect = egui::Rect::from_min_size(
+            available.min,
+            egui::vec2(available.width() - panel_width, available.height()),
+        );
+
+        // Chat panel area (right side)
+        let panel_rect = egui::Rect::from_min_size(
+            egui::pos2(available.max.x - panel_width, available.min.y),
+            egui::vec2(panel_width, available.height()),
+        );
+
+        // Update all session statuses
+        self.session_manager.update_all_statuses();
+
+        // Check for agents needing attention and auto-jump to them
+        if let Some(attention_id) = self.scene.check_attention(&self.session_manager) {
+            // Also sync with session manager's active session
+            self.session_manager.switch_to(attention_id);
+        }
+
+        // Render scene
+        let scene_response = ui
+            .allocate_new_ui(egui::UiBuilder::new().max_rect(scene_rect), |ui| {
+                // Scene toolbar at top
+                ui.horizontal(|ui| {
+                    if ui.button("+ New Agent").clicked() {
+                        dave_response = DaveResponse::new(DaveAction::NewChat);
+                    }
+                    ui.separator();
+                    if ui.button("Classic View").clicked() {
+                        self.show_scene = false;
+                    }
+                });
+                ui.separator();
+
+                // Render the scene
+                self.scene.ui(&self.session_manager, ui)
+            })
+            .inner;
+
+        // Handle scene actions
+        if let Some(action) = scene_response.action {
+            match action {
+                SceneAction::SelectionChanged(ids) => {
+                    // Selection updated, sync with session manager's active
+                    if let Some(id) = ids.first() {
+                        self.session_manager.switch_to(*id);
+                    }
+                }
+                SceneAction::SpawnAgent => {
+                    dave_response = DaveResponse::new(DaveAction::NewChat);
+                }
+                SceneAction::DeleteSelected => {
+                    for id in self.scene.selected.clone() {
+                        self.session_manager.delete_session(id);
+                    }
+                    self.scene.clear_selection();
+                }
+                SceneAction::AgentMoved { id, position } => {
+                    if let Some(session) = self.session_manager.get_mut(id) {
+                        session.scene_position = position;
+                    }
+                }
+            }
+        }
+
+        // Render chat side panel
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect), |ui| {
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .inner_margin(egui::Margin::symmetric(8, 12))
+                .show(ui, |ui| {
+                    if let Some(selected_id) = self.scene.primary_selection() {
+                        if let Some(session) = self.session_manager.get_mut(selected_id) {
+                            // Show title
+                            ui.heading(&session.title);
+                            ui.separator();
+
+                            // Render chat UI for selected session
+                            let response = DaveUi::new(
+                                self.model_config.trial,
+                                &session.chat,
+                                &mut session.input,
+                            )
+                            .ui(app_ctx, ui);
+
+                            if response.action.is_some() {
+                                dave_response = response;
+                            }
+                        }
+                    } else {
+                        // No selection
+                        ui.centered_and_justified(|ui| {
+                            ui.label("Select an agent to view chat");
+                        });
+                    }
+                });
+        });
+
+        dave_response
     }
 
     /// Desktop layout with sidebar for session list
@@ -282,7 +400,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 egui::Frame::new()
                     .fill(ui.visuals().faint_bg_color)
                     .inner_margin(egui::Margin::symmetric(8, 12))
-                    .show(ui, |ui| SessionListUi::new(&self.session_manager).ui(ui))
+                    .show(ui, |ui| {
+                        // Add scene view toggle button
+                        if ui.button("Scene View").clicked() {
+                            self.show_scene = true;
+                        }
+                        ui.separator();
+                        SessionListUi::new(&self.session_manager).ui(ui)
+                    })
                     .inner
             })
             .inner;
