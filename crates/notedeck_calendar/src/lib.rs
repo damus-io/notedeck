@@ -28,6 +28,7 @@ mod app;
 mod calendar;
 pub mod comment;
 mod event;
+pub mod forms;
 mod parse;
 mod rsvp;
 pub mod subscription;
@@ -37,6 +38,9 @@ pub use app::{CalendarApp, CalendarViewMode};
 pub use calendar::{Calendar, EventRef};
 pub use comment::{CachedComment, Comment, KIND_COMMENT};
 pub use event::{CalendarEvent, CalendarTime, Participant};
+pub use forms::{
+    build_calendar_note, build_event_note, build_rsvp_note, CalendarFormState, EventFormState,
+};
 pub use parse::{
     get_a_tag_value, get_all_a_tags, get_all_tag_values, get_e_tag, get_participants,
     get_tag_value, parse_a_tag, parse_participant_tag,
