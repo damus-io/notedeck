@@ -175,9 +175,6 @@ impl AgentScene {
         egui::Scene::new()
             .zoom_range(0.1..=4.0)
             .show(ui, &mut scene_rect, |ui| {
-                // Draw background grid
-                Self::draw_grid(ui);
-
                 // Draw agents and collect interaction responses
                 for session in session_manager.iter() {
                     let id = session.id;
@@ -259,16 +256,19 @@ impl AgentScene {
             }
         }
 
-        // Handle keyboard input
-        if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
-            if !self.selected.is_empty() {
-                response = SceneResponse::new(SceneAction::DeleteSelected);
+        // Handle keyboard input (only when no text input has focus)
+        if !ui.ctx().wants_keyboard_input() {
+            if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+            {
+                if !self.selected.is_empty() {
+                    response = SceneResponse::new(SceneAction::DeleteSelected);
+                }
             }
-        }
 
-        // Handle 'n' key to spawn new agent
-        if ui.input(|i| i.key_pressed(egui::Key::N)) {
-            response = SceneResponse::new(SceneAction::SpawnAgent);
+            // Handle 'n' key to spawn new agent
+            if ui.input(|i| i.key_pressed(egui::Key::N)) {
+                response = SceneResponse::new(SceneAction::SpawnAgent);
+            }
         }
 
         // Handle box selection completion
@@ -311,63 +311,6 @@ impl AgentScene {
         }
 
         response
-    }
-
-    /// Draw the background grid
-    fn draw_grid(ui: &mut egui::Ui) {
-        let painter = ui.painter();
-        let rect = ui.max_rect();
-        let grid_spacing = 50.0;
-        let grid_color = ui
-            .visuals()
-            .widgets
-            .noninteractive
-            .bg_stroke
-            .color
-            .gamma_multiply(0.3);
-
-        // Vertical lines
-        let start_x = (rect.min.x / grid_spacing).floor() * grid_spacing;
-        let mut x = start_x;
-        while x < rect.max.x {
-            painter.line_segment(
-                [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
-                egui::Stroke::new(1.0, grid_color),
-            );
-            x += grid_spacing;
-        }
-
-        // Horizontal lines
-        let start_y = (rect.min.y / grid_spacing).floor() * grid_spacing;
-        let mut y = start_y;
-        while y < rect.max.y {
-            painter.line_segment(
-                [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
-                egui::Stroke::new(1.0, grid_color),
-            );
-            y += grid_spacing;
-        }
-
-        // Draw origin axes slightly brighter
-        let axis_color = ui
-            .visuals()
-            .widgets
-            .noninteractive
-            .bg_stroke
-            .color
-            .gamma_multiply(0.6);
-        if rect.min.x < 0.0 && rect.max.x > 0.0 {
-            painter.line_segment(
-                [Pos2::new(0.0, rect.min.y), Pos2::new(0.0, rect.max.y)],
-                egui::Stroke::new(2.0, axis_color),
-            );
-        }
-        if rect.min.y < 0.0 && rect.max.y > 0.0 {
-            painter.line_segment(
-                [Pos2::new(rect.min.x, 0.0), Pos2::new(rect.max.x, 0.0)],
-                egui::Stroke::new(2.0, axis_color),
-            );
-        }
     }
 
     /// Draw a single agent unit and return the interaction Response

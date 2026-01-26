@@ -18,6 +18,7 @@ pub struct DaveUi<'a> {
     chat: &'a [Message],
     trial: bool,
     input: &'a mut String,
+    compact: bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -79,19 +80,29 @@ pub enum DaveAction {
 
 impl<'a> DaveUi<'a> {
     pub fn new(trial: bool, chat: &'a [Message], input: &'a mut String) -> Self {
-        DaveUi { trial, chat, input }
+        DaveUi {
+            trial,
+            chat,
+            input,
+            compact: false,
+        }
     }
 
-    fn chat_margin(ctx: &egui::Context) -> i8 {
-        if notedeck::ui::is_narrow(ctx) {
+    pub fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+
+    fn chat_margin(&self, ctx: &egui::Context) -> i8 {
+        if self.compact || notedeck::ui::is_narrow(ctx) {
             20
         } else {
             100
         }
     }
 
-    fn chat_frame(ctx: &egui::Context) -> egui::Frame {
-        let margin = Self::chat_margin(ctx);
+    fn chat_frame(&self, ctx: &egui::Context) -> egui::Frame {
+        let margin = self.chat_margin(ctx);
         egui::Frame::new().inner_margin(egui::Margin {
             left: margin,
             right: margin,
@@ -107,7 +118,7 @@ impl<'a> DaveUi<'a> {
         egui::Frame::NONE
             .show(ui, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    let margin = Self::chat_margin(ui.ctx());
+                    let margin = self.chat_margin(ui.ctx());
 
                     let r = egui::Frame::new()
                         .outer_margin(egui::Margin {
@@ -126,7 +137,7 @@ impl<'a> DaveUi<'a> {
                         .stick_to_bottom(true)
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
-                            Self::chat_frame(ui.ctx())
+                            self.chat_frame(ui.ctx())
                                 .show(ui, |ui| {
                                     ui.vertical(|ui| self.render_chat(app_ctx, ui)).inner
                                 })

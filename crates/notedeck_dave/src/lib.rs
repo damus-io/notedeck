@@ -155,109 +155,137 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.settings = settings;
     }
 
-    /// Process incoming tokens from the ai backend
+    /// Process incoming tokens from the ai backend for ALL sessions
     fn process_events(&mut self, app_ctx: &AppContext) -> bool {
         // Should we continue sending requests? Set this to true if
-        // we have tool responses to send back to the ai
+        // we have tool responses to send back to the ai (only for active session)
         let mut should_send = false;
+        let active_id = self.session_manager.active_id();
 
-        // Take the receiver out to avoid borrow conflicts
-        let recvr = {
-            let Some(session) = self.session_manager.get_active_mut() else {
-                return should_send;
-            };
-            session.incoming_tokens.take()
-        };
+        // Get all session IDs to process
+        let session_ids = self.session_manager.session_ids();
 
-        let Some(recvr) = recvr else {
-            return should_send;
-        };
-
-        while let Ok(res) = recvr.try_recv() {
-            if let Some(avatar) = &mut self.avatar {
-                avatar.random_nudge();
-            }
-
-            let Some(session) = self.session_manager.get_active_mut() else {
-                break;
+        for session_id in session_ids {
+            // Take the receiver out to avoid borrow conflicts
+            let recvr = {
+                let Some(session) = self.session_manager.get_mut(session_id) else {
+                    continue;
+                };
+                session.incoming_tokens.take()
             };
 
-            match res {
-                DaveApiResponse::Failed(err) => session.chat.push(Message::Error(err)),
+            let Some(recvr) = recvr else {
+                continue;
+            };
 
-                DaveApiResponse::Token(token) => match session.chat.last_mut() {
-                    Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
-                    Some(_) => session.chat.push(Message::Assistant(token)),
-                    None => {}
-                },
-
-                DaveApiResponse::ToolCalls(toolcalls) => {
-                    tracing::info!("got tool calls: {:?}", toolcalls);
-                    session.chat.push(Message::ToolCalls(toolcalls.clone()));
-
-                    let txn = Transaction::new(app_ctx.ndb).unwrap();
-                    for call in &toolcalls {
-                        // execute toolcall
-                        match call.calls() {
-                            ToolCalls::PresentNotes(present) => {
-                                session.chat.push(Message::ToolResponse(ToolResponse::new(
-                                    call.id().to_owned(),
-                                    ToolResponses::PresentNotes(present.note_ids.len() as i32),
-                                )));
-
-                                should_send = true;
-                            }
-
-                            ToolCalls::Invalid(invalid) => {
-                                should_send = true;
-
-                                session.chat.push(Message::tool_error(
-                                    call.id().to_string(),
-                                    invalid.error.clone(),
-                                ));
-                            }
-
-                            ToolCalls::Query(search_call) => {
-                                should_send = true;
-
-                                let resp = search_call.execute(&txn, app_ctx.ndb);
-                                session.chat.push(Message::ToolResponse(ToolResponse::new(
-                                    call.id().to_owned(),
-                                    ToolResponses::Query(resp),
-                                )))
-                            }
-                        }
+            while let Ok(res) = recvr.try_recv() {
+                // Nudge avatar only for active session
+                if active_id == Some(session_id) {
+                    if let Some(avatar) = &mut self.avatar {
+                        avatar.random_nudge();
                     }
                 }
 
-                DaveApiResponse::PermissionRequest(pending) => {
-                    tracing::info!(
-                        "Permission request for tool '{}': {:?}",
-                        pending.request.tool_name,
-                        pending.request.tool_input
-                    );
+                let Some(session) = self.session_manager.get_mut(session_id) else {
+                    break;
+                };
 
-                    // Store the response sender for later
-                    session
-                        .pending_permissions
-                        .insert(pending.request.id, pending.response_tx);
+                match res {
+                    DaveApiResponse::Failed(err) => session.chat.push(Message::Error(err)),
 
-                    // Add the request to chat for UI display
-                    session
-                        .chat
-                        .push(Message::PermissionRequest(pending.request));
-                }
+                    DaveApiResponse::Token(token) => match session.chat.last_mut() {
+                        Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
+                        Some(_) => session.chat.push(Message::Assistant(token)),
+                        None => {}
+                    },
 
-                DaveApiResponse::ToolResult(result) => {
-                    tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
-                    session.chat.push(Message::ToolResult(result));
+                    DaveApiResponse::ToolCalls(toolcalls) => {
+                        tracing::info!("got tool calls: {:?}", toolcalls);
+                        session.chat.push(Message::ToolCalls(toolcalls.clone()));
+
+                        let txn = Transaction::new(app_ctx.ndb).unwrap();
+                        for call in &toolcalls {
+                            // execute toolcall
+                            match call.calls() {
+                                ToolCalls::PresentNotes(present) => {
+                                    session.chat.push(Message::ToolResponse(ToolResponse::new(
+                                        call.id().to_owned(),
+                                        ToolResponses::PresentNotes(present.note_ids.len() as i32),
+                                    )));
+
+                                    // Only send for active session
+                                    if active_id == Some(session_id) {
+                                        should_send = true;
+                                    }
+                                }
+
+                                ToolCalls::Invalid(invalid) => {
+                                    if active_id == Some(session_id) {
+                                        should_send = true;
+                                    }
+
+                                    session.chat.push(Message::tool_error(
+                                        call.id().to_string(),
+                                        invalid.error.clone(),
+                                    ));
+                                }
+
+                                ToolCalls::Query(search_call) => {
+                                    if active_id == Some(session_id) {
+                                        should_send = true;
+                                    }
+
+                                    let resp = search_call.execute(&txn, app_ctx.ndb);
+                                    session.chat.push(Message::ToolResponse(ToolResponse::new(
+                                        call.id().to_owned(),
+                                        ToolResponses::Query(resp),
+                                    )))
+                                }
+                            }
+                        }
+                    }
+
+                    DaveApiResponse::PermissionRequest(pending) => {
+                        tracing::info!(
+                            "Permission request for tool '{}': {:?}",
+                            pending.request.tool_name,
+                            pending.request.tool_input
+                        );
+
+                        // Store the response sender for later
+                        session
+                            .pending_permissions
+                            .insert(pending.request.id, pending.response_tx);
+
+                        // Add the request to chat for UI display
+                        session
+                            .chat
+                            .push(Message::PermissionRequest(pending.request));
+                    }
+
+                    DaveApiResponse::ToolResult(result) => {
+                        tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
+                        session.chat.push(Message::ToolResult(result));
+                    }
                 }
             }
-        }
 
-        // Put the receiver back
-        if let Some(session) = self.session_manager.get_active_mut() {
-            session.incoming_tokens = Some(recvr);
+            // Check if channel is disconnected (stream ended)
+            match recvr.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Stream ended, clear task state
+                    if let Some(session) = self.session_manager.get_mut(session_id) {
+                        session.task_handle = None;
+                        // Don't restore incoming_tokens - leave it None
+                    }
+                }
+                _ => {
+                    // Channel still open, put receiver back
+                    if let Some(session) = self.session_manager.get_mut(session_id) {
+                        session.incoming_tokens = Some(recvr);
+                    }
+                }
+            }
         }
 
         should_send
@@ -364,6 +392,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 &session.chat,
                                 &mut session.input,
                             )
+                            .compact(true)
                             .ui(app_ctx, ui);
 
                             if response.action.is_some() {
