@@ -16,7 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.URL
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
 
 /**
  * Helper class for creating rich Android notifications from Nostr events.
@@ -24,8 +24,18 @@ import java.util.concurrent.ConcurrentHashMap
 object NotificationHelper {
     private const val TAG = "NotificationHelper"
 
-    // Cache for profile images - thread-safe for concurrent access
-    private val profileImageCache = ConcurrentHashMap<String, Bitmap>()
+    /** Maximum number of profile images to cache (LRU eviction). */
+    private const val MAX_PROFILE_CACHE_SIZE = 100
+
+    // Cache for profile images - bounded LRU cache to prevent OOM in long-running sessions.
+    // Thread-safe via Collections.synchronizedMap wrapping LinkedHashMap in access-order mode.
+    private val profileImageCache: MutableMap<String, Bitmap> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, Bitmap>(MAX_PROFILE_CACHE_SIZE, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean {
+                return size > MAX_PROFILE_CACHE_SIZE
+            }
+        }
+    )
 
     /**
      * Create and show a notification for a Nostr event.
@@ -267,9 +277,9 @@ object NotificationHelper {
                 connection.readTimeout = 5000
                 val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
 
-                // Cache the result (thread-safe write via putIfAbsent)
+                // Cache the result (thread-safe via synchronized wrapper)
                 if (bitmap != null) {
-                    profileImageCache.putIfAbsent(pubkey, bitmap)
+                    profileImageCache[pubkey] = bitmap
                 }
                 bitmap
             } catch (e: Exception) {
@@ -283,7 +293,7 @@ object NotificationHelper {
                         connection.readTimeout = 5000
                         val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
                         if (bitmap != null) {
-                            profileImageCache.putIfAbsent(pubkey, bitmap)
+                            profileImageCache[pubkey] = bitmap
                         }
                         return@withContext bitmap
                     } catch (e2: Exception) {
