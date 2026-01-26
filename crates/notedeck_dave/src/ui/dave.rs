@@ -571,7 +571,11 @@ impl<'a> DaveUi<'a> {
                 .corner_radius(10.0)
                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                 .show(ui, |ui| {
-                    ui.add(egui::Label::new(msg).selectable(true));
+                    ui.add(
+                        egui::Label::new(msg)
+                            .wrap_mode(egui::TextWrapMode::Wrap)
+                            .selectable(true),
+                    );
                 })
         });
     }
