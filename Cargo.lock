@@ -4122,6 +4122,7 @@ dependencies = [
  "bytemuck",
  "chrono",
  "claude-agent-sdk-rs",
+ "dashmap",
  "eframe",
  "egui",
  "egui-wgpu",

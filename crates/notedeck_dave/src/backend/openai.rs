@@ -161,4 +161,9 @@ impl AiBackend for OpenAiBackend {
 
         (rx, Some(handle))
     }
+
+    fn cleanup_session(&self, _session_id: String) {
+        // OpenAI backend doesn't maintain persistent connections per session
+        // No cleanup needed
+    }
 }

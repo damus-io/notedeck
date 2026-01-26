@@ -24,6 +24,7 @@ rand = "0.9.0"
 uuid = { version = "1", features = ["v4"] }
 bytemuck = "1.22.0"
 futures = "0.3.31"
+dashmap = "6"
 #reqwest = "0.12.15"
 egui_extras = { workspace = true }
 

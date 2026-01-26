@@ -391,7 +391,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                     SceneAction::DeleteSelected => {
                         for id in self.scene.selected.clone() {
-                            self.session_manager.delete_session(id);
+                            self.delete_session(id);
                         }
                         self.scene.clear_selection();
                     }
@@ -457,7 +457,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     self.session_manager.switch_to(id);
                 }
                 SessionListAction::Delete(id) => {
-                    self.session_manager.delete_session(id);
+                    self.delete_session(id);
                 }
             }
         }
@@ -485,7 +485,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         self.show_session_list = false;
                     }
                     SessionListAction::Delete(id) => {
-                        self.session_manager.delete_session(id);
+                        self.delete_session(id);
                     }
                 }
             }
@@ -503,6 +503,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     fn handle_new_chat(&mut self) {
         self.session_manager.new_session();
+    }
+
+    /// Delete a session and clean up backend resources
+    fn delete_session(&mut self, id: SessionId) {
+        if self.session_manager.delete_session(id) {
+            // Clean up backend resources (e.g., close persistent connections)
+            let session_id = format!("dave-session-{}", id);
+            self.backend.cleanup_session(session_id);
+        }
     }
 
     /// Handle a user send action triggered by the ui

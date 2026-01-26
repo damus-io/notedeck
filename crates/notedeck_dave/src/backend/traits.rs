@@ -29,4 +29,8 @@ pub trait AiBackend: Send + Sync {
         mpsc::Receiver<DaveApiResponse>,
         Option<tokio::task::JoinHandle<()>>,
     );
+
+    /// Clean up resources associated with a session.
+    /// Called when a session is deleted to allow backends to shut down any persistent connections.
+    fn cleanup_session(&self, session_id: String);
 }
