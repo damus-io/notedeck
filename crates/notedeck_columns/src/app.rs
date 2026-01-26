@@ -260,7 +260,10 @@ fn handle_pending_deep_link(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
         }
     };
 
-    // Create a thread route for the event
+    // Create a thread route for the event.
+    // Note: Uses new_unsafe (no DB lookup) consistent with URL navigation in route.rs.
+    // If the note is a reply, thread will start from that note rather than the root.
+    // This matches URL deep link behavior - navigate to the specific linked note.
     let thread_selection = timeline::ThreadSelection::from_root_id(
         notedeck::RootNoteIdBuf::new_unsafe(*note_id.bytes()),
     );
