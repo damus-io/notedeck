@@ -60,7 +60,8 @@ object NotificationHelper {
         zapAmountSats: Long? = null
     ) {
         Log.i(TAG, "showNotification: eventKind=$eventKind eventId=${eventId.take(8)} authorPubkey=${authorPubkey.take(8)}")
-        Log.i(TAG, "showNotification: authorName=$authorName pictureUrl=${authorPictureUrl?.take(50)}")
+        // Use debug level for PII (author name, picture URL) to avoid logging in production
+        Log.d(TAG, "showNotification: authorName=$authorName pictureUrl=${authorPictureUrl?.take(50)}")
 
         val notificationManager = context.getSystemService(NotificationManager::class.java)
 
