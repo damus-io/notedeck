@@ -25,6 +25,7 @@
 //! ```
 
 mod calendar;
+pub mod comment;
 mod event;
 mod parse;
 mod rsvp;
@@ -32,6 +33,7 @@ pub mod subscription;
 pub mod timezone;
 
 pub use calendar::{Calendar, EventRef};
+pub use comment::{CachedComment, Comment, KIND_COMMENT};
 pub use event::{CalendarEvent, CalendarTime, Participant};
 pub use parse::{
     get_a_tag_value, get_all_a_tags, get_all_tag_values, get_e_tag, get_participants,

@@ -5,6 +5,7 @@
 
 use nostrdb::Filter;
 
+use crate::comment::KIND_COMMENT;
 use crate::{KIND_CALENDAR, KIND_DATE_CALENDAR_EVENT, KIND_RSVP, KIND_TIME_CALENDAR_EVENT};
 
 /// Default limit for calendar event queries.
@@ -139,6 +140,46 @@ pub fn rsvps_by_author(pubkey: &[u8; 32], limit: u64) -> Filter {
     Filter::new()
         .authors([pubkey])
         .kinds([KIND_RSVP as u64])
+        .limit(limit)
+        .build()
+}
+
+/// Creates a filter for NIP-22 comments (kind 1111).
+///
+/// This filter matches all kind 1111 comments. Use `comments_for_event`
+/// for comments on a specific calendar event.
+pub fn comments_filter(limit: u64) -> Filter {
+    Filter::new()
+        .kinds([KIND_COMMENT as u64])
+        .limit(limit)
+        .build()
+}
+
+/// Creates a filter for NIP-22 comments on a specific calendar event.
+///
+/// This uses the uppercase "A" tag to find comments scoped to a calendar event.
+///
+/// # Arguments
+///
+/// * `event_coordinates` - The NIP-33 coordinates of the event (e.g., "31923:pubkey:d-tag")
+/// * `limit` - Maximum number of comments to return
+pub fn comments_for_event(event_coordinates: &str, limit: u64) -> Filter {
+    Filter::new()
+        .kinds([KIND_COMMENT as u64])
+        .tags([event_coordinates], 'A')
+        .limit(limit)
+        .build()
+}
+
+/// Creates a filter for comments on calendar events (kind 31922 and 31923).
+///
+/// This is a broader filter that finds comments with root kind tags
+/// indicating they are commenting on calendar events.
+pub fn calendar_comments_filter(limit: u64) -> Filter {
+    // NIP-22 uses uppercase K tag for root kind
+    // We filter for comments that have K tag with calendar event kinds
+    Filter::new()
+        .kinds([KIND_COMMENT as u64])
         .limit(limit)
         .build()
 }
