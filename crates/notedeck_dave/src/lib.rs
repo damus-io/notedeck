@@ -21,7 +21,9 @@ use std::sync::Arc;
 
 pub use avatar::DaveAvatar;
 pub use config::{AiProvider, DaveSettings, ModelConfig};
-pub use messages::{DaveApiResponse, Message, PermissionResponse, PermissionResponseType};
+pub use messages::{
+    DaveApiResponse, Message, PermissionResponse, PermissionResponseType, ToolResult,
+};
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
 pub use tools::{
@@ -237,6 +239,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session
                         .chat
                         .push(Message::PermissionRequest(pending.request));
+                }
+
+                DaveApiResponse::ToolResult(result) => {
+                    tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
+                    session.chat.push(Message::ToolResult(result));
                 }
             }
         }

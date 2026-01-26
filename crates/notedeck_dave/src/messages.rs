@@ -41,6 +41,13 @@ pub enum PermissionResponseType {
     Denied,
 }
 
+/// Metadata about a completed tool execution
+#[derive(Debug, Clone)]
+pub struct ToolResult {
+    pub tool_name: String,
+    pub summary: String, // e.g., "154 lines", "exit 0", "3 matches"
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     System(String),
@@ -51,6 +58,8 @@ pub enum Message {
     ToolResponse(ToolResponse),
     /// A permission request from the AI that needs user response
     PermissionRequest(PermissionRequest),
+    /// Result metadata from a completed tool execution
+    ToolResult(ToolResult),
 }
 
 /// The ai backends response. Since we are using streaming APIs these are
@@ -61,6 +70,8 @@ pub enum DaveApiResponse {
     Failed(String),
     /// A permission request that needs to be displayed to the user
     PermissionRequest(PendingPermission),
+    /// Metadata from a completed tool execution
+    ToolResult(ToolResult),
 }
 
 impl Message {
@@ -115,6 +126,9 @@ impl Message {
 
             // Permission requests are UI-only, not sent to the API
             Message::PermissionRequest(_) => None,
+
+            // Tool results are UI-only, not sent to the API
+            Message::ToolResult(_) => None,
         }
     }
 }

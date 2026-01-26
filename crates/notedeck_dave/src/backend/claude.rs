@@ -1,10 +1,12 @@
 use crate::backend::traits::AiBackend;
-use crate::messages::{DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse};
+use crate::messages::{
+    DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse, ToolResult,
+};
 use crate::tools::Tool;
 use crate::Message;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
-    PermissionResult, PermissionResultAllow, PermissionResultDeny, TextBlock,
+    PermissionResult, PermissionResultAllow, PermissionResultDeny, TextBlock, ToolUseBlock,
 };
 use futures::future::BoxFuture;
 use futures::StreamExt;
@@ -53,8 +55,9 @@ impl ClaudeBackend {
                 Message::ToolCalls(_)
                 | Message::ToolResponse(_)
                 | Message::Error(_)
-                | Message::PermissionRequest(_) => {
-                    // Skip tool-related, error, and permission messages
+                | Message::PermissionRequest(_)
+                | Message::ToolResult(_) => {
+                    // Skip tool-related, error, permission, and tool result messages
                 }
             }
         }
@@ -201,16 +204,17 @@ impl AiBackend for ClaudeBackend {
             // for can_use_tool callbacks
             // For follow-up messages, use --continue to resume the last conversation
             let stderr_callback = Arc::new(stderr_callback);
+
             let options = if is_first_message {
                 ClaudeAgentOptions::builder()
                     .permission_mode(PermissionMode::Default)
-                    .stderr_callback(stderr_callback)
+                    .stderr_callback(stderr_callback.clone())
                     .can_use_tool(can_use_tool)
                     .build()
             } else {
                 ClaudeAgentOptions::builder()
                     .permission_mode(PermissionMode::Default)
-                    .stderr_callback(stderr_callback)
+                    .stderr_callback(stderr_callback.clone())
                     .can_use_tool(can_use_tool)
                     .continue_conversation(true)
                     .build()
@@ -230,20 +234,32 @@ impl AiBackend for ClaudeBackend {
             }
             let mut stream = client.receive_response();
 
+            // Track pending tool uses: tool_use_id -> (tool_name, tool_input)
+            let mut pending_tools: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(message) => match message {
                         ClaudeMessage::Assistant(assistant_msg) => {
                             for block in &assistant_msg.message.content {
-                                if let ContentBlock::Text(TextBlock { text }) = block {
-                                    if let Err(err) = tx.send(DaveApiResponse::Token(text.clone()))
-                                    {
-                                        tracing::error!("Failed to send token to UI: {}", err);
-                                        drop(stream);
-                                        let _ = client.disconnect().await;
-                                        return;
+                                match block {
+                                    ContentBlock::Text(TextBlock { text }) => {
+                                        if let Err(err) =
+                                            tx.send(DaveApiResponse::Token(text.clone()))
+                                        {
+                                            tracing::error!("Failed to send token to UI: {}", err);
+                                            drop(stream);
+                                            let _ = client.disconnect().await;
+                                            return;
+                                        }
+                                        ctx.request_repaint();
                                     }
-                                    ctx.request_repaint();
+                                    ContentBlock::ToolUse(ToolUseBlock { id, name, input }) => {
+                                        // Store for later correlation with tool result
+                                        pending_tools
+                                            .insert(id.clone(), (name.clone(), input.clone()));
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
@@ -255,6 +271,37 @@ impl AiBackend for ClaudeBackend {
                                 let _ = tx.send(DaveApiResponse::Failed(error_text));
                             }
                             break;
+                        }
+                        ClaudeMessage::User(user_msg) => {
+                            // Tool results come in user_msg.extra, not content
+                            // Structure: extra["tool_use_result"] has the result,
+                            // extra["message"]["content"][0]["tool_use_id"] has the correlation ID
+                            if let Some(tool_use_result) = user_msg.extra.get("tool_use_result") {
+                                // Get tool_use_id from message.content[0].tool_use_id
+                                let tool_use_id = user_msg
+                                    .extra
+                                    .get("message")
+                                    .and_then(|m| m.get("content"))
+                                    .and_then(|c| c.as_array())
+                                    .and_then(|arr| arr.first())
+                                    .and_then(|item| item.get("tool_use_id"))
+                                    .and_then(|id| id.as_str());
+
+                                if let Some(tool_use_id) = tool_use_id {
+                                    if let Some((tool_name, tool_input)) =
+                                        pending_tools.remove(tool_use_id)
+                                    {
+                                        let summary = format_tool_summary(
+                                            &tool_name,
+                                            &tool_input,
+                                            tool_use_result,
+                                        );
+                                        let tool_result = ToolResult { tool_name, summary };
+                                        let _ = tx.send(DaveApiResponse::ToolResult(tool_result));
+                                        ctx.request_repaint();
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     },
@@ -274,5 +321,117 @@ impl AiBackend for ClaudeBackend {
         });
 
         (rx, Some(handle))
+    }
+}
+
+/// Extract string content from a tool response, handling various JSON structures
+fn extract_response_content(response: &serde_json::Value) -> Option<String> {
+    // Try direct string first
+    if let Some(s) = response.as_str() {
+        return Some(s.to_string());
+    }
+    // Try "content" field (common wrapper)
+    if let Some(s) = response.get("content").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    // Try file.content for Read tool responses
+    if let Some(s) = response
+        .get("file")
+        .and_then(|f| f.get("content"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(s.to_string());
+    }
+    // Try "output" field
+    if let Some(s) = response.get("output").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    // Try "result" field
+    if let Some(s) = response.get("result").and_then(|v| v.as_str()) {
+        return Some(s.to_string());
+    }
+    // Fallback: serialize the whole response if it's not null
+    if !response.is_null() {
+        return Some(response.to_string());
+    }
+    None
+}
+
+/// Format a human-readable summary for tool execution results
+fn format_tool_summary(
+    tool_name: &str,
+    input: &serde_json::Value,
+    response: &serde_json::Value,
+) -> String {
+    match tool_name {
+        "Read" => {
+            let file = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let filename = file.rsplit('/').next().unwrap_or(file);
+            // Try to get numLines directly from file metadata (most accurate)
+            let lines = response
+                .get("file")
+                .and_then(|f| f.get("numLines").or_else(|| f.get("totalLines")))
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                // Fallback to counting lines in content
+                .or_else(|| {
+                    extract_response_content(response)
+                        .as_ref()
+                        .map(|s| s.lines().count())
+                })
+                .unwrap_or(0);
+            format!("{} ({} lines)", filename, lines)
+        }
+        "Write" => {
+            let file = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let filename = file.rsplit('/').next().unwrap_or(file);
+            let bytes = input
+                .get("content")
+                .and_then(|v| v.as_str())
+                .map(|s| s.len())
+                .unwrap_or(0);
+            format!("{} ({} bytes)", filename, bytes)
+        }
+        "Bash" => {
+            let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            // Truncate long commands
+            let cmd_display = if cmd.len() > 40 {
+                format!("{}...", &cmd[..37])
+            } else {
+                cmd.to_string()
+            };
+            let output_len = extract_response_content(response)
+                .as_ref()
+                .map(|s| s.len())
+                .unwrap_or(0);
+            if output_len > 0 {
+                format!("`{}` ({} chars)", cmd_display, output_len)
+            } else {
+                format!("`{}`", cmd_display)
+            }
+        }
+        "Grep" => {
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("'{}'", pattern)
+        }
+        "Glob" => {
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("'{}'", pattern)
+        }
+        "Edit" => {
+            let file = input
+                .get("file_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let filename = file.rsplit('/').next().unwrap_or(file);
+            filename.to_string()
+        }
+        _ => String::new(),
     }
 }

@@ -1,6 +1,8 @@
 use crate::{
     config::DaveSettings,
-    messages::{Message, PermissionRequest, PermissionResponse, PermissionResponseType},
+    messages::{
+        Message, PermissionRequest, PermissionResponse, PermissionResponseType, ToolResult,
+    },
     tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
@@ -186,6 +188,9 @@ impl<'a> DaveUi<'a> {
                         response = DaveResponse::new(action);
                     }
                 }
+                Message::ToolResult(result) => {
+                    Self::tool_result_ui(result, ui);
+                }
             };
         }
 
@@ -354,6 +359,29 @@ impl<'a> DaveUi<'a> {
                     request_id: request.id,
                     response: PermissionResponse::Allow,
                 });
+            }
+        });
+    }
+
+    /// Render tool result metadata as a compact line
+    fn tool_result_ui(result: &ToolResult, ui: &mut egui::Ui) {
+        // Compact single-line display with subdued styling
+        ui.horizontal(|ui| {
+            // Tool name in slightly brighter text
+            ui.add(egui::Label::new(
+                egui::RichText::new(&result.tool_name)
+                    .size(11.0)
+                    .color(ui.visuals().text_color().gamma_multiply(0.6))
+                    .monospace(),
+            ));
+            // Summary in more subdued text
+            if !result.summary.is_empty() {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(&result.summary)
+                        .size(11.0)
+                        .color(ui.visuals().text_color().gamma_multiply(0.4))
+                        .monospace(),
+                ));
             }
         });
     }
