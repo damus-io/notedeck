@@ -90,8 +90,11 @@ class NotificationsService : Service() {
     // Coroutine scope for async operations
     private var serviceScope: CoroutineScope? = null
 
-    // Event deduplication - bounded LRU cache to prevent memory leaks
-    // Synchronized access required since it's accessed from JNI callback thread
+    // Event deduplication - bounded LRU cache to prevent memory leaks.
+    // NOTE: Rust worker also deduplicates events before calling JNI (see notifications.rs
+    // record_event_if_new). This Kotlin-side dedup is defensive: protects against edge cases
+    // like native library reload where Rust state resets but Kotlin service continues.
+    // Synchronized access required since it's accessed from JNI callback thread.
     private val processedEvents = object : LinkedHashMap<String, Boolean>(100, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
             return size > MAX_DEDUP_CACHE

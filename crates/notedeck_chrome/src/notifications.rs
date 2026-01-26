@@ -759,6 +759,14 @@ fn record_event_if_new(state: &mut WorkerState, event_id: &str) -> bool {
     true
 }
 
+/// Validates that a string is exactly 64 characters of valid hexadecimal.
+///
+/// Used to validate Nostr event IDs and pubkeys which must be 32-byte hex-encoded values.
+/// Checks both length (64 chars) and character validity ([0-9a-fA-F]).
+fn is_valid_hex_64(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// Structured event data extracted from JSON - passed to Kotlin via JNI
 /// This avoids JSON parsing in Kotlin entirely
 struct ExtractedEvent {
@@ -824,20 +832,18 @@ fn extract_event(relay_message: &str) -> Option<ExtractedEvent> {
         .unwrap_or("")
         .to_string();
 
-    // Validate id and pubkey are proper hex (64 chars)
-    // Log warning but don't silently drop - helps debug relay issues
-    if id.len() != 64 {
+    // Validate id and pubkey are proper 64-char hex strings.
+    // Checks both length AND character validity to prevent malformed data downstream.
+    if !is_valid_hex_64(&id) {
         warn!(
-            "Dropping event with invalid id length {}: {}",
-            id.len(),
+            "Dropping event with invalid id (not 64-char hex): {}",
             &id[..id.len().min(16)]
         );
         return None;
     }
-    if pubkey.len() != 64 {
+    if !is_valid_hex_64(&pubkey) {
         warn!(
-            "Dropping event with invalid pubkey length {}: {}",
-            pubkey.len(),
+            "Dropping event with invalid pubkey (not 64-char hex): {}",
             &pubkey[..pubkey.len().min(16)]
         );
         return None;
