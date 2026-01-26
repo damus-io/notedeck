@@ -33,6 +33,43 @@ pub struct NavTitle<'a> {
     jobs: &'a MediaJobSender,
 }
 
+struct HeaderAnim {
+    padding: f32,
+    height: f32,
+}
+
+fn toolbar_visibility_amount(ui: &mut egui::Ui) -> f32 {
+    let toolbar_visible_id = egui::Id::new("toolbar_visible");
+    let toolbar_visible = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(toolbar_visible_id))
+        .unwrap_or(true);
+    ui.ctx()
+        .animate_bool_responsive(toolbar_visible_id.with("anim"), toolbar_visible)
+}
+
+fn header_anim(ui: &mut egui::Ui) -> HeaderAnim {
+    let base_padding = 8.0;
+    let base_height = 48.0;
+
+    let navbar_anim = toolbar_visibility_amount(ui);
+    let is_wide = !notedeck::ui::is_narrow(ui.ctx());
+    let anim_is_negligible = navbar_anim < 0.01;
+    let skip_animation = is_wide || anim_is_negligible;
+
+    if skip_animation {
+        HeaderAnim {
+            padding: base_padding,
+            height: base_height,
+        }
+    } else {
+        let height = base_height * navbar_anim;
+        let padding = base_padding * navbar_anim;
+
+        HeaderAnim { padding, height }
+    }
+}
+
 impl<'a> NavTitle<'a> {
     // options
     const SHOW_MOVE: u32 = 1 << 0;
@@ -63,27 +100,12 @@ impl<'a> NavTitle<'a> {
     pub fn show(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
         // On mobile, animate navbar visibility in sync with the toolbar
         // (toolbar_visible is set in render_damus_mobile based on scroll direction)
-        let toolbar_visible_id = egui::Id::new("toolbar_visible");
-        let toolbar_visible = ui
-            .ctx()
-            .data(|d| d.get_temp::<bool>(toolbar_visible_id))
-            .unwrap_or(true);
-        let navbar_anim = ui
-            .ctx()
-            .animate_bool_responsive(toolbar_visible_id.with("anim"), toolbar_visible);
 
-        // Skip rendering if almost completely hidden
-        if navbar_anim < 0.01 {
-            return None;
-        }
+        let anim = header_anim(ui);
 
-        let base_height = 48.0;
-        let animated_height = base_height * navbar_anim;
-        let animated_padding = 8.0 * navbar_anim;
-
-        notedeck_ui::padding(animated_padding, ui, |ui| {
+        notedeck_ui::padding(anim.padding, ui, |ui| {
             let mut rect = ui.available_rect_before_wrap();
-            rect.set_height(animated_height);
+            rect.set_height(anim.height);
 
             let mut child_ui = ui.new_child(
                 UiBuilder::new()
