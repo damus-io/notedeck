@@ -307,8 +307,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let mut dave_response = DaveResponse::default();
         let mut scene_response: Option<SceneResponse> = None;
-        let panel_width = 400.0;
-
         // Update all session statuses
         self.session_manager.update_all_statuses();
 
@@ -319,8 +317,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         StripBuilder::new(ui)
-            .size(Size::remainder()) // Scene area takes remaining space
-            .size(Size::exact(panel_width)) // Chat panel fixed width
+            .size(Size::relative(0.5)) // Scene area: 50%
+            .size(Size::remainder()) // Chat panel: 50%
             .clip(true) // Clip content to cell bounds
             .horizontal(|mut strip| {
                 // Scene area (main)
