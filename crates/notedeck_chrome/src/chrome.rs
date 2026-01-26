@@ -172,6 +172,11 @@ impl Chrome {
         #[cfg(feature = "clndash")]
         chrome.add_app(NotedeckApp::ClnDash(Box::default()));
 
+        #[cfg(feature = "calendar")]
+        chrome.add_app(NotedeckApp::Calendar(Box::new(
+            notedeck_calendar::CalendarApp::new(),
+        )));
+
         chrome.set_active(0);
 
         Ok(chrome)
@@ -426,6 +431,14 @@ fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
         ui,
         false,
     )
+}
+
+#[cfg(feature = "calendar")]
+fn calendar_button(ui: &mut egui::Ui) -> egui::Response {
+    // Simple text-based calendar icon
+    ui.add(egui::Label::new(
+        egui::RichText::new("Cal").size(16.0).strong(),
+    ))
 }
 
 fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui, rect: Rect) -> egui::Response {
@@ -796,6 +809,10 @@ fn topdown_sidebar(
 
             #[cfg(feature = "clndash")]
             NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
+
+            #[cfg(feature = "calendar")]
+            NotedeckApp::Calendar(_) => tr!(loc, "Calendar", "Button to go to the Calendar app"),
+
             NotedeckApp::Other(_) => tr!(loc, "Other", "Button to go to the Other app"),
         };
 
@@ -836,6 +853,11 @@ fn topdown_sidebar(
                                 #[cfg(feature = "notebook")]
                                 NotedeckApp::Notebook(_notebook) => {
                                     notebook_button(ui);
+                                }
+
+                                #[cfg(feature = "calendar")]
+                                NotedeckApp::Calendar(_calendar) => {
+                                    calendar_button(ui);
                                 }
 
                                 NotedeckApp::Other(_other) => {
