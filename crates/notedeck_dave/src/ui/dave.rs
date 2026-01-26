@@ -113,19 +113,27 @@ impl<'a> DaveUi<'a> {
 
     /// The main render function. Call this to render Dave
     pub fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        let action = top_buttons_ui(app_ctx, ui);
+        // Skip top buttons in compact mode (scene panel has its own controls)
+        let action = if self.compact {
+            None
+        } else {
+            top_buttons_ui(app_ctx, ui)
+        };
 
         egui::Frame::NONE
             .show(ui, |ui| {
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     let margin = self.chat_margin(ui.ctx());
 
+                    // Reduce bottom margin in compact mode to prevent overflow
+                    let bottom_margin = if self.compact { 20 } else { 100 };
+
                     let r = egui::Frame::new()
                         .outer_margin(egui::Margin {
                             left: margin,
                             right: margin,
                             top: 0,
-                            bottom: 100,
+                            bottom: bottom_margin,
                         })
                         .inner_margin(egui::Margin::same(8))
                         .fill(ui.visuals().extreme_bg_color)
@@ -565,14 +573,18 @@ impl<'a> DaveUi<'a> {
                 .corner_radius(10.0)
                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                 .show(ui, |ui| {
-                    ui.label(msg);
+                    ui.add(egui::Label::new(msg).selectable(true));
                 })
         });
     }
 
     fn assistant_chat(&self, msg: &str, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.add(egui::Label::new(msg).wrap_mode(egui::TextWrapMode::Wrap));
+            ui.add(
+                egui::Label::new(msg)
+                    .wrap_mode(egui::TextWrapMode::Wrap)
+                    .selectable(true),
+            );
         });
     }
 }

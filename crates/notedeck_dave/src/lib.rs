@@ -303,21 +303,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Scene view with RTS-style agent visualization and chat side panel
     fn scene_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        use egui_extras::{Size, StripBuilder};
+
         let mut dave_response = DaveResponse::default();
-        let available = ui.available_rect_before_wrap();
+        let mut scene_response: Option<SceneResponse> = None;
         let panel_width = 400.0;
-
-        // Scene area (main)
-        let scene_rect = egui::Rect::from_min_size(
-            available.min,
-            egui::vec2(available.width() - panel_width, available.height()),
-        );
-
-        // Chat panel area (right side)
-        let panel_rect = egui::Rect::from_min_size(
-            egui::pos2(available.max.x - panel_width, available.min.y),
-            egui::vec2(panel_width, available.height()),
-        );
 
         // Update all session statuses
         self.session_manager.update_all_statuses();
@@ -328,85 +318,91 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.session_manager.switch_to(attention_id);
         }
 
-        // Render scene
-        let scene_response = ui
-            .allocate_new_ui(egui::UiBuilder::new().max_rect(scene_rect), |ui| {
-                // Scene toolbar at top
-                ui.horizontal(|ui| {
-                    if ui.button("+ New Agent").clicked() {
+        StripBuilder::new(ui)
+            .size(Size::remainder()) // Scene area takes remaining space
+            .size(Size::exact(panel_width)) // Chat panel fixed width
+            .clip(true) // Clip content to cell bounds
+            .horizontal(|mut strip| {
+                // Scene area (main)
+                strip.cell(|ui| {
+                    // Scene toolbar at top
+                    ui.horizontal(|ui| {
+                        if ui.button("+ New Agent").clicked() {
+                            dave_response = DaveResponse::new(DaveAction::NewChat);
+                        }
+                        ui.separator();
+                        if ui.button("Classic View").clicked() {
+                            self.show_scene = false;
+                        }
+                    });
+                    ui.separator();
+
+                    // Render the scene
+                    scene_response = Some(self.scene.ui(&self.session_manager, ui));
+                });
+
+                // Chat side panel
+                strip.cell(|ui| {
+                    egui::Frame::new()
+                        .fill(ui.visuals().faint_bg_color)
+                        .inner_margin(egui::Margin::symmetric(8, 12))
+                        .show(ui, |ui| {
+                            if let Some(selected_id) = self.scene.primary_selection() {
+                                if let Some(session) = self.session_manager.get_mut(selected_id) {
+                                    // Show title
+                                    ui.heading(&session.title);
+                                    ui.separator();
+
+                                    // Render chat UI for selected session
+                                    let response = DaveUi::new(
+                                        self.model_config.trial,
+                                        &session.chat,
+                                        &mut session.input,
+                                    )
+                                    .compact(true)
+                                    .ui(app_ctx, ui);
+
+                                    if response.action.is_some() {
+                                        dave_response = response;
+                                    }
+                                }
+                            } else {
+                                // No selection
+                                ui.centered_and_justified(|ui| {
+                                    ui.label("Select an agent to view chat");
+                                });
+                            }
+                        });
+                });
+            });
+
+        // Handle scene actions after strip rendering
+        if let Some(response) = scene_response {
+            if let Some(action) = response.action {
+                match action {
+                    SceneAction::SelectionChanged(ids) => {
+                        // Selection updated, sync with session manager's active
+                        if let Some(id) = ids.first() {
+                            self.session_manager.switch_to(*id);
+                        }
+                    }
+                    SceneAction::SpawnAgent => {
                         dave_response = DaveResponse::new(DaveAction::NewChat);
                     }
-                    ui.separator();
-                    if ui.button("Classic View").clicked() {
-                        self.show_scene = false;
+                    SceneAction::DeleteSelected => {
+                        for id in self.scene.selected.clone() {
+                            self.session_manager.delete_session(id);
+                        }
+                        self.scene.clear_selection();
                     }
-                });
-                ui.separator();
-
-                // Render the scene
-                self.scene.ui(&self.session_manager, ui)
-            })
-            .inner;
-
-        // Handle scene actions
-        if let Some(action) = scene_response.action {
-            match action {
-                SceneAction::SelectionChanged(ids) => {
-                    // Selection updated, sync with session manager's active
-                    if let Some(id) = ids.first() {
-                        self.session_manager.switch_to(*id);
-                    }
-                }
-                SceneAction::SpawnAgent => {
-                    dave_response = DaveResponse::new(DaveAction::NewChat);
-                }
-                SceneAction::DeleteSelected => {
-                    for id in self.scene.selected.clone() {
-                        self.session_manager.delete_session(id);
-                    }
-                    self.scene.clear_selection();
-                }
-                SceneAction::AgentMoved { id, position } => {
-                    if let Some(session) = self.session_manager.get_mut(id) {
-                        session.scene_position = position;
+                    SceneAction::AgentMoved { id, position } => {
+                        if let Some(session) = self.session_manager.get_mut(id) {
+                            session.scene_position = position;
+                        }
                     }
                 }
             }
         }
-
-        // Render chat side panel
-        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(panel_rect), |ui| {
-            egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
-                .inner_margin(egui::Margin::symmetric(8, 12))
-                .show(ui, |ui| {
-                    if let Some(selected_id) = self.scene.primary_selection() {
-                        if let Some(session) = self.session_manager.get_mut(selected_id) {
-                            // Show title
-                            ui.heading(&session.title);
-                            ui.separator();
-
-                            // Render chat UI for selected session
-                            let response = DaveUi::new(
-                                self.model_config.trial,
-                                &session.chat,
-                                &mut session.input,
-                            )
-                            .compact(true)
-                            .ui(app_ctx, ui);
-
-                            if response.action.is_some() {
-                                dave_response = response;
-                            }
-                        }
-                    } else {
-                        // No selection
-                        ui.centered_and_justified(|ui| {
-                            ui.label("Select an agent to view chat");
-                        });
-                    }
-                });
-        });
 
         dave_response
     }
