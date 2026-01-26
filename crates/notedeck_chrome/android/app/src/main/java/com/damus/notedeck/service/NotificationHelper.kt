@@ -250,7 +250,7 @@ object NotificationHelper {
 
     /**
      * Load a profile image from the provided URL or robohash (fallback).
-     * Thread-safe via ConcurrentHashMap.
+     * Thread-safe via Collections.synchronizedMap wrapper on bounded LRU LinkedHashMap.
      *
      * @param pubkey The author's pubkey (used as cache key and robohash fallback)
      * @param pictureUrl Optional real profile picture URL from the author's profile
@@ -265,11 +265,12 @@ object NotificationHelper {
                 profileImageCache[pubkey]?.let { return@withContext it }
 
                 // Use real picture URL if available, fall back to robohash
+                // Use debug level for PII (picture URLs) to avoid leaking profile data in production logs
                 val imageUrl = if (!pictureUrl.isNullOrEmpty()) {
-                    Log.i(TAG, "Loading real profile image for ${pubkey.take(8)}: ${pictureUrl.take(50)}...")
+                    Log.d(TAG, "Loading real profile image for ${pubkey.take(8)}: ${pictureUrl.take(50)}...")
                     URL(pictureUrl)
                 } else {
-                    Log.i(TAG, "No profile image URL, using robohash for ${pubkey.take(8)}")
+                    Log.d(TAG, "No profile image URL, using robohash for ${pubkey.take(8)}")
                     URL("https://robohash.org/${pubkey}.png?size=128x128&set=set4")
                 }
 
