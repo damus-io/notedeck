@@ -31,6 +31,7 @@ impl AiBackend for OpenAiBackend {
         tools: Arc<HashMap<String, Tool>>,
         model: String,
         user_id: String,
+        _session_id: String,
         ctx: egui::Context,
     ) -> mpsc::Receiver<DaveApiResponse> {
         let (tx, rx) = mpsc::channel();

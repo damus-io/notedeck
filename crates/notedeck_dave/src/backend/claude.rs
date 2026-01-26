@@ -61,6 +61,18 @@ impl ClaudeBackend {
 
         prompt
     }
+
+    /// Extract only the latest user message for session continuation
+    fn get_latest_user_message(messages: &[Message]) -> String {
+        messages
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                Message::User(content) => Some(content.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
 }
 
 impl AiBackend for ClaudeBackend {
@@ -70,6 +82,7 @@ impl AiBackend for ClaudeBackend {
         _tools: Arc<HashMap<String, Tool>>,
         _model: String,
         _user_id: String,
+        _session_id: String, // TODO: Currently unused - --continue resumes last conversation globally
         ctx: egui::Context,
     ) -> mpsc::Receiver<DaveApiResponse> {
         let (tx, rx) = mpsc::channel();
@@ -78,11 +91,28 @@ impl AiBackend for ClaudeBackend {
         let tx_for_callback = tx.clone();
         let ctx_for_callback = ctx.clone();
 
+        // First message in session = start fresh conversation
+        // Subsequent messages = use --continue to resume the last conversation
+        // NOTE: --continue resumes the globally last conversation, not per-session.
+        // This works for single-conversation use but multiple UI sessions would interfere.
+        // For proper per-session context, we'd need a persistent ClaudeClient connection.
+        let is_first_message = messages
+            .iter()
+            .filter(|m| matches!(m, Message::User(_)))
+            .count()
+            == 1;
+
         tokio::spawn(async move {
-            let prompt = ClaudeBackend::messages_to_prompt(&messages);
+            // For first message, send full prompt; for continuation, just the latest message
+            let prompt = if is_first_message {
+                Self::messages_to_prompt(&messages)
+            } else {
+                Self::get_latest_user_message(&messages)
+            };
 
             tracing::debug!(
-                "Sending request to Claude Code: prompt length: {}, preview: {:?}",
+                "Sending request to Claude Code: is_first={}, prompt length: {}, preview: {:?}",
+                is_first_message,
                 prompt.len(),
                 &prompt[..prompt.len().min(100)]
             );
@@ -164,14 +194,24 @@ impl AiBackend for ClaudeBackend {
                 }
             });
 
-            let options = ClaudeAgentOptions::builder()
-                .permission_mode(PermissionMode::Default)
-                .stderr_callback(Arc::new(stderr_callback))
-                .can_use_tool(can_use_tool)
-                .build();
-
             // Use ClaudeClient instead of query_stream to enable control protocol
             // for can_use_tool callbacks
+            // For follow-up messages, use --continue to resume the last conversation
+            let stderr_callback = Arc::new(stderr_callback);
+            let options = if is_first_message {
+                ClaudeAgentOptions::builder()
+                    .permission_mode(PermissionMode::Default)
+                    .stderr_callback(stderr_callback)
+                    .can_use_tool(can_use_tool)
+                    .build()
+            } else {
+                ClaudeAgentOptions::builder()
+                    .permission_mode(PermissionMode::Default)
+                    .stderr_callback(stderr_callback)
+                    .can_use_tool(can_use_tool)
+                    .continue_conversation(true)
+                    .build()
+            };
             let mut client = ClaudeClient::new(options);
             if let Err(err) = client.connect().await {
                 tracing::error!("Claude Code connection error: {}", err);

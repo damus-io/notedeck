@@ -22,6 +22,7 @@ pub trait AiBackend: Send + Sync {
         tools: Arc<HashMap<String, Tool>>,
         model: String,
         user_id: String,
+        session_id: String,
         ctx: egui::Context,
     ) -> mpsc::Receiver<DaveApiResponse>;
 }

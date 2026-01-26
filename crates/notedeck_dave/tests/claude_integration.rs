@@ -255,6 +255,232 @@ async fn test_can_use_tool_callback_invoked() {
     println!("can_use_tool callback was invoked {} time(s)", count);
 }
 
+/// Test session management - sending multiple queries with session context maintained.
+/// The ClaudeClient must be kept connected to maintain session context.
+#[tokio::test]
+#[ignore = "Requires Claude Code CLI to be installed and authenticated"]
+async fn test_session_context_maintained() {
+    if !cli_available() {
+        println!("Skipping: Claude CLI not available");
+        return;
+    }
+
+    let stderr_callback = |_msg: String| {};
+
+    let options = ClaudeAgentOptions::builder()
+        .permission_mode(PermissionMode::BypassPermissions)
+        .max_turns(1)
+        .skip_version_check(true)
+        .stderr_callback(Arc::new(stderr_callback))
+        .build();
+
+    let mut client = ClaudeClient::new(options);
+    client.connect().await.expect("Failed to connect");
+
+    // First query - tell Claude a secret
+    let session_id = "test-session-context";
+    println!("Sending first query to session: {}", session_id);
+    client
+        .query_with_session(
+            "Remember this secret code: BANANA42. Just acknowledge.",
+            session_id,
+        )
+        .await
+        .expect("Failed to send first query");
+
+    // Consume first response
+    let mut first_response = String::new();
+    {
+        let mut stream = client.receive_response();
+        while let Some(result) = stream.next().await {
+            if let Ok(ClaudeMessage::Assistant(msg)) = result {
+                for block in &msg.message.content {
+                    if let ContentBlock::Text(TextBlock { text }) = block {
+                        first_response.push_str(text);
+                    }
+                }
+            }
+        }
+    }
+    println!("First response: {}", first_response);
+
+    // Second query - ask about the secret (should remember within same session)
+    println!("Sending second query to same session");
+    client
+        .query_with_session("What was the secret code I told you?", session_id)
+        .await
+        .expect("Failed to send second query");
+
+    // Check if second response mentions the secret
+    let mut second_response = String::new();
+    {
+        let mut stream = client.receive_response();
+        while let Some(result) = stream.next().await {
+            if let Ok(ClaudeMessage::Assistant(msg)) = result {
+                for block in &msg.message.content {
+                    if let ContentBlock::Text(TextBlock { text }) = block {
+                        second_response.push_str(text);
+                    }
+                }
+            }
+        }
+    }
+    println!("Second response: {}", second_response);
+
+    client.disconnect().await.expect("Failed to disconnect");
+
+    // The second response should contain the secret code if context is maintained
+    assert!(
+        second_response.to_uppercase().contains("BANANA42"),
+        "Claude should remember the secret code from the same session. Got: {}",
+        second_response
+    );
+}
+
+/// Test that different session IDs maintain separate contexts.
+#[tokio::test]
+#[ignore = "Requires Claude Code CLI to be installed and authenticated"]
+async fn test_separate_sessions_have_separate_context() {
+    if !cli_available() {
+        println!("Skipping: Claude CLI not available");
+        return;
+    }
+
+    let stderr_callback = |_msg: String| {};
+
+    let options = ClaudeAgentOptions::builder()
+        .permission_mode(PermissionMode::BypassPermissions)
+        .max_turns(1)
+        .skip_version_check(true)
+        .stderr_callback(Arc::new(stderr_callback))
+        .build();
+
+    let mut client = ClaudeClient::new(options);
+    client.connect().await.expect("Failed to connect");
+
+    // First session - tell a secret
+    println!("Session A: Setting secret");
+    client
+        .query_with_session(
+            "Remember: The password is APPLE123. Just acknowledge.",
+            "session-A",
+        )
+        .await
+        .expect("Failed to send to session A");
+
+    {
+        let mut stream = client.receive_response();
+        while let Some(_) = stream.next().await {}
+    }
+
+    // Different session - should NOT know the secret
+    println!("Session B: Asking about secret");
+    client
+        .query_with_session(
+            "What password did I tell you? If you don't know, just say 'I don't know any password'.",
+            "session-B",
+        )
+        .await
+        .expect("Failed to send to session B");
+
+    let mut response_b = String::new();
+    {
+        let mut stream = client.receive_response();
+        while let Some(result) = stream.next().await {
+            if let Ok(ClaudeMessage::Assistant(msg)) = result {
+                for block in &msg.message.content {
+                    if let ContentBlock::Text(TextBlock { text }) = block {
+                        response_b.push_str(text);
+                    }
+                }
+            }
+        }
+    }
+    println!("Session B response: {}", response_b);
+
+    client.disconnect().await.expect("Failed to disconnect");
+
+    // Session B should NOT know the password from Session A
+    assert!(
+        !response_b.to_uppercase().contains("APPLE123"),
+        "Session B should NOT know the password from Session A. Got: {}",
+        response_b
+    );
+}
+
+/// Test --continue flag for resuming the last conversation.
+/// This tests the simpler approach of continuing the most recent conversation.
+#[tokio::test]
+#[ignore = "Requires Claude Code CLI to be installed and authenticated"]
+async fn test_continue_conversation_flag() {
+    if !cli_available() {
+        println!("Skipping: Claude CLI not available");
+        return;
+    }
+
+    let stderr_callback = |_msg: String| {};
+
+    // First: Start a fresh conversation
+    let options1 = ClaudeAgentOptions::builder()
+        .permission_mode(PermissionMode::BypassPermissions)
+        .max_turns(1)
+        .skip_version_check(true)
+        .stderr_callback(Arc::new(stderr_callback))
+        .build();
+
+    let mut stream1 = query_stream(
+        "Remember this code: ZEBRA999. Just acknowledge.".to_string(),
+        Some(options1),
+    )
+    .await
+    .expect("First query failed");
+
+    let mut first_response = String::new();
+    while let Some(result) = stream1.next().await {
+        if let Ok(ClaudeMessage::Assistant(msg)) = result {
+            for block in &msg.message.content {
+                if let ContentBlock::Text(TextBlock { text }) = block {
+                    first_response.push_str(text);
+                }
+            }
+        }
+    }
+    println!("First response: {}", first_response);
+
+    // Second: Use --continue to resume and ask about the code
+    let stderr_callback2 = |_msg: String| {};
+    let options2 = ClaudeAgentOptions::builder()
+        .permission_mode(PermissionMode::BypassPermissions)
+        .max_turns(1)
+        .skip_version_check(true)
+        .stderr_callback(Arc::new(stderr_callback2))
+        .continue_conversation(true)
+        .build();
+
+    let mut stream2 = query_stream("What was the code I told you?".to_string(), Some(options2))
+        .await
+        .expect("Second query failed");
+
+    let mut second_response = String::new();
+    while let Some(result) = stream2.next().await {
+        if let Ok(ClaudeMessage::Assistant(msg)) = result {
+            for block in &msg.message.content {
+                if let ContentBlock::Text(TextBlock { text }) = block {
+                    second_response.push_str(text);
+                }
+            }
+        }
+    }
+    println!("Second response (with --continue): {}", second_response);
+
+    // Claude should remember the code when using --continue
+    assert!(
+        second_response.to_uppercase().contains("ZEBRA999"),
+        "Claude should remember the code with --continue. Got: {}",
+        second_response
+    );
+}
+
 /// Test that denying a tool permission prevents the tool from executing.
 #[tokio::test]
 #[ignore = "Requires Claude Code CLI to be installed and authenticated"]

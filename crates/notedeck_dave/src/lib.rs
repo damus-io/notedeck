@@ -364,6 +364,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
+        let session_id = format!("dave-session-{}", session.id);
         let messages = session.chat.clone();
         let tools = self.tools.clone();
         let model_name = self.model_config.model().to_owned();
@@ -372,7 +373,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Use backend to stream request
         let rx = self
             .backend
-            .stream_request(messages, tools, model_name, user_id, ctx);
+            .stream_request(messages, tools, model_name, user_id, session_id, ctx);
         session.incoming_tokens = Some(rx);
     }
 }
