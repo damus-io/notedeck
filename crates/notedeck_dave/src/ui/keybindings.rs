@@ -29,13 +29,12 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
     }
 
     // Tab / Shift+Tab for cycling through agents (works even with text input focus)
-    if let Some(action) = ctx.input(|i| {
-        if i.key_pressed(Key::Tab) {
-            if i.modifiers.shift {
-                Some(KeyAction::PreviousAgent)
-            } else {
-                Some(KeyAction::NextAgent)
-            }
+    // We use input_mut to consume the Tab key so egui's native widget focus navigation doesn't also process it
+    if let Some(action) = ctx.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::NONE, Key::Tab) {
+            Some(KeyAction::NextAgent)
+        } else if i.consume_key(egui::Modifiers::SHIFT, Key::Tab) {
+            Some(KeyAction::PreviousAgent)
         } else {
             None
         }

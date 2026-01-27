@@ -257,17 +257,12 @@ impl AgentScene {
         }
 
         // Handle keyboard input (only when no text input has focus)
-        if !ui.ctx().wants_keyboard_input() {
-            if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
-                && !self.selected.is_empty()
-            {
-                response = SceneResponse::new(SceneAction::DeleteSelected);
-            }
-
-            // Handle 'n' key to spawn new agent
-            if ui.input(|i| i.key_pressed(egui::Key::N)) {
-                response = SceneResponse::new(SceneAction::SpawnAgent);
-            }
+        // Note: N key for spawning agents is handled globally in keybindings.rs
+        if !ui.ctx().wants_keyboard_input()
+            && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+            && !self.selected.is_empty()
+        {
+            response = SceneResponse::new(SceneAction::DeleteSelected);
         }
 
         // Handle box selection completion
