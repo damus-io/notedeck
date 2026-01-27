@@ -20,20 +20,22 @@ pub enum KeyAction {
 }
 
 /// Check for keybinding actions.
-/// If `has_pending_permission` is true, keys 1/2 are used for permission responses
-/// instead of agent switching.
+/// All keybindings use Ctrl modifier to avoid conflicts with text input.
 pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> Option<KeyAction> {
     // Escape works even when text input has focus (to interrupt AI)
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
         return Some(KeyAction::Interrupt);
     }
 
-    // Tab / Shift+Tab for cycling through agents (works even with text input focus)
-    // We use input_mut to consume the Tab key so egui's native widget focus navigation doesn't also process it
+    let ctrl = egui::Modifiers::CTRL;
+    let ctrl_shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
+
+    // Ctrl+Tab / Ctrl+Shift+Tab for cycling through agents
+    // Works even with text input focus since Ctrl modifier makes it unambiguous
     if let Some(action) = ctx.input_mut(|i| {
-        if i.consume_key(egui::Modifiers::NONE, Key::Tab) {
+        if i.consume_key(ctrl, Key::Tab) {
             Some(KeyAction::NextAgent)
-        } else if i.consume_key(egui::Modifiers::SHIFT, Key::Tab) {
+        } else if i.consume_key(ctrl_shift, Key::Tab) {
             Some(KeyAction::PreviousAgent)
         } else {
             None
@@ -42,13 +44,18 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
         return Some(action);
     }
 
-    // Only process other keys when no text input has focus
-    if ctx.wants_keyboard_input() {
-        return None;
+    // Ctrl+N to spawn a new agent (works even with text input focus)
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::N)) {
+        return Some(KeyAction::NewAgent);
     }
 
-    ctx.input(|i| {
-        // When there's a pending permission, 1 = accept, 2 = deny
+    // Ctrl+1-9 for switching agents (works even with text input focus)
+    // When there's a pending permission, Ctrl+1 = accept, Ctrl+2 = deny
+    if let Some(action) = ctx.input(|i| {
+        if !i.modifiers.matches_exact(ctrl) {
+            return None;
+        }
+
         if has_pending_permission {
             if i.key_pressed(Key::Num1) {
                 return Some(KeyAction::AcceptPermission);
@@ -58,7 +65,6 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
             }
         }
 
-        // Number keys 1-9 for switching agents (when no pending permission)
         for (idx, key) in [
             Key::Num1,
             Key::Num2,
@@ -78,11 +84,10 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
             }
         }
 
-        // N to spawn a new agent
-        if i.key_pressed(Key::N) {
-            return Some(KeyAction::NewAgent);
-        }
-
         None
-    })
+    }) {
+        return Some(action);
+    }
+
+    None
 }
