@@ -73,6 +73,11 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
             }
         }
 
+        // N to spawn a new agent
+        if i.key_pressed(Key::N) {
+            return Some(KeyAction::NewAgent);
+        }
+
         None
     })
 }
