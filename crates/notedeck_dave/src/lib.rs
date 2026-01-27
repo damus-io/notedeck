@@ -387,6 +387,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .interrupt_pending(interrupt_pending)
                                     .has_pending_permission(has_pending_permission)
                                     .plan_mode_active(plan_mode_active)
+                                    .permission_message_state(session.permission_message_state)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -497,6 +498,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .interrupt_pending(interrupt_pending)
                     .has_pending_permission(has_pending_permission)
                     .plan_mode_active(plan_mode_active)
+                    .permission_message_state(session.permission_message_state)
                     .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -565,6 +567,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .interrupt_pending(interrupt_pending)
                 .has_pending_permission(has_pending_permission)
                 .plan_mode_active(plan_mode_active)
+                .permission_message_state(session.permission_message_state)
                 .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
@@ -697,9 +700,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         if let Some(session) = self.session_manager.get_active_mut() {
             // Record the response type in the message for UI display
             let response_type = match &response {
-                PermissionResponse::Allow => messages::PermissionResponseType::Allowed,
+                PermissionResponse::Allow { .. } => messages::PermissionResponseType::Allowed,
                 PermissionResponse::Deny { .. } => messages::PermissionResponseType::Denied,
             };
+
+            // If Allow has a message, add it as a User message to the chat
+            // (SDK doesn't support message field on Allow, so we inject it as context)
+            if let PermissionResponse::Allow { message: Some(msg) } = &response {
+                if !msg.is_empty() {
+                    session.chat.push(Message::User(msg.clone()));
+                }
+            }
+
+            // Clear permission message state
+            session.permission_message_state = crate::session::PermissionMessageState::None;
 
             for msg in &mut session.chat {
                 if let Message::PermissionRequest(req) = msg {
@@ -855,11 +869,19 @@ impl notedeck::App for Dave {
 
         // Handle global keybindings (when no text input has focus)
         let has_pending_permission = self.first_pending_permission().is_some();
-        if let Some(key_action) = check_keybindings(ui.ctx(), has_pending_permission) {
+        let in_tentative_state = self
+            .session_manager
+            .get_active()
+            .map(|s| s.permission_message_state != crate::session::PermissionMessageState::None)
+            .unwrap_or(false);
+        if let Some(key_action) = check_keybindings(ui.ctx(), has_pending_permission, in_tentative_state) {
             match key_action {
                 KeyAction::AcceptPermission => {
                     if let Some(request_id) = self.first_pending_permission() {
-                        self.handle_permission_response(request_id, PermissionResponse::Allow);
+                        self.handle_permission_response(
+                            request_id,
+                            PermissionResponse::Allow { message: None },
+                        );
                         // Restore input focus after permission response
                         if let Some(session) = self.session_manager.get_active_mut() {
                             session.focus_requested = true;
@@ -871,13 +893,36 @@ impl notedeck::App for Dave {
                         self.handle_permission_response(
                             request_id,
                             PermissionResponse::Deny {
-                                reason: "User denied via keyboard".into(),
+                                reason: "User denied".into(),
                             },
                         );
                         // Restore input focus after permission response
                         if let Some(session) = self.session_manager.get_active_mut() {
                             session.focus_requested = true;
                         }
+                    }
+                }
+                KeyAction::TentativeAccept => {
+                    // Enter tentative accept mode - user will type message, then Enter to send
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.permission_message_state =
+                            crate::session::PermissionMessageState::TentativeAccept;
+                        session.focus_requested = true;
+                    }
+                }
+                KeyAction::TentativeDeny => {
+                    // Enter tentative deny mode - user will type message, then Enter to send
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.permission_message_state =
+                            crate::session::PermissionMessageState::TentativeDeny;
+                        session.focus_requested = true;
+                    }
+                }
+                KeyAction::CancelTentative => {
+                    // Cancel tentative mode
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.permission_message_state =
+                            crate::session::PermissionMessageState::None;
                     }
                 }
                 KeyAction::SwitchToAgent(index) => {
@@ -930,7 +975,56 @@ impl notedeck::App for Dave {
                     self.handle_new_chat();
                 }
                 DaveAction::Send => {
-                    self.handle_user_send(ctx, ui);
+                    // Check if we're in tentative state - if so, send permission response with message
+                    let tentative_state = self
+                        .session_manager
+                        .get_active()
+                        .map(|s| s.permission_message_state)
+                        .unwrap_or(crate::session::PermissionMessageState::None);
+
+                    match tentative_state {
+                        crate::session::PermissionMessageState::TentativeAccept => {
+                            // Send permission Allow with the message from input
+                            if let Some(request_id) = self.first_pending_permission() {
+                                let message = self
+                                    .session_manager
+                                    .get_active()
+                                    .map(|s| s.input.clone())
+                                    .filter(|m| !m.is_empty());
+                                // Clear input
+                                if let Some(session) = self.session_manager.get_active_mut() {
+                                    session.input.clear();
+                                }
+                                self.handle_permission_response(
+                                    request_id,
+                                    PermissionResponse::Allow { message },
+                                );
+                            }
+                        }
+                        crate::session::PermissionMessageState::TentativeDeny => {
+                            // Send permission Deny with the message from input
+                            if let Some(request_id) = self.first_pending_permission() {
+                                let reason = self
+                                    .session_manager
+                                    .get_active()
+                                    .map(|s| s.input.clone())
+                                    .filter(|m| !m.is_empty())
+                                    .unwrap_or_else(|| "User denied".into());
+                                // Clear input
+                                if let Some(session) = self.session_manager.get_active_mut() {
+                                    session.input.clear();
+                                }
+                                self.handle_permission_response(
+                                    request_id,
+                                    PermissionResponse::Deny { reason },
+                                );
+                            }
+                        }
+                        crate::session::PermissionMessageState::None => {
+                            // Normal send behavior
+                            self.handle_user_send(ctx, ui);
+                        }
+                    }
                 }
                 DaveAction::ShowSessionList => {
                     self.show_session_list = !self.show_session_list;
@@ -949,6 +1043,22 @@ impl notedeck::App for Dave {
                 }
                 DaveAction::Interrupt => {
                     self.handle_interrupt(ui);
+                }
+                DaveAction::TentativeAccept => {
+                    // Enter tentative accept mode (from Shift+click)
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.permission_message_state =
+                            crate::session::PermissionMessageState::TentativeAccept;
+                        session.focus_requested = true;
+                    }
+                }
+                DaveAction::TentativeDeny => {
+                    // Enter tentative deny mode (from Shift+click)
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.permission_message_state =
+                            crate::session::PermissionMessageState::TentativeDeny;
+                        session.focus_requested = true;
+                    }
                 }
             }
         }

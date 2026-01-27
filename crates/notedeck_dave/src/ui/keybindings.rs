@@ -7,6 +7,12 @@ pub enum KeyAction {
     AcceptPermission,
     /// Deny a pending permission request
     DenyPermission,
+    /// Tentatively accept, waiting for message (Shift+1)
+    TentativeAccept,
+    /// Tentatively deny, waiting for message (Shift+2)
+    TentativeDeny,
+    /// Cancel tentative state (Escape when tentative)
+    CancelTentative,
     /// Switch to agent by number (0-indexed)
     SwitchToAgent(usize),
     /// Cycle to next agent
@@ -26,8 +32,17 @@ pub enum KeyAction {
 /// Check for keybinding actions.
 /// Most keybindings use Ctrl modifier to avoid conflicts with text input.
 /// Exception: 1/2 for permission responses work without Ctrl since input is unfocused.
-pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> Option<KeyAction> {
-    // Escape works even when text input has focus (to interrupt AI)
+pub fn check_keybindings(
+    ctx: &egui::Context,
+    has_pending_permission: bool,
+    in_tentative_state: bool,
+) -> Option<KeyAction> {
+    // Escape in tentative state cancels the tentative mode
+    if in_tentative_state && ctx.input(|i| i.key_pressed(Key::Escape)) {
+        return Some(KeyAction::CancelTentative);
+    }
+
+    // Escape otherwise works to interrupt AI (even when text input has focus)
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
         return Some(KeyAction::Interrupt);
     }
@@ -95,22 +110,33 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
         return Some(action);
     }
 
-    // When there's a pending permission, 1 = accept, 2 = deny (no Ctrl needed)
-    // Input is unfocused when permission is pending, so bare keys work
+    // When there's a pending permission:
+    // - 1 = accept, 2 = deny (no modifiers)
+    // - Shift+1 = tentative accept, Shift+2 = tentative deny (for adding message)
     // This is checked AFTER Ctrl+number so Ctrl bindings take precedence
     if has_pending_permission {
+        let shift = egui::Modifiers::SHIFT;
+
         if let Some(action) = ctx.input(|i| {
-            // Only trigger on bare keypresses (no modifiers)
-            if i.modifiers.any() {
-                return None;
+            // Shift+1 = tentative accept, Shift+2 = tentative deny
+            if i.modifiers.matches_exact(shift) {
+                if i.key_pressed(Key::Num1) {
+                    return Some(KeyAction::TentativeAccept);
+                } else if i.key_pressed(Key::Num2) {
+                    return Some(KeyAction::TentativeDeny);
+                }
             }
-            if i.key_pressed(Key::Num1) {
-                Some(KeyAction::AcceptPermission)
-            } else if i.key_pressed(Key::Num2) {
-                Some(KeyAction::DenyPermission)
-            } else {
-                None
+
+            // Bare keypresses (no modifiers) for immediate accept/deny
+            if !i.modifiers.any() {
+                if i.key_pressed(Key::Num1) {
+                    return Some(KeyAction::AcceptPermission);
+                } else if i.key_pressed(Key::Num2) {
+                    return Some(KeyAction::DenyPermission);
+                }
             }
+
+            None
         }) {
             return Some(action);
         }

@@ -303,8 +303,14 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                             let callback_tx = perm_req.response_tx;
                             tokio::spawn(async move {
                                 let result = match ui_resp_rx.await {
-                                    Ok(PermissionResponse::Allow) => {
-                                        tracing::debug!("User allowed tool: {}", tool_name);
+                                    Ok(PermissionResponse::Allow { message }) => {
+                                        if let Some(msg) = &message {
+                                            tracing::debug!("User allowed tool {} with message: {}", tool_name, msg);
+                                        } else {
+                                            tracing::debug!("User allowed tool: {}", tool_name);
+                                        }
+                                        // Note: message is handled in lib.rs by adding a User message to chat
+                                        // SDK's PermissionResultAllow doesn't have a message field
                                         PermissionResult::Allow(PermissionResultAllow::default())
                                     }
                                     Ok(PermissionResponse::Deny { reason }) => {

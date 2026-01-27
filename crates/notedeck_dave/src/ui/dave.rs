@@ -5,6 +5,7 @@ use crate::{
     messages::{
         Message, PermissionRequest, PermissionResponse, PermissionResponseType, ToolResult,
     },
+    session::PermissionMessageState,
     tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
@@ -26,6 +27,8 @@ pub struct DaveUi<'a> {
     has_pending_permission: bool,
     focus_requested: &'a mut bool,
     plan_mode_active: bool,
+    /// State for tentative permission response (waiting for message)
+    permission_message_state: PermissionMessageState,
 }
 
 /// The response the app generates. The response contains an optional
@@ -85,6 +88,10 @@ pub enum DaveAction {
     },
     /// User wants to interrupt/stop the current AI operation
     Interrupt,
+    /// Enter tentative accept mode (Shift+click on Yes)
+    TentativeAccept,
+    /// Enter tentative deny mode (Shift+click on No)
+    TentativeDeny,
 }
 
 impl<'a> DaveUi<'a> {
@@ -104,7 +111,13 @@ impl<'a> DaveUi<'a> {
             has_pending_permission: false,
             focus_requested,
             plan_mode_active: false,
+            permission_message_state: PermissionMessageState::None,
         }
+    }
+
+    pub fn permission_message_state(mut self, state: PermissionMessageState) -> Self {
+        self.permission_message_state = state;
+        self
     }
 
     pub fn compact(mut self, compact: bool) -> Self {
@@ -215,7 +228,7 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Render a chat message (user, assistant, tool call/response, etc)
-    fn render_chat(&self, ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+    fn render_chat(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let mut response = DaveResponse::default();
         for message in self.chat {
             match message {
@@ -241,7 +254,7 @@ impl<'a> DaveUi<'a> {
                     }
                 }
                 Message::PermissionRequest(request) => {
-                    if let Some(action) = Self::permission_request_ui(request, ui) {
+                    if let Some(action) = self.permission_request_ui(request, ui) {
                         response = DaveResponse::new(action);
                     }
                 }
@@ -259,7 +272,11 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Render a permission request with Allow/Deny buttons or response state
-    fn permission_request_ui(request: &PermissionRequest, ui: &mut egui::Ui) -> Option<DaveAction> {
+    fn permission_request_ui(
+        &mut self,
+        request: &PermissionRequest,
+        ui: &mut egui::Ui,
+    ) -> Option<DaveAction> {
         let mut action = None;
 
         let inner_margin = 8.0;
@@ -324,7 +341,7 @@ impl<'a> DaveUi<'a> {
                             // Header with file path and buttons
                             ui.horizontal(|ui| {
                                 diff::file_path_header(&file_update, ui);
-                                Self::permission_buttons(request, ui, &mut action);
+                                self.permission_buttons(request, ui, &mut action);
                             });
 
                             // Diff view
@@ -356,7 +373,7 @@ impl<'a> DaveUi<'a> {
                                     ui.label(egui::RichText::new(&request.tool_name).strong());
                                     ui.label(desc);
 
-                                    Self::permission_buttons(request, ui, &mut action);
+                                    self.permission_buttons(request, ui, &mut action);
                                 });
                                 // Command on next line if present
                                 if let Some(cmd) = command {
@@ -371,14 +388,14 @@ impl<'a> DaveUi<'a> {
                                     ui.label(egui::RichText::new(&request.tool_name).strong());
                                     ui.label(egui::RichText::new(value).monospace());
 
-                                    Self::permission_buttons(request, ui, &mut action);
+                                    self.permission_buttons(request, ui, &mut action);
                                 });
                             } else {
                                 // Fallback: show JSON
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&request.tool_name).strong());
 
-                                    Self::permission_buttons(request, ui, &mut action);
+                                    self.permission_buttons(request, ui, &mut action);
                                 });
                                 let formatted = serde_json::to_string_pretty(&request.tool_input)
                                     .unwrap_or_else(|_| request.tool_input.to_string());
@@ -399,13 +416,16 @@ impl<'a> DaveUi<'a> {
 
     /// Render Allow/Deny buttons aligned to the right with keybinding hints
     fn permission_buttons(
+        &self,
         request: &PermissionRequest,
         ui: &mut egui::Ui,
         action: &mut Option<DaveAction>,
     ) {
+        let shift_held = ui.input(|i| i.modifiers.shift);
+
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Deny button (red) with [2] hint
-            if ui
+            let deny_response = ui
                 .add(
                     egui::Button::new(
                         egui::RichText::new("[2] No")
@@ -413,19 +433,25 @@ impl<'a> DaveUi<'a> {
                     )
                     .fill(egui::Color32::from_rgb(178, 34, 34)),
                 )
-                .on_hover_text("Press 2 to deny")
-                .clicked()
-            {
-                *action = Some(DaveAction::PermissionResponse {
-                    request_id: request.id,
-                    response: PermissionResponse::Deny {
-                        reason: "User denied".into(),
-                    },
-                });
+                .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
+
+            if deny_response.clicked() {
+                if shift_held {
+                    // Shift+click: enter tentative deny mode
+                    *action = Some(DaveAction::TentativeDeny);
+                } else {
+                    // Normal click: immediate deny
+                    *action = Some(DaveAction::PermissionResponse {
+                        request_id: request.id,
+                        response: PermissionResponse::Deny {
+                            reason: "User denied".into(),
+                        },
+                    });
+                }
             }
 
             // Allow button (green) with [1] hint
-            if ui
+            let allow_response = ui
                 .add(
                     egui::Button::new(
                         egui::RichText::new("[1] Yes")
@@ -433,13 +459,47 @@ impl<'a> DaveUi<'a> {
                     )
                     .fill(egui::Color32::from_rgb(34, 139, 34)),
                 )
-                .on_hover_text("Press 1 to allow")
-                .clicked()
-            {
-                *action = Some(DaveAction::PermissionResponse {
-                    request_id: request.id,
-                    response: PermissionResponse::Allow,
-                });
+                .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
+
+            if allow_response.clicked() {
+                if shift_held {
+                    // Shift+click: enter tentative accept mode
+                    *action = Some(DaveAction::TentativeAccept);
+                } else {
+                    // Normal click: immediate allow
+                    *action = Some(DaveAction::PermissionResponse {
+                        request_id: request.id,
+                        response: PermissionResponse::Allow { message: None },
+                    });
+                }
+            }
+
+            // Show tentative state indicator OR shift hint
+            match self.permission_message_state {
+                PermissionMessageState::TentativeAccept => {
+                    ui.label(
+                        egui::RichText::new("✓ Will Accept")
+                            .color(egui::Color32::from_rgb(100, 180, 100))
+                            .strong(),
+                    );
+                }
+                PermissionMessageState::TentativeDeny => {
+                    ui.label(
+                        egui::RichText::new("✗ Will Deny")
+                            .color(egui::Color32::from_rgb(200, 100, 100))
+                            .strong(),
+                    );
+                }
+                PermissionMessageState::None => {
+                    // Show hint when Shift is held
+                    if shift_held {
+                        ui.label(
+                            egui::RichText::new("+ message")
+                                .color(ui.visuals().warn_fg_color)
+                                .italics(),
+                        );
+                    }
+                }
             }
         });
     }
@@ -657,15 +717,16 @@ impl<'a> DaveUi<'a> {
                     super::paint_keybind_hint(ui, hint_pos, "P", 18.0);
                 }
 
-                // Request focus if flagged (e.g., after spawning a new agent)
+                // Request focus if flagged (e.g., after spawning a new agent or entering tentative state)
                 if *self.focus_requested {
                     r.request_focus();
                     *self.focus_requested = false;
                 }
 
                 // Unfocus text input when there's a pending permission request
-                // so keyboard shortcuts (Y/A/N/D) can be used to respond
-                if self.has_pending_permission {
+                // UNLESS we're in tentative state (user needs to type message)
+                let in_tentative_state = self.permission_message_state != PermissionMessageState::None;
+                if self.has_pending_permission && !in_tentative_state {
                     r.surrender_focus();
                 }
 

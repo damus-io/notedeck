@@ -10,6 +10,17 @@ use uuid::Uuid;
 
 pub type SessionId = u32;
 
+/// State for permission response with message
+#[derive(Default, Clone, Copy, PartialEq)]
+pub enum PermissionMessageState {
+    #[default]
+    None,
+    /// User pressed Shift+1, waiting for message then will Allow
+    TentativeAccept,
+    /// User pressed Shift+2, waiting for message then will Deny
+    TentativeDeny,
+}
+
 /// A single chat session with Dave
 pub struct ChatSession {
     pub id: SessionId,
@@ -30,6 +41,8 @@ pub struct ChatSession {
     pub focus_requested: bool,
     /// Permission mode for Claude (Default or Plan)
     pub permission_mode: PermissionMode,
+    /// State for permission response message (tentative accept/deny)
+    pub permission_message_state: PermissionMessageState,
 }
 
 impl Drop for ChatSession {
@@ -60,6 +73,7 @@ impl ChatSession {
             cached_status: AgentStatus::Idle,
             focus_requested: false,
             permission_mode: PermissionMode::Default,
+            permission_message_state: PermissionMessageState::None,
         }
     }
 

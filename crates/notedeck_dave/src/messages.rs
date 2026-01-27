@@ -28,9 +28,9 @@ pub struct PendingPermission {
 /// The user's response to a permission request
 #[derive(Debug, Clone)]
 pub enum PermissionResponse {
-    /// Allow the tool to execute
-    Allow,
-    /// Deny the tool execution with an optional reason
+    /// Allow the tool to execute, with an optional message for the AI
+    Allow { message: Option<String> },
+    /// Deny the tool execution with a reason
     Deny { reason: String },
 }
 
