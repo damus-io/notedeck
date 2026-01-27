@@ -764,7 +764,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         if let Some(session) = self.session_manager.get_active_mut() {
             session.chat.push(Message::User(session.input.clone()));
             session.input.clear();
-            session.update_title_from_first_message();
+            session.update_title_from_last_message();
         }
         self.send_user_message(app_ctx, ui.ctx());
     }

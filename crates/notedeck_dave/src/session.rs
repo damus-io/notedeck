@@ -59,11 +59,11 @@ impl ChatSession {
         }
     }
 
-    /// Update the session title from the first user message
-    pub fn update_title_from_first_message(&mut self) {
-        for msg in &self.chat {
+    /// Update the session title from the last user message
+    pub fn update_title_from_last_message(&mut self) {
+        for msg in self.chat.iter().rev() {
             if let Message::User(text) = msg {
-                // Use first ~30 chars of first user message as title
+                // Use first ~30 chars of last user message as title
                 let title: String = text.chars().take(30).collect();
                 self.title = if text.len() > 30 {
                     format!("{}...", title)
