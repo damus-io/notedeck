@@ -616,22 +616,15 @@ impl<'a> DaveUi<'a> {
                     dave_response = DaveResponse::send();
                 }
 
-                // Show plan mode indicator or Ctrl+P hint
+                // Show plan mode indicator when active
                 let ctrl_held = ui.input(|i| i.modifiers.ctrl);
                 if self.plan_mode_active {
-                    super::badge::StatusBadge::new("PLAN")
-                        .variant(super::badge::BadgeVariant::Info)
-                        .show(ui)
-                        .on_hover_text("Ctrl+P to toggle plan mode");
+                    let mut badge = super::badge::StatusBadge::new("PLAN")
+                        .variant(super::badge::BadgeVariant::Info);
                     if ctrl_held {
-                        super::keybind_hint(ui, "P");
+                        badge = badge.keybind("P");
                     }
-                } else if ctrl_held {
-                    // Show temporary plan hint when Ctrl is held
-                    super::badge::StatusBadge::new("Plan")
-                        .variant(super::badge::BadgeVariant::Default)
-                        .show(ui);
-                    super::keybind_hint(ui, "P");
+                    badge.show(ui).on_hover_text("Ctrl+P to toggle plan mode");
                 }
 
                 let r = ui.add(
@@ -655,6 +648,14 @@ impl<'a> DaveUi<'a> {
                         .frame(false),
                 );
                 notedeck_ui::include_input(ui, &r);
+
+                // Show Ctrl+P hint as overlay when Ctrl is held (but not in plan mode)
+                // Using paint_at() instead of show() avoids layout changes that cause focus loss
+                if ctrl_held && !self.plan_mode_active {
+                    // Paint the hint near the right side of the input area
+                    let hint_pos = r.rect.right_center() + egui::vec2(-30.0, 0.0);
+                    super::paint_keybind_hint(ui, hint_pos, "P", 18.0);
+                }
 
                 // Request focus if flagged (e.g., after spawning a new agent)
                 if *self.focus_requested {
