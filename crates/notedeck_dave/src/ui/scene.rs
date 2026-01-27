@@ -183,7 +183,9 @@ impl AgentScene {
             .show(ui, &mut scene_rect, |ui| {
                 // Draw agents and collect interaction responses
                 // Use sessions_ordered() to match keybinding order (Ctrl+1 = first in order, etc.)
-                for (keybind_idx, session) in session_manager.sessions_ordered().into_iter().enumerate() {
+                for (keybind_idx, session) in
+                    session_manager.sessions_ordered().into_iter().enumerate()
+                {
                     let id = session.id;
                     let keybind_number = keybind_idx + 1; // 1-indexed for display
                     let position = session.scene_position;
@@ -191,8 +193,16 @@ impl AgentScene {
                     let title = &session.title;
                     let is_selected = selected_ids.contains(&id);
 
-                    let agent_response =
-                        Self::draw_agent(ui, id, keybind_number, position, status, title, is_selected, ctrl_held);
+                    let agent_response = Self::draw_agent(
+                        ui,
+                        id,
+                        keybind_number,
+                        position,
+                        status,
+                        title,
+                        is_selected,
+                        ctrl_held,
+                    );
 
                     if agent_response.clicked() {
                         let shift = ui.input(|i| i.modifiers.shift);

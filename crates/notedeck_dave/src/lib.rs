@@ -312,14 +312,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let mut dave_response = DaveResponse::default();
         let mut scene_response: Option<SceneResponse> = None;
-        // Update all session statuses
-        self.session_manager.update_all_statuses();
-
-        // Check for agents needing attention and auto-jump to them
-        if let Some(attention_id) = self.scene.check_attention(&self.session_manager) {
-            // Also sync with session manager's active session
-            self.session_manager.switch_to(attention_id);
-        }
 
         // Check if Ctrl is held for showing keybinding hints
         let ctrl_held = ui.input(|i| i.modifiers.ctrl);
@@ -347,10 +339,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         ui.separator();
                         if ui
                             .button("Classic View")
-                            .on_hover_text("Tab/Shift+Tab to cycle agents")
+                            .on_hover_text("Ctrl+G to toggle views")
                             .clicked()
                         {
                             self.show_scene = false;
+                        }
+                        if ctrl_held {
+                            ui::keybind_hint(ui, "G");
                         }
                     });
                     ui.separator();
@@ -461,9 +456,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .inner_margin(egui::Margin::symmetric(8, 12))
                     .show(ui, |ui| {
                         // Add scene view toggle button
-                        if ui.button("Scene View").clicked() {
-                            self.show_scene = true;
-                        }
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button("Scene View")
+                                .on_hover_text("Ctrl+G to toggle views")
+                                .clicked()
+                            {
+                                self.show_scene = true;
+                            }
+                            if ctrl_held {
+                                ui::keybind_hint(ui, "G");
+                            }
+                        });
                         ui.separator();
                         SessionListUi::new(&self.session_manager, ctrl_held).ui(ui)
                     })
@@ -860,6 +864,9 @@ impl notedeck::App for Dave {
                 KeyAction::Interrupt => {
                     self.handle_interrupt_request(ui);
                 }
+                KeyAction::ToggleView => {
+                    self.show_scene = !self.show_scene;
+                }
             }
         }
 
@@ -868,6 +875,15 @@ impl notedeck::App for Dave {
 
         //update_dave(self, ctx, ui.ctx());
         let should_send = self.process_events(ctx);
+
+        // Update all session statuses after processing events
+        self.session_manager.update_all_statuses();
+
+        // Check for agents needing attention and auto-switch to them
+        if let Some(attention_id) = self.scene.check_attention(&self.session_manager) {
+            self.session_manager.switch_to(attention_id);
+        }
+
         if let Some(action) = self.ui(ctx, ui).action {
             match action {
                 DaveAction::ToggleChrome => {
