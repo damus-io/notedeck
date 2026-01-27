@@ -2,6 +2,7 @@ use egui::{Align, Color32, Layout, Sense};
 use notedeck_ui::app_images;
 
 use crate::agent_status::AgentStatus;
+use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{SessionId, SessionManager};
 use crate::ui::keybind_hint::paint_keybind_hint;
 
@@ -16,13 +17,19 @@ pub enum SessionListAction {
 /// UI component for displaying the session list sidebar
 pub struct SessionListUi<'a> {
     session_manager: &'a SessionManager,
+    focus_queue: &'a FocusQueue,
     ctrl_held: bool,
 }
 
 impl<'a> SessionListUi<'a> {
-    pub fn new(session_manager: &'a SessionManager, ctrl_held: bool) -> Self {
+    pub fn new(
+        session_manager: &'a SessionManager,
+        focus_queue: &'a FocusQueue,
+        ctrl_held: bool,
+    ) -> Self {
         SessionListUi {
             session_manager,
+            focus_queue,
             ctrl_held,
         }
     }
@@ -89,12 +96,16 @@ impl<'a> SessionListUi<'a> {
                 None
             };
 
+            // Check if this session is in the focus queue
+            let queue_priority = self.focus_queue.get_session_priority(session.id);
+
             let response = self.session_item_ui(
                 ui,
                 &session.title,
                 is_active,
                 shortcut_hint,
                 session.status(),
+                queue_priority,
             );
 
             if response.clicked() {
@@ -120,6 +131,7 @@ impl<'a> SessionListUi<'a> {
         is_active: bool,
         shortcut_hint: Option<usize>,
         status: AgentStatus,
+        queue_priority: Option<FocusPriority>,
     ) -> egui::Response {
         let desired_size = egui::vec2(ui.available_width(), 36.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
@@ -159,15 +171,48 @@ impl<'a> SessionListUi<'a> {
             12.0 // Leave room for status bar
         };
 
-        // Draw title text
+        // Draw focus queue indicator dot on the far right if in queue
+        let text_end_x = if let Some(priority) = queue_priority {
+            let dot_radius = 5.0;
+            let dot_center = rect.right_center() - egui::vec2(12.0, 0.0);
+            ui.painter()
+                .circle_filled(dot_center, dot_radius, priority.color());
+            24.0 // Space reserved for the dot
+        } else {
+            8.0 // Normal right padding
+        };
+
+        // Draw title text (with clipping to avoid overlapping the dot)
         let text_pos = rect.left_center() + egui::vec2(text_start_x, 0.0);
-        ui.painter().text(
-            text_pos,
-            egui::Align2::LEFT_CENTER,
-            title,
-            egui::FontId::proportional(14.0),
-            ui.visuals().text_color(),
-        );
+        let max_text_width = rect.width() - text_start_x - text_end_x;
+
+        // Clip title if needed
+        let font_id = egui::FontId::proportional(14.0);
+        let text_color = ui.visuals().text_color();
+        let galley = ui
+            .painter()
+            .layout_no_wrap(title.to_string(), font_id.clone(), text_color);
+
+        if galley.size().x > max_text_width {
+            // Text is too long, use ellipsis
+            let clip_rect = egui::Rect::from_min_size(
+                text_pos - egui::vec2(0.0, galley.size().y / 2.0),
+                egui::vec2(max_text_width, galley.size().y),
+            );
+            ui.painter().with_clip_rect(clip_rect).galley(
+                text_pos - egui::vec2(0.0, galley.size().y / 2.0),
+                galley,
+                text_color,
+            );
+        } else {
+            ui.painter().text(
+                text_pos,
+                egui::Align2::LEFT_CENTER,
+                title,
+                font_id,
+                text_color,
+            );
+        }
 
         response
     }

@@ -2,7 +2,6 @@ use super::diff;
 use crate::{
     config::DaveSettings,
     file_update::FileUpdate,
-    focus_queue::FocusPriority,
     messages::{
         Message, PermissionRequest, PermissionResponse, PermissionResponseType, ToolResult,
     },
@@ -30,8 +29,6 @@ pub struct DaveUi<'a> {
     plan_mode_active: bool,
     /// State for tentative permission response (waiting for message)
     permission_message_state: PermissionMessageState,
-    /// Focus queue info: (current_position, total, priority)
-    focus_queue_info: Option<(usize, usize, FocusPriority)>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -115,7 +112,6 @@ impl<'a> DaveUi<'a> {
             focus_requested,
             plan_mode_active: false,
             permission_message_state: PermissionMessageState::None,
-            focus_queue_info: None,
         }
     }
 
@@ -146,16 +142,6 @@ impl<'a> DaveUi<'a> {
 
     pub fn plan_mode_active(mut self, plan_mode_active: bool) -> Self {
         self.plan_mode_active = plan_mode_active;
-        self
-    }
-
-    pub fn focus_queue_info(
-        mut self,
-        position: usize,
-        total: usize,
-        priority: FocusPriority,
-    ) -> Self {
-        self.focus_queue_info = Some((position, total, priority));
         self
     }
 
@@ -710,24 +696,6 @@ impl<'a> DaveUi<'a> {
                     badge = badge.keybind("M");
                 }
                 badge.show(ui).on_hover_text("Ctrl+M to toggle plan mode");
-
-                // Show focus queue indicator if there are items in the queue
-                if let Some((position, total, priority)) = self.focus_queue_info {
-                    let variant = match priority {
-                        FocusPriority::NeedsInput => super::badge::BadgeVariant::Warning,
-                        FocusPriority::Error => super::badge::BadgeVariant::Destructive,
-                        FocusPriority::Done => super::badge::BadgeVariant::Info,
-                    };
-                    let queue_text = format!("{}/{}", position, total);
-                    let mut queue_badge =
-                        super::badge::StatusBadge::new(&queue_text).variant(variant);
-                    if ctrl_held {
-                        queue_badge = queue_badge.keybind("N/P/D");
-                    }
-                    queue_badge
-                        .show(ui)
-                        .on_hover_text("Focus Queue: Ctrl+N next, Ctrl+P prev, Ctrl+D dismiss");
-                }
 
                 let r = ui.add(
                     egui::TextEdit::multiline(self.input)

@@ -368,7 +368,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .show(ui, |ui| {
                             if let Some(selected_id) = self.scene.primary_selection() {
                                 let interrupt_pending = self.is_interrupt_pending();
-                                let queue_info = self.focus_queue.ui_info();
                                 if let Some(session) = self.session_manager.get_mut(selected_id) {
                                     // Show title
                                     ui.heading(&session.title);
@@ -382,7 +381,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         !session.pending_permissions.is_empty();
                                     let plan_mode_active =
                                         session.permission_mode == PermissionMode::Plan;
-                                    let mut dave_ui = DaveUi::new(
+                                    let response = DaveUi::new(
                                         self.model_config.trial,
                                         &session.chat,
                                         &mut session.input,
@@ -393,13 +392,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .interrupt_pending(interrupt_pending)
                                     .has_pending_permission(has_pending_permission)
                                     .plan_mode_active(plan_mode_active)
-                                    .permission_message_state(session.permission_message_state);
-
-                                    if let Some((pos, total, priority)) = queue_info {
-                                        dave_ui = dave_ui.focus_queue_info(pos, total, priority);
-                                    }
-
-                                    let response = dave_ui.ui(app_ctx, ui);
+                                    .permission_message_state(session.permission_message_state)
+                                    .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
                                         dave_response = response;
@@ -485,7 +479,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             }
                         });
                         ui.separator();
-                        SessionListUi::new(&self.session_manager, ctrl_held).ui(ui)
+                        SessionListUi::new(&self.session_manager, &self.focus_queue, ctrl_held)
+                            .ui(ui)
                     })
                     .inner
             })
@@ -493,14 +488,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Now we can mutably borrow for chat
         let interrupt_pending = self.is_interrupt_pending();
-        let queue_info = self.focus_queue.ui_info();
         let chat_response = ui
             .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
                 if let Some(session) = self.session_manager.get_active_mut() {
                     let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                     let has_pending_permission = !session.pending_permissions.is_empty();
                     let plan_mode_active = session.permission_mode == PermissionMode::Plan;
-                    let mut dave_ui = DaveUi::new(
+                    DaveUi::new(
                         self.model_config.trial,
                         &session.chat,
                         &mut session.input,
@@ -510,13 +504,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .interrupt_pending(interrupt_pending)
                     .has_pending_permission(has_pending_permission)
                     .plan_mode_active(plan_mode_active)
-                    .permission_message_state(session.permission_message_state);
-
-                    if let Some((pos, total, priority)) = queue_info {
-                        dave_ui = dave_ui.focus_queue_info(pos, total, priority);
-                    }
-
-                    dave_ui.ui(app_ctx, ui)
+                    .permission_message_state(session.permission_message_state)
+                    .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
                 }
@@ -548,7 +537,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::symmetric(8, 12))
                 .show(ui, |ui| {
-                    SessionListUi::new(&self.session_manager, ctrl_held).ui(ui)
+                    SessionListUi::new(&self.session_manager, &self.focus_queue, ctrl_held).ui(ui)
                 })
                 .inner;
             if let Some(action) = session_action {
@@ -570,12 +559,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         } else {
             // Show chat
             let interrupt_pending = self.is_interrupt_pending();
-            let queue_info = self.focus_queue.ui_info();
             if let Some(session) = self.session_manager.get_active_mut() {
                 let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                 let has_pending_permission = !session.pending_permissions.is_empty();
                 let plan_mode_active = session.permission_mode == PermissionMode::Plan;
-                let mut dave_ui = DaveUi::new(
+                DaveUi::new(
                     self.model_config.trial,
                     &session.chat,
                     &mut session.input,
@@ -585,13 +573,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .interrupt_pending(interrupt_pending)
                 .has_pending_permission(has_pending_permission)
                 .plan_mode_active(plan_mode_active)
-                .permission_message_state(session.permission_message_state);
-
-                if let Some((pos, total, priority)) = queue_info {
-                    dave_ui = dave_ui.focus_queue_info(pos, total, priority);
-                }
-
-                dave_ui.ui(app_ctx, ui)
+                .permission_message_state(session.permission_message_state)
+                .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
             }

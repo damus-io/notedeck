@@ -330,4 +330,9 @@ impl FocusQueue {
         self.dequeue(session_id);
         self.previous_statuses.remove(&session_id);
     }
+
+    /// Check if a session is in the queue and return its priority if so
+    pub fn get_session_priority(&self, session_id: SessionId) -> Option<FocusPriority> {
+        self.find_session(session_id).map(|(priority, _)| priority)
+    }
 }
