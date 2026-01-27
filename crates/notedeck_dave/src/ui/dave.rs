@@ -1,10 +1,12 @@
 use crate::{
     config::DaveSettings,
+    file_update::FileUpdate,
     messages::{
         Message, PermissionRequest, PermissionResponse, PermissionResponseType, ToolResult,
     },
     tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
 };
+use super::diff;
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
@@ -270,65 +272,87 @@ impl<'a> DaveUi<'a> {
                     });
             }
             None => {
-                // Parse tool input for display
-                let obj = request.tool_input.as_object();
-                let description = obj
-                    .and_then(|o| o.get("description"))
-                    .and_then(|v| v.as_str());
-                let command = obj.and_then(|o| o.get("command")).and_then(|v| v.as_str());
-                let single_value = obj
-                    .filter(|o| o.len() == 1)
-                    .and_then(|o| o.values().next())
-                    .and_then(|v| v.as_str());
-
-                // Pending state: Show Allow/Deny buttons
-                egui::Frame::new()
-                    .fill(ui.visuals().widgets.noninteractive.bg_fill)
-                    .inner_margin(inner_margin)
-                    .corner_radius(corner_radius)
-                    .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
-                    .show(ui, |ui| {
-                        // Tool info display
-                        if let Some(desc) = description {
-                            // Format: ToolName: description
+                // Check if this is a file update (Edit or Write tool)
+                if let Some(file_update) =
+                    FileUpdate::from_tool_call(&request.tool_name, &request.tool_input)
+                {
+                    // Render file update with diff view
+                    egui::Frame::new()
+                        .fill(ui.visuals().widgets.noninteractive.bg_fill)
+                        .inner_margin(inner_margin)
+                        .corner_radius(corner_radius)
+                        .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
+                        .show(ui, |ui| {
+                            // Header with file path and buttons
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&request.tool_name).strong());
-                                ui.label(desc);
-
+                                diff::file_path_header(&file_update, ui);
                                 Self::permission_buttons(request, ui, &mut action);
                             });
-                            // Command on next line if present
-                            if let Some(cmd) = command {
+
+                            // Diff view
+                            diff::file_update_ui(&file_update, ui);
+                        });
+                } else {
+                    // Parse tool input for display (existing logic)
+                    let obj = request.tool_input.as_object();
+                    let description = obj
+                        .and_then(|o| o.get("description"))
+                        .and_then(|v| v.as_str());
+                    let command = obj.and_then(|o| o.get("command")).and_then(|v| v.as_str());
+                    let single_value = obj
+                        .filter(|o| o.len() == 1)
+                        .and_then(|o| o.values().next())
+                        .and_then(|v| v.as_str());
+
+                    // Pending state: Show Allow/Deny buttons
+                    egui::Frame::new()
+                        .fill(ui.visuals().widgets.noninteractive.bg_fill)
+                        .inner_margin(inner_margin)
+                        .corner_radius(corner_radius)
+                        .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
+                        .show(ui, |ui| {
+                            // Tool info display
+                            if let Some(desc) = description {
+                                // Format: ToolName: description
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&request.tool_name).strong());
+                                    ui.label(desc);
+
+                                    Self::permission_buttons(request, ui, &mut action);
+                                });
+                                // Command on next line if present
+                                if let Some(cmd) = command {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(cmd).monospace())
+                                            .wrap_mode(egui::TextWrapMode::Wrap),
+                                    );
+                                }
+                            } else if let Some(value) = single_value {
+                                // Format: ToolName `value`
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&request.tool_name).strong());
+                                    ui.label(egui::RichText::new(value).monospace());
+
+                                    Self::permission_buttons(request, ui, &mut action);
+                                });
+                            } else {
+                                // Fallback: show JSON
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&request.tool_name).strong());
+
+                                    Self::permission_buttons(request, ui, &mut action);
+                                });
+                                let formatted = serde_json::to_string_pretty(&request.tool_input)
+                                    .unwrap_or_else(|_| request.tool_input.to_string());
                                 ui.add(
-                                    egui::Label::new(egui::RichText::new(cmd).monospace())
-                                        .wrap_mode(egui::TextWrapMode::Wrap),
+                                    egui::Label::new(
+                                        egui::RichText::new(formatted).monospace().size(11.0),
+                                    )
+                                    .wrap_mode(egui::TextWrapMode::Wrap),
                                 );
                             }
-                        } else if let Some(value) = single_value {
-                            // Format: ToolName `value`
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&request.tool_name).strong());
-                                ui.label(egui::RichText::new(value).monospace());
-
-                                Self::permission_buttons(request, ui, &mut action);
-                            });
-                        } else {
-                            // Fallback: show JSON
-                            ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&request.tool_name).strong());
-
-                                Self::permission_buttons(request, ui, &mut action);
-                            });
-                            let formatted = serde_json::to_string_pretty(&request.tool_input)
-                                .unwrap_or_else(|_| request.tool_input.to_string());
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(formatted).monospace().size(11.0),
-                                )
-                                .wrap_mode(egui::TextWrapMode::Wrap),
-                            );
-                        }
-                    });
+                        });
+                }
             }
         }
 

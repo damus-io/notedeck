@@ -1,4 +1,5 @@
 mod dave;
+pub mod diff;
 pub mod scene;
 pub mod session_list;
 mod settings;

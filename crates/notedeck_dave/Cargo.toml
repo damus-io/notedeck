@@ -27,6 +27,7 @@ futures = "0.3.31"
 dashmap = "6"
 #reqwest = "0.12.15"
 egui_extras = { workspace = true }
+similar = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }

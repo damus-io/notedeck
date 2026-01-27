@@ -2,6 +2,7 @@ mod agent_status;
 mod avatar;
 mod backend;
 mod config;
+pub mod file_update;
 pub(crate) mod mesh;
 mod messages;
 mod quaternion;
