@@ -11,7 +11,10 @@ pub struct FileUpdate {
 #[derive(Debug, Clone)]
 pub enum FileUpdateType {
     /// Edit: replace old_string with new_string
-    Edit { old_string: String, new_string: String },
+    Edit {
+        old_string: String,
+        new_string: String,
+    },
     /// Write: create/overwrite entire file
     Write { content: String },
 }
@@ -99,5 +102,4 @@ impl FileUpdate {
             }
         }
     }
-
 }

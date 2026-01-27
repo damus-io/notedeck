@@ -352,6 +352,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     ui.heading(&session.title);
                                     ui.separator();
 
+                                    let is_working = session.status()
+                                        == crate::agent_status::AgentStatus::Working;
+
                                     // Render chat UI for selected session
                                     let response = DaveUi::new(
                                         self.model_config.trial,
@@ -359,6 +362,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         &mut session.input,
                                     )
                                     .compact(true)
+                                    .is_working(is_working)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -440,7 +444,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let chat_response = ui
             .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
                 if let Some(session) = self.session_manager.get_active_mut() {
+                    let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                     DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
+                        .is_working(is_working)
                         .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -492,7 +498,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         } else {
             // Show chat
             if let Some(session) = self.session_manager.get_active_mut() {
+                let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                 DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
+                    .is_working(is_working)
                     .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
@@ -510,6 +518,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Clean up backend resources (e.g., close persistent connections)
             let session_id = format!("dave-session-{}", id);
             self.backend.cleanup_session(session_id);
+        }
+    }
+
+    /// Handle an interrupt action - stop the current AI operation
+    fn handle_interrupt(&mut self, ui: &egui::Ui) {
+        if let Some(session) = self.session_manager.get_active_mut() {
+            let session_id = format!("dave-session-{}", session.id);
+            // Send interrupt to backend
+            self.backend.interrupt_session(session_id, ui.ctx().clone());
+            // Clear the incoming token receiver so we stop processing
+            session.incoming_tokens = None;
+            // Clear pending permissions since we're interrupting
+            session.pending_permissions.clear();
+            tracing::debug!("Interrupted session {}", session.id);
         }
     }
 
@@ -631,6 +653,9 @@ impl notedeck::App for Dave {
                             );
                         }
                     }
+                }
+                DaveAction::Interrupt => {
+                    self.handle_interrupt(ui);
                 }
             }
         }

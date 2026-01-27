@@ -17,7 +17,7 @@ pub fn file_update_ui(update: &FileUpdate, ui: &mut Ui) {
         .corner_radius(4.0)
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
-                .max_height(300.0)
+                .max_height(ui.available_height() * 0.8)
                 .show(ui, |ui| {
                     render_diff_lines(&diff_lines, &update.update_type, ui);
                 });
@@ -54,8 +54,12 @@ fn render_diff_lines(lines: &[DiffLine], update_type: &FileUpdateType, ui: &mut 
 
             // Render line numbers (only for edits, not writes)
             if matches!(update_type, FileUpdateType::Edit { .. }) {
-                let old_str = old_num.map(|n| format!("{:4}", n)).unwrap_or_else(|| "    ".to_string());
-                let new_str = new_num.map(|n| format!("{:4}", n)).unwrap_or_else(|| "    ".to_string());
+                let old_str = old_num
+                    .map(|n| format!("{:4}", n))
+                    .unwrap_or_else(|| "    ".to_string());
+                let new_str = new_num
+                    .map(|n| format!("{:4}", n))
+                    .unwrap_or_else(|| "    ".to_string());
 
                 ui.label(
                     RichText::new(format!("{} {}", old_str, new_str))

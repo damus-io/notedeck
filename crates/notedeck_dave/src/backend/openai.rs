@@ -166,4 +166,9 @@ impl AiBackend for OpenAiBackend {
         // OpenAI backend doesn't maintain persistent connections per session
         // No cleanup needed
     }
+
+    fn interrupt_session(&self, _session_id: String, _ctx: egui::Context) {
+        // OpenAI backend doesn't support interrupts - requests complete atomically
+        // The JoinHandle can be aborted from the session side if needed
+    }
 }

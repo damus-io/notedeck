@@ -1,3 +1,4 @@
+use super::diff;
 use crate::{
     config::DaveSettings,
     file_update::FileUpdate,
@@ -6,7 +7,6 @@ use crate::{
     },
     tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
 };
-use super::diff;
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{
@@ -21,6 +21,7 @@ pub struct DaveUi<'a> {
     trial: bool,
     input: &'a mut String,
     compact: bool,
+    is_working: bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -78,6 +79,8 @@ pub enum DaveAction {
         request_id: Uuid,
         response: PermissionResponse,
     },
+    /// User wants to interrupt/stop the current AI operation
+    Interrupt,
 }
 
 impl<'a> DaveUi<'a> {
@@ -87,11 +90,17 @@ impl<'a> DaveUi<'a> {
             chat,
             input,
             compact: false,
+            is_working: false,
         }
     }
 
     pub fn compact(mut self, compact: bool) -> Self {
         self.compact = compact;
+        self
+    }
+
+    pub fn is_working(mut self, is_working: bool) -> Self {
+        self.is_working = is_working;
         self
     }
 
@@ -544,7 +553,20 @@ impl<'a> DaveUi<'a> {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
                 let mut dave_response = DaveResponse::none();
-                if ui
+
+                // Show Stop button when working, Ask button otherwise
+                if self.is_working {
+                    if ui
+                        .add(egui::Button::new(tr!(
+                            i18n,
+                            "Stop",
+                            "Button to interrupt/stop the AI operation"
+                        )))
+                        .clicked()
+                    {
+                        dave_response = DaveResponse::new(DaveAction::Interrupt);
+                    }
+                } else if ui
                     .add(egui::Button::new(tr!(
                         i18n,
                         "Ask",

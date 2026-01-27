@@ -33,4 +33,8 @@ pub trait AiBackend: Send + Sync {
     /// Clean up resources associated with a session.
     /// Called when a session is deleted to allow backends to shut down any persistent connections.
     fn cleanup_session(&self, session_id: String);
+
+    /// Interrupt the current query for a session.
+    /// This stops any in-progress work but preserves the session history.
+    fn interrupt_session(&self, session_id: String, ctx: egui::Context);
 }

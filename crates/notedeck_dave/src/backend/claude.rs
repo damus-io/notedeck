@@ -25,6 +25,10 @@ enum SessionCommand {
         response_tx: mpsc::Sender<DaveApiResponse>,
         ctx: egui::Context,
     },
+    /// Interrupt the current query - stops the stream but preserves session
+    Interrupt {
+        ctx: egui::Context,
+    },
     Shutdown,
 }
 
@@ -212,7 +216,7 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                 let mut pending_tools: HashMap<String, (String, serde_json::Value)> =
                     HashMap::new();
 
-                // Stream response with select! to handle both stream and permission requests
+                // Stream response with select! to handle stream, permission requests, and interrupts
                 let mut stream = client.receive_response();
                 let mut stream_done = false;
 
@@ -220,7 +224,39 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                     tokio::select! {
                         biased;
 
-                        // Handle permission requests first (they're blocking the SDK)
+                        // Check for interrupt command (highest priority)
+                        Some(cmd) = command_rx.recv() => {
+                            match cmd {
+                                SessionCommand::Interrupt { ctx: interrupt_ctx } => {
+                                    tracing::debug!("Session {} received interrupt", session_id);
+                                    if let Err(err) = client.interrupt().await {
+                                        tracing::error!("Failed to send interrupt: {}", err);
+                                    }
+                                    // Let the stream end naturally - it will send a Result message
+                                    // The session history is preserved by the CLI
+                                    interrupt_ctx.request_repaint();
+                                }
+                                SessionCommand::Query { response_tx: new_tx, .. } => {
+                                    // A new query came in while we're still streaming - shouldn't happen
+                                    // but handle gracefully by rejecting it
+                                    let _ = new_tx.send(DaveApiResponse::Failed(
+                                        "Query already in progress".to_string()
+                                    ));
+                                }
+                                SessionCommand::Shutdown => {
+                                    tracing::debug!("Session actor {} shutting down during query", session_id);
+                                    // Drop stream and disconnect - break to exit loop first
+                                    drop(stream);
+                                    if let Err(err) = client.disconnect().await {
+                                        tracing::warn!("Error disconnecting session {}: {}", session_id, err);
+                                    }
+                                    tracing::debug!("Session {} actor exited", session_id);
+                                    return;
+                                }
+                            }
+                        }
+
+                        // Handle permission requests (they're blocking the SDK)
                         Some(perm_req) = perm_rx.recv() => {
                             // Forward permission request to UI
                             let request_id = Uuid::new_v4();
@@ -356,6 +392,14 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                 tracing::debug!("Query complete for session {}", session_id);
                 // Don't disconnect - keep the connection alive for subsequent queries
             }
+            SessionCommand::Interrupt { ctx } => {
+                // Interrupt received when not in a query - just request repaint
+                tracing::debug!(
+                    "Session {} received interrupt but no query active",
+                    session_id
+                );
+                ctx.request_repaint();
+            }
             SessionCommand::Shutdown => {
                 tracing::debug!("Session actor {} shutting down", session_id);
                 break;
@@ -446,6 +490,17 @@ impl AiBackend for ClaudeBackend {
             tokio::spawn(async move {
                 if let Err(err) = handle.command_tx.send(SessionCommand::Shutdown).await {
                     tracing::warn!("Failed to send shutdown command: {}", err);
+                }
+            });
+        }
+    }
+
+    fn interrupt_session(&self, session_id: String, ctx: egui::Context) {
+        if let Some(handle) = self.sessions.get(&session_id) {
+            let command_tx = handle.command_tx.clone();
+            tokio::spawn(async move {
+                if let Err(err) = command_tx.send(SessionCommand::Interrupt { ctx }).await {
+                    tracing::warn!("Failed to send interrupt command: {}", err);
                 }
             });
         }
