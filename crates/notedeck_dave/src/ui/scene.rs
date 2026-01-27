@@ -264,7 +264,7 @@ impl AgentScene {
         // Handle keyboard input (only when no text input has focus)
         // Note: N key for spawning agents is handled globally in keybindings.rs
         if !ui.ctx().wants_keyboard_input()
-            && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+            && ui.input(|i| i.key_pressed(egui::Key::Delete))
             && !self.selected.is_empty()
         {
             response = SceneResponse::new(SceneAction::DeleteSelected);
