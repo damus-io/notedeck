@@ -1,0 +1,69 @@
+use egui::Key;
+
+/// Keybinding actions that can be triggered globally
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyAction {
+    /// Accept/Allow a pending permission request
+    AcceptPermission,
+    /// Deny a pending permission request
+    DenyPermission,
+    /// Switch to agent by number (0-indexed)
+    SwitchToAgent(usize),
+    /// Cycle to next agent
+    NextAgent,
+    /// Cycle to previous agent
+    PreviousAgent,
+    /// Spawn a new agent
+    NewAgent,
+}
+
+/// Check for keybinding actions when no text input has focus
+pub fn check_keybindings(ctx: &egui::Context) -> Option<KeyAction> {
+    // Only process when no text input has focus
+    if ctx.wants_keyboard_input() {
+        return None;
+    }
+
+    ctx.input(|i| {
+        // Permission response keys: Y/A for accept, N/D for deny
+        if i.key_pressed(Key::Y) || i.key_pressed(Key::A) {
+            return Some(KeyAction::AcceptPermission);
+        }
+        // Note: N is already used for new agent in scene view, so we use D for deny
+        // or N only when there's a pending permission
+        if i.key_pressed(Key::D) {
+            return Some(KeyAction::DenyPermission);
+        }
+
+        // Number keys 1-9 for switching agents
+        for (idx, key) in [
+            Key::Num1,
+            Key::Num2,
+            Key::Num3,
+            Key::Num4,
+            Key::Num5,
+            Key::Num6,
+            Key::Num7,
+            Key::Num8,
+            Key::Num9,
+        ]
+        .iter()
+        .enumerate()
+        {
+            if i.key_pressed(*key) {
+                return Some(KeyAction::SwitchToAgent(idx));
+            }
+        }
+
+        // Tab / Shift+Tab for cycling through agents
+        if i.key_pressed(Key::Tab) {
+            if i.modifiers.shift {
+                return Some(KeyAction::PreviousAgent);
+            } else {
+                return Some(KeyAction::NextAgent);
+            }
+        }
+
+        None
+    })
+}

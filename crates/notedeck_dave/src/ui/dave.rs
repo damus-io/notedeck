@@ -368,22 +368,23 @@ impl<'a> DaveUi<'a> {
         action
     }
 
-    /// Render Allow/Deny buttons aligned to the right
+    /// Render Allow/Deny buttons aligned to the right with keybinding hints
     fn permission_buttons(
         request: &PermissionRequest,
         ui: &mut egui::Ui,
         action: &mut Option<DaveAction>,
     ) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Deny button (red)
+            // Deny button (red) with [D] hint
             if ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("Deny")
+                        egui::RichText::new("Deny [D]")
                             .color(ui.visuals().widgets.active.fg_stroke.color),
                     )
                     .fill(egui::Color32::from_rgb(178, 34, 34)),
                 )
+                .on_hover_text("Press D to deny")
                 .clicked()
             {
                 *action = Some(DaveAction::PermissionResponse {
@@ -394,15 +395,16 @@ impl<'a> DaveUi<'a> {
                 });
             }
 
-            // Allow button (green)
+            // Allow button (green) with [Y] hint
             if ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("Allow")
+                        egui::RichText::new("Allow [Y]")
                             .color(ui.visuals().widgets.active.fg_stroke.color),
                     )
                     .fill(egui::Color32::from_rgb(34, 139, 34)),
                 )
+                .on_hover_text("Press Y or A to allow")
                 .clicked()
             {
                 *action = Some(DaveAction::PermissionResponse {

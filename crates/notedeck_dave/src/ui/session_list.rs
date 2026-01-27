@@ -73,10 +73,16 @@ impl<'a> SessionListUi<'a> {
         let mut action = None;
         let active_id = self.session_manager.active_id();
 
-        for session in self.session_manager.sessions_ordered() {
+        for (index, session) in self.session_manager.sessions_ordered().iter().enumerate() {
             let is_active = Some(session.id) == active_id;
+            // Show keyboard shortcut hint for first 9 sessions (1-9 keys)
+            let shortcut_hint = if index < 9 {
+                Some(index + 1)
+            } else {
+                None
+            };
 
-            let response = self.session_item_ui(ui, &session.title, is_active);
+            let response = self.session_item_ui(ui, &session.title, is_active, shortcut_hint);
 
             if response.clicked() {
                 action = Some(SessionListAction::SwitchTo(session.id));
@@ -94,10 +100,21 @@ impl<'a> SessionListUi<'a> {
         action
     }
 
-    fn session_item_ui(&self, ui: &mut egui::Ui, title: &str, is_active: bool) -> egui::Response {
+    fn session_item_ui(
+        &self,
+        ui: &mut egui::Ui,
+        title: &str,
+        is_active: bool,
+        shortcut_hint: Option<usize>,
+    ) -> egui::Response {
         let desired_size = egui::vec2(ui.available_width(), 36.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
-        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let hover_text = shortcut_hint
+            .map(|n| format!("Press {} to switch", n))
+            .unwrap_or_default();
+        let response = response
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text_at_pointer(hover_text);
 
         // Paint background: active > hovered > transparent
         let fill = if is_active {
@@ -111,8 +128,24 @@ impl<'a> SessionListUi<'a> {
         let corner_radius = 8.0;
         ui.painter().rect_filled(rect, corner_radius, fill);
 
-        // Draw title text (left-aligned, vertically centered)
-        let text_pos = rect.left_center() + egui::vec2(8.0, 0.0);
+        // Draw shortcut hint on the left if available
+        let text_start_x = if let Some(num) = shortcut_hint {
+            let hint_text = format!("{}", num);
+            let hint_pos = rect.left_center() + egui::vec2(12.0, 0.0);
+            ui.painter().text(
+                hint_pos,
+                egui::Align2::LEFT_CENTER,
+                &hint_text,
+                egui::FontId::monospace(12.0),
+                ui.visuals().text_color().gamma_multiply(0.5),
+            );
+            32.0
+        } else {
+            8.0
+        };
+
+        // Draw title text
+        let text_pos = rect.left_center() + egui::vec2(text_start_x, 0.0);
         ui.painter().text(
             text_pos,
             egui::Align2::LEFT_CENTER,

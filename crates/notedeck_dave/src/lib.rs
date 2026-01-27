@@ -33,8 +33,8 @@ pub use tools::{
     ToolResponses,
 };
 pub use ui::{
-    AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi, SceneAction, SceneResponse,
-    SessionListAction, SessionListUi, SettingsPanelAction,
+    check_keybindings, AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi, KeyAction,
+    SceneAction, SceneResponse, SessionListAction, SessionListUi, SettingsPanelAction,
 };
 pub use vec3::Vec3;
 
@@ -326,11 +326,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 strip.cell(|ui| {
                     // Scene toolbar at top
                     ui.horizontal(|ui| {
-                        if ui.button("+ New Agent").clicked() {
+                        if ui
+                            .button("+ New Agent [N]")
+                            .on_hover_text("Press N to spawn new agent")
+                            .clicked()
+                        {
                             dave_response = DaveResponse::new(DaveAction::NewChat);
                         }
                         ui.separator();
-                        if ui.button("Classic View").clicked() {
+                        if ui
+                            .button("Classic View")
+                            .on_hover_text("Tab/Shift+Tab to cycle agents")
+                            .clicked()
+                        {
                             self.show_scene = false;
                         }
                     });
@@ -535,6 +543,100 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Get the first pending permission request ID for the active session
+    fn first_pending_permission(&self) -> Option<uuid::Uuid> {
+        self.session_manager
+            .get_active()
+            .and_then(|session| session.pending_permissions.keys().next().copied())
+    }
+
+    /// Handle a permission response (from UI button or keybinding)
+    fn handle_permission_response(&mut self, request_id: uuid::Uuid, response: PermissionResponse) {
+        if let Some(session) = self.session_manager.get_active_mut() {
+            // Record the response type in the message for UI display
+            let response_type = match &response {
+                PermissionResponse::Allow => messages::PermissionResponseType::Allowed,
+                PermissionResponse::Deny { .. } => messages::PermissionResponseType::Denied,
+            };
+
+            for msg in &mut session.chat {
+                if let Message::PermissionRequest(req) = msg {
+                    if req.id == request_id {
+                        req.response = Some(response_type);
+                        break;
+                    }
+                }
+            }
+
+            if let Some(sender) = session.pending_permissions.remove(&request_id) {
+                if sender.send(response).is_err() {
+                    tracing::error!(
+                        "Failed to send permission response for request {}",
+                        request_id
+                    );
+                }
+            } else {
+                tracing::warn!("No pending permission found for request {}", request_id);
+            }
+        }
+    }
+
+    /// Switch to agent by index in the ordered list (0-indexed)
+    fn switch_to_agent_by_index(&mut self, index: usize) {
+        let ids = self.session_manager.session_ids();
+        if let Some(&id) = ids.get(index) {
+            self.session_manager.switch_to(id);
+            // Also update scene selection if in scene view
+            if self.show_scene {
+                self.scene.select(id);
+            }
+        }
+    }
+
+    /// Cycle to the next agent
+    fn cycle_next_agent(&mut self) {
+        let ids = self.session_manager.session_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let current_idx = self
+            .session_manager
+            .active_id()
+            .and_then(|active| ids.iter().position(|&id| id == active))
+            .unwrap_or(0);
+        let next_idx = (current_idx + 1) % ids.len();
+        if let Some(&id) = ids.get(next_idx) {
+            self.session_manager.switch_to(id);
+            if self.show_scene {
+                self.scene.select(id);
+            }
+        }
+    }
+
+    /// Cycle to the previous agent
+    fn cycle_prev_agent(&mut self) {
+        let ids = self.session_manager.session_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let current_idx = self
+            .session_manager
+            .active_id()
+            .and_then(|active| ids.iter().position(|&id| id == active))
+            .unwrap_or(0);
+        let prev_idx = if current_idx == 0 {
+            ids.len() - 1
+        } else {
+            current_idx - 1
+        };
+        if let Some(&id) = ids.get(prev_idx) {
+            self.session_manager.switch_to(id);
+            if self.show_scene {
+                self.scene.select(id);
+            }
+        }
+    }
+
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         if let Some(session) = self.session_manager.get_active_mut() {
@@ -591,6 +693,39 @@ impl notedeck::App for Dave {
             }
         }
 
+        // Handle global keybindings (when no text input has focus)
+        if let Some(key_action) = check_keybindings(ui.ctx()) {
+            match key_action {
+                KeyAction::AcceptPermission => {
+                    if let Some(request_id) = self.first_pending_permission() {
+                        self.handle_permission_response(request_id, PermissionResponse::Allow);
+                    }
+                }
+                KeyAction::DenyPermission => {
+                    if let Some(request_id) = self.first_pending_permission() {
+                        self.handle_permission_response(
+                            request_id,
+                            PermissionResponse::Deny {
+                                reason: "User denied via keyboard".into(),
+                            },
+                        );
+                    }
+                }
+                KeyAction::SwitchToAgent(index) => {
+                    self.switch_to_agent_by_index(index);
+                }
+                KeyAction::NextAgent => {
+                    self.cycle_next_agent();
+                }
+                KeyAction::PreviousAgent => {
+                    self.cycle_prev_agent();
+                }
+                KeyAction::NewAgent => {
+                    self.handle_new_chat();
+                }
+            }
+        }
+
         //update_dave(self, ctx, ui.ctx());
         let should_send = self.process_events(ctx);
         if let Some(action) = self.ui(ctx, ui).action {
@@ -620,39 +755,7 @@ impl notedeck::App for Dave {
                     request_id,
                     response,
                 } => {
-                    // Send the permission response back to the callback
-                    if let Some(session) = self.session_manager.get_active_mut() {
-                        // Record the response type in the message for UI display
-                        let response_type = match &response {
-                            PermissionResponse::Allow => messages::PermissionResponseType::Allowed,
-                            PermissionResponse::Deny { .. } => {
-                                messages::PermissionResponseType::Denied
-                            }
-                        };
-
-                        for msg in &mut session.chat {
-                            if let Message::PermissionRequest(req) = msg {
-                                if req.id == request_id {
-                                    req.response = Some(response_type);
-                                    break;
-                                }
-                            }
-                        }
-
-                        if let Some(sender) = session.pending_permissions.remove(&request_id) {
-                            if sender.send(response).is_err() {
-                                tracing::error!(
-                                    "Failed to send permission response for request {}",
-                                    request_id
-                                );
-                            }
-                        } else {
-                            tracing::warn!(
-                                "No pending permission found for request {}",
-                                request_id
-                            );
-                        }
-                    }
+                    self.handle_permission_response(request_id, response);
                 }
                 DaveAction::Interrupt => {
                     self.handle_interrupt(ui);
