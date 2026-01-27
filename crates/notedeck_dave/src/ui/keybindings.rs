@@ -19,13 +19,28 @@ pub enum KeyAction {
     Interrupt,
 }
 
-/// Check for keybinding actions when no text input has focus
+/// Check for keybinding actions.
 /// If `has_pending_permission` is true, keys 1/2 are used for permission responses
 /// instead of agent switching.
 pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> Option<KeyAction> {
     // Escape works even when text input has focus (to interrupt AI)
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
         return Some(KeyAction::Interrupt);
+    }
+
+    // Tab / Shift+Tab for cycling through agents (works even with text input focus)
+    if let Some(action) = ctx.input(|i| {
+        if i.key_pressed(Key::Tab) {
+            if i.modifiers.shift {
+                Some(KeyAction::PreviousAgent)
+            } else {
+                Some(KeyAction::NextAgent)
+            }
+        } else {
+            None
+        }
+    }) {
+        return Some(action);
     }
 
     // Only process other keys when no text input has focus
@@ -61,15 +76,6 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
         {
             if i.key_pressed(*key) {
                 return Some(KeyAction::SwitchToAgent(idx));
-            }
-        }
-
-        // Tab / Shift+Tab for cycling through agents
-        if i.key_pressed(Key::Tab) {
-            if i.modifiers.shift {
-                return Some(KeyAction::PreviousAgent);
-            } else {
-                return Some(KeyAction::NextAgent);
             }
         }
 
