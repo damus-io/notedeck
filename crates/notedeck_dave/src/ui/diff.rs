@@ -23,6 +23,7 @@ pub fn file_update_ui(update: &FileUpdate, ui: &mut Ui) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .max_height(max_diff_height)
+                .auto_shrink([false, true]) // shrink vertically to fit content
                 .show(ui, |ui| {
                     render_diff_lines(&diff_lines, &update.update_type, ui);
                 });
