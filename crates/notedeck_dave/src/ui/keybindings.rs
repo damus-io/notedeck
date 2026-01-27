@@ -20,7 +20,9 @@ pub enum KeyAction {
 }
 
 /// Check for keybinding actions when no text input has focus
-pub fn check_keybindings(ctx: &egui::Context) -> Option<KeyAction> {
+/// If `has_pending_permission` is true, keys 1/2 are used for permission responses
+/// instead of agent switching.
+pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> Option<KeyAction> {
     // Escape works even when text input has focus (to interrupt AI)
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
         return Some(KeyAction::Interrupt);
@@ -32,17 +34,17 @@ pub fn check_keybindings(ctx: &egui::Context) -> Option<KeyAction> {
     }
 
     ctx.input(|i| {
-        // Permission response keys: Y/A for accept, N/D for deny
-        if i.key_pressed(Key::Y) || i.key_pressed(Key::A) {
-            return Some(KeyAction::AcceptPermission);
-        }
-        // Note: N is already used for new agent in scene view, so we use D for deny
-        // or N only when there's a pending permission
-        if i.key_pressed(Key::D) {
-            return Some(KeyAction::DenyPermission);
+        // When there's a pending permission, 1 = accept, 2 = deny
+        if has_pending_permission {
+            if i.key_pressed(Key::Num1) {
+                return Some(KeyAction::AcceptPermission);
+            }
+            if i.key_pressed(Key::Num2) {
+                return Some(KeyAction::DenyPermission);
+            }
         }
 
-        // Number keys 1-9 for switching agents
+        // Number keys 1-9 for switching agents (when no pending permission)
         for (idx, key) in [
             Key::Num1,
             Key::Num2,

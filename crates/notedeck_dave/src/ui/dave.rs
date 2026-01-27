@@ -24,6 +24,7 @@ pub struct DaveUi<'a> {
     is_working: bool,
     interrupt_pending: bool,
     has_pending_permission: bool,
+    focus_requested: &'a mut bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -86,7 +87,12 @@ pub enum DaveAction {
 }
 
 impl<'a> DaveUi<'a> {
-    pub fn new(trial: bool, chat: &'a [Message], input: &'a mut String) -> Self {
+    pub fn new(
+        trial: bool,
+        chat: &'a [Message],
+        input: &'a mut String,
+        focus_requested: &'a mut bool,
+    ) -> Self {
         DaveUi {
             trial,
             chat,
@@ -95,6 +101,7 @@ impl<'a> DaveUi<'a> {
             is_working: false,
             interrupt_pending: false,
             has_pending_permission: false,
+            focus_requested,
         }
     }
 
@@ -389,16 +396,16 @@ impl<'a> DaveUi<'a> {
         action: &mut Option<DaveAction>,
     ) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Deny button (red) with [D] hint
+            // Deny button (red) with [2] hint
             if ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("Deny [D]")
+                        egui::RichText::new("[2] No")
                             .color(ui.visuals().widgets.active.fg_stroke.color),
                     )
                     .fill(egui::Color32::from_rgb(178, 34, 34)),
                 )
-                .on_hover_text("Press D to deny")
+                .on_hover_text("Press 2 to deny")
                 .clicked()
             {
                 *action = Some(DaveAction::PermissionResponse {
@@ -409,16 +416,16 @@ impl<'a> DaveUi<'a> {
                 });
             }
 
-            // Allow button (green) with [Y] hint
+            // Allow button (green) with [1] hint
             if ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("Allow [Y]")
+                        egui::RichText::new("[1] Yes")
                             .color(ui.visuals().widgets.active.fg_stroke.color),
                     )
                     .fill(egui::Color32::from_rgb(34, 139, 34)),
                 )
-                .on_hover_text("Press Y or A to allow")
+                .on_hover_text("Press 1 to allow")
                 .clicked()
             {
                 *action = Some(DaveAction::PermissionResponse {
@@ -622,6 +629,12 @@ impl<'a> DaveUi<'a> {
                         .frame(false),
                 );
                 notedeck_ui::include_input(ui, &r);
+
+                // Request focus if flagged (e.g., after spawning a new agent)
+                if *self.focus_requested {
+                    r.request_focus();
+                    *self.focus_requested = false;
+                }
 
                 // Unfocus text input when there's a pending permission request
                 // so keyboard shortcuts (Y/A/N/D) can be used to respond

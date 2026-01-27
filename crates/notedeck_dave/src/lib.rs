@@ -375,6 +375,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         self.model_config.trial,
                                         &session.chat,
                                         &mut session.input,
+                                        &mut session.focus_requested,
                                     )
                                     .compact(true)
                                     .is_working(is_working)
@@ -464,11 +465,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if let Some(session) = self.session_manager.get_active_mut() {
                     let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                     let has_pending_permission = !session.pending_permissions.is_empty();
-                    DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
-                        .is_working(is_working)
-                        .interrupt_pending(interrupt_pending)
-                        .has_pending_permission(has_pending_permission)
-                        .ui(app_ctx, ui)
+                    DaveUi::new(
+                        self.model_config.trial,
+                        &session.chat,
+                        &mut session.input,
+                        &mut session.focus_requested,
+                    )
+                    .is_working(is_working)
+                    .interrupt_pending(interrupt_pending)
+                    .has_pending_permission(has_pending_permission)
+                    .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
                 }
@@ -522,11 +528,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if let Some(session) = self.session_manager.get_active_mut() {
                 let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                 let has_pending_permission = !session.pending_permissions.is_empty();
-                DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
-                    .is_working(is_working)
-                    .interrupt_pending(interrupt_pending)
-                    .has_pending_permission(has_pending_permission)
-                    .ui(app_ctx, ui)
+                DaveUi::new(
+                    self.model_config.trial,
+                    &session.chat,
+                    &mut session.input,
+                    &mut session.focus_requested,
+                )
+                .is_working(is_working)
+                .interrupt_pending(interrupt_pending)
+                .has_pending_permission(has_pending_permission)
+                .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
             }
@@ -534,7 +545,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn handle_new_chat(&mut self) {
-        self.session_manager.new_session();
+        let id = self.session_manager.new_session();
+        // Request focus on the new session's input
+        if let Some(session) = self.session_manager.get_mut(id) {
+            session.focus_requested = true;
+        }
     }
 
     /// Delete a session and clean up backend resources
@@ -764,7 +779,8 @@ impl notedeck::App for Dave {
         }
 
         // Handle global keybindings (when no text input has focus)
-        if let Some(key_action) = check_keybindings(ui.ctx()) {
+        let has_pending_permission = self.first_pending_permission().is_some();
+        if let Some(key_action) = check_keybindings(ui.ctx(), has_pending_permission) {
             match key_action {
                 KeyAction::AcceptPermission => {
                     if let Some(request_id) = self.first_pending_permission() {

@@ -25,6 +25,8 @@ pub struct ChatSession {
     pub scene_position: egui::Vec2,
     /// Cached status for the agent (derived from session state)
     cached_status: AgentStatus,
+    /// Whether this session's input should be focused on the next frame
+    pub focus_requested: bool,
 }
 
 impl Drop for ChatSession {
@@ -53,6 +55,7 @@ impl ChatSession {
             task_handle: None,
             scene_position: egui::Vec2::new(x, y),
             cached_status: AgentStatus::Idle,
+            focus_requested: false,
         }
     }
 
