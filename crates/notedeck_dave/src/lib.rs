@@ -28,7 +28,8 @@ use std::time::Instant;
 pub use avatar::DaveAvatar;
 pub use config::{AiProvider, DaveSettings, ModelConfig};
 pub use messages::{
-    DaveApiResponse, Message, PermissionResponse, PermissionResponseType, ToolResult,
+    AskUserQuestionInput, DaveApiResponse, Message, PermissionResponse, PermissionResponseType,
+    QuestionAnswer, ToolResult,
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -393,6 +394,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .has_pending_permission(has_pending_permission)
                                     .plan_mode_active(plan_mode_active)
                                     .permission_message_state(session.permission_message_state)
+                                    .question_answers(&mut session.question_answers)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -505,6 +507,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .has_pending_permission(has_pending_permission)
                     .plan_mode_active(plan_mode_active)
                     .permission_message_state(session.permission_message_state)
+                    .question_answers(&mut session.question_answers)
                     .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -574,6 +577,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .has_pending_permission(has_pending_permission)
                 .plan_mode_active(plan_mode_active)
                 .permission_message_state(session.permission_message_state)
+                .question_answers(&mut session.question_answers)
                 .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
@@ -736,6 +740,100 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if sender.send(response).is_err() {
                     tracing::error!(
                         "Failed to send permission response for request {}",
+                        request_id
+                    );
+                }
+            } else {
+                tracing::warn!("No pending permission found for request {}", request_id);
+            }
+        }
+    }
+
+    /// Handle a user's response to an AskUserQuestion tool call
+    fn handle_question_response(&mut self, request_id: uuid::Uuid, answers: Vec<QuestionAnswer>) {
+        if let Some(session) = self.session_manager.get_active_mut() {
+            // Find the original AskUserQuestion request to get the question labels
+            let questions_input = session.chat.iter().find_map(|msg| {
+                if let Message::PermissionRequest(req) = msg {
+                    if req.id == request_id && req.tool_name == "AskUserQuestion" {
+                        serde_json::from_value::<AskUserQuestionInput>(req.tool_input.clone()).ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            });
+
+            // Format answers as JSON for the tool response
+            let formatted_response = if let Some(questions) = questions_input {
+                let mut answers_obj = serde_json::Map::new();
+                for (q_idx, (question, answer)) in
+                    questions.questions.iter().zip(answers.iter()).enumerate()
+                {
+                    let mut answer_obj = serde_json::Map::new();
+
+                    // Map selected indices to option labels
+                    let selected_labels: Vec<String> = answer
+                        .selected
+                        .iter()
+                        .filter_map(|&idx| question.options.get(idx).map(|o| o.label.clone()))
+                        .collect();
+
+                    answer_obj.insert(
+                        "selected".to_string(),
+                        serde_json::Value::Array(
+                            selected_labels
+                                .into_iter()
+                                .map(serde_json::Value::String)
+                                .collect(),
+                        ),
+                    );
+
+                    if let Some(ref other) = answer.other_text {
+                        if !other.is_empty() {
+                            answer_obj
+                                .insert("other".to_string(), serde_json::Value::String(other.clone()));
+                        }
+                    }
+
+                    // Use header as the key, fall back to question index
+                    let key = if !question.header.is_empty() {
+                        question.header.clone()
+                    } else {
+                        format!("question_{}", q_idx)
+                    };
+                    answers_obj.insert(key, serde_json::Value::Object(answer_obj));
+                }
+
+                serde_json::json!({ "answers": answers_obj }).to_string()
+            } else {
+                // Fallback: just serialize the answers directly
+                serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string())
+            };
+
+            // Mark the request as allowed in the UI
+            for msg in &mut session.chat {
+                if let Message::PermissionRequest(req) = msg {
+                    if req.id == request_id {
+                        req.response = Some(messages::PermissionResponseType::Allowed);
+                        break;
+                    }
+                }
+            }
+
+            // Clean up answer state
+            session.question_answers.remove(&request_id);
+
+            // Send the response through the permission channel
+            // AskUserQuestion responses are sent as Allow with the formatted answers as the message
+            if let Some(sender) = session.pending_permissions.remove(&request_id) {
+                let response = PermissionResponse::Allow {
+                    message: Some(formatted_response),
+                };
+                if sender.send(response).is_err() {
+                    tracing::error!(
+                        "Failed to send question response for request {}",
                         request_id
                     );
                 }
@@ -1131,6 +1229,12 @@ impl notedeck::App for Dave {
                             crate::session::PermissionMessageState::TentativeDeny;
                         session.focus_requested = true;
                     }
+                }
+                DaveAction::QuestionResponse {
+                    request_id,
+                    answers,
+                } => {
+                    self.handle_question_response(request_id, answers);
                 }
             }
         }

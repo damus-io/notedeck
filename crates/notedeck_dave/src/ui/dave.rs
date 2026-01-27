@@ -3,7 +3,8 @@ use crate::{
     config::DaveSettings,
     file_update::FileUpdate,
     messages::{
-        Message, PermissionRequest, PermissionResponse, PermissionResponseType, ToolResult,
+        AskUserQuestionInput, Message, PermissionRequest, PermissionResponse,
+        PermissionResponseType, QuestionAnswer, ToolResult,
     },
     session::PermissionMessageState,
     tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
@@ -14,6 +15,7 @@ use notedeck::{
     tr, Accounts, AppContext, Images, Localization, MediaJobSender, NoteAction, NoteContext,
 };
 use notedeck_ui::{app_images, icons::search_icon, NoteOptions, ProfilePic};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// DaveUi holds all of the data it needs to render itself
@@ -29,6 +31,8 @@ pub struct DaveUi<'a> {
     plan_mode_active: bool,
     /// State for tentative permission response (waiting for message)
     permission_message_state: PermissionMessageState,
+    /// State for AskUserQuestion responses (selected options per question)
+    question_answers: Option<&'a mut HashMap<Uuid, Vec<QuestionAnswer>>>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -92,6 +96,11 @@ pub enum DaveAction {
     TentativeAccept,
     /// Enter tentative deny mode (Shift+click on No)
     TentativeDeny,
+    /// User responded to an AskUserQuestion
+    QuestionResponse {
+        request_id: Uuid,
+        answers: Vec<QuestionAnswer>,
+    },
 }
 
 impl<'a> DaveUi<'a> {
@@ -112,11 +121,20 @@ impl<'a> DaveUi<'a> {
             focus_requested,
             plan_mode_active: false,
             permission_message_state: PermissionMessageState::None,
+            question_answers: None,
         }
     }
 
     pub fn permission_message_state(mut self, state: PermissionMessageState) -> Self {
         self.permission_message_state = state;
+        self
+    }
+
+    pub fn question_answers(
+        mut self,
+        answers: &'a mut HashMap<Uuid, Vec<QuestionAnswer>>,
+    ) -> Self {
+        self.question_answers = Some(answers);
         self
     }
 
@@ -327,6 +345,22 @@ impl<'a> DaveUi<'a> {
                     });
             }
             None => {
+                // Check if this is an AskUserQuestion tool call
+                if request.tool_name == "AskUserQuestion" {
+                    if let Ok(questions) =
+                        serde_json::from_value::<AskUserQuestionInput>(request.tool_input.clone())
+                    {
+                        if let Some(ref mut answers_map) = self.question_answers {
+                            return super::ask_user_question_ui(
+                                request,
+                                &questions,
+                                answers_map,
+                                ui,
+                            );
+                        }
+                    }
+                }
+
                 // Check if this is a file update (Edit or Write tool)
                 if let Some(file_update) =
                     FileUpdate::from_tool_call(&request.tool_name, &request.tool_input)

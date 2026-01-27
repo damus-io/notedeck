@@ -1,8 +1,42 @@
 use crate::tools::{ToolCall, ToolResponse};
 use async_openai::types::*;
 use nostrdb::{Ndb, Transaction};
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+/// A question option from AskUserQuestion
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+/// A single question from AskUserQuestion
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestion {
+    pub question: String,
+    pub header: String,
+    #[serde(default)]
+    pub multi_select: bool,
+    pub options: Vec<QuestionOption>,
+}
+
+/// Parsed AskUserQuestion tool input
+#[derive(Debug, Clone, Deserialize)]
+pub struct AskUserQuestionInput {
+    pub questions: Vec<UserQuestion>,
+}
+
+/// User's answer to a question
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct QuestionAnswer {
+    /// Selected option indices
+    pub selected: Vec<usize>,
+    /// Custom "Other" text if provided
+    pub other_text: Option<String>,
+}
 
 /// A request for user permission to use a tool (displayable data only)
 #[derive(Debug, Clone)]

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 
 use crate::agent_status::AgentStatus;
-use crate::messages::PermissionResponse;
+use crate::messages::{PermissionResponse, QuestionAnswer};
 use crate::{DaveApiResponse, Message};
 use claude_agent_sdk_rs::PermissionMode;
 use tokio::sync::oneshot;
@@ -43,6 +43,8 @@ pub struct ChatSession {
     pub permission_mode: PermissionMode,
     /// State for permission response message (tentative accept/deny)
     pub permission_message_state: PermissionMessageState,
+    /// State for pending AskUserQuestion responses (keyed by request UUID)
+    pub question_answers: HashMap<Uuid, Vec<QuestionAnswer>>,
 }
 
 impl Drop for ChatSession {
@@ -74,6 +76,7 @@ impl ChatSession {
             focus_requested: false,
             permission_mode: PermissionMode::Default,
             permission_message_state: PermissionMessageState::None,
+            question_answers: HashMap::new(),
         }
     }
 
