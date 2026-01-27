@@ -49,6 +49,23 @@ pub struct PermissionRequest {
     pub tool_input: serde_json::Value,
     /// The user's response (None if still pending)
     pub response: Option<PermissionResponseType>,
+    /// For AskUserQuestion: pre-computed summary of answers for display
+    pub answer_summary: Option<AnswerSummary>,
+}
+
+/// A single entry in an answer summary
+#[derive(Debug, Clone)]
+pub struct AnswerSummaryEntry {
+    /// The question header (e.g., "Library", "Approach")
+    pub header: String,
+    /// The selected answer text, comma-separated if multiple
+    pub answer: String,
+}
+
+/// Pre-computed summary of an AskUserQuestion response for display
+#[derive(Debug, Clone)]
+pub struct AnswerSummary {
+    pub entries: Vec<AnswerSummaryEntry>,
 }
 
 /// A permission request with the response channel (for channel communication)

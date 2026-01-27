@@ -280,6 +280,7 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                                 tool_name: perm_req.tool_name.clone(),
                                 tool_input: perm_req.tool_input.clone(),
                                 response: None,
+                                answer_summary: None,
                             };
 
                             let pending = PendingPermission {

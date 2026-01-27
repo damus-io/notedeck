@@ -313,7 +313,13 @@ impl<'a> DaveUi<'a> {
 
         match request.response {
             Some(PermissionResponseType::Allowed) => {
-                // Responded state: Allowed
+                // Check if this is an answered AskUserQuestion with stored summary
+                if let Some(summary) = &request.answer_summary {
+                    super::ask_user_question_summary_ui(summary, ui);
+                    return None;
+                }
+
+                // Responded state: Allowed (generic fallback)
                 egui::Frame::new()
                     .fill(ui.visuals().widgets.noninteractive.bg_fill)
                     .inner_margin(inner_margin)

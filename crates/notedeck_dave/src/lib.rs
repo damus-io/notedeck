@@ -777,6 +777,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Handle a user's response to an AskUserQuestion tool call
     fn handle_question_response(&mut self, request_id: uuid::Uuid, answers: Vec<QuestionAnswer>) {
+        use messages::{AnswerSummary, AnswerSummaryEntry};
+
         if let Some(session) = self.session_manager.get_active_mut() {
             // Find the original AskUserQuestion request to get the question labels
             let questions_input = session.chat.iter().find_map(|msg| {
@@ -791,9 +793,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             });
 
-            // Format answers as JSON for the tool response
-            let formatted_response = if let Some(questions) = questions_input {
+            // Format answers as JSON for the tool response, and build summary for display
+            let (formatted_response, answer_summary) = if let Some(ref questions) = questions_input
+            {
                 let mut answers_obj = serde_json::Map::new();
+                let mut summary_entries = Vec::with_capacity(questions.questions.len());
+
                 for (q_idx, (question, answer)) in
                     questions.questions.iter().zip(answers.iter()).enumerate()
                 {
@@ -810,16 +815,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         "selected".to_string(),
                         serde_json::Value::Array(
                             selected_labels
-                                .into_iter()
+                                .iter()
+                                .cloned()
                                 .map(serde_json::Value::String)
                                 .collect(),
                         ),
                     );
 
+                    // Build display text for summary
+                    let mut display_parts = selected_labels;
                     if let Some(ref other) = answer.other_text {
                         if !other.is_empty() {
-                            answer_obj
-                                .insert("other".to_string(), serde_json::Value::String(other.clone()));
+                            answer_obj.insert(
+                                "other".to_string(),
+                                serde_json::Value::String(other.clone()),
+                            );
+                            display_parts.push(format!("Other: {}", other));
                         }
                     }
 
@@ -829,27 +840,42 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     } else {
                         format!("question_{}", q_idx)
                     };
-                    answers_obj.insert(key, serde_json::Value::Object(answer_obj));
+                    answers_obj.insert(key.clone(), serde_json::Value::Object(answer_obj));
+
+                    summary_entries.push(AnswerSummaryEntry {
+                        header: key,
+                        answer: display_parts.join(", "),
+                    });
                 }
 
-                serde_json::json!({ "answers": answers_obj }).to_string()
+                (
+                    serde_json::json!({ "answers": answers_obj }).to_string(),
+                    Some(AnswerSummary {
+                        entries: summary_entries,
+                    }),
+                )
             } else {
                 // Fallback: just serialize the answers directly
-                serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string())
+                (
+                    serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string()),
+                    None,
+                )
             };
 
-            // Mark the request as allowed in the UI
+            // Mark the request as allowed in the UI and store the summary for display
             for msg in &mut session.chat {
                 if let Message::PermissionRequest(req) = msg {
                     if req.id == request_id {
                         req.response = Some(messages::PermissionResponseType::Allowed);
+                        req.answer_summary = answer_summary.clone();
                         break;
                     }
                 }
             }
 
-            // Clean up answer state
+            // Clean up transient answer state
             session.question_answers.remove(&request_id);
+            session.question_index.remove(&request_id);
 
             // Send the response through the permission channel
             // AskUserQuestion responses are sent as Allow with the formatted answers as the message

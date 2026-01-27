@@ -8,7 +8,7 @@ pub mod scene;
 pub mod session_list;
 mod settings;
 
-pub use ask_question::ask_user_question_ui;
+pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use dave::{DaveAction, DaveResponse, DaveUi};
 pub use keybind_hint::{keybind_hint, paint_keybind_hint};
 pub use keybindings::{check_keybindings, KeyAction};

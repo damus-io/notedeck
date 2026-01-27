@@ -28,4 +28,6 @@
 
 - [ ] handle ExitPlanMode which simply exits plan mode. claude-code sends this when its done its planning phase
 
-- [ ] handle claude-code questions/answers (AskUserQuestion tool - could be a list of questions)
+- [x] handle claude-code questions/answers (AskUserQuestion tool - could be a list of questions)
+
+- [x] AskUserQuestion: show a small summary view of the question and selected option(s) after answering

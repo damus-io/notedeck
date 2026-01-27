@@ -250,3 +250,41 @@ pub fn ask_user_question_ui(
 
     action
 }
+
+/// Render a compact summary of an answered AskUserQuestion
+///
+/// Shows the question header(s) and selected answer(s) in a single line.
+/// Uses pre-computed AnswerSummary to avoid per-frame allocations.
+pub fn ask_user_question_summary_ui(
+    summary: &crate::messages::AnswerSummary,
+    ui: &mut egui::Ui,
+) {
+    let inner_margin = 8.0;
+    let corner_radius = 6.0;
+
+    egui::Frame::new()
+        .fill(ui.visuals().widgets.noninteractive.bg_fill)
+        .inner_margin(inner_margin)
+        .corner_radius(corner_radius)
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                for (idx, entry) in summary.entries.iter().enumerate() {
+                    // Add separator between questions
+                    if idx > 0 {
+                        ui.separator();
+                    }
+
+                    // Header badge
+                    badge::StatusBadge::new(&entry.header)
+                        .variant(badge::BadgeVariant::Info)
+                        .show(ui);
+
+                    // Pre-computed answer text
+                    ui.label(
+                        egui::RichText::new(&entry.answer)
+                            .color(egui::Color32::from_rgb(100, 180, 100)),
+                    );
+                }
+            });
+        });
+}
