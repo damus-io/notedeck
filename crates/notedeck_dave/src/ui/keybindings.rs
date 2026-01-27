@@ -20,7 +20,8 @@ pub enum KeyAction {
 }
 
 /// Check for keybinding actions.
-/// All keybindings use Ctrl modifier to avoid conflicts with text input.
+/// Most keybindings use Ctrl modifier to avoid conflicts with text input.
+/// Exception: 1/2 for permission responses work without Ctrl since input is unfocused.
 pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> Option<KeyAction> {
     // Escape works even when text input has focus (to interrupt AI)
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
@@ -49,20 +50,26 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
         return Some(KeyAction::NewAgent);
     }
 
+    // When there's a pending permission, 1 = accept, 2 = deny (no Ctrl needed)
+    // Input is unfocused when permission is pending, so bare keys work
+    if has_pending_permission {
+        if let Some(action) = ctx.input(|i| {
+            if i.key_pressed(Key::Num1) {
+                Some(KeyAction::AcceptPermission)
+            } else if i.key_pressed(Key::Num2) {
+                Some(KeyAction::DenyPermission)
+            } else {
+                None
+            }
+        }) {
+            return Some(action);
+        }
+    }
+
     // Ctrl+1-9 for switching agents (works even with text input focus)
-    // When there's a pending permission, Ctrl+1 = accept, Ctrl+2 = deny
     if let Some(action) = ctx.input(|i| {
         if !i.modifiers.matches_exact(ctrl) {
             return None;
-        }
-
-        if has_pending_permission {
-            if i.key_pressed(Key::Num1) {
-                return Some(KeyAction::AcceptPermission);
-            }
-            if i.key_pressed(Key::Num2) {
-                return Some(KeyAction::DenyPermission);
-            }
         }
 
         for (idx, key) in [
