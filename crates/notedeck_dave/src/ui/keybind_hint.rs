@@ -52,10 +52,11 @@ impl<'a> KeybindHint<'a> {
             egui::StrokeKind::Inside,
         );
 
-        // Text in center
+        // Text in center (slight vertical nudge for better optical centering)
         let font_size = self.size * 0.65;
+        let text_pos = rect.center() + Vec2::new(0.0, 2.0);
         painter.text(
-            rect.center(),
+            text_pos,
             egui::Align2::CENTER_CENTER,
             self.text,
             egui::FontId::monospace(font_size),

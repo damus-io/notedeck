@@ -182,15 +182,17 @@ impl AgentScene {
             .zoom_range(0.1..=1.0)
             .show(ui, &mut scene_rect, |ui| {
                 // Draw agents and collect interaction responses
-                for session in session_manager.iter() {
+                // Use sessions_ordered() to match keybinding order (Ctrl+1 = first in order, etc.)
+                for (keybind_idx, session) in session_manager.sessions_ordered().into_iter().enumerate() {
                     let id = session.id;
+                    let keybind_number = keybind_idx + 1; // 1-indexed for display
                     let position = session.scene_position;
                     let status = session.status();
                     let title = &session.title;
                     let is_selected = selected_ids.contains(&id);
 
                     let agent_response =
-                        Self::draw_agent(ui, id, position, status, title, is_selected, ctrl_held);
+                        Self::draw_agent(ui, id, keybind_number, position, status, title, is_selected, ctrl_held);
 
                     if agent_response.clicked() {
                         let shift = ui.input(|i| i.modifiers.shift);
@@ -314,9 +316,11 @@ impl AgentScene {
     }
 
     /// Draw a single agent unit and return the interaction Response
+    /// `keybind_number` is the 1-indexed number displayed when Ctrl is held (matches Ctrl+N keybindings)
     fn draw_agent(
         ui: &mut egui::Ui,
         id: SessionId,
+        keybind_number: usize,
         position: Vec2,
         status: AgentStatus,
         title: &str,
@@ -359,7 +363,7 @@ impl AgentScene {
 
         // Agent icon in center: show keybind frame when Ctrl held, otherwise first letter
         if show_keybinding {
-            paint_keybind_hint(ui, center, &id.to_string(), 24.0);
+            paint_keybind_hint(ui, center, &keybind_number.to_string(), 24.0);
         } else {
             let icon_text: String = title.chars().next().unwrap_or('?').to_uppercase().collect();
             painter.text(

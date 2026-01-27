@@ -76,11 +76,7 @@ impl<'a> SessionListUi<'a> {
         for (index, session) in self.session_manager.sessions_ordered().iter().enumerate() {
             let is_active = Some(session.id) == active_id;
             // Show keyboard shortcut hint for first 9 sessions (1-9 keys)
-            let shortcut_hint = if index < 9 {
-                Some(index + 1)
-            } else {
-                None
-            };
+            let shortcut_hint = if index < 9 { Some(index + 1) } else { None };
 
             let response = self.session_item_ui(ui, &session.title, is_active, shortcut_hint);
 
