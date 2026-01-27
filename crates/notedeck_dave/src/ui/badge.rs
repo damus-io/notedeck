@@ -274,9 +274,9 @@ impl<'a> ActionButton<'a> {
             // Background
             painter.rect_filled(rect, rounding, bg_color);
 
-            // Text (offset left if keybind present)
+            // Text (offset right if keybind present, since keybind goes on left)
             let text_offset_x = if self.keybind.is_some() {
-                -keybind_extra / 2.0
+                keybind_extra / 2.0
             } else {
                 0.0
             };
@@ -284,16 +284,26 @@ impl<'a> ActionButton<'a> {
                 rect.center() + Vec2::new(text_offset_x, 0.0) - galley.size() / 2.0;
             painter.galley(text_pos, galley, self.text_color);
 
-            // Draw keybind hint if present (no background, just text)
+            // Draw keybind hint on left side (white border, no fill)
             if let Some(key) = self.keybind {
-                let key_center = egui::pos2(
-                    rect.right() - padding.x - keybind_box_size / 2.0,
+                let box_center = egui::pos2(
+                    rect.left() + padding.x + keybind_box_size / 2.0,
                     rect.center().y,
                 );
+                let box_rect =
+                    egui::Rect::from_center_size(box_center, Vec2::splat(keybind_box_size));
 
-                // Keybind text using the button's text color
+                // White border only
+                painter.rect_stroke(
+                    box_rect,
+                    3.0,
+                    egui::Stroke::new(1.0, Color32::WHITE),
+                    egui::StrokeKind::Inside,
+                );
+
+                // Keybind text with vertical nudge for optical centering
                 painter.text(
-                    key_center,
+                    box_center + Vec2::new(0.0, 1.0),
                     egui::Align2::CENTER_CENTER,
                     key,
                     egui::FontId::monospace(keybind_box_size * 0.7),
