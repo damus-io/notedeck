@@ -20,6 +20,7 @@ use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::HashMap;
 use std::string::ToString;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub use avatar::DaveAvatar;
 pub use config::{AiProvider, DaveSettings, ModelConfig};
@@ -59,6 +60,8 @@ pub struct Dave {
     scene: AgentScene,
     /// Whether to show scene view (vs classic chat view)
     show_scene: bool,
+    /// Tracks when first Escape was pressed for interrupt confirmation
+    interrupt_pending_since: Option<Instant>,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -142,6 +145,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             settings_panel: DaveSettingsPanel::new(),
             scene: AgentScene::new(),
             show_scene: true, // Default to scene view
+            interrupt_pending_since: None,
         }
     }
 
@@ -355,6 +359,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .inner_margin(egui::Margin::symmetric(8, 12))
                         .show(ui, |ui| {
                             if let Some(selected_id) = self.scene.primary_selection() {
+                                let interrupt_pending = self.is_interrupt_pending();
                                 if let Some(session) = self.session_manager.get_mut(selected_id) {
                                     // Show title
                                     ui.heading(&session.title);
@@ -371,6 +376,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     )
                                     .compact(true)
                                     .is_working(is_working)
+                                    .interrupt_pending(interrupt_pending)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -449,12 +455,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .inner;
 
         // Now we can mutably borrow for chat
+        let interrupt_pending = self.is_interrupt_pending();
         let chat_response = ui
             .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
                 if let Some(session) = self.session_manager.get_active_mut() {
                     let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                     DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
                         .is_working(is_working)
+                        .interrupt_pending(interrupt_pending)
                         .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -505,10 +513,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             DaveResponse::default()
         } else {
             // Show chat
+            let interrupt_pending = self.is_interrupt_pending();
             if let Some(session) = self.session_manager.get_active_mut() {
                 let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                 DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
                     .is_working(is_working)
+                    .interrupt_pending(interrupt_pending)
                     .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
@@ -527,6 +537,59 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let session_id = format!("dave-session-{}", id);
             self.backend.cleanup_session(session_id);
         }
+    }
+
+    /// Timeout for confirming interrupt (in seconds)
+    const INTERRUPT_CONFIRM_TIMEOUT_SECS: f32 = 1.5;
+
+    /// Handle an interrupt request - requires double-Escape to confirm
+    fn handle_interrupt_request(&mut self, ui: &egui::Ui) {
+        // Only allow interrupt if there's an active AI operation
+        let has_active_operation = self
+            .session_manager
+            .get_active()
+            .map(|s| s.incoming_tokens.is_some())
+            .unwrap_or(false);
+
+        if !has_active_operation {
+            // No active operation, just clear any pending state
+            self.interrupt_pending_since = None;
+            return;
+        }
+
+        let now = Instant::now();
+
+        if let Some(pending_since) = self.interrupt_pending_since {
+            // Check if we're within the confirmation timeout
+            if now.duration_since(pending_since).as_secs_f32() < Self::INTERRUPT_CONFIRM_TIMEOUT_SECS
+            {
+                // Second Escape within timeout - confirm interrupt
+                self.handle_interrupt(ui);
+                self.interrupt_pending_since = None;
+            } else {
+                // Timeout expired, treat as new first press
+                self.interrupt_pending_since = Some(now);
+            }
+        } else {
+            // First Escape press - start pending state
+            self.interrupt_pending_since = Some(now);
+        }
+    }
+
+    /// Check if interrupt confirmation has timed out and clear it
+    fn check_interrupt_timeout(&mut self) {
+        if let Some(pending_since) = self.interrupt_pending_since {
+            if Instant::now().duration_since(pending_since).as_secs_f32()
+                >= Self::INTERRUPT_CONFIRM_TIMEOUT_SECS
+            {
+                self.interrupt_pending_since = None;
+            }
+        }
+    }
+
+    /// Returns true if an interrupt is pending confirmation
+    pub fn is_interrupt_pending(&self) -> bool {
+        self.interrupt_pending_since.is_some()
     }
 
     /// Handle an interrupt action - stop the current AI operation
@@ -724,10 +787,13 @@ impl notedeck::App for Dave {
                     self.handle_new_chat();
                 }
                 KeyAction::Interrupt => {
-                    self.handle_interrupt(ui);
+                    self.handle_interrupt_request(ui);
                 }
             }
         }
+
+        // Check if interrupt confirmation has timed out
+        self.check_interrupt_timeout();
 
         //update_dave(self, ctx, ui.ctx());
         let should_send = self.process_events(ctx);

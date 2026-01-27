@@ -22,6 +22,8 @@ pub struct DaveUi<'a> {
     input: &'a mut String,
     compact: bool,
     is_working: bool,
+    interrupt_pending: bool,
+    has_pending_permission: bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -91,6 +93,7 @@ impl<'a> DaveUi<'a> {
             input,
             compact: false,
             is_working: false,
+            interrupt_pending: false,
         }
     }
 
@@ -101,6 +104,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn is_working(mut self, is_working: bool) -> Self {
         self.is_working = is_working;
+        self
+    }
+
+    pub fn interrupt_pending(mut self, interrupt_pending: bool) -> Self {
+        self.interrupt_pending = interrupt_pending;
         self
     }
 
@@ -567,6 +575,14 @@ impl<'a> DaveUi<'a> {
                         .clicked()
                     {
                         dave_response = DaveResponse::new(DaveAction::Interrupt);
+                    }
+
+                    // Show "Press Esc again" indicator when interrupt is pending
+                    if self.interrupt_pending {
+                        ui.label(
+                            egui::RichText::new("Press Esc again to stop")
+                                .color(ui.visuals().warn_fg_color),
+                        );
                     }
                 } else if ui
                     .add(egui::Button::new(tr!(
