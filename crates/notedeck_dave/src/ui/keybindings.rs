@@ -17,6 +17,8 @@ pub enum KeyAction {
     NewAgent,
     /// Interrupt/stop the current AI operation
     Interrupt,
+    /// Toggle between scene view and classic view
+    ToggleView,
 }
 
 /// Check for keybinding actions.
@@ -50,23 +52,13 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
         return Some(KeyAction::NewAgent);
     }
 
-    // When there's a pending permission, 1 = accept, 2 = deny (no Ctrl needed)
-    // Input is unfocused when permission is pending, so bare keys work
-    if has_pending_permission {
-        if let Some(action) = ctx.input(|i| {
-            if i.key_pressed(Key::Num1) {
-                Some(KeyAction::AcceptPermission)
-            } else if i.key_pressed(Key::Num2) {
-                Some(KeyAction::DenyPermission)
-            } else {
-                None
-            }
-        }) {
-            return Some(action);
-        }
+    // Ctrl+G to toggle between scene view and classic view
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::G)) {
+        return Some(KeyAction::ToggleView);
     }
 
     // Ctrl+1-9 for switching agents (works even with text input focus)
+    // Check this BEFORE permission bindings so Ctrl+number always switches agents
     if let Some(action) = ctx.input(|i| {
         if !i.modifiers.matches_exact(ctrl) {
             return None;
@@ -94,6 +86,27 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
         None
     }) {
         return Some(action);
+    }
+
+    // When there's a pending permission, 1 = accept, 2 = deny (no Ctrl needed)
+    // Input is unfocused when permission is pending, so bare keys work
+    // This is checked AFTER Ctrl+number so Ctrl bindings take precedence
+    if has_pending_permission {
+        if let Some(action) = ctx.input(|i| {
+            // Only trigger on bare keypresses (no modifiers)
+            if i.modifiers.any() {
+                return None;
+            }
+            if i.key_pressed(Key::Num1) {
+                Some(KeyAction::AcceptPermission)
+            } else if i.key_pressed(Key::Num2) {
+                Some(KeyAction::DenyPermission)
+            } else {
+                None
+            }
+        }) {
+            return Some(action);
+        }
     }
 
     None
