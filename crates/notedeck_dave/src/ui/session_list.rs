@@ -160,26 +160,29 @@ impl<'a> SessionListUi<'a> {
         );
         ui.painter().rect_filled(status_bar_rect, 1.5, status_color);
 
-        // Draw shortcut hint on the left if available (only when Ctrl held)
-        let text_start_x = if let Some(num) = shortcut_hint {
+        // Left padding (room for status bar)
+        let text_start_x = 12.0;
+
+        // Draw shortcut hint at the far right
+        let mut right_offset = 8.0; // Start with normal right padding
+
+        if let Some(num) = shortcut_hint {
             let hint_text = format!("{}", num);
             let hint_size = 18.0;
-            let hint_center = rect.left_center() + egui::vec2(16.0 + hint_size / 2.0, 0.0);
+            let hint_center = rect.right_center() - egui::vec2(8.0 + hint_size / 2.0, 0.0);
             paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
-            16.0 + hint_size + 6.0 // padding + hint width + spacing
-        } else {
-            12.0 // Leave room for status bar
-        };
+            right_offset = 8.0 + hint_size + 6.0; // padding + hint width + spacing
+        }
 
-        // Draw focus queue indicator dot on the far right if in queue
+        // Draw focus queue indicator dot to the left of the shortcut hint
         let text_end_x = if let Some(priority) = queue_priority {
             let dot_radius = 5.0;
-            let dot_center = rect.right_center() - egui::vec2(12.0, 0.0);
+            let dot_center = rect.right_center() - egui::vec2(right_offset + dot_radius + 4.0, 0.0);
             ui.painter()
                 .circle_filled(dot_center, dot_radius, priority.color());
-            24.0 // Space reserved for the dot
+            right_offset + dot_radius * 2.0 + 8.0 // Space reserved for the dot
         } else {
-            8.0 // Normal right padding
+            right_offset
         };
 
         // Draw title text (with clipping to avoid overlapping the dot)
