@@ -1,3 +1,4 @@
+pub mod badge;
 mod dave;
 pub mod diff;
 pub mod keybind_hint;

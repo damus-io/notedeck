@@ -618,15 +618,10 @@ impl<'a> DaveUi<'a> {
 
                 // Show plan mode indicator
                 if self.plan_mode_active {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new("PLAN MODE")
-                                .color(egui::Color32::from_rgb(100, 149, 237)) // Cornflower blue
-                                .strong(),
-                        )
-                        .selectable(false),
-                    )
-                    .on_hover_text("Ctrl+P to toggle plan mode");
+                    super::badge::StatusBadge::new("PLAN")
+                        .variant(super::badge::BadgeVariant::Info)
+                        .show(ui)
+                        .on_hover_text("Ctrl+P to toggle plan mode");
                 }
 
                 let r = ui.add(
