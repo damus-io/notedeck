@@ -10,23 +10,13 @@ const LINE_NUMBER_COLOR: Color32 = Color32::from_rgb(128, 128, 128);
 pub fn file_update_ui(update: &FileUpdate, ui: &mut Ui) {
     let diff_lines = update.compute_diff();
 
-    // Use screen height for max_height calculation since we're inside a ScrollArea
-    // where available_height() returns infinity
-    let screen_height = ui.ctx().screen_rect().height();
-    let max_diff_height = (screen_height * 0.5).max(200.0).min(500.0);
-
-    // Code block frame
+    // Code block frame - no scroll, just show full diff height
     egui::Frame::new()
         .fill(ui.visuals().extreme_bg_color)
         .inner_margin(8.0)
         .corner_radius(4.0)
         .show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(max_diff_height)
-                .auto_shrink([false, true]) // shrink vertically to fit content
-                .show(ui, |ui| {
-                    render_diff_lines(&diff_lines, &update.update_type, ui);
-                });
+            render_diff_lines(&diff_lines, &update.update_type, ui);
         });
 }
 
