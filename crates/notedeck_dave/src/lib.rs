@@ -684,6 +684,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if self.show_scene {
                 self.scene.select(id);
             }
+            // Focus input if no permission request is pending
+            if let Some(session) = self.session_manager.get_mut(id) {
+                if session.pending_permissions.is_empty() {
+                    session.focus_requested = true;
+                }
+            }
         }
     }
 
@@ -703,6 +709,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.session_manager.switch_to(id);
             if self.show_scene {
                 self.scene.select(id);
+            }
+            // Focus input if no permission request is pending
+            if let Some(session) = self.session_manager.get_mut(id) {
+                if session.pending_permissions.is_empty() {
+                    session.focus_requested = true;
+                }
             }
         }
     }
@@ -727,6 +739,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.session_manager.switch_to(id);
             if self.show_scene {
                 self.scene.select(id);
+            }
+            // Focus input if no permission request is pending
+            if let Some(session) = self.session_manager.get_mut(id) {
+                if session.pending_permissions.is_empty() {
+                    session.focus_requested = true;
+                }
             }
         }
     }
