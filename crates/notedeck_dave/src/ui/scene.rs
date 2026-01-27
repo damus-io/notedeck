@@ -350,13 +350,12 @@ impl AgentScene {
         };
         painter.circle_filled(center, agent_radius - 2.0, fill_color);
 
-        // Agent icon/letter in center
-        let icon_char = title.chars().next().unwrap_or('?');
-        let icon_text: String = icon_char.to_uppercase().collect();
+        // Agent number in center
+        let node_number = id.to_string();
         painter.text(
             center,
             egui::Align2::CENTER_CENTER,
-            &icon_text,
+            &node_number,
             egui::FontId::proportional(20.0),
             ui.visuals().text_color(),
         );
