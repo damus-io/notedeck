@@ -100,11 +100,4 @@ impl FileUpdate {
         }
     }
 
-    /// Get the filename portion of the path for display
-    pub fn filename(&self) -> &str {
-        self.file_path
-            .rsplit('/')
-            .next()
-            .unwrap_or(&self.file_path)
-    }
 }

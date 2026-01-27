@@ -85,15 +85,13 @@ fn render_diff_lines(lines: &[DiffLine], update_type: &FileUpdateType, ui: &mut 
     }
 }
 
-/// Render the file path header
+/// Render the file path header (call within a horizontal layout)
 pub fn file_path_header(update: &FileUpdate, ui: &mut Ui) {
     let type_label = match &update.update_type {
         FileUpdateType::Edit { .. } => "Edit",
         FileUpdateType::Write { .. } => "Write",
     };
 
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(type_label).strong());
-        ui.label(RichText::new(&update.file_path).monospace());
-    });
+    ui.label(RichText::new(type_label).strong());
+    ui.label(RichText::new(&update.file_path).monospace());
 }
