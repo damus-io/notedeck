@@ -94,6 +94,7 @@ impl<'a> DaveUi<'a> {
             compact: false,
             is_working: false,
             interrupt_pending: false,
+            has_pending_permission: false,
         }
     }
 
@@ -109,6 +110,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn interrupt_pending(mut self, interrupt_pending: bool) -> Self {
         self.interrupt_pending = interrupt_pending;
+        self
+    }
+
+    pub fn has_pending_permission(mut self, has_pending_permission: bool) -> Self {
+        self.has_pending_permission = has_pending_permission;
         self
     }
 
@@ -616,6 +622,12 @@ impl<'a> DaveUi<'a> {
                         .frame(false),
                 );
                 notedeck_ui::include_input(ui, &r);
+
+                // Unfocus text input when there's a pending permission request
+                // so keyboard shortcuts (Y/A/N/D) can be used to respond
+                if self.has_pending_permission {
+                    r.surrender_focus();
+                }
 
                 if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     DaveResponse::send()

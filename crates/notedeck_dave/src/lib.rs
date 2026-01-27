@@ -369,6 +369,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         == crate::agent_status::AgentStatus::Working;
 
                                     // Render chat UI for selected session
+                                    let has_pending_permission =
+                                        !session.pending_permissions.is_empty();
                                     let response = DaveUi::new(
                                         self.model_config.trial,
                                         &session.chat,
@@ -377,6 +379,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .compact(true)
                                     .is_working(is_working)
                                     .interrupt_pending(interrupt_pending)
+                                    .has_pending_permission(has_pending_permission)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -460,9 +463,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
                 if let Some(session) = self.session_manager.get_active_mut() {
                     let is_working = session.status() == crate::agent_status::AgentStatus::Working;
+                    let has_pending_permission = !session.pending_permissions.is_empty();
                     DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
                         .is_working(is_working)
                         .interrupt_pending(interrupt_pending)
+                        .has_pending_permission(has_pending_permission)
                         .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -516,9 +521,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let interrupt_pending = self.is_interrupt_pending();
             if let Some(session) = self.session_manager.get_active_mut() {
                 let is_working = session.status() == crate::agent_status::AgentStatus::Working;
+                let has_pending_permission = !session.pending_permissions.is_empty();
                 DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
                     .is_working(is_working)
                     .interrupt_pending(interrupt_pending)
+                    .has_pending_permission(has_pending_permission)
                     .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
