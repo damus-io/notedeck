@@ -33,7 +33,7 @@ pub enum KeyAction {
 
 /// Check for keybinding actions.
 /// Most keybindings use Ctrl modifier to avoid conflicts with text input.
-/// Exception: 1/2 for permission responses work without Ctrl since input is unfocused.
+/// Exception: 1/2 for permission responses work without Ctrl but only when no text input has focus.
 pub fn check_keybindings(
     ctx: &egui::Context,
     has_pending_permission: bool,
@@ -121,20 +121,28 @@ pub fn check_keybindings(
     // - 1 = accept, 2 = deny (no modifiers)
     // - Shift+1 = tentative accept, Shift+2 = tentative deny (for adding message)
     // This is checked AFTER Ctrl+number so Ctrl bindings take precedence
-    if has_pending_permission {
-        let shift = egui::Modifiers::SHIFT;
-
-        if let Some(action) = ctx.input(|i| {
-            // Shift+1 = tentative accept, Shift+2 = tentative deny
-            if i.modifiers.matches_exact(shift) {
-                if i.key_pressed(Key::Num1) {
-                    return Some(KeyAction::TentativeAccept);
-                } else if i.key_pressed(Key::Num2) {
-                    return Some(KeyAction::TentativeDeny);
-                }
+    // IMPORTANT: Only handle these when no text input has focus, to avoid
+    // capturing keypresses when user is typing a message in tentative state
+    if has_pending_permission && !ctx.wants_keyboard_input() {
+        // Shift+1 = tentative accept, Shift+2 = tentative deny
+        // Note: egui may report shifted keys as their symbol (e.g., Shift+1 as Exclamationmark)
+        // We check for both the symbol key and Shift+Num key to handle different behaviors
+        if let Some(action) = ctx.input_mut(|i| {
+            // Shift+1: check for '!' (Exclamationmark) which egui reports on some systems
+            if i.key_pressed(Key::Exclamationmark) {
+                return Some(KeyAction::TentativeAccept);
             }
+            // Shift+2: check with shift modifier (egui may report Num2 with shift held)
+            if i.modifiers.shift && i.key_pressed(Key::Num2) {
+                return Some(KeyAction::TentativeDeny);
+            }
+            None
+        }) {
+            return Some(action);
+        }
 
-            // Bare keypresses (no modifiers) for immediate accept/deny
+        // Bare keypresses (no modifiers) for immediate accept/deny
+        if let Some(action) = ctx.input(|i| {
             if !i.modifiers.any() {
                 if i.key_pressed(Key::Num1) {
                     return Some(KeyAction::AcceptPermission);
@@ -142,7 +150,6 @@ pub fn check_keybindings(
                     return Some(KeyAction::DenyPermission);
                 }
             }
-
             None
         }) {
             return Some(action);
