@@ -813,6 +813,10 @@ impl notedeck::App for Dave {
                 KeyAction::AcceptPermission => {
                     if let Some(request_id) = self.first_pending_permission() {
                         self.handle_permission_response(request_id, PermissionResponse::Allow);
+                        // Restore input focus after permission response
+                        if let Some(session) = self.session_manager.get_active_mut() {
+                            session.focus_requested = true;
+                        }
                     }
                 }
                 KeyAction::DenyPermission => {
@@ -823,6 +827,10 @@ impl notedeck::App for Dave {
                                 reason: "User denied via keyboard".into(),
                             },
                         );
+                        // Restore input focus after permission response
+                        if let Some(session) = self.session_manager.get_active_mut() {
+                            session.focus_requested = true;
+                        }
                     }
                 }
                 KeyAction::SwitchToAgent(index) => {
