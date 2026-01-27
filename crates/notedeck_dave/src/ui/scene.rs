@@ -173,7 +173,7 @@ impl AgentScene {
         let selected_ids = &self.selected;
 
         egui::Scene::new()
-            .zoom_range(0.1..=4.0)
+            .zoom_range(0.1..=1.0)
             .show(ui, &mut scene_rect, |ui| {
                 // Draw agents and collect interaction responses
                 for session in session_manager.iter() {
