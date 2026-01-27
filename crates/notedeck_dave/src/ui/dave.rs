@@ -424,16 +424,17 @@ impl<'a> DaveUi<'a> {
         let shift_held = ui.input(|i| i.modifiers.shift);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Deny button (red) with [2] hint
+            // Deny button (red) with keybind hint on left
             let deny_response = ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("[2] No")
+                        egui::RichText::new("Deny")
                             .color(ui.visuals().widgets.active.fg_stroke.color),
                     )
                     .fill(egui::Color32::from_rgb(178, 34, 34)),
                 )
                 .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
+            super::keybind_hint(ui, "2");
 
             if deny_response.clicked() {
                 if shift_held {
@@ -450,16 +451,17 @@ impl<'a> DaveUi<'a> {
                 }
             }
 
-            // Allow button (green) with [1] hint
+            // Allow button (green) with keybind hint on left
             let allow_response = ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("[1] Yes")
+                        egui::RichText::new("Allow")
                             .color(ui.visuals().widgets.active.fg_stroke.color),
                     )
                     .fill(egui::Color32::from_rgb(34, 139, 34)),
                 )
                 .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
+            super::keybind_hint(ui, "1");
 
             if allow_response.clicked() {
                 if shift_held {
@@ -491,14 +493,13 @@ impl<'a> DaveUi<'a> {
                     );
                 }
                 PermissionMessageState::None => {
-                    // Show hint when Shift is held
-                    if shift_held {
-                        ui.label(
-                            egui::RichText::new("+ message")
-                                .color(ui.visuals().warn_fg_color)
-                                .italics(),
-                        );
-                    }
+                    // Always show hint for adding message
+                    let hint_color = if shift_held {
+                        ui.visuals().warn_fg_color
+                    } else {
+                        ui.visuals().weak_text_color()
+                    };
+                    ui.label(egui::RichText::new("(⇧ for message)").color(hint_color).small());
                 }
             }
         });
