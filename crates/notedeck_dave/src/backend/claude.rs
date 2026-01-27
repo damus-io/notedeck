@@ -29,6 +29,11 @@ enum SessionCommand {
     Interrupt {
         ctx: egui::Context,
     },
+    /// Set the permission mode (Default or Plan)
+    SetPermissionMode {
+        mode: PermissionMode,
+        ctx: egui::Context,
+    },
     Shutdown,
 }
 
@@ -243,6 +248,14 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                                         "Query already in progress".to_string()
                                     ));
                                 }
+                                SessionCommand::SetPermissionMode { mode, ctx: mode_ctx } => {
+                                    // Permission mode change during query - apply it
+                                    tracing::debug!("Session {} setting permission mode to {:?} during query", session_id, mode);
+                                    if let Err(err) = client.set_permission_mode(mode).await {
+                                        tracing::error!("Failed to set permission mode: {}", err);
+                                    }
+                                    mode_ctx.request_repaint();
+                                }
                                 SessionCommand::Shutdown => {
                                     tracing::debug!("Session actor {} shutting down during query", session_id);
                                     // Drop stream and disconnect - break to exit loop first
@@ -400,6 +413,13 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                 );
                 ctx.request_repaint();
             }
+            SessionCommand::SetPermissionMode { mode, ctx } => {
+                tracing::debug!("Session {} setting permission mode to {:?}", session_id, mode);
+                if let Err(err) = client.set_permission_mode(mode).await {
+                    tracing::error!("Failed to set permission mode: {}", err);
+                }
+                ctx.request_repaint();
+            }
             SessionCommand::Shutdown => {
                 tracing::debug!("Session actor {} shutting down", session_id);
                 break;
@@ -503,6 +523,25 @@ impl AiBackend for ClaudeBackend {
                     tracing::warn!("Failed to send interrupt command: {}", err);
                 }
             });
+        }
+    }
+
+    fn set_permission_mode(&self, session_id: String, mode: PermissionMode, ctx: egui::Context) {
+        if let Some(handle) = self.sessions.get(&session_id) {
+            let command_tx = handle.command_tx.clone();
+            tokio::spawn(async move {
+                if let Err(err) = command_tx
+                    .send(SessionCommand::SetPermissionMode { mode, ctx })
+                    .await
+                {
+                    tracing::warn!("Failed to send set_permission_mode command: {}", err);
+                }
+            });
+        } else {
+            tracing::debug!(
+                "Session {} not active, permission mode will apply on next query",
+                session_id
+            );
         }
     }
 }

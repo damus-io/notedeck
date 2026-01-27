@@ -4,6 +4,7 @@ use std::sync::mpsc::Receiver;
 use crate::agent_status::AgentStatus;
 use crate::messages::PermissionResponse;
 use crate::{DaveApiResponse, Message};
+use claude_agent_sdk_rs::PermissionMode;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -27,6 +28,8 @@ pub struct ChatSession {
     cached_status: AgentStatus,
     /// Whether this session's input should be focused on the next frame
     pub focus_requested: bool,
+    /// Permission mode for Claude (Default or Plan)
+    pub permission_mode: PermissionMode,
 }
 
 impl Drop for ChatSession {
@@ -56,6 +59,7 @@ impl ChatSession {
             scene_position: egui::Vec2::new(x, y),
             cached_status: AgentStatus::Idle,
             focus_requested: false,
+            permission_mode: PermissionMode::Default,
         }
     }
 

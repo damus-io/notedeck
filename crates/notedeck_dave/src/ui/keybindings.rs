@@ -19,6 +19,8 @@ pub enum KeyAction {
     Interrupt,
     /// Toggle between scene view and classic view
     ToggleView,
+    /// Toggle plan mode for the active session
+    TogglePlanMode,
 }
 
 /// Check for keybinding actions.
@@ -55,6 +57,11 @@ pub fn check_keybindings(ctx: &egui::Context, has_pending_permission: bool) -> O
     // Ctrl+G to toggle between scene view and classic view
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::G)) {
         return Some(KeyAction::ToggleView);
+    }
+
+    // Ctrl+P to toggle plan mode
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
+        return Some(KeyAction::TogglePlanMode);
     }
 
     // Ctrl+1-9 for switching agents (works even with text input focus)

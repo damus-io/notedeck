@@ -1,5 +1,6 @@
 use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
+use claude_agent_sdk_rs::PermissionMode;
 use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -37,4 +38,8 @@ pub trait AiBackend: Send + Sync {
     /// Interrupt the current query for a session.
     /// This stops any in-progress work but preserves the session history.
     fn interrupt_session(&self, session_id: String, ctx: egui::Context);
+
+    /// Set the permission mode for a session.
+    /// Plan mode makes Claude plan actions without executing them.
+    fn set_permission_mode(&self, session_id: String, mode: PermissionMode, ctx: egui::Context);
 }

@@ -7,6 +7,7 @@ use async_openai::{
     types::{ChatCompletionRequestMessage, CreateChatCompletionRequest},
     Client,
 };
+use claude_agent_sdk_rs::PermissionMode;
 use futures::StreamExt;
 use nostrdb::{Ndb, Transaction};
 use std::collections::HashMap;
@@ -170,5 +171,10 @@ impl AiBackend for OpenAiBackend {
     fn interrupt_session(&self, _session_id: String, _ctx: egui::Context) {
         // OpenAI backend doesn't support interrupts - requests complete atomically
         // The JoinHandle can be aborted from the session side if needed
+    }
+
+    fn set_permission_mode(&self, _session_id: String, _mode: PermissionMode, _ctx: egui::Context) {
+        // OpenAI backend doesn't support permission modes / plan mode
+        tracing::warn!("Plan mode is not supported with the OpenAI backend");
     }
 }

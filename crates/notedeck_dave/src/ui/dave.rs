@@ -25,6 +25,7 @@ pub struct DaveUi<'a> {
     interrupt_pending: bool,
     has_pending_permission: bool,
     focus_requested: &'a mut bool,
+    plan_mode_active: bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -102,6 +103,7 @@ impl<'a> DaveUi<'a> {
             interrupt_pending: false,
             has_pending_permission: false,
             focus_requested,
+            plan_mode_active: false,
         }
     }
 
@@ -122,6 +124,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn has_pending_permission(mut self, has_pending_permission: bool) -> Self {
         self.has_pending_permission = has_pending_permission;
+        self
+    }
+
+    pub fn plan_mode_active(mut self, plan_mode_active: bool) -> Self {
+        self.plan_mode_active = plan_mode_active;
         self
     }
 
@@ -607,6 +614,19 @@ impl<'a> DaveUi<'a> {
                     .clicked()
                 {
                     dave_response = DaveResponse::send();
+                }
+
+                // Show plan mode indicator
+                if self.plan_mode_active {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("PLAN MODE")
+                                .color(egui::Color32::from_rgb(100, 149, 237)) // Cornflower blue
+                                .strong(),
+                        )
+                        .selectable(false),
+                    )
+                    .on_hover_text("Ctrl+P to toggle plan mode");
                 }
 
                 let r = ui.add(

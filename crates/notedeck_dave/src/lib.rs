@@ -12,6 +12,7 @@ mod ui;
 mod vec3;
 
 use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend};
+use claude_agent_sdk_rs::PermissionMode;
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
@@ -373,6 +374,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     // Render chat UI for selected session
                                     let has_pending_permission =
                                         !session.pending_permissions.is_empty();
+                                    let plan_mode_active =
+                                        session.permission_mode == PermissionMode::Plan;
                                     let response = DaveUi::new(
                                         self.model_config.trial,
                                         &session.chat,
@@ -383,6 +386,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .is_working(is_working)
                                     .interrupt_pending(interrupt_pending)
                                     .has_pending_permission(has_pending_permission)
+                                    .plan_mode_active(plan_mode_active)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -482,6 +486,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if let Some(session) = self.session_manager.get_active_mut() {
                     let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                     let has_pending_permission = !session.pending_permissions.is_empty();
+                    let plan_mode_active = session.permission_mode == PermissionMode::Plan;
                     DaveUi::new(
                         self.model_config.trial,
                         &session.chat,
@@ -491,6 +496,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .is_working(is_working)
                     .interrupt_pending(interrupt_pending)
                     .has_pending_permission(has_pending_permission)
+                    .plan_mode_active(plan_mode_active)
                     .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -548,6 +554,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if let Some(session) = self.session_manager.get_active_mut() {
                 let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                 let has_pending_permission = !session.pending_permissions.is_empty();
+                let plan_mode_active = session.permission_mode == PermissionMode::Plan;
                 DaveUi::new(
                     self.model_config.trial,
                     &session.chat,
@@ -557,6 +564,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .is_working(is_working)
                 .interrupt_pending(interrupt_pending)
                 .has_pending_permission(has_pending_permission)
+                .plan_mode_active(plan_mode_active)
                 .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
@@ -651,6 +659,29 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Clear pending permissions since we're interrupting
             session.pending_permissions.clear();
             tracing::debug!("Interrupted session {}", session.id);
+        }
+    }
+
+    /// Toggle plan mode for the active session
+    fn toggle_plan_mode(&mut self, ctx: &egui::Context) {
+        if let Some(session) = self.session_manager.get_active_mut() {
+            // Toggle between Plan and Default modes
+            let new_mode = match session.permission_mode {
+                PermissionMode::Plan => PermissionMode::Default,
+                _ => PermissionMode::Plan,
+            };
+            session.permission_mode = new_mode;
+
+            // Notify the backend
+            let session_id = format!("dave-session-{}", session.id);
+            self.backend
+                .set_permission_mode(session_id, new_mode, ctx.clone());
+
+            tracing::debug!(
+                "Toggled plan mode for session {} to {:?}",
+                session.id,
+                new_mode
+            );
         }
     }
 
@@ -866,6 +897,9 @@ impl notedeck::App for Dave {
                 }
                 KeyAction::ToggleView => {
                     self.show_scene = !self.show_scene;
+                }
+                KeyAction::TogglePlanMode => {
+                    self.toggle_plan_mode(ui.ctx());
                 }
             }
         }
