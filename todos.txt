@@ -1,0 +1,11 @@
+- [ ] in crates/notedeck_dave, when an agent steals focus from another agent to ask a question, i want it to focus back to where it was
+
+- [ ] in crates/notedeck_dave, i want to be able to switch to plan mode like you can in the claude-code cli. I believe there
+
+- [ ] plan: plan a feature for creating a queue of tool requests/questions 
+
+- [ ] plan: need a way to respond to a approve/deny in crates/notedeck_dave but giving a response as well
+
+- [ ] plan: plan a way to run claude commands such as /compact
+
+- [ ] have the default view be classic instead of scene view. also don't call it classic, call it list
