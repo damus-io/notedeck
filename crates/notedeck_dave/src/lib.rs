@@ -414,7 +414,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         for id in self.scene.selected.clone() {
                             self.delete_session(id);
                         }
-                        self.scene.clear_selection();
+                        // Focus another node after deletion
+                        if let Some(session) = self.session_manager.sessions_ordered().first() {
+                            self.scene.select(session.id);
+                        } else {
+                            self.scene.clear_selection();
+                        }
                     }
                     SceneAction::AgentMoved { id, position } => {
                         if let Some(session) = self.session_manager.get_mut(id) {
@@ -549,6 +554,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Request focus on the new session's input
         if let Some(session) = self.session_manager.get_mut(id) {
             session.focus_requested = true;
+        }
+        // Also update scene selection if in scene view
+        if self.show_scene {
+            self.scene.select(id);
         }
     }
 
