@@ -554,10 +554,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Request focus on the new session's input
         if let Some(session) = self.session_manager.get_mut(id) {
             session.focus_requested = true;
-        }
-        // Also update scene selection if in scene view
-        if self.show_scene {
-            self.scene.select(id);
+            // Also update scene selection and camera if in scene view
+            if self.show_scene {
+                self.scene.select(id);
+                self.scene.focus_on(session.scene_position);
+            }
         }
     }
 
