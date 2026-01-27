@@ -136,7 +136,12 @@ impl AgentScene {
     }
 
     /// Render the scene
-    pub fn ui(&mut self, session_manager: &SessionManager, ui: &mut egui::Ui) -> SceneResponse {
+    pub fn ui(
+        &mut self,
+        session_manager: &SessionManager,
+        ui: &mut egui::Ui,
+        ctrl_held: bool,
+    ) -> SceneResponse {
         let mut response = SceneResponse::default();
 
         // Update camera animation towards target
@@ -184,7 +189,7 @@ impl AgentScene {
                     let is_selected = selected_ids.contains(&id);
 
                     let agent_response =
-                        Self::draw_agent(ui, id, position, status, title, is_selected);
+                        Self::draw_agent(ui, id, position, status, title, is_selected, ctrl_held);
 
                     if agent_response.clicked() {
                         let shift = ui.input(|i| i.modifiers.shift);
@@ -315,6 +320,7 @@ impl AgentScene {
         status: AgentStatus,
         title: &str,
         is_selected: bool,
+        show_keybinding: bool,
     ) -> Response {
         let agent_radius = 30.0;
         let center = Pos2::new(position.x, position.y);
@@ -350,12 +356,16 @@ impl AgentScene {
         };
         painter.circle_filled(center, agent_radius - 2.0, fill_color);
 
-        // Agent number in center
-        let node_number = id.to_string();
+        // Agent icon in center: show number when Ctrl held (keybinding hint), otherwise first letter
+        let icon_text = if show_keybinding {
+            id.to_string()
+        } else {
+            title.chars().next().unwrap_or('?').to_uppercase().collect()
+        };
         painter.text(
             center,
             egui::Align2::CENTER_CENTER,
-            &node_number,
+            &icon_text,
             egui::FontId::proportional(20.0),
             ui.visuals().text_color(),
         );

@@ -321,6 +321,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.session_manager.switch_to(attention_id);
         }
 
+        // Check if Ctrl is held for showing keybinding hints
+        let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+
         StripBuilder::new(ui)
             .size(Size::relative(0.25)) // Scene area: 25%
             .size(Size::remainder()) // Chat panel: 75%
@@ -330,9 +333,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 strip.cell(|ui| {
                     // Scene toolbar at top
                     ui.horizontal(|ui| {
+                        // Show keybinding hint only when Ctrl is held
+                        let new_agent_label = if ctrl_held {
+                            "+ New Agent [N]"
+                        } else {
+                            "+ New Agent"
+                        };
                         if ui
-                            .button("+ New Agent [N]")
-                            .on_hover_text("Press N to spawn new agent")
+                            .button(new_agent_label)
+                            .on_hover_text("Hold Ctrl to see keybindings")
                             .clicked()
                         {
                             dave_response = DaveResponse::new(DaveAction::NewChat);
@@ -348,8 +357,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     });
                     ui.separator();
 
-                    // Render the scene
-                    scene_response = Some(self.scene.ui(&self.session_manager, ui));
+                    // Render the scene, passing ctrl_held for keybinding hints
+                    scene_response = Some(self.scene.ui(&self.session_manager, ui, ctrl_held));
                 });
 
                 // Chat side panel
