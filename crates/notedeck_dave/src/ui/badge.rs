@@ -205,3 +205,104 @@ impl<'a> StatusBadge<'a> {
     }
 }
 
+/// A pill-shaped action button with integrated keybind hint
+pub struct ActionButton<'a> {
+    text: &'a str,
+    bg_color: Color32,
+    text_color: Color32,
+    keybind: Option<&'a str>,
+}
+
+impl<'a> ActionButton<'a> {
+    /// Create a new action button with the given text and colors
+    pub fn new(text: &'a str, bg_color: Color32, text_color: Color32) -> Self {
+        Self {
+            text,
+            bg_color,
+            text_color,
+            keybind: None,
+        }
+    }
+
+    /// Add a keybind hint inside the button (e.g., "1" for key 1)
+    pub fn keybind(mut self, key: &'a str) -> Self {
+        self.keybind = Some(key);
+        self
+    }
+
+    /// Show the button and return the response
+    pub fn show(self, ui: &mut Ui) -> Response {
+        // Calculate text size for proper allocation
+        let font_id = egui::FontId::proportional(13.0);
+        let galley = ui.painter().layout_no_wrap(
+            self.text.to_string(),
+            font_id.clone(),
+            self.text_color,
+        );
+
+        // Calculate keybind box size if present
+        let keybind_box_size = 16.0;
+        let keybind_spacing = 6.0;
+        let keybind_extra = if self.keybind.is_some() {
+            keybind_box_size + keybind_spacing
+        } else {
+            0.0
+        };
+
+        // Padding: horizontal 10px, vertical 4px
+        let padding = Vec2::new(10.0, 4.0);
+        let desired_size =
+            Vec2::new(galley.size().x + keybind_extra, galley.size().y) + padding * 2.0;
+
+        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+
+        if ui.is_rect_visible(rect) {
+            let painter = ui.painter();
+
+            // Adjust color based on hover/click state
+            let bg_color = if response.is_pointer_button_down_on() {
+                self.bg_color.gamma_multiply(0.8)
+            } else if response.hovered() {
+                self.bg_color.gamma_multiply(1.15)
+            } else {
+                self.bg_color
+            };
+
+            // Full pill rounding (half of height)
+            let rounding = rect.height() / 2.0;
+
+            // Background
+            painter.rect_filled(rect, rounding, bg_color);
+
+            // Text (offset left if keybind present)
+            let text_offset_x = if self.keybind.is_some() {
+                -keybind_extra / 2.0
+            } else {
+                0.0
+            };
+            let text_pos =
+                rect.center() + Vec2::new(text_offset_x, 0.0) - galley.size() / 2.0;
+            painter.galley(text_pos, galley, self.text_color);
+
+            // Draw keybind hint if present (no background, just text)
+            if let Some(key) = self.keybind {
+                let key_center = egui::pos2(
+                    rect.right() - padding.x - keybind_box_size / 2.0,
+                    rect.center().y,
+                );
+
+                // Keybind text using the button's text color
+                painter.text(
+                    key_center,
+                    egui::Align2::CENTER_CENTER,
+                    key,
+                    egui::FontId::monospace(keybind_box_size * 0.7),
+                    self.text_color,
+                );
+            }
+        }
+
+        response
+    }
+}
+

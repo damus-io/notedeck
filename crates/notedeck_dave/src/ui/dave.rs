@@ -429,17 +429,17 @@ impl<'a> DaveUi<'a> {
         let shift_held = ui.input(|i| i.modifiers.shift);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Deny button (red) with keybind hint on left
-            let deny_response = ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Deny")
-                            .color(ui.visuals().widgets.active.fg_stroke.color),
-                    )
-                    .fill(egui::Color32::from_rgb(178, 34, 34)),
-                )
-                .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
-            super::keybind_hint(ui, "2");
+            let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
+
+            // Deny button (red) with integrated keybind hint
+            let deny_response = super::badge::ActionButton::new(
+                "Deny",
+                egui::Color32::from_rgb(178, 34, 34),
+                button_text_color,
+            )
+            .keybind("2")
+            .show(ui)
+            .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
 
             if deny_response.clicked() {
                 if shift_held {
@@ -456,17 +456,15 @@ impl<'a> DaveUi<'a> {
                 }
             }
 
-            // Allow button (green) with keybind hint on left
-            let allow_response = ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Allow")
-                            .color(ui.visuals().widgets.active.fg_stroke.color),
-                    )
-                    .fill(egui::Color32::from_rgb(34, 139, 34)),
-                )
-                .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
-            super::keybind_hint(ui, "1");
+            // Allow button (green) with integrated keybind hint
+            let allow_response = super::badge::ActionButton::new(
+                "Allow",
+                egui::Color32::from_rgb(34, 139, 34),
+                button_text_color,
+            )
+            .keybind("1")
+            .show(ui)
+            .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
 
             if allow_response.clicked() {
                 if shift_held {
@@ -485,7 +483,7 @@ impl<'a> DaveUi<'a> {
             match self.permission_message_state {
                 PermissionMessageState::TentativeAccept => {
                     ui.label(
-                        egui::RichText::new("✓ Will Accept")
+                        egui::RichText::new("✓ Will Allow")
                             .color(egui::Color32::from_rgb(100, 180, 100))
                             .strong(),
                     );
