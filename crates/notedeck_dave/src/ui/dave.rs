@@ -338,14 +338,19 @@ impl<'a> DaveUi<'a> {
                         .corner_radius(corner_radius)
                         .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
                         .show(ui, |ui| {
-                            // Header with file path and buttons
-                            ui.horizontal(|ui| {
-                                diff::file_path_header(&file_update, ui);
-                                self.permission_buttons(request, ui, &mut action);
-                            });
+                            // Header with file path
+                            diff::file_path_header(&file_update, ui);
 
                             // Diff view
                             diff::file_update_ui(&file_update, ui);
+
+                            // Approve/deny buttons at the bottom right
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    self.permission_buttons(request, ui, &mut action);
+                                },
+                            );
                         });
                 } else {
                     // Parse tool input for display (existing logic)
