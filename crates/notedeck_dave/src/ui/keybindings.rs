@@ -27,6 +27,8 @@ pub enum KeyAction {
     ToggleView,
     /// Toggle plan mode for the active session
     TogglePlanMode,
+    /// Delete the active session
+    DeleteActiveSession,
 }
 
 /// Check for keybinding actions.
@@ -77,6 +79,11 @@ pub fn check_keybindings(
     // Ctrl+P to toggle plan mode
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
         return Some(KeyAction::TogglePlanMode);
+    }
+
+    // Delete key to delete active session (only when no text input has focus)
+    if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(Key::Delete)) {
+        return Some(KeyAction::DeleteActiveSession);
     }
 
     // Ctrl+1-9 for switching agents (works even with text input focus)

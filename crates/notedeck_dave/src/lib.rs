@@ -946,6 +946,11 @@ impl notedeck::App for Dave {
                 KeyAction::TogglePlanMode => {
                     self.toggle_plan_mode(ui.ctx());
                 }
+                KeyAction::DeleteActiveSession => {
+                    if let Some(id) = self.session_manager.active_id() {
+                        self.delete_session(id);
+                    }
+                }
             }
         }
 
