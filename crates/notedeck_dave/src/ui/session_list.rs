@@ -3,6 +3,7 @@ use notedeck_ui::app_images;
 
 use crate::agent_status::AgentStatus;
 use crate::session::{SessionId, SessionManager};
+use crate::ui::keybind_hint::paint_keybind_hint;
 
 /// Actions that can be triggered from the session list UI
 #[derive(Debug, Clone)]
@@ -37,6 +38,7 @@ impl<'a> SessionListUi<'a> {
 
             // Scrollable list of sessions
             egui::ScrollArea::vertical()
+                .id_salt("session_list_scroll")
                 .auto_shrink([false; 2])
                 .show(ui, |ui| {
                     if let Some(session_action) = self.sessions_list_ui(ui) {
@@ -149,15 +151,10 @@ impl<'a> SessionListUi<'a> {
         // Draw shortcut hint on the left if available (only when Ctrl held)
         let text_start_x = if let Some(num) = shortcut_hint {
             let hint_text = format!("{}", num);
-            let hint_pos = rect.left_center() + egui::vec2(16.0, 0.0);
-            ui.painter().text(
-                hint_pos,
-                egui::Align2::LEFT_CENTER,
-                &hint_text,
-                egui::FontId::monospace(12.0),
-                ui.visuals().text_color().gamma_multiply(0.5),
-            );
-            32.0
+            let hint_size = 18.0;
+            let hint_center = rect.left_center() + egui::vec2(16.0 + hint_size / 2.0, 0.0);
+            paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
+            16.0 + hint_size + 6.0 // padding + hint width + spacing
         } else {
             12.0 // Leave room for status bar
         };
