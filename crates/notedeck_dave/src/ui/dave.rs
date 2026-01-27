@@ -616,12 +616,22 @@ impl<'a> DaveUi<'a> {
                     dave_response = DaveResponse::send();
                 }
 
-                // Show plan mode indicator
+                // Show plan mode indicator or Ctrl+P hint
+                let ctrl_held = ui.input(|i| i.modifiers.ctrl);
                 if self.plan_mode_active {
                     super::badge::StatusBadge::new("PLAN")
                         .variant(super::badge::BadgeVariant::Info)
                         .show(ui)
                         .on_hover_text("Ctrl+P to toggle plan mode");
+                    if ctrl_held {
+                        super::keybind_hint(ui, "P");
+                    }
+                } else if ctrl_held {
+                    // Show temporary plan hint when Ctrl is held
+                    super::badge::StatusBadge::new("Plan")
+                        .variant(super::badge::BadgeVariant::Default)
+                        .show(ui);
+                    super::keybind_hint(ui, "P");
                 }
 
                 let r = ui.add(
