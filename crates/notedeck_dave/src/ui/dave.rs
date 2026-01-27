@@ -680,16 +680,18 @@ impl<'a> DaveUi<'a> {
                     dave_response = DaveResponse::send();
                 }
 
-                // Show plan mode indicator when active
+                // Show plan mode indicator when active (without keybind to keep layout stable)
                 let ctrl_held = ui.input(|i| i.modifiers.ctrl);
-                if self.plan_mode_active {
-                    let mut badge = super::badge::StatusBadge::new("PLAN")
-                        .variant(super::badge::BadgeVariant::Info);
-                    if ctrl_held {
-                        badge = badge.keybind("P");
-                    }
-                    badge.show(ui).on_hover_text("Ctrl+P to toggle plan mode");
-                }
+                let plan_badge_response = if self.plan_mode_active {
+                    Some(
+                        super::badge::StatusBadge::new("PLAN")
+                            .variant(super::badge::BadgeVariant::Info)
+                            .show(ui)
+                            .on_hover_text("Ctrl+P to toggle plan mode"),
+                    )
+                } else {
+                    None
+                };
 
                 let r = ui.add(
                     egui::TextEdit::multiline(self.input)
@@ -713,11 +715,16 @@ impl<'a> DaveUi<'a> {
                 );
                 notedeck_ui::include_input(ui, &r);
 
-                // Show Ctrl+P hint as overlay when Ctrl is held (but not in plan mode)
+                // Show Ctrl+P hint as overlay when Ctrl is held
                 // Using paint_at() instead of show() avoids layout changes that cause focus loss
-                if ctrl_held && !self.plan_mode_active {
-                    // Paint the hint near the right side of the input area
-                    let hint_pos = r.rect.right_center() + egui::vec2(-30.0, 0.0);
+                if ctrl_held {
+                    let hint_pos = if let Some(ref badge_resp) = plan_badge_response {
+                        // Paint near the PLAN badge when in plan mode
+                        badge_resp.rect.right_center() + egui::vec2(4.0, 0.0)
+                    } else {
+                        // Paint near the right side of the input area
+                        r.rect.right_center() + egui::vec2(-30.0, 0.0)
+                    };
                     super::paint_keybind_hint(ui, hint_pos, "P", 18.0);
                 }
 

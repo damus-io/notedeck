@@ -945,6 +945,10 @@ impl notedeck::App for Dave {
                 }
                 KeyAction::TogglePlanMode => {
                     self.toggle_plan_mode(ui.ctx());
+                    // Restore input focus after toggling plan mode
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.focus_requested = true;
+                    }
                 }
                 KeyAction::DeleteActiveSession => {
                     if let Some(id) = self.session_manager.active_id() {
