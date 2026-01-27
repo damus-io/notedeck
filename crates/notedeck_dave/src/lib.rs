@@ -444,6 +444,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn desktop_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let available = ui.available_rect_before_wrap();
         let sidebar_width = 280.0;
+        let ctrl_held = ui.input(|i| i.modifiers.ctrl);
 
         let sidebar_rect =
             egui::Rect::from_min_size(available.min, egui::vec2(sidebar_width, available.height()));
@@ -464,7 +465,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             self.show_scene = true;
                         }
                         ui.separator();
-                        SessionListUi::new(&self.session_manager).ui(ui)
+                        SessionListUi::new(&self.session_manager, ctrl_held).ui(ui)
                     })
                     .inner
             })
@@ -513,10 +514,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn narrow_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         if self.show_session_list {
             // Show session list
+            let ctrl_held = ui.input(|i| i.modifiers.ctrl);
             let session_action = egui::Frame::new()
                 .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::symmetric(8, 12))
-                .show(ui, |ui| SessionListUi::new(&self.session_manager).ui(ui))
+                .show(ui, |ui| {
+                    SessionListUi::new(&self.session_manager, ctrl_held).ui(ui)
+                })
                 .inner;
             if let Some(action) = session_action {
                 match action {

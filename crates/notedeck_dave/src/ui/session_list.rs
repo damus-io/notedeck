@@ -1,6 +1,7 @@
-use egui::{Align, Layout, Sense};
+use egui::{Align, Color32, Layout, Sense};
 use notedeck_ui::app_images;
 
+use crate::agent_status::AgentStatus;
 use crate::session::{SessionId, SessionManager};
 
 /// Actions that can be triggered from the session list UI
@@ -14,11 +15,15 @@ pub enum SessionListAction {
 /// UI component for displaying the session list sidebar
 pub struct SessionListUi<'a> {
     session_manager: &'a SessionManager,
+    ctrl_held: bool,
 }
 
 impl<'a> SessionListUi<'a> {
-    pub fn new(session_manager: &'a SessionManager) -> Self {
-        SessionListUi { session_manager }
+    pub fn new(session_manager: &'a SessionManager, ctrl_held: bool) -> Self {
+        SessionListUi {
+            session_manager,
+            ctrl_held,
+        }
     }
 
     pub fn ui(&self, ui: &mut egui::Ui) -> Option<SessionListAction> {
@@ -75,10 +80,20 @@ impl<'a> SessionListUi<'a> {
 
         for (index, session) in self.session_manager.sessions_ordered().iter().enumerate() {
             let is_active = Some(session.id) == active_id;
-            // Show keyboard shortcut hint for first 9 sessions (1-9 keys)
-            let shortcut_hint = if index < 9 { Some(index + 1) } else { None };
+            // Show keyboard shortcut hint for first 9 sessions (1-9 keys), only when Ctrl held
+            let shortcut_hint = if self.ctrl_held && index < 9 {
+                Some(index + 1)
+            } else {
+                None
+            };
 
-            let response = self.session_item_ui(ui, &session.title, is_active, shortcut_hint);
+            let response = self.session_item_ui(
+                ui,
+                &session.title,
+                is_active,
+                shortcut_hint,
+                session.status(),
+            );
 
             if response.clicked() {
                 action = Some(SessionListAction::SwitchTo(session.id));
@@ -102,12 +117,11 @@ impl<'a> SessionListUi<'a> {
         title: &str,
         is_active: bool,
         shortcut_hint: Option<usize>,
+        status: AgentStatus,
     ) -> egui::Response {
         let desired_size = egui::vec2(ui.available_width(), 36.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
-        let hover_text = shortcut_hint
-            .map(|n| format!("Press {} to switch", n))
-            .unwrap_or_default();
+        let hover_text = format!("Ctrl+{} to switch", shortcut_hint.unwrap_or(0));
         let response = response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
             .on_hover_text_at_pointer(hover_text);
@@ -118,16 +132,24 @@ impl<'a> SessionListUi<'a> {
         } else if response.hovered() {
             ui.visuals().widgets.hovered.weak_bg_fill
         } else {
-            egui::Color32::TRANSPARENT
+            Color32::TRANSPARENT
         };
 
         let corner_radius = 8.0;
         ui.painter().rect_filled(rect, corner_radius, fill);
 
-        // Draw shortcut hint on the left if available
+        // Status color indicator (left edge vertical bar)
+        let status_color = status.color();
+        let status_bar_rect = egui::Rect::from_min_size(
+            rect.left_top() + egui::vec2(2.0, 4.0),
+            egui::vec2(3.0, rect.height() - 8.0),
+        );
+        ui.painter().rect_filled(status_bar_rect, 1.5, status_color);
+
+        // Draw shortcut hint on the left if available (only when Ctrl held)
         let text_start_x = if let Some(num) = shortcut_hint {
             let hint_text = format!("{}", num);
-            let hint_pos = rect.left_center() + egui::vec2(12.0, 0.0);
+            let hint_pos = rect.left_center() + egui::vec2(16.0, 0.0);
             ui.painter().text(
                 hint_pos,
                 egui::Align2::LEFT_CENTER,
@@ -137,7 +159,7 @@ impl<'a> SessionListUi<'a> {
             );
             32.0
         } else {
-            8.0
+            12.0 // Leave room for status bar
         };
 
         // Draw title text
