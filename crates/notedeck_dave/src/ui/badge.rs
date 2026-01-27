@@ -96,6 +96,7 @@ impl BadgeVariant {
 pub struct StatusBadge<'a> {
     text: &'a str,
     variant: BadgeVariant,
+    keybind: Option<&'a str>,
 }
 
 impl<'a> StatusBadge<'a> {
@@ -104,12 +105,19 @@ impl<'a> StatusBadge<'a> {
         Self {
             text,
             variant: BadgeVariant::Default,
+            keybind: None,
         }
     }
 
     /// Set the badge variant
     pub fn variant(mut self, variant: BadgeVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// Add a keybind hint inside the badge (e.g., "P" for Ctrl+P)
+    pub fn keybind(mut self, key: &'a str) -> Self {
+        self.keybind = Some(key);
         self
     }
 
@@ -125,9 +133,19 @@ impl<'a> StatusBadge<'a> {
             text_color,
         );
 
+        // Calculate keybind box size if present
+        let keybind_box_size = 14.0;
+        let keybind_spacing = 5.0;
+        let keybind_extra = if self.keybind.is_some() {
+            keybind_box_size + keybind_spacing
+        } else {
+            0.0
+        };
+
         // Padding: horizontal 8px, vertical 2px
         let padding = Vec2::new(8.0, 3.0);
-        let desired_size = galley.size() + padding * 2.0;
+        let desired_size =
+            Vec2::new(galley.size().x + keybind_extra, galley.size().y) + padding * 2.0;
 
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
 
@@ -140,9 +158,47 @@ impl<'a> StatusBadge<'a> {
             // Background
             painter.rect_filled(rect, rounding, bg_color);
 
-            // Text centered
-            let text_pos = rect.center() - galley.size() / 2.0;
+            // Text (offset left if keybind present)
+            let text_offset_x = if self.keybind.is_some() {
+                -keybind_extra / 2.0
+            } else {
+                0.0
+            };
+            let text_pos =
+                rect.center() + Vec2::new(text_offset_x, 0.0) - galley.size() / 2.0;
             painter.galley(text_pos, galley, text_color);
+
+            // Draw keybind box if present
+            if let Some(key) = self.keybind {
+                let box_center = egui::pos2(
+                    rect.right() - padding.x - keybind_box_size / 2.0,
+                    rect.center().y,
+                );
+                let box_rect =
+                    egui::Rect::from_center_size(box_center, Vec2::splat(keybind_box_size));
+
+                // Keybind box background (slightly darker/lighter than badge bg)
+                let visuals = ui.visuals();
+                let box_bg = visuals.widgets.noninteractive.bg_fill;
+                let box_stroke = text_color.gamma_multiply(0.5);
+
+                painter.rect_filled(box_rect, 3.0, box_bg);
+                painter.rect_stroke(
+                    box_rect,
+                    3.0,
+                    egui::Stroke::new(1.0, box_stroke),
+                    egui::StrokeKind::Inside,
+                );
+
+                // Keybind text
+                painter.text(
+                    box_center + Vec2::new(0.0, 1.0),
+                    egui::Align2::CENTER_CENTER,
+                    key,
+                    egui::FontId::monospace(keybind_box_size * 0.65),
+                    visuals.text_color(),
+                );
+            }
         }
 
         response
