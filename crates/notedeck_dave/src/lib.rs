@@ -145,7 +145,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             settings,
             settings_panel: DaveSettingsPanel::new(),
             scene: AgentScene::new(),
-            show_scene: true, // Default to scene view
+            show_scene: false, // Default to list view
             interrupt_pending_since: None,
         }
     }
@@ -339,7 +339,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                         ui.separator();
                         if ui
-                            .button("Classic View")
+                            .button("List View")
                             .on_hover_text("Ctrl+G to toggle views")
                             .clicked()
                         {
