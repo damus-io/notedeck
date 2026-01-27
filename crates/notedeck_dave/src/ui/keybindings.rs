@@ -60,11 +60,13 @@ pub fn check_keybindings(
 
     // Ctrl+Tab / Ctrl+Shift+Tab for cycling through agents
     // Works even with text input focus since Ctrl modifier makes it unambiguous
+    // IMPORTANT: Check Ctrl+Shift+Tab first because consume_key uses matches_logically
+    // which ignores extra Shift, so Ctrl+Tab would consume Ctrl+Shift+Tab otherwise
     if let Some(action) = ctx.input_mut(|i| {
-        if i.consume_key(ctrl, Key::Tab) {
-            Some(KeyAction::NextAgent)
-        } else if i.consume_key(ctrl_shift, Key::Tab) {
+        if i.consume_key(ctrl_shift, Key::Tab) {
             Some(KeyAction::PreviousAgent)
+        } else if i.consume_key(ctrl, Key::Tab) {
+            Some(KeyAction::NextAgent)
         } else {
             None
         }
