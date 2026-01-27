@@ -1,5 +1,6 @@
 use crate::agent_status::AgentStatus;
 use crate::session::{SessionId, SessionManager};
+use crate::ui::paint_keybind_hint;
 use egui::{Color32, Pos2, Rect, Response, Sense, Vec2};
 
 /// The RTS-style scene view for managing agents
@@ -356,19 +357,19 @@ impl AgentScene {
         };
         painter.circle_filled(center, agent_radius - 2.0, fill_color);
 
-        // Agent icon in center: show number when Ctrl held (keybinding hint), otherwise first letter
-        let icon_text = if show_keybinding {
-            id.to_string()
+        // Agent icon in center: show keybind frame when Ctrl held, otherwise first letter
+        if show_keybinding {
+            paint_keybind_hint(ui, center, &id.to_string(), 24.0);
         } else {
-            title.chars().next().unwrap_or('?').to_uppercase().collect()
-        };
-        painter.text(
-            center,
-            egui::Align2::CENTER_CENTER,
-            &icon_text,
-            egui::FontId::proportional(20.0),
-            ui.visuals().text_color(),
-        );
+            let icon_text: String = title.chars().next().unwrap_or('?').to_uppercase().collect();
+            painter.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                &icon_text,
+                egui::FontId::proportional(20.0),
+                ui.visuals().text_color(),
+            );
+        }
 
         // Title below
         let title_pos = center + Vec2::new(0.0, agent_radius + 10.0);

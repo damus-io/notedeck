@@ -333,18 +333,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 strip.cell(|ui| {
                     // Scene toolbar at top
                     ui.horizontal(|ui| {
-                        // Show keybinding hint only when Ctrl is held
-                        let new_agent_label = if ctrl_held {
-                            "+ New Agent [N]"
-                        } else {
-                            "+ New Agent"
-                        };
                         if ui
-                            .button(new_agent_label)
+                            .button("+ New Agent")
                             .on_hover_text("Hold Ctrl to see keybindings")
                             .clicked()
                         {
                             dave_response = DaveResponse::new(DaveAction::NewChat);
+                        }
+                        // Show keybinding hint only when Ctrl is held
+                        if ctrl_held {
+                            ui::keybind_hint(ui, "N");
                         }
                         ui.separator();
                         if ui
@@ -602,7 +600,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         if let Some(pending_since) = self.interrupt_pending_since {
             // Check if we're within the confirmation timeout
-            if now.duration_since(pending_since).as_secs_f32() < Self::INTERRUPT_CONFIRM_TIMEOUT_SECS
+            if now.duration_since(pending_since).as_secs_f32()
+                < Self::INTERRUPT_CONFIRM_TIMEOUT_SECS
             {
                 // Second Escape within timeout - confirm interrupt
                 self.handle_interrupt(ui);
