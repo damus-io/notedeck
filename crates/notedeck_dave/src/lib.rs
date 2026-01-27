@@ -322,8 +322,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         StripBuilder::new(ui)
-            .size(Size::relative(0.5)) // Scene area: 50%
-            .size(Size::remainder()) // Chat panel: 50%
+            .size(Size::relative(0.25)) // Scene area: 25%
+            .size(Size::remainder()) // Chat panel: 75%
             .clip(true) // Clip content to cell bounds
             .horizontal(|mut strip| {
                 // Scene area (main)
