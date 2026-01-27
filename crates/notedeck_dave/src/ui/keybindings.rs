@@ -43,6 +43,7 @@ pub enum KeyAction {
 pub fn check_keybindings(
     ctx: &egui::Context,
     has_pending_permission: bool,
+    has_pending_question: bool,
     in_tentative_state: bool,
 ) -> Option<KeyAction> {
     // Escape in tentative state cancels the tentative mode
@@ -140,13 +141,14 @@ pub fn check_keybindings(
         return Some(action);
     }
 
-    // When there's a pending permission:
+    // When there's a pending permission (but NOT an AskUserQuestion):
     // - 1 = accept, 2 = deny (no modifiers)
     // - Shift+1 = tentative accept, Shift+2 = tentative deny (for adding message)
     // This is checked AFTER Ctrl+number so Ctrl bindings take precedence
     // IMPORTANT: Only handle these when no text input has focus, to avoid
     // capturing keypresses when user is typing a message in tentative state
-    if has_pending_permission && !ctx.wants_keyboard_input() {
+    // AskUserQuestion uses number keys for option selection, so we skip these bindings
+    if has_pending_permission && !has_pending_question && !ctx.wants_keyboard_input() {
         // Shift+1 = tentative accept, Shift+2 = tentative deny
         // Note: egui may report shifted keys as their symbol (e.g., Shift+1 as Exclamationmark)
         // We check for both the symbol key and Shift+Num key to handle different behaviors

@@ -395,6 +395,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .plan_mode_active(plan_mode_active)
                                     .permission_message_state(session.permission_message_state)
                                     .question_answers(&mut session.question_answers)
+                                    .question_index(&mut session.question_index)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -508,6 +509,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .plan_mode_active(plan_mode_active)
                     .permission_message_state(session.permission_message_state)
                     .question_answers(&mut session.question_answers)
+                    .question_index(&mut session.question_index)
                     .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -578,6 +580,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .plan_mode_active(plan_mode_active)
                 .permission_message_state(session.permission_message_state)
                 .question_answers(&mut session.question_answers)
+                .question_index(&mut session.question_index)
                 .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
@@ -705,6 +708,29 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.session_manager
             .get_active()
             .and_then(|session| session.pending_permissions.keys().next().copied())
+    }
+
+    /// Check if the first pending permission is an AskUserQuestion tool call
+    fn has_pending_question(&self) -> bool {
+        let Some(session) = self.session_manager.get_active() else {
+            return false;
+        };
+
+        // Get the first pending permission request ID
+        let Some(request_id) = session.pending_permissions.keys().next() else {
+            return false;
+        };
+
+        // Find the corresponding PermissionRequest in chat to check tool_name
+        for msg in &session.chat {
+            if let Message::PermissionRequest(req) = msg {
+                if &req.id == request_id && req.tool_name == "AskUserQuestion" {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Handle a permission response (from UI button or keybinding)
@@ -1020,14 +1046,18 @@ impl notedeck::App for Dave {
 
         // Handle global keybindings (when no text input has focus)
         let has_pending_permission = self.first_pending_permission().is_some();
+        let has_pending_question = self.has_pending_question();
         let in_tentative_state = self
             .session_manager
             .get_active()
             .map(|s| s.permission_message_state != crate::session::PermissionMessageState::None)
             .unwrap_or(false);
-        if let Some(key_action) =
-            check_keybindings(ui.ctx(), has_pending_permission, in_tentative_state)
-        {
+        if let Some(key_action) = check_keybindings(
+            ui.ctx(),
+            has_pending_permission,
+            has_pending_question,
+            in_tentative_state,
+        ) {
             match key_action {
                 KeyAction::AcceptPermission => {
                     if let Some(request_id) = self.first_pending_permission() {

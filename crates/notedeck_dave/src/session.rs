@@ -45,6 +45,8 @@ pub struct ChatSession {
     pub permission_message_state: PermissionMessageState,
     /// State for pending AskUserQuestion responses (keyed by request UUID)
     pub question_answers: HashMap<Uuid, Vec<QuestionAnswer>>,
+    /// Current question index for multi-question AskUserQuestion (keyed by request UUID)
+    pub question_index: HashMap<Uuid, usize>,
 }
 
 impl Drop for ChatSession {
@@ -77,6 +79,7 @@ impl ChatSession {
             permission_mode: PermissionMode::Default,
             permission_message_state: PermissionMessageState::None,
             question_answers: HashMap::new(),
+            question_index: HashMap::new(),
         }
     }
 

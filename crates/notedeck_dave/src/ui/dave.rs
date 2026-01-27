@@ -33,6 +33,8 @@ pub struct DaveUi<'a> {
     permission_message_state: PermissionMessageState,
     /// State for AskUserQuestion responses (selected options per question)
     question_answers: Option<&'a mut HashMap<Uuid, Vec<QuestionAnswer>>>,
+    /// Current question index for multi-question AskUserQuestion
+    question_index: Option<&'a mut HashMap<Uuid, usize>>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -122,6 +124,7 @@ impl<'a> DaveUi<'a> {
             plan_mode_active: false,
             permission_message_state: PermissionMessageState::None,
             question_answers: None,
+            question_index: None,
         }
     }
 
@@ -135,6 +138,11 @@ impl<'a> DaveUi<'a> {
         answers: &'a mut HashMap<Uuid, Vec<QuestionAnswer>>,
     ) -> Self {
         self.question_answers = Some(answers);
+        self
+    }
+
+    pub fn question_index(mut self, index: &'a mut HashMap<Uuid, usize>) -> Self {
+        self.question_index = Some(index);
         self
     }
 
@@ -350,11 +358,14 @@ impl<'a> DaveUi<'a> {
                     if let Ok(questions) =
                         serde_json::from_value::<AskUserQuestionInput>(request.tool_input.clone())
                     {
-                        if let Some(ref mut answers_map) = self.question_answers {
+                        if let (Some(answers_map), Some(index_map)) =
+                            (&mut self.question_answers, &mut self.question_index)
+                        {
                             return super::ask_user_question_ui(
                                 request,
                                 &questions,
                                 answers_map,
+                                index_map,
                                 ui,
                             );
                         }
