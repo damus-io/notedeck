@@ -723,6 +723,9 @@ impl notedeck::App for Dave {
                 KeyAction::NewAgent => {
                     self.handle_new_chat();
                 }
+                KeyAction::Interrupt => {
+                    self.handle_interrupt(ui);
+                }
             }
         }
 

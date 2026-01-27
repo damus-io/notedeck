@@ -15,11 +15,18 @@ pub enum KeyAction {
     PreviousAgent,
     /// Spawn a new agent
     NewAgent,
+    /// Interrupt/stop the current AI operation
+    Interrupt,
 }
 
 /// Check for keybinding actions when no text input has focus
 pub fn check_keybindings(ctx: &egui::Context) -> Option<KeyAction> {
-    // Only process when no text input has focus
+    // Escape works even when text input has focus (to interrupt AI)
+    if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        return Some(KeyAction::Interrupt);
+    }
+
+    // Only process other keys when no text input has focus
     if ctx.wants_keyboard_input() {
         return None;
     }
