@@ -7,6 +7,7 @@ use crate::Message;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
     PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolUseBlock,
+    UserContentBlock,
 };
 use dashmap::DashMap;
 use futures::future::BoxFuture;
@@ -298,38 +299,41 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
 
                             ctx.request_repaint();
 
-                            // Spawn task to wait for UI response and forward to callback
+                            // Wait for UI response inline - blocking is OK since stream is
+                            // waiting for permission result anyway
                             let tool_name = perm_req.tool_name.clone();
-                            let callback_tx = perm_req.response_tx;
-                            tokio::spawn(async move {
-                                let result = match ui_resp_rx.await {
-                                    Ok(PermissionResponse::Allow { message }) => {
-                                        if let Some(msg) = &message {
-                                            tracing::debug!("User allowed tool {} with message: {}", tool_name, msg);
-                                        } else {
-                                            tracing::debug!("User allowed tool: {}", tool_name);
+                            let result = match ui_resp_rx.await {
+                                Ok(PermissionResponse::Allow { message }) => {
+                                    if let Some(msg) = &message {
+                                        tracing::debug!("User allowed tool {} with message: {}", tool_name, msg);
+                                        // Inject user message into conversation so AI sees it
+                                        if let Err(err) = client.query_with_content_and_session(
+                                            vec![UserContentBlock::text(msg.as_str())],
+                                            &session_id
+                                        ).await {
+                                            tracing::error!("Failed to inject user message: {}", err);
                                         }
-                                        // Note: message is handled in lib.rs by adding a User message to chat
-                                        // SDK's PermissionResultAllow doesn't have a message field
-                                        PermissionResult::Allow(PermissionResultAllow::default())
+                                    } else {
+                                        tracing::debug!("User allowed tool: {}", tool_name);
                                     }
-                                    Ok(PermissionResponse::Deny { reason }) => {
-                                        tracing::debug!("User denied tool {}: {}", tool_name, reason);
-                                        PermissionResult::Deny(PermissionResultDeny {
-                                            message: reason,
-                                            interrupt: false,
-                                        })
-                                    }
-                                    Err(_) => {
-                                        tracing::error!("Permission response channel closed");
-                                        PermissionResult::Deny(PermissionResultDeny {
-                                            message: "Permission request cancelled".to_string(),
-                                            interrupt: true,
-                                        })
-                                    }
-                                };
-                                let _ = callback_tx.send(result);
-                            });
+                                    PermissionResult::Allow(PermissionResultAllow::default())
+                                }
+                                Ok(PermissionResponse::Deny { reason }) => {
+                                    tracing::debug!("User denied tool {}: {}", tool_name, reason);
+                                    PermissionResult::Deny(PermissionResultDeny {
+                                        message: reason,
+                                        interrupt: false,
+                                    })
+                                }
+                                Err(_) => {
+                                    tracing::error!("Permission response channel closed");
+                                    PermissionResult::Deny(PermissionResultDeny {
+                                        message: "Permission request cancelled".to_string(),
+                                        interrupt: true,
+                                    })
+                                }
+                            };
+                            let _ = perm_req.response_tx.send(result);
                         }
 
                         stream_result = stream.next() => {
