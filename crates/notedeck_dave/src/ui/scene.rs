@@ -15,8 +15,6 @@ pub struct AgentScene {
     camera_target: Option<Vec2>,
     /// Animation progress (0.0 to 1.0)
     animation_progress: f32,
-    /// Sessions that have already been alerted (to avoid re-jumping)
-    alerted_sessions: Vec<SessionId>,
 }
 
 /// State for box/marquee selection
@@ -66,7 +64,6 @@ impl AgentScene {
             drag_select: None,
             camera_target: None,
             animation_progress: 1.0,
-            alerted_sessions: Vec::new(),
         }
     }
 
@@ -102,38 +99,6 @@ impl AgentScene {
     pub fn focus_on(&mut self, position: Vec2) {
         self.camera_target = Some(position);
         self.animation_progress = 0.0;
-    }
-
-    /// Check for agents needing attention and jump to them if not already alerted.
-    /// Returns the ID of the agent that was jumped to, if any.
-    pub fn check_attention(&mut self, session_manager: &SessionManager) -> Option<SessionId> {
-        // Clean up alerted list - remove sessions that no longer need input
-        self.alerted_sessions.retain(|id| {
-            session_manager
-                .get(*id)
-                .map(|s| s.status() == AgentStatus::NeedsInput)
-                .unwrap_or(false)
-        });
-
-        // Find first session needing attention that we haven't alerted yet
-        for session in session_manager.iter() {
-            if session.status() == AgentStatus::NeedsInput
-                && !self.alerted_sessions.contains(&session.id)
-            {
-                // Mark as alerted
-                self.alerted_sessions.push(session.id);
-
-                // Focus camera on this agent
-                self.focus_on(session.scene_position);
-
-                // Select this agent
-                self.select(session.id);
-
-                return Some(session.id);
-            }
-        }
-
-        None
     }
 
     /// Render the scene

@@ -19,16 +19,22 @@ pub enum KeyAction {
     NextAgent,
     /// Cycle to previous agent
     PreviousAgent,
-    /// Spawn a new agent
+    /// Spawn a new agent (Ctrl+T)
     NewAgent,
     /// Interrupt/stop the current AI operation
     Interrupt,
     /// Toggle between scene view and classic view
     ToggleView,
-    /// Toggle plan mode for the active session
+    /// Toggle plan mode for the active session (Ctrl+M)
     TogglePlanMode,
     /// Delete the active session
     DeleteActiveSession,
+    /// Navigate to next item in focus queue (Ctrl+N)
+    FocusQueueNext,
+    /// Navigate to previous item in focus queue (Ctrl+P)
+    FocusQueuePrev,
+    /// Dismiss current item from focus queue (Ctrl+D)
+    FocusQueueDismiss,
 }
 
 /// Check for keybinding actions.
@@ -66,8 +72,18 @@ pub fn check_keybindings(
         return Some(action);
     }
 
-    // Ctrl+N to spawn a new agent (works even with text input focus)
+    // Ctrl+N for focus queue next
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::N)) {
+        return Some(KeyAction::FocusQueueNext);
+    }
+
+    // Ctrl+P for focus queue previous
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
+        return Some(KeyAction::FocusQueuePrev);
+    }
+
+    // Ctrl+T to spawn a new agent
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::T)) {
         return Some(KeyAction::NewAgent);
     }
 
@@ -76,9 +92,14 @@ pub fn check_keybindings(
         return Some(KeyAction::ToggleView);
     }
 
-    // Ctrl+P to toggle plan mode
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
+    // Ctrl+M to toggle plan mode
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::M)) {
         return Some(KeyAction::TogglePlanMode);
+    }
+
+    // Ctrl+D to dismiss current item from focus queue
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::D)) {
+        return Some(KeyAction::FocusQueueDismiss);
     }
 
     // Delete key to delete active session (only when no text input has focus)

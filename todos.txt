@@ -1,11 +1,31 @@
 - [ ] in crates/notedeck_dave, when an agent steals focus from another agent to ask a question, i want it to focus back to where it was
 
-- [ ] in crates/notedeck_dave, i want to be able to switch to plan mode like you can in the claude-code cli. I believe there
+- [x] in crates/notedeck_dave, i want to be able to switch to plan mode like you can in the claude-code cli. I believe there
 
 - [ ] plan: plan a feature for creating a queue of tool requests/questions 
 
-- [ ] plan: need a way to respond to a approve/deny in crates/notedeck_dave but giving a response as well
+- [x] plan: need a way to respond to a approve/deny in crates/notedeck_dave but giving a response as well
 
-- [ ] plan: plan a way to run claude commands such as /compact
+- [ ] plan: plan a way to run claude commands such as /compact, with the ability to specify arguments as well (/compact <input>) etc
 
-- [ ] have the default view be classic instead of scene view. also don't call it classic, call it list
+- [x] have the default view be classic instead of scene view. also don't call it classic, call it list
+
+- [ ] make crates/notedeck_dave/src/lib.rs smaller
+
+- [x] update [1] Yes and [2] No options to Allow/Deny, use key indicator widget instead of [1] text
+
+- [x] have the approve/deny message appear near the bottom right of the diff instead of top right
+
+- [ ] ctrl-shift-tab should go in reverse node selection order
+
+- [ ] chat sidebar text should show the user's or AI's last message, not our last message
+
+- [ ] add a modeswitch (ctrl-something) for "auto-steal focus". when enabled, AI requests instantly steal focus. when disabled, requests are queued instead
+
+- [ ] add keybinding to open external editor (like vim) for composing input
+
+- [ ] persist conversation across app restarts
+
+- [ ] handle ExitPlanMode which simply exits plan mode. claude-code sends this when its done its planning phase
+
+- [ ] handle claude-code questions/answers (AskUserQuestion tool - could be a list of questions)

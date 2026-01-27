@@ -127,11 +127,9 @@ impl<'a> StatusBadge<'a> {
 
         // Calculate text size for proper allocation
         let font_id = egui::FontId::proportional(11.0);
-        let galley = ui.painter().layout_no_wrap(
-            self.text.to_string(),
-            font_id.clone(),
-            text_color,
-        );
+        let galley =
+            ui.painter()
+                .layout_no_wrap(self.text.to_string(), font_id.clone(), text_color);
 
         // Calculate keybind box size if present
         let keybind_box_size = 14.0;
@@ -164,8 +162,7 @@ impl<'a> StatusBadge<'a> {
             } else {
                 0.0
             };
-            let text_pos =
-                rect.center() + Vec2::new(text_offset_x, 0.0) - galley.size() / 2.0;
+            let text_pos = rect.center() + Vec2::new(text_offset_x, 0.0) - galley.size() / 2.0;
             painter.galley(text_pos, galley, text_color);
 
             // Draw keybind box if present
@@ -234,11 +231,9 @@ impl<'a> ActionButton<'a> {
     pub fn show(self, ui: &mut Ui) -> Response {
         // Calculate text size for proper allocation
         let font_id = egui::FontId::proportional(13.0);
-        let galley = ui.painter().layout_no_wrap(
-            self.text.to_string(),
-            font_id.clone(),
-            self.text_color,
-        );
+        let galley =
+            ui.painter()
+                .layout_no_wrap(self.text.to_string(), font_id.clone(), self.text_color);
 
         // Calculate keybind box size if present
         let keybind_box_size = 16.0;
@@ -280,8 +275,7 @@ impl<'a> ActionButton<'a> {
             } else {
                 0.0
             };
-            let text_pos =
-                rect.center() + Vec2::new(text_offset_x, 0.0) - galley.size() / 2.0;
+            let text_pos = rect.center() + Vec2::new(text_offset_x, 0.0) - galley.size() / 2.0;
             painter.galley(text_pos, galley, self.text_color);
 
             // Draw keybind hint on left side (white border, no fill)
@@ -315,4 +309,3 @@ impl<'a> ActionButton<'a> {
         response
     }
 }
-

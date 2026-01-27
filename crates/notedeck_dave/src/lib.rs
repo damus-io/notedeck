@@ -3,6 +3,7 @@ mod avatar;
 mod backend;
 mod config;
 pub mod file_update;
+mod focus_queue;
 pub(crate) mod mesh;
 mod messages;
 mod quaternion;
@@ -12,10 +13,11 @@ mod ui;
 mod vec3;
 
 use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend};
-use claude_agent_sdk_rs::PermissionMode;
 use chrono::{Duration, Local};
+use claude_agent_sdk_rs::PermissionMode;
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
+use focus_queue::FocusQueue;
 use nostrdb::Transaction;
 use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::HashMap;
@@ -63,6 +65,8 @@ pub struct Dave {
     show_scene: bool,
     /// Tracks when first Escape was pressed for interrupt confirmation
     interrupt_pending_since: Option<Instant>,
+    /// Focus queue for agents needing attention
+    focus_queue: FocusQueue,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -147,6 +151,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             scene: AgentScene::new(),
             show_scene: false, // Default to list view
             interrupt_pending_since: None,
+            focus_queue: FocusQueue::new(),
         }
     }
 
@@ -363,6 +368,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .show(ui, |ui| {
                             if let Some(selected_id) = self.scene.primary_selection() {
                                 let interrupt_pending = self.is_interrupt_pending();
+                                let queue_info = self.focus_queue.ui_info();
                                 if let Some(session) = self.session_manager.get_mut(selected_id) {
                                     // Show title
                                     ui.heading(&session.title);
@@ -376,7 +382,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         !session.pending_permissions.is_empty();
                                     let plan_mode_active =
                                         session.permission_mode == PermissionMode::Plan;
-                                    let response = DaveUi::new(
+                                    let mut dave_ui = DaveUi::new(
                                         self.model_config.trial,
                                         &session.chat,
                                         &mut session.input,
@@ -387,8 +393,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .interrupt_pending(interrupt_pending)
                                     .has_pending_permission(has_pending_permission)
                                     .plan_mode_active(plan_mode_active)
-                                    .permission_message_state(session.permission_message_state)
-                                    .ui(app_ctx, ui);
+                                    .permission_message_state(session.permission_message_state);
+
+                                    if let Some((pos, total, priority)) = queue_info {
+                                        dave_ui = dave_ui.focus_queue_info(pos, total, priority);
+                                    }
+
+                                    let response = dave_ui.ui(app_ctx, ui);
 
                                     if response.action.is_some() {
                                         dave_response = response;
@@ -482,13 +493,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Now we can mutably borrow for chat
         let interrupt_pending = self.is_interrupt_pending();
+        let queue_info = self.focus_queue.ui_info();
         let chat_response = ui
             .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
                 if let Some(session) = self.session_manager.get_active_mut() {
                     let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                     let has_pending_permission = !session.pending_permissions.is_empty();
                     let plan_mode_active = session.permission_mode == PermissionMode::Plan;
-                    DaveUi::new(
+                    let mut dave_ui = DaveUi::new(
                         self.model_config.trial,
                         &session.chat,
                         &mut session.input,
@@ -498,8 +510,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .interrupt_pending(interrupt_pending)
                     .has_pending_permission(has_pending_permission)
                     .plan_mode_active(plan_mode_active)
-                    .permission_message_state(session.permission_message_state)
-                    .ui(app_ctx, ui)
+                    .permission_message_state(session.permission_message_state);
+
+                    if let Some((pos, total, priority)) = queue_info {
+                        dave_ui = dave_ui.focus_queue_info(pos, total, priority);
+                    }
+
+                    dave_ui.ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
                 }
@@ -553,11 +570,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         } else {
             // Show chat
             let interrupt_pending = self.is_interrupt_pending();
+            let queue_info = self.focus_queue.ui_info();
             if let Some(session) = self.session_manager.get_active_mut() {
                 let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                 let has_pending_permission = !session.pending_permissions.is_empty();
                 let plan_mode_active = session.permission_mode == PermissionMode::Plan;
-                DaveUi::new(
+                let mut dave_ui = DaveUi::new(
                     self.model_config.trial,
                     &session.chat,
                     &mut session.input,
@@ -567,8 +585,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .interrupt_pending(interrupt_pending)
                 .has_pending_permission(has_pending_permission)
                 .plan_mode_active(plan_mode_active)
-                .permission_message_state(session.permission_message_state)
-                .ui(app_ctx, ui)
+                .permission_message_state(session.permission_message_state);
+
+                if let Some((pos, total, priority)) = queue_info {
+                    dave_ui = dave_ui.focus_queue_info(pos, total, priority);
+                }
+
+                dave_ui.ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
             }
@@ -590,6 +613,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Delete a session and clean up backend resources
     fn delete_session(&mut self, id: SessionId) {
+        // Remove from focus queue first
+        self.focus_queue.remove_session(id);
         if self.session_manager.delete_session(id) {
             // Clean up backend resources (e.g., close persistent connections)
             let session_id = format!("dave-session-{}", id);
@@ -811,6 +836,51 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Navigate to the next item in the focus queue
+    fn focus_queue_next(&mut self) {
+        if let Some(session_id) = self.focus_queue.next() {
+            self.session_manager.switch_to(session_id);
+            if self.show_scene {
+                self.scene.select(session_id);
+                if let Some(session) = self.session_manager.get(session_id) {
+                    self.scene.focus_on(session.scene_position);
+                }
+            }
+            // Focus input if no permission request is pending
+            if let Some(session) = self.session_manager.get_mut(session_id) {
+                if session.pending_permissions.is_empty() {
+                    session.focus_requested = true;
+                }
+            }
+        }
+    }
+
+    /// Navigate to the previous item in the focus queue
+    fn focus_queue_prev(&mut self) {
+        if let Some(session_id) = self.focus_queue.prev() {
+            self.session_manager.switch_to(session_id);
+            if self.show_scene {
+                self.scene.select(session_id);
+                if let Some(session) = self.session_manager.get(session_id) {
+                    self.scene.focus_on(session.scene_position);
+                }
+            }
+            // Focus input if no permission request is pending
+            if let Some(session) = self.session_manager.get_mut(session_id) {
+                if session.pending_permissions.is_empty() {
+                    session.focus_requested = true;
+                }
+            }
+        }
+    }
+
+    /// Dismiss the current item from the focus queue
+    fn focus_queue_dismiss(&mut self) {
+        if let Some(entry) = self.focus_queue.current() {
+            self.focus_queue.dequeue(entry.session_id);
+        }
+    }
+
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         if let Some(session) = self.session_manager.get_active_mut() {
@@ -874,7 +944,9 @@ impl notedeck::App for Dave {
             .get_active()
             .map(|s| s.permission_message_state != crate::session::PermissionMessageState::None)
             .unwrap_or(false);
-        if let Some(key_action) = check_keybindings(ui.ctx(), has_pending_permission, in_tentative_state) {
+        if let Some(key_action) =
+            check_keybindings(ui.ctx(), has_pending_permission, in_tentative_state)
+        {
             match key_action {
                 KeyAction::AcceptPermission => {
                     if let Some(request_id) = self.first_pending_permission() {
@@ -955,6 +1027,15 @@ impl notedeck::App for Dave {
                         self.delete_session(id);
                     }
                 }
+                KeyAction::FocusQueueNext => {
+                    self.focus_queue_next();
+                }
+                KeyAction::FocusQueuePrev => {
+                    self.focus_queue_prev();
+                }
+                KeyAction::FocusQueueDismiss => {
+                    self.focus_queue_dismiss();
+                }
             }
         }
 
@@ -967,10 +1048,9 @@ impl notedeck::App for Dave {
         // Update all session statuses after processing events
         self.session_manager.update_all_statuses();
 
-        // Check for agents needing attention and auto-switch to them
-        if let Some(attention_id) = self.scene.check_attention(&self.session_manager) {
-            self.session_manager.switch_to(attention_id);
-        }
+        // Update focus queue based on status changes (replaces auto-focus-stealing)
+        let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));
+        self.focus_queue.update_from_statuses(status_iter);
 
         if let Some(action) = self.ui(ctx, ui).action {
             match action {

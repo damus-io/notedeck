@@ -6,8 +6,7 @@ use crate::tools::Tool;
 use crate::Message;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
-    PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolUseBlock,
-    UserContentBlock,
+    PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolUseBlock, UserContentBlock,
 };
 use dashmap::DashMap;
 use futures::future::BoxFuture;
@@ -396,7 +395,9 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                                                 }
                                             }
                                         }
-                                        _ => {}
+                                        other => {
+                                            tracing::debug!("Received unhandled message type: {:?}", other);
+                                        }
                                     }
                                 }
                                 Some(Err(err)) => {
@@ -424,7 +425,11 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                 ctx.request_repaint();
             }
             SessionCommand::SetPermissionMode { mode, ctx } => {
-                tracing::debug!("Session {} setting permission mode to {:?}", session_id, mode);
+                tracing::debug!(
+                    "Session {} setting permission mode to {:?}",
+                    session_id,
+                    mode
+                );
                 if let Err(err) = client.set_permission_mode(mode).await {
                     tracing::error!("Failed to set permission mode: {}", err);
                 }
