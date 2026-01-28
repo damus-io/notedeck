@@ -3,6 +3,9 @@ use notedeck::{AppContext, AppResponse};
 use notedeck_columns::Damus;
 use notedeck_dave::Dave;
 
+#[cfg(feature = "calendar")]
+use notedeck_calendar::CalendarApp;
+
 #[cfg(feature = "clndash")]
 use notedeck_clndash::ClnDash;
 
@@ -16,6 +19,8 @@ use notedeck_notebook::Notebook;
 pub enum NotedeckApp {
     Dave(Box<Dave>),
     Columns(Box<Damus>),
+    #[cfg(feature = "calendar")]
+    Calendar(Box<CalendarApp>),
     #[cfg(feature = "notebook")]
     Notebook(Box<Notebook>),
     #[cfg(feature = "clndash")]
@@ -31,6 +36,9 @@ impl notedeck::App for NotedeckApp {
         match self {
             NotedeckApp::Dave(dave) => dave.update(ctx, ui),
             NotedeckApp::Columns(columns) => columns.update(ctx, ui),
+
+            #[cfg(feature = "calendar")]
+            NotedeckApp::Calendar(calendar) => calendar.update(ctx, ui),
 
             #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(notebook) => notebook.update(ctx, ui),

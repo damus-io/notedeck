@@ -3,6 +3,7 @@ resolver = "2"
 package.version = "0.7.1"
 members = [
     "crates/notedeck",
+    "crates/notedeck_calendar",
     "crates/notedeck_chrome",
     "crates/notedeck_columns",
     "crates/notedeck_dave",
@@ -38,7 +39,8 @@ hyper = { version = "1.7.0", features = ["full"] }
 hyper-util = {version = "0.1" , features = ["tokio"]}
 # hyper-rustls with NO default crypto provider (aws-lc-rs is default and requires cmake on Windows)
 # Crates add platform-specific features: ring on Windows, aws-lc-rs elsewhere
-hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio"] }
+# webpki-roots needed as fallback when native roots fail
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "tls12", "logging", "native-tokio", "webpki-roots"] }
 http-body-util = "0.1.3"
 # rustls with NO default crypto provider at workspace level.
 # Crates use platform-specific dependencies to select:
@@ -62,6 +64,7 @@ mio = { version = "1.0.3", features = ["os-poll", "net"] }
 nostrdb = "0.9.0"
 #nostrdb = "0.6.1"
 notedeck = { path = "crates/notedeck" }
+notedeck_calendar = { path = "crates/notedeck_calendar" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
 notedeck_columns = { path = "crates/notedeck_columns" }
