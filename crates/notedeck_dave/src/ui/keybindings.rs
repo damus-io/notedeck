@@ -75,14 +75,14 @@ pub fn check_keybindings(
         return Some(action);
     }
 
-    // Ctrl+N for focus queue next
+    // Ctrl+N for higher priority (toward NeedsInput)
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::N)) {
-        return Some(KeyAction::FocusQueueNext);
+        return Some(KeyAction::FocusQueuePrev);
     }
 
-    // Ctrl+P for focus queue previous
+    // Ctrl+P for lower priority (toward Done)
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
-        return Some(KeyAction::FocusQueuePrev);
+        return Some(KeyAction::FocusQueueNext);
     }
 
     // Ctrl+T to spawn a new agent
