@@ -295,12 +295,20 @@ impl<'a> DaveUi<'a> {
             };
         }
 
-        // Show status line at the bottom of chat when compacting
-        if self.is_compacting {
+        // Show status line at the bottom of chat when working or compacting
+        let status_text = if self.is_compacting {
+            Some("compacting...")
+        } else if self.is_working {
+            Some("computing...")
+        } else {
+            None
+        };
+
+        if let Some(status) = status_text {
             ui.horizontal(|ui| {
                 ui.add(egui::Spinner::new().size(14.0));
                 ui.label(
-                    egui::RichText::new("compacting...")
+                    egui::RichText::new(status)
                         .color(ui.visuals().weak_text_color())
                         .italics(),
                 );
