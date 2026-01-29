@@ -92,8 +92,9 @@ impl ClaudeBackend {
                 | Message::Error(_)
                 | Message::PermissionRequest(_)
                 | Message::ToolResult(_)
-                | Message::CompactionComplete(_) => {
-                    // Skip tool-related, error, permission, tool result, and compaction messages
+                | Message::CompactionComplete(_)
+                | Message::Subagent(_) => {
+                    // Skip tool-related, error, permission, tool result, compaction, and subagent messages
                 }
             }
         }

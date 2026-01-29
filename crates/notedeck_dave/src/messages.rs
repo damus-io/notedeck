@@ -162,6 +162,8 @@ pub enum Message {
     ToolResult(ToolResult),
     /// Conversation was compacted
     CompactionComplete(CompactionInfo),
+    /// A subagent spawned by Task tool
+    Subagent(SubagentInfo),
 }
 
 /// Compaction info from compact_boundary system message
@@ -259,6 +261,9 @@ impl Message {
 
             // Compaction complete is UI-only, not sent to the API
             Message::CompactionComplete(_) => None,
+
+            // Subagent info is UI-only, not sent to the API
+            Message::Subagent(_) => None,
         }
     }
 }

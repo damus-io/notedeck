@@ -54,8 +54,8 @@ pub struct ChatSession {
     pub cwd: Option<PathBuf>,
     /// Session info from Claude Code CLI (tools, model, agents, etc.)
     pub session_info: Option<SessionInfo>,
-    /// Active subagents spawned by Task tool (keyed by task_id)
-    pub subagents: HashMap<String, SubagentInfo>,
+    /// Indices of subagent messages in chat (keyed by task_id)
+    pub subagent_indices: HashMap<String, usize>,
     /// Whether conversation compaction is in progress
     pub is_compacting: bool,
     /// Info from the last completed compaction (for display)
@@ -95,7 +95,7 @@ impl ChatSession {
             question_index: HashMap::new(),
             cwd: None,
             session_info: None,
-            subagents: HashMap::new(),
+            subagent_indices: HashMap::new(),
             is_compacting: false,
             last_compaction: None,
         }
@@ -103,29 +103,26 @@ impl ChatSession {
 
     /// Update a subagent's output (appending new content, keeping only the tail)
     pub fn update_subagent_output(&mut self, task_id: &str, new_output: &str) {
-        if let Some(subagent) = self.subagents.get_mut(task_id) {
-            subagent.output.push_str(new_output);
-            // Keep only the most recent content up to max_output_size
-            if subagent.output.len() > subagent.max_output_size {
-                let keep_from = subagent.output.len() - subagent.max_output_size;
-                subagent.output = subagent.output[keep_from..].to_string();
+        if let Some(&idx) = self.subagent_indices.get(task_id) {
+            if let Some(Message::Subagent(subagent)) = self.chat.get_mut(idx) {
+                subagent.output.push_str(new_output);
+                // Keep only the most recent content up to max_output_size
+                if subagent.output.len() > subagent.max_output_size {
+                    let keep_from = subagent.output.len() - subagent.max_output_size;
+                    subagent.output = subagent.output[keep_from..].to_string();
+                }
             }
         }
     }
 
     /// Mark a subagent as completed
     pub fn complete_subagent(&mut self, task_id: &str, result: &str) {
-        if let Some(subagent) = self.subagents.get_mut(task_id) {
-            subagent.status = SubagentStatus::Completed;
-            subagent.output = result.to_string();
+        if let Some(&idx) = self.subagent_indices.get(task_id) {
+            if let Some(Message::Subagent(subagent)) = self.chat.get_mut(idx) {
+                subagent.status = SubagentStatus::Completed;
+                subagent.output = result.to_string();
+            }
         }
-    }
-
-    /// Get all active (running) subagents
-    pub fn active_subagents(&self) -> impl Iterator<Item = &SubagentInfo> {
-        self.subagents
-            .values()
-            .filter(|s| s.status == SubagentStatus::Running)
     }
 
     /// Update the session title from the last message (user or assistant)

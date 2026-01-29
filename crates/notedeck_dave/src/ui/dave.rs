@@ -1,10 +1,11 @@
+use super::badge::{BadgeVariant, StatusBadge};
 use super::diff;
 use crate::{
     config::DaveSettings,
     file_update::FileUpdate,
     messages::{
         AskUserQuestionInput, CompactionInfo, Message, PermissionRequest, PermissionResponse,
-        PermissionResponseType, QuestionAnswer, ToolResult,
+        PermissionResponseType, QuestionAnswer, SubagentInfo, SubagentStatus, ToolResult,
     },
     session::PermissionMessageState,
     tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
@@ -294,6 +295,9 @@ impl<'a> DaveUi<'a> {
                 }
                 Message::CompactionComplete(info) => {
                     Self::compaction_complete_ui(info, ui);
+                }
+                Message::Subagent(info) => {
+                    Self::subagent_ui(info, ui);
                 }
             };
         }
@@ -633,6 +637,33 @@ impl<'a> DaveUi<'a> {
                     .color(ui.visuals().weak_text_color())
                     .italics(),
             ));
+        });
+    }
+
+    /// Render a single subagent's status
+    fn subagent_ui(info: &SubagentInfo, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            // Status badge with color based on status
+            let variant = match info.status {
+                SubagentStatus::Running => BadgeVariant::Warning,
+                SubagentStatus::Completed => BadgeVariant::Success,
+                SubagentStatus::Failed => BadgeVariant::Destructive,
+            };
+            StatusBadge::new(&info.subagent_type)
+                .variant(variant)
+                .show(ui);
+
+            // Description
+            ui.label(
+                egui::RichText::new(&info.description)
+                    .size(11.0)
+                    .color(ui.visuals().text_color().gamma_multiply(0.7)),
+            );
+
+            // Show spinner for running subagents
+            if info.status == SubagentStatus::Running {
+                ui.add(egui::Spinner::new().size(11.0));
+            }
         });
     }
 

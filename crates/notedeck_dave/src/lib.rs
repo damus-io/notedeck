@@ -298,7 +298,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             subagent.subagent_type,
                             subagent.description
                         );
-                        session.subagents.insert(subagent.task_id.clone(), subagent);
+                        let task_id = subagent.task_id.clone();
+                        let idx = session.chat.len();
+                        session.chat.push(Message::Subagent(subagent));
+                        session.subagent_indices.insert(task_id, idx);
                     }
 
                     DaveApiResponse::SubagentOutput { task_id, output } => {
