@@ -309,6 +309,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         tracing::debug!("Subagent completed: {}", task_id);
                         session.complete_subagent(&task_id, &result);
                     }
+
+                    DaveApiResponse::CompactionStarted => {
+                        tracing::debug!("Compaction started for session {}", session_id);
+                        session.is_compacting = true;
+                    }
+
+                    DaveApiResponse::CompactionComplete(info) => {
+                        tracing::debug!(
+                            "Compaction completed for session {}: pre_tokens={}",
+                            session_id,
+                            info.pre_tokens
+                        );
+                        session.is_compacting = false;
+                        session.last_compaction = Some(info);
+                    }
                 }
             }
 
@@ -426,6 +441,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .permission_message_state(session.permission_message_state)
                                     .question_answers(&mut session.question_answers)
                                     .question_index(&mut session.question_index)
+                                    .is_compacting(session.is_compacting)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -540,6 +556,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .permission_message_state(session.permission_message_state)
                     .question_answers(&mut session.question_answers)
                     .question_index(&mut session.question_index)
+                    .is_compacting(session.is_compacting)
                     .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -611,6 +628,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .permission_message_state(session.permission_message_state)
                 .question_answers(&mut session.question_answers)
                 .question_index(&mut session.question_index)
+                .is_compacting(session.is_compacting)
                 .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()

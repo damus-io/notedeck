@@ -35,6 +35,8 @@ pub struct DaveUi<'a> {
     question_answers: Option<&'a mut HashMap<Uuid, Vec<QuestionAnswer>>>,
     /// Current question index for multi-question AskUserQuestion
     question_index: Option<&'a mut HashMap<Uuid, usize>>,
+    /// Whether conversation compaction is in progress
+    is_compacting: bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -125,6 +127,7 @@ impl<'a> DaveUi<'a> {
             permission_message_state: PermissionMessageState::None,
             question_answers: None,
             question_index: None,
+            is_compacting: false,
         }
     }
 
@@ -165,6 +168,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn plan_mode_active(mut self, plan_mode_active: bool) -> Self {
         self.plan_mode_active = plan_mode_active;
+        self
+    }
+
+    pub fn is_compacting(mut self, is_compacting: bool) -> Self {
+        self.is_compacting = is_compacting;
         self
     }
 
@@ -730,6 +738,14 @@ impl<'a> DaveUi<'a> {
                     .clicked()
                 {
                     dave_response = DaveResponse::send();
+                }
+
+                // Show compaction indicator when compacting
+                if self.is_compacting {
+                    super::badge::StatusBadge::new("COMPACTING...")
+                        .variant(super::badge::BadgeVariant::Warning)
+                        .show(ui)
+                        .on_hover_text("Conversation is being compacted to save tokens");
                 }
 
                 // Show plan mode indicator with optional keybind hint when Ctrl is held

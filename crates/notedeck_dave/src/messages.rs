@@ -162,6 +162,13 @@ pub enum Message {
     ToolResult(ToolResult),
 }
 
+/// Compaction info from compact_boundary system message
+#[derive(Debug, Clone)]
+pub struct CompactionInfo {
+    /// Number of tokens before compaction
+    pub pre_tokens: u64,
+}
+
 /// The ai backends response. Since we are using streaming APIs these are
 /// represented as individual tokens or tool calls
 pub enum DaveApiResponse {
@@ -186,6 +193,10 @@ pub enum DaveApiResponse {
         task_id: String,
         result: String,
     },
+    /// Conversation compaction started
+    CompactionStarted,
+    /// Conversation compaction completed with token info
+    CompactionComplete(CompactionInfo),
 }
 
 impl Message {

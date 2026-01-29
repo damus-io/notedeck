@@ -1,7 +1,7 @@
 use crate::backend::traits::AiBackend;
 use crate::messages::{
-    DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse, SessionInfo,
-    SubagentInfo, SubagentStatus, ToolResult,
+    CompactionInfo, DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse,
+    SessionInfo, SubagentInfo, SubagentStatus, ToolResult,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -451,6 +451,23 @@ async fn session_actor(
                                             if system_msg.subtype == "init" {
                                                 let session_info = parse_session_info(&system_msg);
                                                 let _ = response_tx.send(DaveApiResponse::SessionInfo(session_info));
+                                                ctx.request_repaint();
+                                            } else if system_msg.subtype == "status" {
+                                                // Handle status messages (compaction start/end)
+                                                let status = system_msg.data.get("status")
+                                                    .and_then(|v| v.as_str());
+                                                if status == Some("compacting") {
+                                                    let _ = response_tx.send(DaveApiResponse::CompactionStarted);
+                                                    ctx.request_repaint();
+                                                }
+                                                // status: null means compaction finished (handled by compact_boundary)
+                                            } else if system_msg.subtype == "compact_boundary" {
+                                                // Compaction completed - extract token savings info
+                                                let pre_tokens = system_msg.data.get("pre_tokens")
+                                                    .and_then(|v| v.as_u64())
+                                                    .unwrap_or(0);
+                                                let info = CompactionInfo { pre_tokens };
+                                                let _ = response_tx.send(DaveApiResponse::CompactionComplete(info));
                                                 ctx.request_repaint();
                                             } else {
                                                 tracing::debug!("Received system message subtype: {}", system_msg.subtype);

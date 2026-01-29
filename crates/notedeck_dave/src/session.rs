@@ -4,7 +4,7 @@ use std::sync::mpsc::Receiver;
 
 use crate::agent_status::AgentStatus;
 use crate::messages::{
-    PermissionResponse, QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus,
+    CompactionInfo, PermissionResponse, QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus,
 };
 use crate::{DaveApiResponse, Message};
 use claude_agent_sdk_rs::PermissionMode;
@@ -56,6 +56,10 @@ pub struct ChatSession {
     pub session_info: Option<SessionInfo>,
     /// Active subagents spawned by Task tool (keyed by task_id)
     pub subagents: HashMap<String, SubagentInfo>,
+    /// Whether conversation compaction is in progress
+    pub is_compacting: bool,
+    /// Info from the last completed compaction (for display)
+    pub last_compaction: Option<CompactionInfo>,
 }
 
 impl Drop for ChatSession {
@@ -92,6 +96,8 @@ impl ChatSession {
             cwd: None,
             session_info: None,
             subagents: HashMap::new(),
+            is_compacting: false,
+            last_compaction: None,
         }
     }
 
