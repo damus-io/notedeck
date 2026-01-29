@@ -4,9 +4,12 @@ mod dave;
 pub mod diff;
 pub mod keybind_hint;
 pub mod keybindings;
+mod pill;
+mod query_ui;
 pub mod scene;
 pub mod session_list;
 mod settings;
+mod top_buttons;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use dave::{DaveAction, DaveResponse, DaveUi};

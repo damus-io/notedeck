@@ -4,7 +4,7 @@ use std::sync::mpsc::Receiver;
 
 use crate::agent_status::AgentStatus;
 use crate::messages::{
-    CompactionInfo, PermissionResponse, QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus,
+    CompactionInfo, PermissionResponse, QuestionAnswer, SessionInfo, SubagentStatus,
 };
 use crate::{DaveApiResponse, Message};
 use claude_agent_sdk_rs::PermissionMode;

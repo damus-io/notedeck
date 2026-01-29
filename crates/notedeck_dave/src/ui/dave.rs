@@ -1,5 +1,7 @@
 use super::badge::{BadgeVariant, StatusBadge};
 use super::diff;
+use super::query_ui::query_call_ui;
+use super::top_buttons::top_buttons_ui;
 use crate::{
     config::DaveSettings,
     file_update::FileUpdate,
@@ -8,14 +10,12 @@ use crate::{
         PermissionResponseType, QuestionAnswer, SubagentInfo, SubagentStatus, ToolResult,
     },
     session::PermissionMessageState,
-    tools::{PresentNotesCall, QueryCall, ToolCall, ToolCalls, ToolResponse},
+    tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse},
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
-use nostrdb::{Ndb, Transaction};
-use notedeck::{
-    tr, Accounts, AppContext, Images, Localization, MediaJobSender, NoteAction, NoteContext,
-};
-use notedeck_ui::{app_images, icons::search_icon, NoteOptions, ProfilePic};
+use nostrdb::Transaction;
+use notedeck::{tr, AppContext, Localization, NoteAction, NoteContext};
+use notedeck_ui::{icons::search_icon, NoteOptions};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -675,7 +675,11 @@ impl<'a> DaveUi<'a> {
         });
     }
 
-    fn search_call_ui(ctx: &mut AppContext, query_call: &QueryCall, ui: &mut egui::Ui) {
+    fn search_call_ui(
+        ctx: &mut AppContext,
+        query_call: &crate::tools::QueryCall,
+        ui: &mut egui::Ui,
+    ) {
         ui.add(search_icon(16.0, 16.0));
         ui.add_space(8.0);
 
@@ -925,190 +929,4 @@ impl<'a> DaveUi<'a> {
             );
         });
     }
-}
-
-fn settings_button(dark_mode: bool) -> impl egui::Widget {
-    move |ui: &mut egui::Ui| {
-        let img_size = 24.0;
-        let max_size = 32.0;
-
-        let img = if dark_mode {
-            app_images::settings_dark_image()
-        } else {
-            app_images::settings_light_image()
-        }
-        .max_width(img_size);
-
-        let helper = notedeck_ui::anim::AnimationHelper::new(
-            ui,
-            "settings-button",
-            egui::vec2(max_size, max_size),
-        );
-
-        let cur_img_size = helper.scale_1d_pos(img_size);
-        img.paint_at(
-            ui,
-            helper
-                .get_animation_rect()
-                .shrink((max_size - cur_img_size) / 2.0),
-        );
-
-        helper.take_animation_response()
-    }
-}
-
-fn query_call_ui(
-    cache: &mut notedeck::Images,
-    ndb: &Ndb,
-    query: &QueryCall,
-    jobs: &MediaJobSender,
-    ui: &mut egui::Ui,
-) {
-    ui.spacing_mut().item_spacing.x = 8.0;
-    if let Some(pubkey) = query.author() {
-        let txn = Transaction::new(ndb).unwrap();
-        pill_label_ui(
-            "author",
-            move |ui| {
-                ui.add(
-                    &mut ProfilePic::from_profile_or_default(
-                        cache,
-                        jobs,
-                        ndb.get_profile_by_pubkey(&txn, pubkey.bytes())
-                            .ok()
-                            .as_ref(),
-                    )
-                    .size(ProfilePic::small_size() as f32),
-                );
-            },
-            ui,
-        );
-    }
-
-    if let Some(limit) = query.limit {
-        pill_label("limit", &limit.to_string(), ui);
-    }
-
-    if let Some(since) = query.since {
-        pill_label("since", &since.to_string(), ui);
-    }
-
-    if let Some(kind) = query.kind {
-        pill_label("kind", &kind.to_string(), ui);
-    }
-
-    if let Some(until) = query.until {
-        pill_label("until", &until.to_string(), ui);
-    }
-
-    if let Some(search) = query.search.as_ref() {
-        pill_label("search", search, ui);
-    }
-}
-
-fn pill_label(name: &str, value: &str, ui: &mut egui::Ui) {
-    pill_label_ui(
-        name,
-        move |ui| {
-            ui.label(value);
-        },
-        ui,
-    );
-}
-
-fn pill_label_ui(name: &str, mut value: impl FnMut(&mut egui::Ui), ui: &mut egui::Ui) {
-    egui::Frame::new()
-        .fill(ui.visuals().noninteractive().bg_fill)
-        .inner_margin(egui::Margin::same(4))
-        .corner_radius(egui::CornerRadius::same(10))
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().noninteractive().bg_stroke.color,
-        ))
-        .show(ui, |ui| {
-            egui::Frame::new()
-                .fill(ui.visuals().noninteractive().weak_bg_fill)
-                .inner_margin(egui::Margin::same(4))
-                .corner_radius(egui::CornerRadius::same(10))
-                .stroke(egui::Stroke::new(
-                    1.0,
-                    ui.visuals().noninteractive().bg_stroke.color,
-                ))
-                .show(ui, |ui| {
-                    ui.label(name);
-                });
-
-            value(ui);
-        });
-}
-
-fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAction> {
-    // Scroll area for chat messages
-    let mut action: Option<DaveAction> = None;
-    let mut rect = ui.available_rect_before_wrap();
-    rect = rect.translate(egui::vec2(20.0, 20.0));
-    rect.set_height(32.0);
-    rect.set_width(32.0);
-
-    // Show session list button on mobile/narrow screens
-    if notedeck::ui::is_narrow(ui.ctx()) {
-        let r = ui
-            .put(rect, egui::Button::new("\u{2630}").frame(false))
-            .on_hover_text("Show chats")
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-        if r.clicked() {
-            action = Some(DaveAction::ShowSessionList);
-        }
-
-        rect = rect.translate(egui::vec2(30.0, 0.0));
-    }
-
-    let txn = Transaction::new(app_ctx.ndb).unwrap();
-    let r = ui
-        .put(
-            rect,
-            &mut pfp_button(
-                &txn,
-                app_ctx.accounts,
-                app_ctx.img_cache,
-                app_ctx.ndb,
-                app_ctx.media_jobs.sender(),
-            ),
-        )
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    if r.clicked() {
-        action = Some(DaveAction::ToggleChrome);
-    }
-
-    // Settings button
-    rect = rect.translate(egui::vec2(30.0, 0.0));
-    let dark_mode = ui.visuals().dark_mode;
-    let r = ui
-        .put(rect, settings_button(dark_mode))
-        .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-    if r.clicked() {
-        action = Some(DaveAction::OpenSettings);
-    }
-
-    action
-}
-
-fn pfp_button<'me, 'a>(
-    txn: &'a Transaction,
-    accounts: &Accounts,
-    img_cache: &'me mut Images,
-    ndb: &Ndb,
-    jobs: &'me MediaJobSender,
-) -> ProfilePic<'me, 'a> {
-    let account = accounts.get_selected_account();
-    let profile = ndb
-        .get_profile_by_pubkey(txn, account.key.pubkey.bytes())
-        .ok();
-
-    ProfilePic::from_profile_or_default(img_cache, jobs, profile.as_ref())
-        .size(24.0)
-        .sense(egui::Sense::click())
 }
