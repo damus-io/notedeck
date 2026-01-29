@@ -33,8 +33,8 @@ pub enum KeyAction {
     FocusQueueNext,
     /// Navigate to previous item in focus queue (Ctrl+P)
     FocusQueuePrev,
-    /// Dismiss current item from focus queue (Ctrl+D)
-    FocusQueueDismiss,
+    /// Toggle Done status for current focus queue item (Ctrl+D)
+    FocusQueueToggleDone,
     /// Toggle auto-steal focus mode (Ctrl+Space)
     ToggleAutoSteal,
     /// Open external editor for composing input (Ctrl+G)
@@ -109,9 +109,9 @@ pub fn check_keybindings(
         return Some(KeyAction::TogglePlanMode);
     }
 
-    // Ctrl+D to dismiss current item from focus queue
+    // Ctrl+D to toggle Done status for current focus queue item
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::D)) {
-        return Some(KeyAction::FocusQueueDismiss);
+        return Some(KeyAction::FocusQueueToggleDone);
     }
 
     // Ctrl+Space to toggle auto-steal focus mode

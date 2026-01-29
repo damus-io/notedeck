@@ -17,7 +17,7 @@ use chrono::{Duration, Local};
 use claude_agent_sdk_rs::PermissionMode;
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
-use focus_queue::FocusQueue;
+use focus_queue::{FocusPriority, FocusQueue};
 use nostrdb::Transaction;
 use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::HashMap;
@@ -1165,10 +1165,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Dismiss the current item from the focus queue
-    fn focus_queue_dismiss(&mut self) {
+    /// Toggle Done status for the current focus queue item.
+    /// If the item is Done, remove it from the queue.
+    fn focus_queue_toggle_done(&mut self) {
         if let Some(entry) = self.focus_queue.current() {
-            self.focus_queue.dequeue(entry.session_id);
+            if entry.priority == FocusPriority::Done {
+                self.focus_queue.dequeue(entry.session_id);
+            }
         }
     }
 
@@ -1313,8 +1316,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let current_session = self.session_manager.active_id();
             let current_priority =
                 current_session.and_then(|id| self.focus_queue.get_session_priority(id));
-            let already_on_needs_input =
-                current_priority == Some(focus_queue::FocusPriority::NeedsInput);
+            let already_on_needs_input = current_priority == Some(FocusPriority::NeedsInput);
 
             if !already_on_needs_input {
                 // Save current session before stealing (only if we haven't saved yet)
@@ -1533,8 +1535,8 @@ impl notedeck::App for Dave {
                 KeyAction::FocusQueuePrev => {
                     self.focus_queue_prev();
                 }
-                KeyAction::FocusQueueDismiss => {
-                    self.focus_queue_dismiss();
+                KeyAction::FocusQueueToggleDone => {
+                    self.focus_queue_toggle_done();
                 }
                 KeyAction::ToggleAutoSteal => {
                     self.toggle_auto_steal();
