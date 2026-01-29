@@ -40,7 +40,7 @@ impl<'a> SessionListUi<'a> {
         let mut action: Option<SessionListAction> = None;
 
         ui.vertical(|ui| {
-            // Header with New Chat button
+            // Header with New Agent button
             action = self.header_ui(ui);
 
             ui.add_space(8.0);
@@ -64,7 +64,7 @@ impl<'a> SessionListUi<'a> {
 
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("Chats").size(18.0).strong());
+            ui.label(egui::RichText::new("Agents").size(18.0).strong());
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let icon = app_images::new_message_image()
@@ -74,7 +74,7 @@ impl<'a> SessionListUi<'a> {
                 if ui
                     .add(icon)
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("New Chat")
+                    .on_hover_text("New Agent")
                     .clicked()
                 {
                     action = Some(SessionListAction::NewSession);
