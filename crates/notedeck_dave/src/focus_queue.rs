@@ -135,7 +135,11 @@ impl FocusQueue {
             return None;
         }
         let cur = self.cursor.unwrap_or(0);
-        let next = (cur + 1) % self.entries.len();
+        // Don't wrap around - stay at lowest priority (last index)
+        if cur >= self.entries.len() - 1 {
+            return Some(self.entries[cur].session_id);
+        }
+        let next = cur + 1;
         self.cursor = Some(next);
         Some(self.entries[next].session_id)
     }
@@ -146,7 +150,11 @@ impl FocusQueue {
             return None;
         }
         let cur = self.cursor.unwrap_or(0);
-        let prev = (cur + self.entries.len() - 1) % self.entries.len();
+        // Don't wrap around - stay at highest priority (index 0)
+        if cur == 0 {
+            return Some(self.entries[0].session_id);
+        }
+        let prev = cur - 1;
         self.cursor = Some(prev);
         Some(self.entries[prev].session_id)
     }
