@@ -1,6 +1,7 @@
 use crate::backend::traits::AiBackend;
 use crate::messages::{
-    DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse, ToolResult,
+    DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse, SessionInfo,
+    SubagentInfo, SubagentStatus, ToolResult,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -12,6 +13,7 @@ use dashmap::DashMap;
 use futures::future::BoxFuture;
 use futures::StreamExt;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -118,7 +120,11 @@ struct PermissionRequestInternal {
 }
 
 /// Session actor task that owns a single ClaudeClient with persistent connection
-async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<SessionCommand>) {
+async fn session_actor(
+    session_id: String,
+    cwd: Option<PathBuf>,
+    mut command_rx: tokio_mpsc::Receiver<SessionCommand>,
+) {
     // Permission channel - the callback sends to perm_tx, actor receives on perm_rx
     let (perm_tx, mut perm_rx) = tokio_mpsc::channel::<PermissionRequestInternal>(16);
 
@@ -171,12 +177,21 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
     });
 
     // Create client once - this maintains the persistent connection
-    let options = ClaudeAgentOptions::builder()
-        .permission_mode(PermissionMode::Default)
-        .stderr_callback(stderr_callback)
-        .can_use_tool(can_use_tool)
-        .include_partial_messages(true)
-        .build();
+    let options = match cwd {
+        Some(ref dir) => ClaudeAgentOptions::builder()
+            .permission_mode(PermissionMode::Default)
+            .stderr_callback(stderr_callback)
+            .can_use_tool(can_use_tool)
+            .include_partial_messages(true)
+            .cwd(dir)
+            .build(),
+        None => ClaudeAgentOptions::builder()
+            .permission_mode(PermissionMode::Default)
+            .stderr_callback(stderr_callback)
+            .can_use_tool(can_use_tool)
+            .include_partial_messages(true)
+            .build(),
+    };
     let mut client = ClaudeClient::new(options);
 
     // Connect once - this starts the subprocess
@@ -344,6 +359,31 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                                             for block in &assistant_msg.message.content {
                                                 if let ContentBlock::ToolUse(ToolUseBlock { id, name, input }) = block {
                                                     pending_tools.insert(id.clone(), (name.clone(), input.clone()));
+
+                                                    // Emit SubagentSpawned for Task tool calls
+                                                    if name == "Task" {
+                                                        let description = input
+                                                            .get("description")
+                                                            .and_then(|v| v.as_str())
+                                                            .unwrap_or("task")
+                                                            .to_string();
+                                                        let subagent_type = input
+                                                            .get("subagent_type")
+                                                            .and_then(|v| v.as_str())
+                                                            .unwrap_or("unknown")
+                                                            .to_string();
+
+                                                        let subagent_info = SubagentInfo {
+                                                            task_id: id.clone(),
+                                                            description,
+                                                            subagent_type,
+                                                            status: SubagentStatus::Running,
+                                                            output: String::new(),
+                                                            max_output_size: 4000,
+                                                        };
+                                                        let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
+                                                        ctx.request_repaint();
+                                                    }
                                                 }
                                             }
                                         }
@@ -388,6 +428,16 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
 
                                                 if let Some(tool_use_id) = tool_use_id {
                                                     if let Some((tool_name, tool_input)) = pending_tools.remove(tool_use_id) {
+                                                        // Check if this is a Task tool completion
+                                                        if tool_name == "Task" {
+                                                            let result_text = extract_response_content(tool_use_result)
+                                                                .unwrap_or_else(|| "completed".to_string());
+                                                            let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
+                                                                task_id: tool_use_id.to_string(),
+                                                                result: truncate_output(&result_text, 2000),
+                                                            });
+                                                        }
+
                                                         let summary = format_tool_summary(&tool_name, &tool_input, tool_use_result);
                                                         let tool_result = ToolResult { tool_name, summary };
                                                         let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
@@ -396,8 +446,18 @@ async fn session_actor(session_id: String, mut command_rx: tokio_mpsc::Receiver<
                                                 }
                                             }
                                         }
-                                        other => {
-                                            tracing::debug!("Received unhandled message type: {:?}", other);
+                                        ClaudeMessage::System(system_msg) => {
+                                            // Handle system init message - extract session info
+                                            if system_msg.subtype == "init" {
+                                                let session_info = parse_session_info(&system_msg);
+                                                let _ = response_tx.send(DaveApiResponse::SessionInfo(session_info));
+                                                ctx.request_repaint();
+                                            } else {
+                                                tracing::debug!("Received system message subtype: {}", system_msg.subtype);
+                                            }
+                                        }
+                                        ClaudeMessage::ControlCancelRequest(_) => {
+                                            // Ignore internal control messages
                                         }
                                     }
                                 }
@@ -458,6 +518,7 @@ impl AiBackend for ClaudeBackend {
         _model: String,
         _user_id: String,
         session_id: String,
+        cwd: Option<PathBuf>,
         ctx: egui::Context,
     ) -> (
         mpsc::Receiver<DaveApiResponse>,
@@ -493,10 +554,11 @@ impl AiBackend for ClaudeBackend {
             let handle = entry.or_insert_with(|| {
                 let (command_tx, command_rx) = tokio_mpsc::channel(16);
 
-                // Spawn session actor
+                // Spawn session actor with cwd
                 let session_id_clone = session_id.clone();
+                let cwd_clone = cwd.clone();
                 tokio::spawn(async move {
-                    session_actor(session_id_clone, command_rx).await;
+                    session_actor(session_id_clone, cwd_clone, command_rx).await;
                 });
 
                 SessionHandle { command_tx }
@@ -670,6 +732,76 @@ fn format_tool_summary(
             let filename = file.rsplit('/').next().unwrap_or(file);
             filename.to_string()
         }
+        "Task" => {
+            let description = input
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("task");
+            let subagent_type = input
+                .get("subagent_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            format!("{} ({})", description, subagent_type)
+        }
         _ => String::new(),
+    }
+}
+
+/// Parse a System message into SessionInfo
+fn parse_session_info(system_msg: &claude_agent_sdk_rs::SystemMessage) -> SessionInfo {
+    let data = &system_msg.data;
+
+    // Extract slash_commands from data
+    let slash_commands = data
+        .get("slash_commands")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Extract agents from data
+    let agents = data
+        .get("agents")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Extract CLI version
+    let cli_version = data
+        .get("claude_code_version")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    SessionInfo {
+        tools: system_msg.tools.clone().unwrap_or_default(),
+        model: system_msg.model.clone(),
+        permission_mode: system_msg.permission_mode.clone(),
+        slash_commands,
+        agents,
+        cli_version,
+        cwd: system_msg.cwd.clone(),
+        claude_session_id: system_msg.session_id.clone(),
+    }
+}
+
+/// Truncate output to a maximum size, keeping the end (most recent) content
+fn truncate_output(output: &str, max_size: usize) -> String {
+    if output.len() <= max_size {
+        output.to_string()
+    } else {
+        let start = output.len() - max_size;
+        // Find a newline near the start to avoid cutting mid-line
+        let adjusted_start = output[start..]
+            .find('\n')
+            .map(|pos| start + pos + 1)
+            .unwrap_or(start);
+        format!("...\n{}", &output[adjusted_start..])
     }
 }

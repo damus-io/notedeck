@@ -2,6 +2,7 @@ use crate::messages::DaveApiResponse;
 use crate::tools::Tool;
 use claude_agent_sdk_rs::PermissionMode;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 
@@ -25,6 +26,7 @@ pub trait AiBackend: Send + Sync {
         model: String,
         user_id: String,
         session_id: String,
+        cwd: Option<PathBuf>,
         ctx: egui::Context,
     ) -> (
         mpsc::Receiver<DaveApiResponse>,

@@ -11,6 +11,7 @@ use claude_agent_sdk_rs::PermissionMode;
 use futures::StreamExt;
 use nostrdb::{Ndb, Transaction};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 
@@ -33,6 +34,7 @@ impl AiBackend for OpenAiBackend {
         model: String,
         user_id: String,
         _session_id: String,
+        _cwd: Option<PathBuf>,
         ctx: egui::Context,
     ) -> (
         mpsc::Receiver<DaveApiResponse>,

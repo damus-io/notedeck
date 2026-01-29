@@ -21,6 +21,7 @@ use focus_queue::FocusQueue;
 use nostrdb::Transaction;
 use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
@@ -29,7 +30,7 @@ pub use avatar::DaveAvatar;
 pub use config::{AiProvider, DaveSettings, ModelConfig};
 pub use messages::{
     AskUserQuestionInput, DaveApiResponse, Message, PermissionResponse, PermissionResponseType,
-    QuestionAnswer, ToolResult,
+    QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus, ToolResult,
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -278,6 +279,35 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::ToolResult(result) => {
                         tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
                         session.chat.push(Message::ToolResult(result));
+                    }
+
+                    DaveApiResponse::SessionInfo(info) => {
+                        tracing::debug!(
+                            "Session info: model={:?}, tools={}, agents={}",
+                            info.model,
+                            info.tools.len(),
+                            info.agents.len()
+                        );
+                        session.session_info = Some(info);
+                    }
+
+                    DaveApiResponse::SubagentSpawned(subagent) => {
+                        tracing::debug!(
+                            "Subagent spawned: {} ({}) - {}",
+                            subagent.task_id,
+                            subagent.subagent_type,
+                            subagent.description
+                        );
+                        session.subagents.insert(subagent.task_id.clone(), subagent);
+                    }
+
+                    DaveApiResponse::SubagentOutput { task_id, output } => {
+                        session.update_subagent_output(&task_id, &output);
+                    }
+
+                    DaveApiResponse::SubagentCompleted { task_id, result } => {
+                        tracing::debug!("Subagent completed: {}", task_id);
+                        session.complete_subagent(&task_id, &result);
                     }
                 }
             }
@@ -1017,6 +1047,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         if let Some(session) = self.session_manager.get_active_mut() {
+            let input = session.input.trim().to_string();
+
+            // Handle /cd command
+            if input.starts_with("/cd ") {
+                let path_str = input.strip_prefix("/cd ").unwrap().trim();
+                let path = PathBuf::from(path_str);
+                if path.exists() && path.is_dir() {
+                    session.cwd = Some(path.clone());
+                    session.chat.push(Message::System(format!(
+                        "Working directory set to: {}",
+                        path.display()
+                    )));
+                } else {
+                    session
+                        .chat
+                        .push(Message::Error(format!("Invalid directory: {}", path_str)));
+                }
+                session.input.clear();
+                return;
+            }
+
             session.chat.push(Message::User(session.input.clone()));
             session.input.clear();
             session.update_title_from_last_message();
@@ -1032,6 +1083,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
         let session_id = format!("dave-session-{}", session.id);
         let messages = session.chat.clone();
+        let cwd = session.cwd.clone();
         let tools = self.tools.clone();
         let model_name = self.model_config.model().to_owned();
         let ctx = ctx.clone();
@@ -1039,7 +1091,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Use backend to stream request
         let (rx, task_handle) = self
             .backend
-            .stream_request(messages, tools, model_name, user_id, session_id, ctx);
+            .stream_request(messages, tools, model_name, user_id, session_id, cwd, ctx);
         session.incoming_tokens = Some(rx);
         session.task_handle = task_handle;
     }

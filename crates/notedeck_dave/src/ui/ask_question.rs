@@ -50,10 +50,7 @@ pub fn ask_user_question_ui(
         .fill(ui.visuals().widgets.noninteractive.bg_fill)
         .inner_margin(inner_margin)
         .corner_radius(corner_radius)
-        .stroke(egui::Stroke::new(
-            1.0,
-            ui.visuals().selection.stroke.color,
-        ))
+        .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color))
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 // Progress indicator if multiple questions
@@ -151,11 +148,7 @@ pub fn ask_user_question_ui(
 
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new(&option.label));
-                            ui.label(
-                                egui::RichText::new(&option.description)
-                                    .weak()
-                                    .size(11.0),
-                            );
+                            ui.label(egui::RichText::new(&option.description).weak().size(11.0));
                         });
                     });
 
@@ -216,11 +209,7 @@ pub fn ask_user_question_ui(
                     let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
 
                     let is_last_question = current_idx == num_questions - 1;
-                    let button_label = if is_last_question {
-                        "Submit"
-                    } else {
-                        "Next"
-                    };
+                    let button_label = if is_last_question { "Submit" } else { "Next" };
 
                     let submit_response = badge::ActionButton::new(
                         button_label,
@@ -255,10 +244,7 @@ pub fn ask_user_question_ui(
 ///
 /// Shows the question header(s) and selected answer(s) in a single line.
 /// Uses pre-computed AnswerSummary to avoid per-frame allocations.
-pub fn ask_user_question_summary_ui(
-    summary: &crate::messages::AnswerSummary,
-    ui: &mut egui::Ui,
-) {
+pub fn ask_user_question_summary_ui(summary: &crate::messages::AnswerSummary, ui: &mut egui::Ui) {
     let inner_margin = 8.0;
     let corner_radius = 6.0;
 

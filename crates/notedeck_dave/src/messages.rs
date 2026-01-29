@@ -99,6 +99,55 @@ pub struct ToolResult {
     pub summary: String, // e.g., "154 lines", "exit 0", "3 matches"
 }
 
+/// Session initialization info from Claude Code CLI
+#[derive(Debug, Clone, Default)]
+pub struct SessionInfo {
+    /// Available tools in this session
+    pub tools: Vec<String>,
+    /// Model being used (e.g., "claude-opus-4-5-20251101")
+    pub model: Option<String>,
+    /// Permission mode (e.g., "default", "plan")
+    pub permission_mode: Option<String>,
+    /// Available slash commands
+    pub slash_commands: Vec<String>,
+    /// Available agent types for Task tool
+    pub agents: Vec<String>,
+    /// Claude Code CLI version
+    pub cli_version: Option<String>,
+    /// Current working directory
+    pub cwd: Option<String>,
+    /// Session ID from Claude Code
+    pub claude_session_id: Option<String>,
+}
+
+/// Status of a subagent spawned by the Task tool
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubagentStatus {
+    /// Subagent is running
+    Running,
+    /// Subagent completed successfully
+    Completed,
+    /// Subagent failed with an error
+    Failed,
+}
+
+/// Information about a subagent spawned by the Task tool
+#[derive(Debug, Clone)]
+pub struct SubagentInfo {
+    /// Unique ID for this subagent task
+    pub task_id: String,
+    /// Description of what the subagent is doing
+    pub description: String,
+    /// Type of subagent (e.g., "Explore", "Plan", "Bash")
+    pub subagent_type: String,
+    /// Current status
+    pub status: SubagentStatus,
+    /// Output content (truncated for display)
+    pub output: String,
+    /// Maximum output size to keep (for size-restricted window)
+    pub max_output_size: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     System(String),
@@ -123,6 +172,20 @@ pub enum DaveApiResponse {
     PermissionRequest(PendingPermission),
     /// Metadata from a completed tool execution
     ToolResult(ToolResult),
+    /// Session initialization info from Claude Code CLI
+    SessionInfo(SessionInfo),
+    /// Subagent spawned by Task tool
+    SubagentSpawned(SubagentInfo),
+    /// Subagent output update
+    SubagentOutput {
+        task_id: String,
+        output: String,
+    },
+    /// Subagent completed
+    SubagentCompleted {
+        task_id: String,
+        result: String,
+    },
 }
 
 impl Message {

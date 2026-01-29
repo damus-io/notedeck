@@ -133,10 +133,7 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn question_answers(
-        mut self,
-        answers: &'a mut HashMap<Uuid, Vec<QuestionAnswer>>,
-    ) -> Self {
+    pub fn question_answers(mut self, answers: &'a mut HashMap<Uuid, Vec<QuestionAnswer>>) -> Self {
         self.question_answers = Some(answers);
         self
     }
