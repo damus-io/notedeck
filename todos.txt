@@ -2,11 +2,11 @@
 
 - [x] in crates/notedeck_dave, i want to be able to switch to plan mode like you can in the claude-code cli. I believe there
 
-- [ ] plan: plan a feature for creating a queue of tool requests/questions 
+- [x] plan: plan a feature for creating a queue of tool requests/questions 
 
 - [x] plan: need a way to respond to a approve/deny in crates/notedeck_dave but giving a response as well
 
-- [ ] plan: plan a way to run claude commands such as /compact, with the ability to specify arguments as well (/compact <input>) etc
+- [x] plan: plan a way to run claude commands such as /compact, with the ability to specify arguments as well (/compact <input>) etc
 
 - [x] have the default view be classic instead of scene view. also don't call it classic, call it list
 
@@ -16,13 +16,15 @@
 
 - [x] have the approve/deny message appear near the bottom right of the diff instead of top right
 
-- [ ] ctrl-shift-tab should go in reverse node selection order
+- [x] ctrl-shift-tab should go in reverse node selection order
 
 - [ ] chat sidebar text should show the user's or AI's last message, not our last message
 
 - [ ] add a modeswitch (ctrl-something) for "auto-steal focus". when enabled, AI requests instantly steal focus. when disabled, requests are queued instead
 
 - [ ] add keybinding to open external editor (like vim) for composing input
+
+- [ ] auto-accept mode: add a toggle that automatically approves agent tool calls without requiring manual confirmation. useful for trusted tasks or batch mode. could be global or per-agent
 
 - [ ] persist conversation across app restarts
 
@@ -31,3 +33,7 @@
 - [x] handle claude-code questions/answers (AskUserQuestion tool - could be a list of questions)
 
 - [x] AskUserQuestion: show a small summary view of the question and selected option(s) after answering
+
+- [ ] auto-accept single line changes: automatically approve Edit tool calls that only modify a single line, reducing confirmation friction for trivial edits
+
+- [ ] preserve edit view after approval/denial: when approving or denying an edit, keep the diff visible instead of making it disappear. allows reviewing what was changed even after responding

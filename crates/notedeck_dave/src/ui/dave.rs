@@ -38,6 +38,8 @@ pub struct DaveUi<'a> {
     question_index: Option<&'a mut HashMap<Uuid, usize>>,
     /// Whether conversation compaction is in progress
     is_compacting: bool,
+    /// Whether auto-steal focus mode is active
+    auto_steal_focus: bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -129,6 +131,7 @@ impl<'a> DaveUi<'a> {
             question_answers: None,
             question_index: None,
             is_compacting: false,
+            auto_steal_focus: false,
         }
     }
 
@@ -174,6 +177,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn is_compacting(mut self, is_compacting: bool) -> Self {
         self.is_compacting = is_compacting;
+        self
+    }
+
+    pub fn auto_steal_focus(mut self, auto_steal_focus: bool) -> Self {
+        self.auto_steal_focus = auto_steal_focus;
         self
     }
 
@@ -818,16 +826,32 @@ impl<'a> DaveUi<'a> {
 
                 // Show plan mode indicator with optional keybind hint when Ctrl is held
                 let ctrl_held = ui.input(|i| i.modifiers.ctrl);
-                let mut badge =
+                let mut plan_badge =
                     super::badge::StatusBadge::new("PLAN").variant(if self.plan_mode_active {
                         super::badge::BadgeVariant::Info
                     } else {
                         super::badge::BadgeVariant::Default
                     });
                 if ctrl_held {
-                    badge = badge.keybind("M");
+                    plan_badge = plan_badge.keybind("M");
                 }
-                badge.show(ui).on_hover_text("Ctrl+M to toggle plan mode");
+                plan_badge
+                    .show(ui)
+                    .on_hover_text("Ctrl+M to toggle plan mode");
+
+                // Show auto-steal focus indicator
+                let mut auto_badge =
+                    super::badge::StatusBadge::new("AUTO").variant(if self.auto_steal_focus {
+                        super::badge::BadgeVariant::Info
+                    } else {
+                        super::badge::BadgeVariant::Default
+                    });
+                if ctrl_held {
+                    auto_badge = auto_badge.keybind("⎵");
+                }
+                auto_badge
+                    .show(ui)
+                    .on_hover_text("Ctrl+Space to toggle auto-focus mode");
 
                 let r = ui.add(
                     egui::TextEdit::multiline(self.input)

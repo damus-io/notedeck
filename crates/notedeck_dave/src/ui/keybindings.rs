@@ -35,6 +35,8 @@ pub enum KeyAction {
     FocusQueuePrev,
     /// Dismiss current item from focus queue (Ctrl+D)
     FocusQueueDismiss,
+    /// Toggle auto-steal focus mode (Ctrl+Space)
+    ToggleAutoSteal,
 }
 
 /// Check for keybinding actions.
@@ -103,6 +105,11 @@ pub fn check_keybindings(
     // Ctrl+D to dismiss current item from focus queue
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::D)) {
         return Some(KeyAction::FocusQueueDismiss);
+    }
+
+    // Ctrl+Space to toggle auto-steal focus mode
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::Space)) {
+        return Some(KeyAction::ToggleAutoSteal);
     }
 
     // Delete key to delete active session (only when no text input has focus)

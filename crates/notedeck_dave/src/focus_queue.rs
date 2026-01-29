@@ -168,6 +168,34 @@ impl FocusQueue {
         Some(self.cursor? + 1) // 1-indexed
     }
 
+    /// Get the raw cursor index (0-indexed)
+    pub fn cursor_index(&self) -> Option<usize> {
+        self.cursor
+    }
+
+    /// Set the cursor to a specific index, clamping to valid range
+    pub fn set_cursor(&mut self, index: usize) {
+        if self.entries.is_empty() {
+            self.cursor = None;
+        } else {
+            self.cursor = Some(index.min(self.entries.len() - 1));
+        }
+    }
+
+    /// Find the first entry with NeedsInput priority and return its index
+    pub fn first_needs_input_index(&self) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.priority == FocusPriority::NeedsInput)
+    }
+
+    /// Check if there are any NeedsInput items in the queue
+    pub fn has_needs_input(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.priority == FocusPriority::NeedsInput)
+    }
+
     pub fn ui_info(&self) -> Option<(usize, usize, FocusPriority)> {
         let entry = self.current()?;
         Some((self.current_position()?, self.len(), entry.priority))

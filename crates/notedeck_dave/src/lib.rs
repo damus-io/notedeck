@@ -69,6 +69,10 @@ pub struct Dave {
     interrupt_pending_since: Option<Instant>,
     /// Focus queue for agents needing attention
     focus_queue: FocusQueue,
+    /// Auto-steal focus mode: automatically cycle through focus queue items
+    auto_steal_focus: bool,
+    /// The cursor index to return to after processing all NeedsInput items
+    home_cursor: Option<usize>,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -154,6 +158,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             show_scene: false, // Default to list view
             interrupt_pending_since: None,
             focus_queue: FocusQueue::new(),
+            auto_steal_focus: false,
+            home_cursor: None,
         }
     }
 
@@ -371,6 +377,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Check if Ctrl is held for showing keybinding hints
         let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+        let auto_steal_focus = self.auto_steal_focus;
 
         StripBuilder::new(ui)
             .size(Size::relative(0.25)) // Scene area: 25%
@@ -451,6 +458,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .question_answers(&mut session.question_answers)
                                     .question_index(&mut session.question_index)
                                     .is_compacting(session.is_compacting)
+                                    .auto_steal_focus(auto_steal_focus)
                                     .ui(app_ctx, ui);
 
                                     if response.action.is_some() {
@@ -546,6 +554,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Now we can mutably borrow for chat
         let interrupt_pending = self.is_interrupt_pending();
+        let auto_steal_focus = self.auto_steal_focus;
         let chat_response = ui
             .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
                 if let Some(session) = self.session_manager.get_active_mut() {
@@ -566,6 +575,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .question_answers(&mut session.question_answers)
                     .question_index(&mut session.question_index)
                     .is_compacting(session.is_compacting)
+                    .auto_steal_focus(auto_steal_focus)
                     .ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
@@ -620,6 +630,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         } else {
             // Show chat
             let interrupt_pending = self.is_interrupt_pending();
+            let auto_steal_focus = self.auto_steal_focus;
             if let Some(session) = self.session_manager.get_active_mut() {
                 let is_working = session.status() == crate::agent_status::AgentStatus::Working;
                 let has_pending_permission = !session.pending_permissions.is_empty();
@@ -638,6 +649,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .question_answers(&mut session.question_answers)
                 .question_index(&mut session.question_index)
                 .is_compacting(session.is_compacting)
+                .auto_steal_focus(auto_steal_focus)
                 .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
@@ -1071,6 +1083,98 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Toggle auto-steal focus mode
+    fn toggle_auto_steal(&mut self) {
+        self.auto_steal_focus = !self.auto_steal_focus;
+
+        if self.auto_steal_focus {
+            // Enabling: record current cursor position as home
+            self.home_cursor = self.focus_queue.cursor_index();
+            tracing::debug!(
+                "Auto-steal focus enabled, home cursor: {:?}",
+                self.home_cursor
+            );
+        } else {
+            // Disabling: switch back to home cursor position if set
+            if let Some(home_idx) = self.home_cursor.take() {
+                self.focus_queue.set_cursor(home_idx);
+                // Switch to the session at that cursor position
+                if let Some(entry) = self.focus_queue.current() {
+                    self.session_manager.switch_to(entry.session_id);
+                    if self.show_scene {
+                        self.scene.select(entry.session_id);
+                        if let Some(session) = self.session_manager.get(entry.session_id) {
+                            self.scene.focus_on(session.scene_position);
+                        }
+                    }
+                }
+                tracing::debug!("Auto-steal focus disabled, returned to home cursor");
+            }
+        }
+
+        // Request focus on input after toggle
+        if let Some(session) = self.session_manager.get_active_mut() {
+            session.focus_requested = true;
+        }
+    }
+
+    /// Process auto-steal focus logic: switch to focus queue items as needed
+    fn process_auto_steal_focus(&mut self) {
+        if !self.auto_steal_focus {
+            return;
+        }
+
+        let has_needs_input = self.focus_queue.has_needs_input();
+
+        if has_needs_input {
+            // There are NeedsInput items - check if we need to steal focus
+            let current_entry = self.focus_queue.current();
+            let already_on_needs_input = current_entry
+                .map(|e| e.priority == focus_queue::FocusPriority::NeedsInput)
+                .unwrap_or(false);
+
+            if !already_on_needs_input {
+                // Save current position before stealing (only if we haven't saved yet)
+                if self.home_cursor.is_none() {
+                    self.home_cursor = self.focus_queue.cursor_index();
+                    tracing::debug!("Auto-steal: saved home cursor {:?}", self.home_cursor);
+                }
+
+                // Jump to first NeedsInput item
+                if let Some(idx) = self.focus_queue.first_needs_input_index() {
+                    self.focus_queue.set_cursor(idx);
+                    if let Some(entry) = self.focus_queue.current() {
+                        self.session_manager.switch_to(entry.session_id);
+                        if self.show_scene {
+                            self.scene.select(entry.session_id);
+                            if let Some(session) = self.session_manager.get(entry.session_id) {
+                                self.scene.focus_on(session.scene_position);
+                            }
+                        }
+                        tracing::debug!("Auto-steal: switched to session {:?}", entry.session_id);
+                    }
+                }
+            }
+        } else if let Some(home_idx) = self.home_cursor.take() {
+            // No more NeedsInput items - return to saved cursor position
+            self.focus_queue.set_cursor(home_idx);
+            if let Some(entry) = self.focus_queue.current() {
+                self.session_manager.switch_to(entry.session_id);
+                if self.show_scene {
+                    self.scene.select(entry.session_id);
+                    if let Some(session) = self.session_manager.get(entry.session_id) {
+                        self.scene.focus_on(session.scene_position);
+                    }
+                }
+                tracing::debug!(
+                    "Auto-steal: returned to home cursor, session {:?}",
+                    entry.session_id
+                );
+            }
+        }
+        // If no NeedsInput and no home_cursor saved, do nothing - allow free navigation
+    }
+
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         if let Some(session) = self.session_manager.get_active_mut() {
@@ -1252,6 +1356,9 @@ impl notedeck::App for Dave {
                 KeyAction::FocusQueueDismiss => {
                     self.focus_queue_dismiss();
                 }
+                KeyAction::ToggleAutoSteal => {
+                    self.toggle_auto_steal();
+                }
             }
         }
 
@@ -1267,6 +1374,9 @@ impl notedeck::App for Dave {
         // Update focus queue based on status changes (replaces auto-focus-stealing)
         let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));
         self.focus_queue.update_from_statuses(status_iter);
+
+        // Process auto-steal focus mode
+        self.process_auto_steal_focus();
 
         if let Some(action) = self.ui(ctx, ui).action {
             match action {
