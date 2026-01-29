@@ -75,6 +75,22 @@ impl FileUpdate {
         }
     }
 
+    /// Returns true if this is an Edit that changes at most `max_lines` lines
+    /// on both the old and new side. Never returns true for Write operations.
+    pub fn is_small_edit(&self, max_lines: usize) -> bool {
+        match &self.update_type {
+            FileUpdateType::Edit {
+                old_string,
+                new_string,
+            } => {
+                let old_lines = old_string.lines().count();
+                let new_lines = new_string.lines().count();
+                old_lines <= max_lines && new_lines <= max_lines
+            }
+            FileUpdateType::Write { .. } => false,
+        }
+    }
+
     /// Compute the diff lines for this update
     pub fn compute_diff(&self) -> Vec<DiffLine> {
         match &self.update_type {
