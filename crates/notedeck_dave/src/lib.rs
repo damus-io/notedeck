@@ -407,7 +407,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     ui.separator();
 
                     // Render the scene, passing ctrl_held for keybinding hints
-                    scene_response = Some(self.scene.ui(&self.session_manager, ui, ctrl_held));
+                    scene_response = Some(self.scene.ui(
+                        &self.session_manager,
+                        &self.focus_queue,
+                        ui,
+                        ctrl_held,
+                    ));
                 });
 
                 // Chat side panel

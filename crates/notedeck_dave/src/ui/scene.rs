@@ -1,4 +1,5 @@
 use crate::agent_status::AgentStatus;
+use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{SessionId, SessionManager};
 use crate::ui::paint_keybind_hint;
 use egui::{Color32, Pos2, Rect, Response, Sense, Vec2};
@@ -105,6 +106,7 @@ impl AgentScene {
     pub fn ui(
         &mut self,
         session_manager: &SessionManager,
+        focus_queue: &FocusQueue,
         ui: &mut egui::Ui,
         ctrl_held: bool,
     ) -> SceneResponse {
@@ -157,6 +159,7 @@ impl AgentScene {
                     let status = session.status();
                     let title = &session.title;
                     let is_selected = selected_ids.contains(&id);
+                    let queue_priority = focus_queue.get_session_priority(id);
 
                     let agent_response = Self::draw_agent(
                         ui,
@@ -167,6 +170,7 @@ impl AgentScene {
                         title,
                         is_selected,
                         ctrl_held,
+                        queue_priority,
                     );
 
                     if agent_response.clicked() {
@@ -301,6 +305,7 @@ impl AgentScene {
         title: &str,
         is_selected: bool,
         show_keybinding: bool,
+        queue_priority: Option<FocusPriority>,
     ) -> Response {
         let agent_radius = 30.0;
         let center = Pos2::new(position.x, position.y);
@@ -335,6 +340,14 @@ impl AgentScene {
             ui.visuals().widgets.inactive.bg_fill
         };
         painter.circle_filled(center, agent_radius - 2.0, fill_color);
+
+        // Focus queue indicator dot (top-right of the agent circle)
+        if let Some(priority) = queue_priority {
+            let dot_radius = 6.0;
+            let dot_offset = Vec2::new(agent_radius * 0.7, -agent_radius * 0.7);
+            let dot_center = center + dot_offset;
+            painter.circle_filled(dot_center, dot_radius, priority.color());
+        }
 
         // Agent icon in center: show keybind frame when Ctrl held, otherwise first letter
         if show_keybinding {
