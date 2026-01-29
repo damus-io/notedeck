@@ -322,7 +322,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             info.pre_tokens
                         );
                         session.is_compacting = false;
-                        session.last_compaction = Some(info);
+                        session.last_compaction = Some(info.clone());
+                        session.chat.push(Message::CompactionComplete(info));
                     }
                 }
             }

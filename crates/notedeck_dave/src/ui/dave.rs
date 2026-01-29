@@ -3,7 +3,7 @@ use crate::{
     config::DaveSettings,
     file_update::FileUpdate,
     messages::{
-        AskUserQuestionInput, Message, PermissionRequest, PermissionResponse,
+        AskUserQuestionInput, CompactionInfo, Message, PermissionRequest, PermissionResponse,
         PermissionResponseType, QuestionAnswer, ToolResult,
     },
     session::PermissionMessageState,
@@ -291,6 +291,9 @@ impl<'a> DaveUi<'a> {
                 }
                 Message::ToolResult(result) => {
                     Self::tool_result_ui(result, ui);
+                }
+                Message::CompactionComplete(info) => {
+                    Self::compaction_complete_ui(info, ui);
                 }
             };
         }
@@ -613,6 +616,23 @@ impl<'a> DaveUi<'a> {
                         .monospace(),
                 ));
             }
+        });
+    }
+
+    /// Render compaction complete notification
+    fn compaction_complete_ui(info: &CompactionInfo, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(
+                egui::RichText::new("✓")
+                    .size(11.0)
+                    .color(egui::Color32::from_rgb(100, 180, 100)),
+            ));
+            ui.add(egui::Label::new(
+                egui::RichText::new(format!("Compacted ({} tokens)", info.pre_tokens))
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color())
+                    .italics(),
+            ));
         });
     }
 

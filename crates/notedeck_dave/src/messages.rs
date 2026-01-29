@@ -160,6 +160,8 @@ pub enum Message {
     PermissionRequest(PermissionRequest),
     /// Result metadata from a completed tool execution
     ToolResult(ToolResult),
+    /// Conversation was compacted
+    CompactionComplete(CompactionInfo),
 }
 
 /// Compaction info from compact_boundary system message
@@ -254,6 +256,9 @@ impl Message {
 
             // Tool results are UI-only, not sent to the API
             Message::ToolResult(_) => None,
+
+            // Compaction complete is UI-only, not sent to the API
+            Message::CompactionComplete(_) => None,
         }
     }
 }
