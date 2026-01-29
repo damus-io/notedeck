@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::agent_status::AgentStatus;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{SessionId, SessionManager};
@@ -168,6 +170,7 @@ impl AgentScene {
                         position,
                         status,
                         title,
+                        session.cwd.as_deref(),
                         is_selected,
                         ctrl_held,
                         queue_priority,
@@ -303,6 +306,7 @@ impl AgentScene {
         position: Vec2,
         status: AgentStatus,
         title: &str,
+        cwd: Option<&Path>,
         is_selected: bool,
         show_keybinding: bool,
         queue_priority: Option<FocusPriority>,
@@ -382,6 +386,19 @@ impl AgentScene {
             egui::FontId::proportional(9.0),
             status_color.gamma_multiply(0.9),
         );
+
+        // Cwd label (monospace, weak+small)
+        if let Some(cwd_path) = cwd {
+            let cwd_text = cwd_path.to_string_lossy();
+            let cwd_pos = center + Vec2::new(0.0, agent_radius + 38.0);
+            painter.text(
+                cwd_pos,
+                egui::Align2::CENTER_TOP,
+                &cwd_text,
+                egui::FontId::monospace(8.0),
+                ui.visuals().weak_text_color(),
+            );
+        }
 
         response
     }

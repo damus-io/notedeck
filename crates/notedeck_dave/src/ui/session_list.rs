@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use egui::{Align, Color32, Layout, Sense};
 use notedeck_ui::app_images;
 
@@ -102,6 +104,7 @@ impl<'a> SessionListUi<'a> {
             let response = self.session_item_ui(
                 ui,
                 &session.title,
+                session.cwd.as_deref(),
                 is_active,
                 shortcut_hint,
                 session.status(),
@@ -128,12 +131,15 @@ impl<'a> SessionListUi<'a> {
         &self,
         ui: &mut egui::Ui,
         title: &str,
+        cwd: Option<&Path>,
         is_active: bool,
         shortcut_hint: Option<usize>,
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
     ) -> egui::Response {
-        let desired_size = egui::vec2(ui.available_width(), 36.0);
+        // Taller height when cwd is present to fit both lines
+        let item_height = if cwd.is_some() { 48.0 } else { 36.0 };
+        let desired_size = egui::vec2(ui.available_width(), item_height);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let hover_text = format!("Ctrl+{} to switch", shortcut_hint.unwrap_or(0));
         let response = response
@@ -185,11 +191,12 @@ impl<'a> SessionListUi<'a> {
             right_offset
         };
 
-        // Draw title text (with clipping to avoid overlapping the dot)
-        let text_pos = rect.left_center() + egui::vec2(text_start_x, 0.0);
+        // Calculate text position - offset title upward when cwd is present
+        let title_y_offset = if cwd.is_some() { -7.0 } else { 0.0 };
+        let text_pos = rect.left_center() + egui::vec2(text_start_x, title_y_offset);
         let max_text_width = rect.width() - text_start_x - text_end_x;
 
-        // Clip title if needed
+        // Draw title text (with clipping to avoid overlapping the dot)
         let font_id = egui::FontId::proportional(14.0);
         let text_color = ui.visuals().text_color();
         let galley = ui
@@ -217,6 +224,43 @@ impl<'a> SessionListUi<'a> {
             );
         }
 
+        // Draw cwd below title
+        if let Some(cwd_path) = cwd {
+            let cwd_pos = rect.left_center() + egui::vec2(text_start_x, 7.0);
+            cwd_ui(ui, cwd_path, cwd_pos, max_text_width);
+        }
+
         response
+    }
+}
+
+/// Draw cwd text (monospace, weak+small) with clipping
+fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, pos: egui::Pos2, max_width: f32) {
+    let cwd_text = cwd_path.to_string_lossy();
+    let cwd_font = egui::FontId::monospace(10.0);
+    let cwd_color = ui.visuals().weak_text_color();
+
+    let cwd_galley = ui
+        .painter()
+        .layout_no_wrap(cwd_text.to_string(), cwd_font.clone(), cwd_color);
+
+    if cwd_galley.size().x > max_width {
+        let clip_rect = egui::Rect::from_min_size(
+            pos - egui::vec2(0.0, cwd_galley.size().y / 2.0),
+            egui::vec2(max_width, cwd_galley.size().y),
+        );
+        ui.painter().with_clip_rect(clip_rect).galley(
+            pos - egui::vec2(0.0, cwd_galley.size().y / 2.0),
+            cwd_galley,
+            cwd_color,
+        );
+    } else {
+        ui.painter().text(
+            pos,
+            egui::Align2::LEFT_CENTER,
+            &cwd_text,
+            cwd_font,
+            cwd_color,
+        );
     }
 }
