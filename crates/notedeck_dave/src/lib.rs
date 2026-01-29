@@ -71,8 +71,8 @@ pub struct Dave {
     focus_queue: FocusQueue,
     /// Auto-steal focus mode: automatically cycle through focus queue items
     auto_steal_focus: bool,
-    /// The cursor index to return to after processing all NeedsInput items
-    home_cursor: Option<usize>,
+    /// The session ID to return to after processing all NeedsInput items
+    home_session: Option<SessionId>,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -159,7 +159,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             interrupt_pending_since: None,
             focus_queue: FocusQueue::new(),
             auto_steal_focus: false,
-            home_cursor: None,
+            home_session: None,
         }
     }
 
@@ -1088,27 +1088,23 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.auto_steal_focus = !self.auto_steal_focus;
 
         if self.auto_steal_focus {
-            // Enabling: record current cursor position as home
-            self.home_cursor = self.focus_queue.cursor_index();
+            // Enabling: record current session as home
+            self.home_session = self.session_manager.active_id();
             tracing::debug!(
-                "Auto-steal focus enabled, home cursor: {:?}",
-                self.home_cursor
+                "Auto-steal focus enabled, home session: {:?}",
+                self.home_session
             );
         } else {
-            // Disabling: switch back to home cursor position if set
-            if let Some(home_idx) = self.home_cursor.take() {
-                self.focus_queue.set_cursor(home_idx);
-                // Switch to the session at that cursor position
-                if let Some(entry) = self.focus_queue.current() {
-                    self.session_manager.switch_to(entry.session_id);
-                    if self.show_scene {
-                        self.scene.select(entry.session_id);
-                        if let Some(session) = self.session_manager.get(entry.session_id) {
-                            self.scene.focus_on(session.scene_position);
-                        }
+            // Disabling: switch back to home session if set
+            if let Some(home_id) = self.home_session.take() {
+                self.session_manager.switch_to(home_id);
+                if self.show_scene {
+                    self.scene.select(home_id);
+                    if let Some(session) = self.session_manager.get(home_id) {
+                        self.scene.focus_on(session.scene_position);
                     }
                 }
-                tracing::debug!("Auto-steal focus disabled, returned to home cursor");
+                tracing::debug!("Auto-steal focus disabled, returned to home session");
             }
         }
 
@@ -1128,16 +1124,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         if has_needs_input {
             // There are NeedsInput items - check if we need to steal focus
-            let current_entry = self.focus_queue.current();
-            let already_on_needs_input = current_entry
-                .map(|e| e.priority == focus_queue::FocusPriority::NeedsInput)
-                .unwrap_or(false);
+            let current_session = self.session_manager.active_id();
+            let current_priority =
+                current_session.and_then(|id| self.focus_queue.get_session_priority(id));
+            let already_on_needs_input =
+                current_priority == Some(focus_queue::FocusPriority::NeedsInput);
 
             if !already_on_needs_input {
-                // Save current position before stealing (only if we haven't saved yet)
-                if self.home_cursor.is_none() {
-                    self.home_cursor = self.focus_queue.cursor_index();
-                    tracing::debug!("Auto-steal: saved home cursor {:?}", self.home_cursor);
+                // Save current session before stealing (only if we haven't saved yet)
+                if self.home_session.is_none() {
+                    self.home_session = current_session;
+                    tracing::debug!("Auto-steal: saved home session {:?}", self.home_session);
                 }
 
                 // Jump to first NeedsInput item
@@ -1155,24 +1152,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
             }
-        } else if let Some(home_idx) = self.home_cursor.take() {
-            // No more NeedsInput items - return to saved cursor position
-            self.focus_queue.set_cursor(home_idx);
-            if let Some(entry) = self.focus_queue.current() {
-                self.session_manager.switch_to(entry.session_id);
-                if self.show_scene {
-                    self.scene.select(entry.session_id);
-                    if let Some(session) = self.session_manager.get(entry.session_id) {
-                        self.scene.focus_on(session.scene_position);
-                    }
+        } else if let Some(home_id) = self.home_session.take() {
+            // No more NeedsInput items - return to saved session
+            self.session_manager.switch_to(home_id);
+            if self.show_scene {
+                self.scene.select(home_id);
+                if let Some(session) = self.session_manager.get(home_id) {
+                    self.scene.focus_on(session.scene_position);
                 }
-                tracing::debug!(
-                    "Auto-steal: returned to home cursor, session {:?}",
-                    entry.session_id
-                );
             }
+            tracing::debug!("Auto-steal: returned to home session {:?}", home_id);
         }
-        // If no NeedsInput and no home_cursor saved, do nothing - allow free navigation
+        // If no NeedsInput and no home_session saved, do nothing - allow free navigation
     }
 
     /// Handle a user send action triggered by the ui
