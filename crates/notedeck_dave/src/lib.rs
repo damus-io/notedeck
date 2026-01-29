@@ -45,6 +45,15 @@ pub use ui::{
 };
 pub use vec3::Vec3;
 
+/// Represents which full-screen overlay (if any) is currently active
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DaveOverlay {
+    #[default]
+    None,
+    Settings,
+    DirectoryPicker,
+}
+
 pub struct Dave {
     /// Manages multiple chat sessions
     session_manager: SessionManager,
@@ -76,6 +85,8 @@ pub struct Dave {
     home_session: Option<SessionId>,
     /// Directory picker for selecting working directory when creating sessions
     directory_picker: DirectoryPicker,
+    /// Current overlay taking over the UI (if any)
+    active_overlay: DaveOverlay,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -148,9 +159,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let settings = DaveSettings::from_model_config(&model_config);
 
-        let mut directory_picker = DirectoryPicker::new();
-        // Auto-open the picker on startup since there are no sessions
-        directory_picker.open();
+        let directory_picker = DirectoryPicker::new();
 
         Dave {
             backend,
@@ -168,6 +177,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             auto_steal_focus: false,
             home_session: None,
             directory_picker,
+            // Auto-show directory picker on startup since there are no sessions
+            active_overlay: DaveOverlay::DirectoryPicker,
         }
     }
 
@@ -367,6 +378,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        // Check overlays first - they take over the entire UI
+        match self.active_overlay {
+            DaveOverlay::Settings => return self.settings_overlay_ui(app_ctx, ui),
+            DaveOverlay::DirectoryPicker => return self.directory_picker_overlay_ui(app_ctx, ui),
+            DaveOverlay::None => {}
+        }
+
+        // Normal routing
         if is_narrow(ui.ctx()) {
             self.narrow_ui(app_ctx, ui)
         } else if self.show_scene {
@@ -374,6 +393,54 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         } else {
             self.desktop_ui(app_ctx, ui)
         }
+    }
+
+    /// Full-screen settings overlay
+    fn settings_overlay_ui(
+        &mut self,
+        _app_ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+    ) -> DaveResponse {
+        if let Some(action) = self.settings_panel.overlay_ui(ui, &self.settings) {
+            match action {
+                SettingsPanelAction::Save(new_settings) => {
+                    self.apply_settings(new_settings.clone());
+                    self.active_overlay = DaveOverlay::None;
+                    return DaveResponse::new(DaveAction::UpdateSettings(new_settings));
+                }
+                SettingsPanelAction::Cancel => {
+                    self.active_overlay = DaveOverlay::None;
+                }
+            }
+        }
+        DaveResponse::default()
+    }
+
+    /// Full-screen directory picker overlay
+    fn directory_picker_overlay_ui(
+        &mut self,
+        _app_ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+    ) -> DaveResponse {
+        let has_sessions = !self.session_manager.is_empty();
+        if let Some(action) = self.directory_picker.overlay_ui(ui, has_sessions) {
+            match action {
+                DirectoryPickerAction::DirectorySelected(path) => {
+                    self.create_session_with_cwd(path);
+                    self.active_overlay = DaveOverlay::None;
+                }
+                DirectoryPickerAction::Cancelled => {
+                    // Only close if there are existing sessions to fall back to
+                    if has_sessions {
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                }
+                DirectoryPickerAction::BrowseRequested => {
+                    // Handled internally by the picker
+                }
+            }
+        }
+        DaveResponse::default()
     }
 
     /// Scene view with RTS-style agent visualization and chat side panel
@@ -666,8 +733,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn handle_new_chat(&mut self) {
-        // Open the directory picker instead of creating session directly
-        self.directory_picker.open();
+        // Show the directory picker overlay
+        self.active_overlay = DaveOverlay::DirectoryPicker;
     }
 
     /// Create a new session with the given cwd (called after directory picker selection)
@@ -1366,34 +1433,6 @@ impl notedeck::App for Dave {
             }
         }
 
-        // Render settings panel and handle its actions
-        if let Some(settings_action) = self.settings_panel.ui(ui.ctx()) {
-            match settings_action {
-                SettingsPanelAction::Save(new_settings) => {
-                    self.apply_settings(new_settings.clone());
-                    dave_action = Some(DaveAction::UpdateSettings(new_settings));
-                }
-                SettingsPanelAction::Cancel => {
-                    // Panel closed, nothing to do
-                }
-            }
-        }
-
-        // Render directory picker and handle its actions
-        if let Some(picker_action) = self.directory_picker.ui(ui.ctx()) {
-            match picker_action {
-                DirectoryPickerAction::DirectorySelected(path) => {
-                    self.create_session_with_cwd(path);
-                }
-                DirectoryPickerAction::Cancelled => {
-                    // Picker closed without selection, nothing to do
-                }
-                DirectoryPickerAction::BrowseRequested => {
-                    // Handled internally by the picker
-                }
-            }
-        }
-
         // Handle global keybindings (when no text input has focus)
         let has_pending_permission = self.first_pending_permission().is_some();
         let has_pending_question = self.has_pending_question();
@@ -1589,7 +1628,7 @@ impl notedeck::App for Dave {
                     self.show_session_list = !self.show_session_list;
                 }
                 DaveAction::OpenSettings => {
-                    self.settings_panel.open(&self.settings);
+                    self.active_overlay = DaveOverlay::Settings;
                 }
                 DaveAction::UpdateSettings(settings) => {
                     dave_action = Some(DaveAction::UpdateSettings(settings));
