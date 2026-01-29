@@ -1,4 +1,5 @@
 use crate::config::{AiProvider, DaveSettings};
+use crate::ui::keybind_hint::keybind_hint;
 
 /// Tracks the state of the settings panel
 pub struct DaveSettingsPanel {
@@ -81,6 +82,12 @@ impl DaveSettingsPanel {
 
         let mut action: Option<SettingsPanelAction> = None;
         let is_narrow = notedeck::ui::is_narrow(ui.ctx());
+        let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+
+        // Handle Ctrl+S to save
+        if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::S)) {
+            action = Some(SettingsPanelAction::Save(self.editing.clone()));
+        }
 
         // Full panel frame with padding
         egui::Frame::new()
@@ -91,6 +98,9 @@ impl DaveSettingsPanel {
                 ui.horizontal(|ui| {
                     if ui.button("< Back").clicked() {
                         action = Some(SettingsPanelAction::Cancel);
+                    }
+                    if ctrl_held {
+                        keybind_hint(ui, "Esc");
                     }
                     ui.add_space(16.0);
                     ui.heading("Settings");
@@ -112,13 +122,20 @@ impl DaveSettingsPanel {
 
                         ui.add_space(24.0);
 
-                        // Action buttons
+                        // Action buttons with keyboard hints
                         ui.horizontal(|ui| {
                             if ui.button("Save").clicked() {
                                 action = Some(SettingsPanelAction::Save(self.editing.clone()));
                             }
+                            if ctrl_held {
+                                keybind_hint(ui, "S");
+                            }
+                            ui.add_space(8.0);
                             if ui.button("Cancel").clicked() {
                                 action = Some(SettingsPanelAction::Cancel);
+                            }
+                            if ctrl_held {
+                                keybind_hint(ui, "Esc");
                             }
                         });
                     },

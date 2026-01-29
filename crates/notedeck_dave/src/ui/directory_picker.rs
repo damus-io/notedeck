@@ -1,3 +1,4 @@
+use crate::ui::keybind_hint::paint_keybind_hint;
 use egui::{RichText, Vec2};
 use std::path::PathBuf;
 
@@ -102,6 +103,30 @@ impl DirectoryPicker {
 
         let mut action = None;
         let is_narrow = notedeck::ui::is_narrow(ui.ctx());
+        let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+
+        // Handle keyboard shortcuts for recent directories (1-9)
+        for (idx, path) in self.recent_directories.iter().take(9).enumerate() {
+            let key = match idx {
+                0 => egui::Key::Num1,
+                1 => egui::Key::Num2,
+                2 => egui::Key::Num3,
+                3 => egui::Key::Num4,
+                4 => egui::Key::Num5,
+                5 => egui::Key::Num6,
+                6 => egui::Key::Num7,
+                7 => egui::Key::Num8,
+                8 => egui::Key::Num9,
+                _ => continue,
+            };
+            if ui.input(|i| i.key_pressed(key)) {
+                return Some(DirectoryPickerAction::DirectorySelected(path.clone()));
+            }
+        }
+
+        // Handle B key for browse (track whether we need to trigger it)
+        let trigger_browse =
+            ui.input(|i| i.key_pressed(egui::Key::B)) && self.pending_folder_pick.is_none();
 
         // Full panel frame
         egui::Frame::new()
@@ -149,29 +174,49 @@ impl DirectoryPicker {
                             egui::ScrollArea::vertical()
                                 .max_height(scroll_height)
                                 .show(ui, |ui| {
-                                    for path in &self.recent_directories.clone() {
+                                    for (idx, path) in
+                                        self.recent_directories.clone().iter().enumerate()
+                                    {
                                         let display = abbreviate_path(path);
 
                                         // Full-width button style with larger touch targets on mobile
                                         let button_height = if is_narrow { 44.0 } else { 32.0 };
-                                        let button =
-                                            egui::Button::new(RichText::new(&display).monospace())
-                                                .min_size(Vec2::new(
-                                                    ui.available_width(),
-                                                    button_height,
-                                                ))
-                                                .fill(ui.visuals().widgets.inactive.weak_bg_fill);
+                                        let hint_width =
+                                            if ctrl_held && idx < 9 { 24.0 } else { 0.0 };
+                                        let button_width = ui.available_width() - hint_width - 4.0;
 
-                                        if ui
-                                            .add(button)
-                                            .on_hover_text(path.display().to_string())
-                                            .clicked()
-                                        {
-                                            action =
-                                                Some(DirectoryPickerAction::DirectorySelected(
-                                                    path.clone(),
-                                                ));
-                                        }
+                                        ui.horizontal(|ui| {
+                                            let button = egui::Button::new(
+                                                RichText::new(&display).monospace(),
+                                            )
+                                            .min_size(Vec2::new(button_width, button_height))
+                                            .fill(ui.visuals().widgets.inactive.weak_bg_fill);
+
+                                            let response = ui.add(button);
+
+                                            // Show keybind hint when Ctrl is held (for first 9 items)
+                                            if ctrl_held && idx < 9 {
+                                                let hint_text = format!("{}", idx + 1);
+                                                let hint_center = response.rect.right_center()
+                                                    + egui::vec2(hint_width / 2.0 + 2.0, 0.0);
+                                                paint_keybind_hint(
+                                                    ui,
+                                                    hint_center,
+                                                    &hint_text,
+                                                    18.0,
+                                                );
+                                            }
+
+                                            if response
+                                                .on_hover_text(path.display().to_string())
+                                                .clicked()
+                                            {
+                                                action =
+                                                    Some(DirectoryPickerAction::DirectorySelected(
+                                                        path.clone(),
+                                                    ));
+                                            }
+                                        });
 
                                         ui.add_space(4.0);
                                     }
@@ -183,36 +228,47 @@ impl DirectoryPicker {
                         }
 
                         // Browse button (larger touch target on mobile)
-                        let browse_button =
-                            egui::Button::new(RichText::new("Browse...").size(if is_narrow {
-                                16.0
-                            } else {
-                                14.0
-                            }))
-                            .min_size(Vec2::new(
-                                if is_narrow {
-                                    ui.available_width()
+                        ui.horizontal(|ui| {
+                            let browse_button =
+                                egui::Button::new(RichText::new("Browse...").size(if is_narrow {
+                                    16.0
                                 } else {
-                                    120.0
-                                },
-                                if is_narrow { 48.0 } else { 32.0 },
-                            ));
+                                    14.0
+                                }))
+                                .min_size(Vec2::new(
+                                    if is_narrow {
+                                        ui.available_width() - 28.0
+                                    } else {
+                                        120.0
+                                    },
+                                    if is_narrow { 48.0 } else { 32.0 },
+                                ));
 
-                        if ui
-                            .add(browse_button)
-                            .on_hover_text("Open folder picker dialog")
-                            .clicked()
-                        {
-                            // Spawn async folder picker
-                            let (tx, rx) = std::sync::mpsc::channel();
-                            let ctx_clone = ui.ctx().clone();
-                            std::thread::spawn(move || {
-                                let result = rfd::FileDialog::new().pick_folder();
-                                let _ = tx.send(result);
-                                ctx_clone.request_repaint();
-                            });
-                            self.pending_folder_pick = Some(rx);
-                        }
+                            let response = ui.add(browse_button);
+
+                            // Show keybind hint when Ctrl is held
+                            if ctrl_held {
+                                let hint_center =
+                                    response.rect.right_center() + egui::vec2(14.0, 0.0);
+                                paint_keybind_hint(ui, hint_center, "B", 18.0);
+                            }
+
+                            if response
+                                .on_hover_text("Open folder picker dialog (B)")
+                                .clicked()
+                                || trigger_browse
+                            {
+                                // Spawn async folder picker
+                                let (tx, rx) = std::sync::mpsc::channel();
+                                let ctx_clone = ui.ctx().clone();
+                                std::thread::spawn(move || {
+                                    let result = rfd::FileDialog::new().pick_folder();
+                                    let _ = tx.send(result);
+                                    ctx_clone.request_repaint();
+                                });
+                                self.pending_folder_pick = Some(rx);
+                            }
+                        });
 
                         if self.pending_folder_pick.is_some() {
                             ui.horizontal(|ui| {
