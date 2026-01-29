@@ -295,6 +295,23 @@ impl<'a> DaveUi<'a> {
             };
         }
 
+        // Show status line at the bottom of chat when compacting
+        if self.is_compacting {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(14.0));
+                ui.label(
+                    egui::RichText::new("compacting...")
+                        .color(ui.visuals().weak_text_color())
+                        .italics(),
+                );
+                ui.label(
+                    egui::RichText::new("(press esc to interrupt)")
+                        .color(ui.visuals().weak_text_color())
+                        .small(),
+                );
+            });
+        }
+
         response
     }
 
@@ -738,14 +755,6 @@ impl<'a> DaveUi<'a> {
                     .clicked()
                 {
                     dave_response = DaveResponse::send();
-                }
-
-                // Show compaction indicator when compacting
-                if self.is_compacting {
-                    super::badge::StatusBadge::new("COMPACTING...")
-                        .variant(super::badge::BadgeVariant::Warning)
-                        .show(ui)
-                        .on_hover_text("Conversation is being compacted to save tokens");
                 }
 
                 // Show plan mode indicator with optional keybind hint when Ctrl is held
