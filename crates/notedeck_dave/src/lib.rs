@@ -1114,6 +1114,103 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Open an external editor for composing the input text
+    fn open_external_editor(&mut self) {
+        use std::process::Command;
+
+        let Some(session) = self.session_manager.get_active_mut() else {
+            return;
+        };
+
+        // Create temp file with current input content
+        let temp_path = std::env::temp_dir().join("notedeck_input.txt");
+        if let Err(e) = std::fs::write(&temp_path, &session.input) {
+            tracing::error!("Failed to write temp file for external editor: {}", e);
+            return;
+        }
+
+        // Try $VISUAL first (GUI editors), then fall back to terminal + $EDITOR
+        let visual = std::env::var("VISUAL").ok();
+        let editor = std::env::var("EDITOR").ok();
+
+        let result = if let Some(visual_editor) = visual {
+            // $VISUAL is set - use it directly (assumes GUI editor)
+            tracing::debug!("Opening external editor via $VISUAL: {}", visual_editor);
+            Command::new(&visual_editor).arg(&temp_path).status()
+        } else {
+            // Fall back to terminal + $EDITOR
+            let editor_cmd = editor.unwrap_or_else(|| "vim".to_string());
+            let terminal = std::env::var("TERMINAL")
+                .ok()
+                .or_else(Self::find_terminal)
+                .unwrap_or_else(|| "xterm".to_string());
+
+            tracing::debug!(
+                "Opening external editor via terminal: {} -e {} {}",
+                terminal,
+                editor_cmd,
+                temp_path.display()
+            );
+            Command::new(&terminal)
+                .arg("-e")
+                .arg(&editor_cmd)
+                .arg(&temp_path)
+                .status()
+        };
+
+        match result {
+            Ok(status) if status.success() => {
+                // Read the edited content back
+                match std::fs::read_to_string(&temp_path) {
+                    Ok(content) => {
+                        // Re-get mutable session reference after potential borrow issues
+                        if let Some(session) = self.session_manager.get_active_mut() {
+                            session.input = content;
+                            session.focus_requested = true;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to read temp file after editing: {}", e);
+                    }
+                }
+            }
+            Ok(status) => {
+                tracing::warn!("External editor exited with status: {}", status);
+            }
+            Err(e) => {
+                tracing::error!("Failed to spawn external editor: {}", e);
+            }
+        }
+
+        // Clean up temp file
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    /// Try to find a common terminal emulator
+    fn find_terminal() -> Option<String> {
+        use std::process::Command;
+        let terminals = [
+            "alacritty",
+            "kitty",
+            "gnome-terminal",
+            "konsole",
+            "urxvtc",
+            "urxvt",
+            "xterm",
+        ];
+        for term in terminals {
+            if Command::new("which")
+                .arg(term)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                return Some(term.to_string());
+            }
+        }
+        None
+    }
+
     /// Process auto-steal focus logic: switch to focus queue items as needed
     fn process_auto_steal_focus(&mut self) {
         if !self.auto_steal_focus {
@@ -1349,6 +1446,9 @@ impl notedeck::App for Dave {
                 }
                 KeyAction::ToggleAutoSteal => {
                     self.toggle_auto_steal();
+                }
+                KeyAction::OpenExternalEditor => {
+                    self.open_external_editor();
                 }
             }
         }

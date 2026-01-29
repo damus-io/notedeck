@@ -37,6 +37,8 @@ pub enum KeyAction {
     FocusQueueDismiss,
     /// Toggle auto-steal focus mode (Ctrl+Space)
     ToggleAutoSteal,
+    /// Open external editor for composing input (Ctrl+G)
+    OpenExternalEditor,
 }
 
 /// Check for keybinding actions.
@@ -92,9 +94,14 @@ pub fn check_keybindings(
         return Some(KeyAction::NewAgent);
     }
 
-    // Ctrl+G to toggle between scene view and classic view
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::G)) {
+    // Ctrl+L to toggle between scene view and list view
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::L)) {
         return Some(KeyAction::ToggleView);
+    }
+
+    // Ctrl+G to open external editor for composing input
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::G)) {
+        return Some(KeyAction::OpenExternalEditor);
     }
 
     // Ctrl+M to toggle plan mode
