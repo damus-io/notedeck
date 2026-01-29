@@ -1,4 +1,5 @@
 .DS_Store
+crates/notedeck_dave/.planning/
 .buildcmd
 TODO.bak
 android-config.json

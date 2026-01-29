@@ -170,7 +170,7 @@ impl AgentScene {
                         position,
                         status,
                         title,
-                        session.cwd.as_deref(),
+                        &session.cwd,
                         is_selected,
                         ctrl_held,
                         queue_priority,
@@ -306,7 +306,7 @@ impl AgentScene {
         position: Vec2,
         status: AgentStatus,
         title: &str,
-        cwd: Option<&Path>,
+        cwd: &Path,
         is_selected: bool,
         show_keybinding: bool,
         queue_priority: Option<FocusPriority>,
@@ -388,17 +388,15 @@ impl AgentScene {
         );
 
         // Cwd label (monospace, weak+small)
-        if let Some(cwd_path) = cwd {
-            let cwd_text = cwd_path.to_string_lossy();
-            let cwd_pos = center + Vec2::new(0.0, agent_radius + 38.0);
-            painter.text(
-                cwd_pos,
-                egui::Align2::CENTER_TOP,
-                &cwd_text,
-                egui::FontId::monospace(8.0),
-                ui.visuals().weak_text_color(),
-            );
-        }
+        let cwd_text = cwd.to_string_lossy();
+        let cwd_pos = center + Vec2::new(0.0, agent_radius + 38.0);
+        painter.text(
+            cwd_pos,
+            egui::Align2::CENTER_TOP,
+            &cwd_text,
+            egui::FontId::monospace(8.0),
+            ui.visuals().weak_text_color(),
+        );
 
         response
     }

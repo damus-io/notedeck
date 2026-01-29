@@ -2,6 +2,7 @@ mod ask_question;
 pub mod badge;
 mod dave;
 pub mod diff;
+pub mod directory_picker;
 pub mod keybind_hint;
 pub mod keybindings;
 mod pill;
@@ -13,6 +14,7 @@ mod top_buttons;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use dave::{DaveAction, DaveResponse, DaveUi};
+pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
 pub use keybind_hint::{keybind_hint, paint_keybind_hint};
 pub use keybindings::{check_keybindings, KeyAction};
 pub use scene::{AgentScene, SceneAction, SceneResponse};

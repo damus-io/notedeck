@@ -104,7 +104,7 @@ impl<'a> SessionListUi<'a> {
             let response = self.session_item_ui(
                 ui,
                 &session.title,
-                session.cwd.as_deref(),
+                &session.cwd,
                 is_active,
                 shortcut_hint,
                 session.status(),
@@ -131,14 +131,14 @@ impl<'a> SessionListUi<'a> {
         &self,
         ui: &mut egui::Ui,
         title: &str,
-        cwd: Option<&Path>,
+        cwd: &Path,
         is_active: bool,
         shortcut_hint: Option<usize>,
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
     ) -> egui::Response {
-        // Taller height when cwd is present to fit both lines
-        let item_height = if cwd.is_some() { 48.0 } else { 36.0 };
+        // Always use taller height since cwd is always present
+        let item_height = 48.0;
         let desired_size = egui::vec2(ui.available_width(), item_height);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let hover_text = format!("Ctrl+{} to switch", shortcut_hint.unwrap_or(0));
@@ -191,8 +191,8 @@ impl<'a> SessionListUi<'a> {
             right_offset
         };
 
-        // Calculate text position - offset title upward when cwd is present
-        let title_y_offset = if cwd.is_some() { -7.0 } else { 0.0 };
+        // Calculate text position - offset title upward since cwd is always present
+        let title_y_offset = -7.0;
         let text_pos = rect.left_center() + egui::vec2(text_start_x, title_y_offset);
         let max_text_width = rect.width() - text_start_x - text_end_x;
 
@@ -225,10 +225,8 @@ impl<'a> SessionListUi<'a> {
         }
 
         // Draw cwd below title
-        if let Some(cwd_path) = cwd {
-            let cwd_pos = rect.left_center() + egui::vec2(text_start_x, 7.0);
-            cwd_ui(ui, cwd_path, cwd_pos, max_text_width);
-        }
+        let cwd_pos = rect.left_center() + egui::vec2(text_start_x, 7.0);
+        cwd_ui(ui, cwd, cwd_pos, max_text_width);
 
         response
     }

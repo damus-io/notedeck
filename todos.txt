@@ -1,4 +1,4 @@
-- [ ] in crates/notedeck_dave, when an agent steals focus from another agent to ask a question, i want it to focus back to where it was
+- [x] in crates/notedeck_dave, when an agent steals focus from another agent to ask a question, i want it to focus back to where it was
 
 - [ ] make crates/notedeck_dave/src/lib.rs smaller
 

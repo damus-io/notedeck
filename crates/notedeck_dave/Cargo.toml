@@ -28,6 +28,8 @@ dashmap = "6"
 #reqwest = "0.12.15"
 egui_extras = { workspace = true }
 similar = "2"
+rfd = "0.14"
+dirs = "5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }

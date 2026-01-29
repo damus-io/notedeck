@@ -51,7 +51,7 @@ pub struct ChatSession {
     /// Current question index for multi-question AskUserQuestion (keyed by request UUID)
     pub question_index: HashMap<Uuid, usize>,
     /// Working directory for claude-code subprocess
-    pub cwd: Option<PathBuf>,
+    pub cwd: PathBuf,
     /// Session info from Claude Code CLI (tools, model, agents, etc.)
     pub session_info: Option<SessionInfo>,
     /// Indices of subagent messages in chat (keyed by task_id)
@@ -71,7 +71,7 @@ impl Drop for ChatSession {
 }
 
 impl ChatSession {
-    pub fn new(id: SessionId) -> Self {
+    pub fn new(id: SessionId, cwd: PathBuf) -> Self {
         // Arrange sessions in a grid pattern
         let col = (id as i32 - 1) % 4;
         let row = (id as i32 - 1) / 4;
@@ -93,7 +93,7 @@ impl ChatSession {
             permission_message_state: PermissionMessageState::None,
             question_answers: HashMap::new(),
             question_index: HashMap::new(),
-            cwd: None,
+            cwd,
             session_info: None,
             subagent_indices: HashMap::new(),
             is_compacting: false,
@@ -203,23 +203,20 @@ impl Default for SessionManager {
 
 impl SessionManager {
     pub fn new() -> Self {
-        let mut manager = SessionManager {
+        SessionManager {
             sessions: HashMap::new(),
             order: Vec::new(),
             active: None,
             next_id: 1,
-        };
-        // Start with one session
-        manager.new_session();
-        manager
+        }
     }
 
-    /// Create a new session and make it active
-    pub fn new_session(&mut self) -> SessionId {
+    /// Create a new session with the given cwd and make it active
+    pub fn new_session(&mut self, cwd: PathBuf) -> SessionId {
         let id = self.next_id;
         self.next_id += 1;
 
-        let session = ChatSession::new(id);
+        let session = ChatSession::new(id, cwd);
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
@@ -253,6 +250,9 @@ impl SessionManager {
     }
 
     /// Delete a session
+    /// Returns true if the session was deleted, false if it didn't exist.
+    /// If the last session is deleted, active will be None and the caller
+    /// should open the directory picker to create a new session.
     pub fn delete_session(&mut self, id: SessionId) -> bool {
         if self.sessions.remove(&id).is_some() {
             self.order.retain(|&x| x != id);
@@ -260,11 +260,6 @@ impl SessionManager {
             // If we deleted the active session, switch to another
             if self.active == Some(id) {
                 self.active = self.order.first().copied();
-
-                // If no sessions left, create a new one
-                if self.active.is_none() {
-                    self.new_session();
-                }
             }
             true
         } else {

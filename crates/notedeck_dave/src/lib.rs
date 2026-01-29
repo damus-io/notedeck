@@ -39,8 +39,9 @@ pub use tools::{
     ToolResponses,
 };
 pub use ui::{
-    check_keybindings, AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi, KeyAction,
-    SceneAction, SceneResponse, SessionListAction, SessionListUi, SettingsPanelAction,
+    check_keybindings, AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi,
+    DirectoryPicker, DirectoryPickerAction, KeyAction, SceneAction, SceneResponse,
+    SessionListAction, SessionListUi, SettingsPanelAction,
 };
 pub use vec3::Vec3;
 
@@ -73,6 +74,8 @@ pub struct Dave {
     auto_steal_focus: bool,
     /// The session ID to return to after processing all NeedsInput items
     home_session: Option<SessionId>,
+    /// Directory picker for selecting working directory when creating sessions
+    directory_picker: DirectoryPicker,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -145,6 +148,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let settings = DaveSettings::from_model_config(&model_config);
 
+        let mut directory_picker = DirectoryPicker::new();
+        // Auto-open the picker on startup since there are no sessions
+        directory_picker.open();
+
         Dave {
             backend,
             avatar,
@@ -160,6 +167,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             focus_queue: FocusQueue::new(),
             auto_steal_focus: false,
             home_session: None,
+            directory_picker,
         }
     }
 
@@ -614,7 +622,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if let Some(action) = session_action {
                 match action {
                     SessionListAction::NewSession => {
-                        self.session_manager.new_session();
+                        self.handle_new_chat();
                         self.show_session_list = false;
                     }
                     SessionListAction::SwitchTo(id) => {
@@ -658,7 +666,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn handle_new_chat(&mut self) {
-        let id = self.session_manager.new_session();
+        // Open the directory picker instead of creating session directly
+        self.directory_picker.open();
+    }
+
+    /// Create a new session with the given cwd (called after directory picker selection)
+    fn create_session_with_cwd(&mut self, cwd: PathBuf) {
+        // Add to recent directories
+        self.directory_picker.add_recent(cwd.clone());
+
+        let id = self.session_manager.new_session(cwd);
         // Request focus on the new session's input
         if let Some(session) = self.session_manager.get_mut(id) {
             session.focus_requested = true;
@@ -678,6 +695,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Clean up backend resources (e.g., close persistent connections)
             let session_id = format!("dave-session-{}", id);
             self.backend.cleanup_session(session_id);
+
+            // If no sessions remain, open the directory picker for a new session
+            if self.session_manager.is_empty() {
+                self.directory_picker.open();
+            }
         }
     }
 
@@ -1265,28 +1287,44 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
-        if let Some(session) = self.session_manager.get_active_mut() {
+        // Check for /cd command first
+        let cd_result = if let Some(session) = self.session_manager.get_active_mut() {
             let input = session.input.trim().to_string();
-
-            // Handle /cd command
             if input.starts_with("/cd ") {
                 let path_str = input.strip_prefix("/cd ").unwrap().trim();
                 let path = PathBuf::from(path_str);
+                session.input.clear();
                 if path.exists() && path.is_dir() {
-                    session.cwd = Some(path.clone());
+                    session.cwd = path.clone();
                     session.chat.push(Message::System(format!(
                         "Working directory set to: {}",
                         path.display()
                     )));
+                    Some(Ok(path))
                 } else {
                     session
                         .chat
                         .push(Message::Error(format!("Invalid directory: {}", path_str)));
+                    Some(Err(()))
                 }
-                session.input.clear();
-                return;
+            } else {
+                None
             }
+        } else {
+            None
+        };
 
+        // If /cd command was processed, add to recent directories
+        if let Some(Ok(path)) = cd_result {
+            self.directory_picker.add_recent(path);
+            return;
+        } else if cd_result.is_some() {
+            // Error case - already handled above
+            return;
+        }
+
+        // Normal message handling
+        if let Some(session) = self.session_manager.get_active_mut() {
             session.chat.push(Message::User(session.input.clone()));
             session.input.clear();
             session.update_title_from_last_message();
@@ -1302,7 +1340,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
         let session_id = format!("dave-session-{}", session.id);
         let messages = session.chat.clone();
-        let cwd = session.cwd.clone();
+        let cwd = Some(session.cwd.clone());
         let tools = self.tools.clone();
         let model_name = self.model_config.model().to_owned();
         let ctx = ctx.clone();
@@ -1337,6 +1375,21 @@ impl notedeck::App for Dave {
                 }
                 SettingsPanelAction::Cancel => {
                     // Panel closed, nothing to do
+                }
+            }
+        }
+
+        // Render directory picker and handle its actions
+        if let Some(picker_action) = self.directory_picker.ui(ui.ctx()) {
+            match picker_action {
+                DirectoryPickerAction::DirectorySelected(path) => {
+                    self.create_session_with_cwd(path);
+                }
+                DirectoryPickerAction::Cancelled => {
+                    // Picker closed without selection, nothing to do
+                }
+                DirectoryPickerAction::BrowseRequested => {
+                    // Handled internally by the picker
                 }
             }
         }
