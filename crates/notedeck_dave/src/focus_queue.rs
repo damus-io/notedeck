@@ -202,3 +202,216 @@ impl FocusQueue {
         self.previous_statuses.remove(&session_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(id: u32) -> SessionId {
+        id
+    }
+
+    #[test]
+    fn test_empty_queue() {
+        let mut queue = FocusQueue::new();
+        assert!(queue.is_empty());
+        assert_eq!(queue.next(), None);
+        assert_eq!(queue.prev(), None);
+        assert_eq!(queue.current(), None);
+    }
+
+    #[test]
+    fn test_priority_ordering() {
+        // Items should be sorted: NeedsInput -> Error -> Done
+        let mut queue = FocusQueue::new();
+
+        queue.enqueue(session(1), FocusPriority::Done);
+        queue.enqueue(session(2), FocusPriority::NeedsInput);
+        queue.enqueue(session(3), FocusPriority::Error);
+
+        // Verify internal ordering: NeedsInput(2), Error(3), Done(1)
+        assert_eq!(queue.entries[0].session_id, session(2));
+        assert_eq!(queue.entries[0].priority, FocusPriority::NeedsInput);
+        assert_eq!(queue.entries[1].session_id, session(3));
+        assert_eq!(queue.entries[1].priority, FocusPriority::Error);
+        assert_eq!(queue.entries[2].session_id, session(1));
+        assert_eq!(queue.entries[2].priority, FocusPriority::Done);
+
+        // Cursor tracks what you were viewing - it shifted as items were inserted
+        // before Done (now at index 2), so navigate to front (highest priority)
+        queue.prev();
+        queue.prev();
+        assert_eq!(queue.current().unwrap().session_id, session(2));
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
+
+        // Navigate through: NeedsInput -> Error -> Done
+        queue.next();
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::Error);
+        queue.next();
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::Done);
+    }
+
+    #[test]
+    fn test_prev_does_not_wrap_at_highest_priority() {
+        let mut queue = FocusQueue::new();
+
+        // Add NeedsInput first so cursor starts there
+        queue.enqueue(session(2), FocusPriority::NeedsInput);
+        queue.enqueue(session(1), FocusPriority::Done);
+
+        // Cursor should be at NeedsInput (was first inserted, at index 0)
+        assert_eq!(queue.current().unwrap().session_id, session(2));
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
+
+        // Pressing prev at highest priority should stay there, not wrap to Done
+        let result = queue.prev();
+        assert_eq!(result, Some(session(2)));
+        assert_eq!(queue.current().unwrap().session_id, session(2));
+
+        // Multiple prev calls should still stay at highest priority
+        queue.prev();
+        queue.prev();
+        assert_eq!(queue.current().unwrap().session_id, session(2));
+    }
+
+    #[test]
+    fn test_next_does_not_wrap_at_lowest_priority() {
+        let mut queue = FocusQueue::new();
+
+        queue.enqueue(session(1), FocusPriority::Done);
+        queue.enqueue(session(2), FocusPriority::NeedsInput);
+
+        // Navigate to lowest priority (Done)
+        queue.next();
+        assert_eq!(queue.current().unwrap().session_id, session(1));
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::Done);
+
+        // Pressing next at lowest priority should stay there, not wrap to NeedsInput
+        let result = queue.next();
+        assert_eq!(result, Some(session(1)));
+        assert_eq!(queue.current().unwrap().session_id, session(1));
+
+        // Multiple next calls should still stay at lowest priority
+        queue.next();
+        queue.next();
+        assert_eq!(queue.current().unwrap().session_id, session(1));
+    }
+
+    #[test]
+    fn test_prev_navigates_to_higher_priority() {
+        let mut queue = FocusQueue::new();
+
+        queue.enqueue(session(1), FocusPriority::Done);
+        queue.enqueue(session(2), FocusPriority::Error);
+        queue.enqueue(session(3), FocusPriority::NeedsInput);
+
+        // Move to lowest priority
+        queue.next(); // Error
+        queue.next(); // Done
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::Done);
+
+        // prev should go back to Error
+        queue.prev();
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::Error);
+
+        // prev should go back to NeedsInput
+        queue.prev();
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
+    }
+
+    #[test]
+    fn test_cursor_adjustment_on_higher_priority_insert() {
+        let mut queue = FocusQueue::new();
+
+        // Start with a Done item
+        queue.enqueue(session(1), FocusPriority::Done);
+        assert_eq!(queue.current().unwrap().session_id, session(1));
+
+        // Insert a higher priority item - cursor should shift to keep pointing at same item
+        queue.enqueue(session(2), FocusPriority::NeedsInput);
+
+        // Cursor should still point to session 1 (now at index 1)
+        assert_eq!(queue.current().unwrap().session_id, session(1));
+
+        // prev should now go to the new higher priority item
+        queue.prev();
+        assert_eq!(queue.current().unwrap().session_id, session(2));
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
+    }
+
+    #[test]
+    fn test_priority_upgrade() {
+        let mut queue = FocusQueue::new();
+
+        queue.enqueue(session(1), FocusPriority::Done);
+        queue.enqueue(session(2), FocusPriority::Done);
+
+        // Session 2 should be after session 1 (same priority, insertion order)
+        assert_eq!(queue.entries[0].session_id, session(1));
+        assert_eq!(queue.entries[1].session_id, session(2));
+
+        // Upgrade session 2 to NeedsInput
+        queue.enqueue(session(2), FocusPriority::NeedsInput);
+
+        // Session 2 should now be first
+        assert_eq!(queue.entries[0].session_id, session(2));
+        assert_eq!(queue.entries[0].priority, FocusPriority::NeedsInput);
+    }
+
+    #[test]
+    fn test_dequeue_adjusts_cursor() {
+        let mut queue = FocusQueue::new();
+
+        queue.enqueue(session(1), FocusPriority::NeedsInput);
+        queue.enqueue(session(2), FocusPriority::Error);
+        queue.enqueue(session(3), FocusPriority::Done);
+
+        // Move cursor to session 2 (Error)
+        queue.next();
+        assert_eq!(queue.current().unwrap().session_id, session(2));
+
+        // Remove session 1 (before cursor)
+        queue.dequeue(session(1));
+
+        // Cursor should adjust and still point to session 2
+        assert_eq!(queue.current().unwrap().session_id, session(2));
+    }
+
+    #[test]
+    fn test_single_item_navigation() {
+        let mut queue = FocusQueue::new();
+
+        queue.enqueue(session(1), FocusPriority::NeedsInput);
+
+        // With single item, next and prev should both return that item
+        assert_eq!(queue.next(), Some(session(1)));
+        assert_eq!(queue.prev(), Some(session(1)));
+        assert_eq!(queue.current().unwrap().session_id, session(1));
+    }
+
+    #[test]
+    fn test_update_from_statuses() {
+        let mut queue = FocusQueue::new();
+
+        // Initial statuses - order matters for cursor position
+        // First item added gets cursor, subsequent inserts shift it
+        let statuses = vec![
+            (session(1), AgentStatus::Done),
+            (session(2), AgentStatus::NeedsInput),
+            (session(3), AgentStatus::Working), // Should not be added (Idle/Working excluded)
+        ];
+        queue.update_from_statuses(statuses.into_iter());
+
+        assert_eq!(queue.len(), 2);
+        // Verify NeedsInput is first in priority order
+        assert_eq!(queue.entries[0].session_id, session(2));
+        assert_eq!(queue.entries[0].priority, FocusPriority::NeedsInput);
+
+        // Update: session 2 becomes Idle (should be removed from queue)
+        let statuses = vec![(session(2), AgentStatus::Idle)];
+        queue.update_from_statuses(statuses.into_iter());
+
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.current().unwrap().session_id, session(1));
+    }
+}
