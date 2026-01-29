@@ -135,11 +135,26 @@ impl FocusQueue {
             return None;
         }
         let cur = self.cursor.unwrap_or(0);
-        // Don't wrap around - stay at lowest priority (last index)
-        if cur >= self.entries.len() - 1 {
-            return Some(self.entries[cur].session_id);
-        }
-        let next = cur + 1;
+        let current_priority = self.entries[cur].priority;
+
+        // Find all entries with the same priority
+        let same_priority_indices: Vec<usize> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.priority == current_priority)
+            .map(|(i, _)| i)
+            .collect();
+
+        // Find current position within same-priority items
+        let pos_in_group = same_priority_indices
+            .iter()
+            .position(|&i| i == cur)
+            .unwrap_or(0);
+
+        // Cycle within same priority level (wrap around)
+        let next_pos = (pos_in_group + 1) % same_priority_indices.len();
+        let next = same_priority_indices[next_pos];
         self.cursor = Some(next);
         Some(self.entries[next].session_id)
     }
@@ -150,11 +165,30 @@ impl FocusQueue {
             return None;
         }
         let cur = self.cursor.unwrap_or(0);
-        // Don't wrap around - stay at highest priority (index 0)
-        if cur == 0 {
-            return Some(self.entries[0].session_id);
-        }
-        let prev = cur - 1;
+        let current_priority = self.entries[cur].priority;
+
+        // Find all entries with the same priority
+        let same_priority_indices: Vec<usize> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.priority == current_priority)
+            .map(|(i, _)| i)
+            .collect();
+
+        // Find current position within same-priority items
+        let pos_in_group = same_priority_indices
+            .iter()
+            .position(|&i| i == cur)
+            .unwrap_or(0);
+
+        // Cycle within same priority level (wrap around)
+        let prev_pos = if pos_in_group == 0 {
+            same_priority_indices.len() - 1
+        } else {
+            pos_in_group - 1
+        };
+        let prev = same_priority_indices[prev_pos];
         self.cursor = Some(prev);
         Some(self.entries[prev].session_id)
     }
@@ -280,71 +314,72 @@ mod tests {
     }
 
     #[test]
-    fn test_prev_does_not_wrap_at_highest_priority() {
+    fn test_cycling_within_same_priority() {
         let mut queue = FocusQueue::new();
 
-        // Add NeedsInput first so cursor starts there
+        // Add two NeedsInput items and one Done
+        queue.enqueue(session(1), FocusPriority::NeedsInput);
         queue.enqueue(session(2), FocusPriority::NeedsInput);
-        queue.enqueue(session(1), FocusPriority::Done);
+        queue.enqueue(session(3), FocusPriority::Done);
 
-        // Cursor should be at NeedsInput (was first inserted, at index 0)
-        assert_eq!(queue.current().unwrap().session_id, session(2));
+        // Cursor starts at session 1 (first NeedsInput)
+        // After insertions, cursor should still be pointing at first entry
+        queue.set_cursor(0);
+        assert_eq!(queue.current().unwrap().session_id, session(1));
         assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
 
-        // Pressing prev at highest priority should stay there, not wrap to Done
-        let result = queue.prev();
+        // next should cycle to session 2 (also NeedsInput), not jump to Done
+        let result = queue.next();
         assert_eq!(result, Some(session(2)));
-        assert_eq!(queue.current().unwrap().session_id, session(2));
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
 
-        // Multiple prev calls should still stay at highest priority
-        queue.prev();
-        queue.prev();
-        assert_eq!(queue.current().unwrap().session_id, session(2));
-    }
-
-    #[test]
-    fn test_next_does_not_wrap_at_lowest_priority() {
-        let mut queue = FocusQueue::new();
-
-        queue.enqueue(session(1), FocusPriority::Done);
-        queue.enqueue(session(2), FocusPriority::NeedsInput);
-
-        // Navigate to lowest priority (Done)
-        queue.next();
-        assert_eq!(queue.current().unwrap().session_id, session(1));
-        assert_eq!(queue.current().unwrap().priority, FocusPriority::Done);
-
-        // Pressing next at lowest priority should stay there, not wrap to NeedsInput
+        // next again should wrap back to session 1 (still NeedsInput)
         let result = queue.next();
         assert_eq!(result, Some(session(1)));
-        assert_eq!(queue.current().unwrap().session_id, session(1));
-
-        // Multiple next calls should still stay at lowest priority
-        queue.next();
-        queue.next();
-        assert_eq!(queue.current().unwrap().session_id, session(1));
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
     }
 
     #[test]
-    fn test_prev_navigates_to_higher_priority() {
+    fn test_prev_cycles_within_same_priority() {
+        let mut queue = FocusQueue::new();
+
+        // Add two NeedsInput items
+        queue.enqueue(session(1), FocusPriority::NeedsInput);
+        queue.enqueue(session(2), FocusPriority::NeedsInput);
+        queue.enqueue(session(3), FocusPriority::Done);
+
+        // Start at first NeedsInput
+        queue.set_cursor(0);
+        assert_eq!(queue.current().unwrap().session_id, session(1));
+
+        // prev should wrap to session 2 (last in same priority group)
+        let result = queue.prev();
+        assert_eq!(result, Some(session(2)));
+        assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
+
+        // prev again should wrap back to session 1
+        let result = queue.prev();
+        assert_eq!(result, Some(session(1)));
+    }
+
+    #[test]
+    fn test_single_item_in_priority_stays_put() {
         let mut queue = FocusQueue::new();
 
         queue.enqueue(session(1), FocusPriority::Done);
-        queue.enqueue(session(2), FocusPriority::Error);
-        queue.enqueue(session(3), FocusPriority::NeedsInput);
+        queue.enqueue(session(2), FocusPriority::NeedsInput);
+        queue.enqueue(session(3), FocusPriority::Error);
 
-        // Move to lowest priority
-        queue.next(); // Error
-        queue.next(); // Done
+        // Navigate to Done (only one item with this priority)
+        queue.set_cursor(2); // Done is at index 2
+        assert_eq!(queue.current().unwrap().session_id, session(1));
         assert_eq!(queue.current().unwrap().priority, FocusPriority::Done);
 
-        // prev should go back to Error
-        queue.prev();
-        assert_eq!(queue.current().unwrap().priority, FocusPriority::Error);
-
-        // prev should go back to NeedsInput
-        queue.prev();
-        assert_eq!(queue.current().unwrap().priority, FocusPriority::NeedsInput);
+        // next/prev should stay on the same item since it's the only Done
+        let result = queue.next();
+        assert_eq!(result, Some(session(1)));
+        let result = queue.prev();
+        assert_eq!(result, Some(session(1)));
     }
 
     #[test]
