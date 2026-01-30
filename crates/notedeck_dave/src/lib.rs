@@ -4,6 +4,7 @@ mod backend;
 mod config;
 pub mod file_update;
 mod focus_queue;
+pub mod ipc;
 pub(crate) mod mesh;
 mod messages;
 mod quaternion;
@@ -87,6 +88,9 @@ pub struct Dave {
     directory_picker: DirectoryPicker,
     /// Current overlay taking over the UI (if any)
     active_overlay: DaveOverlay,
+    /// IPC listener for external spawn-agent commands (Unix only)
+    #[cfg(unix)]
+    ipc_listener: Option<std::os::unix::net::UnixListener>,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -161,6 +165,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let directory_picker = DirectoryPicker::new();
 
+        // Create IPC listener for external spawn-agent commands (Unix only)
+        #[cfg(unix)]
+        let ipc_listener = ipc::create_listener();
+
         Dave {
             backend,
             avatar,
@@ -179,6 +187,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             directory_picker,
             // Auto-show directory picker on startup since there are no sessions
             active_overlay: DaveOverlay::DirectoryPicker,
+            #[cfg(unix)]
+            ipc_listener,
         }
     }
 
@@ -758,6 +768,62 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn clone_active_agent(&mut self) {
         if let Some(cwd) = self.session_manager.get_active().map(|s| s.cwd.clone()) {
             self.create_session_with_cwd(cwd);
+        }
+    }
+
+    /// Poll for IPC spawn-agent commands from external tools (Unix only)
+    #[cfg(unix)]
+    fn poll_ipc_commands(&mut self) {
+        use std::io::ErrorKind;
+
+        let Some(listener) = self.ipc_listener.as_ref() else {
+            return;
+        };
+
+        // Non-blocking accept - check for incoming connections
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                // Handle the connection
+                match ipc::handle_connection(&mut stream) {
+                    Ok(cwd) => {
+                        // Create the session and get its ID
+                        let id = self.session_manager.new_session(cwd.clone());
+                        self.directory_picker.add_recent(cwd);
+
+                        // Focus on new session
+                        if let Some(session) = self.session_manager.get_mut(id) {
+                            session.focus_requested = true;
+                            if self.show_scene {
+                                self.scene.select(id);
+                                self.scene.focus_on(session.scene_position);
+                            }
+                        }
+
+                        // Close directory picker if open
+                        if self.active_overlay == DaveOverlay::DirectoryPicker {
+                            self.active_overlay = DaveOverlay::None;
+                        }
+
+                        // Send success response
+                        let response = ipc::SpawnResponse::ok(id);
+                        let _ = ipc::send_response(&mut stream, &response);
+
+                        tracing::info!("Spawned agent via IPC (session {})", id);
+                    }
+                    Err(e) => {
+                        // Send error response
+                        let response = ipc::SpawnResponse::error(&e);
+                        let _ = ipc::send_response(&mut stream, &response);
+                        tracing::warn!("IPC spawn-agent failed: {}", e);
+                    }
+                }
+            }
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                // No pending connections, this is normal
+            }
+            Err(e) => {
+                tracing::warn!("IPC accept error: {}", e);
+            }
         }
     }
 
@@ -1441,6 +1507,10 @@ impl notedeck::App for Dave {
                 //session.chat.push(Dave::system_prompt());
             }
         }
+
+        // Poll for external spawn-agent commands via IPC (Unix only)
+        #[cfg(unix)]
+        self.poll_ipc_commands();
 
         // Handle global keybindings (when no text input has focus)
         let has_pending_permission = self.first_pending_permission().is_some();

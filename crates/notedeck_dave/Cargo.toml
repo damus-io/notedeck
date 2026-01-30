@@ -33,3 +33,7 @@ dirs = "5"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+
+[[bin]]
+name = "notedeck-spawn"
+path = "src/bin/notedeck-spawn.rs"
