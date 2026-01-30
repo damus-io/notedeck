@@ -6,6 +6,9 @@ use notedeck_dave::Dave;
 #[cfg(feature = "clndash")]
 use notedeck_clndash::ClnDash;
 
+#[cfg(feature = "git")]
+use notedeck_git::GitApp;
+
 #[cfg(feature = "messages")]
 use notedeck_messages::MessagesApp;
 
@@ -16,6 +19,8 @@ use notedeck_notebook::Notebook;
 pub enum NotedeckApp {
     Dave(Box<Dave>),
     Columns(Box<Damus>),
+    #[cfg(feature = "git")]
+    Git(Box<GitApp>),
     #[cfg(feature = "notebook")]
     Notebook(Box<Notebook>),
     #[cfg(feature = "clndash")]
@@ -31,6 +36,9 @@ impl notedeck::App for NotedeckApp {
         match self {
             NotedeckApp::Dave(dave) => dave.update(ctx, ui),
             NotedeckApp::Columns(columns) => columns.update(ctx, ui),
+
+            #[cfg(feature = "git")]
+            NotedeckApp::Git(git) => git.update(ctx, ui),
 
             #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(notebook) => notebook.update(ctx, ui),

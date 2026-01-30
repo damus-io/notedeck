@@ -18,6 +18,7 @@ egui = { workspace = true }
 notedeck_columns = { workspace = true }
 notedeck_ui = { workspace = true }
 notedeck_dave = { workspace = true }
+notedeck_git = { workspace = true, optional = true }
 notedeck_messages = { workspace = true, optional = true }
 notedeck_notebook = { workspace = true, optional = true }
 notedeck_clndash = { workspace = true, optional = true }
@@ -54,6 +55,7 @@ default = []
 memory = ["re_memory"]
 puffin = ["profiling/profile-with-puffin", "dep:puffin"]
 tracy = ["profiling/profile-with-tracy"]
+git = ["notedeck_git"]
 messages = ["notedeck_messages"]
 notebook = ["notedeck_notebook"]
 clndash = ["notedeck_clndash"]

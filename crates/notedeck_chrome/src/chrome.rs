@@ -27,6 +27,9 @@ use notedeck::{
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
 
+#[cfg(feature = "git")]
+use notedeck_git::GitApp;
+
 #[cfg(feature = "messages")]
 use notedeck_messages::MessagesApp;
 
@@ -162,6 +165,9 @@ impl Chrome {
         }
 
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
+
+        #[cfg(feature = "git")]
+        chrome.add_app(NotedeckApp::Git(Box::new(GitApp::new())));
 
         #[cfg(feature = "messages")]
         chrome.add_app(NotedeckApp::Messages(Box::new(MessagesApp::new())));
@@ -789,6 +795,9 @@ fn topdown_sidebar(
                 tr!(loc, "Messaging", "Button to go to the messaging app")
             }
 
+            #[cfg(feature = "git")]
+            NotedeckApp::Git(_) => tr!(loc, "Git", "Button to go to the Git app"),
+
             #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(_) => {
                 tr!(loc, "Notebook", "Button to go to the Notebook app")
@@ -826,6 +835,12 @@ fn topdown_sidebar(
                                 #[cfg(feature = "messages")]
                                 NotedeckApp::Messages(_dms) => {
                                     ui.add(app_images::new_message_image());
+                                }
+
+                                #[cfg(feature = "git")]
+                                NotedeckApp::Git(_git) => {
+                                    // Git icon placeholder - using text for now
+                                    ui.label(RichText::new("⌥").size(20.0));
                                 }
 
                                 #[cfg(feature = "clndash")]
