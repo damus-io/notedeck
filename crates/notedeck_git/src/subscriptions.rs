@@ -4,7 +4,7 @@
 //! using notedeck's existing subscription patterns.
 
 use crate::events::{
-    kinds, GitEvent, GitIssue, GitPatch, GitPullRequest, GitRepo, GitStatus, StatusKind,
+    GitEvent, GitIssue, GitPatch, GitPullRequest, GitRepo, GitStatus, StatusKind, kinds,
 };
 use enostr::RelayPool;
 use nostrdb::{Filter, Ndb, Note, Transaction};
@@ -87,10 +87,12 @@ impl GitSubscriptions {
         );
 
         // Filter for repository announcements
-        let repo_filter = vec![Filter::new()
-            .kinds([kinds::REPO_ANNOUNCEMENT])
-            .limit(500)
-            .build()];
+        let repo_filter = vec![
+            Filter::new()
+                .kinds([kinds::REPO_ANNOUNCEMENT])
+                .limit(500)
+                .build(),
+        ];
 
         // Filter for all other git events
         let events_filter = vec![

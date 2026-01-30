@@ -5,7 +5,7 @@ use crate::subscriptions::GitSubscriptions;
 use crate::ui::colors::{accent, bg, font, label, sizing, status, text};
 use egui::{Color32, CornerRadius, RichText, Stroke, Vec2};
 use nostrdb::Transaction;
-use notedeck::{try_process_events_core, AppContext, AppResponse};
+use notedeck::{AppContext, AppResponse, try_process_events_core};
 
 /// Navigation routes for the git app.
 #[derive(Debug, Clone, PartialEq, Eq)]
