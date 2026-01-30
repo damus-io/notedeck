@@ -4,7 +4,7 @@
 //! using notedeck's existing subscription patterns.
 
 use crate::events::{
-    GitEvent, GitIssue, GitPatch, GitPullRequest, GitRepo, GitStatus, StatusKind, kinds,
+    GitComment, GitEvent, GitIssue, GitPatch, GitPullRequest, GitRepo, GitStatus, StatusKind, kinds,
 };
 use enostr::RelayPool;
 use nostrdb::{Filter, Ndb, Note, Transaction};
@@ -22,6 +22,8 @@ pub struct GitSubscriptions {
     pub repo_sub: Option<UnifiedSubscription>,
     /// Unified subscription for patches, PRs, issues, and status events.
     pub events_sub: Option<UnifiedSubscription>,
+    /// Unified subscription for comments (NIP-22 kind 1111 and kind 1 replies).
+    pub comment_sub: Option<UnifiedSubscription>,
     /// Cached repositories.
     pub repos: Vec<GitRepo>,
     /// Cached issues by repo address.
@@ -32,6 +34,8 @@ pub struct GitSubscriptions {
     pub pull_requests: HashMap<String, Vec<GitPullRequest>>,
     /// Status events by target event ID (hex encoded note key).
     pub statuses: HashMap<String, GitStatus>,
+    /// Comments by root event ID (hex encoded).
+    pub comments: HashMap<String, Vec<GitComment>>,
 }
 
 impl Default for GitSubscriptions {
@@ -46,11 +50,13 @@ impl GitSubscriptions {
         Self {
             repo_sub: None,
             events_sub: None,
+            comment_sub: None,
             repos: Vec::new(),
             issues: HashMap::new(),
             patches: HashMap::new(),
             pull_requests: HashMap::new(),
             statuses: HashMap::new(),
+            comments: HashMap::new(),
         }
     }
 
@@ -138,6 +144,26 @@ impl GitSubscriptions {
             tracing::info!("Subscribed to NIP-34 patches/PRs/issues/status events");
         }
 
+        // Filter for comments (NIP-22 kind 1111 and kind 1 replies)
+        let comment_filter = vec![
+            Filter::new()
+                .kinds([kinds::COMMENT, kinds::NOTE])
+                .limit(1000)
+                .build(),
+        ];
+
+        if let Ok(comment_local_sub) = ndb.subscribe(&comment_filter) {
+            let comment_remote_id = Uuid::new_v4().to_string();
+            pool.subscribe(comment_remote_id.clone(), comment_filter);
+
+            self.comment_sub = Some(UnifiedSubscription {
+                local: comment_local_sub,
+                remote: comment_remote_id,
+            });
+
+            tracing::info!("Subscribed to NIP-22 comments and note replies");
+        }
+
         // Do initial query from existing data
         self.refresh_from_db(ndb);
     }
@@ -163,6 +189,15 @@ impl GitSubscriptions {
                 tracing::debug!("Polled {} git event notes", event_notes.len());
             }
             new_note_keys.extend(event_notes);
+        }
+
+        // Poll comment subscription
+        if let Some(sub) = &self.comment_sub {
+            let comment_notes = ndb.poll_for_notes(sub.local, 500);
+            if !comment_notes.is_empty() {
+                tracing::debug!("Polled {} comment notes", comment_notes.len());
+            }
+            new_note_keys.extend(comment_notes);
         }
 
         if new_note_keys.is_empty() {
@@ -198,6 +233,7 @@ impl GitSubscriptions {
         self.patches.clear();
         self.pull_requests.clear();
         self.statuses.clear();
+        self.comments.clear();
 
         // Query repositories
         let repo_filter = Filter::new()
@@ -273,6 +309,21 @@ impl GitSubscriptions {
             }
         }
 
+        // Query comments (NIP-22 and standard replies)
+        // Note: We query both kind 1111 and kind 1, but only those with 'e' tags
+        // are processed as comments by GitComment::from_note
+        let comment_filter = Filter::new()
+            .kinds([kinds::COMMENT, kinds::NOTE])
+            .limit(1000)
+            .build();
+        if let Ok(results) = ndb.query(&txn, &[comment_filter], 1000) {
+            for result in results {
+                if let Ok(note) = ndb.get_note_by_key(&txn, result.note_key) {
+                    self.process_note(&note);
+                }
+            }
+        }
+
         self.sort_caches();
     }
 
@@ -333,13 +384,24 @@ impl GitSubscriptions {
                     }
                 }
             }
+            GitEvent::Comment(comment) => {
+                // Key by root event ID for lookup
+                if let Some(root) = &comment.root_event {
+                    let comments = self.comments.entry(root.clone()).or_default();
+                    if !comments.iter().any(|c| c.key == comment.key) {
+                        comments.push(comment);
+                    }
+                }
+            }
             GitEvent::State(_) => {
                 // TODO: Handle repo state events
             }
         }
     }
 
-    /// Sort all caches by created_at descending.
+    /// Sort all caches by created_at descending (newest first).
+    ///
+    /// Comments are sorted ascending (oldest first) for conversation order.
     fn sort_caches(&mut self) {
         self.repos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
@@ -353,6 +415,11 @@ impl GitSubscriptions {
 
         for issues in self.issues.values_mut() {
             issues.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        }
+
+        // Comments sorted ascending (oldest first) for conversation flow
+        for comments in self.comments.values_mut() {
+            comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         }
     }
 
@@ -374,5 +441,10 @@ impl GitSubscriptions {
     /// Get pull requests for a repository address.
     pub fn get_pull_requests(&self, repo_address: &str) -> Option<&Vec<GitPullRequest>> {
         self.pull_requests.get(repo_address)
+    }
+
+    /// Get comments for an event (by hex-encoded note ID).
+    pub fn get_comments(&self, event_id: &str) -> Option<&Vec<GitComment>> {
+        self.comments.get(event_id)
     }
 }

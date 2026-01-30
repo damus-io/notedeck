@@ -27,6 +27,10 @@ pub mod kinds {
     pub const STATUS_CLOSED: u64 = 1632;
     /// Status: Draft.
     pub const STATUS_DRAFT: u64 = 1633;
+    /// NIP-22 comment event kind.
+    pub const COMMENT: u64 = 1111;
+    /// Standard note (also used for replies).
+    pub const NOTE: u64 = 1;
 }
 
 /// A git repository announced on nostr (kind 30617).
@@ -567,6 +571,74 @@ impl GitStatus {
     }
 }
 
+/// A comment on an issue, patch, or PR (kind 1111 NIP-22 or kind 1 reply).
+#[derive(Debug, Clone)]
+pub struct GitComment {
+    /// The note key in nostrdb.
+    pub key: NoteKey,
+    /// Comment content (markdown).
+    pub content: String,
+    /// The root event ID this comment is on (issue/patch/PR note ID).
+    pub root_event: Option<String>,
+    /// The event ID this is replying to (for nested replies).
+    pub reply_to: Option<String>,
+    /// Author pubkey.
+    pub author: [u8; 32],
+    /// Created timestamp.
+    pub created_at: u64,
+}
+
+impl GitComment {
+    /// Parse a GitComment from a nostrdb Note.
+    ///
+    /// Accepts kind 1111 (NIP-22 comment) or kind 1 (standard reply).
+    #[profiling::function]
+    pub fn from_note(note: &Note) -> Option<Self> {
+        let kind = note.kind() as u64;
+        if kind != kinds::COMMENT && kind != kinds::NOTE {
+            return None;
+        }
+
+        let mut root_event = None;
+        let mut reply_to = None;
+
+        for tag in note.tags() {
+            let tag_name = tag.get(0).and_then(|t| t.variant().str());
+            if tag_name != Some("e") {
+                continue;
+            }
+
+            let event_id = tag.get(1).and_then(|t| t.variant().str());
+            let marker = tag.get(3).and_then(|t| t.variant().str());
+
+            match marker {
+                Some("root") => root_event = event_id.map(String::from),
+                Some("reply") => reply_to = event_id.map(String::from),
+                _ => {
+                    // Fallback: first 'e' tag without marker is root
+                    if root_event.is_none() {
+                        root_event = event_id.map(String::from);
+                    }
+                }
+            }
+        }
+
+        // Must reference some event to be a comment
+        if root_event.is_none() && reply_to.is_none() {
+            return None;
+        }
+
+        Some(GitComment {
+            key: note.key().expect("note should have key"),
+            content: note.content().to_string(),
+            root_event,
+            reply_to,
+            author: *note.pubkey(),
+            created_at: note.created_at(),
+        })
+    }
+}
+
 /// Enum representing any NIP-34 git event.
 #[derive(Debug, Clone)]
 pub enum GitEvent {
@@ -582,6 +654,8 @@ pub enum GitEvent {
     Issue(GitIssue),
     /// Status event.
     Status(GitStatus),
+    /// Comment on an issue/patch/PR.
+    Comment(GitComment),
 }
 
 impl GitEvent {
@@ -600,6 +674,7 @@ impl GitEvent {
             | kinds::STATUS_APPLIED
             | kinds::STATUS_CLOSED
             | kinds::STATUS_DRAFT => GitStatus::from_note(note).map(GitEvent::Status),
+            kinds::COMMENT | kinds::NOTE => GitComment::from_note(note).map(GitEvent::Comment),
             _ => None,
         }
     }

@@ -2,7 +2,7 @@
 
 use crate::events::StatusKind;
 use crate::subscriptions::GitSubscriptions;
-use crate::ui::colors::{accent, bg, font, label, sizing, status, text};
+use crate::ui::colors::{accent, bg, diff, font, label, sizing, status, text};
 use egui::{Color32, CornerRadius, RichText, Stroke, Vec2};
 use nostrdb::Transaction;
 use notedeck::{AppContext, AppResponse, try_process_events_core};
@@ -429,6 +429,138 @@ impl GitApp {
 
         // Fallback: just truncate with ellipsis
         format!("{}...", &url[..max_chars - 3])
+    }
+
+    /// Get the appropriate color for a diff line based on its content.
+    ///
+    /// Parses git format-patch output and returns syntax highlighting colors.
+    fn diff_line_color(line: &str) -> Color32 {
+        // Added lines
+        if line.starts_with('+') && !line.starts_with("+++") {
+            return diff::ADDED;
+        }
+
+        // Removed lines
+        if line.starts_with('-') && !line.starts_with("---") {
+            return diff::REMOVED;
+        }
+
+        // Diff headers
+        if line.starts_with("diff --git")
+            || line.starts_with("index ")
+            || line.starts_with("---")
+            || line.starts_with("+++")
+        {
+            return diff::HEADER;
+        }
+
+        // Hunk headers
+        if line.starts_with("@@") {
+            return diff::HUNK;
+        }
+
+        // Patch metadata headers
+        if line.starts_with("From:")
+            || line.starts_with("Date:")
+            || line.starts_with("Subject:")
+            || line.starts_with("From ")
+            || line.starts_with("Signed-off-by:")
+            || line.starts_with("Co-authored-by:")
+        {
+            return diff::META;
+        }
+
+        // Context/default
+        diff::CONTEXT
+    }
+
+    /// Render patch content with syntax highlighting.
+    ///
+    /// Colorizes diff output for better readability.
+    fn render_patch_content(ui: &mut egui::Ui, content: &str) {
+        for line in content.lines() {
+            let color = Self::diff_line_color(line);
+            ui.label(
+                RichText::new(line)
+                    .size(font::MONO)
+                    .monospace()
+                    .color(color),
+            );
+        }
+    }
+
+    /// Render the comments section for an event.
+    ///
+    /// Displays a list of comments if any exist, with author info and timestamps.
+    fn render_comments(&self, ui: &mut egui::Ui, event_id: &str) {
+        let Some(comments) = self.subs.get_comments(event_id) else {
+            return;
+        };
+
+        if comments.is_empty() {
+            return;
+        }
+
+        ui.add_space(sizing::SPACING_LG);
+
+        // Comments header
+        ui.label(
+            RichText::new(format!("Comments ({})", comments.len()))
+                .size(font::TITLE)
+                .color(text::PRIMARY)
+                .strong(),
+        );
+
+        ui.add_space(sizing::SPACING_MD);
+
+        // Render each comment
+        for comment in comments {
+            Self::render_card(ui, |ui| {
+                // Author row
+                ui.horizontal(|ui| {
+                    // Avatar placeholder
+                    let (_, rect) = ui.allocate_space(Vec2::splat(20.0));
+                    ui.painter().circle_filled(rect.center(), 8.0, accent::LINK);
+
+                    ui.add_space(sizing::SPACING_SM);
+
+                    // Author pubkey (truncated) and timestamp
+                    let author_hex = hex::encode(comment.author);
+                    let author_short = if author_hex.len() > 8 {
+                        format!("{}...", &author_hex[..8])
+                    } else {
+                        author_hex
+                    };
+
+                    ui.label(
+                        RichText::new(author_short)
+                            .size(font::SMALL)
+                            .color(text::PRIMARY)
+                            .strong(),
+                    );
+
+                    ui.label(
+                        RichText::new(format!(
+                            " · {}",
+                            Self::format_relative_time(comment.created_at)
+                        ))
+                        .size(font::SMALL)
+                        .color(text::TERTIARY),
+                    );
+                });
+
+                ui.add_space(sizing::SPACING_SM);
+
+                // Comment content
+                ui.label(
+                    RichText::new(&comment.content)
+                        .size(font::BODY)
+                        .color(text::PRIMARY),
+                );
+            });
+
+            ui.add_space(sizing::CARD_SPACING);
+        }
     }
 
     /// Render the current view.
@@ -1339,8 +1471,9 @@ impl GitApp {
             return GitResponse::default();
         };
 
-        // Get status
+        // Get status and note ID for comments lookup
         let issue_id = hex::encode(issue.key.as_u64().to_be_bytes());
+        let note_id_hex = hex::encode(note.id());
         let current_status = self.subs.get_status(&issue_id).unwrap_or(StatusKind::Open);
 
         // Title (wrapping enabled for long titles)
@@ -1448,6 +1581,9 @@ impl GitApp {
             });
         });
 
+        // Comments section
+        self.render_comments(ui, &note_id_hex);
+
         GitResponse::default()
     }
 
@@ -1473,8 +1609,9 @@ impl GitApp {
             return GitResponse::default();
         };
 
-        // Get status
+        // Get status and note ID for comments lookup
         let patch_id = hex::encode(patch.key.as_u64().to_be_bytes());
+        let note_id_hex = hex::encode(note.id());
         let current_status = self.subs.get_status(&patch_id).unwrap_or(StatusKind::Open);
 
         let title = patch.subject().unwrap_or("Untitled Patch");
@@ -1518,7 +1655,7 @@ impl GitApp {
 
         ui.add_space(sizing::SPACING_MD);
 
-        // Patch content with monospace in a code-style card
+        // Patch content with syntax highlighting in a code-style card
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -1531,13 +1668,11 @@ impl GitApp {
                         sizing::CARD_PADDING_V,
                     ))
                     .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(&patch.content)
-                                .size(font::MONO)
-                                .monospace()
-                                .color(text::PRIMARY),
-                        );
+                        Self::render_patch_content(ui, &patch.content);
                     });
+
+                // Comments section
+                self.render_comments(ui, &note_id_hex);
             });
 
         GitResponse::default()
@@ -1565,8 +1700,9 @@ impl GitApp {
             return GitResponse::default();
         };
 
-        // Get status
+        // Get status and note ID for comments lookup
         let pr_id = hex::encode(pr.key.as_u64().to_be_bytes());
+        let note_id_hex = hex::encode(note.id());
         let current_status = self.subs.get_status(&pr_id).unwrap_or(StatusKind::Open);
 
         // Title
@@ -1700,6 +1836,9 @@ impl GitApp {
                 }
             }
         });
+
+        // Comments section
+        self.render_comments(ui, &note_id_hex);
 
         GitResponse::default()
     }

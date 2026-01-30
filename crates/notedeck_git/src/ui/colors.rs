@@ -92,6 +92,29 @@ pub mod label {
     pub const TEXT: Color32 = Color32::from_rgb(0xC9, 0xD1, 0xD9);
 }
 
+/// Diff/patch syntax highlighting colors.
+pub mod diff {
+    use super::*;
+
+    /// Added line foreground - green.
+    pub const ADDED: Color32 = Color32::from_rgb(0x3F, 0xB9, 0x50);
+
+    /// Removed line foreground - red.
+    pub const REMOVED: Color32 = Color32::from_rgb(0xF8, 0x51, 0x49);
+
+    /// Context line foreground - muted.
+    pub const CONTEXT: Color32 = Color32::from_rgb(0x8B, 0x94, 0x9E);
+
+    /// Diff header (diff --git, index, ---, +++).
+    pub const HEADER: Color32 = Color32::from_rgb(0x58, 0xA6, 0xFF);
+
+    /// Hunk header (@@...@@).
+    pub const HUNK: Color32 = Color32::from_rgb(0xA3, 0x71, 0xF7);
+
+    /// Patch metadata (From:, Date:, Subject:).
+    pub const META: Color32 = Color32::from_rgb(0x6E, 0x76, 0x81);
+}
+
 /// Sizing constants following Apple HIG.
 pub mod sizing {
     /// Minimum touch target size (Apple HIG: 44pt).
