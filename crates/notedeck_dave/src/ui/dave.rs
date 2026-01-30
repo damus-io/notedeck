@@ -667,7 +667,9 @@ impl<'a> DaveUi<'a> {
 
                     ui.add_space(8.0);
 
-                    // Approve/Reject buttons
+                    // Approve/Reject buttons with shift support for adding message
+                    let shift_held = ui.input(|i| i.modifiers.shift);
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
 
@@ -679,13 +681,17 @@ impl<'a> DaveUi<'a> {
                         )
                         .keybind("2")
                         .show(ui)
-                        .on_hover_text("Press 2 to reject the plan");
+                        .on_hover_text("Press 2 to reject, Shift+2 to reject with message");
 
                         if reject_response.clicked() {
-                            action = Some(DaveAction::ExitPlanMode {
-                                request_id: request.id,
-                                approved: false,
-                            });
+                            if shift_held {
+                                action = Some(DaveAction::TentativeDeny);
+                            } else {
+                                action = Some(DaveAction::ExitPlanMode {
+                                    request_id: request.id,
+                                    approved: false,
+                                });
+                            }
                         }
 
                         // Approve button (green)
@@ -696,13 +702,47 @@ impl<'a> DaveUi<'a> {
                         )
                         .keybind("1")
                         .show(ui)
-                        .on_hover_text("Press 1 to approve and exit plan mode");
+                        .on_hover_text("Press 1 to approve, Shift+1 to approve with message");
 
                         if approve_response.clicked() {
-                            action = Some(DaveAction::ExitPlanMode {
-                                request_id: request.id,
-                                approved: true,
-                            });
+                            if shift_held {
+                                action = Some(DaveAction::TentativeAccept);
+                            } else {
+                                action = Some(DaveAction::ExitPlanMode {
+                                    request_id: request.id,
+                                    approved: true,
+                                });
+                            }
+                        }
+
+                        // Show tentative state indicator OR shift hint
+                        match self.permission_message_state {
+                            PermissionMessageState::TentativeAccept => {
+                                ui.label(
+                                    egui::RichText::new("✓ Will Approve")
+                                        .color(egui::Color32::from_rgb(100, 180, 100))
+                                        .strong(),
+                                );
+                            }
+                            PermissionMessageState::TentativeDeny => {
+                                ui.label(
+                                    egui::RichText::new("✗ Will Reject")
+                                        .color(egui::Color32::from_rgb(200, 100, 100))
+                                        .strong(),
+                                );
+                            }
+                            PermissionMessageState::None => {
+                                let hint_color = if shift_held {
+                                    ui.visuals().warn_fg_color
+                                } else {
+                                    ui.visuals().weak_text_color()
+                                };
+                                ui.label(
+                                    egui::RichText::new("(⇧ for message)")
+                                        .color(hint_color)
+                                        .small(),
+                                );
+                            }
                         }
                     });
                 });
