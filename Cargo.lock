@@ -3941,6 +3941,7 @@ dependencies = [
  "notedeck_clndash",
  "notedeck_columns",
  "notedeck_dave",
+ "notedeck_git",
  "notedeck_messages",
  "notedeck_notebook",
  "notedeck_ui",
@@ -4058,6 +4059,25 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "notedeck_git"
+version = "0.7.1"
+dependencies = [
+ "eframe",
+ "egui",
+ "enostr",
+ "hex",
+ "nostrdb",
+ "notedeck",
+ "notedeck_ui",
+ "profiling",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

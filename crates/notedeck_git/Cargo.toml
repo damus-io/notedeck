@@ -1,0 +1,21 @@
+[package]
+name = "notedeck_git"
+edition = "2021"
+version.workspace = true
+description = "Git collaboration app for Notedeck (NIP-34)"
+license = "GPLv3"
+
+[dependencies]
+egui = { workspace = true }
+notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
+eframe = { workspace = true }
+tokio = { workspace = true }
+enostr = { workspace = true }
+tracing = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+nostrdb = { workspace = true }
+profiling = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
