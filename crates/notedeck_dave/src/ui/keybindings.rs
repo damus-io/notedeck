@@ -81,12 +81,12 @@ pub fn check_keybindings(
 
     // Ctrl+N for higher priority (toward NeedsInput)
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::N)) {
-        return Some(KeyAction::FocusQueuePrev);
+        return Some(KeyAction::FocusQueueNext);
     }
 
     // Ctrl+P for lower priority (toward Done)
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
-        return Some(KeyAction::FocusQueueNext);
+        return Some(KeyAction::FocusQueuePrev);
     }
 
     // Ctrl+T to spawn a new agent
