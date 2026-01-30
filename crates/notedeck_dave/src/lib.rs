@@ -772,6 +772,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Exit plan mode for the active session (switch to Default mode)
+    fn exit_plan_mode(&mut self, ctx: &egui::Context) {
+        if let Some(session) = self.session_manager.get_active_mut() {
+            session.permission_mode = PermissionMode::Default;
+            let session_id = format!("dave-session-{}", session.id);
+            self.backend
+                .set_permission_mode(session_id, PermissionMode::Default, ctx.clone());
+            tracing::debug!("Exited plan mode for session {}", session.id);
+        }
+    }
+
     /// Get the first pending permission request ID for the active session
     fn first_pending_permission(&self) -> Option<uuid::Uuid> {
         self.session_manager
@@ -1571,6 +1582,27 @@ impl notedeck::App for Dave {
                     answers,
                 } => {
                     self.handle_question_response(request_id, answers);
+                }
+                DaveAction::ExitPlanMode {
+                    request_id,
+                    approved,
+                } => {
+                    if approved {
+                        // Exit plan mode and allow the tool call
+                        self.exit_plan_mode(ui.ctx());
+                        self.handle_permission_response(
+                            request_id,
+                            PermissionResponse::Allow { message: None },
+                        );
+                    } else {
+                        // Deny the tool call
+                        self.handle_permission_response(
+                            request_id,
+                            PermissionResponse::Deny {
+                                reason: "User rejected plan".into(),
+                            },
+                        );
+                    }
                 }
             }
         }

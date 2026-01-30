@@ -108,6 +108,11 @@ pub enum DaveAction {
         request_id: Uuid,
         answers: Vec<QuestionAnswer>,
     },
+    /// User approved or rejected an ExitPlanMode request
+    ExitPlanMode {
+        request_id: Uuid,
+        approved: bool,
+    },
 }
 
 impl<'a> DaveUi<'a> {
@@ -404,6 +409,11 @@ impl<'a> DaveUi<'a> {
                     });
             }
             None => {
+                // Check if this is an ExitPlanMode tool call
+                if request.tool_name == "ExitPlanMode" {
+                    return self.exit_plan_mode_ui(request, ui);
+                }
+
                 // Check if this is an AskUserQuestion tool call
                 if request.tool_name == "AskUserQuestion" {
                     if let Ok(questions) =
@@ -606,6 +616,99 @@ impl<'a> DaveUi<'a> {
                 }
             }
         });
+    }
+
+    /// Render ExitPlanMode tool call with Approve/Reject buttons
+    fn exit_plan_mode_ui(
+        &self,
+        request: &PermissionRequest,
+        ui: &mut egui::Ui,
+    ) -> Option<DaveAction> {
+        let mut action = None;
+        let inner_margin = 12.0;
+        let corner_radius = 8.0;
+
+        // The plan content is in tool_input.plan field
+        let plan_content = request
+            .tool_input
+            .get("plan")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        egui::Frame::new()
+            .fill(ui.visuals().widgets.noninteractive.bg_fill)
+            .inner_margin(inner_margin)
+            .corner_radius(corner_radius)
+            .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color))
+            .show(ui, |ui| {
+                ui.vertical(|ui| {
+                    // Header with badge
+                    ui.horizontal(|ui| {
+                        super::badge::StatusBadge::new("PLAN")
+                            .variant(super::badge::BadgeVariant::Info)
+                            .show(ui);
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Plan ready for approval").strong());
+                    });
+
+                    ui.add_space(8.0);
+
+                    // Display the plan content as plain text (TODO: markdown rendering)
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&plan_content)
+                                .monospace()
+                                .size(11.0)
+                                .color(ui.visuals().text_color()),
+                        )
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                    );
+
+                    ui.add_space(8.0);
+
+                    // Approve/Reject buttons
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
+
+                        // Reject button (red)
+                        let reject_response = super::badge::ActionButton::new(
+                            "Reject",
+                            egui::Color32::from_rgb(178, 34, 34),
+                            button_text_color,
+                        )
+                        .keybind("2")
+                        .show(ui)
+                        .on_hover_text("Press 2 to reject the plan");
+
+                        if reject_response.clicked() {
+                            action = Some(DaveAction::ExitPlanMode {
+                                request_id: request.id,
+                                approved: false,
+                            });
+                        }
+
+                        // Approve button (green)
+                        let approve_response = super::badge::ActionButton::new(
+                            "Approve",
+                            egui::Color32::from_rgb(34, 139, 34),
+                            button_text_color,
+                        )
+                        .keybind("1")
+                        .show(ui)
+                        .on_hover_text("Press 1 to approve and exit plan mode");
+
+                        if approve_response.clicked() {
+                            action = Some(DaveAction::ExitPlanMode {
+                                request_id: request.id,
+                                approved: true,
+                            });
+                        }
+                    });
+                });
+            });
+
+        action
     }
 
     /// Render tool result metadata as a compact line
