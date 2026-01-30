@@ -477,13 +477,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         ui.separator();
                         if ui
                             .button("List View")
-                            .on_hover_text("Ctrl+G to toggle views")
+                            .on_hover_text("Ctrl+L to toggle views")
                             .clicked()
                         {
                             self.show_scene = false;
                         }
                         if ctrl_held {
-                            ui::keybind_hint(ui, "G");
+                            ui::keybind_hint(ui, "L");
                         }
                     });
                     ui.separator();
@@ -610,13 +610,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         ui.horizontal(|ui| {
                             if ui
                                 .button("Scene View")
-                                .on_hover_text("Ctrl+G to toggle views")
+                                .on_hover_text("Ctrl+L to toggle views")
                                 .clicked()
                             {
                                 self.show_scene = true;
                             }
                             if ctrl_held {
-                                ui::keybind_hint(ui, "G");
+                                ui::keybind_hint(ui, "L");
                             }
                         });
                         ui.separator();
@@ -751,6 +751,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.scene.select(id);
                 self.scene.focus_on(session.scene_position);
             }
+        }
+    }
+
+    /// Clone the active agent, creating a new session with the same working directory
+    fn clone_active_agent(&mut self) {
+        if let Some(cwd) = self.session_manager.get_active().map(|s| s.cwd.clone()) {
+            self.create_session_with_cwd(cwd);
         }
     }
 
@@ -1510,6 +1517,9 @@ impl notedeck::App for Dave {
                 }
                 KeyAction::NewAgent => {
                     self.handle_new_chat();
+                }
+                KeyAction::CloneAgent => {
+                    self.clone_active_agent();
                 }
                 KeyAction::Interrupt => {
                     self.handle_interrupt_request(ui);

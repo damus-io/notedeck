@@ -39,6 +39,8 @@ pub enum KeyAction {
     ToggleAutoSteal,
     /// Open external editor for composing input (Ctrl+G)
     OpenExternalEditor,
+    /// Clone the active agent with the same working directory (Ctrl+Shift+T)
+    CloneAgent,
 }
 
 /// Check for keybinding actions.
@@ -87,6 +89,11 @@ pub fn check_keybindings(
     // Ctrl+P for lower priority (toward Done)
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
         return Some(KeyAction::FocusQueueNext);
+    }
+
+    // Ctrl+Shift+T to clone the active agent (check before Ctrl+T)
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::T)) {
+        return Some(KeyAction::CloneAgent);
     }
 
     // Ctrl+T to spawn a new agent
