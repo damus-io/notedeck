@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Local, NaiveDate};
 use egui::{
-    vec2, Align, Color32, CornerRadius, Frame, Key, Layout, Margin, RichText, ScrollArea, TextEdit,
+    vec2, Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers,
+    RichText, ScrollArea, TextEdit,
 };
 use egui_extras::{Size, StripBuilder};
 use enostr::Pubkey;
@@ -54,7 +55,12 @@ impl<'a> ConversationUi<'a> {
         let mut action = None;
         Frame::new().fill(ui.visuals().panel_fill).show(ui, |ui| {
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                ui.allocate_ui(vec2(ui.available_width(), 64.0), |ui| {
+                // Calculate height based on number of lines (min 1, max 8)
+                let line_count = self.state.composer.lines().count().max(1).min(8);
+                let line_height = 20.0; // approximate line height
+                let base_height = 44.0; // padding + margin
+                let composer_height = base_height + (line_count as f32 * line_height);
+                ui.allocate_ui(vec2(ui.available_width(), composer_height), |ui| {
                     let comp_resp =
                         conversation_composer(ui, self.state, self.conversation.id, self.i18n);
                     if action.is_none() {
@@ -282,9 +288,6 @@ fn conversation_composer(
     let mut composer_has_focus = false;
     Frame::new().inner_margin(margin).show(ui, |ui| {
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            // TODO(kernelkind): ideally this will be multiline, but the default multiline impl doesn't work the way
-            // signal's multiline works... TBC
-
             let old = mut_visuals_corner_radius(ui, CornerRadius::same(16));
 
             let hint_text = RichText::new(tr!(
@@ -303,19 +306,24 @@ fn conversation_composer(
                 .horizontal(|mut strip| {
                     strip.cell(|ui| {
                         let spacing = ui.spacing().item_spacing.x;
-                        let text_height = ui.spacing().item_spacing.y * 1.4;
                         let text_width = (ui.available_width() - spacing).max(0.0);
-                        let size = vec2(text_width, text_height);
 
-                        let text_edit = TextEdit::singleline(&mut state.composer)
+                        let text_edit = TextEdit::multiline(&mut state.composer)
                             .margin(Margin::symmetric(16, 8))
-                            .vertical_align(Align::Center)
                             .desired_width(text_width)
                             .hint_text(hint_text)
-                            .min_size(size);
+                            .desired_rows(1)
+                            .return_key(KeyboardShortcut::new(
+                                Modifiers {
+                                    shift: true,
+                                    ..Default::default()
+                                },
+                                Key::Enter,
+                            ));
                         let text_resp = ui.add(text_edit);
                         restore_widgets_corner_rad(ui, old);
-                        send = text_resp.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                        send = text_resp.has_focus()
+                            && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
                         include_input(ui, &text_resp);
                         composer_has_focus = text_resp.has_focus();
                     });
@@ -423,10 +431,7 @@ fn self_chat_bubble(
     ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
         chat_bubble(ui, msg_type, true, bubble_fill, |ui| {
             ui.with_layout(Layout::top_down(Align::Max), |ui| {
-                ui.add(
-                    egui::Label::new(RichText::new(message).color(ui.visuals().text_color()))
-                        .selectable(true),
-                );
+                ui.label(RichText::new(message).color(ui.visuals().text_color()));
 
                 if msg_type == MessageType::Standalone || msg_type == MessageType::LastInSeries {
                     let timestamp_label =
@@ -469,9 +474,7 @@ fn other_chat_bubble(
             ui.with_layout(
                 Layout::left_to_right(Align::Max).with_main_wrap(true),
                 |ui| {
-                    ui.add(
-                        egui::Label::new(RichText::new(message).color(text_color)).selectable(true),
-                    );
+                    ui.label(RichText::new(message).color(text_color));
                     if msg_type == MessageType::Standalone || msg_type == MessageType::LastInSeries
                     {
                         ui.add_space(6.0);
