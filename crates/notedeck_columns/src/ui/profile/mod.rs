@@ -149,6 +149,8 @@ fn profile_body(
     ui.vertical(|ui| {
         let banner_resp = banner(
             ui,
+            note_context.img_cache,
+            note_context.jobs,
             profile
                 .map(|p| p.record().profile())
                 .and_then(|p| p.and_then(|p| p.banner())),

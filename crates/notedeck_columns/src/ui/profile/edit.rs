@@ -45,7 +45,7 @@ impl<'a> EditProfileView<'a> {
             .id_salt(EditProfileView::scroll_id())
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                banner(ui, self.state.banner(), 188.0);
+                banner(ui, self.img_cache, self.jobs, self.state.banner(), 188.0);
 
                 let padding = 24.0;
                 notedeck_ui::padding(padding, ui, |ui| {

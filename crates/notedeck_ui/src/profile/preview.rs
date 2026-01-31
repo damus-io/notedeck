@@ -65,6 +65,8 @@ impl egui::Widget for ProfilePreview<'_, '_> {
         ui.vertical(|ui| {
             banner(
                 ui,
+                self.cache,
+                self.jobs,
                 self.profile.record().profile().and_then(|p| p.banner()),
                 80.0,
             );

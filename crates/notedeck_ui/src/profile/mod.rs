@@ -8,8 +8,12 @@ pub mod preview;
 pub use picture::ProfilePic;
 pub use preview::ProfilePreview;
 
-use egui::{load::TexturePoll, Label, RichText};
-use notedeck::{IsFollowing, NostrName, NotedeckTextStyle};
+use egui::{Label, RichText, TextureHandle};
+use notedeck::media::images::ImageType;
+use notedeck::media::AnimationMode;
+use notedeck::{
+    Images, IsFollowing, MediaJobSender, NostrName, NotedeckTextStyle, PointDimensions,
+};
 
 use crate::{app_images, colors, widgets::styled_button_toggleable};
 
@@ -93,36 +97,62 @@ pub fn about_section_widget<'a>(profile: Option<&'a ProfileRecord<'a>>) -> impl 
     }
 }
 
-pub fn banner_texture(ui: &mut egui::Ui, banner_url: &str) -> Option<egui::load::SizedTexture> {
-    // TODO: cache banner
-    if !banner_url.is_empty() {
-        let texture_load_res =
-            egui::Image::new(banner_url).load_for_size(ui.ctx(), ui.available_size());
-        if let Ok(texture_poll) = texture_load_res {
-            match texture_poll {
-                TexturePoll::Pending { .. } => {}
-                TexturePoll::Ready { texture, .. } => return Some(texture),
-            }
-        }
+/// Loads a banner texture using the shared media cache to prevent blocking.
+#[profiling::function]
+pub fn banner_texture<'a>(
+    ui: &mut egui::Ui,
+    cache: &'a mut Images,
+    jobs: &MediaJobSender,
+    banner_url: &str,
+    size: PointDimensions,
+) -> Option<&'a TextureHandle> {
+    if banner_url.is_empty() {
+        return None;
     }
 
-    None
+    cache.latest_texture(
+        jobs,
+        ui,
+        banner_url,
+        ImageType::Content(Some(size.to_pixels(ui))),
+        AnimationMode::NoAnimation,
+    )
 }
 
-pub fn banner(ui: &mut egui::Ui, banner_url: Option<&str>, height: f32) -> egui::Response {
-    ui.add_sized([ui.available_size().x, height], |ui: &mut egui::Ui| {
+/// Renders a profile banner via the cached loader so we avoid egui_extras overhead.
+#[profiling::function]
+pub fn banner(
+    ui: &mut egui::Ui,
+    cache: &mut Images,
+    jobs: &MediaJobSender,
+    banner_url: Option<&str>,
+    height: f32,
+) -> egui::Response {
+    let x = ui.available_size().x;
+    ui.add_sized([x, height], |ui: &mut egui::Ui| {
         banner_url
-            .and_then(|url| banner_texture(ui, url))
+            .and_then(|url| banner_texture(ui, cache, jobs, url, PointDimensions { x, y: height }))
             .map(|texture| {
+                let size = texture.size_vec2();
+                let aspect_ratio = if size.y == 0.0 { 1.0 } else { size.x / size.y };
+
                 notedeck::media::images::aspect_fill(
                     ui,
                     egui::Sense::hover(),
-                    texture.id,
-                    texture.size.x / texture.size.y,
+                    texture.id(),
+                    aspect_ratio,
                 )
             })
-            .unwrap_or_else(|| ui.label(""))
+            .unwrap_or_else(|| empty_banner(ui))
     })
+}
+
+/// Draws an empty banner placeholder while the image loads or is missing.
+fn empty_banner(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
+    response
 }
 
 pub fn follow_button(following: IsFollowing) -> impl egui::Widget + 'static {
