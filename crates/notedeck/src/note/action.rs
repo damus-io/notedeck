@@ -7,6 +7,8 @@ use enostr::{NoteId, Pubkey};
 pub struct ScrollInfo {
     pub velocity: Vec2,
     pub offset: Vec2,
+    pub full_content_size: Vec2,
+    pub viewable_content_rect: egui::Rect,
 }
 
 #[derive(Debug)]

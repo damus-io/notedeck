@@ -205,7 +205,12 @@ fn timeline_ui(
         let velocity = scroll_output.state.velocity();
         let offset = scroll_output.state.offset;
         if velocity.length_sq() > 0.0 {
-            Some(NoteAction::Scroll(ScrollInfo { velocity, offset }))
+            Some(NoteAction::Scroll(ScrollInfo {
+                velocity,
+                offset,
+                full_content_size: scroll_output.content_size,
+                viewable_content_rect: scroll_output.inner_rect,
+            }))
         } else {
             None
         }
