@@ -792,25 +792,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Check if the first pending permission is an AskUserQuestion tool call
     fn has_pending_question(&self) -> bool {
-        let Some(session) = self.session_manager.get_active() else {
-            return false;
-        };
+        self.pending_permission_tool_name() == Some("AskUserQuestion")
+    }
 
-        // Get the first pending permission request ID
-        let Some(request_id) = session.pending_permissions.keys().next() else {
-            return false;
-        };
+    /// Check if the first pending permission is an ExitPlanMode tool call
+    fn has_pending_exit_plan_mode(&self) -> bool {
+        self.pending_permission_tool_name() == Some("ExitPlanMode")
+    }
 
-        // Find the corresponding PermissionRequest in chat to check tool_name
+    /// Get the tool name of the first pending permission request
+    fn pending_permission_tool_name(&self) -> Option<&str> {
+        let session = self.session_manager.get_active()?;
+        let request_id = session.pending_permissions.keys().next()?;
+
         for msg in &session.chat {
             if let Message::PermissionRequest(req) = msg {
-                if &req.id == request_id && req.tool_name == "AskUserQuestion" {
-                    return true;
+                if &req.id == request_id {
+                    return Some(&req.tool_name);
                 }
             }
         }
 
-        false
+        None
     }
 
     /// Handle a permission response (from UI button or keybinding)
@@ -1502,6 +1505,8 @@ impl notedeck::App for Dave {
                     match tentative_state {
                         crate::session::PermissionMessageState::TentativeAccept => {
                             // Send permission Allow with the message from input
+                            // If this is ExitPlanMode, also exit plan mode
+                            let is_exit_plan_mode = self.has_pending_exit_plan_mode();
                             if let Some(request_id) = self.first_pending_permission() {
                                 let message = self
                                     .session_manager
@@ -1511,6 +1516,9 @@ impl notedeck::App for Dave {
                                 // Clear input
                                 if let Some(session) = self.session_manager.get_active_mut() {
                                     session.input.clear();
+                                }
+                                if is_exit_plan_mode {
+                                    self.exit_plan_mode(ui.ctx());
                                 }
                                 self.handle_permission_response(
                                     request_id,
