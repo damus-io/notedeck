@@ -1,9 +1,9 @@
+use crate::auto_accept::AutoAcceptRules;
 use crate::backend::session_info::parse_session_info;
 use crate::backend::tool_summary::{
     extract_response_content, format_tool_summary, truncate_output,
 };
 use crate::backend::traits::AiBackend;
-use crate::file_update::FileUpdate;
 use crate::messages::{
     CompactionInfo, DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse,
     SubagentInfo, SubagentStatus, ToolResult,
@@ -293,14 +293,12 @@ async fn session_actor(
 
                         // Handle permission requests (they're blocking the SDK)
                         Some(perm_req) = perm_rx.recv() => {
-                            // Auto-accept small edits (2 lines or less)
-                            const AUTO_ACCEPT_MAX_LINES: usize = 2;
-                            if let Some(file_update) = FileUpdate::from_tool_call(&perm_req.tool_name, &perm_req.tool_input) {
-                                if file_update.is_small_edit(AUTO_ACCEPT_MAX_LINES) {
-                                    tracing::debug!("Auto-accepting small edit ({} lines max): {}", AUTO_ACCEPT_MAX_LINES, file_update.file_path);
-                                    let _ = perm_req.response_tx.send(PermissionResult::Allow(PermissionResultAllow::default()));
-                                    continue;
-                                }
+                            // Check auto-accept rules
+                            let auto_accept_rules = AutoAcceptRules::default();
+                            if auto_accept_rules.should_auto_accept(&perm_req.tool_name, &perm_req.tool_input) {
+                                tracing::debug!("Auto-accepting {}: matched auto-accept rule", perm_req.tool_name);
+                                let _ = perm_req.response_tx.send(PermissionResult::Allow(PermissionResultAllow::default()));
+                                continue;
                             }
 
                             // Forward permission request to UI

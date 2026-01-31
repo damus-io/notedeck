@@ -1,4 +1,5 @@
 mod agent_status;
+mod auto_accept;
 mod avatar;
 mod backend;
 mod config;
