@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use egui::TextureHandle;
+use egui::{TextureHandle, Vec2};
 use nostrdb::Note;
 
 use crate::{
@@ -18,7 +18,7 @@ pub struct ImageMetadata {
     pub dimensions: Option<PixelDimensions>, // width and height in pixels
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub struct PixelDimensions {
     pub x: u32,
     pub y: u32,
@@ -53,6 +53,10 @@ pub struct PointDimensions {
 }
 
 impl PointDimensions {
+    pub fn from_vec(vec: Vec2) -> Self {
+        Self { x: vec.x, y: vec.y }
+    }
+
     pub fn to_pixels(self, ui: &egui::Ui) -> PixelDimensions {
         PixelDimensions {
             x: (self.x * ui.pixels_per_point()).round() as u32,
@@ -83,7 +87,7 @@ impl ImageMetadata {
         }
 
         if defined_dimensions.y <= max_pixels.y {
-            return defined_dimensions.clone();
+            return *defined_dimensions;
         }
 
         let scale_factor = (max_pixels.y as f32) / (defined_dimensions.y as f32);
