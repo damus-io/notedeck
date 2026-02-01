@@ -935,6 +935,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Exit plan mode for the active session (switch to Default mode)
+    fn exit_plan_mode(&mut self, ctx: &egui::Context) {
+        if let Some(session) = self.session_manager.get_active_mut() {
+            session.permission_mode = PermissionMode::Default;
+            let session_id = format!("dave-session-{}", session.id);
+            self.backend
+                .set_permission_mode(session_id, PermissionMode::Default, ctx.clone());
+            tracing::debug!("Exited plan mode for session {}", session.id);
+        }
+    }
+
     /// Get the first pending permission request ID for the active session
     fn first_pending_permission(&self) -> Option<uuid::Uuid> {
         self.session_manager
@@ -944,25 +955,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Check if the first pending permission is an AskUserQuestion tool call
     fn has_pending_question(&self) -> bool {
-        let Some(session) = self.session_manager.get_active() else {
-            return false;
-        };
+        self.pending_permission_tool_name() == Some("AskUserQuestion")
+    }
 
-        // Get the first pending permission request ID
-        let Some(request_id) = session.pending_permissions.keys().next() else {
-            return false;
-        };
+    /// Check if the first pending permission is an ExitPlanMode tool call
+    fn has_pending_exit_plan_mode(&self) -> bool {
+        self.pending_permission_tool_name() == Some("ExitPlanMode")
+    }
 
-        // Find the corresponding PermissionRequest in chat to check tool_name
+    /// Get the tool name of the first pending permission request
+    fn pending_permission_tool_name(&self) -> Option<&str> {
+        let session = self.session_manager.get_active()?;
+        let request_id = session.pending_permissions.keys().next()?;
+
         for msg in &session.chat {
             if let Message::PermissionRequest(req) = msg {
-                if &req.id == request_id && req.tool_name == "AskUserQuestion" {
-                    return true;
+                if &req.id == request_id {
+                    return Some(&req.tool_name);
                 }
             }
         }
 
-        false
+        None
     }
 
     /// Handle a permission response (from UI button or keybinding)
@@ -1666,6 +1680,8 @@ impl notedeck::App for Dave {
                     match tentative_state {
                         crate::session::PermissionMessageState::TentativeAccept => {
                             // Send permission Allow with the message from input
+                            // If this is ExitPlanMode, also exit plan mode
+                            let is_exit_plan_mode = self.has_pending_exit_plan_mode();
                             if let Some(request_id) = self.first_pending_permission() {
                                 let message = self
                                     .session_manager
@@ -1675,6 +1691,9 @@ impl notedeck::App for Dave {
                                 // Clear input
                                 if let Some(session) = self.session_manager.get_active_mut() {
                                     session.input.clear();
+                                }
+                                if is_exit_plan_mode {
+                                    self.exit_plan_mode(ui.ctx());
                                 }
                                 self.handle_permission_response(
                                     request_id,
@@ -1746,6 +1765,27 @@ impl notedeck::App for Dave {
                     answers,
                 } => {
                     self.handle_question_response(request_id, answers);
+                }
+                DaveAction::ExitPlanMode {
+                    request_id,
+                    approved,
+                } => {
+                    if approved {
+                        // Exit plan mode and allow the tool call
+                        self.exit_plan_mode(ui.ctx());
+                        self.handle_permission_response(
+                            request_id,
+                            PermissionResponse::Allow { message: None },
+                        );
+                    } else {
+                        // Deny the tool call
+                        self.handle_permission_response(
+                            request_id,
+                            PermissionResponse::Deny {
+                                reason: "User rejected plan".into(),
+                            },
+                        );
+                    }
                 }
             }
         }
