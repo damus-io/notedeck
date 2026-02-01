@@ -558,15 +558,29 @@ impl GitStatus {
         let status = StatusKind::from_kind(note.kind() as u64)?;
 
         let mut target_event = None;
+        let mut first_e_tag = None;
 
         for tag in note.tags() {
             let tag_name = tag.get(0).and_then(|t| t.variant().str());
             if tag_name == Some("e") {
-                // Look for root marker
+                let event_id = tag.get(1).and_then(|t| t.variant().str()).map(String::from);
+
+                // Prefer e tag with root marker (NIP-10 style)
                 if tag.get(3).and_then(|t| t.variant().str()) == Some("root") {
-                    target_event = tag.get(1).and_then(|t| t.variant().str()).map(String::from);
+                    target_event = event_id;
+                    break; // Found explicit root, use it
+                }
+
+                // Remember first e tag as fallback
+                if first_e_tag.is_none() {
+                    first_e_tag = event_id;
                 }
             }
+        }
+
+        // Fall back to first e tag if no explicit root marker
+        if target_event.is_none() {
+            target_event = first_e_tag;
         }
 
         Some(GitStatus {

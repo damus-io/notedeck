@@ -364,6 +364,16 @@ impl GitApp {
             if ui.add(closed_button).clicked() && !closed_selected {
                 new_filter = Some(ListFilter::Closed);
             }
+
+            // Show underline for selected (Closed tab)
+            if closed_selected {
+                let rect = ui.min_rect();
+                ui.painter().hline(
+                    rect.right() - 80.0..=rect.right(),
+                    rect.bottom() - 2.0,
+                    Stroke::new(2.0, status::CLOSED),
+                );
+            }
         });
 
         // Separator line
@@ -747,15 +757,23 @@ impl GitApp {
             }
 
             if should_submit {
-                // Try to publish the comment
-                if let Some(keypair) = ctx.accounts.selected_filled() {
+                // Re-read current draft content (may have changed during this frame)
+                let current_content = self
+                    .reply_drafts
+                    .get(event_id)
+                    .cloned()
+                    .unwrap_or_default();
+
+                if current_content.trim().is_empty() {
+                    // Content became empty, don't submit
+                } else if let Some(keypair) = ctx.accounts.selected_filled() {
                     let seckey = keypair.secret_key.secret_bytes();
 
                     // Build NIP-22 comment event (kind 1111)
                     // Tags: ["e", event_id, "", "root"], ["p", author], ["K", kind]
                     let note = NoteBuilder::new()
                         .kind(kinds::COMMENT as u32)
-                        .content(&draft_content)
+                        .content(&current_content)
                         .start_tag()
                         .tag_str("e")
                         .tag_str(event_id)
