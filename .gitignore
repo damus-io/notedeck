@@ -24,3 +24,4 @@ scripts/macos_build_secrets.sh
 .lsp
 .idea
 local.properties
+.beads/
