@@ -4,7 +4,7 @@
 //! using notedeck's existing subscription patterns.
 
 use crate::events::{
-    GitComment, GitEvent, GitIssue, GitPatch, GitPullRequest, GitRepo, GitStatus, StatusKind, kinds,
+    kinds, GitComment, GitEvent, GitIssue, GitPatch, GitPullRequest, GitRepo, GitStatus, StatusKind,
 };
 use enostr::RelayPool;
 use nostrdb::{Filter, Ndb, Note, Transaction};
@@ -93,12 +93,10 @@ impl GitSubscriptions {
         );
 
         // Filter for repository announcements
-        let repo_filter = vec![
-            Filter::new()
-                .kinds([kinds::REPO_ANNOUNCEMENT])
-                .limit(500)
-                .build(),
-        ];
+        let repo_filter = vec![Filter::new()
+            .kinds([kinds::REPO_ANNOUNCEMENT])
+            .limit(500)
+            .build()];
 
         // Filter for all other git events
         let events_filter = vec![
@@ -145,12 +143,10 @@ impl GitSubscriptions {
         }
 
         // Filter for comments (NIP-22 kind 1111 and kind 1 replies)
-        let comment_filter = vec![
-            Filter::new()
-                .kinds([kinds::COMMENT, kinds::NOTE])
-                .limit(1000)
-                .build(),
-        ];
+        let comment_filter = vec![Filter::new()
+            .kinds([kinds::COMMENT, kinds::NOTE])
+            .limit(1000)
+            .build()];
 
         if let Ok(comment_local_sub) = ndb.subscribe(&comment_filter) {
             let comment_remote_id = Uuid::new_v4().to_string();

@@ -227,6 +227,8 @@ impl RepoState {
 pub struct GitPatch {
     /// The note key in nostrdb.
     pub key: NoteKey,
+    /// The hex-encoded note ID (for comment lookup).
+    pub note_id: String,
     /// The patch content (git format-patch output).
     pub content: String,
     /// Repository address tag (30617:pubkey:repo-id).
@@ -295,6 +297,7 @@ impl GitPatch {
 
         Some(GitPatch {
             key: note.key().expect("note should have key"),
+            note_id: hex::encode(note.id()),
             content: note.content().to_string(),
             repo_address,
             repo_commit,
@@ -329,6 +332,8 @@ impl GitPatch {
 pub struct GitPullRequest {
     /// The note key in nostrdb.
     pub key: NoteKey,
+    /// The hex-encoded note ID (for comment lookup).
+    pub note_id: String,
     /// PR description (markdown).
     pub content: String,
     /// Repository address tag.
@@ -395,6 +400,7 @@ impl GitPullRequest {
 
         Some(GitPullRequest {
             key: note.key().expect("note should have key"),
+            note_id: hex::encode(note.id()),
             content: note.content().to_string(),
             repo_address,
             subject,
@@ -418,6 +424,8 @@ impl GitPullRequest {
 pub struct GitIssue {
     /// The note key in nostrdb.
     pub key: NoteKey,
+    /// The hex-encoded note ID (for comment lookup).
+    pub note_id: String,
     /// Issue body (markdown).
     pub content: String,
     /// Repository address tag.
@@ -464,6 +472,7 @@ impl GitIssue {
 
         Some(GitIssue {
             key: note.key().expect("note should have key"),
+            note_id: hex::encode(note.id()),
             content: note.content().to_string(),
             repo_address,
             subject,

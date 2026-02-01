@@ -1,11 +1,14 @@
 //! Main Git app struct and App trait implementation.
 
-use crate::events::StatusKind;
+use crate::events::{kinds, StatusKind};
 use crate::subscriptions::GitSubscriptions;
 use crate::ui::colors::{accent, bg, diff, font, label, sizing, status, text};
 use egui::{Color32, CornerRadius, RichText, Stroke, Vec2};
-use nostrdb::Transaction;
-use notedeck::{AppContext, AppResponse, try_process_events_core};
+use enostr::Pubkey;
+use nostrdb::{NoteBuilder, Transaction};
+use notedeck::{name::get_display_name, try_process_events_core, AppContext, AppResponse};
+use notedeck_ui::ProfilePic;
+use std::collections::HashMap;
 
 /// Navigation routes for the git app.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +86,10 @@ pub struct GitApp {
     pr_search: String,
     /// Search query for patch list.
     patch_search: String,
+    /// Reply drafts keyed by event ID (hex-encoded).
+    reply_drafts: HashMap<String, String>,
+    /// Whether reply input is visible, keyed by event ID.
+    reply_visible: HashMap<String, bool>,
 }
 
 impl Default for GitApp {
@@ -105,6 +112,8 @@ impl GitApp {
             issue_search: String::new(),
             pr_search: String::new(),
             patch_search: String::new(),
+            reply_drafts: HashMap::new(),
+            reply_visible: HashMap::new(),
         }
     }
 
@@ -136,7 +145,11 @@ impl GitApp {
                 sizing::CARD_PADDING_H,
                 sizing::CARD_PADDING_V,
             ))
-            .show(ui, content);
+            .show(ui, |ui| {
+                // Fill available width (already constrained by parent)
+                ui.set_width(ui.available_width());
+                content(ui);
+            });
     }
 
     /// Render a search input field with GitHub-style appearance.
@@ -196,6 +209,8 @@ impl GitApp {
             ));
 
         let frame_response = frame.show(ui, |ui| {
+            // Fill available width (constrained by parent)
+            ui.set_width(ui.available_width());
             // Ensure minimum touch target height
             ui.set_min_height(sizing::MIN_TOUCH_TARGET);
             content(ui);
@@ -431,6 +446,52 @@ impl GitApp {
         format!("{}...", &url[..max_chars - 3])
     }
 
+    /// Render an author's profile picture and display name.
+    ///
+    /// Shows profile picture (or placeholder) and the author's display name.
+    /// Falls back to truncated pubkey if no profile found.
+    fn render_author(
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        pubkey: &[u8; 32],
+        size: f32,
+    ) {
+        let profile = ctx.ndb.get_profile_by_pubkey(txn, pubkey).ok();
+        let display_name = get_display_name(profile.as_ref());
+
+        // Profile picture
+        let mut pfp = ProfilePic::from_profile_or_default(
+            ctx.img_cache,
+            ctx.media_jobs.sender(),
+            profile.as_ref(),
+        )
+        .size(size);
+        ui.add(&mut pfp);
+
+        ui.add_space(sizing::SPACING_SM);
+
+        // Display name
+        let name_text = if display_name.name() == "??" {
+            // Fallback to truncated npub (more user-friendly than hex)
+            Pubkey::new(*pubkey)
+                .npub()
+                .map(|npub| format!("{}...", &npub[..12]))
+                .unwrap_or_else(|| {
+                    let pk_hex = hex::encode(pubkey);
+                    format!("{}...", &pk_hex[..8])
+                })
+        } else {
+            display_name.name().to_string()
+        };
+
+        ui.label(
+            RichText::new(name_text)
+                .size(font::SMALL)
+                .color(text::PRIMARY),
+        );
+    }
+
     /// Get the appropriate color for a diff line based on its content.
     ///
     /// Parses git format-patch output and returns syntax highlighting colors.
@@ -491,8 +552,14 @@ impl GitApp {
 
     /// Render the comments section for an event.
     ///
-    /// Displays a list of comments if any exist, with author info and timestamps.
-    fn render_comments(&self, ui: &mut egui::Ui, event_id: &str) {
+    /// Displays a list of comments if any exist, with author profile pictures and names.
+    fn render_comments(
+        &self,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        txn: &Transaction,
+        event_id: &str,
+    ) {
         let Some(comments) = self.subs.get_comments(event_id) else {
             return;
         };
@@ -516,28 +583,9 @@ impl GitApp {
         // Render each comment
         for comment in comments {
             Self::render_card(ui, |ui| {
-                // Author row
+                // Author row with profile picture
                 ui.horizontal(|ui| {
-                    // Avatar placeholder
-                    let (_, rect) = ui.allocate_space(Vec2::splat(20.0));
-                    ui.painter().circle_filled(rect.center(), 8.0, accent::LINK);
-
-                    ui.add_space(sizing::SPACING_SM);
-
-                    // Author pubkey (truncated) and timestamp
-                    let author_hex = hex::encode(comment.author);
-                    let author_short = if author_hex.len() > 8 {
-                        format!("{}...", &author_hex[..8])
-                    } else {
-                        author_hex
-                    };
-
-                    ui.label(
-                        RichText::new(author_short)
-                            .size(font::SMALL)
-                            .color(text::PRIMARY)
-                            .strong(),
-                    );
+                    Self::render_author(ctx, ui, txn, &comment.author, 20.0);
 
                     ui.label(
                         RichText::new(format!(
@@ -561,6 +609,201 @@ impl GitApp {
 
             ui.add_space(sizing::CARD_SPACING);
         }
+    }
+
+    /// Render the reply input section for an event.
+    ///
+    /// Shows a "Reply" button that expands into a text input with submit button.
+    /// Returns true if a comment was successfully published.
+    fn render_reply_input(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        ui: &mut egui::Ui,
+        event_id: &str,
+        event_kind: u64,
+        event_author: &[u8; 32],
+    ) -> bool {
+        let mut published = false;
+
+        ui.add_space(sizing::SPACING_LG);
+
+        // Toggle reply visibility
+        let is_visible = *self.reply_visible.get(event_id).unwrap_or(&false);
+
+        if !is_visible {
+            // Show "Reply" button
+            let button = egui::Button::new(
+                RichText::new("💬 Reply")
+                    .size(font::BODY)
+                    .color(text::PRIMARY),
+            )
+            .fill(bg::HOVER)
+            .stroke(Stroke::new(1.0, bg::BORDER))
+            .corner_radius(CornerRadius::same(sizing::BADGE_ROUNDING))
+            .min_size(Vec2::new(100.0, sizing::MIN_TOUCH_TARGET));
+
+            if ui.add(button).clicked() {
+                self.reply_visible.insert(event_id.to_string(), true);
+                self.reply_drafts
+                    .entry(event_id.to_string())
+                    .or_default();
+            }
+        } else {
+            // Track actions to perform after UI
+            let mut should_cancel = false;
+            let mut should_submit = false;
+
+            // Get current draft content
+            let draft_content = self
+                .reply_drafts
+                .get(event_id)
+                .cloned()
+                .unwrap_or_default();
+            let can_submit = !draft_content.trim().is_empty();
+
+            // Show reply input card
+            egui::Frame::new()
+                .fill(bg::CARD)
+                .corner_radius(CornerRadius::same(sizing::CARD_ROUNDING))
+                .stroke(Stroke::new(1.0, bg::BORDER))
+                .inner_margin(egui::Margin::symmetric(
+                    sizing::CARD_PADDING_H,
+                    sizing::CARD_PADDING_V,
+                ))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+
+                    ui.label(
+                        RichText::new("Write a reply")
+                            .size(font::SMALL)
+                            .color(text::TERTIARY),
+                    );
+
+                    ui.add_space(sizing::SPACING_SM);
+
+                    // Text input - get mutable reference
+                    let draft = self
+                        .reply_drafts
+                        .entry(event_id.to_string())
+                        .or_default();
+
+                    let text_edit = egui::TextEdit::multiline(draft)
+                        .hint_text("Write your comment...")
+                        .desired_width(ui.available_width())
+                        .desired_rows(3)
+                        .font(egui::TextStyle::Body);
+
+                    ui.add(text_edit);
+
+                    ui.add_space(sizing::SPACING_SM);
+
+                    // Action buttons
+                    ui.horizontal(|ui| {
+                        // Cancel button
+                        let cancel_btn = egui::Button::new(
+                            RichText::new("Cancel")
+                                .size(font::BODY)
+                                .color(text::SECONDARY),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::new(1.0, bg::BORDER))
+                        .corner_radius(CornerRadius::same(sizing::BADGE_ROUNDING))
+                        .min_size(Vec2::new(80.0, 36.0));
+
+                        if ui.add(cancel_btn).clicked() {
+                            should_cancel = true;
+                        }
+
+                        ui.add_space(sizing::SPACING_SM);
+
+                        // Submit button
+                        let submit_btn = egui::Button::new(
+                            RichText::new("Submit")
+                                .size(font::BODY)
+                                .color(if can_submit {
+                                    text::PRIMARY
+                                } else {
+                                    text::MUTED
+                                }),
+                        )
+                        .fill(if can_submit {
+                            accent::PRIMARY
+                        } else {
+                            bg::HOVER
+                        })
+                        .stroke(Stroke::NONE)
+                        .corner_radius(CornerRadius::same(sizing::BADGE_ROUNDING))
+                        .min_size(Vec2::new(80.0, 36.0));
+
+                        if ui.add(submit_btn).clicked() && can_submit {
+                            should_submit = true;
+                        }
+                    });
+                });
+
+            // Handle actions after UI rendering (avoid borrow conflicts)
+            if should_cancel {
+                self.reply_visible.insert(event_id.to_string(), false);
+            }
+
+            if should_submit {
+                // Try to publish the comment
+                if let Some(keypair) = ctx.accounts.selected_filled() {
+                    let seckey = keypair.secret_key.secret_bytes();
+
+                    // Build NIP-22 comment event (kind 1111)
+                    // Tags: ["e", event_id, "", "root"], ["p", author], ["K", kind]
+                    let note = NoteBuilder::new()
+                        .kind(kinds::COMMENT as u32)
+                        .content(&draft_content)
+                        .start_tag()
+                        .tag_str("e")
+                        .tag_str(event_id)
+                        .tag_str("")
+                        .tag_str("root")
+                        .start_tag()
+                        .tag_str("p")
+                        .tag_str(&hex::encode(event_author))
+                        .start_tag()
+                        .tag_str("K")
+                        .tag_str(&event_kind.to_string())
+                        .start_tag()
+                        .tag_str("client")
+                        .tag_str("Notedeck Git")
+                        .sign(&seckey)
+                        .build();
+
+                    match note {
+                        Some(note) => {
+                            match enostr::ClientMessage::event(&note) {
+                                Ok(msg) => {
+                                    ctx.pool.send(&msg);
+                                    tracing::info!("Published comment to event {}", event_id);
+
+                                    // Clear the draft and hide input
+                                    self.reply_drafts.remove(event_id);
+                                    self.reply_visible.insert(event_id.to_string(), false);
+                                    published = true;
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to create client message: {:?}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::error!("Failed to build comment note");
+                        }
+                    }
+                } else {
+                    tracing::warn!("No keypair available for signing");
+                }
+            }
+        }
+
+        published
     }
 
     /// Render the current view.
@@ -640,22 +883,40 @@ impl GitApp {
         );
         ui.add_space(sizing::SPACING_SM);
 
-        // Relay status indicator
-        let relay_count = ctx.pool.relays.len();
+        // Stats summary header
+        let total_repos = self.subs.repos.len();
+        let total_issues: usize = self.subs.issues.values().map(|v| v.len()).sum();
+        let total_prs: usize = self.subs.pull_requests.values().map(|v| v.len()).sum();
+        let total_patches: usize = self.subs.patches.values().map(|v| v.len()).sum();
+
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = sizing::SPACING_MD;
+
+            // Relay status
+            let relay_count = ctx.pool.relays.len();
             if relay_count == 0 {
                 ui.spinner();
-                ui.label(RichText::new("Connecting to relays...").color(text::SECONDARY));
+                ui.label(RichText::new("Connecting...").color(text::SECONDARY));
             } else {
-                // Small dot indicator
                 let dot_rect = ui.allocate_space(Vec2::splat(8.0)).1;
                 ui.painter()
                     .circle_filled(dot_rect.center(), 4.0, accent::SUCCESS);
                 ui.label(
-                    RichText::new(format!("{} relay(s)", relay_count))
+                    RichText::new(format!("{} relays", relay_count))
                         .size(font::SMALL)
                         .color(text::TERTIARY),
                 );
+            }
+
+            // Stats (only show if we have data)
+            if total_repos > 0 || total_issues > 0 || total_prs > 0 || total_patches > 0 {
+                ui.label(RichText::new("·").size(font::SMALL).color(text::MUTED));
+
+                let stats = format!(
+                    "{} repos · {} issues · {} PRs · {} patches",
+                    total_repos, total_issues, total_prs, total_patches
+                );
+                ui.label(RichText::new(stats).size(font::SMALL).color(text::TERTIARY));
             }
         });
         ui.add_space(sizing::SPACING_SM);
@@ -730,6 +991,9 @@ impl GitApp {
             })
             .collect();
 
+        // Create transaction for profile lookups
+        let txn = Transaction::new(ctx.ndb).ok();
+
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -753,7 +1017,46 @@ impl GitApp {
                         .unwrap_or(0);
 
                     let card_response = Self::render_interactive_card(ui, |ui| {
+                        // Owner row with profile pic (like GitHub Mobile)
+                        ui.horizontal(|ui| {
+                            if let Some(ref txn) = txn {
+                                let profile = ctx.ndb.get_profile_by_pubkey(txn, &repo.owner).ok();
+                                let display_name = get_display_name(profile.as_ref());
+
+                                // Small profile picture
+                                let mut pfp = ProfilePic::from_profile_or_default(
+                                    ctx.img_cache,
+                                    ctx.media_jobs.sender(),
+                                    profile.as_ref(),
+                                )
+                                .size(16.0);
+                                ui.add(&mut pfp);
+
+                                ui.add_space(4.0);
+
+                                // Owner name
+                                let name = if display_name.name() == "??" {
+                                    // Fallback to truncated npub
+                                    Pubkey::new(repo.owner)
+                                        .npub()
+                                        .map(|npub| format!("{}...", &npub[..12]))
+                                        .unwrap_or_else(|| {
+                                            let pk_hex = hex::encode(repo.owner);
+                                            format!("{}...", &pk_hex[..8])
+                                        })
+                                } else {
+                                    display_name.name().to_string()
+                                };
+                                ui.label(
+                                    RichText::new(name).size(font::SMALL).color(text::TERTIARY),
+                                );
+                            }
+                        });
+
+                        ui.add_space(2.0);
+
                         // Repository name row
+                        let total_activity = issue_count + pr_count + patch_count;
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(repo.display_name())
@@ -761,6 +1064,11 @@ impl GitApp {
                                     .color(text::PRIMARY)
                                     .strong(),
                             );
+                            // Hot badge for active repos
+                            if total_activity >= 2 {
+                                ui.add_space(4.0);
+                                Self::render_badge(ui, "🔥 active", text::PRIMARY, status::OPEN);
+                            }
                             if repo.is_personal_fork {
                                 Self::render_badge(ui, "fork", text::TERTIARY, bg::HOVER);
                             }
@@ -772,82 +1080,62 @@ impl GitApp {
                             ui.label(RichText::new(desc).size(font::BODY).color(text::SECONDARY));
                         }
 
-                        // Labels row
+                        // Labels row (limit to 3 to avoid overflow)
                         if !repo.labels.is_empty() {
                             ui.add_space(sizing::SPACING_SM);
                             ui.horizontal_wrapped(|ui| {
-                                for repo_label in &repo.labels {
+                                let max_labels = 3;
+                                for (i, repo_label) in repo.labels.iter().enumerate() {
+                                    if i >= max_labels {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "+{}",
+                                                repo.labels.len() - max_labels
+                                            ))
+                                            .size(font::TINY)
+                                            .color(text::TERTIARY),
+                                        );
+                                        break;
+                                    }
                                     Self::render_badge(ui, repo_label, label::TEXT, label::BG);
                                 }
                             });
                         }
 
-                        // Activity stats row (always show for discoverability)
+                        // Bottom row: activity stats + timestamp
                         ui.add_space(sizing::SPACING_SM);
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 12.0;
+                            // Activity counts
+                            let mut parts = Vec::new();
+                            if issue_count > 0 {
+                                parts.push(format!("{} issues", issue_count));
+                            }
+                            if pr_count > 0 {
+                                parts.push(format!("{} PRs", pr_count));
+                            }
+                            if patch_count > 0 {
+                                parts.push(format!("{} patches", patch_count));
+                            }
 
-                            // Issues
-                            let dot_rect = ui.allocate_space(Vec2::splat(8.0)).1;
-                            ui.painter()
-                                .circle_filled(dot_rect.center(), 3.0, status::OPEN);
-                            ui.label(
-                                RichText::new(format!("{}", issue_count))
-                                    .size(font::SMALL)
-                                    .color(if issue_count > 0 {
-                                        text::SECONDARY
-                                    } else {
-                                        text::MUTED
-                                    }),
-                            );
-
-                            // PRs
-                            let dot_rect = ui.allocate_space(Vec2::splat(8.0)).1;
-                            ui.painter()
-                                .circle_filled(dot_rect.center(), 3.0, status::MERGED);
-                            ui.label(
-                                RichText::new(format!("{}", pr_count))
-                                    .size(font::SMALL)
-                                    .color(if pr_count > 0 {
-                                        text::SECONDARY
-                                    } else {
-                                        text::MUTED
-                                    }),
-                            );
-
-                            // Patches
-                            let dot_rect = ui.allocate_space(Vec2::splat(8.0)).1;
-                            ui.painter()
-                                .circle_filled(dot_rect.center(), 3.0, accent::LINK);
-                            ui.label(
-                                RichText::new(format!("{}", patch_count))
-                                    .size(font::SMALL)
-                                    .color(if patch_count > 0 {
-                                        text::SECONDARY
-                                    } else {
-                                        text::MUTED
-                                    }),
-                            );
-                        });
-
-                        // Clone URL (truncated)
-                        if !repo.clone_urls.is_empty() {
-                            ui.add_space(sizing::SPACING_SM);
-                            ui.horizontal(|ui| {
+                            if !parts.is_empty() {
                                 ui.label(
-                                    RichText::new("Clone:")
+                                    RichText::new(parts.join(" · "))
                                         .size(font::SMALL)
                                         .color(text::TERTIARY),
                                 );
-                                let truncated = Self::truncate_url(&repo.clone_urls[0], 45);
-                                ui.label(
-                                    RichText::new(truncated)
-                                        .size(font::MONO)
-                                        .monospace()
-                                        .color(accent::LINK),
-                                );
-                            });
-                        }
+                                ui.label(RichText::new(" · ").size(font::SMALL).color(text::MUTED));
+                            }
+
+                            // Timestamp
+                            ui.label(
+                                RichText::new(format!(
+                                    "updated {}",
+                                    Self::format_relative_time(repo.created_at)
+                                ))
+                                .size(font::SMALL)
+                                .color(text::TERTIARY),
+                            );
+                        });
                     });
 
                     if card_response.clicked() {
@@ -1026,8 +1314,10 @@ impl GitApp {
         let mut open_count = 0;
         let mut closed_count = 0;
         for issue in filtered_issues.iter() {
-            let issue_id = hex::encode(issue.key.as_u64().to_be_bytes());
-            let issue_status = self.subs.get_status(&issue_id).unwrap_or(StatusKind::Open);
+            let issue_status = self
+                .subs
+                .get_status(&issue.note_id)
+                .unwrap_or(StatusKind::Open);
             match issue_status {
                 StatusKind::Open | StatusKind::Draft => open_count += 1,
                 StatusKind::Closed | StatusKind::Applied => closed_count += 1,
@@ -1046,9 +1336,10 @@ impl GitApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for issue in filtered_issues.iter() {
-                    let issue_id = hex::encode(issue.key.as_u64().to_be_bytes());
-                    let current_status =
-                        self.subs.get_status(&issue_id).unwrap_or(StatusKind::Open);
+                    let current_status = self
+                        .subs
+                        .get_status(&issue.note_id)
+                        .unwrap_or(StatusKind::Open);
 
                     // Filter based on current tab
                     let show = match self.issue_filter {
@@ -1062,6 +1353,13 @@ impl GitApp {
                     if !show {
                         continue;
                     }
+
+                    // Get comment count
+                    let comment_count = self
+                        .subs
+                        .get_comments(&issue.note_id)
+                        .map(|c| c.len())
+                        .unwrap_or(0);
 
                     // GitHub-style row with wrapping support
                     let card_response = Self::render_interactive_card(ui, |ui| {
@@ -1098,14 +1396,26 @@ impl GitApp {
                                 }
 
                                 // Metadata row
-                                ui.label(
-                                    RichText::new(format!(
-                                        "opened {}",
-                                        Self::format_relative_time(issue.created_at)
-                                    ))
-                                    .size(font::SMALL)
-                                    .color(text::TERTIARY),
-                                );
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "opened {}",
+                                            Self::format_relative_time(issue.created_at)
+                                        ))
+                                        .size(font::SMALL)
+                                        .color(text::TERTIARY),
+                                    );
+
+                                    // Comment count (like gitworkshop)
+                                    if comment_count > 0 {
+                                        ui.add_space(sizing::SPACING_SM);
+                                        ui.label(
+                                            RichText::new(format!("💬 {}", comment_count))
+                                                .size(font::SMALL)
+                                                .color(text::TERTIARY),
+                                        );
+                                    }
+                                });
                             });
                         });
                     });
@@ -1178,8 +1488,10 @@ impl GitApp {
         let mut open_count = 0;
         let mut closed_count = 0;
         for patch in filtered_patches.iter() {
-            let patch_id = hex::encode(patch.key.as_u64().to_be_bytes());
-            let patch_status = self.subs.get_status(&patch_id).unwrap_or(StatusKind::Open);
+            let patch_status = self
+                .subs
+                .get_status(&patch.note_id)
+                .unwrap_or(StatusKind::Open);
             match patch_status {
                 StatusKind::Open | StatusKind::Draft => open_count += 1,
                 StatusKind::Closed | StatusKind::Applied => closed_count += 1,
@@ -1197,9 +1509,10 @@ impl GitApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for patch in filtered_patches.iter() {
-                    let patch_id = hex::encode(patch.key.as_u64().to_be_bytes());
-                    let current_status =
-                        self.subs.get_status(&patch_id).unwrap_or(StatusKind::Open);
+                    let current_status = self
+                        .subs
+                        .get_status(&patch.note_id)
+                        .unwrap_or(StatusKind::Open);
 
                     // Filter based on current tab
                     let show = match self.patch_filter {
@@ -1215,6 +1528,13 @@ impl GitApp {
                     }
 
                     let title = patch.subject().unwrap_or("Untitled Patch");
+
+                    // Get comment count
+                    let comment_count = self
+                        .subs
+                        .get_comments(&patch.note_id)
+                        .map(|c| c.len())
+                        .unwrap_or(0);
 
                     // GitHub-style row with wrapping support
                     let card_response = Self::render_interactive_card(ui, |ui| {
@@ -1263,6 +1583,20 @@ impl GitApp {
                                             .size(font::SMALL)
                                             .color(text::TERTIARY),
                                     );
+
+                                    // Comment count
+                                    if comment_count > 0 {
+                                        ui.label(
+                                            RichText::new(" · ")
+                                                .size(font::SMALL)
+                                                .color(text::MUTED),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("💬 {}", comment_count))
+                                                .size(font::SMALL)
+                                                .color(text::TERTIARY),
+                                        );
+                                    }
                                 });
                             });
                         });
@@ -1337,8 +1671,10 @@ impl GitApp {
         let mut open_count = 0;
         let mut closed_count = 0;
         for pr in filtered_prs.iter() {
-            let pr_id = hex::encode(pr.key.as_u64().to_be_bytes());
-            let pr_status = self.subs.get_status(&pr_id).unwrap_or(StatusKind::Open);
+            let pr_status = self
+                .subs
+                .get_status(&pr.note_id)
+                .unwrap_or(StatusKind::Open);
             match pr_status {
                 StatusKind::Open | StatusKind::Draft => open_count += 1,
                 StatusKind::Closed | StatusKind::Applied => closed_count += 1,
@@ -1356,8 +1692,10 @@ impl GitApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for pr in filtered_prs.iter() {
-                    let pr_id = hex::encode(pr.key.as_u64().to_be_bytes());
-                    let current_status = self.subs.get_status(&pr_id).unwrap_or(StatusKind::Open);
+                    let current_status = self
+                        .subs
+                        .get_status(&pr.note_id)
+                        .unwrap_or(StatusKind::Open);
 
                     // Filter based on current tab
                     let show = match self.pr_filter {
@@ -1371,6 +1709,13 @@ impl GitApp {
                     if !show {
                         continue;
                     }
+
+                    // Get comment count
+                    let comment_count = self
+                        .subs
+                        .get_comments(&pr.note_id)
+                        .map(|c| c.len())
+                        .unwrap_or(0);
 
                     // GitHub-style row with wrapping support
                     let card_response = Self::render_interactive_card(ui, |ui| {
@@ -1432,6 +1777,20 @@ impl GitApp {
                                         .size(font::SMALL)
                                         .color(text::TERTIARY),
                                     );
+
+                                    // Comment count
+                                    if comment_count > 0 {
+                                        ui.label(
+                                            RichText::new(" · ")
+                                                .size(font::SMALL)
+                                                .color(text::MUTED),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("💬 {}", comment_count))
+                                                .size(font::SMALL)
+                                                .color(text::TERTIARY),
+                                        );
+                                    }
                                 });
                             });
                         });
@@ -1451,7 +1810,7 @@ impl GitApp {
 
     /// Render issue detail view with GitHub-style layout.
     fn render_issue_detail(
-        &self,
+        &mut self,
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
         issue_key: nostrdb::NoteKey,
@@ -1471,10 +1830,11 @@ impl GitApp {
             return GitResponse::default();
         };
 
-        // Get status and note ID for comments lookup
-        let issue_id = hex::encode(issue.key.as_u64().to_be_bytes());
-        let note_id_hex = hex::encode(note.id());
-        let current_status = self.subs.get_status(&issue_id).unwrap_or(StatusKind::Open);
+        // Get status using note_id
+        let current_status = self
+            .subs
+            .get_status(&issue.note_id)
+            .unwrap_or(StatusKind::Open);
 
         // Title (wrapping enabled for long titles)
         ui.label(
@@ -1493,18 +1853,13 @@ impl GitApp {
 
         ui.add_space(sizing::SPACING_MD);
 
-        // Author info row
+        // Author info row with profile picture and name
         ui.horizontal(|ui| {
-            // Author avatar placeholder (colored circle)
-            let (_, rect) = ui.allocate_space(Vec2::splat(24.0));
-            ui.painter()
-                .circle_filled(rect.center(), 10.0, accent::PRIMARY);
-
-            ui.add_space(sizing::SPACING_SM);
+            Self::render_author(ctx, ui, &txn, &issue.author, 24.0);
 
             ui.label(
                 RichText::new(format!(
-                    "opened {}",
+                    " opened {}",
                     Self::format_relative_time(issue.created_at)
                 ))
                 .size(font::SMALL)
@@ -1582,14 +1937,23 @@ impl GitApp {
         });
 
         // Comments section
-        self.render_comments(ui, &note_id_hex);
+        self.render_comments(ctx, ui, &txn, &issue.note_id);
+
+        // Reply input
+        self.render_reply_input(
+            ctx,
+            ui,
+            &issue.note_id,
+            kinds::ISSUE,
+            &issue.author,
+        );
 
         GitResponse::default()
     }
 
     /// Render patch detail view with GitHub-style layout.
     fn render_patch_detail(
-        &self,
+        &mut self,
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
         patch_key: nostrdb::NoteKey,
@@ -1609,10 +1973,11 @@ impl GitApp {
             return GitResponse::default();
         };
 
-        // Get status and note ID for comments lookup
-        let patch_id = hex::encode(patch.key.as_u64().to_be_bytes());
-        let note_id_hex = hex::encode(note.id());
-        let current_status = self.subs.get_status(&patch_id).unwrap_or(StatusKind::Open);
+        // Get status using note_id
+        let current_status = self
+            .subs
+            .get_status(&patch.note_id)
+            .unwrap_or(StatusKind::Open);
 
         let title = patch.subject().unwrap_or("Untitled Patch");
 
@@ -1656,31 +2021,41 @@ impl GitApp {
         ui.add_space(sizing::SPACING_MD);
 
         // Patch content with syntax highlighting in a code-style card
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
+        egui::Frame::new()
+            .fill(Color32::from_rgb(0x0D, 0x11, 0x17)) // Darker code background
+            .corner_radius(CornerRadius::same(sizing::CARD_ROUNDING))
+            .stroke(Stroke::new(1.0, bg::BORDER))
+            .inner_margin(egui::Margin::symmetric(
+                sizing::CARD_PADDING_H,
+                sizing::CARD_PADDING_V,
+            ))
             .show(ui, |ui| {
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(0x0D, 0x11, 0x17)) // Darker code background
-                    .corner_radius(CornerRadius::same(sizing::CARD_ROUNDING))
-                    .stroke(Stroke::new(1.0, bg::BORDER))
-                    .inner_margin(egui::Margin::symmetric(
-                        sizing::CARD_PADDING_H,
-                        sizing::CARD_PADDING_V,
-                    ))
+                egui::ScrollArea::vertical()
+                    .max_height(400.0)
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
                         Self::render_patch_content(ui, &patch.content);
                     });
-
-                // Comments section
-                self.render_comments(ui, &note_id_hex);
             });
+
+        // Comments section (outside scroll area for better UX)
+        self.render_comments(ctx, ui, &txn, &patch.note_id);
+
+        // Reply input
+        self.render_reply_input(
+            ctx,
+            ui,
+            &patch.note_id,
+            kinds::PATCH,
+            &patch.author,
+        );
 
         GitResponse::default()
     }
 
     /// Render PR detail view with GitHub-style layout.
     fn render_pr_detail(
-        &self,
+        &mut self,
         ctx: &mut AppContext<'_>,
         ui: &mut egui::Ui,
         pr_key: nostrdb::NoteKey,
@@ -1700,10 +2075,11 @@ impl GitApp {
             return GitResponse::default();
         };
 
-        // Get status and note ID for comments lookup
-        let pr_id = hex::encode(pr.key.as_u64().to_be_bytes());
-        let note_id_hex = hex::encode(note.id());
-        let current_status = self.subs.get_status(&pr_id).unwrap_or(StatusKind::Open);
+        // Get status using note_id
+        let current_status = self
+            .subs
+            .get_status(&pr.note_id)
+            .unwrap_or(StatusKind::Open);
 
         // Title
         ui.label(
@@ -1722,17 +2098,13 @@ impl GitApp {
 
         ui.add_space(sizing::SPACING_MD);
 
-        // Author info row
+        // Author info row with profile picture and name
         ui.horizontal(|ui| {
-            let (_, rect) = ui.allocate_space(Vec2::splat(24.0));
-            ui.painter()
-                .circle_filled(rect.center(), 10.0, status::MERGED);
-
-            ui.add_space(sizing::SPACING_SM);
+            Self::render_author(ctx, ui, &txn, &pr.author, 24.0);
 
             ui.label(
                 RichText::new(format!(
-                    "opened {}",
+                    " opened {}",
                     Self::format_relative_time(pr.created_at)
                 ))
                 .size(font::SMALL)
@@ -1838,7 +2210,16 @@ impl GitApp {
         });
 
         // Comments section
-        self.render_comments(ui, &note_id_hex);
+        self.render_comments(ctx, ui, &txn, &pr.note_id);
+
+        // Reply input
+        self.render_reply_input(
+            ctx,
+            ui,
+            &pr.note_id,
+            kinds::PULL_REQUEST,
+            &pr.author,
+        );
 
         GitResponse::default()
     }
