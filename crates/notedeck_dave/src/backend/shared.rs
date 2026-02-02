@@ -82,7 +82,8 @@ pub fn messages_to_prompt(messages: &[Message]) -> String {
             | Message::Error(_)
             | Message::PermissionRequest(_)
             | Message::CompactionComplete(_)
-            | Message::Subagent(_) => {}
+            | Message::Subagent(_)
+            | Message::TodoUpdate(_) => {}
         }
     }
 

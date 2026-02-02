@@ -551,6 +551,8 @@ pub enum Message {
     CompactionComplete(CompactionInfo),
     /// A subagent spawned by Task tool
     Subagent(SubagentInfo),
+    /// TodoWrite tool input for task list display
+    TodoUpdate(serde_json::Value),
 }
 
 /// Compaction info from compact_boundary system message
@@ -618,6 +620,8 @@ pub enum DaveApiResponse {
     UsageUpdate(UsageInfo),
     /// Query completed with usage metrics (cumulative totals, cost, and turn count)
     QueryComplete(UsageInfo),
+    /// TodoWrite tool was called with these todos
+    TodoUpdate(serde_json::Value),
 }
 
 impl Message {
@@ -683,6 +687,9 @@ impl Message {
 
             // Subagent info is UI-only, not sent to the API
             Message::Subagent(_) => None,
+
+            // Todo updates are UI-only, not sent to the API
+            Message::TodoUpdate(_) => None,
         }
     }
 }

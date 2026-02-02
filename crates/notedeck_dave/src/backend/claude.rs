@@ -500,6 +500,12 @@ async fn session_actor(
                                                         let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
                                                         ctx.request_repaint();
                                                     }
+
+                                                    // Emit TodoUpdate for TodoWrite tool calls
+                                                    if name == "TodoWrite" {
+                                                        let _ = response_tx.send(DaveApiResponse::TodoUpdate(input.clone()));
+                                                        ctx.request_repaint();
+                                                    }
                                                 }
                                             }
                                         }

@@ -592,6 +592,9 @@ impl<'a> DaveUi<'a> {
                         Self::subagent_ui(info, ui);
                     }
                 }
+                Message::TodoUpdate(_) => {
+                    // TodoUpdate is displayed in the task list sidebar, not in chat
+                }
             };
         }
 

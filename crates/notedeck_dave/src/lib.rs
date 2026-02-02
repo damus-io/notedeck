@@ -10,6 +10,7 @@ pub(crate) mod git_status;
 pub mod ipc;
 pub(crate) mod mesh;
 mod messages;
+mod notifications;
 mod path_normalize;
 pub(crate) mod path_utils;
 mod quaternion;
@@ -325,6 +326,8 @@ pub struct Dave {
     active_overlay: DaveOverlay,
     /// IPC listener for external spawn-agent commands
     ipc_listener: Option<ipc::IpcListener>,
+    /// Notification state for desktop notifications when unfocused
+    notification_state: notifications::NotificationState,
     /// Pending archive conversion: (jsonl_path, dave_session_id, claude_session_id).
     /// Set when resuming a session; processed in update() where AppContext is available.
     pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
@@ -729,6 +732,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_picker: SessionPicker::new(),
             active_overlay,
             ipc_listener,
+            notification_state: notifications::NotificationState::new(),
             pending_archive_convert: None,
             pending_message_load: None,
             pending_relay_events: Vec::new(),
@@ -1029,6 +1033,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                     DaveApiResponse::QueryComplete(info) => {
                         handle_query_complete(session, info);
+                    }
+
+                    DaveApiResponse::TodoUpdate(todos) => {
+                        tracing::debug!("Todo update for session {}", session_id);
+                        session.chat.push(Message::TodoUpdate(todos));
                     }
                 }
             }
@@ -3966,6 +3975,10 @@ impl notedeck::App for Dave {
         self.process_keybindings(ui.ctx());
 
         let mut app_action: Option<AppAction> = None;
+
+        // Check if we should send a desktop notification (when unfocused and NeedsInput)
+        self.notification_state
+            .maybe_notify(ui.ctx(), &self.focus_queue, &self.session_manager);
 
         if let Some(action) = self.ui(ctx, ui).action {
             if let Some(returned_action) = self.handle_ui_action(action, ctx, ui) {

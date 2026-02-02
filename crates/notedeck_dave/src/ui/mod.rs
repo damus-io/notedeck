@@ -16,6 +16,7 @@ pub mod scene;
 pub mod session_list;
 pub mod session_picker;
 mod settings;
+pub mod task_list;
 mod top_buttons;
 pub mod worktree_creator;
 
@@ -577,20 +578,41 @@ pub fn desktop_ui(
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> (DaveResponse, Option<SessionListAction>, bool) {
+    use crate::ui::task_list::TaskListPanel;
+
     let available = ui.available_rect_before_wrap();
     let sidebar_width = if available.width() < 830.0 {
         200.0
     } else {
         280.0
     };
+    let task_panel_width = 200.0;
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
     let mut toggle_scene = false;
+
+    // Show the task panel when the active session has any tasks.
+    let show_task_panel = session_manager
+        .get_active()
+        .map(|s| TaskListPanel::has_tasks(&s.chat))
+        .unwrap_or(false);
+    let right_panel_width = if show_task_panel {
+        task_panel_width
+    } else {
+        0.0
+    };
 
     let sidebar_rect =
         egui::Rect::from_min_size(available.min, egui::vec2(sidebar_width, available.height()));
     let chat_rect = egui::Rect::from_min_size(
         egui::pos2(available.min.x + sidebar_width, available.min.y),
-        egui::vec2(available.width() - sidebar_width, available.height()),
+        egui::vec2(
+            available.width() - sidebar_width - right_panel_width,
+            available.height(),
+        ),
+    );
+    let task_panel_rect = egui::Rect::from_min_size(
+        egui::pos2(available.max.x - task_panel_width, available.min.y),
+        egui::vec2(task_panel_width, available.height()),
     );
 
     let session_action = ui
@@ -624,6 +646,21 @@ pub fn desktop_ui(
                 .inner
         })
         .inner;
+
+    // Render the task panel (immutable borrow) before the mutable chat borrow.
+    if show_task_panel {
+        if let Some(session) = session_manager.get_active() {
+            let chat = &session.chat;
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(task_panel_rect), |ui| {
+                egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::symmetric(8, 12))
+                    .show(ui, |ui| {
+                        TaskListPanel::ui(ui, chat);
+                    });
+            });
+        }
+    }
 
     let chat_response = ui
         .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
