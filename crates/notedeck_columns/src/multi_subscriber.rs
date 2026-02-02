@@ -1,11 +1,10 @@
 use egui_nav::ReturnType;
-use enostr::{Filter, NoteId, RelayPool};
+use enostr::{Filter, NoteId, OutboxSubId};
 use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
-use notedeck::{filter::HybridFilter, UnifiedSubscription};
-use uuid::Uuid;
+use notedeck::{filter::HybridFilter, RelayPool, UnifiedSubscription};
 
-use crate::{subscriptions, timeline::ThreadSelection};
+use crate::timeline::ThreadSelection;
 
 type RootNoteId = NoteId;
 
@@ -20,7 +19,7 @@ type MetaId = usize;
 
 pub struct Remote {
     pub filter: Vec<Filter>,
-    subid: String,
+    subid: OutboxSubId,
     dependers: usize,
 }
 
@@ -161,7 +160,7 @@ impl ThreadSubs {
                 .remotes
                 .remove(&id.root_id.bytes())
                 .expect("code above should guarentee existence");
-            tracing::debug!("Remotely unsubscribed: {}", remote.subid);
+            tracing::debug!("Remotely unsubscribed: {:?}", remote.subid);
             pool.unsubscribe(remote.subid);
         }
 
@@ -233,21 +232,17 @@ fn sub_remote(
     remote_sub_filter: impl FnOnce() -> Vec<Filter>,
     id: impl std::fmt::Debug,
 ) -> Remote {
-    let subid = Uuid::new_v4().to_string();
-
     let filter = remote_sub_filter();
-
-    let remote = Remote {
-        filter: filter.clone(),
-        subid: subid.clone(),
-        dependers: 0,
-    };
 
     tracing::debug!("Remote subscribe for {:?}", id);
 
-    pool.subscribe(subid, filter);
+    let id = pool.subscribe(filter.clone());
 
-    remote
+    Remote {
+        filter,
+        subid: id,
+        dependers: 0,
+    }
 }
 
 fn local_sub_new_scope(
@@ -288,7 +283,7 @@ enum SubState {
         dependers: usize,
     },
     RemoteOnly {
-        remote: String,
+        remote: OutboxSubId,
         dependers: usize,
     },
     Unified {
@@ -388,7 +383,7 @@ impl TimelineSub {
         );
     }
 
-    pub fn force_add_remote(&mut self, subid: String) {
+    pub fn add_remote(&mut self, subid: OutboxSubId) {
         let before = self.state.clone();
         match &mut self.state {
             SubState::NoSub { dependers } => {
@@ -417,46 +412,6 @@ impl TimelineSub {
         }
         tracing::debug!(
             "TimelineSub::force_add_remote: {:?} => {:?}",
-            before,
-            self.state
-        );
-    }
-
-    pub fn try_add_remote(&mut self, pool: &mut RelayPool, filter: &HybridFilter) {
-        let before = self.state.clone();
-        match &mut self.state {
-            SubState::NoSub { dependers } => {
-                let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.remote().to_vec());
-                self.filter = Some(filter.to_owned());
-                self.state = SubState::RemoteOnly {
-                    remote: subid,
-                    dependers: *dependers,
-                };
-            }
-            SubState::LocalOnly { local, dependers } => {
-                let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.remote().to_vec());
-                self.filter = Some(filter.to_owned());
-                self.state = SubState::Unified {
-                    unified: UnifiedSubscription {
-                        local: *local,
-                        remote: subid,
-                    },
-                    dependers: *dependers,
-                }
-            }
-            SubState::RemoteOnly {
-                remote: _,
-                dependers: _,
-            } => {}
-            SubState::Unified {
-                unified: _,
-                dependers: _,
-            } => {}
-        }
-        tracing::debug!(
-            "TimelineSub::try_add_remote: {:?} => {:?}",
             before,
             self.state
         );

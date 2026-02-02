@@ -1,9 +1,9 @@
 use egui_nav::ReturnType;
 use egui_virtual_list::VirtualList;
-use enostr::{NoteId, RelayPool};
+use enostr::NoteId;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Filter, Ndb, Note, NoteKey, NoteReplyBuf, Transaction};
-use notedeck::{NoteCache, NoteRef, UnknownIds};
+use notedeck::{NoteCache, NoteRef, RelayPool, UnknownIds};
 
 use crate::{
     actionbar::{process_thread_notes, NewThreadNotes},

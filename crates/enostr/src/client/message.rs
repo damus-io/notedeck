@@ -45,13 +45,7 @@ pub enum ClientMessage {
 
 impl ClientMessage {
     pub fn event(note: &Note) -> Result<Self, Error> {
-        Ok(ClientMessage::Event(EventClientMessage {
-            note_json: note.json()?,
-        }))
-    }
-
-    pub fn event_json(note_json: String) -> Result<Self, Error> {
-        Ok(ClientMessage::Event(EventClientMessage { note_json }))
+        Ok(ClientMessage::Event(EventClientMessage::try_from(note)?))
     }
 
     pub fn req(sub_id: String, filters: Vec<Filter>) -> Self {

@@ -1,9 +1,8 @@
-use enostr::{Pubkey, RelayPool};
+use enostr::Pubkey;
 use indexmap::IndexMap;
 use nostrdb::{Filter, Ndb, Note, Transaction};
-use uuid::Uuid;
 
-use crate::{UnifiedSubscription, UnknownIds};
+use crate::{RelayPool, UnifiedSubscription, UnknownIds};
 
 /// Keeps track of most recent NIP-51 sets
 #[derive(Debug)]
@@ -22,7 +21,6 @@ impl Nip51SetCache {
         unknown_ids: &mut UnknownIds,
         nip51_set_filter: Vec<Filter>,
     ) -> Option<Self> {
-        let subid = Uuid::new_v4().to_string();
         let mut cached_notes = IndexMap::default();
 
         let notes: Option<Vec<Note>> = if let Ok(results) = ndb.query(txn, &nip51_set_filter, 500) {
@@ -42,13 +40,10 @@ impl Nip51SetCache {
                 return None;
             }
         };
-        pool.subscribe(subid.clone(), nip51_set_filter);
+        let remote = pool.subscribe(nip51_set_filter);
 
         Some(Self {
-            sub: UnifiedSubscription {
-                local: sub,
-                remote: subid,
-            },
+            sub: UnifiedSubscription { local: sub, remote },
             cached_notes,
         })
     }

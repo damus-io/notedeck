@@ -1,9 +1,8 @@
 use std::collections::HashMap;
 
-use crate::ui::{Preview, PreviewConfig};
 use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
-use enostr::{RelayPool, RelayStatus};
-use notedeck::{tr, DragResponse, Localization, NotedeckTextStyle, RelayAction};
+use enostr::{NormRelayUrl, RelayStatus};
+use notedeck::{tr, DragResponse, Localization, NotedeckTextStyle, Outbox, RelayAction};
 use notedeck_ui::app_images;
 use notedeck_ui::{colors::PINK, padding};
 use tracing::debug;
@@ -11,7 +10,7 @@ use tracing::debug;
 use super::widgets::styled_button;
 
 pub struct RelayView<'a> {
-    pool: &'a RelayPool,
+    pool: &'a Outbox<'a>,
     id_string_map: &'a mut HashMap<Id, String>,
     i18n: &'a mut Localization,
 }
@@ -62,7 +61,7 @@ impl RelayView<'_> {
 
 impl<'a> RelayView<'a> {
     pub fn new(
-        pool: &'a RelayPool,
+        pool: &'a Outbox<'a>,
         id_string_map: &'a mut HashMap<Id, String>,
         i18n: &'a mut Localization,
     ) -> Self {
@@ -77,6 +76,7 @@ impl<'a> RelayView<'a> {
         egui::CentralPanel::default().show(ui.ctx(), |ui| self.ui(ui));
     }
 
+    // TODO(kernelkind): show section for user's relay list & a seperate section for outbox relays
     /// Show the current relays and return a relay the user selected to delete
     fn show_relays(&mut self, ui: &mut Ui) -> Option<String> {
         let mut relay_to_remove = None;
@@ -99,7 +99,7 @@ impl<'a> RelayView<'a> {
                                         ) // TODO: refactor to dynamically check the size of the 'right to left' portion and set the max width to be the screen width minus padding minus 'right to left' width
                                         .show(ui, |ui| {
                                             ui.label(
-                                                RichText::new(relay_info.relay_url)
+                                                RichText::new(relay_info.relay_url.clone())
                                                     .text_style(
                                                         NotedeckTextStyle::Monospace.text_style(),
                                                     )
@@ -160,7 +160,7 @@ impl<'a> RelayView<'a> {
                 .id_string_map
                 .entry(id)
                 .or_insert_with(|| Self::RELAY_PREFILL.to_string());
-            let is_enabled = self.pool.is_valid_url(text_buffer);
+            let is_enabled = NormRelayUrl::new(text_buffer).is_ok();
             let text_edit = egui::TextEdit::singleline(text_buffer)
                 .hint_text(
                     RichText::new(tr!(
@@ -271,54 +271,18 @@ fn get_connection_icon(status: RelayStatus) -> egui::Image<'static> {
     }
 }
 
-struct RelayInfo<'a> {
-    pub relay_url: &'a str,
+struct RelayInfo {
+    pub relay_url: String,
     pub status: RelayStatus,
 }
 
-fn get_relay_infos(pool: &RelayPool) -> Vec<RelayInfo<'_>> {
-    pool.relays
-        .iter()
-        .map(|relay| RelayInfo {
-            relay_url: relay.url(),
-            status: relay.status(),
+fn get_relay_infos(pool: &Outbox) -> Vec<RelayInfo> {
+    pool.outbox
+        .websocket_statuses()
+        .into_iter()
+        .map(|(url, status)| RelayInfo {
+            relay_url: url.to_string(),
+            status,
         })
         .collect()
-}
-
-// PREVIEWS
-
-mod preview {
-    use super::*;
-    use crate::test_data::sample_pool;
-    use notedeck::{App, AppContext, AppResponse};
-
-    pub struct RelayViewPreview {
-        pool: RelayPool,
-    }
-
-    impl RelayViewPreview {
-        fn new() -> Self {
-            RelayViewPreview {
-                pool: sample_pool(),
-            }
-        }
-    }
-
-    impl App for RelayViewPreview {
-        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-            self.pool.try_recv();
-            let mut id_string_map = HashMap::new();
-            RelayView::new(app.pool, &mut id_string_map, app.i18n).ui(ui);
-            AppResponse::none()
-        }
-    }
-
-    impl Preview for RelayView<'_> {
-        type Prev = RelayViewPreview;
-
-        fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            RelayViewPreview::new()
-        }
-    }
 }

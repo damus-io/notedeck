@@ -1,6 +1,8 @@
-use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
+use enostr::{NoteId, Pubkey, RelayId};
 use nostrdb::{Note, NoteKey, Transaction};
 use tracing::error;
+
+use crate::{Accounts, Outbox};
 
 /// When broadcasting notes, this determines whether to broadcast
 /// over the local network via multicast, or globally
@@ -47,21 +49,21 @@ impl NoteContextSelection {
         &self,
         ui: &mut egui::Ui,
         note: &Note<'_>,
-        pool: &mut RelayPool,
+        pool: &mut Outbox,
+        accounts: &Accounts,
         txn: &Transaction,
     ) {
         match self {
             NoteContextSelection::Broadcast(context) => {
                 tracing::info!("Broadcasting note {}", hex::encode(note.id()));
-                match context {
+                let relays = match context {
                     BroadcastContext::LocalNetwork => {
-                        pool.send_to(&ClientMessage::event(note).unwrap(), "multicast");
+                        vec![RelayId::Multicast]
                     }
 
-                    BroadcastContext::Everywhere => {
-                        pool.send(&ClientMessage::event(note).unwrap());
-                    }
-                }
+                    BroadcastContext::Everywhere => accounts.selected_account_write_relays(),
+                };
+                pool.broadcast_note(note, relays);
             }
             NoteContextSelection::CopyText => {
                 ui.ctx().copy_text(note.content().to_string());

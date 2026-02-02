@@ -10,7 +10,7 @@ use egui::{
     widgets::text_edit::TextEdit,
     Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
 };
-use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
+use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::media::latest::LatestImageTex;
 use notedeck::media::AnimationMode;
@@ -20,7 +20,7 @@ use notedeck::platform::get_next_selected_file;
 use notedeck::{
     name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
 };
-use notedeck::{DragResponse, PixelDimensions};
+use notedeck::{DragResponse, PixelDimensions, RelayPool};
 use notedeck_ui::{
     app_images,
     context_menu::{input_context, PasteBehavior},
@@ -89,7 +89,7 @@ impl NewPostAction {
             }
         };
 
-        pool.send(&enostr::ClientMessage::event(&note)?);
+        pool.broadcast_note(&note);
         drafts.get_from_post_type(&self.post_type).clear();
 
         Ok(())
@@ -875,7 +875,6 @@ mod preview {
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
                 zaps: app.zaps,
-                pool: app.pool,
                 jobs: app.media_jobs.sender(),
                 unknown_ids: app.unknown_ids,
                 clipboard: app.clipboard,

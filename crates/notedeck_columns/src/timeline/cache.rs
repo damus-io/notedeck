@@ -4,9 +4,8 @@ use crate::{
     timeline::{Timeline, TimelineKind, UnknownPksOwned},
 };
 
-use notedeck::{filter, FilterState, NoteCache, NoteRef};
+use notedeck::{filter, FilterState, NoteCache, NoteRef, RelayPool};
 
-use enostr::RelayPool;
 use nostrdb::{Filter, Ndb, Transaction};
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -217,10 +216,11 @@ impl TimelineCache {
             Vitality::Fresh(timeline) => (None, timeline),
         };
 
-        if let Some(filter) = timeline.filter.get_any_ready() {
+        if let FilterState::Ready(filter) = &timeline.filter {
             debug!("got open with *new* subscription for {:?}", &timeline.kind);
             timeline.subscription.try_add_local(ndb, filter);
-            timeline.subscription.try_add_remote(pool, filter);
+            let subid = pool.subscribe(filter.remote().to_vec());
+            timeline.subscription.add_remote(subid);
         } else {
             // This should never happen reasoning, self.notes would have
             // failed above if the filter wasn't ready

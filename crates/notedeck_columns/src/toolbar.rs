@@ -1,5 +1,5 @@
 use egui_nav::ReturnType;
-use notedeck::AppContext;
+use notedeck::{AppContext, RelayPool};
 
 use crate::{
     route::cleanup_popped_route,
@@ -102,7 +102,7 @@ fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
                 &mut app.threads,
                 &mut app.view_state,
                 ctx.ndb,
-                ctx.pool,
+                &mut RelayPool::new(&mut ctx.pool, ctx.accounts),
                 ReturnType::Click,
                 col_index,
             );

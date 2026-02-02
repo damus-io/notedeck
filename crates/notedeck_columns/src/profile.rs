@@ -1,7 +1,7 @@
-use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey, RelayPool};
+use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey};
 use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
-use notedeck::{Accounts, ContactState, DataPath, Localization, ProfileContext};
+use notedeck::{Accounts, ContactState, DataPath, Localization, Outbox, ProfileContext, RelayPool};
 use tracing::info;
 
 use crate::{column::Column, nav::RouterAction, route::Route, storage, Damus};
@@ -50,7 +50,7 @@ impl ProfileAction {
         i18n: &mut Localization,
         ctx: &egui::Context,
         ndb: &Ndb,
-        pool: &mut RelayPool,
+        pool: &mut Outbox,
         accounts: &Accounts,
     ) -> Option<RouterAction> {
         match self {
@@ -71,7 +71,7 @@ impl ProfileAction {
                 let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
 
                 info!("sending {}", &json);
-                pool.send(&event);
+                pool.broadcast_note(&note, accounts.selected_account_write_relays());
 
                 Some(RouterAction::GoBack)
             }
@@ -125,7 +125,7 @@ impl ProfileAction {
 
     fn send_follow_user_event(
         ndb: &Ndb,
-        pool: &mut RelayPool,
+        pool: &mut Outbox,
         accounts: &Accounts,
         target_key: &Pubkey,
     ) {
@@ -134,7 +134,7 @@ impl ProfileAction {
 
     fn send_unfollow_user_event(
         ndb: &Ndb,
-        pool: &mut RelayPool,
+        pool: &mut Outbox,
         accounts: &Accounts,
         target_key: &Pubkey,
     ) {
@@ -177,7 +177,7 @@ enum FollowAction<'a> {
     Unfollow(&'a Pubkey),
 }
 
-fn send_kind_3_event(ndb: &Ndb, pool: &mut RelayPool, accounts: &Accounts, action: FollowAction) {
+fn send_kind_3_event(ndb: &Ndb, pool: &mut Outbox, accounts: &Accounts, action: FollowAction) {
     let Some(kp) = accounts.get_selected_account().key.to_full() else {
         return;
     };
@@ -237,7 +237,7 @@ fn send_kind_3_event(ndb: &Ndb, pool: &mut RelayPool, accounts: &Accounts, actio
         ),
     };
 
-    send_note_builder(builder, ndb, pool, kp);
+    send_note_builder(builder, ndb, &mut RelayPool::new(pool, accounts), kp);
 }
 
 fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, kp: FilledKeypair) {
@@ -258,7 +258,7 @@ fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, kp: 
 
     let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
     info!("sending {}", &json);
-    pool.send(event);
+    pool.broadcast_note(&note);
 }
 
 pub fn send_new_contact_list(

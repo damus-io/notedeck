@@ -24,6 +24,7 @@ mod notecache;
 mod options;
 mod persist;
 pub mod platform;
+mod pool;
 pub mod profile;
 pub mod relay_debug;
 pub mod relayspec;
@@ -47,12 +48,12 @@ pub use account::accounts::{AccountData, AccountSubs, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;
 pub use account::FALLBACK_PUBKEY;
-pub use app::{try_process_events_core, App, AppAction, AppResponse, Notedeck};
+pub use app::{try_process_events, App, AppAction, AppResponse, Notedeck};
 pub use args::Args;
 pub use context::{AppContext, SoftKeyboardContext};
-use enostr::Wakeup;
+use enostr::{OutboxSessionHandler, Wakeup};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
-pub use filter::{FilterState, FilterStates, UnifiedSubscription};
+pub use filter::{FilterState, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use i18n::{CacheStats, FluentArgs, FluentValue, LanguageIdentifier, Localization};
 pub use imgcache::{
@@ -78,6 +79,7 @@ pub use note::{
 pub use notecache::{CachedNote, NoteCache};
 pub use options::NotedeckOptions;
 pub use persist::*;
+pub use pool::RelayPool;
 pub use profile::*;
 pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
@@ -90,7 +92,9 @@ pub use time::{
     is_future_timestamp, time_ago_since, time_format, unix_time_secs, MAX_FUTURE_NOTE_SKEW_SECS,
 };
 pub use timecache::TimeCached;
-pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
+pub use unknowns::{
+    get_unknown_note_ids, unknown_id_send, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds,
+};
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
 pub use wallet::{
@@ -107,6 +111,8 @@ pub use enostr;
 pub use nostrdb;
 
 pub use zaps::Zaps;
+
+pub type Outbox<'a> = OutboxSessionHandler<'a, EguiWakeup>;
 
 #[derive(Clone)]
 pub struct EguiWakeup(egui::Context);

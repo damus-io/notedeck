@@ -1,7 +1,6 @@
 use crate::{
     error::Error,
     multi_subscriber::TimelineSub,
-    subscriptions::{self, SubKind, Subscriptions},
     timeline::{kind::ListKind, note_units::InsertManyResponse, timeline_units::NotePayload},
     Result,
 };
@@ -10,11 +9,11 @@ use notedeck::{
     contacts::hybrid_contacts_filter,
     filter::{self, HybridFilter},
     is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
-    FilterState, FilterStates, Localization, NoteCache, NoteRef, UnknownIds,
+    FilterState, Localization, NoteCache, NoteRef, Outbox, RelayPool, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
-use enostr::{PoolRelay, Pubkey, RelayPool};
+use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::rc::Rc;
 use std::{cell::RefCell, collections::HashSet};
@@ -243,7 +242,7 @@ pub struct Timeline {
     pub kind: TimelineKind,
     // We may not have the filter loaded yet, so let's make it an option so
     // that codepaths have to explicitly handle it
-    pub filter: FilterStates,
+    pub filter: FilterState,
     pub views: Vec<TimelineTab>,
     pub selected_view: usize,
     pub seen_latest_notes: bool,
@@ -312,7 +311,6 @@ impl Timeline {
     }
 
     pub fn new(kind: TimelineKind, filter_state: FilterState, views: Vec<TimelineTab>) -> Self {
-        let filter = FilterStates::new(filter_state);
         let subscription = TimelineSub::default();
         let selected_view = 0;
 
@@ -321,7 +319,7 @@ impl Timeline {
 
         Timeline {
             kind,
-            filter,
+            filter: filter_state,
             views,
             subscription,
             selected_view,
@@ -536,10 +534,7 @@ impl Timeline {
     /// Note: We reset states rather than clearing them so that
     /// [`Self::set_all_states`] can update them during the rebuild.
     pub fn invalidate(&mut self) {
-        self.filter.initial_state = FilterState::NeedsRemote;
-        for state in self.filter.states.values_mut() {
-            *state = FilterState::NeedsRemote;
-        }
+        self.filter = FilterState::NeedsRemote;
         self.contact_list_timestamp = None;
     }
 }
@@ -607,8 +602,7 @@ pub fn setup_new_timeline(
     timeline: &mut Timeline,
     ndb: &Ndb,
     txn: &Transaction,
-    subs: &mut Subscriptions,
-    pool: &mut RelayPool,
+    pool: &mut Outbox,
     note_cache: &mut NoteCache,
     since_optimize: bool,
     accounts: &Accounts,
@@ -621,56 +615,28 @@ pub fn setup_new_timeline(
         }
     }
 
-    for relay in &mut pool.relays {
-        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
-    }
+    send_initial_timeline_filter(since_optimize, pool, timeline, accounts);
     timeline.subscription.increment();
-}
-
-/// Send initial filters for a specific relay. This typically gets called
-/// when we first connect to a new relay for the first time. For
-/// situations where you are adding a new timeline, use
-/// setup_new_timeline.
-#[profiling::function]
-pub fn send_initial_timeline_filters(
-    since_optimize: bool,
-    timeline_cache: &mut TimelineCache,
-    subs: &mut Subscriptions,
-    pool: &mut RelayPool,
-    relay_id: &str,
-    accounts: &Accounts,
-) -> Option<()> {
-    info!("Sending initial filters to {}", relay_id);
-    let relay = &mut pool.relays.iter_mut().find(|r| r.url() == relay_id)?;
-
-    for (_kind, timeline) in timeline_cache {
-        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
-    }
-
-    Some(())
 }
 
 pub fn send_initial_timeline_filter(
     can_since_optimize: bool,
-    subs: &mut Subscriptions,
-    relay: &mut PoolRelay,
+    pool: &mut Outbox,
     timeline: &mut Timeline,
     accounts: &Accounts,
 ) {
-    let filter_state = timeline.filter.get_mut(relay.url());
-
-    match filter_state {
+    match &timeline.filter {
         FilterState::Broken(err) => {
             error!(
                 "FetchingRemote state in broken state when sending initial timeline filter? {err}"
             );
         }
 
-        FilterState::FetchingRemote(_unisub) => {
+        FilterState::FetchingRemote => {
             error!("FetchingRemote state when sending initial timeline filter?");
         }
 
-        FilterState::GotRemote(_sub) => {
+        FilterState::GotRemote => {
             error!("GotRemote state when sending initial timeline filter?");
         }
 
@@ -703,47 +669,30 @@ pub fn send_initial_timeline_filter(
                 filter
             }).collect();
 
-            //let sub_id = damus.gen_subid(&SubKind::Initial);
-            let sub_id = subscriptions::new_sub_id();
-            subs.subs.insert(sub_id.clone(), SubKind::Initial);
-
-            if let Err(err) = relay.subscribe(sub_id.clone(), new_filters.clone()) {
-                error!("error subscribing: {err}");
-            } else {
-                timeline.subscription.force_add_remote(sub_id);
-            }
+            let sid = RelayPool::new(pool, accounts).subscribe(new_filters);
+            timeline.subscription.add_remote(sid);
         }
 
         // we need some data first
-        FilterState::NeedsRemote => fetch_contact_list(subs, timeline, accounts),
+        FilterState::NeedsRemote => fetch_contact_list(timeline, accounts),
     }
 }
 
-pub fn fetch_contact_list(subs: &mut Subscriptions, timeline: &mut Timeline, accounts: &Accounts) {
-    if timeline.filter.get_any_ready().is_some() {
+pub fn fetch_contact_list(timeline: &mut Timeline, accounts: &Accounts) {
+    if let FilterState::Ready(_) = timeline.filter {
         return;
     }
 
     let new_filter_state = match accounts.get_selected_account().data.contacts.get_state() {
-        ContactState::Unreceived => {
-            FilterState::FetchingRemote(filter::FetchingRemoteType::Contact)
-        }
+        ContactState::Unreceived => FilterState::FetchingRemote,
         ContactState::Received {
             contacts: _,
             note_key: _,
             timestamp: _,
-        } => FilterState::GotRemote(filter::GotRemoteType::Contact),
+        } => FilterState::GotRemote,
     };
 
-    timeline.filter.set_all_states(new_filter_state);
-
-    let sub = &accounts.get_subs().contacts;
-    if subs.subs.contains_key(&sub.remote) {
-        return;
-    }
-
-    let sub_kind = SubKind::FetchingContactList(timeline.kind.clone());
-    subs.subs.insert(sub.remote.clone(), sub_kind);
+    timeline.filter = new_filter_state;
 }
 
 #[profiling::function]
@@ -753,11 +702,11 @@ fn setup_initial_timeline(
     timeline: &mut Timeline,
     note_cache: &mut NoteCache,
     unknown_ids: &mut UnknownIds,
-    filters: &HybridFilter,
+    filters: HybridFilter,
 ) -> Result<()> {
     // some timelines are one-shot and a refreshed, like last_per_pubkey algo feed
     if timeline.kind.should_subscribe_locally() {
-        timeline.subscription.try_add_local(ndb, filters);
+        timeline.subscription.try_add_local(ndb, &filters);
     }
 
     debug!(
@@ -823,13 +772,18 @@ fn setup_timeline_nostrdb_sub(
     timeline: &mut Timeline,
     unknown_ids: &mut UnknownIds,
 ) -> Result<()> {
-    let filter_state = timeline
-        .filter
-        .get_any_ready()
-        .ok_or(Error::App(notedeck::Error::empty_contact_list()))?
-        .to_owned();
+    let FilterState::Ready(filter_state) = &timeline.filter else {
+        return Err(Error::App(notedeck::Error::empty_contact_list()));
+    };
 
-    setup_initial_timeline(ndb, txn, timeline, note_cache, unknown_ids, &filter_state)?;
+    setup_initial_timeline(
+        ndb,
+        txn,
+        timeline,
+        note_cache,
+        unknown_ids,
+        filter_state.clone(),
+    )?;
 
     Ok(())
 }
@@ -840,7 +794,7 @@ fn setup_timeline_nostrdb_sub(
 /// following list query.
 pub fn is_timeline_ready(
     ndb: &Ndb,
-    pool: &mut RelayPool,
+    pool: &mut Outbox,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
     accounts: &Accounts,
@@ -848,43 +802,25 @@ pub fn is_timeline_ready(
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have
     // seen all of the different contact lists from each relay
-    if let Some(_f) = timeline.filter.get_any_ready() {
+    if matches!(timeline.filter, FilterState::Ready(_)) {
         return true;
     }
 
-    let Some(res) = timeline.filter.get_any_gotremote() else {
+    let FilterState::GotRemote = timeline.filter else {
         return false;
     };
 
-    let (relay_id, note_key) = match res {
-        filter::GotRemoteResult::Normal { relay_id, sub_id } => {
-            // We got at least one eose for our filter request. Let's see
-            // if nostrdb is done processing it yet.
-            let res = ndb.poll_for_notes(sub_id, 1);
-            if res.is_empty() {
-                debug!(
-                    "check_timeline_filter_state: no notes found (yet?) for timeline {:?}",
-                    timeline
-                );
-                return false;
-            }
+    let note_key = {
+        let ContactState::Received {
+            contacts: _,
+            note_key,
+            timestamp: _,
+        } = accounts.get_selected_account().data.contacts.get_state()
+        else {
+            return false;
+        };
 
-            info!("notes found for contact timeline after GotRemote!");
-
-            (relay_id, res[0])
-        }
-        filter::GotRemoteResult::Contact { relay_id } => {
-            let ContactState::Received {
-                contacts: _,
-                note_key,
-                timestamp: _,
-            } = accounts.get_selected_account().data.contacts.get_state()
-            else {
-                return false;
-            };
-
-            (relay_id, *note_key)
-        }
+        *note_key
     };
 
     let with_hashtags = false;
@@ -901,16 +837,12 @@ pub fn is_timeline_ready(
     match filter {
         Err(notedeck::Error::Filter(e)) => {
             error!("got broken when building filter {e}");
-            timeline
-                .filter
-                .set_relay_state(relay_id, FilterState::broken(e));
+            timeline.filter = FilterState::broken(e);
             false
         }
         Err(err) => {
             error!("got broken when building filter {err}");
-            timeline
-                .filter
-                .set_relay_state(relay_id, FilterState::broken(FilterError::EmptyContactList));
+            timeline.filter = FilterState::broken(FilterError::EmptyContactList);
             false
         }
         Ok(filter) => {
@@ -918,15 +850,12 @@ pub fn is_timeline_ready(
             // queries and setup the local subscription
             info!("Found contact list! Setting up local and remote contact list query");
             let txn = Transaction::new(ndb).expect("txn");
-            setup_initial_timeline(ndb, &txn, timeline, note_cache, unknown_ids, &filter)
+            setup_initial_timeline(ndb, &txn, timeline, note_cache, unknown_ids, filter.clone())
                 .expect("setup init");
-            timeline
-                .filter
-                .set_relay_state(relay_id, FilterState::ready_hybrid(filter.clone()));
+            timeline.filter = FilterState::ready_hybrid(filter.clone());
 
-            //let ck = &timeline.kind;
-            //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
-            timeline.subscription.try_add_remote(pool, &filter);
+            let id = RelayPool::new(pool, accounts).subscribe(filter.remote().to_vec());
+            timeline.subscription.add_remote(id);
             true
         }
     }

@@ -1,7 +1,7 @@
 use crate::{
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
-    Result,
+    RelayPool, Result,
 };
 
 use enostr::{Filter, NoteId, Pubkey};
@@ -384,14 +384,14 @@ fn get_unknown_ids_filter(ids: &[&UnknownId]) -> Option<Vec<Filter>> {
     Some(filters)
 }
 
-pub fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut enostr::RelayPool) {
+pub fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut RelayPool) {
     tracing::debug!("unknown_id_send called on: {:?}", &unknown_ids);
     let filter = unknown_ids.filter().expect("filter");
     tracing::debug!(
         "Getting {} unknown ids from relays",
         unknown_ids.ids_iter().len()
     );
-    let msg = enostr::ClientMessage::req("unknownids".to_string(), filter);
+
+    pool.oneshot(filter);
     unknown_ids.clear();
-    pool.send(&msg);
 }

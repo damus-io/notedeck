@@ -1,5 +1,4 @@
-use enostr::ClientMessage;
-use notedeck::AppContext;
+use notedeck::{AppContext, RelayPool};
 
 use crate::cache::{ConversationCache, ConversationId};
 use crate::nip17::{build_rumor_json, giftwrap_message, OsRng};
@@ -44,17 +43,16 @@ pub fn send_conversation_message(
         else {
             continue;
         };
-        let Some(giftwrap_json) = gifrwrap_note.json().ok() else {
-            continue;
-        };
         if participant == selected_kp.pubkey {
+            let Some(giftwrap_json) = gifrwrap_note.json().ok() else {
+                continue;
+            };
+
             if let Err(e) = ctx.ndb.process_client_event(&giftwrap_json) {
                 tracing::error!("Could not ingest event: {e:?}");
             }
         }
-        match ClientMessage::event_json(giftwrap_json.clone()) {
-            Ok(msg) => ctx.pool.send(&msg),
-            Err(err) => tracing::error!("failed to build client message: {err}"),
-        };
+
+        RelayPool::new(&mut ctx.pool, ctx.accounts).broadcast_note(&gifrwrap_note);
     }
 }

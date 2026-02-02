@@ -8,11 +8,9 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
     route::{cleanup_popped_route, ColumnsRouter, Route, SingletonRouter},
-    subscriptions::Subscriptions,
     timeline::{
-        kind::ListKind,
         route::{render_thread_route, render_timeline_route},
-        TimelineCache, TimelineKind,
+        TimelineCache,
     },
     ui::{
         self,
@@ -35,11 +33,11 @@ use crate::{
 use egui_nav::{
     Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
-use enostr::{ProfileState, RelayPool};
+use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
-    NoteAction, NoteCache, NoteContext, RelayAction,
+    NoteAction, NoteCache, NoteContext, Outbox, RelayAction, RelayPool,
 };
 use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
 use tracing::error;
@@ -88,8 +86,6 @@ impl SwitchingAction {
         timeline_cache: &mut TimelineCache,
         decks_cache: &mut DecksCache,
         ctx: &mut AppContext<'_>,
-        subs: &mut Subscriptions,
-        ui_ctx: &egui::Context,
     ) -> bool {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
@@ -100,17 +96,7 @@ impl SwitchingAction {
                             &switch_action.switch_to,
                             ctx.ndb,
                             &txn,
-                            ctx.pool,
-                            ui_ctx,
-                        );
-
-                        let contacts_sub = ctx.accounts.get_subs().contacts.remote.clone();
-                        // this is cringe but we're gonna get a new sub manager soon...
-                        subs.subs.insert(
-                            contacts_sub,
-                            crate::subscriptions::SubKind::FetchingContactList(TimelineKind::List(
-                                ListKind::Contact(*ctx.accounts.selected_account_pubkey()),
-                            )),
+                            &mut ctx.pool,
                         );
                     }
 
@@ -127,20 +113,22 @@ impl SwitchingAction {
                 AccountsAction::Remove(to_remove) => 's: {
                     if !ctx
                         .accounts
-                        .remove_account(to_remove, ctx.ndb, ctx.pool, ui_ctx)
+                        .remove_account(to_remove, ctx.ndb, &mut ctx.pool)
                     {
                         break 's;
                     }
 
-                    decks_cache.remove(ctx.i18n, to_remove, timeline_cache, ctx.ndb, ctx.pool);
+                    let mut pool = RelayPool::new(&mut ctx.pool, ctx.accounts);
+                    decks_cache.remove(ctx.i18n, to_remove, timeline_cache, ctx.ndb, &mut pool);
                 }
             },
             SwitchingAction::Columns(columns_action) => match *columns_action {
                 ColumnsAction::Remove(index) => {
                     let kinds_to_pop = get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache)
                         .delete_column(index);
+                    let mut pool = RelayPool::new(&mut ctx.pool, ctx.accounts);
                     for kind in &kinds_to_pop {
-                        if let Err(err) = timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                        if let Err(err) = timeline_cache.pop(kind, ctx.ndb, &mut pool) {
                             error!("error popping timeline: {err}");
                         }
                     }
@@ -159,7 +147,7 @@ impl SwitchingAction {
                         index,
                         timeline_cache,
                         ctx.ndb,
-                        ctx.pool,
+                        &mut RelayPool::new(&mut ctx.pool, ctx.accounts),
                     );
                 }
             },
@@ -294,7 +282,7 @@ fn process_nav_resp(
                         &mut app.threads,
                         &mut app.view_state,
                         ctx.ndb,
-                        ctx.pool,
+                        &mut RelayPool::new(&mut ctx.pool, ctx.accounts),
                         return_type,
                         col,
                     );
@@ -313,7 +301,7 @@ fn process_nav_resp(
                 handle_navigating_timeline(
                     ctx.ndb,
                     ctx.note_cache,
-                    ctx.pool,
+                    &mut ctx.pool,
                     ctx.accounts,
                     app,
                     col,
@@ -344,7 +332,7 @@ fn process_nav_resp(
                 handle_navigating_timeline(
                     ctx.ndb,
                     ctx.note_cache,
-                    ctx.pool,
+                    &mut ctx.pool,
                     ctx.accounts,
                     app,
                     col,
@@ -397,7 +385,7 @@ fn handle_navigating_edit_profile(ndb: &Ndb, accounts: &Accounts, app: &mut Damu
 fn handle_navigating_timeline(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    pool: &mut RelayPool,
+    pool: &mut Outbox,
     accounts: &Accounts,
     app: &mut Damus,
     col: usize,
@@ -415,7 +403,13 @@ fn handle_navigating_timeline(
     };
 
     let txn = Transaction::new(ndb).expect("txn");
-    app.timeline_cache.open(ndb, note_cache, &txn, pool, &kind);
+    app.timeline_cache.open(
+        ndb,
+        note_cache,
+        &txn,
+        &mut RelayPool::new(pool, accounts),
+        &kind,
+    );
 }
 
 pub enum RouterAction {
@@ -516,6 +510,7 @@ fn process_render_nav_action(
     col: usize,
     action: RenderNavAction,
 ) -> Option<ProcessNavResult> {
+    let mut pool = RelayPool::new(&mut ctx.pool, ctx.accounts);
     let router_action = match action {
         RenderNavAction::Back => Some(RouterAction::GoBack),
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
@@ -523,7 +518,7 @@ fn process_render_nav_action(
             let kinds_to_pop = app.columns_mut(ctx.i18n, ctx.accounts).delete_column(col);
 
             for kind in &kinds_to_pop {
-                if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
+                if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, &mut pool) {
                     error!("error popping timeline: {err}");
                 }
             }
@@ -532,7 +527,7 @@ fn process_render_nav_action(
         }
         RenderNavAction::PostAction(new_post_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
-            match new_post_action.execute(ctx.ndb, &txn, ctx.pool, &mut app.drafts) {
+            match new_post_action.execute(ctx.ndb, &txn, &mut pool, &mut app.drafts) {
                 Err(err) => tracing::error!("Error executing post action: {err}"),
                 Ok(_) => tracing::debug!("Post action executed"),
             }
@@ -550,7 +545,7 @@ fn process_render_nav_action(
                 &mut app.timeline_cache,
                 &mut app.threads,
                 ctx.note_cache,
-                ctx.pool,
+                &mut ctx.pool,
                 &txn,
                 ctx.unknown_ids,
                 ctx.accounts,
@@ -563,13 +558,7 @@ fn process_render_nav_action(
             )
         }
         RenderNavAction::SwitchingAction(switching_action) => {
-            if switching_action.process(
-                &mut app.timeline_cache,
-                &mut app.decks_cache,
-                ctx,
-                &mut app.subscriptions,
-                ui.ctx(),
-            ) {
+            if switching_action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx) {
                 return Some(ProcessNavResult::SwitchOccurred);
             } else {
                 return None;
@@ -581,15 +570,14 @@ fn process_render_nav_action(
             ctx.i18n,
             ui.ctx(),
             ctx.ndb,
-            ctx.pool,
+            &mut ctx.pool,
             ctx.accounts,
         ),
         RenderNavAction::WalletAction(wallet_action) => {
             wallet_action.process(ctx.accounts, ctx.global_wallet)
         }
         RenderNavAction::RelayAction(action) => {
-            ctx.accounts
-                .process_relay_action(ui.ctx(), ctx.pool, action);
+            ctx.accounts.process_relay_action(&mut ctx.pool, action);
             None
         }
         RenderNavAction::SettingsAction(action) => action.process_settings_action(
@@ -600,9 +588,12 @@ fn process_render_nav_action(
             ui.ctx(),
             ctx.accounts,
         ),
-        RenderNavAction::RepostAction(action) => {
-            action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
-        }
+        RenderNavAction::RepostAction(action) => action.process(
+            ctx.ndb,
+            &ctx.accounts.get_selected_account().key,
+            ctx.accounts,
+            &mut ctx.pool,
+        ),
         RenderNavAction::ShowFollowing(pubkey) => Some(RouterAction::RouteTo(
             crate::route::Route::Following(pubkey),
             RouterType::Stack,
@@ -640,7 +631,6 @@ fn render_nav_body(
         img_cache: ctx.img_cache,
         note_cache: ctx.note_cache,
         zaps: ctx.zaps,
-        pool: ctx.pool,
         jobs: ctx.media_jobs.sender(),
         unknown_ids: ctx.unknown_ids,
         clipboard: ctx.clipboard,
@@ -709,7 +699,7 @@ fn render_nav_body(
                 }
             })
         }
-        Route::Relays => RelayView::new(ctx.pool, &mut app.view_state.id_string_map, ctx.i18n)
+        Route::Relays => RelayView::new(&ctx.pool, &mut app.view_state.id_string_map, ctx.i18n)
             .ui(ui)
             .map_output(RenderNavAction::RelayAction),
 

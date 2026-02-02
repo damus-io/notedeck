@@ -1,12 +1,9 @@
 use std::{cell::RefCell, rc::Rc};
 
 use egui_virtual_list::VirtualList;
-use enostr::{Pubkey, RelayPool};
+use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
-use notedeck::{create_nip51_set, filter::default_limit, Nip51SetCache, UnknownIds};
-use uuid::Uuid;
-
-use crate::subscriptions::Subscriptions;
+use notedeck::{create_nip51_set, filter::default_limit, Nip51SetCache, RelayPool, UnknownIds};
 
 #[derive(Debug)]
 enum OnboardingState {
@@ -39,13 +36,7 @@ impl Onboarding {
         Some(packs)
     }
 
-    pub fn process(
-        &mut self,
-        pool: &mut RelayPool,
-        ndb: &Ndb,
-        subs: &mut Subscriptions,
-        unknown_ids: &mut UnknownIds,
-    ) {
+    pub fn process(&mut self, pool: &mut RelayPool, ndb: &Ndb, unknown_ids: &mut UnknownIds) {
         match &self.state {
             Some(res) => {
                 let Ok(OnboardingState::AwaitingTrustedPksList(filter)) = res else {
@@ -75,10 +66,7 @@ impl Onboarding {
             None => {
                 let filter = vec![trusted_pks_list_filter()];
 
-                let subid = Uuid::new_v4().to_string();
-                pool.subscribe(subid.clone(), filter.clone());
-                subs.subs
-                    .insert(subid, crate::subscriptions::SubKind::OneShot);
+                pool.oneshot(filter.clone());
 
                 let new_state = Some(Ok(OnboardingState::AwaitingTrustedPksList(filter)));
                 self.state = new_state;
@@ -95,7 +83,7 @@ impl Onboarding {
 
         let unified = &state.sub;
 
-        pool.unsubscribe(unified.remote.clone());
+        pool.unsubscribe(unified.remote);
         let _ = ndb.unsubscribe(unified.local);
 
         self.state = None;

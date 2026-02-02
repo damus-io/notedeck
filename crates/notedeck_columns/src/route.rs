@@ -1,8 +1,9 @@
 use egui_nav::{Percent, ReturnType};
-use enostr::{NoteId, Pubkey, RelayPool};
+use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
 use notedeck::{
-    tr, Localization, NoteZapTargetOwned, ReplacementType, RootNoteIdBuf, Router, WalletType,
+    tr, Localization, NoteZapTargetOwned, RelayPool, ReplacementType, RootNoteIdBuf, Router,
+    WalletType,
 };
 use std::ops::Range;
 
