@@ -1,4 +1,5 @@
-use crate::relay::{setup_multicast_relay, MulticastRelay, Relay, RelayStatus};
+use crate::relay::multicast::{setup_multicast_relay, MulticastRelay};
+use crate::relay::{Relay, RelayStatus};
 use crate::{ClientMessage, Error, Result};
 use nostrdb::Filter;
 
@@ -71,7 +72,7 @@ impl PoolRelay {
     pub fn status(&self) -> RelayStatus {
         match self {
             Self::Websocket(wsr) => wsr.relay.status,
-            Self::Multicast(mcr) => mcr.status,
+            Self::Multicast(mcr) => mcr.status(),
         }
     }
 
