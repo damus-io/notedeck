@@ -1,4 +1,5 @@
 mod broadcast;
+mod compaction;
 mod identity;
 mod limits;
 pub mod message;
