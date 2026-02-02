@@ -1,3 +1,4 @@
+mod broadcast;
 mod identity;
 mod limits;
 pub mod message;
@@ -6,6 +7,7 @@ pub mod pool;
 pub mod subs_debug;
 mod websocket;
 
+pub use broadcast::{BroadcastCache, BroadcastRelay};
 pub use identity::{
     NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs,
 };
