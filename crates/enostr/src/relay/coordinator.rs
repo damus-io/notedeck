@@ -422,3 +422,144 @@ impl CoordinationSession {
         self.tasks.insert(id, CoordinationTask::Unsubscribe);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Returns the task held for `id`, panicking when no matching task exists.
+    #[track_caller]
+    fn expect_task<'a>(session: &'a CoordinationSession, id: OutboxSubId) -> &'a CoordinationTask {
+        session
+            .tasks
+            .get(&id)
+            .unwrap_or_else(|| panic!("Expected task for {:?}", id))
+    }
+
+    // ==================== CoordinationSession tests ====================
+
+    /// Newly created coordination sessions hold no tasks.
+    #[test]
+    fn coordination_session_default_empty() {
+        let session = CoordinationSession::default();
+        assert!(session.tasks.is_empty());
+    }
+
+    /// Transparent subscriptions should be recorded as TransparentSub tasks.
+    #[test]
+    fn coordination_session_subscribe_transparent() {
+        let mut session = CoordinationSession::default();
+
+        session.subscribe(OutboxSubId(0), true); // use_transparent = true
+
+        assert!(matches!(
+            expect_task(&session, OutboxSubId(0)),
+            CoordinationTask::TransparentSub
+        ));
+    }
+
+    /// Compaction mode subscriptions should be recorded as CompactionSub tasks.
+    #[test]
+    fn coordination_session_subscribe_compaction() {
+        let mut session = CoordinationSession::default();
+
+        session.subscribe(OutboxSubId(0), false); // use_transparent = false means compaction
+
+        assert!(matches!(
+            expect_task(&session, OutboxSubId(0)),
+            CoordinationTask::CompactionSub
+        ));
+    }
+
+    /// Unsubscribe should record an Unsubscribe task.
+    #[test]
+    fn coordination_session_unsubscribe() {
+        let mut session = CoordinationSession::default();
+
+        session.unsubscribe(OutboxSubId(42));
+
+        assert!(matches!(
+            expect_task(&session, OutboxSubId(42)),
+            CoordinationTask::Unsubscribe
+        ));
+    }
+
+    /// Subsequent subscribe calls should overwrite previous modes.
+    #[test]
+    fn coordination_session_subscribe_overwrites_previous() {
+        let mut session = CoordinationSession::default();
+
+        // First subscribe as transparent
+        session.subscribe(OutboxSubId(0), true);
+
+        assert!(matches!(
+            expect_task(&session, OutboxSubId(0)),
+            CoordinationTask::TransparentSub
+        ));
+
+        // Then as compaction
+        session.subscribe(OutboxSubId(0), false);
+
+        // Should be compaction now
+        assert!(matches!(
+            expect_task(&session, OutboxSubId(0)),
+            CoordinationTask::CompactionSub
+        ));
+    }
+
+    /// Unsubscribe should override any prior subscribe entries.
+    #[test]
+    fn coordination_session_unsubscribe_overwrites_subscribe() {
+        let mut session = CoordinationSession::default();
+
+        session.subscribe(OutboxSubId(0), true);
+        assert!(matches!(
+            expect_task(&session, OutboxSubId(0)),
+            CoordinationTask::TransparentSub
+        ));
+        session.unsubscribe(OutboxSubId(0));
+
+        assert!(matches!(
+            expect_task(&session, OutboxSubId(0)),
+            CoordinationTask::Unsubscribe
+        ));
+    }
+
+    /// Multiple tasks can be recorded in a single session.
+    #[test]
+    fn coordination_session_multiple_tasks() {
+        let mut session = CoordinationSession::default();
+
+        session.subscribe(OutboxSubId(0), true);
+        session.subscribe(OutboxSubId(1), false);
+        session.unsubscribe(OutboxSubId(2));
+
+        assert_eq!(session.tasks.len(), 3);
+    }
+
+    // ==================== EoseIds tests ====================
+
+    #[test]
+    fn eose_ids_default_empty() {
+        let eose_ids = EoseIds::default();
+        assert!(eose_ids.oneshots.is_empty());
+        assert!(eose_ids.normal.is_empty());
+    }
+
+    /// absorb merges oneshot and normal ID sets into the target accumulator.
+    #[test]
+    fn eose_ids_absorb_merges_both_sets() {
+        let mut acc = EoseIds::default();
+        let mut incoming = EoseIds::default();
+
+        acc.oneshots.insert(OutboxSubId(1));
+        incoming.oneshots.insert(OutboxSubId(2));
+        incoming.normal.insert(OutboxSubId(3));
+
+        acc.absorb(incoming);
+
+        assert!(acc.oneshots.contains(&OutboxSubId(1)));
+        assert!(acc.oneshots.contains(&OutboxSubId(2)));
+        assert!(acc.normal.contains(&OutboxSubId(3)));
+    }
+}
