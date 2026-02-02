@@ -5,6 +5,7 @@ mod identity;
 mod limits;
 pub mod message;
 mod multicast;
+mod outbox;
 pub mod pool;
 mod queue;
 pub mod subs_debug;
@@ -21,6 +22,7 @@ pub use limits::{
 };
 pub use multicast::{MulticastRelay, MulticastRelayCache};
 use nostrdb::Filter;
+pub use outbox::OutboxSession;
 pub use queue::QueuedTasks;
 pub use subscription::{
     FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask, OutboxSubscriptions,
