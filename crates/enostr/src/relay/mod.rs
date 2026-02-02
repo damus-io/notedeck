@@ -6,7 +6,7 @@ mod websocket;
 
 pub use websocket::{WebsocketConn, WebsocketRelay};
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RelayStatus {
     Connected,
     Connecting,
