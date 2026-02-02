@@ -54,6 +54,7 @@ pub use app::{try_process_events_core, App, AppAction, AppResponse, Notedeck};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
+use enostr::{OutboxSessionHandler, Wakeup};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
 pub use filter::{FilterState, FilterStates, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
@@ -113,3 +114,20 @@ pub use enostr;
 pub use nostrdb;
 
 pub use zaps::Zaps;
+
+pub type Outbox<'a> = OutboxSessionHandler<'a, EguiWakeup>;
+
+#[derive(Clone)]
+pub struct EguiWakeup(egui::Context);
+
+impl EguiWakeup {
+    pub fn new(ctx: egui::Context) -> Self {
+        Self(ctx)
+    }
+}
+
+impl Wakeup for EguiWakeup {
+    fn wake(&self) {
+        self.0.request_repaint();
+    }
+}
