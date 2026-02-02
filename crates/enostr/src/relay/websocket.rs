@@ -8,14 +8,14 @@ use std::{
 use ewebsock::{Options, WsMessage, WsReceiver, WsSender};
 use tracing::{debug, error};
 
-pub struct Relay {
+pub struct WebsocketConn {
     pub url: nostr::RelayUrl,
     pub status: RelayStatus,
     pub sender: WsSender,
     pub receiver: WsReceiver,
 }
 
-impl fmt::Debug for Relay {
+impl fmt::Debug for WebsocketConn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Relay")
             .field("url", &self.url)
@@ -24,22 +24,22 @@ impl fmt::Debug for Relay {
     }
 }
 
-impl Hash for Relay {
+impl Hash for WebsocketConn {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Hashes the Relay by hashing the URL
         self.url.hash(state);
     }
 }
 
-impl PartialEq for Relay {
+impl PartialEq for WebsocketConn {
     fn eq(&self, other: &Self) -> bool {
         self.url == other.url
     }
 }
 
-impl Eq for Relay {}
+impl Eq for WebsocketConn {}
 
-impl Relay {
+impl WebsocketConn {
     pub fn new(url: nostr::RelayUrl, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
         let status = RelayStatus::Connecting;
         let (sender, receiver) =
