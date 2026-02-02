@@ -86,7 +86,7 @@ impl WebsocketConn {
 }
 
 pub struct WebsocketRelay {
-    pub relay: WebsocketConn,
+    pub conn: WebsocketConn,
     pub last_ping: Instant,
     pub last_connect_attempt: Instant,
     pub retry_connect_after: Duration,
@@ -95,7 +95,7 @@ pub struct WebsocketRelay {
 impl WebsocketRelay {
     pub fn new(relay: WebsocketConn) -> Self {
         Self {
-            relay,
+            conn: relay,
             last_ping: Instant::now(),
             last_connect_attempt: Instant::now(),
             retry_connect_after: Self::initial_reconnect_duration(),
