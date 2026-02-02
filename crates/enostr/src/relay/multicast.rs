@@ -5,7 +5,8 @@ use std::net::IpAddr;
 use std::net::{SocketAddr, SocketAddrV4};
 use std::time::{Duration, Instant};
 
-use crate::{EventClientMessage, RelayStatus, Result};
+use crate::relay::{BroadcastCache, BroadcastRelay, RawEventData, RelayImplType};
+use crate::{EventClientMessage, RelayStatus, Result, Wakeup};
 use std::net::Ipv4Addr;
 use tracing::{debug, error};
 
@@ -137,4 +138,61 @@ pub fn setup_multicast_relay(
     });
 
     Ok(MulticastRelay::new(multicast_address, socket, interface))
+}
+/// MulticastRelayCache lazily initializes the multicast connection and buffers
+/// outbound events until a connection is available.
+#[derive(Default)]
+pub struct MulticastRelayCache {
+    multicast: Option<MulticastRelay>,
+    cache: BroadcastCache,
+}
+
+impl MulticastRelayCache {
+    pub fn is_setup(&self) -> bool {
+        self.multicast.is_some()
+    }
+
+    pub fn try_setup<W>(&mut self, wakeup: &W)
+    where
+        W: Wakeup,
+    {
+        let wake = wakeup.clone();
+        let Ok(multicast) = setup_multicast_relay(move || wake.wake()) else {
+            return;
+        };
+
+        self.multicast = Some(multicast);
+    }
+
+    pub fn broadcast(&mut self, msg: EventClientMessage) {
+        BroadcastRelay::multicast(self.multicast.as_mut(), &mut self.cache).broadcast(msg);
+    }
+
+    #[profiling::function]
+    pub fn try_recv<F>(&mut self, mut process: F)
+    where
+        for<'a> F: FnMut(RawEventData<'a>),
+    {
+        let Some(multicast) = &mut self.multicast else {
+            return;
+        };
+
+        if multicast.should_rejoin() {
+            if let Err(e) = multicast.rejoin() {
+                tracing::error!("multicast: rejoin error: {e}");
+            }
+        }
+
+        BroadcastRelay::multicast(Some(multicast), &mut self.cache).try_flush_queue();
+
+        let Some(WsEvent::Message(WsMessage::Text(text))) = multicast.try_recv() else {
+            return;
+        };
+
+        process(RawEventData {
+            url: "multicast",
+            event_json: &text,
+            relay_type: RelayImplType::Multicast,
+        });
+    }
 }
