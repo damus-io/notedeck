@@ -220,6 +220,17 @@ impl OutboxPool {
         pending_eoses
     }
 
+    pub fn start_session<'a, W>(&'a mut self, wakeup: W) -> OutboxSessionHandler<'a, W>
+    where
+        W: Wakeup,
+    {
+        OutboxSessionHandler {
+            outbox: self,
+            session: OutboxSession::default(),
+            wakeup,
+        }
+    }
+
     pub fn broadcast_note<W>(&mut self, note: &Note, relays: Vec<RelayId>, wakeup: &W)
     where
         W: Wakeup,
