@@ -19,7 +19,12 @@ pub use pubkey::{Pubkey, PubkeyRef};
 pub use relay::message::{RelayEvent, RelayMessage};
 pub use relay::pool::{PoolEvent, PoolEventBuf, PoolRelay, RelayPool};
 pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferStats};
-pub use relay::{RelayStatus, WebsocketConn};
+pub use relay::{
+    NormRelayUrl, OutboxPool, OutboxSession, OutboxSessionHandler, OutboxSubId,
+    RelayCoordinatorLimits, RelayId, RelayImplType, RelayLimitations, RelayReqId, RelayReqStatus,
+    RelayStatus, RelayType, RelayUrlPkgs, SubPass, SubPassGuardian, SubPassRevocation,
+    WebsocketConn,
+};
 
 pub type Result<T> = std::result::Result<T, error::Error>;
 
