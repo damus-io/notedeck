@@ -1,4 +1,5 @@
 mod identity;
+mod limits;
 pub mod message;
 mod multicast;
 pub mod pool;
@@ -7,6 +8,9 @@ mod websocket;
 
 pub use identity::{
     NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs,
+};
+pub use limits::{
+    RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,
 };
 pub use websocket::{WebsocketConn, WebsocketRelay};
 
