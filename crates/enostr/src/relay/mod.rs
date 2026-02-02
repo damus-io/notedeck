@@ -27,6 +27,9 @@ pub use subscription::{
 };
 pub use websocket::{WebsocketConn, WebsocketRelay};
 
+#[cfg(test)]
+pub mod test_utils;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RelayStatus {
     Connected,
