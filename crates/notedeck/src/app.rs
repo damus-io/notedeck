@@ -93,6 +93,7 @@ fn main_panel(style: &egui::Style) -> egui::CentralPanel {
     })
 }
 
+#[profiling::function]
 fn render_notedeck(
     app: Rc<RefCell<dyn App + 'static>>,
     app_ctx: &mut AppContext,
@@ -116,17 +117,21 @@ fn render_notedeck(
 }
 
 impl eframe::App for Notedeck {
+    #[profiling::function]
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         profiling::finish_frame!();
         self.frame_history
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
 
-        self.media_jobs.run_received(&mut self.job_pool, |id| {
-            crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
-        });
-        self.media_jobs.deliver_all_completed(|completed| {
-            crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
-        });
+        {
+            profiling::scope!("media jobs");
+            self.media_jobs.run_received(&mut self.job_pool, |id| {
+                crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
+            });
+            self.media_jobs.deliver_all_completed(|completed| {
+                crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
+            });
+        }
 
         let Some(app) = &self.app else {
             return;
@@ -143,7 +148,10 @@ impl eframe::App for Notedeck {
 
         render_notedeck(app, &mut app_ctx, ctx);
 
-        drop(app_ctx);
+        {
+            profiling::scope!("outbox ingestion");
+            drop(app_ctx);
+        }
 
         self.settings.update_batch(|settings| {
             settings.zoom_factor = ctx.zoom_factor();
@@ -474,6 +482,7 @@ pub fn install_crypto() {
     }
 }
 
+#[profiling::function]
 pub fn try_process_events(ctx: &Context, pool: &mut Outbox, ndb: &Ndb) {
     let ctx2 = ctx.clone();
     let wakeup = move || {
@@ -488,13 +497,16 @@ pub fn try_process_events(ctx: &Context, pool: &mut Outbox, ndb: &Ndb) {
             enostr::RelayImplType::Multicast => true,
         };
 
-        if let Err(err) = ndb.process_event_with(
-            ev.event_json,
-            nostrdb::IngestMetadata::new()
-                .client(from_client)
-                .relay(ev.url),
-        ) {
-            error!("error processing event {}: {err}", ev.event_json);
+        {
+            profiling::scope!("ndb process event");
+            if let Err(err) = ndb.process_event_with(
+                ev.event_json,
+                nostrdb::IngestMetadata::new()
+                    .client(from_client)
+                    .relay(ev.url),
+            ) {
+                error!("error processing event {}: {err}", ev.event_json);
+            }
         }
     });
 }

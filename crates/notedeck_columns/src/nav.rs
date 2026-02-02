@@ -245,6 +245,7 @@ fn process_popup_resp(
     process_result
 }
 
+#[profiling::function]
 fn process_nav_resp(
     app: &mut Damus,
     ctx: &mut AppContext<'_>,
@@ -503,6 +504,7 @@ impl RouterAction {
     }
 }
 
+#[profiling::function]
 fn process_render_nav_action(
     app: &mut Damus,
     ctx: &mut AppContext<'_>,

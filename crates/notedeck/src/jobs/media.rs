@@ -23,6 +23,7 @@ pub enum MediaJobResult {
     Animation(Result<Animation, Error>),
 }
 
+#[profiling::function]
 pub fn deliver_completed_media_job(
     completed: JobComplete<MediaJobKind, MediaJobResult>,
     tex_cache: &mut TexturesCache,
@@ -56,6 +57,7 @@ pub fn deliver_completed_media_job(
     tracing::trace!("Delivered job for {id_c}");
 }
 
+#[profiling::function]
 pub fn run_media_job_pre_action(job_id: &JobId<MediaJobKind>, tex_cache: &mut TexturesCache) {
     let id = job_id.id.clone();
     match job_id.job_kind {

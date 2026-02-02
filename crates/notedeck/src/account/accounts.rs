@@ -267,6 +267,7 @@ impl Accounts {
         }
     }
 
+    #[profiling::function]
     pub fn update(&mut self, ndb: &mut Ndb, pool: &mut Outbox) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
@@ -414,6 +415,7 @@ impl AccountData {
         }
     }
 
+    #[profiling::function]
     pub(super) fn poll_for_updates(
         &mut self,
         ndb: &Ndb,
@@ -549,6 +551,7 @@ impl AccountSubs {
         );
     }
 
+    #[profiling::function]
     fn update_subs_with_current_relays(
         &mut self,
         pool: &mut Outbox,

@@ -174,58 +174,64 @@ fn try_process_event(
 
     try_process_events(ctx, &mut app_ctx.pool, app_ctx.ndb);
 
-    if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(
-            app_ctx.unknown_ids,
-            &mut RelayPool::new(&mut app_ctx.pool, app_ctx.accounts),
-        );
-    }
-
-    for (kind, timeline) in &mut damus.timeline_cache {
-        if let FilterState::Ready(filter) = &timeline.filter {
-            if !timeline.subscription.has_remote() {
-                timeline.subscription.try_add_local(app_ctx.ndb, filter);
-                let subid = {
-                    let mut relay_pool = RelayPool::new(&mut app_ctx.pool, app_ctx.accounts);
-                    relay_pool.subscribe(filter.remote().to_vec())
-                };
-                timeline.subscription.add_remote(subid);
-            }
-        }
-
-        let is_ready = timeline::is_timeline_ready(
-            app_ctx.ndb,
-            &mut app_ctx.pool,
-            app_ctx.note_cache,
-            timeline,
-            app_ctx.accounts,
-            app_ctx.unknown_ids,
-        );
-
-        if is_ready {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            // only thread timelines are reversed
-            let reversed = false;
-
-            if let Err(err) = timeline.poll_notes_into_view(
-                app_ctx.ndb,
-                &txn,
+    {
+        profiling::scope!("unknown id");
+        if app_ctx.unknown_ids.ready_to_send() {
+            unknown_id_send(
                 app_ctx.unknown_ids,
-                app_ctx.note_cache,
-                reversed,
-            ) {
-                error!("poll_notes_into_view: {err}");
-            }
-        } else {
-            // TODO: show loading?
-            if matches!(kind, TimelineKind::List(ListKind::Contact(_))) {
-                timeline::fetch_contact_list(timeline, app_ctx.accounts);
-            }
+                &mut RelayPool::new(&mut app_ctx.pool, app_ctx.accounts),
+            );
         }
     }
 
-    if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
-        follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
+    {
+        profiling::scope!("misc poll for notes");
+        for (kind, timeline) in &mut damus.timeline_cache {
+            if let FilterState::Ready(filter) = &timeline.filter {
+                if !timeline.subscription.has_remote() {
+                    timeline.subscription.try_add_local(app_ctx.ndb, filter);
+                    let subid = {
+                        let mut relay_pool = RelayPool::new(&mut app_ctx.pool, app_ctx.accounts);
+                        relay_pool.subscribe(filter.remote().to_vec())
+                    };
+                    timeline.subscription.add_remote(subid);
+                }
+            }
+
+            let is_ready = timeline::is_timeline_ready(
+                app_ctx.ndb,
+                &mut app_ctx.pool,
+                app_ctx.note_cache,
+                timeline,
+                app_ctx.accounts,
+                app_ctx.unknown_ids,
+            );
+
+            if is_ready {
+                let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                // only thread timelines are reversed
+                let reversed = false;
+
+                if let Err(err) = timeline.poll_notes_into_view(
+                    app_ctx.ndb,
+                    &txn,
+                    app_ctx.unknown_ids,
+                    app_ctx.note_cache,
+                    reversed,
+                ) {
+                    error!("poll_notes_into_view: {err}");
+                }
+            } else {
+                // TODO: show loading?
+                if matches!(kind, TimelineKind::List(ListKind::Contact(_))) {
+                    timeline::fetch_contact_list(timeline, app_ctx.accounts);
+                }
+            }
+        }
+
+        if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
+            follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
+        }
     }
 
     Ok(())

@@ -114,6 +114,7 @@ impl TimelineCache {
     }
 
     /// Get and/or update the notes associated with this timeline
+    #[profiling::function]
     fn notes<'a>(
         &'a mut self,
         ndb: &Ndb,
@@ -136,6 +137,7 @@ impl TimelineCache {
             let mut notes = Vec::new();
 
             for package in filters.local().packages {
+                profiling::scope!("ndb query");
                 if let Ok(results) = ndb.query(txn, package.filters, 1000) {
                     let cur_notes: Vec<NoteRef> = results
                         .into_iter()
@@ -172,6 +174,7 @@ impl TimelineCache {
     /// into the timeline cache. If there exists a timeline already, we
     /// bump its subscription reference count. If it's new we start a new
     /// subscription
+    #[profiling::function]
     pub fn open(
         &mut self,
         ndb: &Ndb,

@@ -108,6 +108,7 @@ impl AccountRelayData {
         builder.sign(seckey).build().expect("note build")
     }
 
+    #[profiling::function]
     pub fn poll_for_updates(&mut self, ndb: &Ndb, txn: &Transaction, sub: Subscription) -> bool {
         let nks = ndb.poll_for_notes(sub, 1);
 
