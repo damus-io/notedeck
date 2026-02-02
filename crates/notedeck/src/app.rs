@@ -536,5 +536,11 @@ fn process_message_core(ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessag
         RelayMessage::Eose(id) => {
             tracing::trace!("Relay {} received eose: {id}", relay)
         }
+        RelayMessage::Closed(sid, reason) => {
+            tracing::trace!(
+                "Relay {} with sub {sid} received close because: {reason}",
+                relay
+            );
+        }
     }
 }
