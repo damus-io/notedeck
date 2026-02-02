@@ -3,6 +3,7 @@ use crate::{relay::RelayStatus, ClientMessage, Result};
 use std::{
     fmt,
     hash::{Hash, Hasher},
+    time::{Duration, Instant},
 };
 
 use ewebsock::{Options, WsMessage, WsReceiver, WsSender};
@@ -81,5 +82,27 @@ impl WebsocketConn {
     pub fn ping(&mut self) {
         let msg = WsMessage::Ping(vec![]);
         self.sender.send(msg);
+    }
+}
+
+pub struct WebsocketRelay {
+    pub relay: WebsocketConn,
+    pub last_ping: Instant,
+    pub last_connect_attempt: Instant,
+    pub retry_connect_after: Duration,
+}
+
+impl WebsocketRelay {
+    pub fn new(relay: WebsocketConn) -> Self {
+        Self {
+            relay,
+            last_ping: Instant::now(),
+            last_connect_attempt: Instant::now(),
+            retry_connect_after: Self::initial_reconnect_duration(),
+        }
+    }
+
+    pub fn initial_reconnect_duration() -> Duration {
+        Duration::from_secs(5)
     }
 }

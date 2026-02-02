@@ -4,7 +4,7 @@ pub mod pool;
 pub mod subs_debug;
 mod websocket;
 
-pub use websocket::WebsocketConn;
+pub use websocket::{WebsocketConn, WebsocketRelay};
 
 #[derive(Debug, Copy, Clone)]
 pub enum RelayStatus {
