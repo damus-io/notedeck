@@ -39,9 +39,12 @@ pub fn send_conversation_message(
 
     let mut rng = OsRng;
     for participant in &conversation.metadata.participants {
-        let Some(giftwrap_json) =
+        let Some(gifrwrap_note) =
             giftwrap_message(&mut rng, sender_secret, participant, &rumor_json)
         else {
+            continue;
+        };
+        let Some(giftwrap_json) = gifrwrap_note.json().ok() else {
             continue;
         };
         if participant == selected_kp.pubkey {

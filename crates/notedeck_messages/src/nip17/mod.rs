@@ -37,7 +37,7 @@ pub fn giftwrap_message(
     sender_secret: &SecretKey,
     recipient: &Pubkey,
     rumor_json: &str,
-) -> Option<String> {
+) -> Option<Note<'static>> {
     let Some(recipient_pk) = nostrcrate_pk(recipient) else {
         tracing::warn!("failed to convert recipient pubkey {}", recipient);
         return None;
@@ -79,7 +79,7 @@ pub fn giftwrap_message(
     };
 
     let wrap_created = randomized_timestamp(rng);
-    build_giftwrap_json(&encrypted_seal, &wrap_keys, recipient, wrap_created)
+    build_giftwrap_note(&encrypted_seal, &wrap_keys, recipient, wrap_created)
 }
 
 fn build_seal_json(
@@ -99,12 +99,12 @@ fn build_seal_json(
         .ok()
 }
 
-fn build_giftwrap_json(
+fn build_giftwrap_note(
     content: &str,
     wrap_keys: &FullKeypair,
     recipient: &Pubkey,
     created_at: u64,
-) -> Option<String> {
+) -> Option<Note<'static>> {
     let builder = NoteBuilder::new()
         .kind(1059)
         .content(content)
@@ -113,11 +113,7 @@ fn build_giftwrap_json(
         .tag_str("p")
         .tag_str(&recipient.hex());
 
-    builder
-        .sign(&wrap_keys.secret_key.secret_bytes())
-        .build()?
-        .json()
-        .ok()
+    builder.sign(&wrap_keys.secret_key.secret_bytes()).build()
 }
 
 fn nostrcrate_pk(pk: &Pubkey) -> Option<PublicKey> {
