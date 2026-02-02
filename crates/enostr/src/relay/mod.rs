@@ -1,9 +1,13 @@
+mod identity;
 pub mod message;
 mod multicast;
 pub mod pool;
 pub mod subs_debug;
 mod websocket;
 
+pub use identity::{
+    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs,
+};
 pub use websocket::{WebsocketConn, WebsocketRelay};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
