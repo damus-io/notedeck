@@ -507,3 +507,374 @@ where
         wakeup,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use hashbrown::HashSet;
+    use nostrdb::Filter;
+
+    use super::*;
+    use crate::relay::{
+        coordinator::CoordinationTask,
+        test_utils::{filters_json, trivial_filter, MockWakeup},
+        RelayUrlPkgs,
+    };
+
+    /// Ensures the subscription registry always yields unique IDs.
+    #[test]
+    fn registry_generates_unique_ids() {
+        let mut registry = SubRegistry { next_request_id: 0 };
+
+        let id1 = registry.next();
+        let id2 = registry.next();
+        let id3 = registry.next();
+
+        assert_ne!(id1, id2);
+        assert_ne!(id2, id3);
+        assert_ne!(id1, id3);
+    }
+
+    // ==================== OutboxPool tests ====================
+
+    /// Default pool has no relays or subscriptions.
+    #[test]
+    fn outbox_pool_default_empty() {
+        let pool = OutboxPool::default();
+        assert!(pool.relays.is_empty());
+        // Verify no subscriptions by checking that a lookup returns empty status
+        assert!(pool.status(&OutboxSubId(0)).is_empty());
+    }
+
+    /// has_eose returns false when no relays are tracking the request.
+    #[test]
+    fn outbox_pool_has_eose_false_when_empty() {
+        let pool = OutboxPool::default();
+        assert!(!pool.has_eose(&OutboxSubId(0)));
+    }
+
+    /// status() returns empty map for unknown request IDs.
+    #[test]
+    fn outbox_pool_status_empty_for_unknown() {
+        let pool = OutboxPool::default();
+        let status = pool.status(&OutboxSubId(999));
+        assert!(status.is_empty());
+    }
+
+    /// websocket_statuses() is empty before any relays connect.
+    #[test]
+    fn outbox_pool_websocket_statuses_empty_initially() {
+        let pool = OutboxPool::default();
+        let statuses = pool.websocket_statuses();
+        assert!(statuses.is_empty());
+    }
+
+    /// Full modifications should unsubscribe old relays and resubscribe new ones using the updated filters.
+    #[test]
+    fn full_modification_updates_sessions_with_new_filters() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay_a = NormRelayUrl::new("wss://relay-a.example.com").unwrap();
+        let relay_b = NormRelayUrl::new("wss://relay-b.example.com").unwrap();
+
+        let mut urls = HashSet::new();
+        urls.insert(relay_a.clone());
+        let new_sub_id = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(trivial_filter(), RelayUrlPkgs::new(urls))
+        };
+
+        {
+            let sub = pool
+                .subs
+                .get_mut(&new_sub_id)
+                .expect("subscription should be registered");
+            assert_eq!(sub.relays.len(), 1);
+            assert!(sub.relays.contains(&relay_a));
+            assert!(!sub.is_oneshot);
+            assert_eq!(sub.relay_type, RelayType::Compaction);
+        }
+
+        let sessions = {
+            let mut updated_relays = HashSet::new();
+            updated_relays.insert(relay_b.clone());
+
+            let mut handler = pool.start_session(wakeup);
+            handler.modify_filters(
+                new_sub_id,
+                vec![Filter::new().kinds(vec![3]).limit(1).build()],
+            );
+            handler.modify_relays(new_sub_id, updated_relays);
+            let session = handler.export();
+            pool.collect_sessions(session)
+        };
+
+        let old_task = sessions
+            .get(&relay_a)
+            .and_then(|session| session.tasks.get(&new_sub_id))
+            .expect("expected a task for relay relay_a");
+        assert!(matches!(old_task, CoordinationTask::Unsubscribe));
+
+        let new_task = sessions
+            .get(&relay_b)
+            .and_then(|session| session.tasks.get(&new_sub_id))
+            .expect("expected a task for relay relay_b");
+        assert!(matches!(new_task, CoordinationTask::CompactionSub));
+    }
+
+    /// Oneshot requests route to compaction mode by default.
+    #[test]
+    fn oneshot_routes_to_compaction() {
+        let mut pool = OutboxPool::default();
+        let relay = NormRelayUrl::new("wss://relay-oneshot.example.com").unwrap();
+        let mut relays = HashSet::new();
+        relays.insert(relay.clone());
+        let filters = vec![Filter::new().kinds(vec![1]).limit(2).build()];
+        let id = OutboxSubId(42);
+
+        let mut session = OutboxSession::default();
+        session.oneshot(id, filters.clone(), RelayUrlPkgs::new(relays));
+
+        let sessions = pool.collect_sessions(session);
+
+        let relay_task = sessions
+            .get(&relay)
+            .and_then(|session| session.tasks.get(&id))
+            .expect("expected task for oneshot relay");
+        assert!(matches!(relay_task, CoordinationTask::CompactionSub));
+    }
+
+    /// Unsubscribing from a multi-relay subscription emits unsubscribe tasks for each relay.
+    #[test]
+    fn unsubscribe_targets_all_relays() {
+        let mut pool = OutboxPool::default();
+        let relay_a = NormRelayUrl::new("wss://relay-a.example.com").unwrap();
+        let relay_b = NormRelayUrl::new("wss://relay-b.example.com").unwrap();
+        let id = OutboxSubId(42);
+
+        // Subscribe to both relays
+        let mut urls = HashSet::new();
+        urls.insert(relay_a.clone());
+        urls.insert(relay_b.clone());
+
+        let mut session = OutboxSession::default();
+        session.subscribe(id, trivial_filter(), RelayUrlPkgs::new(urls));
+        pool.collect_sessions(session);
+
+        // Unsubscribe
+        let mut session = OutboxSession::default();
+        session.unsubscribe(id);
+        let sessions = pool.collect_sessions(session);
+
+        // Both relays should receive unsubscribe tasks
+        let task_a = sessions.get(&relay_a).and_then(|s| s.tasks.get(&id));
+        let task_b = sessions.get(&relay_b).and_then(|s| s.tasks.get(&id));
+
+        assert!(matches!(task_a, Some(CoordinationTask::Unsubscribe)));
+        assert!(matches!(task_b, Some(CoordinationTask::Unsubscribe)));
+    }
+
+    /// Subscriptions with use_transparent=true route to transparent mode.
+    #[test]
+    fn subscribe_transparent_mode() {
+        let mut pool = OutboxPool::default();
+        let relay = NormRelayUrl::new("wss://relay-transparent.example.com").unwrap();
+        let id = OutboxSubId(5);
+
+        let mut urls = HashSet::new();
+        urls.insert(relay.clone());
+        let mut pkgs = RelayUrlPkgs::new(urls);
+        pkgs.use_transparent = true;
+
+        let mut session = OutboxSession::default();
+        session.subscribe(id, trivial_filter(), pkgs);
+        let sessions = pool.collect_sessions(session);
+
+        let task = sessions.get(&relay).and_then(|s| s.tasks.get(&id));
+        assert!(matches!(task, Some(CoordinationTask::TransparentSub)));
+    }
+
+    /// Modifying filters should re-subscribe the routed relays with the new filters.
+    #[test]
+    fn modify_filters_reissues_subscribe_for_existing_relays() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-modify.example.com").unwrap();
+
+        let mut urls = HashSet::new();
+        urls.insert(relay.clone());
+        let sub_id = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(trivial_filter(), RelayUrlPkgs::new(urls))
+        };
+
+        let (sessions, expected_json) = {
+            let mut handler = pool.start_session(wakeup);
+            let updated_filters = vec![Filter::new().kinds(vec![7]).limit(2).build()];
+            let expected_json = filters_json(&updated_filters);
+            handler.modify_filters(sub_id, updated_filters);
+            let session = handler.export();
+            (pool.collect_sessions(session), expected_json)
+        };
+
+        let view = pool.subs.view(&sub_id).expect("updated subscription view");
+        let stored_json = filters_json(view.filters.get_filters());
+        assert_eq!(stored_json, expected_json);
+
+        let task = sessions
+            .get(&relay)
+            .and_then(|session| session.tasks.get(&sub_id))
+            .expect("expected coordination task");
+        assert!(matches!(task, CoordinationTask::CompactionSub));
+    }
+
+    /// Modifying relays should unsubscribe removed relays and subscribe new ones.
+    #[test]
+    fn modify_relays_differs_routing_sets() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay_a = NormRelayUrl::new("wss://relay-diff-a.example.com").unwrap();
+        let relay_b = NormRelayUrl::new("wss://relay-diff-b.example.com").unwrap();
+
+        let mut urls = HashSet::new();
+        urls.insert(relay_a.clone());
+        let sub_id = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(trivial_filter(), RelayUrlPkgs::new(urls))
+        };
+
+        let sessions = {
+            let mut handler = pool.start_session(wakeup);
+            let mut new_urls = HashSet::new();
+            new_urls.insert(relay_b.clone());
+            handler.modify_relays(sub_id, new_urls);
+            let session = handler.export();
+            pool.collect_sessions(session)
+        };
+
+        let unsub_task = sessions
+            .get(&relay_a)
+            .and_then(|session| session.tasks.get(&sub_id))
+            .expect("missing relay_a task");
+        assert!(matches!(unsub_task, CoordinationTask::Unsubscribe));
+
+        let sub_task = sessions
+            .get(&relay_b)
+            .and_then(|session| session.tasks.get(&sub_id))
+            .expect("missing relay_b task");
+        assert!(matches!(sub_task, CoordinationTask::CompactionSub));
+    }
+
+    /// Full modifications that end up with no relays should drop the subscription entirely.
+    #[test]
+    fn modify_full_with_empty_relays_removes_subscription() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-empty.example.com").unwrap();
+
+        let mut urls = HashSet::new();
+        urls.insert(relay.clone());
+        let sub_id = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(trivial_filter(), RelayUrlPkgs::new(urls))
+        };
+
+        let sessions = {
+            let mut handler = pool.start_session(wakeup);
+            handler.modify_filters(sub_id, vec![Filter::new().kinds(vec![9]).limit(1).build()]);
+            handler.modify_relays(sub_id, HashSet::new());
+            let session = handler.export();
+            pool.collect_sessions(session)
+        };
+
+        let task = sessions
+            .get(&relay)
+            .and_then(|session| session.tasks.get(&sub_id))
+            .expect("expected unsubscribe for relay");
+        assert!(matches!(task, CoordinationTask::Unsubscribe));
+        assert!(
+            pool.subs.get_mut(&sub_id).is_none(),
+            "subscription metadata should be removed"
+        );
+    }
+
+    // ==================== OutboxSessionHandler tests ====================
+
+    /// The first subscribe issued via handler should return SubRequestId(0).
+    #[test]
+    fn outbox_session_handler_subscribe_returns_id() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+
+        let id = {
+            let mut handler = pool.start_session(wakeup);
+            handler.subscribe(trivial_filter(), RelayUrlPkgs::new(HashSet::new()))
+        };
+
+        assert_eq!(id, OutboxSubId(0));
+    }
+
+    /// Separate sessions should continue incrementing subscription IDs globally.
+    #[test]
+    fn outbox_session_handler_multiple_subscribes_unique_ids() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+
+        let id1 = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(trivial_filter(), RelayUrlPkgs::new(HashSet::new()))
+        };
+
+        let id2 = {
+            let mut handler = pool.start_session(wakeup);
+            handler.subscribe(trivial_filter(), RelayUrlPkgs::new(HashSet::new()))
+        };
+
+        assert_ne!(id1, id2);
+        assert_eq!(id1, OutboxSubId(0));
+        assert_eq!(id2, OutboxSubId(1));
+    }
+
+    /// Exporting/importing a session should carry over any pending tasks intact.
+    #[test]
+    fn outbox_session_handler_export_and_import() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+
+        // Create a handler and export its session
+        let handler = pool.start_session(wakeup.clone());
+        let session = handler.export();
+
+        // Should be empty since we didn't do anything
+        assert!(session.tasks.is_empty());
+
+        // Import the session back
+        let _handler = OutboxSessionHandler::import(&mut pool, session, wakeup);
+    }
+
+    // ==================== get_session tests ====================
+
+    /// get_session should create a new coordination entry when missing.
+    #[test]
+    fn get_session_creates_new_if_missing() {
+        let mut map: HashMap<NormRelayUrl, CoordinationSession> = HashMap::new();
+        let url = NormRelayUrl::new("wss://relay.example.com").unwrap();
+
+        let _session = get_session(&mut map, &url);
+
+        // Should have created a new session
+        assert!(map.contains_key(&url));
+    }
+
+    /// get_session returns the pre-existing coordination session.
+    #[test]
+    fn get_session_returns_existing() {
+        let mut map: HashMap<NormRelayUrl, CoordinationSession> = HashMap::new();
+        let url = NormRelayUrl::new("wss://relay.example.com").unwrap();
+
+        let session = get_session(&mut map, &url);
+        session.subscribe(OutboxSubId(0), false);
+
+        // Map should still have exactly one entry
+        assert_eq!(map.len(), 1);
+    }
+}
