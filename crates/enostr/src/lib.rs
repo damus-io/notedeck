@@ -22,3 +22,7 @@ pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferS
 pub use relay::{RelayStatus, WebsocketConn};
 
 pub type Result<T> = std::result::Result<T, error::Error>;
+
+pub trait Wakeup: Send + Sync + Clone + 'static {
+    fn wake(&self);
+}
