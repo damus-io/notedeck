@@ -22,7 +22,7 @@ pub use limits::{
 };
 pub use multicast::{MulticastRelay, MulticastRelayCache};
 use nostrdb::Filter;
-pub use outbox::OutboxSession;
+pub use outbox::{OutboxPool, OutboxSession};
 pub use queue::QueuedTasks;
 pub use subscription::{
     FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask, OutboxSubscriptions,

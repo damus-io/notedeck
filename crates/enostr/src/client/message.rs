@@ -13,6 +13,22 @@ impl EventClientMessage {
     }
 }
 
+impl<'a> TryFrom<&'a Note<'a>> for EventClientMessage {
+    type Error = Error;
+
+    fn try_from(value: &'a Note<'a>) -> Result<Self, Self::Error> {
+        Ok(Self {
+            note_json: value.json()?,
+        })
+    }
+}
+
+impl From<EventClientMessage> for ClientMessage {
+    fn from(value: EventClientMessage) -> Self {
+        ClientMessage::Event(value)
+    }
+}
+
 /// Messages sent by clients, received by relays
 #[derive(Debug, Clone)]
 pub enum ClientMessage {
