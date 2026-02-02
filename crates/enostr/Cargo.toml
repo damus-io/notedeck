@@ -27,3 +27,10 @@ base64 = { workspace = true }
 negentropy = { workspace = true }
 uuid = { workspace = true }
 profiling = { workspace = true }
+
+[dev-dependencies]
+nostr-database = "0.37"
+nostr-relay-builder = "0.37"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = { workspace = true }
