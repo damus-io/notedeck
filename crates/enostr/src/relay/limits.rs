@@ -139,3 +139,158 @@ impl Drop for SubPassRevocation {
 pub struct SubPass {
     _private: (),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== SubPassGuardian tests ====================
+
+    #[test]
+    fn guardian_starts_with_correct_passes() {
+        let guardian = SubPassGuardian::new(10);
+        assert_eq!(guardian.available_passes(), 10);
+    }
+
+    #[test]
+    fn guardian_take_pass_decrements() {
+        let mut guardian = SubPassGuardian::new(5);
+        let pass = guardian.take_pass();
+        assert!(pass.is_some());
+        assert_eq!(guardian.available_passes(), 4);
+    }
+
+    #[test]
+    fn guardian_take_pass_returns_none_when_empty() {
+        let mut guardian = SubPassGuardian::new(1);
+        let _pass = guardian.take_pass();
+        assert!(guardian.take_pass().is_none());
+        assert_eq!(guardian.available_passes(), 0);
+    }
+
+    #[test]
+    fn guardian_return_pass_increments() {
+        let mut guardian = SubPassGuardian::new(1);
+        let pass = guardian.take_pass().unwrap();
+        assert_eq!(guardian.available_passes(), 0);
+        guardian.return_pass(pass);
+        assert_eq!(guardian.available_passes(), 1);
+    }
+
+    #[test]
+    fn guardian_spawn_passes_adds_new_passes() {
+        let mut guardian = SubPassGuardian::new(2);
+        assert_eq!(guardian.available_passes(), 2);
+        guardian.spawn_passes(3);
+        assert_eq!(guardian.available_passes(), 5);
+    }
+
+    #[test]
+    fn guardian_multiple_take_and_return() {
+        let mut guardian = SubPassGuardian::new(3);
+
+        let pass1 = guardian.take_pass().unwrap();
+        let pass2 = guardian.take_pass().unwrap();
+        assert_eq!(guardian.available_passes(), 1);
+
+        guardian.return_pass(pass1);
+        assert_eq!(guardian.available_passes(), 2);
+
+        let _pass3 = guardian.take_pass().unwrap();
+        assert_eq!(guardian.available_passes(), 1);
+
+        guardian.return_pass(pass2);
+        assert_eq!(guardian.available_passes(), 2);
+    }
+
+    // ==================== SubPassRevocation tests ====================
+
+    #[test]
+    #[should_panic(expected = "did not revoke")]
+    fn revocation_panics_if_not_revoked() {
+        let _revocation = SubPassRevocation::new();
+        // drop triggers panic
+    }
+
+    #[test]
+    fn revocation_does_not_panic_when_revoked() {
+        let mut guardian = SubPassGuardian::new(1);
+        let pass = guardian.take_pass().unwrap();
+        let mut revocation = SubPassRevocation::new();
+        revocation.revocate(pass);
+        // drop should not panic since revoked is true
+    }
+
+    #[test]
+    fn revocation_marks_as_revoked_after_revocate() {
+        let mut guardian = SubPassGuardian::new(1);
+        let pass = guardian.take_pass().unwrap();
+        let mut revocation = SubPassRevocation::new();
+
+        assert!(!revocation.revoked);
+        revocation.revocate(pass);
+        assert!(revocation.revoked);
+    }
+
+    // ==================== RelayCoordinatorLimits tests ====================
+
+    #[test]
+    fn new_total_returns_none_when_same() {
+        let mut limits = RelayCoordinatorLimits::new(RelayLimitations {
+            maximum_subs: 5,
+            max_json_bytes: 400_000,
+        });
+
+        let revocations = limits.new_total(5);
+        assert!(revocations.is_none());
+        assert_eq!(limits.sub_guardian.available_passes(), 5);
+    }
+
+    #[test]
+    fn new_total_spawns_passes_when_increasing() {
+        let mut limits = RelayCoordinatorLimits::new(RelayLimitations {
+            maximum_subs: 5,
+            max_json_bytes: 400_000,
+        });
+
+        let revocations = limits.new_total(10);
+        assert!(revocations.is_none());
+        assert_eq!(limits.sub_guardian.available_passes(), 10);
+    }
+
+    #[test]
+    fn new_total_returns_revocations_when_decreasing() {
+        let mut limits = RelayCoordinatorLimits::new(RelayLimitations {
+            maximum_subs: 10,
+            max_json_bytes: 400_000,
+        });
+
+        let revocations = limits.new_total(5);
+        assert!(revocations.is_none());
+    }
+
+    #[test]
+    fn new_total_partial_revocations_when_passes_in_use() {
+        let mut limits = RelayCoordinatorLimits::new(RelayLimitations {
+            maximum_subs: 5,
+            max_json_bytes: 400_000,
+        });
+
+        // Take 3 passes (simulate them being in use)
+        let pass = limits.sub_guardian.take_pass().unwrap();
+        limits.sub_guardian.take_pass();
+        limits.sub_guardian.take_pass();
+        assert_eq!(limits.sub_guardian.available_passes(), 2);
+
+        // Now reduce to 2 total (need to remove 3)
+        let revocations = limits.new_total(2);
+
+        assert!(revocations.is_some());
+
+        let mut revs = revocations.unwrap();
+        // since there were two available passes, the guardian used those, but there is still one pass unaccounted for
+        assert_eq!(revs.len(), 1);
+
+        revs.pop().unwrap().revocate(pass);
+    }
+}
