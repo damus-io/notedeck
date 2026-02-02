@@ -1,4 +1,4 @@
-use crate::{relay::RelayStatus, ClientMessage, Result};
+use crate::{relay::RelayStatus, ClientMessage, Result, Wakeup};
 
 use std::{
     fmt,
@@ -42,10 +42,33 @@ impl PartialEq for WebsocketConn {
 impl Eq for WebsocketConn {}
 
 impl WebsocketConn {
-    pub fn new(url: nostr::RelayUrl, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
+    pub fn new(
+        url: nostr::RelayUrl,
+        wakeup: impl Fn() + Send + Sync + Clone + 'static,
+    ) -> Result<Self> {
+        #[derive(Clone)]
+        struct TmpWakeup<W>(W);
+
+        impl<W> Wakeup for TmpWakeup<W>
+        where
+            W: Fn() + Send + Sync + Clone + 'static,
+        {
+            fn wake(&self) {
+                (self.0)()
+            }
+        }
+
+        WebsocketConn::from_wakeup(url, TmpWakeup(wakeup))
+    }
+
+    pub fn from_wakeup<W>(url: nostr::RelayUrl, wakeup: W) -> Result<Self>
+    where
+        W: Wakeup,
+    {
         let status = RelayStatus::Connecting;
+        let wake = wakeup;
         let (sender, receiver) =
-            ewebsock::connect_with_wakeup(url.as_str(), Options::default(), wakeup)?;
+            ewebsock::connect_with_wakeup(url.as_str(), Options::default(), move || wake.wake())?;
 
         Ok(Self {
             url,
@@ -55,6 +78,7 @@ impl WebsocketConn {
         })
     }
 
+    #[profiling::function]
     pub fn send(&mut self, msg: &ClientMessage) {
         let json = match msg.to_json() {
             Ok(json) => {
