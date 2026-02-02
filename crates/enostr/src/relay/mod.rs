@@ -6,7 +6,6 @@ mod limits;
 pub mod message;
 mod multicast;
 mod outbox;
-pub mod pool;
 mod queue;
 pub mod subs_debug;
 mod subscription;

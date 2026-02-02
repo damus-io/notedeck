@@ -17,7 +17,6 @@ pub use note::{Note, NoteId};
 pub use profile::ProfileState;
 pub use pubkey::{Pubkey, PubkeyRef};
 pub use relay::message::{RelayEvent, RelayMessage};
-pub use relay::pool::{PoolEvent, PoolEventBuf, PoolRelay, RelayPool};
 pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferStats};
 pub use relay::{
     NormRelayUrl, OutboxPool, OutboxSession, OutboxSessionHandler, OutboxSubId,
