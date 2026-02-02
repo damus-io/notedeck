@@ -1,5 +1,5 @@
 use crate::relay::multicast::{setup_multicast_relay, MulticastRelay};
-use crate::relay::{RelayStatus, WebsocketConn};
+use crate::relay::{RelayStatus, WebsocketConn, WebsocketRelay};
 use crate::{ClientMessage, Error, Result};
 use nostrdb::Filter;
 
@@ -36,13 +36,6 @@ pub struct PoolEventBuf {
 pub enum PoolRelay {
     Websocket(WebsocketRelay),
     Multicast(MulticastRelay),
-}
-
-pub struct WebsocketRelay {
-    pub relay: WebsocketConn,
-    pub last_ping: Instant,
-    pub last_connect_attempt: Instant,
-    pub retry_connect_after: Duration,
 }
 
 impl PoolRelay {
@@ -103,21 +96,6 @@ impl PoolRelay {
 
     pub fn multicast(wakeup: impl Fn() + Send + Sync + Clone + 'static) -> Result<Self> {
         Ok(Self::Multicast(setup_multicast_relay(wakeup)?))
-    }
-}
-
-impl WebsocketRelay {
-    pub fn new(relay: WebsocketConn) -> Self {
-        Self {
-            relay,
-            last_ping: Instant::now(),
-            last_connect_attempt: Instant::now(),
-            retry_connect_after: Self::initial_reconnect_duration(),
-        }
-    }
-
-    pub fn initial_reconnect_duration() -> Duration {
-        Duration::from_secs(5)
     }
 }
 
