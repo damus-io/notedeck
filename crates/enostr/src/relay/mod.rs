@@ -14,7 +14,7 @@ pub use identity::{
 pub use limits::{
     RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,
 };
-pub use multicast::MulticastRelay;
+pub use multicast::{MulticastRelay, MulticastRelayCache};
 use nostrdb::Filter;
 pub use websocket::{WebsocketConn, WebsocketRelay};
 
