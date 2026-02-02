@@ -9,6 +9,7 @@ use std::{
 use ewebsock::{Options, WsMessage, WsReceiver, WsSender};
 use tracing::{debug, error};
 
+/// WebsocketConn owns an outbound websocket connection to a relay.
 pub struct WebsocketConn {
     pub url: nostr::RelayUrl,
     pub status: RelayStatus,
@@ -83,8 +84,13 @@ impl WebsocketConn {
         let msg = WsMessage::Ping(vec![]);
         self.sender.send(msg);
     }
+
+    pub fn set_status(&mut self, status: RelayStatus) {
+        self.status = status;
+    }
 }
 
+/// WebsocketRelay wraps WebsocketConn with reconnect/keepalive metadata.
 pub struct WebsocketRelay {
     pub conn: WebsocketConn,
     pub last_ping: Instant,
@@ -104,5 +110,9 @@ impl WebsocketRelay {
 
     pub fn initial_reconnect_duration() -> Duration {
         Duration::from_secs(5)
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.conn.status == RelayStatus::Connected
     }
 }
