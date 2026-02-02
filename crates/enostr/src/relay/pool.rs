@@ -1,5 +1,5 @@
 use crate::relay::multicast::{setup_multicast_relay, MulticastRelay};
-use crate::relay::{Relay, RelayStatus};
+use crate::relay::{RelayStatus, WebsocketConn};
 use crate::{ClientMessage, Error, Result};
 use nostrdb::Filter;
 
@@ -39,7 +39,7 @@ pub enum PoolRelay {
 }
 
 pub struct WebsocketRelay {
-    pub relay: Relay,
+    pub relay: WebsocketConn,
     pub last_ping: Instant,
     pub last_connect_attempt: Instant,
     pub retry_connect_after: Duration,
@@ -97,7 +97,7 @@ impl PoolRelay {
         self.send(&ClientMessage::req(subid, filter))
     }
 
-    pub fn websocket(relay: Relay) -> Self {
+    pub fn websocket(relay: WebsocketConn) -> Self {
         Self::Websocket(WebsocketRelay::new(relay))
     }
 
@@ -107,7 +107,7 @@ impl PoolRelay {
 }
 
 impl WebsocketRelay {
-    pub fn new(relay: Relay) -> Self {
+    pub fn new(relay: WebsocketConn) -> Self {
         Self {
             relay,
             last_ping: Instant::now(),
@@ -313,7 +313,7 @@ impl RelayPool {
         if self.has(&url) {
             return Ok(());
         }
-        let relay = Relay::new(
+        let relay = WebsocketConn::new(
             nostr::RelayUrl::parse(url).map_err(|_| Error::InvalidRelayUrl)?,
             wakeup,
         )?;
