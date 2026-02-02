@@ -16,8 +16,10 @@ use crate::{
     EventClientMessage, Wakeup, WebsocketConn,
 };
 
+mod handler;
 mod session;
 
+pub use handler::OutboxSessionHandler;
 pub use session::OutboxSession;
 
 const KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
