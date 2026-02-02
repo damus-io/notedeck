@@ -141,3 +141,113 @@ fn canonicalize_url(url: String) -> String {
         Err(_) => url, // If parsing fails, return the original URL.
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== NormRelayUrl tests ====================
+
+    #[test]
+    fn norm_relay_url_creates_valid_url() {
+        let url = NormRelayUrl::new("wss://relay.example.com");
+        assert!(url.is_ok());
+    }
+
+    #[test]
+    fn norm_relay_url_handles_trailing_slash() {
+        let url1 = NormRelayUrl::new("wss://relay.example.com/").unwrap();
+        let url2 = NormRelayUrl::new("wss://relay.example.com").unwrap();
+        // Both should canonicalize to the same thing
+        assert_eq!(url1.to_string(), url2.to_string());
+    }
+
+    #[test]
+    fn norm_relay_url_rejects_invalid() {
+        assert!(NormRelayUrl::new("not-a-url").is_err());
+    }
+
+    #[test]
+    fn norm_relay_url_rejects_http() {
+        // nostr relay URLs must be ws:// or wss://
+        assert!(NormRelayUrl::new("http://relay.example.com").is_err());
+    }
+
+    #[test]
+    fn norm_relay_url_equality() {
+        let url1 = NormRelayUrl::new("wss://relay.example.com").unwrap();
+        let url2 = NormRelayUrl::new("wss://relay.example.com").unwrap();
+        assert_eq!(url1, url2);
+    }
+
+    #[test]
+    fn norm_relay_url_hash_consistency() {
+        use std::collections::HashSet;
+
+        let url1 = NormRelayUrl::new("wss://relay.example.com").unwrap();
+        let url2 = NormRelayUrl::new("wss://relay.example.com").unwrap();
+
+        let mut set = HashSet::new();
+        set.insert(url1);
+        assert!(set.contains(&url2));
+    }
+
+    // ==================== RelayUrlPkgs tests ====================
+
+    #[test]
+    fn relay_url_pkgs_default_not_transparent() {
+        let pkgs = RelayUrlPkgs::default();
+        assert!(!pkgs.use_transparent);
+        assert!(pkgs.urls.is_empty());
+    }
+
+    #[test]
+    fn relay_url_pkgs_new_sets_urls() {
+        let mut urls = HashSet::new();
+        urls.insert(NormRelayUrl::new("wss://relay1.example.com").unwrap());
+        urls.insert(NormRelayUrl::new("wss://relay2.example.com").unwrap());
+
+        let pkgs = RelayUrlPkgs::new(urls);
+        assert_eq!(pkgs.urls.len(), 2);
+        assert!(!pkgs.use_transparent);
+    }
+
+    #[test]
+    fn relay_url_pkgs_iter() {
+        let mut urls = HashSet::new();
+        urls.insert(NormRelayUrl::new("wss://relay1.example.com").unwrap());
+
+        let pkgs = RelayUrlPkgs::new(urls);
+        assert_eq!(pkgs.iter().count(), 1);
+    }
+
+    // ==================== RelayREQId tests ====================
+
+    #[test]
+    fn relay_req_id_default_generates_uuid() {
+        let id1 = RelayReqId::default();
+        let id2 = RelayReqId::default();
+        // Each default should generate a unique UUID
+        assert_ne!(id1, id2);
+    }
+
+    // ==================== SubRequestId tests ====================
+
+    #[test]
+    fn sub_request_id_equality() {
+        let id1 = OutboxSubId(42);
+        let id2 = OutboxSubId(42);
+        let id3 = OutboxSubId(43);
+
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn sub_request_id_ordering() {
+        let id1 = OutboxSubId(1);
+        let id2 = OutboxSubId(2);
+
+        assert!(id1 < id2);
+    }
+}
