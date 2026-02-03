@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "android", allow(dead_code, unused_variables))]
 
+use std::io;
+
 use crate::Error;
 use base64::{prelude::BASE64_URL_SAFE, Engine};
 use ehttp::Request;
@@ -205,10 +207,17 @@ fn internal_nip96_upload(
                         Err(e) => Err(Error::Generic(e.to_string())),
                     }
                 } else {
-                    Err(Error::Generic(format!(
+                    let kind = match response.status {
+                        400..=499 => io::ErrorKind::InvalidInput,
+                        500..=599 => io::ErrorKind::ConnectionAborted,
+                        _ => io::ErrorKind::Other,
+                    };
+                    let err_msg = format!(
                         "ehttp Response was unsuccessful. Code {} with message: {}",
                         response.status, response.status_text
-                    )))
+                    );
+
+                    Err(Error::Io(io::Error::new(kind, err_msg)))
                 }
             }
             Err(e) => Err(Error::Generic(e)),
