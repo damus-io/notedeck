@@ -1046,11 +1046,7 @@ fn like_button(
             app_images::like_image()
         };
 
-        if ui.visuals().dark_mode {
-            img.tint(ui.visuals().text_color())
-        } else {
-            img
-        }
+        img.tint(ui.visuals().text_color())
     };
 
     let (rect, size, resp) =
