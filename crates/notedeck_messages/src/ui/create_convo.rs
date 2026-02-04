@@ -221,7 +221,7 @@ fn search_profiles<'a>(
     if let Ok(pks) = ndb.search_profile(txn, query, 20) {
         for pk_bytes in pks {
             if !seen.contains(pk_bytes) {
-                let is_contact = contacts.map_or(false, |c| c.contains(pk_bytes));
+                let is_contact = contacts.is_some_and(|c| c.contains(pk_bytes));
                 results.push(SearchResult {
                     pk: pk_bytes,
                     is_contact,
