@@ -17,7 +17,7 @@ mod username;
 pub mod widgets;
 
 pub use anim::{rolling_number, AnimationHelper, PulseAlpha};
-pub use contacts_list::{ContactsListAction, ContactsListView};
+pub use contacts_list::{profile_row, ContactsListAction, ContactsListView};
 pub use debug::debug_slider;
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};
 pub use mention::Mention;

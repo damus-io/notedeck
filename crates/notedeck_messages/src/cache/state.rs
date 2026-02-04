@@ -4,11 +4,17 @@ use crate::cache::ConversationId;
 use egui_virtual_list::VirtualList;
 use notedeck::NoteRef;
 
-/// Keep track of the UI state for conversations. Meant to be mutably accessed by UI
+/// Search state for the create conversation UI
+#[derive(Default)]
+pub struct CreateConvoState {
+    pub query: String,
+}
+
 #[derive(Default)]
 pub struct ConversationStates {
     pub cache: HashMap<ConversationId, ConversationState>,
     pub convos_list: VirtualList,
+    pub create_convo: CreateConvoState,
 }
 
 impl ConversationStates {
@@ -18,6 +24,7 @@ impl ConversationStates {
         Self {
             cache: Default::default(),
             convos_list,
+            create_convo: Default::default(),
         }
     }
     pub fn get_or_insert(&mut self, id: ConversationId) -> &mut ConversationState {

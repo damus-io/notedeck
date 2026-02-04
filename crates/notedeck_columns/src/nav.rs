@@ -1008,6 +1008,7 @@ fn render_nav_body(
                 note_context.ndb,
                 note_context.img_cache,
                 &txn,
+                note_context.i18n,
             )
             .ui(ui)
             .map_output(|action| match action {
