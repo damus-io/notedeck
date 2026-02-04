@@ -29,6 +29,14 @@ android: jni
 	adb shell am start -n com.damus.notedeck/.MainActivity
 	adb logcat -v color -s GameActivity -s RustStdoutStderr -s threaded_app | tee logcat.txt
 
+release-apk: jni
+	cd $(ANDROID_DIR) && ./gradlew assembleRelease
+	@echo "Signed APK: $(ANDROID_DIR)/app/build/outputs/apk/release/app-release.apk"
+
+release-aab: jni
+	cd $(ANDROID_DIR) && ./gradlew bundleRelease
+	@echo "Signed AAB: $(ANDROID_DIR)/app/build/outputs/bundle/release/app-release.aab"
+
 android-tracy: fake
 	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --profile release --features tracy
 	cd $(ANDROID_DIR) && ./gradlew installDebug
