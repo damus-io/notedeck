@@ -75,9 +75,14 @@ fn execute_note_action(
             let toolbar_visible_id = egui::Id::new("toolbar_visible");
             let velocity_threshold = 50.0; // pixels per second
 
+            let viewable_content_height = scroll_info.viewable_content_rect.height();
+            let scrollable_distance = scroll_info.full_content_size.y - viewable_content_height;
+
             // velocity.y > 0 means scrolling up (content moving down) - show toolbar
             // velocity.y < 0 means scrolling down (content moving up) - hide toolbar
-            if scroll_info.velocity.y > velocity_threshold {
+            if scroll_info.velocity.y > velocity_threshold
+                || scrollable_distance < viewable_content_height
+            {
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
             } else if scroll_info.velocity.y < -velocity_threshold {
