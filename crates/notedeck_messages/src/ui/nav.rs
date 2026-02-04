@@ -124,6 +124,11 @@ fn render_nav_body(
                 .inner
         }
         Route::CreateConvo => 's: {
+            // Escape key goes back
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                break 's Some(MessagesAction::Back);
+            }
+
             let Some(r) = CreateConvoUi::new(
                 ndb,
                 jobs,
