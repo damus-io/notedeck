@@ -3,10 +3,70 @@ use std::collections::HashSet;
 use crate::ProfilePic;
 use egui::{RichText, Sense};
 use enostr::Pubkey;
-use nostrdb::{Ndb, Transaction};
+use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
-    name::get_display_name, profile::get_profile_url, DragResponse, Images, MediaJobSender,
+    name::get_display_name, profile::get_profile_url, tr, DragResponse, Images, Localization,
+    MediaJobSender,
 };
+
+/// Render a profile row with picture and name, optionally showing a contact badge. Returns true if clicked.
+pub fn profile_row(
+    ui: &mut egui::Ui,
+    profile: Option<&ProfileRecord<'_>>,
+    is_contact: bool,
+    img_cache: &mut Images,
+    jobs: &MediaJobSender,
+    i18n: &mut Localization,
+) -> bool {
+    let (rect, resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), Sense::click());
+
+    if !ui.clip_rect().intersects(rect) {
+        return false;
+    }
+
+    let name_str = get_display_name(profile).name();
+    let profile_url = get_profile_url(profile);
+
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+
+    if resp.hovered() {
+        ui.painter()
+            .rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+
+    let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    child_ui.horizontal(|ui| {
+        ui.add_space(16.0);
+        ui.add(&mut ProfilePic::new(img_cache, jobs, profile_url).size(48.0));
+        ui.add_space(12.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(name_str)
+                    .size(16.0)
+                    .color(ui.visuals().text_color()),
+            )
+            .selectable(false),
+        );
+        if is_contact {
+            ui.add_space(8.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(tr!(
+                        i18n,
+                        "Contact",
+                        "Badge indicating this profile is in contacts"
+                    ))
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
+                )
+                .selectable(false),
+            );
+        }
+    });
+
+    resp.clicked()
+}
 
 pub struct ContactsListView<'a, 'txn> {
     contacts: ContactsCollection<'a>,
@@ -14,6 +74,7 @@ pub struct ContactsListView<'a, 'txn> {
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
     txn: &'txn Transaction,
+    i18n: &'a mut Localization,
 }
 
 #[derive(Clone)]
@@ -58,6 +119,7 @@ impl<'a, 'txn> ContactsListView<'a, 'txn> {
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
         txn: &'txn Transaction,
+        i18n: &'a mut Localization,
     ) -> Self {
         ContactsListView {
             contacts,
@@ -65,6 +127,7 @@ impl<'a, 'txn> ContactsListView<'a, 'txn> {
             img_cache,
             txn,
             jobs,
+            i18n,
         }
     }
 
@@ -72,51 +135,20 @@ impl<'a, 'txn> ContactsListView<'a, 'txn> {
         let mut action = None;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            let clip_rect = ui.clip_rect();
-
             for contact_pubkey in self.contacts.iter() {
-                let (rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), Sense::click());
-
-                if !clip_rect.intersects(rect) {
-                    continue;
-                }
-
                 let profile = self
                     .ndb
                     .get_profile_by_pubkey(self.txn, contact_pubkey.bytes())
                     .ok();
 
-                let display_name = get_display_name(profile.as_ref());
-                let name_str = display_name.display_name.unwrap_or("Anonymous");
-                let profile_url = get_profile_url(profile.as_ref());
-
-                let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-
-                if resp.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
-                }
-
-                let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                child_ui.horizontal(|ui| {
-                    ui.add_space(16.0);
-
-                    ui.add(&mut ProfilePic::new(self.img_cache, self.jobs, profile_url).size(48.0));
-
-                    ui.add_space(12.0);
-
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(name_str)
-                                .size(16.0)
-                                .color(ui.visuals().text_color()),
-                        )
-                        .selectable(false),
-                    );
-                });
-
-                if resp.clicked() {
+                if profile_row(
+                    ui,
+                    profile.as_ref(),
+                    false,
+                    self.img_cache,
+                    self.jobs,
+                    self.i18n,
+                ) {
                     action = Some(ContactsListAction::Select(*contact_pubkey));
                 }
             }

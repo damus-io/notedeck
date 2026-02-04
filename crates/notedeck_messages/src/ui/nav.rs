@@ -10,6 +10,7 @@ use notedeck_ui::{
     header::{chevron, HorizontalHeader},
 };
 
+pub use crate::cache::CreateConvoState;
 use crate::{
     cache::{ConversationCache, ConversationStates},
     nav::{MessagesAction, Route},
@@ -123,7 +124,15 @@ fn render_nav_body(
                 .inner
         }
         Route::CreateConvo => 's: {
-            let Some(r) = CreateConvoUi::new(ndb, jobs, img_cache, contacts, i18n).ui(ui) else {
+            let Some(r) = CreateConvoUi::new(
+                ndb,
+                jobs,
+                img_cache,
+                contacts,
+                i18n,
+                &mut states.create_convo,
+            )
+            .ui(ui) else {
                 break 's None;
             };
 
