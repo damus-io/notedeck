@@ -77,3 +77,21 @@ pub fn styled_button_toggleable(
         resp
     }
 }
+
+/// Get appropriate background color for active side panel icon button
+pub fn side_panel_active_bg(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(70, 70, 70)
+    } else {
+        egui::Color32::from_rgb(220, 220, 220)
+    }
+}
+
+/// Get appropriate tint color for side panel icons to ensure visibility
+pub fn side_panel_icon_tint(ui: &egui::Ui) -> egui::Color32 {
+    if ui.visuals().dark_mode {
+        egui::Color32::WHITE
+    } else {
+        egui::Color32::BLACK
+    }
+}

@@ -883,6 +883,10 @@ fn timelines_view(
         .horizontal(|mut strip| {
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
+                // Clone the route to avoid holding a borrow on app.decks_cache
+                let current_route = get_active_columns(ctx.accounts, &app.decks_cache)
+                    .selected()
+                    .map(|col| col.router().top().clone());
                 let side_panel = DesktopSidePanel::new(
                     ctx.accounts.get_selected_account(),
                     &app.decks_cache,
@@ -890,6 +894,8 @@ fn timelines_view(
                     ctx.ndb,
                     ctx.img_cache,
                     ctx.media_jobs.sender(),
+                    current_route.as_ref(),
+                    ctx.pool,
                 )
                 .show(ui);
 

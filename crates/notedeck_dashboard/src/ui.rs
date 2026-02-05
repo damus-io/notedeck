@@ -5,7 +5,9 @@ use std::time::Duration;
 use std::time::Instant;
 
 use nostrdb::Transaction;
-use notedeck::{abbrev::floor_char_boundary, name::get_display_name, profile::get_profile_url, AppContext};
+use notedeck::{
+    AppContext, abbrev::floor_char_boundary, name::get_display_name, profile::get_profile_url,
+};
 use notedeck_ui::ProfilePic;
 
 use crate::Dashboard;
