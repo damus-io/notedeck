@@ -22,3 +22,4 @@ tokio = { workspace = true }
 tokenator = { workspace = true }
 hashbrown = { workspace = true }
 uuid = { workspace = true }
+profiling = { workspace = true }
