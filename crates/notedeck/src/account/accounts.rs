@@ -5,6 +5,7 @@ use crate::account::relay::{
     calculate_relays, modify_advertised_relays, write_relays, AccountRelayData, RelayAction,
     RelayDefaults,
 };
+use crate::account::relay_dependents::RelayListDependents;
 use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;
 use crate::{
@@ -282,11 +283,14 @@ impl Accounts {
         match update {
             // If needed, update the relay configuration
             AccountDataUpdate::Relay => {
-                let acc = self.cache.selected();
+                let acc = self.cache.selected_mut();
+                let relay = &acc.data.relay;
+                let dependents = &mut acc.dependents;
                 self.subs.update_subs_with_current_relays(
                     pool,
                     &self.relay_defaults,
-                    &acc.data.relay,
+                    relay,
+                    dependents,
                 );
             }
         }
@@ -300,8 +304,10 @@ impl Accounts {
         let acc = self.cache.selected_mut();
         modify_advertised_relays(&acc.key, action, pool, &self.relay_defaults, &mut acc.data);
 
+        let relay = &acc.data.relay;
+        let dependents = &mut acc.dependents;
         self.subs
-            .update_subs_with_current_relays(pool, &self.relay_defaults, &acc.data.relay);
+            .update_subs_with_current_relays(pool, &self.relay_defaults, relay, dependents);
     }
 
     pub fn get_subs(&self) -> &AccountSubs {
@@ -329,6 +335,15 @@ impl Accounts {
             &self.get_selected_account_data().relay,
             false,
         )
+    }
+
+    /// the existing sub's relays will stay updated with the user's relay list
+    pub fn register_remote_sub(&mut self, id: OutboxSubId) {
+        self.get_selected_account_mut().dependents.add(id);
+    }
+
+    pub fn remove_general_sub(&mut self, id: &OutboxSubId) {
+        self.get_selected_account_mut().dependents.remove(id);
     }
 }
 
@@ -379,6 +394,7 @@ fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> O
         key: keypair,
         wallet,
         data: new_account_data,
+        dependents: Default::default(),
     })
 }
 
@@ -538,13 +554,18 @@ impl AccountSubs {
         pool: &mut Outbox,
         relay_defaults: &RelayDefaults,
         new_selection_data: &AccountRelayData,
+        dependents: &mut RelayListDependents,
     ) {
         let relays = calculate_relays(relay_defaults, new_selection_data, true);
 
         pool.modify_relays(self.relay_remote, relays.clone());
         pool.modify_relays(self.mute_remote, relays.clone());
         pool.modify_relays(self.giftwrap_remote, relays.clone());
-        pool.modify_relays(self.contacts_remote, relays);
+        pool.modify_relays(self.contacts_remote, relays.clone());
+
+        for id in dependents.get_all() {
+            pool.modify_relays(*id, relays.clone());
+        }
     }
 }
 

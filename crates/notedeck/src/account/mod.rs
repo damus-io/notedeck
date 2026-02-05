@@ -3,6 +3,7 @@ pub mod cache;
 pub mod contacts;
 pub mod mute;
 pub mod relay;
+pub mod relay_dependents;
 
 pub const FALLBACK_PUBKEY: fn() -> enostr::Pubkey = || {
     enostr::Pubkey::new([

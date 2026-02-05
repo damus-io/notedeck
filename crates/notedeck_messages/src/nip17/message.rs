@@ -23,6 +23,8 @@ pub fn send_conversation_message(
         return;
     };
 
+    let selected_pubkey = *selected_kp.pubkey;
+
     let Some(rumor_json) = build_rumor_json(
         &content,
         &conversation.metadata.participants,
@@ -32,18 +34,15 @@ pub fn send_conversation_message(
         return;
     };
 
-    let Some(sender_secret) = ctx.accounts.selected_filled().map(|f| f.secret_key) else {
-        return;
-    };
-
+    let sender_secret = selected_kp.secret_key.clone();
     let mut rng = OsRng;
     for participant in &conversation.metadata.participants {
         let Some(gifrwrap_note) =
-            giftwrap_message(&mut rng, sender_secret, participant, &rumor_json)
+            giftwrap_message(&mut rng, &sender_secret, participant, &rumor_json)
         else {
             continue;
         };
-        if participant == selected_kp.pubkey {
+        if participant == &selected_pubkey {
             let Some(giftwrap_json) = gifrwrap_note.json().ok() else {
                 continue;
             };

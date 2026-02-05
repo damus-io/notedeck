@@ -386,7 +386,7 @@ fn handle_navigating_timeline(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
     pool: &mut Outbox,
-    accounts: &Accounts,
+    accounts: &mut Accounts,
     app: &mut Damus,
     col: usize,
 ) {
@@ -510,13 +510,13 @@ fn process_render_nav_action(
     col: usize,
     action: RenderNavAction,
 ) -> Option<ProcessNavResult> {
-    let mut pool = RelayPool::new(&mut ctx.pool, ctx.accounts);
     let router_action = match action {
         RenderNavAction::Back => Some(RouterAction::GoBack),
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
         RenderNavAction::RemoveColumn => {
             let kinds_to_pop = app.columns_mut(ctx.i18n, ctx.accounts).delete_column(col);
 
+            let mut pool = RelayPool::new(&mut ctx.pool, ctx.accounts);
             for kind in &kinds_to_pop {
                 if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, &mut pool) {
                     error!("error popping timeline: {err}");
@@ -527,6 +527,7 @@ fn process_render_nav_action(
         }
         RenderNavAction::PostAction(new_post_action) => {
             let txn = Transaction::new(ctx.ndb).expect("txn");
+            let mut pool = RelayPool::new(&mut ctx.pool, ctx.accounts);
             match new_post_action.execute(ctx.ndb, &txn, &mut pool, &mut app.drafts) {
                 Err(err) => tracing::error!("Error executing post action: {err}"),
                 Ok(_) => tracing::debug!("Post action executed"),

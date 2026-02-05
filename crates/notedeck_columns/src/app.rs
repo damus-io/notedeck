@@ -347,7 +347,7 @@ impl Damus {
         let (parsed_args, unrecognized_args) =
             ColumnsArgs::parse(args, Some(app_context.accounts.selected_account_pubkey()));
 
-        let account = app_context.accounts.selected_account_pubkey_bytes();
+        let account = *app_context.accounts.selected_account_pubkey_bytes();
 
         let mut timeline_cache = TimelineCache::default();
         let mut options = AppOptions::default();
@@ -386,7 +386,7 @@ impl Damus {
                 }
             }
 
-            columns_to_decks_cache(app_context.i18n, columns, account)
+            columns_to_decks_cache(app_context.i18n, columns, &account)
         } else if let Some(decks_cache) = crate::storage::load_decks_cache(
             app_context.path,
             app_context.ndb,

@@ -100,18 +100,20 @@ fn execute_note_action(
         }
         NoteAction::React(react_action) => {
             if let Some(filled) = accounts.selected_filled() {
+                let secret_bytes = filled.secret_key.secret_bytes();
+                let pubkey = *filled.pubkey;
                 if let Err(err) = send_reaction_event(
                     ndb,
                     txn,
                     &mut RelayPool::new(pool, accounts),
-                    filled,
+                    &secret_bytes,
                     &react_action,
                 ) {
                     tracing::error!("Failed to send reaction: {err}");
                 }
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(
-                        reaction_sent_id(filled.pubkey, react_action.note_id.bytes()),
+                        reaction_sent_id(&pubkey, react_action.note_id.bytes()),
                         true,
                     )
                 });
@@ -320,7 +322,7 @@ fn send_reaction_event(
     ndb: &mut Ndb,
     txn: &Transaction,
     pool: &mut RelayPool,
-    kp: FilledKeypair<'_>,
+    secret_bytes: &[u8; 32],
     reaction: &ReactAction,
 ) -> Result<(), String> {
     let Ok(note) = ndb.get_note_by_id(txn, reaction.note_id.bytes()) else {
@@ -367,7 +369,7 @@ fn send_reaction_event(
         .tag_str(&target_kind.to_string());
 
     let note = builder
-        .sign(&kp.secret_key.secret_bytes())
+        .sign(secret_bytes)
         .build()
         .ok_or_else(|| "failed to build reaction event".to_owned())?;
 

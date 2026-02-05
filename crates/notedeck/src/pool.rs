@@ -5,14 +5,14 @@ use crate::{Accounts, EguiWakeup};
 
 // A helpful wrapper for simple legacy-like operations
 pub struct RelayPool<'o, 'a> {
-    outbox: &'o mut OutboxSessionHandler<'a, EguiWakeup>,
-    accounts: &'o Accounts,
+    pub outbox: &'o mut OutboxSessionHandler<'a, EguiWakeup>,
+    pub accounts: &'o mut Accounts,
 }
 
 impl<'o, 'a> RelayPool<'o, 'a> {
     pub fn new(
         outbox: &'o mut OutboxSessionHandler<'a, EguiWakeup>,
-        accounts: &'o Accounts,
+        accounts: &'o mut Accounts,
     ) -> Self {
         Self { outbox, accounts }
     }
@@ -23,10 +23,12 @@ impl<'o, 'a> RelayPool<'o, 'a> {
     }
 
     pub fn subscribe(&mut self, filters: Vec<Filter>) -> OutboxSubId {
-        self.outbox.subscribe(
+        let id = self.outbox.subscribe(
             filters,
             RelayUrlPkgs::new(self.accounts.selected_account_read_relays()),
-        )
+        );
+        self.accounts.register_remote_sub(id);
+        id
     }
 
     pub fn oneshot(&mut self, filters: Vec<Filter>) {
@@ -37,6 +39,7 @@ impl<'o, 'a> RelayPool<'o, 'a> {
     }
 
     pub fn unsubscribe(&mut self, id: OutboxSubId) {
+        self.accounts.remove_general_sub(&id);
         self.outbox.unsubscribe(id);
     }
 }

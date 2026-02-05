@@ -605,7 +605,7 @@ pub fn setup_new_timeline(
     pool: &mut Outbox,
     note_cache: &mut NoteCache,
     since_optimize: bool,
-    accounts: &Accounts,
+    accounts: &mut Accounts,
     unknown_ids: &mut UnknownIds,
 ) {
     // if we're ready, setup local subs
@@ -615,15 +615,21 @@ pub fn setup_new_timeline(
         }
     }
 
-    send_initial_timeline_filter(since_optimize, pool, timeline, accounts);
+    send_initial_timeline_filter(
+        since_optimize,
+        &mut RelayPool {
+            outbox: pool,
+            accounts,
+        },
+        timeline,
+    );
     timeline.subscription.increment();
 }
 
 pub fn send_initial_timeline_filter(
     can_since_optimize: bool,
-    pool: &mut Outbox,
+    pool: &mut RelayPool,
     timeline: &mut Timeline,
-    accounts: &Accounts,
 ) {
     match &timeline.filter {
         FilterState::Broken(err) => {
@@ -669,12 +675,12 @@ pub fn send_initial_timeline_filter(
                 filter
             }).collect();
 
-            let sid = RelayPool::new(pool, accounts).subscribe(new_filters);
+            let sid = pool.subscribe(new_filters);
             timeline.subscription.add_remote(sid);
         }
 
         // we need some data first
-        FilterState::NeedsRemote => fetch_contact_list(timeline, accounts),
+        FilterState::NeedsRemote => fetch_contact_list(timeline, pool.accounts),
     }
 }
 
@@ -797,7 +803,7 @@ pub fn is_timeline_ready(
     pool: &mut Outbox,
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
-    accounts: &Accounts,
+    accounts: &mut Accounts,
     unknown_ids: &mut UnknownIds,
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have

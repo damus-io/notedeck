@@ -2,6 +2,7 @@ use enostr::{Keypair, KeypairUnowned};
 use tokenator::{ParseError, TokenParser, TokenSerializable};
 
 use crate::{
+    account::relay_dependents::RelayListDependents,
     wallet::{WalletSerializable, ZapWallet},
     AccountData, IsFollowing,
 };
@@ -11,6 +12,7 @@ pub struct UserAccount {
     pub key: Keypair,
     pub wallet: Option<ZapWallet>,
     pub data: AccountData,
+    pub dependents: RelayListDependents,
 }
 
 impl UserAccount {
@@ -19,6 +21,7 @@ impl UserAccount {
             key,
             wallet: None,
             data,
+            dependents: Default::default(),
         }
     }
 
