@@ -20,8 +20,8 @@ use enostr::Pubkey;
 use nostrdb::Transaction;
 use notedeck::{
     tr, try_process_events, ui::is_narrow, unknown_id_send, Accounts, AppAction, AppContext,
-    AppResponse, DataPath, DataPathType, Images, Localization, MediaJobSender, NotedeckOptions,
-    RelayPool, SettingsHandler,
+    AppResponse, DataPath, DataPathType, FilterState, Images, Localization, MediaJobSender,
+    NotedeckOptions, RelayPool, SettingsHandler,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -64,6 +64,7 @@ pub struct Damus {
     hovered_column: Option<usize>,
 }
 
+#[profiling::function]
 fn handle_egui_events(
     input: &egui::InputState,
     columns: &mut Columns,
@@ -181,6 +182,17 @@ fn try_process_event(
     }
 
     for (kind, timeline) in &mut damus.timeline_cache {
+        if let FilterState::Ready(filter) = &timeline.filter {
+            if !timeline.subscription.has_remote() {
+                timeline.subscription.try_add_local(app_ctx.ndb, filter);
+                let subid = {
+                    let mut relay_pool = RelayPool::new(&mut app_ctx.pool, app_ctx.accounts);
+                    relay_pool.subscribe(filter.remote().to_vec())
+                };
+                timeline.subscription.add_remote(subid);
+            }
+        }
+
         let is_ready = timeline::is_timeline_ready(
             app_ctx.ndb,
             &mut app_ctx.pool,

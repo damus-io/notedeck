@@ -523,6 +523,14 @@ impl TimelineSub {
         self.filter.as_ref()
     }
 
+    /// Returns true when a remote relay subscription has been registered.
+    pub fn has_remote(&self) -> bool {
+        matches!(
+            self.state,
+            SubState::RemoteOnly { .. } | SubState::Unified { .. }
+        )
+    }
+
     pub fn no_sub(&self) -> bool {
         matches!(self.state, SubState::NoSub { dependers: _ })
     }
