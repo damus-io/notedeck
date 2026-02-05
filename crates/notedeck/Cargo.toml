@@ -52,8 +52,8 @@ regex = "1"
 chrono = { workspace = true }
 indexmap = {workspace = true}
 rand = {workspace = true}
-crossbeam-channel = "0.5"
-crossbeam = "0.8.4"
+crossbeam-channel = { workspace = true }
+crossbeam = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 http-body-util = { workspace = true }

@@ -1,0 +1,17 @@
+[package]
+name = "notedeck_dashboard"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+rustc-hash = "2.1.1"
+
+egui = { workspace = true }
+enostr = { workspace = true }
+nostrdb = { workspace = true }
+chrono = { workspace = true }
+crossbeam-channel = { workspace = true }
+notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
