@@ -7,6 +7,7 @@ pub mod pool;
 mod queue;
 pub mod subs_debug;
 mod subscription;
+mod transparent;
 mod websocket;
 
 pub use broadcast::{BroadcastCache, BroadcastRelay};
