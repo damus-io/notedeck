@@ -10,6 +10,7 @@ pub(crate) mod mesh;
 mod messages;
 mod quaternion;
 pub mod session;
+pub mod session_discovery;
 mod tools;
 mod ui;
 mod vec3;
@@ -36,6 +37,7 @@ pub use messages::{
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
+pub use session_discovery::{discover_sessions, format_relative_time, ResumableSession};
 pub use tools::{
     PartialToolCall, QueryCall, QueryResponse, Tool, ToolCall, ToolCalls, ToolResponse,
     ToolResponses,
@@ -43,7 +45,7 @@ pub use tools::{
 pub use ui::{
     check_keybindings, AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi,
     DirectoryPicker, DirectoryPickerAction, KeyAction, SceneAction, SceneResponse,
-    SessionListAction, SessionListUi, SettingsPanelAction,
+    SessionListAction, SessionListUi, SessionPicker, SessionPickerAction, SettingsPanelAction,
 };
 pub use vec3::Vec3;
 
@@ -54,6 +56,7 @@ pub enum DaveOverlay {
     None,
     Settings,
     DirectoryPicker,
+    SessionPicker,
 }
 
 pub struct Dave {
@@ -87,6 +90,8 @@ pub struct Dave {
     home_session: Option<SessionId>,
     /// Directory picker for selecting working directory when creating sessions
     directory_picker: DirectoryPicker,
+    /// Session picker for resuming existing Claude sessions
+    session_picker: SessionPicker,
     /// Current overlay taking over the UI (if any)
     active_overlay: DaveOverlay,
     /// IPC listener for external spawn-agent commands
@@ -184,6 +189,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             auto_steal_focus: false,
             home_session: None,
             directory_picker,
+            session_picker: SessionPicker::new(),
             // Auto-show directory picker on startup since there are no sessions
             active_overlay: DaveOverlay::DirectoryPicker,
             ipc_listener,
@@ -390,6 +396,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         match self.active_overlay {
             DaveOverlay::Settings => return self.settings_overlay_ui(app_ctx, ui),
             DaveOverlay::DirectoryPicker => return self.directory_picker_overlay_ui(app_ctx, ui),
+            DaveOverlay::SessionPicker => return self.session_picker_overlay_ui(app_ctx, ui),
             DaveOverlay::None => {}
         }
 
@@ -434,8 +441,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         if let Some(action) = self.directory_picker.overlay_ui(ui, has_sessions) {
             match action {
                 DirectoryPickerAction::DirectorySelected(path) => {
-                    self.create_session_with_cwd(path);
-                    self.active_overlay = DaveOverlay::None;
+                    // Check if there are resumable sessions for this directory
+                    let resumable_sessions = discover_sessions(&path);
+                    if resumable_sessions.is_empty() {
+                        // No previous sessions, create new directly
+                        self.create_session_with_cwd(path);
+                        self.active_overlay = DaveOverlay::None;
+                    } else {
+                        // Show session picker to let user choose
+                        self.session_picker.open(path);
+                        self.active_overlay = DaveOverlay::SessionPicker;
+                    }
                 }
                 DirectoryPickerAction::Cancelled => {
                     // Only close if there are existing sessions to fall back to
@@ -445,6 +461,40 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 DirectoryPickerAction::BrowseRequested => {
                     // Handled internally by the picker
+                }
+            }
+        }
+        DaveResponse::default()
+    }
+
+    /// Full-screen session picker overlay (for resuming Claude sessions)
+    fn session_picker_overlay_ui(
+        &mut self,
+        _app_ctx: &mut AppContext,
+        ui: &mut egui::Ui,
+    ) -> DaveResponse {
+        if let Some(action) = self.session_picker.overlay_ui(ui) {
+            match action {
+                SessionPickerAction::ResumeSession {
+                    cwd,
+                    session_id,
+                    title,
+                } => {
+                    // Create a session that resumes the existing Claude conversation
+                    self.create_resumed_session_with_cwd(cwd, session_id, title);
+                    self.session_picker.close();
+                    self.active_overlay = DaveOverlay::None;
+                }
+                SessionPickerAction::NewSession { cwd } => {
+                    // User chose to start fresh
+                    self.create_session_with_cwd(cwd);
+                    self.session_picker.close();
+                    self.active_overlay = DaveOverlay::None;
+                }
+                SessionPickerAction::BackToDirectoryPicker => {
+                    // Go back to directory picker
+                    self.session_picker.close();
+                    self.active_overlay = DaveOverlay::DirectoryPicker;
                 }
             }
         }
@@ -751,6 +801,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.directory_picker.add_recent(cwd.clone());
 
         let id = self.session_manager.new_session(cwd);
+        // Request focus on the new session's input
+        if let Some(session) = self.session_manager.get_mut(id) {
+            session.focus_requested = true;
+            // Also update scene selection and camera if in scene view
+            if self.show_scene {
+                self.scene.select(id);
+                self.scene.focus_on(session.scene_position);
+            }
+        }
+    }
+
+    /// Create a new session that resumes an existing Claude conversation
+    fn create_resumed_session_with_cwd(
+        &mut self,
+        cwd: PathBuf,
+        resume_session_id: String,
+        title: String,
+    ) {
+        // Add to recent directories
+        self.directory_picker.add_recent(cwd.clone());
+
+        let id = self
+            .session_manager
+            .new_resumed_session(cwd, resume_session_id, title);
         // Request focus on the new session's input
         if let Some(session) = self.session_manager.get_mut(id) {
             session.focus_requested = true;
@@ -1476,14 +1550,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let session_id = format!("dave-session-{}", session.id);
         let messages = session.chat.clone();
         let cwd = Some(session.cwd.clone());
+        let resume_session_id = session.resume_session_id.clone();
         let tools = self.tools.clone();
         let model_name = self.model_config.model().to_owned();
         let ctx = ctx.clone();
 
         // Use backend to stream request
-        let (rx, task_handle) = self
-            .backend
-            .stream_request(messages, tools, model_name, user_id, session_id, cwd, ctx);
+        let (rx, task_handle) = self.backend.stream_request(
+            messages,
+            tools,
+            model_name,
+            user_id,
+            session_id,
+            cwd,
+            resume_session_id,
+            ctx,
+        );
         session.incoming_tokens = Some(rx);
         session.task_handle = task_handle;
     }

@@ -130,6 +130,7 @@ struct PermissionRequestInternal {
 async fn session_actor(
     session_id: String,
     cwd: Option<PathBuf>,
+    resume_session_id: Option<String>,
     mut command_rx: tokio_mpsc::Receiver<SessionCommand>,
 ) {
     // Permission channel - the callback sends to perm_tx, actor receives on perm_rx
@@ -183,16 +184,41 @@ async fn session_actor(
         tracing::trace!("Claude CLI stderr: {}", msg);
     });
 
+    // Log if we're resuming a session
+    if let Some(ref resume_id) = resume_session_id {
+        tracing::info!(
+            "Session {} will resume Claude session: {}",
+            session_id,
+            resume_id
+        );
+    }
+
     // Create client once - this maintains the persistent connection
-    let options = match cwd {
-        Some(ref dir) => ClaudeAgentOptions::builder()
+    // Using match to handle the TypedBuilder's strict type requirements
+    let options = match (&cwd, &resume_session_id) {
+        (Some(dir), Some(resume_id)) => ClaudeAgentOptions::builder()
+            .permission_mode(PermissionMode::Default)
+            .stderr_callback(stderr_callback)
+            .can_use_tool(can_use_tool)
+            .include_partial_messages(true)
+            .cwd(dir)
+            .resume(resume_id)
+            .build(),
+        (Some(dir), None) => ClaudeAgentOptions::builder()
             .permission_mode(PermissionMode::Default)
             .stderr_callback(stderr_callback)
             .can_use_tool(can_use_tool)
             .include_partial_messages(true)
             .cwd(dir)
             .build(),
-        None => ClaudeAgentOptions::builder()
+        (None, Some(resume_id)) => ClaudeAgentOptions::builder()
+            .permission_mode(PermissionMode::Default)
+            .stderr_callback(stderr_callback)
+            .can_use_tool(can_use_tool)
+            .include_partial_messages(true)
+            .resume(resume_id)
+            .build(),
+        (None, None) => ClaudeAgentOptions::builder()
             .permission_mode(PermissionMode::Default)
             .stderr_callback(stderr_callback)
             .can_use_tool(can_use_tool)
@@ -551,6 +577,7 @@ impl AiBackend for ClaudeBackend {
         _user_id: String,
         session_id: String,
         cwd: Option<PathBuf>,
+        resume_session_id: Option<String>,
         ctx: egui::Context,
     ) -> (
         mpsc::Receiver<DaveApiResponse>,
@@ -586,11 +613,18 @@ impl AiBackend for ClaudeBackend {
             let handle = entry.or_insert_with(|| {
                 let (command_tx, command_rx) = tokio_mpsc::channel(16);
 
-                // Spawn session actor with cwd
+                // Spawn session actor with cwd and optional resume session ID
                 let session_id_clone = session_id.clone();
                 let cwd_clone = cwd.clone();
+                let resume_session_id_clone = resume_session_id.clone();
                 tokio::spawn(async move {
-                    session_actor(session_id_clone, cwd_clone, command_rx).await;
+                    session_actor(
+                        session_id_clone,
+                        cwd_clone,
+                        resume_session_id_clone,
+                        command_rx,
+                    )
+                    .await;
                 });
 
                 SessionHandle { command_tx }

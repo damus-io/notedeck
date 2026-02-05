@@ -19,6 +19,9 @@ pub trait AiBackend: Send + Sync {
     ///
     /// Returns a receiver that will receive tokens and tool calls as they arrive,
     /// plus an optional JoinHandle to the spawned task for cleanup on session deletion.
+    ///
+    /// If `resume_session_id` is Some, the backend should resume the specified Claude
+    /// session instead of starting a new conversation.
     #[allow(clippy::too_many_arguments)]
     fn stream_request(
         &self,
@@ -28,6 +31,7 @@ pub trait AiBackend: Send + Sync {
         user_id: String,
         session_id: String,
         cwd: Option<PathBuf>,
+        resume_session_id: Option<String>,
         ctx: egui::Context,
     ) -> (
         mpsc::Receiver<DaveApiResponse>,

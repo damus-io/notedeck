@@ -60,6 +60,9 @@ pub struct ChatSession {
     pub is_compacting: bool,
     /// Info from the last completed compaction (for display)
     pub last_compaction: Option<CompactionInfo>,
+    /// Claude session ID to resume (UUID from Claude CLI's session storage)
+    /// When set, the backend will use --resume to continue this session
+    pub resume_session_id: Option<String>,
 }
 
 impl Drop for ChatSession {
@@ -98,7 +101,21 @@ impl ChatSession {
             subagent_indices: HashMap::new(),
             is_compacting: false,
             last_compaction: None,
+            resume_session_id: None,
         }
+    }
+
+    /// Create a new session that resumes an existing Claude conversation
+    pub fn new_resumed(
+        id: SessionId,
+        cwd: PathBuf,
+        resume_session_id: String,
+        title: String,
+    ) -> Self {
+        let mut session = Self::new(id, cwd);
+        session.resume_session_id = Some(resume_session_id);
+        session.title = title;
+        session
     }
 
     /// Update a subagent's output (appending new content, keeping only the tail)
@@ -217,6 +234,24 @@ impl SessionManager {
         self.next_id += 1;
 
         let session = ChatSession::new(id, cwd);
+        self.sessions.insert(id, session);
+        self.order.insert(0, id); // Most recent first
+        self.active = Some(id);
+
+        id
+    }
+
+    /// Create a new session that resumes an existing Claude conversation
+    pub fn new_resumed_session(
+        &mut self,
+        cwd: PathBuf,
+        resume_session_id: String,
+        title: String,
+    ) -> SessionId {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let session = ChatSession::new_resumed(id, cwd, resume_session_id, title);
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
