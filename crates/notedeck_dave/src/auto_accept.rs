@@ -58,11 +58,58 @@ impl Default for AutoAcceptRules {
                 AutoAcceptRule::SmallEdit { max_lines: 2 },
                 AutoAcceptRule::BashCommand {
                     prefixes: vec![
+                        // Cargo commands
                         "cargo build".into(),
                         "cargo check".into(),
                         "cargo test".into(),
                         "cargo fmt".into(),
                         "cargo clippy".into(),
+                        "cargo run".into(),
+                        "cargo doc".into(),
+                        // Read-only bash commands
+                        "grep ".into(),
+                        "grep\t".into(),
+                        "rg ".into(),
+                        "rg\t".into(),
+                        "find ".into(),
+                        "find\t".into(),
+                        "ls ".into(),
+                        "ls\t".into(),
+                        "ls\n".into(),
+                        "cat ".into(),
+                        "cat\t".into(),
+                        "head ".into(),
+                        "head\t".into(),
+                        "tail ".into(),
+                        "tail\t".into(),
+                        "wc ".into(),
+                        "wc\t".into(),
+                        "file ".into(),
+                        "file\t".into(),
+                        "stat ".into(),
+                        "stat\t".into(),
+                        "which ".into(),
+                        "which\t".into(),
+                        "type ".into(),
+                        "type\t".into(),
+                        "pwd".into(),
+                        "tree ".into(),
+                        "tree\t".into(),
+                        "tree\n".into(),
+                        "du ".into(),
+                        "du\t".into(),
+                        "df ".into(),
+                        "df\t".into(),
+                        // Git read-only commands
+                        "git status".into(),
+                        "git log".into(),
+                        "git diff".into(),
+                        "git show".into(),
+                        "git branch".into(),
+                        "git remote".into(),
+                        "git rev-parse".into(),
+                        "git ls-files".into(),
+                        "git describe".into(),
                     ],
                 },
                 AutoAcceptRule::ReadOnlyTool {
@@ -204,6 +251,69 @@ mod tests {
     fn test_bash_with_leading_whitespace() {
         let rules = default_rules();
         let input = json!({ "command": "  cargo build" });
+        assert!(rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_grep_bash_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "grep -rn \"pattern\" /path" });
+        assert!(rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_rg_bash_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "rg \"pattern\" /path" });
+        assert!(rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_find_bash_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "find . -name \"*.rs\"" });
+        assert!(rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_git_status_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "git status" });
+        assert!(rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_git_log_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "git log --oneline -10" });
+        assert!(rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_git_push_not_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "git push origin main" });
+        assert!(!rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_git_commit_not_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "git commit -m \"test\"" });
+        assert!(!rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_ls_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "ls -la /tmp" });
+        assert!(rules.should_auto_accept("Bash", &input));
+    }
+
+    #[test]
+    fn test_cat_auto_accept() {
+        let rules = default_rules();
+        let input = json!({ "command": "cat /path/to/file.txt" });
         assert!(rules.should_auto_accept("Bash", &input));
     }
 }
