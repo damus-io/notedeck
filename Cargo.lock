@@ -2121,6 +2121,7 @@ dependencies = [
  "negentropy 0.5.0",
  "nostr 0.37.0",
  "nostrdb",
+ "profiling",
  "serde",
  "serde_derive",
  "serde_json",
