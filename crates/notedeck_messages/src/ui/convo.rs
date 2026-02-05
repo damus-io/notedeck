@@ -56,7 +56,7 @@ impl<'a> ConversationUi<'a> {
         Frame::new().fill(ui.visuals().panel_fill).show(ui, |ui| {
             ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                 // Calculate height based on number of lines (min 1, max 8)
-                let line_count = self.state.composer.lines().count().max(1).min(8);
+                let line_count = self.state.composer.lines().count().clamp(1, 8);
                 let line_height = 20.0; // approximate line height
                 let base_height = 44.0; // padding + margin
                 let composer_height = base_height + (line_count as f32 * line_height);

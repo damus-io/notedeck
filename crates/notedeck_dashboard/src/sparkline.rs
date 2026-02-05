@@ -3,16 +3,16 @@ use egui::{Color32, Pos2, Response, Sense, Stroke, Ui, Vec2};
 #[derive(Clone, Copy)]
 pub struct SparkStyle {
     pub stroke: Stroke,
-    pub fill_alpha: u8,
-    pub rounding: f32,
+    //pub fill_alpha: u8,
+    //pub rounding: f32,
 }
 
 impl Default for SparkStyle {
     fn default() -> Self {
         Self {
             stroke: Stroke::new(1.5, Color32::WHITE),
-            fill_alpha: 40,
-            rounding: 3.0,
+            //fill_alpha: 40,
+            //rounding: 3.0,
         }
     }
 }

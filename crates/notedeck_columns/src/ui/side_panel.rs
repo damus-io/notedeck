@@ -71,6 +71,7 @@ impl SidePanelResponse {
 }
 
 impl<'a> DesktopSidePanel<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         selected_account: &'a UserAccount,
         decks_cache: &'a DecksCache,
@@ -252,7 +253,7 @@ impl<'a> DesktopSidePanel<'a> {
                     // Draw border if Accounts route is active
                     let is_accounts_active = self
                         .current_route
-                        .map_or(false, |r| matches!(r, Route::Accounts(_)));
+                        .is_some_and(|r| matches!(r, Route::Accounts(_)));
                     if is_accounts_active {
                         let rect = resp.rect;
                         let radius = avatar_size / 2.0;
