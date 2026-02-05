@@ -41,9 +41,7 @@ use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
     NoteAction, NoteCache, NoteContext, RelayAction,
 };
-use notedeck_ui::{
-    contacts_list::ContactsCollection, ContactsListAction, ContactsListView, NoteOptions,
-};
+use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
 use tracing::error;
 
 /// The result of processing a nav response
@@ -1011,7 +1009,7 @@ fn render_nav_body(
             };
 
             ContactsListView::new(
-                ContactsCollection::Vec(&contacts),
+                &contacts,
                 note_context.jobs,
                 note_context.ndb,
                 note_context.img_cache,

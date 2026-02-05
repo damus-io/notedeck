@@ -150,8 +150,8 @@ pub fn profile_row(
         .clicked()
 }
 
-pub struct ContactsListView<'a, 'txn> {
-    contacts: ContactsCollection<'a>,
+pub struct ContactsListView<'a, 'txn, I> {
+    contacts: I,
     jobs: &'a MediaJobSender,
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
@@ -164,39 +164,12 @@ pub enum ContactsListAction {
     Select(Pubkey),
 }
 
-pub enum ContactsCollection<'a> {
-    Vec(&'a Vec<Pubkey>),
-    Set(&'a HashSet<Pubkey>),
-}
-
-pub enum ContactsIter<'a> {
-    Vec(std::slice::Iter<'a, Pubkey>),
-    Set(std::collections::hash_set::Iter<'a, Pubkey>),
-}
-
-impl<'a> ContactsCollection<'a> {
-    pub fn iter(&'a self) -> ContactsIter<'a> {
-        match self {
-            ContactsCollection::Vec(v) => ContactsIter::Vec(v.iter()),
-            ContactsCollection::Set(s) => ContactsIter::Set(s.iter()),
-        }
-    }
-}
-
-impl<'a> Iterator for ContactsIter<'a> {
-    type Item = &'a Pubkey;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            ContactsIter::Vec(iter) => iter.next().as_ref().copied(),
-            ContactsIter::Set(iter) => iter.next().as_ref().copied(),
-        }
-    }
-}
-
-impl<'a, 'txn> ContactsListView<'a, 'txn> {
+impl<'a, 'txn, I> ContactsListView<'a, 'txn, I>
+where
+    I: IntoIterator<Item = &'a Pubkey>,
+{
     pub fn new(
-        contacts: ContactsCollection<'a>,
+        contacts: I,
         jobs: &'a MediaJobSender,
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
@@ -213,11 +186,11 @@ impl<'a, 'txn> ContactsListView<'a, 'txn> {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<ContactsListAction> {
+    pub fn ui(self, ui: &mut egui::Ui) -> DragResponse<ContactsListAction> {
         let mut action = None;
 
         egui::ScrollArea::vertical().show(ui, |ui| {
-            for contact_pubkey in self.contacts.iter() {
+            for contact_pubkey in self.contacts {
                 let profile = self
                     .ndb
                     .get_profile_by_pubkey(self.txn, contact_pubkey.bytes())

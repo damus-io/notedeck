@@ -3,8 +3,7 @@ use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{tr, ContactState, Images, Localization, MediaJobSender, NotedeckTextStyle};
 use notedeck_ui::{
-    contacts_list::ContactsCollection, profile_row, search_input_box, search_profiles,
-    ContactsListView, ProfileSearchResult,
+    profile_row, search_input_box, search_profiles, ContactsListView, ProfileSearchResult,
 };
 
 use crate::cache::CreateConvoState;
@@ -69,7 +68,7 @@ impl<'a> CreateConvoUi<'a> {
 
             if let ContactState::Received { contacts, .. } = self.contacts {
                 let resp = ContactsListView::new(
-                    ContactsCollection::Set(contacts),
+                    contacts,
                     self.jobs,
                     self.ndb,
                     self.img_cache,
