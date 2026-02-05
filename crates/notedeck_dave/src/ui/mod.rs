@@ -5,6 +5,7 @@ pub mod diff;
 pub mod directory_picker;
 pub mod keybind_hint;
 pub mod keybindings;
+pub mod markdown_ui;
 mod pill;
 mod query_ui;
 pub mod scene;

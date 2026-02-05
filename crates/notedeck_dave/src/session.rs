@@ -128,8 +128,9 @@ impl ChatSession {
     /// Update the session title from the last message (user or assistant)
     pub fn update_title_from_last_message(&mut self) {
         for msg in self.chat.iter().rev() {
-            let text = match msg {
-                Message::User(text) | Message::Assistant(text) => text,
+            let text: &str = match msg {
+                Message::User(text) => text,
+                Message::Assistant(msg) => msg.text(),
                 _ => continue,
             };
             // Use first ~30 chars of last message as title

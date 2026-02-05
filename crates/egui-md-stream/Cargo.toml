@@ -1,0 +1,12 @@
+[package]
+name = "egui-md-stream"
+version = "0.1.0"
+edition = "2021"
+description = "Incremental markdown parser for streaming LLM output in egui"
+license = "MIT"
+
+[dependencies]
+# No deps for core parser - keep it minimal
+
+[dev-dependencies]
+# For testing streaming behavior

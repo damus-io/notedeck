@@ -1709,6 +1709,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-md-stream"
+version = "0.1.0"
+
+[[package]]
 name = "egui-wgpu"
 version = "0.31.1"
 source = "git+https://github.com/damus-io/egui?rev=e05638c40ef734312b3b3e36397d389d0a78b10b#e05638c40ef734312b3b3e36397d389d0a78b10b"
@@ -4157,6 +4161,7 @@ dependencies = [
  "dirs",
  "eframe",
  "egui",
+ "egui-md-stream",
  "egui-wgpu",
  "egui_extras",
  "enostr",

@@ -10,6 +10,7 @@ members = [
     "crates/notedeck_notebook",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
+    "crates/egui-md-stream",
 
     "crates/enostr", "crates/tokenator", "crates/notedeck_dave", "crates/notedeck_ui", "crates/notedeck_clndash",
 ]
@@ -70,6 +71,7 @@ notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_ui = { path = "crates/notedeck_ui" }
 tokenator = { path = "crates/tokenator" }
+egui-md-stream = { path = "crates/egui-md-stream" }
 once_cell = "1.19.0"
 robius-open = "0.1"
 poll-promise = { version = "0.3.0", features = ["tokio"] }

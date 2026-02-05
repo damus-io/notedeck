@@ -27,6 +27,7 @@ futures = "0.3.31"
 dashmap = "6"
 #reqwest = "0.12.15"
 egui_extras = { workspace = true }
+egui-md-stream = { workspace = true }
 similar = "2"
 rfd = "0.14"
 dirs = "5"
