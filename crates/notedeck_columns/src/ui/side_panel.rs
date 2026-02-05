@@ -818,16 +818,28 @@ fn connectivity_indicator(
         .count();
     let total_count = pool.relays.len();
 
-    let indicator_color = if total_count > 1 {
-        if connected_count == 0 {
-            egui::Color32::from_rgb(0xFF, 0x66, 0x66)
-        } else if connected_count == 1 {
-            egui::Color32::from_rgb(0xFF, 0xCC, 0x66)
-        } else {
-            notedeck_ui::side_panel_icon_tint(ui)
-        }
+    // Calculate connectivity ratio (0.0 to 1.0)
+    let ratio = if total_count > 0 {
+        connected_count as f32 / total_count as f32
     } else {
-        notedeck_ui::side_panel_icon_tint(ui)
+        0.0
+    };
+
+    // Color based on ratio: red (0%) -> yellow (50%) -> green (100%)
+    let active_color = if ratio < 0.5 {
+        // Red to yellow: interpolate from red (255,102,102) to yellow (255,204,102)
+        let t = ratio * 2.0;
+        egui::Color32::from_rgb(0xFF, 0x66 + (0x66 as f32 * t) as u8, 0x66)
+    } else {
+        // Yellow to green: interpolate from yellow (255,204,102) to green (102,204,102)
+        let t = (ratio - 0.5) * 2.0;
+        egui::Color32::from_rgb(0xFF - (0x99 as f32 * t) as u8, 0xCC, 0x66)
+    };
+
+    let inactive_color = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(60, 60, 60)
+    } else {
+        egui::Color32::from_rgb(200, 200, 200)
     };
 
     let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
@@ -837,30 +849,39 @@ fn connectivity_indicator(
     let rect = helper.get_animation_rect();
     let center = rect.center();
 
-    let bar_width = 2.0;
-    let bar_spacing = 3.0;
+    let bar_width = 3.0;
+    let bar_spacing = 2.0;
+    let num_bars = 4;
 
-    let base_y = center.y + 4.0;
-    let start_x = center.x - (bar_width + bar_spacing);
+    let base_y = center.y + 6.0;
+    let total_width = (num_bars as f32) * bar_width + ((num_bars - 1) as f32) * bar_spacing;
+    let start_x = center.x - total_width / 2.0;
 
-    let bar_heights = [4.0, 7.0, 10.0];
+    // Progressive bar heights (short to tall)
+    let bar_heights = [4.0, 7.0, 10.0, 13.0];
+
+    // Determine how many bars should be active based on ratio
+    let active_bars = if connected_count == 0 {
+        0
+    } else {
+        // At least 1 bar if connected, scale up to 4
+        ((ratio * (num_bars as f32)).ceil() as usize)
+            .max(1)
+            .min(num_bars)
+    };
+
     for (i, &height) in bar_heights.iter().enumerate() {
         let x = start_x + (i as f32) * (bar_width + bar_spacing);
         let bar_rect =
             egui::Rect::from_min_size(egui::pos2(x, base_y - height), vec2(bar_width, height));
-        painter.rect_filled(bar_rect, 0.0, indicator_color);
+
+        let color = if i < active_bars {
+            active_color
+        } else {
+            inactive_color
+        };
+        painter.rect_filled(bar_rect, 1.0, color);
     }
-
-    let count_text = format!("{}", connected_count);
-    let font_id = egui::FontId::proportional(10.0);
-
-    painter.text(
-        egui::pos2(center.x, center.y - 8.0),
-        egui::Align2::CENTER_CENTER,
-        count_text,
-        font_id,
-        indicator_color,
-    );
 
     helper
         .take_animation_response()
