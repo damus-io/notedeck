@@ -4,6 +4,7 @@ mod limits;
 pub mod message;
 mod multicast;
 pub mod pool;
+mod queue;
 pub mod subs_debug;
 mod websocket;
 
@@ -16,6 +17,7 @@ pub use limits::{
 };
 pub use multicast::{MulticastRelay, MulticastRelayCache};
 use nostrdb::Filter;
+pub use queue::QueuedTasks;
 pub use websocket::{WebsocketConn, WebsocketRelay};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
