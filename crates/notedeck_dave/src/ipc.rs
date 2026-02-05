@@ -78,13 +78,35 @@ pub use unix::*;
 mod unix {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixListener;
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::sync::mpsc;
+    use std::thread;
 
-    /// Creates a non-blocking Unix domain socket listener.
+    /// A pending IPC connection that needs to be processed
+    pub struct PendingConnection {
+        pub stream: UnixStream,
+        pub cwd: PathBuf,
+    }
+
+    /// Handle to the IPC listener background thread
+    pub struct IpcListener {
+        receiver: mpsc::Receiver<PendingConnection>,
+    }
+
+    impl IpcListener {
+        /// Poll for pending connections (non-blocking)
+        pub fn try_recv(&self) -> Option<PendingConnection> {
+            self.receiver.try_recv().ok()
+        }
+    }
+
+    /// Creates an IPC listener that runs in a background thread.
+    ///
+    /// The background thread blocks on accept() and calls request_repaint()
+    /// when a connection arrives, ensuring the UI wakes up immediately.
     ///
     /// Returns None if the socket cannot be created (e.g., permission issues).
-    /// The socket file is removed if it already exists (stale from crash).
-    pub fn create_listener() -> Option<UnixListener> {
+    pub fn create_listener(ctx: egui::Context) -> Option<IpcListener> {
         let path = socket_path();
 
         // Ensure parent directory exists
@@ -103,28 +125,62 @@ mod unix {
             }
         }
 
-        // Create and bind the listener
-        match UnixListener::bind(&path) {
+        // Create and bind the listener (blocking mode for the background thread)
+        let listener = match UnixListener::bind(&path) {
             Ok(listener) => {
-                // Set non-blocking for polling in event loop
-                if let Err(e) = listener.set_nonblocking(true) {
-                    tracing::warn!("Failed to set socket non-blocking: {}", e);
-                    return None;
-                }
                 tracing::info!("IPC listener started at {}", path.display());
-                Some(listener)
+                listener
             }
             Err(e) => {
                 tracing::warn!("Failed to create IPC listener: {}", e);
-                None
+                return None;
             }
-        }
+        };
+
+        // Channel for sending connections to the main thread
+        let (sender, receiver) = mpsc::channel();
+
+        // Spawn background thread to handle incoming connections
+        thread::Builder::new()
+            .name("ipc-listener".to_string())
+            .spawn(move || {
+                for stream in listener.incoming() {
+                    match stream {
+                        Ok(mut stream) => {
+                            // Parse the request in the background thread
+                            match handle_connection(&mut stream) {
+                                Ok(cwd) => {
+                                    let pending = PendingConnection { stream, cwd };
+                                    if sender.send(pending).is_err() {
+                                        // Main thread dropped the receiver, exit
+                                        tracing::debug!("IPC listener: main thread gone, exiting");
+                                        break;
+                                    }
+                                    // Wake up the UI to process the connection
+                                    ctx.request_repaint();
+                                }
+                                Err(e) => {
+                                    // Send error response directly
+                                    let response = SpawnResponse::error(&e);
+                                    let _ = send_response(&mut stream, &response);
+                                    tracing::warn!("IPC spawn-agent failed: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("IPC accept error: {}", e);
+                        }
+                    }
+                }
+                tracing::debug!("IPC listener thread exiting");
+            })
+            .ok()?;
+
+        Some(IpcListener { receiver })
     }
 
     /// Handles a single IPC connection, returning the cwd if valid spawn request.
-    pub fn handle_connection(
-        stream: &mut std::os::unix::net::UnixStream,
-    ) -> Result<PathBuf, String> {
+    pub fn handle_connection(stream: &mut UnixStream) -> Result<PathBuf, String> {
         // Read the request line
         let mut reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?);
         let mut line = String::new();
@@ -154,10 +210,7 @@ mod unix {
     }
 
     /// Sends a response back to the client
-    pub fn send_response(
-        stream: &mut std::os::unix::net::UnixStream,
-        response: &SpawnResponse,
-    ) -> std::io::Result<()> {
+    pub fn send_response(stream: &mut UnixStream, response: &SpawnResponse) -> std::io::Result<()> {
         let json = serde_json::to_string(response)?;
         writeln!(stream, "{}", json)?;
         stream.flush()
@@ -166,7 +219,28 @@ mod unix {
 
 // Stub for non-Unix platforms (Windows)
 #[cfg(not(unix))]
-pub fn create_listener() -> Option<()> {
-    tracing::info!("IPC spawn-agent not supported on this platform");
-    None
+pub mod non_unix {
+    use std::path::PathBuf;
+
+    /// Stub for PendingConnection on non-Unix platforms
+    pub struct PendingConnection {
+        pub cwd: PathBuf,
+    }
+
+    /// Stub for IpcListener on non-Unix platforms
+    pub struct IpcListener;
+
+    impl IpcListener {
+        pub fn try_recv(&self) -> Option<PendingConnection> {
+            None
+        }
+    }
+
+    pub fn create_listener(_ctx: egui::Context) -> Option<IpcListener> {
+        tracing::info!("IPC spawn-agent not supported on this platform");
+        None
+    }
 }
+
+#[cfg(not(unix))]
+pub use non_unix::*;

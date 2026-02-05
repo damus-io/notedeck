@@ -299,6 +299,7 @@ impl AgentScene {
 
     /// Draw a single agent unit and return the interaction Response
     /// `keybind_number` is the 1-indexed number displayed when Ctrl is held (matches Ctrl+N keybindings)
+    #[allow(clippy::too_many_arguments)]
     fn draw_agent(
         ui: &mut egui::Ui,
         id: SessionId,

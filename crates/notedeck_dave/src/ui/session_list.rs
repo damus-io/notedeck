@@ -127,6 +127,7 @@ impl<'a> SessionListUi<'a> {
         action
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn session_item_ui(
         &self,
         ui: &mut egui::Ui,

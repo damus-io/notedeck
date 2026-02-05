@@ -89,9 +89,8 @@ pub struct Dave {
     directory_picker: DirectoryPicker,
     /// Current overlay taking over the UI (if any)
     active_overlay: DaveOverlay,
-    /// IPC listener for external spawn-agent commands (Unix only)
-    #[cfg(unix)]
-    ipc_listener: Option<std::os::unix::net::UnixListener>,
+    /// IPC listener for external spawn-agent commands
+    ipc_listener: Option<ipc::IpcListener>,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -136,7 +135,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ))
     }
 
-    pub fn new(render_state: Option<&RenderState>, ndb: nostrdb::Ndb) -> Self {
+    pub fn new(render_state: Option<&RenderState>, ndb: nostrdb::Ndb, ctx: egui::Context) -> Self {
         let model_config = ModelConfig::default();
         //let model_config = ModelConfig::ollama();
 
@@ -166,9 +165,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let directory_picker = DirectoryPicker::new();
 
-        // Create IPC listener for external spawn-agent commands (Unix only)
-        #[cfg(unix)]
-        let ipc_listener = ipc::create_listener();
+        // Create IPC listener for external spawn-agent commands
+        let ipc_listener = ipc::create_listener(ctx);
 
         Dave {
             backend,
@@ -188,7 +186,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             directory_picker,
             // Auto-show directory picker on startup since there are no sessions
             active_overlay: DaveOverlay::DirectoryPicker,
-            #[cfg(unix)]
             ipc_listener,
         }
     }
@@ -772,59 +769,40 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Poll for IPC spawn-agent commands from external tools (Unix only)
-    #[cfg(unix)]
+    /// Poll for IPC spawn-agent commands from external tools
     fn poll_ipc_commands(&mut self) {
-        use std::io::ErrorKind;
-
         let Some(listener) = self.ipc_listener.as_ref() else {
             return;
         };
 
-        // Non-blocking accept - check for incoming connections
-        match listener.accept() {
-            Ok((mut stream, _)) => {
-                // Handle the connection
-                match ipc::handle_connection(&mut stream) {
-                    Ok(cwd) => {
-                        // Create the session and get its ID
-                        let id = self.session_manager.new_session(cwd.clone());
-                        self.directory_picker.add_recent(cwd);
+        // Drain all pending connections (non-blocking)
+        while let Some(mut pending) = listener.try_recv() {
+            // Create the session and get its ID
+            let id = self.session_manager.new_session(pending.cwd.clone());
+            self.directory_picker.add_recent(pending.cwd);
 
-                        // Focus on new session
-                        if let Some(session) = self.session_manager.get_mut(id) {
-                            session.focus_requested = true;
-                            if self.show_scene {
-                                self.scene.select(id);
-                                self.scene.focus_on(session.scene_position);
-                            }
-                        }
-
-                        // Close directory picker if open
-                        if self.active_overlay == DaveOverlay::DirectoryPicker {
-                            self.active_overlay = DaveOverlay::None;
-                        }
-
-                        // Send success response
-                        let response = ipc::SpawnResponse::ok(id);
-                        let _ = ipc::send_response(&mut stream, &response);
-
-                        tracing::info!("Spawned agent via IPC (session {})", id);
-                    }
-                    Err(e) => {
-                        // Send error response
-                        let response = ipc::SpawnResponse::error(&e);
-                        let _ = ipc::send_response(&mut stream, &response);
-                        tracing::warn!("IPC spawn-agent failed: {}", e);
-                    }
+            // Focus on new session
+            if let Some(session) = self.session_manager.get_mut(id) {
+                session.focus_requested = true;
+                if self.show_scene {
+                    self.scene.select(id);
+                    self.scene.focus_on(session.scene_position);
                 }
             }
-            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
-                // No pending connections, this is normal
+
+            // Close directory picker if open
+            if self.active_overlay == DaveOverlay::DirectoryPicker {
+                self.active_overlay = DaveOverlay::None;
             }
-            Err(e) => {
-                tracing::warn!("IPC accept error: {}", e);
+
+            // Send success response back to the client
+            #[cfg(unix)]
+            {
+                let response = ipc::SpawnResponse::ok(id);
+                let _ = ipc::send_response(&mut pending.stream, &response);
             }
+
+            tracing::info!("Spawned agent via IPC (session {})", id);
         }
     }
 
@@ -1523,8 +1501,7 @@ impl notedeck::App for Dave {
             }
         }
 
-        // Poll for external spawn-agent commands via IPC (Unix only)
-        #[cfg(unix)]
+        // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
 
         // Handle global keybindings (when no text input has focus)

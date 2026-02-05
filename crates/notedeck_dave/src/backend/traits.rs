@@ -19,6 +19,7 @@ pub trait AiBackend: Send + Sync {
     ///
     /// Returns a receiver that will receive tokens and tool calls as they arrive,
     /// plus an optional JoinHandle to the spawned task for cleanup on session deletion.
+    #[allow(clippy::too_many_arguments)]
     fn stream_request(
         &self,
         messages: Vec<crate::Message>,
