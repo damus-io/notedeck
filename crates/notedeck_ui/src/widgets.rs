@@ -1,5 +1,6 @@
 use crate::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
-use egui::{emath::GuiRounding, Pos2, Stroke};
+use crate::icons::search_icon;
+use egui::{emath::GuiRounding, Align, Color32, CornerRadius, Pos2, RichText, Stroke, TextEdit};
 use notedeck::NotedeckTextStyle;
 
 pub fn x_button(rect: egui::Rect) -> impl egui::Widget {
@@ -93,5 +94,55 @@ pub fn side_panel_icon_tint(ui: &egui::Ui) -> egui::Color32 {
         egui::Color32::WHITE
     } else {
         egui::Color32::BLACK
+    }
+}
+
+/// Returns a styled Frame for search input boxes with rounded corners.
+pub fn search_input_frame(dark_mode: bool) -> egui::Frame {
+    egui::Frame {
+        inner_margin: egui::Margin::symmetric(8, 0),
+        outer_margin: egui::Margin::ZERO,
+        corner_radius: CornerRadius::same(18),
+        shadow: Default::default(),
+        fill: if dark_mode {
+            Color32::from_rgb(30, 30, 30)
+        } else {
+            Color32::from_rgb(240, 240, 240)
+        },
+        stroke: if dark_mode {
+            Stroke::new(1.0, Color32::from_rgb(60, 60, 60))
+        } else {
+            Stroke::new(1.0, Color32::from_rgb(200, 200, 200))
+        },
+    }
+}
+
+/// The standard height for search input boxes.
+pub const SEARCH_INPUT_HEIGHT: f32 = 34.0;
+
+/// A styled search input box with rounded corners and search icon.
+pub fn search_input_box<'a>(query: &'a mut String, hint_text: &'a str) -> impl egui::Widget + 'a {
+    move |ui: &mut egui::Ui| -> egui::Response {
+        ui.horizontal(|ui| {
+            search_input_frame(ui.visuals().dark_mode)
+                .show(ui, |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+
+                        ui.add(search_icon(16.0, SEARCH_INPUT_HEIGHT));
+
+                        ui.add_sized(
+                            [ui.available_width(), SEARCH_INPUT_HEIGHT],
+                            TextEdit::singleline(query)
+                                .hint_text(RichText::new(hint_text).weak())
+                                .margin(egui::vec2(0.0, 8.0))
+                                .frame(false),
+                        )
+                    })
+                    .inner
+                })
+                .inner
+        })
+        .response
     }
 }

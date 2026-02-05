@@ -1,14 +1,10 @@
-use std::collections::HashSet;
-
-use egui::{Align, Color32, CornerRadius, Label, RichText, Stroke, TextEdit};
+use egui::{Label, RichText};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::{
-    name::get_display_name, tr, ContactState, Images, Localization, MediaJobSender,
-    NotedeckTextStyle,
-};
+use notedeck::{tr, ContactState, Images, Localization, MediaJobSender, NotedeckTextStyle};
 use notedeck_ui::{
-    contacts_list::ContactsCollection, icons::search_icon, profile_row, ContactsListView,
+    contacts_list::ContactsCollection, profile_row, search_input_box, search_profiles,
+    ContactsListView, ProfileSearchResult,
 };
 
 use crate::cache::CreateConvoState;
@@ -46,16 +42,16 @@ impl<'a> CreateConvoUi<'a> {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<CreateConvoResponse> {
-        let contacts_set = match self.contacts {
-            ContactState::Received { contacts, .. } => Some(contacts),
-            _ => None,
-        };
-
         let txn = Transaction::new(self.ndb).expect("txn");
 
         // Search input
         ui.add_space(8.0);
-        search_input(&mut self.state.query, self.i18n, ui);
+        let hint = tr!(
+            self.i18n,
+            "Search profiles...",
+            "Placeholder for profile search input"
+        );
+        ui.add(search_input_box(&mut self.state.query, &hint));
         ui.add_space(12.0);
 
         let query = self.state.query.trim();
@@ -71,7 +67,7 @@ impl<'a> CreateConvoUi<'a> {
                 .text_style(NotedeckTextStyle::Heading.text_style()),
             ));
 
-            if let Some(contacts) = contacts_set {
+            if let ContactState::Received { contacts, .. } = self.contacts {
                 let resp = ContactsListView::new(
                     ContactsCollection::Set(contacts),
                     self.jobs,
@@ -107,7 +103,7 @@ impl<'a> CreateConvoUi<'a> {
                 .text_style(NotedeckTextStyle::Heading.text_style()),
             ));
 
-            let results = search_profiles(self.ndb, &txn, query, contacts_set);
+            let results = search_profiles(self.ndb, &txn, query, self.contacts, 128);
 
             if results.is_empty() {
                 ui.add_space(20.0);
@@ -135,111 +131,11 @@ impl<'a> CreateConvoUi<'a> {
     }
 }
 
-/// Renders the search input field for profile search.
-fn search_input(query: &mut String, i18n: &mut Localization, ui: &mut egui::Ui) {
-    ui.horizontal(|ui| {
-        let search_container = egui::Frame {
-            inner_margin: egui::Margin::symmetric(8, 0),
-            outer_margin: egui::Margin::ZERO,
-            corner_radius: CornerRadius::same(18),
-            shadow: Default::default(),
-            fill: if ui.visuals().dark_mode {
-                Color32::from_rgb(30, 30, 30)
-            } else {
-                Color32::from_rgb(240, 240, 240)
-            },
-            stroke: if ui.visuals().dark_mode {
-                Stroke::new(1.0, Color32::from_rgb(60, 60, 60))
-            } else {
-                Stroke::new(1.0, Color32::from_rgb(200, 200, 200))
-            },
-        };
-
-        search_container.show(ui, |ui| {
-            ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-
-                let search_height = 34.0;
-                ui.add(search_icon(16.0, search_height));
-
-                ui.add_sized(
-                    [ui.available_width(), search_height],
-                    TextEdit::singleline(query)
-                        .hint_text(
-                            RichText::new(tr!(
-                                i18n,
-                                "Search profiles...",
-                                "Placeholder for profile search input"
-                            ))
-                            .weak(),
-                        )
-                        .margin(egui::vec2(0.0, 8.0))
-                        .frame(false),
-                );
-            });
-        });
-    });
-}
-
-/// A profile search result.
-struct SearchResult<'a> {
-    /// The public key bytes of the matched profile.
-    pk: &'a [u8; 32],
-    /// Whether this profile is in the user's contacts.
-    is_contact: bool,
-}
-
-/// Searches for profiles matching `query` in nostrdb and the user's contacts.
-/// Contacts are prioritized and appear first in results. Returns up to 20 matches.
-fn search_profiles<'a>(
-    ndb: &Ndb,
-    txn: &'a Transaction,
-    query: &str,
-    contacts: Option<&'a HashSet<Pubkey>>,
-) -> Vec<SearchResult<'a>> {
-    let mut results: Vec<SearchResult<'a>> = Vec::new();
-    let mut seen: HashSet<&[u8; 32]> = HashSet::new();
-    let query_lower = query.to_lowercase();
-
-    // First, add matching contacts (prioritized)
-    if let Some(contacts) = contacts {
-        for pk in contacts {
-            if let Ok(profile) = ndb.get_profile_by_pubkey(txn, pk.bytes()) {
-                let name = get_display_name(Some(&profile)).name();
-                if name.to_lowercase().contains(&query_lower) {
-                    results.push(SearchResult {
-                        pk: pk.bytes(),
-                        is_contact: true,
-                    });
-                    seen.insert(pk.bytes());
-                }
-            }
-        }
-    }
-
-    // Then add nostrdb search results
-    if let Ok(pks) = ndb.search_profile(txn, query, 20) {
-        for pk_bytes in pks {
-            if !seen.contains(pk_bytes) {
-                let is_contact = contacts.is_some_and(|c| c.contains(pk_bytes));
-                results.push(SearchResult {
-                    pk: pk_bytes,
-                    is_contact,
-                });
-                seen.insert(pk_bytes);
-            }
-        }
-    }
-
-    results.truncate(20);
-    results
-}
-
 /// Renders a scrollable list of search results. Returns `Some(CreateConvoResponse)`
 /// if the user selects a profile.
 fn search_results_list(
     ui: &mut egui::Ui,
-    results: &[SearchResult<'_>],
+    results: &[ProfileSearchResult],
     ndb: &Ndb,
     txn: &Transaction,
     img_cache: &mut Images,
@@ -250,7 +146,7 @@ fn search_results_list(
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         for result in results {
-            let profile = ndb.get_profile_by_pubkey(txn, result.pk).ok();
+            let profile = ndb.get_profile_by_pubkey(txn, &result.pk).ok();
 
             if profile_row(
                 ui,
@@ -261,7 +157,7 @@ fn search_results_list(
                 i18n,
             ) {
                 action = Some(CreateConvoResponse {
-                    recipient: Pubkey::new(*result.pk),
+                    recipient: Pubkey::new(result.pk),
                 });
             }
         }
