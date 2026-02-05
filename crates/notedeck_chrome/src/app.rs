@@ -9,6 +9,9 @@ use notedeck_clndash::ClnDash;
 #[cfg(feature = "messages")]
 use notedeck_messages::MessagesApp;
 
+#[cfg(feature = "dashboard")]
+use notedeck_dashboard::Dashboard;
+
 #[cfg(feature = "notebook")]
 use notedeck_notebook::Notebook;
 
@@ -16,12 +19,19 @@ use notedeck_notebook::Notebook;
 pub enum NotedeckApp {
     Dave(Box<Dave>),
     Columns(Box<Damus>),
+
     #[cfg(feature = "notebook")]
     Notebook(Box<Notebook>),
+
     #[cfg(feature = "clndash")]
     ClnDash(Box<ClnDash>),
+
     #[cfg(feature = "messages")]
     Messages(Box<MessagesApp>),
+
+    #[cfg(feature = "dashboard")]
+    Dashboard(Box<Dashboard>),
+
     Other(Box<dyn notedeck::App>),
 }
 
@@ -40,6 +50,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "messages")]
             NotedeckApp::Messages(dms) => dms.update(ctx, ui),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.update(ctx, ui),
 
             NotedeckApp::Other(other) => other.update(ctx, ui),
         }
