@@ -12,8 +12,10 @@ use crate::{
     route::Route,
 };
 
-use enostr::{RelayPool, RelayStatus};
-use notedeck::{tr, Accounts, Localization, MediaJobSender, NotedeckTextStyle, UserAccount};
+use enostr::RelayStatus;
+use notedeck::{
+    tr, Accounts, Localization, MediaJobSender, NotedeckTextStyle, Outbox, UserAccount,
+};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     app_images, colors, ProfilePic, View,
@@ -32,7 +34,7 @@ pub struct DesktopSidePanel<'a> {
     img_cache: &'a mut notedeck::Images,
     jobs: &'a MediaJobSender,
     current_route: Option<&'a Route>,
-    pool: &'a RelayPool,
+    pool: &'a Outbox<'a>,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -80,7 +82,7 @@ impl<'a> DesktopSidePanel<'a> {
         img_cache: &'a mut notedeck::Images,
         jobs: &'a MediaJobSender,
         current_route: Option<&'a Route>,
-        pool: &'a RelayPool,
+        pool: &'a Outbox,
     ) -> Self {
         Self {
             selected_account,
@@ -808,15 +810,15 @@ fn home_button() -> impl Widget {
 }
 fn connectivity_indicator(
     ui: &mut egui::Ui,
-    pool: &RelayPool,
+    pool: &Outbox,
     _current_route: Option<&Route>,
 ) -> egui::Response {
-    let connected_count = pool
-        .relays
-        .iter()
-        .filter(|r| matches!(r.status(), RelayStatus::Connected))
+    let relays = pool.outbox.websocket_statuses();
+    let connected_count = relays
+        .values()
+        .filter(|status| matches!(status, RelayStatus::Connected))
         .count();
-    let total_count = pool.relays.len();
+    let total_count = relays.len();
 
     // Calculate connectivity ratio (0.0 to 1.0)
     let ratio = if total_count > 0 {

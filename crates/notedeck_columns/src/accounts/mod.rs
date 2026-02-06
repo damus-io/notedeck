@@ -1,7 +1,9 @@
 use enostr::{FullKeypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 
-use notedeck::{Accounts, AppContext, DragResponse, Localization, SingleUnkIdAction, UnknownIds};
+use notedeck::{
+    Accounts, AppContext, DragResponse, Localization, RelayPool, SingleUnkIdAction, UnknownIds,
+};
 use notedeck_ui::nip51_set::Nip51SetUiCache;
 
 pub use crate::accounts::route::AccountsResponse;
@@ -9,7 +11,6 @@ use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
 use crate::onboarding::Onboarding;
 use crate::profile::{send_default_dms_relay_list, send_new_contact_list};
-use crate::subscriptions::Subscriptions;
 use crate::ui::onboarding::{FollowPackOnboardingView, FollowPacksResponse, OnboardingResponse};
 use crate::{
     login_manager::AcquireKeyState,
@@ -152,7 +153,6 @@ pub fn process_accounts_view_response(
 pub fn process_login_view_response(
     app_ctx: &mut AppContext,
     decks: &mut DecksCache,
-    subs: &mut Subscriptions,
     onboarding: &mut Onboarding,
     col: usize,
     response: AccountLoginResponse,
@@ -169,13 +169,15 @@ pub fn process_login_view_response(
         AccountLoginResponse::CreatingNew => {
             cur_router.route_to(Route::Accounts(AccountsRoute::Onboarding));
 
-            onboarding.process(app_ctx.pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
+            let mut pool = RelayPool::new(&mut app_ctx.pool, app_ctx.accounts);
+            onboarding.process(&mut pool, app_ctx.ndb, app_ctx.unknown_ids);
 
             None
         }
         AccountLoginResponse::Onboarding(onboarding_response) => match onboarding_response {
             FollowPacksResponse::NoFollowPacks => {
-                onboarding.process(app_ctx.pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
+                let mut pool = RelayPool::new(&mut app_ctx.pool, app_ctx.accounts);
+                onboarding.process(&mut pool, app_ctx.ndb, app_ctx.unknown_ids);
                 None
             }
             FollowPacksResponse::UserSelectedPacks(nip51_sets_ui_state) => {
@@ -183,10 +185,11 @@ pub fn process_login_view_response(
 
                 let kp = FullKeypair::generate();
 
-                send_new_contact_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool, pks_to_follow);
-                send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool);
+                let mut pool = RelayPool::new(&mut app_ctx.pool, app_ctx.accounts);
+                send_new_contact_list(kp.to_filled(), app_ctx.ndb, &mut pool, pks_to_follow);
+                send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, &mut pool);
                 cur_router.go_back();
-                onboarding.end_onboarding(app_ctx.pool, app_ctx.ndb);
+                onboarding.end_onboarding(&mut pool, app_ctx.ndb);
 
                 app_ctx.accounts.add_account(kp.to_keypair())
             }
@@ -235,7 +238,6 @@ impl AccountsRouteResponse {
                 let action = process_login_view_response(
                     app_ctx,
                     &mut app.decks_cache,
-                    &mut app.subscriptions,
                     &mut app.onboarding,
                     col,
                     response,

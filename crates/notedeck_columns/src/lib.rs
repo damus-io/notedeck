@@ -24,7 +24,6 @@ mod profile;
 mod repost;
 mod route;
 mod search;
-mod subscriptions;
 mod support;
 mod test_data;
 pub mod timeline;

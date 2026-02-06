@@ -211,6 +211,7 @@ impl SettingsHandler {
         self.try_save_settings();
     }
 
+    #[profiling::function]
     pub fn update_batch<F>(&mut self, update_fn: F)
     where
         F: FnOnce(&mut Settings),

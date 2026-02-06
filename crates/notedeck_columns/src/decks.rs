@@ -1,8 +1,8 @@
 use std::collections::{hash_map::ValuesMut, HashMap};
 
-use enostr::{Pubkey, RelayPool};
+use enostr::Pubkey;
 use nostrdb::Transaction;
-use notedeck::{tr, AppContext, Localization, FALLBACK_PUBKEY};
+use notedeck::{tr, AppContext, Localization, RelayPool, FALLBACK_PUBKEY};
 use tracing::{error, info};
 
 use crate::{
@@ -294,7 +294,7 @@ impl Decks {
         index: usize,
         timeline_cache: &mut TimelineCache,
         ndb: &mut nostrdb::Ndb,
-        pool: &mut enostr::RelayPool,
+        pool: &mut RelayPool,
     ) {
         let Some(deck) = self.remove_deck_internal(index) else {
             return;
@@ -357,7 +357,7 @@ impl Decks {
         self,
         timeline_cache: &mut TimelineCache,
         ndb: &mut nostrdb::Ndb,
-        pool: &mut enostr::RelayPool,
+        pool: &mut RelayPool,
     ) {
         for deck in self.decks {
             delete_deck(deck, timeline_cache, ndb, pool);
@@ -369,7 +369,7 @@ fn delete_deck(
     mut deck: Deck,
     timeline_cache: &mut TimelineCache,
     ndb: &mut nostrdb::Ndb,
-    pool: &mut enostr::RelayPool,
+    pool: &mut RelayPool,
 ) {
     let cols = deck.columns_mut();
     let num_cols = cols.num_columns();
@@ -461,7 +461,7 @@ pub fn add_demo_columns(
             &txn,
             ctx.ndb,
             ctx.note_cache,
-            ctx.pool,
+            &mut RelayPool::new(&mut ctx.pool, ctx.accounts),
             kind,
         ) {
             results.process(

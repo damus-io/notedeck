@@ -18,6 +18,7 @@ pub enum RelayMessage<'a> {
     Eose(&'a str),
     Event(&'a str, &'a str),
     Notice(&'a str),
+    Closed(&'a str, &'a str),
 }
 
 #[derive(Debug)]
@@ -71,6 +72,11 @@ impl<'a> RelayMessage<'a> {
 
     pub fn event(ev: &'a str, sub_id: &'a str) -> Self {
         RelayMessage::Event(sub_id, ev)
+    }
+
+    /// Construct a relay `CLOSED` message with its subscription id and reason.
+    pub fn closed(sub_id: &'a str, message: &'a str) -> Self {
+        RelayMessage::Closed(sub_id, message)
     }
 
     pub fn from_json(msg: &'a str) -> Result<RelayMessage<'a>> {
@@ -133,6 +139,18 @@ impl<'a> RelayMessage<'a> {
             return Err(Error::DecodeFailed(
                 "Invalid subscription ID or format".into(),
             ));
+        }
+
+        // CLOSED (NIP-01)
+        // Relay response format: ["CLOSED", <subscription_id>, <message>]
+        if msg.starts_with("[\"CLOSED\"") {
+            let parts: Vec<&'a str> =
+                serde_json::from_str(msg).map_err(|err| Error::DecodeFailed(err.to_string()))?;
+            if parts.len() != 3 || parts[0] != "CLOSED" {
+                return Err(Error::DecodeFailed("Invalid CLOSED format".into()));
+            }
+
+            return Ok(Self::closed(parts[1], parts[2]));
         }
 
         // OK (NIP-20)
@@ -200,6 +218,13 @@ mod tests {
                 Ok(RelayMessage::eose("random-subscription-id")),
             ),
             (
+                r#"["CLOSED","sub1","error: shutting down idle subscription"]"#,
+                Ok(RelayMessage::closed(
+                    "sub1",
+                    "error: shutting down idle subscription",
+                )),
+            ),
+            (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",true,"pow: difficulty 25>=24"]"#,
                 Ok(RelayMessage::ok(
                     "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",
@@ -239,6 +264,10 @@ mod tests {
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,404]"#,
                 Err(Error::DecodeFailed("bad boolean value".into())),
+            ),
+            (
+                r#"["CLOSED","sub1"]"#,
+                Err(Error::DecodeFailed("Invalid CLOSED format".into())),
             ),
         ];
 

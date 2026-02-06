@@ -39,6 +39,7 @@ impl TimelineUnits {
     }
 
     /// returns number of new entries merged
+    #[profiling::function]
     pub fn merge_new_notes<'a>(
         &mut self,
         payloads: Vec<&'a NotePayload>,

@@ -3,9 +3,8 @@ use crate::{
     route::{ColumnsRouter, Route, SingletonRouter},
     timeline::{Timeline, TimelineCache, TimelineKind},
 };
-use enostr::RelayPool;
 use nostrdb::{Ndb, Transaction};
-use notedeck::NoteCache;
+use notedeck::{NoteCache, RelayPool};
 use std::iter::Iterator;
 use tracing::warn;
 

@@ -12,13 +12,13 @@ use crate::{
 };
 
 use egui_nav::Percent;
-use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
+use enostr::{FilledKeypair, NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
     get_wallet_for, is_future_timestamp,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
     unix_time_secs, Accounts, GlobalWallet, Images, MediaJobSender, NoteAction, NoteCache,
-    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    NoteZapTargetOwned, Outbox, RelayPool, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
@@ -51,7 +51,7 @@ fn execute_note_action(
     timeline_cache: &mut TimelineCache,
     threads: &mut Threads,
     note_cache: &mut NoteCache,
-    pool: &mut RelayPool,
+    pool: &mut Outbox,
     txn: &Transaction,
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
@@ -100,12 +100,20 @@ fn execute_note_action(
         }
         NoteAction::React(react_action) => {
             if let Some(filled) = accounts.selected_filled() {
-                if let Err(err) = send_reaction_event(ndb, txn, pool, filled, &react_action) {
+                let secret_bytes = filled.secret_key.secret_bytes();
+                let pubkey = *filled.pubkey;
+                if let Err(err) = send_reaction_event(
+                    ndb,
+                    txn,
+                    &mut RelayPool::new(pool, accounts),
+                    &secret_bytes,
+                    &react_action,
+                ) {
                     tracing::error!("Failed to send reaction: {err}");
                 }
                 ui.ctx().data_mut(|d| {
                     d.insert_temp(
-                        reaction_sent_id(filled.pubkey, react_action.note_id.bytes()),
+                        reaction_sent_id(&pubkey, react_action.note_id.bytes()),
                         true,
                     )
                 });
@@ -117,7 +125,13 @@ fn execute_note_action(
             let kind = TimelineKind::Profile(pubkey);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             timeline_res = timeline_cache
-                .open(ndb, note_cache, txn, pool, &kind)
+                .open(
+                    ndb,
+                    note_cache,
+                    txn,
+                    &mut RelayPool::new(pool, accounts),
+                    &kind,
+                )
                 .map(NotesOpenResult::Timeline);
         }
         NoteAction::Note {
@@ -135,7 +149,7 @@ fn execute_note_action(
                 .open(
                     ndb,
                     txn,
-                    pool,
+                    &mut RelayPool::new(pool, accounts),
                     &thread_selection,
                     preview,
                     col,
@@ -154,7 +168,13 @@ fn execute_note_action(
             let kind = TimelineKind::Hashtag(vec![htag.clone()]);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             timeline_res = timeline_cache
-                .open(ndb, note_cache, txn, pool, &kind)
+                .open(
+                    ndb,
+                    note_cache,
+                    txn,
+                    &mut RelayPool::new(pool, accounts),
+                    &kind,
+                )
                 .map(NotesOpenResult::Timeline);
         }
         NoteAction::Repost(note_id) => {
@@ -191,7 +211,7 @@ fn execute_note_action(
                     send_zap(
                         &sender,
                         zaps,
-                        pool,
+                        accounts,
                         target,
                         wallet.default_zap.get_default_zap_msats(),
                     )
@@ -209,7 +229,9 @@ fn execute_note_action(
         NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
             Err(err) => tracing::error!("{err}"),
             Ok(note) => {
-                context.action.process_selection(ui, &note, pool, txn);
+                context
+                    .action
+                    .process_selection(ui, &note, pool, accounts, txn);
             }
         },
         NoteAction::Media(media_action) => {
@@ -242,7 +264,7 @@ pub fn execute_and_process_note_action(
     timeline_cache: &mut TimelineCache,
     threads: &mut Threads,
     note_cache: &mut NoteCache,
-    pool: &mut RelayPool,
+    pool: &mut Outbox,
     txn: &Transaction,
     unknown_ids: &mut UnknownIds,
     accounts: &mut Accounts,
@@ -300,7 +322,7 @@ fn send_reaction_event(
     ndb: &mut Ndb,
     txn: &Transaction,
     pool: &mut RelayPool,
-    kp: FilledKeypair<'_>,
+    secret_bytes: &[u8; 32],
     reaction: &ReactAction,
 ) -> Result<(), String> {
     let Ok(note) = ndb.get_note_by_id(txn, reaction.note_id.bytes()) else {
@@ -347,7 +369,7 @@ fn send_reaction_event(
         .tag_str(&target_kind.to_string());
 
     let note = builder
-        .sign(&kp.secret_key.secret_bytes())
+        .sign(secret_bytes)
         .build()
         .ok_or_else(|| "failed to build reaction event".to_owned())?;
 
@@ -361,7 +383,7 @@ fn send_reaction_event(
 
     let _ = ndb.process_event_with(&json, IngestMetadata::new().client(true));
 
-    pool.send(event);
+    pool.broadcast_note(&note);
 
     Ok(())
 }
@@ -387,7 +409,7 @@ fn find_addressable_d_tag(note: &nostrdb::Note<'_>) -> Option<String> {
 fn send_zap(
     sender: &Pubkey,
     zaps: &mut Zaps,
-    pool: &RelayPool,
+    accounts: &Accounts,
     target_amount: &ZapTargetAmount,
     default_msats: u64,
 ) {
@@ -395,7 +417,14 @@ fn send_zap(
 
     let msats = target_amount.specified_msats.unwrap_or(default_msats);
 
-    let sender_relays: Vec<String> = pool.relays.iter().map(|r| r.url().to_string()).collect();
+    let sender_relays: Vec<String> = accounts
+        .selected_account_write_relays()
+        .into_iter()
+        .filter_map(|r| match r {
+            enostr::RelayId::Websocket(norm_relay_url) => Some(norm_relay_url.to_string()),
+            enostr::RelayId::Multicast => None,
+        })
+        .collect();
     zaps.send_zap(sender.bytes(), sender_relays, zap_target, msats);
 }
 

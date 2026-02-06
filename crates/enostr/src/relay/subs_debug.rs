@@ -60,6 +60,9 @@ impl From<RelayEvent<'_>> for OwnedRelayEvent {
                     RelayMessage::Eose(s) => format!("EOSE:{s}"),
                     RelayMessage::Event(_, s) => format!("EVENT:{s}"),
                     RelayMessage::Notice(s) => format!("NOTICE:{s}"),
+                    RelayMessage::Closed(sub_id, message) => {
+                        format!("CLOSED:{sub_id}:{message}")
+                    }
                 };
                 OwnedRelayEvent::Message(relay_msg)
             }
@@ -249,6 +252,9 @@ fn calculate_relay_message_size(message: &RelayMessage) -> usize {
         RelayMessage::Eose(str_ref)
         | RelayMessage::Event(str_ref, _)
         | RelayMessage::Notice(str_ref) => mem::size_of_val(message) + str_ref.len(),
+        RelayMessage::Closed(sub_id, reason) => {
+            mem::size_of_val(message) + sub_id.len() + reason.len()
+        }
     }
 }
 

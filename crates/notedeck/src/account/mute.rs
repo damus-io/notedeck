@@ -94,6 +94,7 @@ impl AccountMutedData {
         muted
     }
 
+    #[profiling::function]
     pub(super) fn poll_for_updates(&mut self, ndb: &Ndb, txn: &Transaction, sub: Subscription) {
         let nks = ndb.poll_for_notes(sub, 1);
 

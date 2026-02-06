@@ -39,6 +39,7 @@ where
         }
     }
 
+    #[profiling::function]
     pub fn run_received(&mut self, pool: &mut JobPool, mut pre_action: impl FnMut(&JobId<K>)) {
         for pkg in self.receive_new_jobs.try_iter() {
             let id = &pkg.id;
@@ -68,6 +69,7 @@ where
         }
     }
 
+    #[profiling::function]
     pub fn deliver_all_completed(&mut self, mut deliver_complete: impl FnMut(JobComplete<K, T>)) {
         while let Some(res) = self.completed.pop() {
             tracing::trace!("Got completed: {:?}", res.job_id);
@@ -82,6 +84,7 @@ where
     }
 }
 
+#[profiling::function]
 fn run_received_job<K, T>(
     job_run: JobRun<T>,
     pool: &mut JobPool,
@@ -102,6 +105,7 @@ fn run_received_job<K, T>(
     }
 }
 
+#[profiling::function]
 fn run_sync<F, K, T>(
     job_pool: &mut JobPool,
     send_new_jobs: Sender<JobPackage<K, T>>,
@@ -114,38 +118,42 @@ fn run_sync<F, K, T>(
     T: Send + 'static,
 {
     let id_c = id.clone();
-    let wrapped: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
-        let res = run_job();
-        match res {
-            JobOutput::Complete(complete_response) => {
-                completion_queue.push(JobComplete {
-                    job_id: id.job_id.clone(),
-                    response: complete_response.response,
-                });
-                if let Some(run) = complete_response.run_no_output {
+    let wrapped: Box<dyn FnOnce() + Send + 'static> = {
+        profiling::scope!("box gen");
+        Box::new(move || {
+            let res = run_job();
+            match res {
+                JobOutput::Complete(complete_response) => {
+                    completion_queue.push(JobComplete {
+                        job_id: id.job_id.clone(),
+                        response: complete_response.response,
+                    });
+                    if let Some(run) = complete_response.run_no_output {
+                        if let Err(e) = send_new_jobs.send(JobPackage {
+                            id: id.into_internal(),
+                            run: RunType::NoOutput(run),
+                        }) {
+                            tracing::error!("{e}");
+                        }
+                    }
+                }
+                JobOutput::Next(job_run) => {
                     if let Err(e) = send_new_jobs.send(JobPackage {
                         id: id.into_internal(),
-                        run: RunType::NoOutput(run),
+                        run: RunType::Output(job_run),
                     }) {
                         tracing::error!("{e}");
                     }
                 }
             }
-            JobOutput::Next(job_run) => {
-                if let Err(e) = send_new_jobs.send(JobPackage {
-                    id: id.into_internal(),
-                    run: RunType::Output(job_run),
-                }) {
-                    tracing::error!("{e}");
-                }
-            }
-        }
-    });
+        })
+    };
 
     tracing::trace!("Spawning sync job: {id_c:?}");
     job_pool.schedule_no_output(wrapped);
 }
 
+#[profiling::function]
 fn run_async<K, T>(
     send_new_jobs: Sender<JobPackage<K, T>>,
     completion_queue: CompletionQueue<K, T>,
@@ -187,6 +195,7 @@ fn run_async<K, T>(
     });
 }
 
+#[profiling::function]
 fn no_output_run(pool: &mut JobPool, run: NoOutputRun) {
     match run {
         NoOutputRun::Sync(c) => {

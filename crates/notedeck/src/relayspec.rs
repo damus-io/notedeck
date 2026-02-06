@@ -1,30 +1,28 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+use enostr::NormRelayUrl;
+
 // A Relay specification includes NIP-65 defined "markers" which
 // indicate if the relay should be used for reading or writing (or
 // both).
 
 #[derive(Clone)]
 pub struct RelaySpec {
-    pub url: String,
+    pub url: NormRelayUrl,
     pub has_read_marker: bool,
     pub has_write_marker: bool,
 }
 
 impl RelaySpec {
-    pub fn new(
-        url: impl Into<String>,
-        mut has_read_marker: bool,
-        mut has_write_marker: bool,
-    ) -> Self {
+    pub fn new(url: NormRelayUrl, mut has_read_marker: bool, mut has_write_marker: bool) -> Self {
         // if both markers are set turn both off ...
         if has_read_marker && has_write_marker {
             has_read_marker = false;
             has_write_marker = false;
         }
         RelaySpec {
-            url: url.into(),
+            url,
             has_read_marker,
             has_write_marker,
         }
@@ -80,12 +78,12 @@ impl Eq for RelaySpec {}
 #[allow(clippy::non_canonical_partial_ord_impl)]
 impl PartialOrd for RelaySpec {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.url.cmp(&other.url))
+        Some(self.url.to_string().cmp(&other.url.to_string()))
     }
 }
 
 impl Ord for RelaySpec {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.url.cmp(&other.url)
+        self.url.to_string().cmp(&other.url.to_string())
     }
 }
