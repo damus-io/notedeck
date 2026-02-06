@@ -5,7 +5,7 @@ version.workspace = true
 
 [dependencies]
 async-openai = { version = "0.28.0", features = ["rustls-webpki-roots"] }
-claude-agent-sdk-rs = { path = "/home/jb55/dev/github/tyrchen/claude-agent-sdk-rs" }
+claude-agent-sdk-rs = { path = "../../../claude-agent-sdk-rs" }
 egui = { workspace = true }
 sha2 = { workspace = true }
 notedeck = { workspace = true }
