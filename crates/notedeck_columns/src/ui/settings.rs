@@ -6,9 +6,10 @@ use egui_extras::{Size, StripBuilder};
 use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::richtext_small, DragResponse, Images, LanguageIdentifier, Localization, NoteContext,
-    NotedeckTextStyle, Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE,
-    DEFAULT_NOTE_BODY_FONT_SIZE,
+    tr,
+    ui::{richtext_small, toggle_ui},
+    DragResponse, Images, LanguageIdentifier, Localization, NoteContext, NotedeckTextStyle,
+    Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
@@ -26,6 +27,7 @@ const RESET_ZOOM: f32 = 1.0;
 
 pub enum SettingsAction {
     SetZoomFactor(f32),
+    SetLoadMediaByDefault(bool),
     SetTheme(ThemePreference),
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
@@ -95,6 +97,12 @@ impl SettingsAction {
             Self::SetMaxHashtagsPerNote(value) => {
                 settings.set_max_hashtags_per_note(value);
                 accounts.update_max_hashtags_per_note(value);
+            }
+            Self::SetLoadMediaByDefault(load_media) => {
+                app.note_options
+                    .set(NoteOptions::LoadMediaByDefault, load_media);
+
+                settings.set_load_media_by_default(load_media);
             }
         }
         route_action
@@ -456,18 +464,7 @@ impl<'a> SettingsView<'a> {
                     "Label for Sort replies newest first, others settings section",
                 )));
 
-                if ui
-                    .toggle_value(
-                        &mut self.settings.show_replies_newest_first,
-                        RichText::new(tr!(
-                            self.note_context.i18n,
-                            "On",
-                            "Setting to turn on sorting replies so that the newest are shown first"
-                        ))
-                        .text_style(NotedeckTextStyle::Small.text_style()),
-                    )
-                    .changed()
-                {
+                if toggle_ui(ui, &mut self.settings.show_replies_newest_first).changed() {
                     action = Some(SettingsAction::SetRepliestNewestFirst(
                         self.settings.show_replies_newest_first,
                     ));
@@ -721,6 +718,10 @@ impl<'a> SettingsView<'a> {
 
                     ui.add_space(5.0);
 
+                    self.media_section(ui);
+
+                    ui.add_space(5.0);
+
                     if let Some(new_action) = self.storage_section(ui) {
                         action = Some(new_action);
                     }
@@ -746,6 +747,36 @@ impl<'a> SettingsView<'a> {
             .inner;
 
         DragResponse::scroll(scroll_out)
+    }
+
+    fn media_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        let mut action = None;
+
+        let title = tr!(
+            self.note_context.i18n,
+            "Media",
+            "label for media setting section"
+        );
+
+        settings_group(ui, title, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
+                    "Load media by default",
+                    "Label for load media by default, Media settings section",
+                )));
+
+                if toggle_ui(ui, &mut self.settings.load_media_by_default).changed() {
+                    action = Some(SettingsAction::SetLoadMediaByDefault(
+                        self.settings.load_media_by_default,
+                    ));
+                }
+            });
+
+            ui.end_row();
+        });
+
+        action
     }
 }
 

@@ -58,13 +58,16 @@ pub fn image_carousel(
                         let mut media_action: Option<(usize, MediaUIAction)> = None;
 
                         for (i, media) in medias.iter().enumerate() {
+                            let trusted_media = note_options.contains(NoteOptions::TrustMedia)
+                                || img_cache.user_trusts_img(&media.url, media.media_type)
+                                || note_options.contains(NoteOptions::LoadMediaByDefault);
+
                             let media_response = render_media(
                                 ui,
                                 img_cache,
                                 jobs,
                                 media,
-                                note_options.contains(NoteOptions::TrustMedia)
-                                    || img_cache.user_trusts_img(&media.url, media.media_type),
+                                trusted_media,
                                 i18n,
                                 size,
                                 if note_options.contains(NoteOptions::NoAnimations) {

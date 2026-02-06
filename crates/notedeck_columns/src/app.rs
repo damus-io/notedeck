@@ -57,7 +57,6 @@ pub struct Damus {
     /// Were columns loaded from the commandline? If so disable persistence.
     pub options: AppOptions,
     pub note_options: NoteOptions,
-
     pub unrecognized_args: BTreeSet<String>,
 
     /// keep track of follow packs
@@ -373,6 +372,11 @@ fn render_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ui: &mut egui::
         .note_options
         .set(NoteOptions::Wide, is_narrow(ui.ctx()));
 
+    damus.note_options.set(
+        NoteOptions::LoadMediaByDefault,
+        app_ctx.settings.load_media_by_default(),
+    );
+
     let app_resp = if notedeck::ui::is_narrow(ui.ctx()) {
         render_damus_mobile(damus, app_ctx, ui)
     } else {
@@ -603,6 +607,11 @@ impl Damus {
 
 fn get_note_options(args: ColumnsArgs, settings_handler: &mut SettingsHandler) -> NoteOptions {
     let mut note_options = NoteOptions::default();
+
+    note_options.set(
+        NoteOptions::LoadMediaByDefault,
+        settings_handler.load_media_by_default(),
+    );
 
     note_options.set(
         NoteOptions::Textmode,
