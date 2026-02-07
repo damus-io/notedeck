@@ -5,7 +5,7 @@ use nostrdb::{Ndb, Subscription};
 use notedeck::{filter::HybridFilter, UnifiedSubscription};
 use uuid::Uuid;
 
-use crate::{subscriptions, timeline::ThreadSelection};
+use crate::{subscriptions::{self, SubKind, Subscriptions}, timeline::{ThreadSelection, TimelineKind}};
 
 type RootNoteId = NoteId;
 
@@ -422,12 +422,28 @@ impl TimelineSub {
         );
     }
 
-    pub fn try_add_remote(&mut self, pool: &mut RelayPool, filter: &HybridFilter) {
+    pub fn try_add_remote(&mut self, subs: &mut Subscriptions, pool: &mut RelayPool, filter: &HybridFilter, timeline_kind: &TimelineKind) {
+        self.try_add_remote_with_relay(subs, pool, filter, None, timeline_kind);
+    }
+
+    pub fn try_add_remote_with_relay(
+        &mut self,
+        subs: &mut Subscriptions,
+        pool: &mut RelayPool,
+        filter: &HybridFilter,
+        relay_url: Option<&str>,
+        timeline_kind: &TimelineKind,
+    ) {
         let before = self.state.clone();
         match &mut self.state {
             SubState::NoSub { dependers } => {
                 let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.remote().to_vec());
+                if let Some(relay) = relay_url {
+                    pool.subscribe_to(relay, subid.clone(), filter.remote().to_vec());
+                } else {
+                    pool.subscribe(subid.clone(), filter.remote().to_vec());
+                }
+                subs.subs.insert(subid.clone(), SubKind::Timeline(timeline_kind.clone()));
                 self.filter = Some(filter.to_owned());
                 self.state = SubState::RemoteOnly {
                     remote: subid,
@@ -436,7 +452,12 @@ impl TimelineSub {
             }
             SubState::LocalOnly { local, dependers } => {
                 let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.remote().to_vec());
+                if let Some(relay) = relay_url {
+                    pool.subscribe_to(relay, subid.clone(), filter.remote().to_vec());
+                } else {
+                    pool.subscribe(subid.clone(), filter.remote().to_vec());
+                }
+                subs.subs.insert(subid.clone(), SubKind::Timeline(timeline_kind.clone()));
                 self.filter = Some(filter.to_owned());
                 self.state = SubState::Unified {
                     unified: UnifiedSubscription {

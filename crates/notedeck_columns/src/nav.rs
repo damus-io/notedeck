@@ -115,7 +115,7 @@ impl SwitchingAction {
                     }
 
                     if switch_action.switching_to_new {
-                        decks_cache.add_deck_default(ctx, timeline_cache, switch_action.switch_to);
+                        decks_cache.add_deck_default(ctx, subs, timeline_cache, switch_action.switch_to);
                     }
 
                     // pop nav after switch
@@ -545,6 +545,7 @@ fn process_render_nav_action(
             crate::actionbar::execute_and_process_note_action(
                 note_action,
                 ctx.ndb,
+                &mut app.subscriptions,
                 get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache),
                 col,
                 &mut app.timeline_cache,

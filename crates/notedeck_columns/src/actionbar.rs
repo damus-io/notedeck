@@ -48,6 +48,7 @@ struct NoteActionResponse {
 fn execute_note_action(
     action: NoteAction,
     ndb: &mut Ndb,
+    subs: &mut crate::subscriptions::Subscriptions,
     timeline_cache: &mut TimelineCache,
     threads: &mut Threads,
     note_cache: &mut NoteCache,
@@ -117,7 +118,7 @@ fn execute_note_action(
             let kind = TimelineKind::Profile(pubkey);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             timeline_res = timeline_cache
-                .open(ndb, note_cache, txn, pool, &kind)
+                .open(subs, ndb, note_cache, txn, pool, &kind)
                 .map(NotesOpenResult::Timeline);
         }
         NoteAction::Note {
@@ -154,7 +155,7 @@ fn execute_note_action(
             let kind = TimelineKind::Hashtag(vec![htag.clone()]);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             timeline_res = timeline_cache
-                .open(ndb, note_cache, txn, pool, &kind)
+                .open(subs, ndb, note_cache, txn, pool, &kind)
                 .map(NotesOpenResult::Timeline);
         }
         NoteAction::Repost(note_id) => {
@@ -237,6 +238,7 @@ fn execute_note_action(
 pub fn execute_and_process_note_action(
     action: NoteAction,
     ndb: &mut Ndb,
+    subs: &mut crate::subscriptions::Subscriptions,
     columns: &mut Columns,
     col: usize,
     timeline_cache: &mut TimelineCache,
@@ -266,6 +268,7 @@ pub fn execute_and_process_note_action(
     let resp = execute_note_action(
         action,
         ndb,
+        subs,
         timeline_cache,
         threads,
         note_cache,

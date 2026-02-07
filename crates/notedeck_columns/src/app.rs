@@ -193,6 +193,7 @@ fn try_process_event(
 
     for (kind, timeline) in &mut damus.timeline_cache {
         let is_ready = timeline::is_timeline_ready(
+            &mut damus.subscriptions,
             app_ctx.ndb,
             app_ctx.pool,
             app_ctx.note_cache,
@@ -467,6 +468,7 @@ impl Damus {
             parsed_args.is_flag_set(ColumnsFlag::SinceOptimize),
         );
 
+        let mut subscriptions = Subscriptions::default();
         let decks_cache = if tmp_columns {
             info!("DecksCache: loading from command line arguments");
             let mut columns: Columns = Columns::new();
@@ -474,6 +476,7 @@ impl Damus {
             for col in &parsed_args.columns {
                 let timeline_kind = col.clone().into_timeline_kind();
                 if let Some(add_result) = columns.add_new_timeline_column(
+                    &mut subscriptions,
                     &mut timeline_cache,
                     &txn,
                     app_context.ndb,
@@ -505,7 +508,7 @@ impl Damus {
             decks_cache
         } else {
             info!("DecksCache: creating new with demo configuration");
-            DecksCache::new_with_demo_config(&mut timeline_cache, app_context)
+            DecksCache::new_with_demo_config(&mut subscriptions, &mut timeline_cache, app_context)
             //for (pk, _) in &app_context.accounts.cache {
             //    cache.add_deck_default(*pk);
             //}
@@ -516,7 +519,7 @@ impl Damus {
         let threads = Threads::default();
 
         Self {
-            subscriptions: Subscriptions::default(),
+            subscriptions,
             timeline_cache,
             drafts: Drafts::default(),
             state: DamusState::Initializing,
@@ -807,6 +810,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
                 TimelineKind::Universe => true,
                 TimelineKind::Generic(_) => true,
                 TimelineKind::Hashtag(_) => true,
+                TimelineKind::Relay(_, _) => true,
 
                 // no!
                 TimelineKind::Search(_) => false,

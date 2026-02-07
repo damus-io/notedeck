@@ -514,6 +514,10 @@ impl<'a> NavTitle<'a> {
                     app_images::hashtag_image().fit_to_exact_size(egui::vec2(pfp_size, pfp_size)),
                 )),
 
+                TimelineKind::Relay(_, _) => Some(ui.add(
+                    app_images::add_relay_image().fit_to_exact_size(egui::vec2(pfp_size, pfp_size)),
+                )),
+
                 TimelineKind::Profile(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
 
                 TimelineKind::Search(_sq) => {

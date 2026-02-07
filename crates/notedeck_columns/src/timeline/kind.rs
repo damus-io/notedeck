@@ -215,6 +215,10 @@ pub enum TimelineKind {
     Generic(u64),
 
     Hashtag(Vec<String>),
+
+    /// Relay-specific timeline with optional hashtag filtering
+    /// Format: Relay(relay_url, optional_hashtags)
+    Relay(String, Option<Vec<String>>),
 }
 
 const NOTIFS_TOKEN_DEPRECATED: &str = "notifs";
@@ -315,6 +319,7 @@ impl TimelineKind {
             TimelineKind::Universe => None,
             TimelineKind::Generic(_) => None,
             TimelineKind::Hashtag(_ht) => None,
+            TimelineKind::Relay(_, _) => None,
             TimelineKind::Search(query) => query.author(),
         }
     }
@@ -330,6 +335,7 @@ impl TimelineKind {
             TimelineKind::Universe => true,
             TimelineKind::Generic(_) => true,
             TimelineKind::Hashtag(_ht) => true,
+            TimelineKind::Relay(_, _) => true,
             TimelineKind::Search(_q) => true,
         }
     }
@@ -362,6 +368,16 @@ impl TimelineKind {
             TimelineKind::Hashtag(ht) => {
                 writer.write_token("hashtag");
                 writer.write_token(&ht.join(" "));
+            }
+            TimelineKind::Relay(relay_url, hashtags) => {
+                writer.write_token("relay");
+                // URL-encode the relay URL to avoid issues with the ":" delimiter
+                writer.write_token(&urlencoding::encode(relay_url));
+                if let Some(ht) = hashtags {
+                    writer.write_token(&ht.join(" "));
+                } else {
+                    writer.write_token("");
+                }
             }
         }
     }
@@ -428,6 +444,28 @@ impl TimelineKind {
                     let search_query = SearchQuery::parse_from_tokens(p)?;
                     Ok(TimelineKind::Search(search_query))
                 },
+                |p| {
+                    p.parse_token("relay")?;
+                    let encoded_relay_url = p.pull_token()?;
+                    // URL-decode the relay URL
+                    let relay_url = urlencoding::decode(encoded_relay_url)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|_| encoded_relay_url.to_string());
+
+                    let hashtags_str = p.pull_token()?;
+                    let hashtags = if hashtags_str.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            hashtags_str
+                                .split_whitespace()
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_lowercase().to_string())
+                                .collect(),
+                        )
+                    };
+                    Ok(TimelineKind::Relay(relay_url, hashtags))
+                },
             ],
         )
     }
@@ -488,6 +526,31 @@ impl TimelineKind {
                             .build()
                     })
                     .collect::<Vec<_>>();
+
+                FilterState::ready(filters)
+            }
+
+            TimelineKind::Relay(_relay_url, hashtags) => {
+                let filters = if let Some(hashtags) = hashtags {
+                    // Filter by hashtags if provided
+                    hashtags
+                        .iter()
+                        .filter(|tag| !tag.is_empty())
+                        .map(|tag| {
+                            Filter::new()
+                                .kinds([1])
+                                .limit(filter::default_limit())
+                                .tags([tag.to_lowercase().as_str()], 't')
+                                .build()
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    // Otherwise show all notes from the relay
+                    vec![Filter::new()
+                        .kinds([1])
+                        .limit(filter::default_limit())
+                        .build()]
+                };
 
                 FilterState::ready(filters)
             }
@@ -586,6 +649,33 @@ impl TimelineKind {
 
             TimelineKind::Hashtag(hashtag) => Some(Timeline::hashtag(hashtag)),
 
+            TimelineKind::Relay(relay_url, hashtags) => {
+                let filters = if let Some(ref hashtags) = hashtags {
+                    hashtags
+                        .iter()
+                        .filter(|tag| !tag.is_empty())
+                        .map(|tag| {
+                            Filter::new()
+                                .kinds([1])
+                                .limit(filter::default_limit())
+                                .tags([tag.as_str()], 't')
+                                .build()
+                        })
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![Filter::new()
+                        .kinds([1])
+                        .limit(filter::default_limit())
+                        .build()]
+                };
+
+                Some(Timeline::new(
+                    TimelineKind::Relay(relay_url, hashtags),
+                    FilterState::ready(filters),
+                    TimelineTab::only_notes_and_replies(),
+                ))
+            }
+
             TimelineKind::List(ListKind::Contact(pk)) => Some(Timeline::new(
                 TimelineKind::contact_list(pk),
                 contact_filter_state(txn, ndb, &pk),
@@ -622,6 +712,13 @@ impl TimelineKind {
                 ColumnTitle::formatted(tr!(i18n, "Custom", "Column title for custom timelines"))
             }
             TimelineKind::Hashtag(hashtag) => ColumnTitle::formatted(hashtag.join(" ").to_string()),
+            TimelineKind::Relay(relay_url, hashtags) => {
+                if let Some(hashtags) = hashtags {
+                    ColumnTitle::formatted(format!("{} ({})", relay_url, hashtags.join(" ")))
+                } else {
+                    ColumnTitle::formatted(relay_url.to_string())
+                }
+            }
         }
     }
 }
