@@ -22,6 +22,19 @@ jobs:
           cargo fmt --all -- --check
           cargo clippy
 
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Run cargo audit
+        run: cargo audit --deny warnings
+
   android:
     name: Check (android)
     runs-on: ubuntu-22.04
