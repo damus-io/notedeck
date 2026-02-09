@@ -25,24 +25,12 @@ pub enum PermissionMessageState {
     TentativeDeny,
 }
 
-/// A single chat session with Dave
-pub struct ChatSession {
-    pub id: SessionId,
-    pub title: String,
-    pub chat: Vec<Message>,
-    pub input: String,
-    pub incoming_tokens: Option<Receiver<DaveApiResponse>>,
+/// Agentic-mode specific session data (Claude backend only)
+pub struct AgenticSessionData {
     /// Pending permission requests waiting for user response
     pub pending_permissions: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
-    /// Handle to the background task processing this session's AI requests.
-    /// Aborted on drop to clean up the subprocess.
-    pub task_handle: Option<tokio::task::JoinHandle<()>>,
     /// Position in the RTS scene (in scene coordinates)
     pub scene_position: egui::Vec2,
-    /// Cached status for the agent (derived from session state)
-    cached_status: AgentStatus,
-    /// Whether this session's input should be focused on the next frame
-    pub focus_requested: bool,
     /// Permission mode for Claude (Default or Plan)
     pub permission_mode: PermissionMode,
     /// State for permission response message (tentative accept/deny)
@@ -64,8 +52,75 @@ pub struct ChatSession {
     /// Claude session ID to resume (UUID from Claude CLI's session storage)
     /// When set, the backend will use --resume to continue this session
     pub resume_session_id: Option<String>,
+}
+
+impl AgenticSessionData {
+    pub fn new(id: SessionId, cwd: PathBuf) -> Self {
+        // Arrange sessions in a grid pattern
+        let col = (id as i32 - 1) % 4;
+        let row = (id as i32 - 1) / 4;
+        let x = col as f32 * 150.0 - 225.0; // Center around origin
+        let y = row as f32 * 150.0 - 75.0;
+
+        AgenticSessionData {
+            pending_permissions: HashMap::new(),
+            scene_position: egui::Vec2::new(x, y),
+            permission_mode: PermissionMode::Default,
+            permission_message_state: PermissionMessageState::None,
+            question_answers: HashMap::new(),
+            question_index: HashMap::new(),
+            cwd,
+            session_info: None,
+            subagent_indices: HashMap::new(),
+            is_compacting: false,
+            last_compaction: None,
+            resume_session_id: None,
+        }
+    }
+
+    /// Update a subagent's output (appending new content, keeping only the tail)
+    pub fn update_subagent_output(&mut self, chat: &mut [Message], task_id: &str, new_output: &str) {
+        if let Some(&idx) = self.subagent_indices.get(task_id) {
+            if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
+                subagent.output.push_str(new_output);
+                // Keep only the most recent content up to max_output_size
+                if subagent.output.len() > subagent.max_output_size {
+                    let keep_from = subagent.output.len() - subagent.max_output_size;
+                    subagent.output = subagent.output[keep_from..].to_string();
+                }
+            }
+        }
+    }
+
+    /// Mark a subagent as completed
+    pub fn complete_subagent(&mut self, chat: &mut [Message], task_id: &str, result: &str) {
+        if let Some(&idx) = self.subagent_indices.get(task_id) {
+            if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
+                subagent.status = SubagentStatus::Completed;
+                subagent.output = result.to_string();
+            }
+        }
+    }
+}
+
+/// A single chat session with Dave
+pub struct ChatSession {
+    pub id: SessionId,
+    pub title: String,
+    pub chat: Vec<Message>,
+    pub input: String,
+    pub incoming_tokens: Option<Receiver<DaveApiResponse>>,
+    /// Handle to the background task processing this session's AI requests.
+    /// Aborted on drop to clean up the subprocess.
+    pub task_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Cached status for the agent (derived from session state)
+    cached_status: AgentStatus,
+    /// Whether this session's input should be focused on the next frame
+    pub focus_requested: bool,
     /// AI interaction mode for this session (Chat vs Agentic)
     pub ai_mode: AiMode,
+    /// Agentic-mode specific data (None in Chat mode)
+    pub agentic: Option<AgenticSessionData>,
 }
 
 impl Drop for ChatSession {
@@ -78,11 +133,10 @@ impl Drop for ChatSession {
 
 impl ChatSession {
     pub fn new(id: SessionId, cwd: PathBuf, ai_mode: AiMode) -> Self {
-        // Arrange sessions in a grid pattern
-        let col = (id as i32 - 1) % 4;
-        let row = (id as i32 - 1) / 4;
-        let x = col as f32 * 150.0 - 225.0; // Center around origin
-        let y = row as f32 * 150.0 - 75.0;
+        let agentic = match ai_mode {
+            AiMode::Agentic => Some(AgenticSessionData::new(id, cwd)),
+            AiMode::Chat => None,
+        };
 
         ChatSession {
             id,
@@ -90,22 +144,11 @@ impl ChatSession {
             chat: vec![],
             input: String::new(),
             incoming_tokens: None,
-            pending_permissions: HashMap::new(),
             task_handle: None,
-            scene_position: egui::Vec2::new(x, y),
             cached_status: AgentStatus::Idle,
             focus_requested: false,
-            permission_mode: PermissionMode::Default,
-            permission_message_state: PermissionMessageState::None,
-            question_answers: HashMap::new(),
-            question_index: HashMap::new(),
-            cwd,
-            session_info: None,
-            subagent_indices: HashMap::new(),
-            is_compacting: false,
-            last_compaction: None,
-            resume_session_id: None,
             ai_mode,
+            agentic,
         }
     }
 
@@ -118,32 +161,64 @@ impl ChatSession {
         ai_mode: AiMode,
     ) -> Self {
         let mut session = Self::new(id, cwd, ai_mode);
-        session.resume_session_id = Some(resume_session_id);
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.resume_session_id = Some(resume_session_id);
+        }
         session.title = title;
         session
     }
 
+    // === Helper methods for accessing agentic data ===
+
+    /// Get agentic data, panics if not in agentic mode (use in agentic-only code paths)
+    pub fn agentic(&self) -> &AgenticSessionData {
+        self.agentic
+            .as_ref()
+            .expect("agentic data only available in Agentic mode")
+    }
+
+    /// Get mutable agentic data
+    pub fn agentic_mut(&mut self) -> &mut AgenticSessionData {
+        self.agentic
+            .as_mut()
+            .expect("agentic data only available in Agentic mode")
+    }
+
+    /// Check if session has agentic capabilities
+    pub fn is_agentic(&self) -> bool {
+        self.agentic.is_some()
+    }
+
+    /// Check if session has pending permission requests
+    pub fn has_pending_permissions(&self) -> bool {
+        self.agentic
+            .as_ref()
+            .is_some_and(|a| !a.pending_permissions.is_empty())
+    }
+
+    /// Check if session is in plan mode
+    pub fn is_plan_mode(&self) -> bool {
+        self.agentic
+            .as_ref()
+            .is_some_and(|a| a.permission_mode == PermissionMode::Plan)
+    }
+
+    /// Get the working directory (agentic only)
+    pub fn cwd(&self) -> Option<&PathBuf> {
+        self.agentic.as_ref().map(|a| &a.cwd)
+    }
+
     /// Update a subagent's output (appending new content, keeping only the tail)
     pub fn update_subagent_output(&mut self, task_id: &str, new_output: &str) {
-        if let Some(&idx) = self.subagent_indices.get(task_id) {
-            if let Some(Message::Subagent(subagent)) = self.chat.get_mut(idx) {
-                subagent.output.push_str(new_output);
-                // Keep only the most recent content up to max_output_size
-                if subagent.output.len() > subagent.max_output_size {
-                    let keep_from = subagent.output.len() - subagent.max_output_size;
-                    subagent.output = subagent.output[keep_from..].to_string();
-                }
-            }
+        if let Some(ref mut agentic) = self.agentic {
+            agentic.update_subagent_output(&mut self.chat, task_id, new_output);
         }
     }
 
     /// Mark a subagent as completed
     pub fn complete_subagent(&mut self, task_id: &str, result: &str) {
-        if let Some(&idx) = self.subagent_indices.get(task_id) {
-            if let Some(Message::Subagent(subagent)) = self.chat.get_mut(idx) {
-                subagent.status = SubagentStatus::Completed;
-                subagent.output = result.to_string();
-            }
+        if let Some(ref mut agentic) = self.agentic {
+            agentic.complete_subagent(&mut self.chat, task_id, result);
         }
     }
 
@@ -177,8 +252,8 @@ impl ChatSession {
 
     /// Derive status from the current session state
     fn derive_status(&self) -> AgentStatus {
-        // Check for pending permission requests (needs input)
-        if !self.pending_permissions.is_empty() {
+        // Check for pending permission requests (needs input) - agentic only
+        if self.has_pending_permissions() {
             return AgentStatus::NeedsInput;
         }
 

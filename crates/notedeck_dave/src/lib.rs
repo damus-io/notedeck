@@ -321,10 +321,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             pending.request.tool_input
                         );
 
-                        // Store the response sender for later
-                        session
-                            .pending_permissions
-                            .insert(pending.request.id, pending.response_tx);
+                        // Store the response sender for later (agentic only)
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic
+                                .pending_permissions
+                                .insert(pending.request.id, pending.response_tx);
+                        }
 
                         // Add the request to chat for UI display
                         session
@@ -344,7 +346,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             info.tools.len(),
                             info.agents.len()
                         );
-                        session.session_info = Some(info);
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.session_info = Some(info);
+                        }
                     }
 
                     DaveApiResponse::SubagentSpawned(subagent) => {
@@ -357,7 +361,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         let task_id = subagent.task_id.clone();
                         let idx = session.chat.len();
                         session.chat.push(Message::Subagent(subagent));
-                        session.subagent_indices.insert(task_id, idx);
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.subagent_indices.insert(task_id, idx);
+                        }
                     }
 
                     DaveApiResponse::SubagentOutput { task_id, output } => {
@@ -371,7 +377,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                     DaveApiResponse::CompactionStarted => {
                         tracing::debug!("Compaction started for session {}", session_id);
-                        session.is_compacting = true;
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.is_compacting = true;
+                        }
                     }
 
                     DaveApiResponse::CompactionComplete(info) => {
@@ -380,8 +388,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             session_id,
                             info.pre_tokens
                         );
-                        session.is_compacting = false;
-                        session.last_compaction = Some(info.clone());
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.is_compacting = false;
+                            agentic.last_compaction = Some(info.clone());
+                        }
                         session.chat.push(Message::CompactionComplete(info));
                     }
                 }
@@ -589,11 +599,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         == crate::agent_status::AgentStatus::Working;
 
                                     // Render chat UI for selected session
-                                    let has_pending_permission =
-                                        !session.pending_permissions.is_empty();
-                                    let plan_mode_active =
-                                        session.permission_mode == PermissionMode::Plan;
-                                    let response = DaveUi::new(
+                                    let has_pending_permission = session.has_pending_permissions();
+                                    let plan_mode_active = session.is_plan_mode();
+                                    let mut ui_builder = DaveUi::new(
                                         self.model_config.trial,
                                         &session.chat,
                                         &mut session.input,
@@ -605,12 +613,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     .interrupt_pending(interrupt_pending)
                                     .has_pending_permission(has_pending_permission)
                                     .plan_mode_active(plan_mode_active)
-                                    .permission_message_state(session.permission_message_state)
-                                    .question_answers(&mut session.question_answers)
-                                    .question_index(&mut session.question_index)
-                                    .is_compacting(session.is_compacting)
-                                    .auto_steal_focus(auto_steal_focus)
-                                    .ui(app_ctx, ui);
+                                    .auto_steal_focus(auto_steal_focus);
+
+                                    // Add agentic-specific UI state if available
+                                    if let Some(agentic) = &mut session.agentic {
+                                        ui_builder = ui_builder
+                                            .permission_message_state(agentic.permission_message_state)
+                                            .question_answers(&mut agentic.question_answers)
+                                            .question_index(&mut agentic.question_index)
+                                            .is_compacting(agentic.is_compacting);
+                                    }
+
+                                    let response = ui_builder.ui(app_ctx, ui);
 
                                     if response.action.is_some() {
                                         dave_response = response;
@@ -652,7 +666,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                     SceneAction::AgentMoved { id, position } => {
                         if let Some(session) = self.session_manager.get_mut(id) {
-                            session.scene_position = position;
+                            if let Some(agentic) = &mut session.agentic {
+                                agentic.scene_position = position;
+                            }
                         }
                     }
                 }
@@ -712,9 +728,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
                 if let Some(session) = self.session_manager.get_active_mut() {
                     let is_working = session.status() == crate::agent_status::AgentStatus::Working;
-                    let has_pending_permission = !session.pending_permissions.is_empty();
-                    let plan_mode_active = session.permission_mode == PermissionMode::Plan;
-                    DaveUi::new(
+                    let has_pending_permission = session.has_pending_permissions();
+                    let plan_mode_active = session.is_plan_mode();
+                    let mut ui_builder = DaveUi::new(
                         self.model_config.trial,
                         &session.chat,
                         &mut session.input,
@@ -725,12 +741,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .interrupt_pending(interrupt_pending)
                     .has_pending_permission(has_pending_permission)
                     .plan_mode_active(plan_mode_active)
-                    .permission_message_state(session.permission_message_state)
-                    .question_answers(&mut session.question_answers)
-                    .question_index(&mut session.question_index)
-                    .is_compacting(session.is_compacting)
-                    .auto_steal_focus(auto_steal_focus)
-                    .ui(app_ctx, ui)
+                    .auto_steal_focus(auto_steal_focus);
+
+                    if let Some(agentic) = &mut session.agentic {
+                        ui_builder = ui_builder
+                            .permission_message_state(agentic.permission_message_state)
+                            .question_answers(&mut agentic.question_answers)
+                            .question_index(&mut agentic.question_index)
+                            .is_compacting(agentic.is_compacting);
+                    }
+
+                    ui_builder.ui(app_ctx, ui)
                 } else {
                     DaveResponse::default()
                 }
@@ -787,9 +808,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let auto_steal_focus = self.auto_steal_focus;
             if let Some(session) = self.session_manager.get_active_mut() {
                 let is_working = session.status() == crate::agent_status::AgentStatus::Working;
-                let has_pending_permission = !session.pending_permissions.is_empty();
-                let plan_mode_active = session.permission_mode == PermissionMode::Plan;
-                DaveUi::new(
+                let has_pending_permission = session.has_pending_permissions();
+                let plan_mode_active = session.is_plan_mode();
+                let mut ui_builder = DaveUi::new(
                     self.model_config.trial,
                     &session.chat,
                     &mut session.input,
@@ -800,12 +821,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .interrupt_pending(interrupt_pending)
                 .has_pending_permission(has_pending_permission)
                 .plan_mode_active(plan_mode_active)
-                .permission_message_state(session.permission_message_state)
-                .question_answers(&mut session.question_answers)
-                .question_index(&mut session.question_index)
-                .is_compacting(session.is_compacting)
-                .auto_steal_focus(auto_steal_focus)
-                .ui(app_ctx, ui)
+                .auto_steal_focus(auto_steal_focus);
+
+                if let Some(agentic) = &mut session.agentic {
+                    ui_builder = ui_builder
+                        .permission_message_state(agentic.permission_message_state)
+                        .question_answers(&mut agentic.question_answers)
+                        .question_index(&mut agentic.question_index)
+                        .is_compacting(agentic.is_compacting);
+                }
+
+                ui_builder.ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
             }
@@ -829,7 +855,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Also update scene selection and camera if in scene view
             if self.show_scene {
                 self.scene.select(id);
-                self.scene.focus_on(session.scene_position);
+                if let Some(agentic) = &session.agentic {
+                    self.scene.focus_on(agentic.scene_position);
+                }
             }
         }
     }
@@ -853,14 +881,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Also update scene selection and camera if in scene view
             if self.show_scene {
                 self.scene.select(id);
-                self.scene.focus_on(session.scene_position);
+                if let Some(agentic) = &session.agentic {
+                    self.scene.focus_on(agentic.scene_position);
+                }
             }
         }
     }
 
     /// Clone the active agent, creating a new session with the same working directory
     fn clone_active_agent(&mut self) {
-        if let Some(cwd) = self.session_manager.get_active().map(|s| s.cwd.clone()) {
+        if let Some(cwd) = self.session_manager.get_active().and_then(|s| s.cwd().cloned()) {
             self.create_session_with_cwd(cwd);
         }
     }
@@ -882,7 +912,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 session.focus_requested = true;
                 if self.show_scene {
                     self.scene.select(id);
-                    self.scene.focus_on(session.scene_position);
+                    if let Some(agentic) = &session.agentic {
+                        self.scene.focus_on(agentic.scene_position);
+                    }
                 }
             }
 
@@ -981,7 +1013,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Clear the incoming token receiver so we stop processing
             session.incoming_tokens = None;
             // Clear pending permissions since we're interrupting
-            session.pending_permissions.clear();
+            if let Some(agentic) = &mut session.agentic {
+                agentic.pending_permissions.clear();
+            }
             tracing::debug!("Interrupted session {}", session.id);
         }
     }
@@ -989,34 +1023,38 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Toggle plan mode for the active session
     fn toggle_plan_mode(&mut self, ctx: &egui::Context) {
         if let Some(session) = self.session_manager.get_active_mut() {
-            // Toggle between Plan and Default modes
-            let new_mode = match session.permission_mode {
-                PermissionMode::Plan => PermissionMode::Default,
-                _ => PermissionMode::Plan,
-            };
-            session.permission_mode = new_mode;
+            if let Some(agentic) = &mut session.agentic {
+                // Toggle between Plan and Default modes
+                let new_mode = match agentic.permission_mode {
+                    PermissionMode::Plan => PermissionMode::Default,
+                    _ => PermissionMode::Plan,
+                };
+                agentic.permission_mode = new_mode;
 
-            // Notify the backend
-            let session_id = format!("dave-session-{}", session.id);
-            self.backend
-                .set_permission_mode(session_id, new_mode, ctx.clone());
+                // Notify the backend
+                let session_id = format!("dave-session-{}", session.id);
+                self.backend
+                    .set_permission_mode(session_id, new_mode, ctx.clone());
 
-            tracing::debug!(
-                "Toggled plan mode for session {} to {:?}",
-                session.id,
-                new_mode
-            );
+                tracing::debug!(
+                    "Toggled plan mode for session {} to {:?}",
+                    session.id,
+                    new_mode
+                );
+            }
         }
     }
 
     /// Exit plan mode for the active session (switch to Default mode)
     fn exit_plan_mode(&mut self, ctx: &egui::Context) {
         if let Some(session) = self.session_manager.get_active_mut() {
-            session.permission_mode = PermissionMode::Default;
-            let session_id = format!("dave-session-{}", session.id);
-            self.backend
-                .set_permission_mode(session_id, PermissionMode::Default, ctx.clone());
-            tracing::debug!("Exited plan mode for session {}", session.id);
+            if let Some(agentic) = &mut session.agentic {
+                agentic.permission_mode = PermissionMode::Default;
+                let session_id = format!("dave-session-{}", session.id);
+                self.backend
+                    .set_permission_mode(session_id, PermissionMode::Default, ctx.clone());
+                tracing::debug!("Exited plan mode for session {}", session.id);
+            }
         }
     }
 
@@ -1024,7 +1062,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     fn first_pending_permission(&self) -> Option<uuid::Uuid> {
         self.session_manager
             .get_active()
-            .and_then(|session| session.pending_permissions.keys().next().copied())
+            .and_then(|session| session.agentic.as_ref())
+            .and_then(|agentic| agentic.pending_permissions.keys().next().copied())
     }
 
     /// Check if the first pending permission is an AskUserQuestion tool call
@@ -1040,7 +1079,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Get the tool name of the first pending permission request
     fn pending_permission_tool_name(&self) -> Option<&str> {
         let session = self.session_manager.get_active()?;
-        let request_id = session.pending_permissions.keys().next()?;
+        let agentic = session.agentic.as_ref()?;
+        let request_id = agentic.pending_permissions.keys().next()?;
 
         for msg in &session.chat {
             if let Message::PermissionRequest(req) = msg {
@@ -1070,8 +1110,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             }
 
-            // Clear permission message state
-            session.permission_message_state = crate::session::PermissionMessageState::None;
+            // Clear permission message state (agentic only)
+            if let Some(agentic) = &mut session.agentic {
+                agentic.permission_message_state = crate::session::PermissionMessageState::None;
+            }
 
             for msg in &mut session.chat {
                 if let Message::PermissionRequest(req) = msg {
@@ -1082,15 +1124,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             }
 
-            if let Some(sender) = session.pending_permissions.remove(&request_id) {
-                if sender.send(response).is_err() {
-                    tracing::error!(
-                        "Failed to send permission response for request {}",
-                        request_id
-                    );
+            if let Some(agentic) = &mut session.agentic {
+                if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
+                    if sender.send(response).is_err() {
+                        tracing::error!(
+                            "Failed to send permission response for request {}",
+                            request_id
+                        );
+                    }
+                } else {
+                    tracing::warn!("No pending permission found for request {}", request_id);
                 }
-            } else {
-                tracing::warn!("No pending permission found for request {}", request_id);
             }
         }
     }
@@ -1193,24 +1237,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             }
 
-            // Clean up transient answer state
-            session.question_answers.remove(&request_id);
-            session.question_index.remove(&request_id);
+            // Clean up transient answer state and send response (agentic only)
+            if let Some(agentic) = &mut session.agentic {
+                agentic.question_answers.remove(&request_id);
+                agentic.question_index.remove(&request_id);
 
-            // Send the response through the permission channel
-            // AskUserQuestion responses are sent as Allow with the formatted answers as the message
-            if let Some(sender) = session.pending_permissions.remove(&request_id) {
-                let response = PermissionResponse::Allow {
-                    message: Some(formatted_response),
-                };
-                if sender.send(response).is_err() {
-                    tracing::error!(
-                        "Failed to send question response for request {}",
-                        request_id
-                    );
+                // Send the response through the permission channel
+                // AskUserQuestion responses are sent as Allow with the formatted answers as the message
+                if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
+                    let response = PermissionResponse::Allow {
+                        message: Some(formatted_response),
+                    };
+                    if sender.send(response).is_err() {
+                        tracing::error!(
+                            "Failed to send question response for request {}",
+                            request_id
+                        );
+                    }
+                } else {
+                    tracing::warn!("No pending permission found for request {}", request_id);
                 }
-            } else {
-                tracing::warn!("No pending permission found for request {}", request_id);
             }
         }
     }
@@ -1226,7 +1272,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             // Focus input if no permission request is pending
             if let Some(session) = self.session_manager.get_mut(id) {
-                if session.pending_permissions.is_empty() {
+                if !session.has_pending_permissions() {
                     session.focus_requested = true;
                 }
             }
@@ -1252,7 +1298,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             // Focus input if no permission request is pending
             if let Some(session) = self.session_manager.get_mut(id) {
-                if session.pending_permissions.is_empty() {
+                if !session.has_pending_permissions() {
                     session.focus_requested = true;
                 }
             }
@@ -1282,7 +1328,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             // Focus input if no permission request is pending
             if let Some(session) = self.session_manager.get_mut(id) {
-                if session.pending_permissions.is_empty() {
+                if !session.has_pending_permissions() {
                     session.focus_requested = true;
                 }
             }
@@ -1296,12 +1342,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if self.show_scene {
                 self.scene.select(session_id);
                 if let Some(session) = self.session_manager.get(session_id) {
-                    self.scene.focus_on(session.scene_position);
+                    if let Some(agentic) = &session.agentic {
+                        self.scene.focus_on(agentic.scene_position);
+                    }
                 }
             }
             // Focus input if no permission request is pending
             if let Some(session) = self.session_manager.get_mut(session_id) {
-                if session.pending_permissions.is_empty() {
+                if !session.has_pending_permissions() {
                     session.focus_requested = true;
                 }
             }
@@ -1315,12 +1363,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if self.show_scene {
                 self.scene.select(session_id);
                 if let Some(session) = self.session_manager.get(session_id) {
-                    self.scene.focus_on(session.scene_position);
+                    if let Some(agentic) = &session.agentic {
+                        self.scene.focus_on(agentic.scene_position);
+                    }
                 }
             }
             // Focus input if no permission request is pending
             if let Some(session) = self.session_manager.get_mut(session_id) {
-                if session.pending_permissions.is_empty() {
+                if !session.has_pending_permissions() {
                     session.focus_requested = true;
                 }
             }
@@ -1355,7 +1405,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if self.show_scene {
                     self.scene.select(home_id);
                     if let Some(session) = self.session_manager.get(home_id) {
-                        self.scene.focus_on(session.scene_position);
+                        if let Some(agentic) = &session.agentic {
+                            self.scene.focus_on(agentic.scene_position);
+                        }
                     }
                 }
                 tracing::debug!("Auto-steal focus disabled, returned to home session");
@@ -1495,7 +1547,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         if self.show_scene {
                             self.scene.select(entry.session_id);
                             if let Some(session) = self.session_manager.get(entry.session_id) {
-                                self.scene.focus_on(session.scene_position);
+                                if let Some(agentic) = &session.agentic {
+                                    self.scene.focus_on(agentic.scene_position);
+                                }
                             }
                         }
                         tracing::debug!("Auto-steal: switched to session {:?}", entry.session_id);
@@ -1508,7 +1562,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if self.show_scene {
                 self.scene.select(home_id);
                 if let Some(session) = self.session_manager.get(home_id) {
-                    self.scene.focus_on(session.scene_position);
+                    if let Some(agentic) = &session.agentic {
+                        self.scene.focus_on(agentic.scene_position);
+                    }
                 }
             }
             tracing::debug!("Auto-steal: returned to home session {:?}", home_id);
@@ -1518,7 +1574,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
-        // Check for /cd command first
+        // Check for /cd command first (agentic only)
         let cd_result = if let Some(session) = self.session_manager.get_active_mut() {
             let input = session.input.trim().to_string();
             if input.starts_with("/cd ") {
@@ -1526,7 +1582,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let path = PathBuf::from(path_str);
                 session.input.clear();
                 if path.exists() && path.is_dir() {
-                    session.cwd = path.clone();
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic.cwd = path.clone();
+                    }
                     session.chat.push(Message::System(format!(
                         "Working directory set to: {}",
                         path.display()
@@ -1571,8 +1629,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
         let session_id = format!("dave-session-{}", session.id);
         let messages = session.chat.clone();
-        let cwd = Some(session.cwd.clone());
-        let resume_session_id = session.resume_session_id.clone();
+        let cwd = session.agentic.as_ref().map(|a| a.cwd.clone());
+        let resume_session_id = session
+            .agentic
+            .as_ref()
+            .and_then(|a| a.resume_session_id.clone());
         let tools = self.tools.clone();
         let model_name = self.model_config.model().to_owned();
         let ctx = ctx.clone();
@@ -1614,7 +1675,8 @@ impl notedeck::App for Dave {
         let in_tentative_state = self
             .session_manager
             .get_active()
-            .map(|s| s.permission_message_state != crate::session::PermissionMessageState::None)
+            .and_then(|s| s.agentic.as_ref())
+            .map(|a| a.permission_message_state != crate::session::PermissionMessageState::None)
             .unwrap_or(false);
         if let Some(key_action) = check_keybindings(
             ui.ctx(),
@@ -1653,24 +1715,30 @@ impl notedeck::App for Dave {
                 KeyAction::TentativeAccept => {
                     // Enter tentative accept mode - user will type message, then Enter to send
                     if let Some(session) = self.session_manager.get_active_mut() {
-                        session.permission_message_state =
-                            crate::session::PermissionMessageState::TentativeAccept;
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.permission_message_state =
+                                crate::session::PermissionMessageState::TentativeAccept;
+                        }
                         session.focus_requested = true;
                     }
                 }
                 KeyAction::TentativeDeny => {
                     // Enter tentative deny mode - user will type message, then Enter to send
                     if let Some(session) = self.session_manager.get_active_mut() {
-                        session.permission_message_state =
-                            crate::session::PermissionMessageState::TentativeDeny;
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.permission_message_state =
+                                crate::session::PermissionMessageState::TentativeDeny;
+                        }
                         session.focus_requested = true;
                     }
                 }
                 KeyAction::CancelTentative => {
                     // Cancel tentative mode
                     if let Some(session) = self.session_manager.get_active_mut() {
-                        session.permission_message_state =
-                            crate::session::PermissionMessageState::None;
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.permission_message_state =
+                                crate::session::PermissionMessageState::None;
+                        }
                     }
                 }
                 KeyAction::SwitchToAgent(index) => {
@@ -1756,7 +1824,8 @@ impl notedeck::App for Dave {
                     let tentative_state = self
                         .session_manager
                         .get_active()
-                        .map(|s| s.permission_message_state)
+                        .and_then(|s| s.agentic.as_ref())
+                        .map(|a| a.permission_message_state)
                         .unwrap_or(crate::session::PermissionMessageState::None);
 
                     match tentative_state {
@@ -1829,16 +1898,20 @@ impl notedeck::App for Dave {
                 DaveAction::TentativeAccept => {
                     // Enter tentative accept mode (from Shift+click)
                     if let Some(session) = self.session_manager.get_active_mut() {
-                        session.permission_message_state =
-                            crate::session::PermissionMessageState::TentativeAccept;
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.permission_message_state =
+                                crate::session::PermissionMessageState::TentativeAccept;
+                        }
                         session.focus_requested = true;
                     }
                 }
                 DaveAction::TentativeDeny => {
                     // Enter tentative deny mode (from Shift+click)
                     if let Some(session) = self.session_manager.get_active_mut() {
-                        session.permission_message_state =
-                            crate::session::PermissionMessageState::TentativeDeny;
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.permission_message_state =
+                                crate::session::PermissionMessageState::TentativeDeny;
+                        }
                         session.focus_requested = true;
                     }
                 }

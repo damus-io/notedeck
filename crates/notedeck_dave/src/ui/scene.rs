@@ -155,9 +155,14 @@ impl AgentScene {
                 for (keybind_idx, session) in
                     session_manager.sessions_ordered().into_iter().enumerate()
                 {
+                    // Scene view only makes sense for agentic sessions
+                    let Some(agentic) = &session.agentic else {
+                        continue;
+                    };
+
                     let id = session.id;
                     let keybind_number = keybind_idx + 1; // 1-indexed for display
-                    let position = session.scene_position;
+                    let position = agentic.scene_position;
                     let status = session.status();
                     let title = &session.title;
                     let is_selected = selected_ids.contains(&id);
@@ -170,7 +175,7 @@ impl AgentScene {
                         position,
                         status,
                         title,
-                        &session.cwd,
+                        &agentic.cwd,
                         is_selected,
                         ctrl_held,
                         queue_priority,
@@ -262,9 +267,11 @@ impl AgentScene {
                 self.selected.clear();
 
                 for session in session_manager.iter() {
-                    let agent_pos = Pos2::new(session.scene_position.x, session.scene_position.y);
-                    if selection_rect.contains(agent_pos) {
-                        self.selected.push(session.id);
+                    if let Some(agentic) = &session.agentic {
+                        let agent_pos = Pos2::new(agentic.scene_position.x, agentic.scene_position.y);
+                        if selection_rect.contains(agent_pos) {
+                            self.selected.push(session.id);
+                        }
                     }
                 }
 

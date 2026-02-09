@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use egui::{Align, Color32, Layout, Sense};
 use notedeck_ui::app_images;
@@ -111,10 +111,14 @@ impl<'a> SessionListUi<'a> {
             // Check if this session is in the focus queue
             let queue_priority = self.focus_queue.get_session_priority(session.id);
 
+            // Get cwd from agentic data, fallback to empty path for Chat mode
+            let empty_path = PathBuf::new();
+            let cwd = session.cwd().unwrap_or(&empty_path);
+
             let response = self.session_item_ui(
                 ui,
                 &session.title,
-                &session.cwd,
+                cwd,
                 is_active,
                 shortcut_hint,
                 session.status(),
