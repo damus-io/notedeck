@@ -23,7 +23,7 @@ use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
 use nostrdb::Transaction;
 use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::string::ToString;
 use std::sync::Arc;
@@ -226,10 +226,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Process incoming tokens from the ai backend for ALL sessions
-    fn process_events(&mut self, app_ctx: &AppContext) -> bool {
-        // Should we continue sending requests? Set this to true if
-        // we have tool responses to send back to the ai (only for active session)
-        let mut should_send = false;
+    /// Returns a set of session IDs that need to send tool responses
+    fn process_events(&mut self, app_ctx: &AppContext) -> HashSet<SessionId> {
+        // Track which sessions need to send tool responses
+        let mut needs_send: HashSet<SessionId> = HashSet::new();
         let active_id = self.session_manager.active_id();
 
         // Get all session IDs to process
@@ -283,33 +283,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         ToolResponses::PresentNotes(present.note_ids.len() as i32),
                                     )));
 
-                                    // Only send for active session
-                                    if active_id == Some(session_id) {
-                                        should_send = true;
-                                    }
+                                    needs_send.insert(session_id);
                                 }
 
                                 ToolCalls::Invalid(invalid) => {
-                                    if active_id == Some(session_id) {
-                                        should_send = true;
-                                    }
-
                                     session.chat.push(Message::tool_error(
                                         call.id().to_string(),
                                         invalid.error.clone(),
                                     ));
+
+                                    needs_send.insert(session_id);
                                 }
 
                                 ToolCalls::Query(search_call) => {
-                                    if active_id == Some(session_id) {
-                                        should_send = true;
-                                    }
-
                                     let resp = search_call.execute(&txn, app_ctx.ndb);
                                     session.chat.push(Message::ToolResponse(ToolResponse::new(
                                         call.id().to_owned(),
                                         ToolResponses::Query(resp),
-                                    )))
+                                    )));
+
+                                    needs_send.insert(session_id);
                                 }
                             }
                         }
@@ -416,7 +409,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
-        should_send
+        needs_send
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
@@ -821,7 +814,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn send_user_message(&mut self, app_ctx: &AppContext, ctx: &egui::Context) {
-        let Some(session) = self.session_manager.get_active_mut() else {
+        let Some(active_id) = self.session_manager.active_id() else {
+            return;
+        };
+        self.send_user_message_for(active_id, app_ctx, ctx);
+    }
+
+    /// Send a message for a specific session by ID
+    fn send_user_message_for(&mut self, sid: SessionId, app_ctx: &AppContext, ctx: &egui::Context) {
+        let Some(session) = self.session_manager.get_mut(sid) else {
             return;
         };
 
@@ -886,7 +887,7 @@ impl notedeck::App for Dave {
         self.check_interrupt_timeout();
 
         // Process incoming AI responses for all sessions
-        let should_send = self.process_events(ctx);
+        let sessions_needing_send = self.process_events(ctx);
 
         // Update all session statuses after processing events
         self.session_manager.update_all_statuses();
@@ -912,9 +913,9 @@ impl notedeck::App for Dave {
             }
         }
 
-        // Send continuation message if we have tool responses
-        if should_send {
-            self.send_user_message(ctx, ui.ctx());
+        // Send continuation messages for all sessions that have tool responses
+        for session_id in sessions_needing_send {
+            self.send_user_message_for(session_id, ctx, ui.ctx());
         }
 
         AppResponse::action(app_action)
