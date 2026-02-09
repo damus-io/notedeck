@@ -534,6 +534,8 @@ pub fn toggle_auto_steal(
 }
 
 /// Process auto-steal focus logic: switch to focus queue items as needed.
+/// Returns true if focus was stolen (switched to a NeedsInput session),
+/// which can be used to raise the OS window.
 pub fn process_auto_steal_focus(
     session_manager: &mut SessionManager,
     focus_queue: &mut FocusQueue,
@@ -541,9 +543,9 @@ pub fn process_auto_steal_focus(
     show_scene: bool,
     auto_steal_focus: bool,
     home_session: &mut Option<SessionId>,
-) {
+) -> bool {
     if !auto_steal_focus {
-        return;
+        return false;
     }
 
     let has_needs_input = focus_queue.has_needs_input();
@@ -575,6 +577,7 @@ pub fn process_auto_steal_focus(
                         }
                     }
                     tracing::debug!("Auto-steal: switched to session {:?}", entry.session_id);
+                    return true;
                 }
             }
         }
@@ -591,6 +594,8 @@ pub fn process_auto_steal_focus(
         }
         tracing::debug!("Auto-steal: returned to home session {:?}", home_id);
     }
+
+    false
 }
 
 // =============================================================================

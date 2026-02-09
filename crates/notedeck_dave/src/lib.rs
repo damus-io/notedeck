@@ -897,7 +897,7 @@ impl notedeck::App for Dave {
         self.focus_queue.update_from_statuses(status_iter);
 
         // Process auto-steal focus mode
-        update::process_auto_steal_focus(
+        let stole_focus = update::process_auto_steal_focus(
             &mut self.session_manager,
             &mut self.focus_queue,
             &mut self.scene,
@@ -905,6 +905,12 @@ impl notedeck::App for Dave {
             self.auto_steal_focus,
             &mut self.home_session,
         );
+
+        // Raise the OS window when auto-steal switches to a NeedsInput session
+        if stole_focus {
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
 
         // Render UI and handle actions
         if let Some(action) = self.ui(ctx, ui).action {
