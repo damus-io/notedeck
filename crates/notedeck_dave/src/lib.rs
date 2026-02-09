@@ -263,7 +263,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::Failed(err) => session.chat.push(Message::Error(err)),
 
                     DaveApiResponse::Token(token) => match session.chat.last_mut() {
-                        Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
+                        Some(Message::Assistant(msg)) => msg.push_str(&token),
                         Some(_) => session.chat.push(Message::Assistant(token)),
                         None => {}
                     },
