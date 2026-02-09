@@ -69,6 +69,7 @@ impl AiBackend for OpenAiBackend {
             {
                 Err(err) => {
                     tracing::error!("openai chat error: {err}");
+                    let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
                     return;
                 }
 
