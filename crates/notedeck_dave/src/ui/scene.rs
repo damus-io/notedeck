@@ -147,7 +147,7 @@ impl AgentScene {
         let mut scene_rect = self.scene_rect;
         let selected_ids = &self.selected;
 
-        egui::Scene::new()
+        let scene_response = egui::Scene::new()
             .zoom_range(0.1..=1.0)
             .show(ui, &mut scene_rect, |ui| {
                 // Draw agents and collect interaction responses
@@ -208,6 +208,9 @@ impl AgentScene {
                 }
             });
 
+        // Get the viewport rect for coordinate transforms
+        let viewport_rect = scene_response.response.rect;
+
         self.scene_rect = scene_rect;
 
         // Process agent click
@@ -263,7 +266,17 @@ impl AgentScene {
         // Handle box selection completion
         if let Some(drag) = &self.drag_select {
             if ui.input(|i| i.pointer.primary_released()) {
-                let selection_rect = Rect::from_two_pos(drag.start, drag.current);
+                // Convert screen-space drag coordinates to scene-space
+                // Screen -> Scene: scene_pos = scene_rect.min + (screen_pos - viewport.min) / viewport.size() * scene_rect.size()
+                let screen_to_scene = |screen_pos: Pos2| -> Pos2 {
+                    let rel = (screen_pos - viewport_rect.min) / viewport_rect.size();
+                    scene_rect.min + rel * scene_rect.size()
+                };
+
+                let scene_start = screen_to_scene(drag.start);
+                let scene_current = screen_to_scene(drag.current);
+                let selection_rect = Rect::from_two_pos(scene_start, scene_current);
+
                 self.selected.clear();
 
                 for session in session_manager.iter() {
