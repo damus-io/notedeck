@@ -105,28 +105,32 @@ impl DirectoryPicker {
         let is_narrow = notedeck::ui::is_narrow(ui.ctx());
         let ctrl_held = ui.input(|i| i.modifiers.ctrl);
 
-        // Handle keyboard shortcuts for recent directories (1-9)
-        for (idx, path) in self.recent_directories.iter().take(9).enumerate() {
-            let key = match idx {
-                0 => egui::Key::Num1,
-                1 => egui::Key::Num2,
-                2 => egui::Key::Num3,
-                3 => egui::Key::Num4,
-                4 => egui::Key::Num5,
-                5 => egui::Key::Num6,
-                6 => egui::Key::Num7,
-                7 => egui::Key::Num8,
-                8 => egui::Key::Num9,
-                _ => continue,
-            };
-            if ui.input(|i| i.key_pressed(key)) {
-                return Some(DirectoryPickerAction::DirectorySelected(path.clone()));
+        // Handle keyboard shortcuts for recent directories (Ctrl+1-9)
+        // Only trigger when Ctrl is held to avoid intercepting TextEdit input
+        if ctrl_held {
+            for (idx, path) in self.recent_directories.iter().take(9).enumerate() {
+                let key = match idx {
+                    0 => egui::Key::Num1,
+                    1 => egui::Key::Num2,
+                    2 => egui::Key::Num3,
+                    3 => egui::Key::Num4,
+                    4 => egui::Key::Num5,
+                    5 => egui::Key::Num6,
+                    6 => egui::Key::Num7,
+                    7 => egui::Key::Num8,
+                    8 => egui::Key::Num9,
+                    _ => continue,
+                };
+                if ui.input(|i| i.key_pressed(key)) {
+                    return Some(DirectoryPickerAction::DirectorySelected(path.clone()));
+                }
             }
         }
 
-        // Handle B key for browse (track whether we need to trigger it)
+        // Handle Ctrl+B key for browse (track whether we need to trigger it)
+        // Only trigger when Ctrl is held to avoid intercepting TextEdit input
         let trigger_browse =
-            ui.input(|i| i.key_pressed(egui::Key::B)) && self.pending_folder_pick.is_none();
+            ctrl_held && ui.input(|i| i.key_pressed(egui::Key::B)) && self.pending_folder_pick.is_none();
 
         // Full panel frame
         egui::Frame::new()

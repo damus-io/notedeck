@@ -80,36 +80,41 @@ impl SessionPicker {
         let is_narrow = notedeck::ui::is_narrow(ui.ctx());
         let ctrl_held = ui.input(|i| i.modifiers.ctrl);
 
-        // Handle keyboard shortcuts for sessions (1-9)
-        for (idx, session) in self.sessions.iter().take(9).enumerate() {
-            let key = match idx {
-                0 => egui::Key::Num1,
-                1 => egui::Key::Num2,
-                2 => egui::Key::Num3,
-                3 => egui::Key::Num4,
-                4 => egui::Key::Num5,
-                5 => egui::Key::Num6,
-                6 => egui::Key::Num7,
-                7 => egui::Key::Num8,
-                8 => egui::Key::Num9,
-                _ => continue,
-            };
-            if ui.input(|i| i.key_pressed(key)) {
-                return Some(SessionPickerAction::ResumeSession {
-                    cwd,
-                    session_id: session.session_id.clone(),
-                    title: session.summary.clone(),
-                });
+        // Handle keyboard shortcuts for sessions (Ctrl+1-9)
+        // Only trigger when Ctrl is held to avoid intercepting TextEdit input
+        if ctrl_held {
+            for (idx, session) in self.sessions.iter().take(9).enumerate() {
+                let key = match idx {
+                    0 => egui::Key::Num1,
+                    1 => egui::Key::Num2,
+                    2 => egui::Key::Num3,
+                    3 => egui::Key::Num4,
+                    4 => egui::Key::Num5,
+                    5 => egui::Key::Num6,
+                    6 => egui::Key::Num7,
+                    7 => egui::Key::Num8,
+                    8 => egui::Key::Num9,
+                    _ => continue,
+                };
+                if ui.input(|i| i.key_pressed(key)) {
+                    return Some(SessionPickerAction::ResumeSession {
+                        cwd,
+                        session_id: session.session_id.clone(),
+                        title: session.summary.clone(),
+                    });
+                }
             }
         }
 
-        // Handle N key for new session
-        if ui.input(|i| i.key_pressed(egui::Key::N)) {
+        // Handle Ctrl+N key for new session
+        // Only trigger when Ctrl is held to avoid intercepting TextEdit input
+        if ctrl_held && ui.input(|i| i.key_pressed(egui::Key::N)) {
             return Some(SessionPickerAction::NewSession { cwd });
         }
 
-        // Handle Escape/B key to go back
-        if ui.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::B)) {
+        // Handle Escape key or Ctrl+B to go back
+        // B key requires Ctrl to avoid intercepting TextEdit input
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) || (ctrl_held && ui.input(|i| i.key_pressed(egui::Key::B))) {
             return Some(SessionPickerAction::BackToDirectoryPicker);
         }
 
