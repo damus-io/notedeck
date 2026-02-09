@@ -2,6 +2,7 @@
 
 use crate::session_discovery::{discover_sessions, format_relative_time, ResumableSession};
 use crate::ui::keybind_hint::paint_keybind_hint;
+use crate::ui::path_utils::abbreviate_path;
 use egui::{RichText, Vec2};
 use std::path::{Path, PathBuf};
 
@@ -307,14 +308,4 @@ impl SessionPicker {
 
         action
     }
-}
-
-/// Abbreviate a path for display (e.g., replace home dir with ~)
-fn abbreviate_path(path: &Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(relative) = path.strip_prefix(&home) {
-            return format!("~/{}", relative.display());
-        }
-    }
-    path.display().to_string()
 }

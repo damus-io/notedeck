@@ -1,6 +1,7 @@
 use crate::ui::keybind_hint::paint_keybind_hint;
+use crate::ui::path_utils::abbreviate_path;
 use egui::{RichText, Vec2};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Maximum number of recent directories to store
 const MAX_RECENT_DIRECTORIES: usize = 10;
@@ -341,14 +342,4 @@ impl DirectoryPicker {
 
         action
     }
-}
-
-/// Abbreviate a path for display (e.g., replace home dir with ~)
-fn abbreviate_path(path: &Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(relative) = path.strip_prefix(&home) {
-            return format!("~/{}", relative.display());
-        }
-    }
-    path.display().to_string()
 }
