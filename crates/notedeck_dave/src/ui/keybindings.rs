@@ -1,3 +1,4 @@
+use crate::config::AiMode;
 use egui::Key;
 
 /// Keybinding actions that can be triggered globally
@@ -46,14 +47,18 @@ pub enum KeyAction {
 /// Check for keybinding actions.
 /// Most keybindings use Ctrl modifier to avoid conflicts with text input.
 /// Exception: 1/2 for permission responses work without Ctrl but only when no text input has focus.
+/// In Chat mode, agentic-specific keybindings (scene view, plan mode, focus queue) are disabled.
 pub fn check_keybindings(
     ctx: &egui::Context,
     has_pending_permission: bool,
     has_pending_question: bool,
     in_tentative_state: bool,
+    ai_mode: AiMode,
 ) -> Option<KeyAction> {
-    // Escape in tentative state cancels the tentative mode
-    if in_tentative_state && ctx.input(|i| i.key_pressed(Key::Escape)) {
+    let is_agentic = ai_mode == AiMode::Agentic;
+
+    // Escape in tentative state cancels the tentative mode (agentic only)
+    if is_agentic && in_tentative_state && ctx.input(|i| i.key_pressed(Key::Escape)) {
         return Some(KeyAction::CancelTentative);
     }
 
@@ -65,7 +70,7 @@ pub fn check_keybindings(
     let ctrl = egui::Modifiers::CTRL;
     let ctrl_shift = egui::Modifiers::CTRL | egui::Modifiers::SHIFT;
 
-    // Ctrl+Tab / Ctrl+Shift+Tab for cycling through agents
+    // Ctrl+Tab / Ctrl+Shift+Tab for cycling through agents/chats
     // Works even with text input focus since Ctrl modifier makes it unambiguous
     // IMPORTANT: Check Ctrl+Shift+Tab first because consume_key uses matches_logically
     // which ignores extra Shift, so Ctrl+Tab would consume Ctrl+Shift+Tab otherwise
@@ -81,28 +86,31 @@ pub fn check_keybindings(
         return Some(action);
     }
 
-    // Ctrl+N for higher priority (toward NeedsInput)
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::N)) {
-        return Some(KeyAction::FocusQueueNext);
+    // Focus queue navigation - agentic only
+    if is_agentic {
+        // Ctrl+N for higher priority (toward NeedsInput)
+        if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::N)) {
+            return Some(KeyAction::FocusQueueNext);
+        }
+
+        // Ctrl+P for lower priority (toward Done)
+        if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
+            return Some(KeyAction::FocusQueuePrev);
+        }
     }
 
-    // Ctrl+P for lower priority (toward Done)
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::P)) {
-        return Some(KeyAction::FocusQueuePrev);
-    }
-
-    // Ctrl+Shift+T to clone the active agent (check before Ctrl+T)
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::T)) {
+    // Ctrl+Shift+T to clone the active agent (check before Ctrl+T) - agentic only
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::T)) {
         return Some(KeyAction::CloneAgent);
     }
 
-    // Ctrl+T to spawn a new agent
+    // Ctrl+T to spawn a new agent/chat
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::T)) {
         return Some(KeyAction::NewAgent);
     }
 
-    // Ctrl+L to toggle between scene view and list view
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::L)) {
+    // Ctrl+L to toggle between scene view and list view - agentic only
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::L)) {
         return Some(KeyAction::ToggleView);
     }
 
@@ -111,18 +119,18 @@ pub fn check_keybindings(
         return Some(KeyAction::OpenExternalEditor);
     }
 
-    // Ctrl+M to toggle plan mode
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::M)) {
+    // Ctrl+M to toggle plan mode - agentic only
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::M)) {
         return Some(KeyAction::TogglePlanMode);
     }
 
-    // Ctrl+D to toggle Done status for current focus queue item
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::D)) {
+    // Ctrl+D to toggle Done status for current focus queue item - agentic only
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::D)) {
         return Some(KeyAction::FocusQueueToggleDone);
     }
 
-    // Ctrl+Space to toggle auto-steal focus mode
-    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::Space)) {
+    // Ctrl+Space to toggle auto-steal focus mode - agentic only
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::Space)) {
         return Some(KeyAction::ToggleAutoSteal);
     }
 
@@ -131,7 +139,7 @@ pub fn check_keybindings(
         return Some(KeyAction::DeleteActiveSession);
     }
 
-    // Ctrl+1-9 for switching agents (works even with text input focus)
+    // Ctrl+1-9 for switching agents/chats (works even with text input focus)
     // Check this BEFORE permission bindings so Ctrl+number always switches agents
     if let Some(action) = ctx.input(|i| {
         if !i.modifiers.matches_exact(ctrl) {
@@ -162,6 +170,7 @@ pub fn check_keybindings(
         return Some(action);
     }
 
+    // Permission keybindings - agentic only
     // When there's a pending permission (but NOT an AskUserQuestion):
     // - 1 = accept, 2 = deny (no modifiers)
     // - Shift+1 = tentative accept, Shift+2 = tentative deny (for adding message)
@@ -169,7 +178,7 @@ pub fn check_keybindings(
     // IMPORTANT: Only handle these when no text input has focus, to avoid
     // capturing keypresses when user is typing a message in tentative state
     // AskUserQuestion uses number keys for option selection, so we skip these bindings
-    if has_pending_permission && !has_pending_question && !ctx.wants_keyboard_input() {
+    if is_agentic && has_pending_permission && !has_pending_question && !ctx.wants_keyboard_input() {
         // Shift+1 = tentative accept, Shift+2 = tentative deny
         // Note: egui may report shifted keys as their symbol (e.g., Shift+1 as Exclamationmark)
         // We check for both the symbol key and Shift+Num key to handle different behaviors

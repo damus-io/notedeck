@@ -1,6 +1,15 @@
 use crate::backend::BackendType;
 use async_openai::config::OpenAIConfig;
 
+/// AI interaction mode - determines UI complexity and feature set
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiMode {
+    /// Simple chat interface (OpenAI-style) - no permissions, no CWD, no scene view
+    Chat,
+    /// Full IDE with permissions, sessions, scene view, etc. (Claude backend)
+    Agentic,
+}
+
 /// Available AI providers for Dave
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AiProvider {
@@ -208,6 +217,13 @@ impl Default for ModelConfig {
 }
 
 impl ModelConfig {
+    pub fn ai_mode(&self) -> AiMode {
+        match self.backend {
+            BackendType::Claude => AiMode::Agentic,
+            BackendType::OpenAI => AiMode::Chat,
+        }
+    }
+
     pub fn model(&self) -> &str {
         &self.model
     }

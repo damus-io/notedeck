@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use crate::agent_status::AgentStatus;
+use crate::config::AiMode;
 use crate::messages::{
     CompactionInfo, PermissionResponse, QuestionAnswer, SessionInfo, SubagentStatus,
 };
@@ -63,6 +64,8 @@ pub struct ChatSession {
     /// Claude session ID to resume (UUID from Claude CLI's session storage)
     /// When set, the backend will use --resume to continue this session
     pub resume_session_id: Option<String>,
+    /// AI interaction mode for this session (Chat vs Agentic)
+    pub ai_mode: AiMode,
 }
 
 impl Drop for ChatSession {
@@ -74,7 +77,7 @@ impl Drop for ChatSession {
 }
 
 impl ChatSession {
-    pub fn new(id: SessionId, cwd: PathBuf) -> Self {
+    pub fn new(id: SessionId, cwd: PathBuf, ai_mode: AiMode) -> Self {
         // Arrange sessions in a grid pattern
         let col = (id as i32 - 1) % 4;
         let row = (id as i32 - 1) / 4;
@@ -102,6 +105,7 @@ impl ChatSession {
             is_compacting: false,
             last_compaction: None,
             resume_session_id: None,
+            ai_mode,
         }
     }
 
@@ -111,8 +115,9 @@ impl ChatSession {
         cwd: PathBuf,
         resume_session_id: String,
         title: String,
+        ai_mode: AiMode,
     ) -> Self {
-        let mut session = Self::new(id, cwd);
+        let mut session = Self::new(id, cwd, ai_mode);
         session.resume_session_id = Some(resume_session_id);
         session.title = title;
         session
@@ -229,11 +234,11 @@ impl SessionManager {
     }
 
     /// Create a new session with the given cwd and make it active
-    pub fn new_session(&mut self, cwd: PathBuf) -> SessionId {
+    pub fn new_session(&mut self, cwd: PathBuf, ai_mode: AiMode) -> SessionId {
         let id = self.next_id;
         self.next_id += 1;
 
-        let session = ChatSession::new(id, cwd);
+        let session = ChatSession::new(id, cwd, ai_mode);
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
@@ -247,11 +252,12 @@ impl SessionManager {
         cwd: PathBuf,
         resume_session_id: String,
         title: String,
+        ai_mode: AiMode,
     ) -> SessionId {
         let id = self.next_id;
         self.next_id += 1;
 
-        let session = ChatSession::new_resumed(id, cwd, resume_session_id, title);
+        let session = ChatSession::new_resumed(id, cwd, resume_session_id, title, ai_mode);
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);

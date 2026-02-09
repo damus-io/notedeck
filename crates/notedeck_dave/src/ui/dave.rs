@@ -3,7 +3,7 @@ use super::diff;
 use super::query_ui::query_call_ui;
 use super::top_buttons::top_buttons_ui;
 use crate::{
-    config::DaveSettings,
+    config::{AiMode, DaveSettings},
     file_update::FileUpdate,
     messages::{
         AskUserQuestionInput, CompactionInfo, Message, PermissionRequest, PermissionResponse,
@@ -40,6 +40,8 @@ pub struct DaveUi<'a> {
     is_compacting: bool,
     /// Whether auto-steal focus mode is active
     auto_steal_focus: bool,
+    /// AI interaction mode (Chat vs Agentic)
+    ai_mode: AiMode,
 }
 
 /// The response the app generates. The response contains an optional
@@ -121,6 +123,7 @@ impl<'a> DaveUi<'a> {
         chat: &'a [Message],
         input: &'a mut String,
         focus_requested: &'a mut bool,
+        ai_mode: AiMode,
     ) -> Self {
         DaveUi {
             trial,
@@ -137,6 +140,7 @@ impl<'a> DaveUi<'a> {
             question_index: None,
             is_compacting: false,
             auto_steal_focus: false,
+            ai_mode,
         }
     }
 
@@ -275,6 +279,8 @@ impl<'a> DaveUi<'a> {
     /// Render a chat message (user, assistant, tool call/response, etc)
     fn render_chat(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let mut response = DaveResponse::default();
+        let is_agentic = self.ai_mode == AiMode::Agentic;
+
         for message in self.chat {
             match message {
                 Message::Error(err) => {
@@ -299,24 +305,36 @@ impl<'a> DaveUi<'a> {
                     }
                 }
                 Message::PermissionRequest(request) => {
-                    if let Some(action) = self.permission_request_ui(request, ui) {
-                        response = DaveResponse::new(action);
+                    // Permission requests only in Agentic mode
+                    if is_agentic {
+                        if let Some(action) = self.permission_request_ui(request, ui) {
+                            response = DaveResponse::new(action);
+                        }
                     }
                 }
                 Message::ToolResult(result) => {
-                    Self::tool_result_ui(result, ui);
+                    // Tool results only in Agentic mode
+                    if is_agentic {
+                        Self::tool_result_ui(result, ui);
+                    }
                 }
                 Message::CompactionComplete(info) => {
-                    Self::compaction_complete_ui(info, ui);
+                    // Compaction only in Agentic mode
+                    if is_agentic {
+                        Self::compaction_complete_ui(info, ui);
+                    }
                 }
                 Message::Subagent(info) => {
-                    Self::subagent_ui(info, ui);
+                    // Subagents only in Agentic mode
+                    if is_agentic {
+                        Self::subagent_ui(info, ui);
+                    }
                 }
             };
         }
 
         // Show status line at the bottom of chat when working or compacting
-        let status_text = if self.is_compacting {
+        let status_text = if is_agentic && self.is_compacting {
             Some("compacting...")
         } else if self.is_working {
             Some("computing...")
@@ -971,34 +989,38 @@ impl<'a> DaveUi<'a> {
                     dave_response = DaveResponse::send();
                 }
 
-                // Show plan mode indicator with optional keybind hint when Ctrl is held
-                let ctrl_held = ui.input(|i| i.modifiers.ctrl);
-                let mut plan_badge =
-                    super::badge::StatusBadge::new("PLAN").variant(if self.plan_mode_active {
-                        super::badge::BadgeVariant::Info
-                    } else {
-                        super::badge::BadgeVariant::Default
-                    });
-                if ctrl_held {
-                    plan_badge = plan_badge.keybind("M");
-                }
-                plan_badge
-                    .show(ui)
-                    .on_hover_text("Ctrl+M to toggle plan mode");
+                // Show plan mode and auto-steal indicators only in Agentic mode
+                if self.ai_mode == AiMode::Agentic {
+                    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
 
-                // Show auto-steal focus indicator
-                let mut auto_badge =
-                    super::badge::StatusBadge::new("AUTO").variant(if self.auto_steal_focus {
-                        super::badge::BadgeVariant::Info
-                    } else {
-                        super::badge::BadgeVariant::Default
-                    });
-                if ctrl_held {
-                    auto_badge = auto_badge.keybind("⎵");
+                    // Plan mode indicator with optional keybind hint when Ctrl is held
+                    let mut plan_badge =
+                        super::badge::StatusBadge::new("PLAN").variant(if self.plan_mode_active {
+                            super::badge::BadgeVariant::Info
+                        } else {
+                            super::badge::BadgeVariant::Default
+                        });
+                    if ctrl_held {
+                        plan_badge = plan_badge.keybind("M");
+                    }
+                    plan_badge
+                        .show(ui)
+                        .on_hover_text("Ctrl+M to toggle plan mode");
+
+                    // Auto-steal focus indicator
+                    let mut auto_badge =
+                        super::badge::StatusBadge::new("AUTO").variant(if self.auto_steal_focus {
+                            super::badge::BadgeVariant::Info
+                        } else {
+                            super::badge::BadgeVariant::Default
+                        });
+                    if ctrl_held {
+                        auto_badge = auto_badge.keybind("⎵");
+                    }
+                    auto_badge
+                        .show(ui)
+                        .on_hover_text("Ctrl+Space to toggle auto-focus mode");
                 }
-                auto_badge
-                    .show(ui)
-                    .on_hover_text("Ctrl+Space to toggle auto-focus mode");
 
                 let r = ui.add(
                     egui::TextEdit::multiline(self.input)

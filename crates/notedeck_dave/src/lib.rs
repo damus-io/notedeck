@@ -30,7 +30,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub use avatar::DaveAvatar;
-pub use config::{AiProvider, DaveSettings, ModelConfig};
+pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig};
 pub use messages::{
     AskUserQuestionInput, DaveApiResponse, Message, PermissionResponse, PermissionResponseType,
     QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus, ToolResult,
@@ -60,6 +60,8 @@ pub enum DaveOverlay {
 }
 
 pub struct Dave {
+    /// AI interaction mode (Chat vs Agentic)
+    ai_mode: AiMode,
     /// Manages multiple chat sessions
     session_manager: SessionManager,
     /// A 3d representation of dave.
@@ -144,6 +146,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let model_config = ModelConfig::default();
         //let model_config = ModelConfig::ollama();
 
+        // Determine AI mode from backend type
+        let ai_mode = model_config.ai_mode();
+
         // Create backend based on configuration
         let backend: Box<dyn AiBackend> = match model_config.backend {
             BackendType::OpenAI => {
@@ -173,10 +178,23 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Create IPC listener for external spawn-agent commands
         let ipc_listener = ipc::create_listener(ctx);
 
+        // In Chat mode, create a default session immediately and skip directory picker
+        // In Agentic mode, show directory picker on startup
+        let (session_manager, active_overlay) = match ai_mode {
+            AiMode::Chat => {
+                let mut manager = SessionManager::new();
+                // Create a default session with current directory
+                manager.new_session(std::env::current_dir().unwrap_or_default(), ai_mode);
+                (manager, DaveOverlay::None)
+            }
+            AiMode::Agentic => (SessionManager::new(), DaveOverlay::DirectoryPicker),
+        };
+
         Dave {
+            ai_mode,
             backend,
             avatar,
-            session_manager: SessionManager::new(),
+            session_manager,
             tools: Arc::new(tools),
             model_config,
             show_session_list: false,
@@ -190,8 +208,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             home_session: None,
             directory_picker,
             session_picker: SessionPicker::new(),
-            // Auto-show directory picker on startup since there are no sessions
-            active_overlay: DaveOverlay::DirectoryPicker,
+            active_overlay,
             ipc_listener,
         }
     }
@@ -581,6 +598,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         &session.chat,
                                         &mut session.input,
                                         &mut session.focus_requested,
+                                        session.ai_mode,
                                     )
                                     .compact(true)
                                     .is_working(is_working)
@@ -664,21 +682,23 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .fill(ui.visuals().faint_bg_color)
                     .inner_margin(egui::Margin::symmetric(8, 12))
                     .show(ui, |ui| {
-                        // Add scene view toggle button
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button("Scene View")
-                                .on_hover_text("Ctrl+L to toggle views")
-                                .clicked()
-                            {
-                                self.show_scene = true;
-                            }
-                            if ctrl_held {
-                                ui::keybind_hint(ui, "L");
-                            }
-                        });
-                        ui.separator();
-                        SessionListUi::new(&self.session_manager, &self.focus_queue, ctrl_held)
+                        // Add scene view toggle button - only in Agentic mode
+                        if self.ai_mode == AiMode::Agentic {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button("Scene View")
+                                    .on_hover_text("Ctrl+L to toggle views")
+                                    .clicked()
+                                {
+                                    self.show_scene = true;
+                                }
+                                if ctrl_held {
+                                    ui::keybind_hint(ui, "L");
+                                }
+                            });
+                            ui.separator();
+                        }
+                        SessionListUi::new(&self.session_manager, &self.focus_queue, ctrl_held, self.ai_mode)
                             .ui(ui)
                     })
                     .inner
@@ -699,6 +719,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         &session.chat,
                         &mut session.input,
                         &mut session.focus_requested,
+                        session.ai_mode,
                     )
                     .is_working(is_working)
                     .interrupt_pending(interrupt_pending)
@@ -741,7 +762,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::symmetric(8, 12))
                 .show(ui, |ui| {
-                    SessionListUi::new(&self.session_manager, &self.focus_queue, ctrl_held).ui(ui)
+                    SessionListUi::new(&self.session_manager, &self.focus_queue, ctrl_held, self.ai_mode).ui(ui)
                 })
                 .inner;
             if let Some(action) = session_action {
@@ -773,6 +794,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &session.chat,
                     &mut session.input,
                     &mut session.focus_requested,
+                    session.ai_mode,
                 )
                 .is_working(is_working)
                 .interrupt_pending(interrupt_pending)
@@ -800,7 +822,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Add to recent directories
         self.directory_picker.add_recent(cwd.clone());
 
-        let id = self.session_manager.new_session(cwd);
+        let id = self.session_manager.new_session(cwd, self.ai_mode);
         // Request focus on the new session's input
         if let Some(session) = self.session_manager.get_mut(id) {
             session.focus_requested = true;
@@ -824,7 +846,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let id = self
             .session_manager
-            .new_resumed_session(cwd, resume_session_id, title);
+            .new_resumed_session(cwd, resume_session_id, title, self.ai_mode);
         // Request focus on the new session's input
         if let Some(session) = self.session_manager.get_mut(id) {
             session.focus_requested = true;
@@ -852,7 +874,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Drain all pending connections (non-blocking)
         while let Some(mut pending) = listener.try_recv() {
             // Create the session and get its ID
-            let id = self.session_manager.new_session(pending.cwd.clone());
+            let id = self.session_manager.new_session(pending.cwd.clone(), self.ai_mode);
             self.directory_picker.add_recent(pending.cwd);
 
             // Focus on new session
@@ -1599,6 +1621,7 @@ impl notedeck::App for Dave {
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
+            self.ai_mode,
         ) {
             match key_action {
                 KeyAction::AcceptPermission => {
