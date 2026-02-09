@@ -83,7 +83,10 @@ impl FileUpdate {
                 let file_path = obj.get("file_path")?.as_str()?.to_string();
                 let content = obj.get("content")?.as_str()?.to_string();
 
-                Some(FileUpdate::new(file_path, FileUpdateType::Write { content }))
+                Some(FileUpdate::new(
+                    file_path,
+                    FileUpdateType::Write { content },
+                ))
             }
             _ => None,
         }

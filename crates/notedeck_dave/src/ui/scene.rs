@@ -147,66 +147,67 @@ impl AgentScene {
         let mut scene_rect = self.scene_rect;
         let selected_ids = &self.selected;
 
-        let scene_response = egui::Scene::new()
-            .zoom_range(0.1..=1.0)
-            .show(ui, &mut scene_rect, |ui| {
-                // Draw agents and collect interaction responses
-                // Use sessions_ordered() to match keybinding order (Ctrl+1 = first in order, etc.)
-                for (keybind_idx, session) in
-                    session_manager.sessions_ordered().into_iter().enumerate()
-                {
-                    // Scene view only makes sense for agentic sessions
-                    let Some(agentic) = &session.agentic else {
-                        continue;
-                    };
+        let scene_response =
+            egui::Scene::new()
+                .zoom_range(0.1..=1.0)
+                .show(ui, &mut scene_rect, |ui| {
+                    // Draw agents and collect interaction responses
+                    // Use sessions_ordered() to match keybinding order (Ctrl+1 = first in order, etc.)
+                    for (keybind_idx, session) in
+                        session_manager.sessions_ordered().into_iter().enumerate()
+                    {
+                        // Scene view only makes sense for agentic sessions
+                        let Some(agentic) = &session.agentic else {
+                            continue;
+                        };
 
-                    let id = session.id;
-                    let keybind_number = keybind_idx + 1; // 1-indexed for display
-                    let position = agentic.scene_position;
-                    let status = session.status();
-                    let title = &session.title;
-                    let is_selected = selected_ids.contains(&id);
-                    let queue_priority = focus_queue.get_session_priority(id);
+                        let id = session.id;
+                        let keybind_number = keybind_idx + 1; // 1-indexed for display
+                        let position = agentic.scene_position;
+                        let status = session.status();
+                        let title = &session.title;
+                        let is_selected = selected_ids.contains(&id);
+                        let queue_priority = focus_queue.get_session_priority(id);
 
-                    let agent_response = Self::draw_agent(
-                        ui,
-                        id,
-                        keybind_number,
-                        position,
-                        status,
-                        title,
-                        &agentic.cwd,
-                        is_selected,
-                        ctrl_held,
-                        queue_priority,
+                        let agent_response = Self::draw_agent(
+                            ui,
+                            id,
+                            keybind_number,
+                            position,
+                            status,
+                            title,
+                            &agentic.cwd,
+                            is_selected,
+                            ctrl_held,
+                            queue_priority,
+                        );
+
+                        if agent_response.clicked() {
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            clicked_agent = Some((id, shift, position));
+                        }
+
+                        if agent_response.dragged() && is_selected {
+                            let delta = agent_response.drag_delta();
+                            dragged_agent = Some((id, position + delta));
+                        }
+                    }
+
+                    // Handle click on empty space to deselect
+                    let bg_response = ui.interact(
+                        ui.max_rect(),
+                        ui.id().with("scene_bg"),
+                        Sense::click_and_drag(),
                     );
 
-                    if agent_response.clicked() {
-                        let shift = ui.input(|i| i.modifiers.shift);
-                        clicked_agent = Some((id, shift, position));
+                    if bg_response.clicked() && clicked_agent.is_none() {
+                        bg_clicked = true;
                     }
 
-                    if agent_response.dragged() && is_selected {
-                        let delta = agent_response.drag_delta();
-                        dragged_agent = Some((id, position + delta));
+                    if bg_response.drag_started() && clicked_agent.is_none() {
+                        bg_drag_started = true;
                     }
-                }
-
-                // Handle click on empty space to deselect
-                let bg_response = ui.interact(
-                    ui.max_rect(),
-                    ui.id().with("scene_bg"),
-                    Sense::click_and_drag(),
-                );
-
-                if bg_response.clicked() && clicked_agent.is_none() {
-                    bg_clicked = true;
-                }
-
-                if bg_response.drag_started() && clicked_agent.is_none() {
-                    bg_drag_started = true;
-                }
-            });
+                });
 
         // Get the viewport rect for coordinate transforms
         let viewport_rect = scene_response.response.rect;

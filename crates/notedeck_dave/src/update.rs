@@ -145,7 +145,7 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
 }
 
 /// Get the tool name of the first pending permission request.
-pub fn pending_permission_tool_name<'a>(session_manager: &'a SessionManager) -> Option<&'a str> {
+pub fn pending_permission_tool_name(session_manager: &SessionManager) -> Option<&str> {
     let session = session_manager.get_active()?;
     let agentic = session.agentic.as_ref()?;
     let request_id = agentic.pending_permissions.keys().next()?;
@@ -551,8 +551,7 @@ pub fn process_auto_steal_focus(
     if has_needs_input {
         // There are NeedsInput items - check if we need to steal focus
         let current_session = session_manager.active_id();
-        let current_priority =
-            current_session.and_then(|id| focus_queue.get_session_priority(id));
+        let current_priority = current_session.and_then(|id| focus_queue.get_session_priority(id));
         let already_on_needs_input = current_priority == Some(FocusPriority::NeedsInput);
 
         if !already_on_needs_input {
@@ -770,6 +769,7 @@ pub fn create_session_with_cwd(
 }
 
 /// Create a new session that resumes an existing Claude conversation.
+#[allow(clippy::too_many_arguments)]
 pub fn create_resumed_session_with_cwd(
     session_manager: &mut SessionManager,
     directory_picker: &mut DirectoryPicker,

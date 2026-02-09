@@ -154,13 +154,12 @@ impl AiBackend for OpenAiBackend {
                 };
             }
 
-            if !parsed_tool_calls.is_empty() {
-                if tx
+            if !parsed_tool_calls.is_empty()
+                && tx
                     .send(DaveApiResponse::ToolCalls(parsed_tool_calls))
                     .is_ok()
-                {
-                    ctx.request_repaint();
-                }
+            {
+                ctx.request_repaint();
             }
 
             tracing::debug!("stream closed");

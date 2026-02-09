@@ -129,8 +129,9 @@ impl DirectoryPicker {
 
         // Handle Ctrl+B key for browse (track whether we need to trigger it)
         // Only trigger when Ctrl is held to avoid intercepting TextEdit input
-        let trigger_browse =
-            ctrl_held && ui.input(|i| i.key_pressed(egui::Key::B)) && self.pending_folder_pick.is_none();
+        let trigger_browse = ctrl_held
+            && ui.input(|i| i.key_pressed(egui::Key::B))
+            && self.pending_folder_pick.is_none();
 
         // Full panel frame
         egui::Frame::new()
