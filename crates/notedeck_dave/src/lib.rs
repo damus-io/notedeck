@@ -1644,6 +1644,259 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // If no NeedsInput and no home_session saved, do nothing - allow free navigation
     }
 
+    /// Handle a keybinding action
+    fn handle_key_action(&mut self, key_action: KeyAction, ui: &egui::Ui) {
+        match key_action {
+            KeyAction::AcceptPermission => {
+                if let Some(request_id) = self.first_pending_permission() {
+                    self.handle_permission_response(
+                        request_id,
+                        PermissionResponse::Allow { message: None },
+                    );
+                    // Restore input focus after permission response
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.focus_requested = true;
+                    }
+                }
+            }
+            KeyAction::DenyPermission => {
+                if let Some(request_id) = self.first_pending_permission() {
+                    self.handle_permission_response(
+                        request_id,
+                        PermissionResponse::Deny {
+                            reason: "User denied".into(),
+                        },
+                    );
+                    // Restore input focus after permission response
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.focus_requested = true;
+                    }
+                }
+            }
+            KeyAction::TentativeAccept => {
+                // Enter tentative accept mode - user will type message, then Enter to send
+                if let Some(session) = self.session_manager.get_active_mut() {
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic.permission_message_state =
+                            crate::session::PermissionMessageState::TentativeAccept;
+                    }
+                    session.focus_requested = true;
+                }
+            }
+            KeyAction::TentativeDeny => {
+                // Enter tentative deny mode - user will type message, then Enter to send
+                if let Some(session) = self.session_manager.get_active_mut() {
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic.permission_message_state =
+                            crate::session::PermissionMessageState::TentativeDeny;
+                    }
+                    session.focus_requested = true;
+                }
+            }
+            KeyAction::CancelTentative => {
+                // Cancel tentative mode
+                if let Some(session) = self.session_manager.get_active_mut() {
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic.permission_message_state =
+                            crate::session::PermissionMessageState::None;
+                    }
+                }
+            }
+            KeyAction::SwitchToAgent(index) => {
+                self.switch_to_agent_by_index(index);
+            }
+            KeyAction::NextAgent => {
+                self.cycle_next_agent();
+            }
+            KeyAction::PreviousAgent => {
+                self.cycle_prev_agent();
+            }
+            KeyAction::NewAgent => {
+                self.handle_new_chat();
+            }
+            KeyAction::CloneAgent => {
+                self.clone_active_agent();
+            }
+            KeyAction::Interrupt => {
+                self.handle_interrupt_request(ui);
+            }
+            KeyAction::ToggleView => {
+                self.show_scene = !self.show_scene;
+            }
+            KeyAction::TogglePlanMode => {
+                self.toggle_plan_mode(ui.ctx());
+                // Restore input focus after toggling plan mode
+                if let Some(session) = self.session_manager.get_active_mut() {
+                    session.focus_requested = true;
+                }
+            }
+            KeyAction::DeleteActiveSession => {
+                if let Some(id) = self.session_manager.active_id() {
+                    self.delete_session(id);
+                }
+            }
+            KeyAction::FocusQueueNext => {
+                self.focus_queue_next();
+            }
+            KeyAction::FocusQueuePrev => {
+                self.focus_queue_prev();
+            }
+            KeyAction::FocusQueueToggleDone => {
+                self.focus_queue_toggle_done();
+            }
+            KeyAction::ToggleAutoSteal => {
+                self.toggle_auto_steal();
+            }
+            KeyAction::OpenExternalEditor => {
+                self.open_external_editor();
+            }
+        }
+    }
+
+    /// Handle the Send action, including tentative permission states
+    fn handle_send_action(&mut self, ctx: &AppContext, ui: &egui::Ui) {
+        // Check if we're in tentative state - if so, send permission response with message
+        let tentative_state = self
+            .session_manager
+            .get_active()
+            .and_then(|s| s.agentic.as_ref())
+            .map(|a| a.permission_message_state)
+            .unwrap_or(crate::session::PermissionMessageState::None);
+
+        match tentative_state {
+            crate::session::PermissionMessageState::TentativeAccept => {
+                // Send permission Allow with the message from input
+                // If this is ExitPlanMode, also exit plan mode
+                let is_exit_plan_mode = self.has_pending_exit_plan_mode();
+                if let Some(request_id) = self.first_pending_permission() {
+                    let message = self
+                        .session_manager
+                        .get_active()
+                        .map(|s| s.input.clone())
+                        .filter(|m| !m.is_empty());
+                    // Clear input
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.input.clear();
+                    }
+                    if is_exit_plan_mode {
+                        self.exit_plan_mode(ui.ctx());
+                    }
+                    self.handle_permission_response(
+                        request_id,
+                        PermissionResponse::Allow { message },
+                    );
+                }
+            }
+            crate::session::PermissionMessageState::TentativeDeny => {
+                // Send permission Deny with the message from input
+                if let Some(request_id) = self.first_pending_permission() {
+                    let reason = self
+                        .session_manager
+                        .get_active()
+                        .map(|s| s.input.clone())
+                        .filter(|m| !m.is_empty())
+                        .unwrap_or_else(|| "User denied".into());
+                    // Clear input
+                    if let Some(session) = self.session_manager.get_active_mut() {
+                        session.input.clear();
+                    }
+                    self.handle_permission_response(
+                        request_id,
+                        PermissionResponse::Deny { reason },
+                    );
+                }
+            }
+            crate::session::PermissionMessageState::None => {
+                // Normal send behavior
+                self.handle_user_send(ctx, ui);
+            }
+        }
+    }
+
+    /// Handle a UI action from DaveUi
+    fn handle_ui_action(&mut self, action: DaveAction, ctx: &AppContext, ui: &egui::Ui) -> Option<AppAction> {
+        match action {
+            DaveAction::ToggleChrome => {
+                return Some(AppAction::ToggleChrome);
+            }
+            DaveAction::Note(n) => {
+                return Some(AppAction::Note(n));
+            }
+            DaveAction::NewChat => {
+                self.handle_new_chat();
+            }
+            DaveAction::Send => {
+                self.handle_send_action(ctx, ui);
+            }
+            DaveAction::ShowSessionList => {
+                self.show_session_list = !self.show_session_list;
+            }
+            DaveAction::OpenSettings => {
+                self.active_overlay = DaveOverlay::Settings;
+            }
+            DaveAction::UpdateSettings(_settings) => {
+                // Parent app can poll settings() after update
+            }
+            DaveAction::PermissionResponse {
+                request_id,
+                response,
+            } => {
+                self.handle_permission_response(request_id, response);
+            }
+            DaveAction::Interrupt => {
+                self.handle_interrupt(ui);
+            }
+            DaveAction::TentativeAccept => {
+                // Enter tentative accept mode (from Shift+click)
+                if let Some(session) = self.session_manager.get_active_mut() {
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic.permission_message_state =
+                            crate::session::PermissionMessageState::TentativeAccept;
+                    }
+                    session.focus_requested = true;
+                }
+            }
+            DaveAction::TentativeDeny => {
+                // Enter tentative deny mode (from Shift+click)
+                if let Some(session) = self.session_manager.get_active_mut() {
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic.permission_message_state =
+                            crate::session::PermissionMessageState::TentativeDeny;
+                    }
+                    session.focus_requested = true;
+                }
+            }
+            DaveAction::QuestionResponse {
+                request_id,
+                answers,
+            } => {
+                self.handle_question_response(request_id, answers);
+            }
+            DaveAction::ExitPlanMode {
+                request_id,
+                approved,
+            } => {
+                if approved {
+                    // Exit plan mode and allow the tool call
+                    self.exit_plan_mode(ui.ctx());
+                    self.handle_permission_response(
+                        request_id,
+                        PermissionResponse::Allow { message: None },
+                    );
+                } else {
+                    // Deny the tool call
+                    self.handle_permission_response(
+                        request_id,
+                        PermissionResponse::Deny {
+                            reason: "User rejected plan".into(),
+                        },
+                    );
+                }
+            }
+        }
+        None
+    }
+
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         // Check for /cd command first (agentic only)
@@ -1729,14 +1982,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut app_action: Option<AppAction> = None;
-        let mut dave_action: Option<DaveAction> = None;
-
-        // always insert system prompt if we have no context in active session
-        if let Some(session) = self.session_manager.get_active_mut() {
-            if session.chat.is_empty() {
-                //session.chat.push(Dave::system_prompt());
-            }
-        }
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
@@ -1760,273 +2005,36 @@ impl notedeck::App for Dave {
             in_tentative_state,
             self.ai_mode,
         ) {
-            match key_action {
-                KeyAction::AcceptPermission => {
-                    if let Some(request_id) = self.first_pending_permission() {
-                        self.handle_permission_response(
-                            request_id,
-                            PermissionResponse::Allow { message: None },
-                        );
-                        // Restore input focus after permission response
-                        if let Some(session) = self.session_manager.get_active_mut() {
-                            session.focus_requested = true;
-                        }
-                    }
-                }
-                KeyAction::DenyPermission => {
-                    if let Some(request_id) = self.first_pending_permission() {
-                        self.handle_permission_response(
-                            request_id,
-                            PermissionResponse::Deny {
-                                reason: "User denied".into(),
-                            },
-                        );
-                        // Restore input focus after permission response
-                        if let Some(session) = self.session_manager.get_active_mut() {
-                            session.focus_requested = true;
-                        }
-                    }
-                }
-                KeyAction::TentativeAccept => {
-                    // Enter tentative accept mode - user will type message, then Enter to send
-                    if let Some(session) = self.session_manager.get_active_mut() {
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.permission_message_state =
-                                crate::session::PermissionMessageState::TentativeAccept;
-                        }
-                        session.focus_requested = true;
-                    }
-                }
-                KeyAction::TentativeDeny => {
-                    // Enter tentative deny mode - user will type message, then Enter to send
-                    if let Some(session) = self.session_manager.get_active_mut() {
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.permission_message_state =
-                                crate::session::PermissionMessageState::TentativeDeny;
-                        }
-                        session.focus_requested = true;
-                    }
-                }
-                KeyAction::CancelTentative => {
-                    // Cancel tentative mode
-                    if let Some(session) = self.session_manager.get_active_mut() {
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.permission_message_state =
-                                crate::session::PermissionMessageState::None;
-                        }
-                    }
-                }
-                KeyAction::SwitchToAgent(index) => {
-                    self.switch_to_agent_by_index(index);
-                }
-                KeyAction::NextAgent => {
-                    self.cycle_next_agent();
-                }
-                KeyAction::PreviousAgent => {
-                    self.cycle_prev_agent();
-                }
-                KeyAction::NewAgent => {
-                    self.handle_new_chat();
-                }
-                KeyAction::CloneAgent => {
-                    self.clone_active_agent();
-                }
-                KeyAction::Interrupt => {
-                    self.handle_interrupt_request(ui);
-                }
-                KeyAction::ToggleView => {
-                    self.show_scene = !self.show_scene;
-                }
-                KeyAction::TogglePlanMode => {
-                    self.toggle_plan_mode(ui.ctx());
-                    // Restore input focus after toggling plan mode
-                    if let Some(session) = self.session_manager.get_active_mut() {
-                        session.focus_requested = true;
-                    }
-                }
-                KeyAction::DeleteActiveSession => {
-                    if let Some(id) = self.session_manager.active_id() {
-                        self.delete_session(id);
-                    }
-                }
-                KeyAction::FocusQueueNext => {
-                    self.focus_queue_next();
-                }
-                KeyAction::FocusQueuePrev => {
-                    self.focus_queue_prev();
-                }
-                KeyAction::FocusQueueToggleDone => {
-                    self.focus_queue_toggle_done();
-                }
-                KeyAction::ToggleAutoSteal => {
-                    self.toggle_auto_steal();
-                }
-                KeyAction::OpenExternalEditor => {
-                    self.open_external_editor();
-                }
-            }
+            self.handle_key_action(key_action, ui);
         }
 
         // Check if interrupt confirmation has timed out
         self.check_interrupt_timeout();
 
-        //update_dave(self, ctx, ui.ctx());
+        // Process incoming AI responses for all sessions
         let should_send = self.process_events(ctx);
 
         // Update all session statuses after processing events
         self.session_manager.update_all_statuses();
 
-        // Update focus queue based on status changes (replaces auto-focus-stealing)
+        // Update focus queue based on status changes
         let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));
         self.focus_queue.update_from_statuses(status_iter);
 
         // Process auto-steal focus mode
         self.process_auto_steal_focus();
 
+        // Render UI and handle actions
         if let Some(action) = self.ui(ctx, ui).action {
-            match action {
-                DaveAction::ToggleChrome => {
-                    app_action = Some(AppAction::ToggleChrome);
-                }
-                DaveAction::Note(n) => {
-                    app_action = Some(AppAction::Note(n));
-                }
-                DaveAction::NewChat => {
-                    self.handle_new_chat();
-                }
-                DaveAction::Send => {
-                    // Check if we're in tentative state - if so, send permission response with message
-                    let tentative_state = self
-                        .session_manager
-                        .get_active()
-                        .and_then(|s| s.agentic.as_ref())
-                        .map(|a| a.permission_message_state)
-                        .unwrap_or(crate::session::PermissionMessageState::None);
-
-                    match tentative_state {
-                        crate::session::PermissionMessageState::TentativeAccept => {
-                            // Send permission Allow with the message from input
-                            // If this is ExitPlanMode, also exit plan mode
-                            let is_exit_plan_mode = self.has_pending_exit_plan_mode();
-                            if let Some(request_id) = self.first_pending_permission() {
-                                let message = self
-                                    .session_manager
-                                    .get_active()
-                                    .map(|s| s.input.clone())
-                                    .filter(|m| !m.is_empty());
-                                // Clear input
-                                if let Some(session) = self.session_manager.get_active_mut() {
-                                    session.input.clear();
-                                }
-                                if is_exit_plan_mode {
-                                    self.exit_plan_mode(ui.ctx());
-                                }
-                                self.handle_permission_response(
-                                    request_id,
-                                    PermissionResponse::Allow { message },
-                                );
-                            }
-                        }
-                        crate::session::PermissionMessageState::TentativeDeny => {
-                            // Send permission Deny with the message from input
-                            if let Some(request_id) = self.first_pending_permission() {
-                                let reason = self
-                                    .session_manager
-                                    .get_active()
-                                    .map(|s| s.input.clone())
-                                    .filter(|m| !m.is_empty())
-                                    .unwrap_or_else(|| "User denied".into());
-                                // Clear input
-                                if let Some(session) = self.session_manager.get_active_mut() {
-                                    session.input.clear();
-                                }
-                                self.handle_permission_response(
-                                    request_id,
-                                    PermissionResponse::Deny { reason },
-                                );
-                            }
-                        }
-                        crate::session::PermissionMessageState::None => {
-                            // Normal send behavior
-                            self.handle_user_send(ctx, ui);
-                        }
-                    }
-                }
-                DaveAction::ShowSessionList => {
-                    self.show_session_list = !self.show_session_list;
-                }
-                DaveAction::OpenSettings => {
-                    self.active_overlay = DaveOverlay::Settings;
-                }
-                DaveAction::UpdateSettings(settings) => {
-                    dave_action = Some(DaveAction::UpdateSettings(settings));
-                }
-                DaveAction::PermissionResponse {
-                    request_id,
-                    response,
-                } => {
-                    self.handle_permission_response(request_id, response);
-                }
-                DaveAction::Interrupt => {
-                    self.handle_interrupt(ui);
-                }
-                DaveAction::TentativeAccept => {
-                    // Enter tentative accept mode (from Shift+click)
-                    if let Some(session) = self.session_manager.get_active_mut() {
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.permission_message_state =
-                                crate::session::PermissionMessageState::TentativeAccept;
-                        }
-                        session.focus_requested = true;
-                    }
-                }
-                DaveAction::TentativeDeny => {
-                    // Enter tentative deny mode (from Shift+click)
-                    if let Some(session) = self.session_manager.get_active_mut() {
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.permission_message_state =
-                                crate::session::PermissionMessageState::TentativeDeny;
-                        }
-                        session.focus_requested = true;
-                    }
-                }
-                DaveAction::QuestionResponse {
-                    request_id,
-                    answers,
-                } => {
-                    self.handle_question_response(request_id, answers);
-                }
-                DaveAction::ExitPlanMode {
-                    request_id,
-                    approved,
-                } => {
-                    if approved {
-                        // Exit plan mode and allow the tool call
-                        self.exit_plan_mode(ui.ctx());
-                        self.handle_permission_response(
-                            request_id,
-                            PermissionResponse::Allow { message: None },
-                        );
-                    } else {
-                        // Deny the tool call
-                        self.handle_permission_response(
-                            request_id,
-                            PermissionResponse::Deny {
-                                reason: "User rejected plan".into(),
-                            },
-                        );
-                    }
-                }
+            if let Some(returned_action) = self.handle_ui_action(action, ctx, ui) {
+                app_action = Some(returned_action);
             }
         }
 
+        // Send continuation message if we have tool responses
         if should_send {
             self.send_user_message(ctx, ui.ctx());
         }
-
-        // If we have a dave action that needs to bubble up, we can't return it
-        // through AppResponse directly, but parent apps can check settings()
-        let _ = dave_action; // Parent app can poll settings() after update
 
         AppResponse::action(app_action)
     }
