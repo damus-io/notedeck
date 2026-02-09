@@ -289,12 +289,24 @@ impl ChatSession {
     }
 }
 
+/// Tracks a pending external editor process
+pub struct EditorJob {
+    /// The spawned editor process
+    pub child: std::process::Child,
+    /// Path to the temp file being edited
+    pub temp_path: PathBuf,
+    /// Session ID that initiated the editor
+    pub session_id: SessionId,
+}
+
 /// Manages multiple chat sessions
 pub struct SessionManager {
     sessions: HashMap<SessionId, ChatSession>,
     order: Vec<SessionId>, // Sorted by recency (most recent first)
     active: Option<SessionId>,
     next_id: SessionId,
+    /// Pending external editor job (only one at a time)
+    pub pending_editor: Option<EditorJob>,
 }
 
 impl Default for SessionManager {
@@ -310,6 +322,7 @@ impl SessionManager {
             order: Vec::new(),
             active: None,
             next_id: 1,
+            pending_editor: None,
         }
     }
 

@@ -1439,17 +1439,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Open an external editor for composing the input text
+    /// Open an external editor for composing the input text (non-blocking)
     fn open_external_editor(&mut self) {
+        use crate::session::EditorJob;
         use std::process::Command;
+
+        // Don't spawn another editor if one is already pending
+        if self.session_manager.pending_editor.is_some() {
+            tracing::warn!("External editor already in progress");
+            return;
+        }
 
         let Some(session) = self.session_manager.get_active_mut() else {
             return;
         };
+        let session_id = session.id;
+        let input_content = session.input.clone();
 
         // Create temp file with current input content
         let temp_path = std::env::temp_dir().join("notedeck_input.txt");
-        if let Err(e) = std::fs::write(&temp_path, &session.input) {
+        if let Err(e) = std::fs::write(&temp_path, &input_content) {
             tracing::error!("Failed to write temp file for external editor: {}", e);
             return;
         }
@@ -1458,10 +1467,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let visual = std::env::var("VISUAL").ok();
         let editor = std::env::var("EDITOR").ok();
 
-        let result = if let Some(visual_editor) = visual {
+        let spawn_result = if let Some(visual_editor) = visual {
             // $VISUAL is set - use it directly (assumes GUI editor)
             tracing::debug!("Opening external editor via $VISUAL: {}", visual_editor);
-            Command::new(&visual_editor).arg(&temp_path).status()
+            Command::new(&visual_editor).arg(&temp_path).spawn()
         } else {
             // Fall back to terminal + $EDITOR
             let editor_cmd = editor.unwrap_or_else(|| "vim".to_string());
@@ -1480,35 +1489,79 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .arg("-e")
                 .arg(&editor_cmd)
                 .arg(&temp_path)
-                .status()
+                .spawn()
         };
 
-        match result {
-            Ok(status) if status.success() => {
-                // Read the edited content back
-                match std::fs::read_to_string(&temp_path) {
-                    Ok(content) => {
-                        // Re-get mutable session reference after potential borrow issues
-                        if let Some(session) = self.session_manager.get_active_mut() {
-                            session.input = content;
-                            session.focus_requested = true;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to read temp file after editing: {}", e);
-                    }
-                }
-            }
-            Ok(status) => {
-                tracing::warn!("External editor exited with status: {}", status);
+        match spawn_result {
+            Ok(child) => {
+                self.session_manager.pending_editor = Some(EditorJob {
+                    child,
+                    temp_path,
+                    session_id,
+                });
+                tracing::debug!("External editor spawned for session {}", session_id);
             }
             Err(e) => {
                 tracing::error!("Failed to spawn external editor: {}", e);
+                // Clean up temp file on spawn failure
+                let _ = std::fs::remove_file(&temp_path);
             }
         }
+    }
 
-        // Clean up temp file
-        let _ = std::fs::remove_file(&temp_path);
+    /// Poll for external editor completion (called each frame)
+    fn poll_editor_job(&mut self) {
+        let Some(ref mut job) = self.session_manager.pending_editor else {
+            return;
+        };
+
+        // Non-blocking check if child has exited
+        match job.child.try_wait() {
+            Ok(Some(status)) => {
+                // Editor has exited
+                let session_id = job.session_id;
+                let temp_path = job.temp_path.clone();
+
+                if status.success() {
+                    // Read the edited content back
+                    match std::fs::read_to_string(&temp_path) {
+                        Ok(content) => {
+                            if let Some(session) = self.session_manager.get_mut(session_id) {
+                                session.input = content;
+                                session.focus_requested = true;
+                                tracing::debug!(
+                                    "External editor completed, updated input for session {}",
+                                    session_id
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to read temp file after editing: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::warn!("External editor exited with status: {}", status);
+                }
+
+                // Clean up temp file
+                if let Err(e) = std::fs::remove_file(&temp_path) {
+                    tracing::error!("Failed to remove temp file: {}", e);
+                }
+
+                // Clear the pending editor
+                self.session_manager.pending_editor = None;
+            }
+            Ok(None) => {
+                // Editor still running, nothing to do
+            }
+            Err(e) => {
+                tracing::error!("Failed to poll editor process: {}", e);
+                // Clean up on error
+                let temp_path = job.temp_path.clone();
+                let _ = std::fs::remove_file(&temp_path);
+                self.session_manager.pending_editor = None;
+            }
+        }
     }
 
     /// Try to find a common terminal emulator
@@ -1687,6 +1740,9 @@ impl notedeck::App for Dave {
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
+
+        // Poll for external editor completion
+        self.poll_editor_job();
 
         // Handle global keybindings (when no text input has focus)
         let has_pending_permission = self.first_pending_permission().is_some();
