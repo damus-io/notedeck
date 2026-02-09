@@ -6,6 +6,8 @@ use similar::{ChangeTag, TextDiff};
 pub struct FileUpdate {
     pub file_path: String,
     pub update_type: FileUpdateType,
+    /// Cached diff lines (computed eagerly at construction)
+    diff_lines: Vec<DiffLine>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +46,21 @@ impl From<ChangeTag> for DiffTag {
 }
 
 impl FileUpdate {
+    /// Create a new FileUpdate, computing the diff eagerly
+    pub fn new(file_path: String, update_type: FileUpdateType) -> Self {
+        let diff_lines = Self::compute_diff_for(&update_type);
+        Self {
+            file_path,
+            update_type,
+            diff_lines,
+        }
+    }
+
+    /// Get the cached diff lines
+    pub fn diff_lines(&self) -> &[DiffLine] {
+        &self.diff_lines
+    }
+
     /// Try to parse a FileUpdate from a tool name and tool input JSON
     pub fn from_tool_call(tool_name: &str, tool_input: &Value) -> Option<Self> {
         let obj = tool_input.as_object()?;
@@ -54,22 +71,19 @@ impl FileUpdate {
                 let old_string = obj.get("old_string")?.as_str()?.to_string();
                 let new_string = obj.get("new_string")?.as_str()?.to_string();
 
-                Some(FileUpdate {
+                Some(FileUpdate::new(
                     file_path,
-                    update_type: FileUpdateType::Edit {
+                    FileUpdateType::Edit {
                         old_string,
                         new_string,
                     },
-                })
+                ))
             }
             "Write" => {
                 let file_path = obj.get("file_path")?.as_str()?.to_string();
                 let content = obj.get("content")?.as_str()?.to_string();
 
-                Some(FileUpdate {
-                    file_path,
-                    update_type: FileUpdateType::Write { content },
-                })
+                Some(FileUpdate::new(file_path, FileUpdateType::Write { content }))
             }
             _ => None,
         }
@@ -104,9 +118,9 @@ impl FileUpdate {
         }
     }
 
-    /// Compute the diff lines for this update
-    pub fn compute_diff(&self) -> Vec<DiffLine> {
-        match &self.update_type {
+    /// Compute the diff lines for an update type (internal helper)
+    fn compute_diff_for(update_type: &FileUpdateType) -> Vec<DiffLine> {
+        match update_type {
             FileUpdateType::Edit {
                 old_string,
                 new_string,
@@ -140,13 +154,13 @@ mod tests {
 
     #[test]
     fn test_is_small_edit_single_line() {
-        let update = FileUpdate {
-            file_path: "test.rs".to_string(),
-            update_type: FileUpdateType::Edit {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::Edit {
                 old_string: "foo".to_string(),
                 new_string: "bar".to_string(),
             },
-        };
+        );
         assert!(
             update.is_small_edit(2),
             "Single line without newline should be small"
@@ -155,13 +169,13 @@ mod tests {
 
     #[test]
     fn test_is_small_edit_single_line_with_newline() {
-        let update = FileUpdate {
-            file_path: "test.rs".to_string(),
-            update_type: FileUpdateType::Edit {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::Edit {
                 old_string: "foo\n".to_string(),
                 new_string: "bar\n".to_string(),
             },
-        };
+        );
         assert!(
             update.is_small_edit(2),
             "Single line with trailing newline should be small"
@@ -170,13 +184,13 @@ mod tests {
 
     #[test]
     fn test_is_small_edit_two_lines() {
-        let update = FileUpdate {
-            file_path: "test.rs".to_string(),
-            update_type: FileUpdateType::Edit {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::Edit {
                 old_string: "foo\nbar".to_string(),
                 new_string: "baz\nqux".to_string(),
             },
-        };
+        );
         assert!(
             update.is_small_edit(2),
             "Two lines without trailing newline should be small"
@@ -185,13 +199,13 @@ mod tests {
 
     #[test]
     fn test_is_small_edit_two_lines_with_newline() {
-        let update = FileUpdate {
-            file_path: "test.rs".to_string(),
-            update_type: FileUpdateType::Edit {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::Edit {
                 old_string: "foo\nbar\n".to_string(),
                 new_string: "baz\nqux\n".to_string(),
             },
-        };
+        );
         assert!(
             update.is_small_edit(2),
             "Two lines with trailing newline should be small"
@@ -200,24 +214,24 @@ mod tests {
 
     #[test]
     fn test_is_small_edit_three_lines_not_small() {
-        let update = FileUpdate {
-            file_path: "test.rs".to_string(),
-            update_type: FileUpdateType::Edit {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::Edit {
                 old_string: "foo\nbar\nbaz".to_string(),
                 new_string: "a\nb\nc".to_string(),
             },
-        };
+        );
         assert!(!update.is_small_edit(2), "Three lines should NOT be small");
     }
 
     #[test]
     fn test_is_small_edit_write_never_small() {
-        let update = FileUpdate {
-            file_path: "test.rs".to_string(),
-            update_type: FileUpdateType::Write {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::Write {
                 content: "x".to_string(),
             },
-        };
+        );
         assert!(
             !update.is_small_edit(2),
             "Write operations should never be small"
@@ -226,13 +240,13 @@ mod tests {
 
     #[test]
     fn test_is_small_edit_old_small_new_large() {
-        let update = FileUpdate {
-            file_path: "test.rs".to_string(),
-            update_type: FileUpdateType::Edit {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::Edit {
                 old_string: "foo".to_string(),
                 new_string: "a\nb\nc\nd".to_string(),
             },
-        };
+        );
         assert!(
             !update.is_small_edit(2),
             "Large new_string should NOT be small"
@@ -241,13 +255,13 @@ mod tests {
 
     #[test]
     fn test_is_small_edit_old_large_new_small() {
-        let update = FileUpdate {
-            file_path: "test.rs".to_string(),
-            update_type: FileUpdateType::Edit {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::Edit {
                 old_string: "a\nb\nc\nd".to_string(),
                 new_string: "foo".to_string(),
             },
-        };
+        );
         assert!(
             !update.is_small_edit(2),
             "Large old_string should NOT be small"
