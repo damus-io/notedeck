@@ -13,14 +13,14 @@ pub mod session;
 pub mod session_discovery;
 mod tools;
 mod ui;
+mod update;
 mod vec3;
 
 use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend};
 use chrono::{Duration, Local};
-use claude_agent_sdk_rs::PermissionMode;
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
-use focus_queue::{FocusPriority, FocusQueue};
+use focus_queue::FocusQueue;
 use nostrdb::Transaction;
 use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::HashMap;
@@ -858,21 +858,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Create a new session with the given cwd (called after directory picker selection)
     fn create_session_with_cwd(&mut self, cwd: PathBuf) {
-        // Add to recent directories
-        self.directory_picker.add_recent(cwd.clone());
-
-        let id = self.session_manager.new_session(cwd, self.ai_mode);
-        // Request focus on the new session's input
-        if let Some(session) = self.session_manager.get_mut(id) {
-            session.focus_requested = true;
-            // Also update scene selection and camera if in scene view
-            if self.show_scene {
-                self.scene.select(id);
-                if let Some(agentic) = &session.agentic {
-                    self.scene.focus_on(agentic.scene_position);
-                }
-            }
-        }
+        update::create_session_with_cwd(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+            cwd,
+        );
     }
 
     /// Create a new session that resumes an existing Claude conversation
@@ -882,34 +875,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         resume_session_id: String,
         title: String,
     ) {
-        // Add to recent directories
-        self.directory_picker.add_recent(cwd.clone());
-
-        let id =
-            self.session_manager
-                .new_resumed_session(cwd, resume_session_id, title, self.ai_mode);
-        // Request focus on the new session's input
-        if let Some(session) = self.session_manager.get_mut(id) {
-            session.focus_requested = true;
-            // Also update scene selection and camera if in scene view
-            if self.show_scene {
-                self.scene.select(id);
-                if let Some(agentic) = &session.agentic {
-                    self.scene.focus_on(agentic.scene_position);
-                }
-            }
-        }
+        update::create_resumed_session_with_cwd(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+            cwd,
+            resume_session_id,
+            title,
+        );
     }
 
     /// Clone the active agent, creating a new session with the same working directory
     fn clone_active_agent(&mut self) {
-        if let Some(cwd) = self
-            .session_manager
-            .get_active()
-            .and_then(|s| s.cwd().cloned())
-        {
-            self.create_session_with_cwd(cwd);
-        }
+        update::clone_active_agent(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+        );
     }
 
     /// Poll for IPC spawn-agent commands from external tools
@@ -955,67 +941,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Delete a session and clean up backend resources
     fn delete_session(&mut self, id: SessionId) {
-        // Remove from focus queue first
-        self.focus_queue.remove_session(id);
-        if self.session_manager.delete_session(id) {
-            // Clean up backend resources (e.g., close persistent connections)
-            let session_id = format!("dave-session-{}", id);
-            self.backend.cleanup_session(session_id);
-
-            // If no sessions remain, open the directory picker for a new session
-            if self.session_manager.is_empty() {
-                self.directory_picker.open();
-            }
-        }
+        update::delete_session(
+            &mut self.session_manager,
+            &mut self.focus_queue,
+            self.backend.as_ref(),
+            &mut self.directory_picker,
+            id,
+        );
     }
 
-    /// Timeout for confirming interrupt (in seconds)
-    const INTERRUPT_CONFIRM_TIMEOUT_SECS: f32 = 1.5;
-
     /// Handle an interrupt request - requires double-Escape to confirm
-    fn handle_interrupt_request(&mut self, ui: &egui::Ui) {
-        // Only allow interrupt if there's an active AI operation
-        let has_active_operation = self
-            .session_manager
-            .get_active()
-            .map(|s| s.incoming_tokens.is_some())
-            .unwrap_or(false);
-
-        if !has_active_operation {
-            // No active operation, just clear any pending state
-            self.interrupt_pending_since = None;
-            return;
-        }
-
-        let now = Instant::now();
-
-        if let Some(pending_since) = self.interrupt_pending_since {
-            // Check if we're within the confirmation timeout
-            if now.duration_since(pending_since).as_secs_f32()
-                < Self::INTERRUPT_CONFIRM_TIMEOUT_SECS
-            {
-                // Second Escape within timeout - confirm interrupt
-                self.handle_interrupt(ui);
-                self.interrupt_pending_since = None;
-            } else {
-                // Timeout expired, treat as new first press
-                self.interrupt_pending_since = Some(now);
-            }
-        } else {
-            // First Escape press - start pending state
-            self.interrupt_pending_since = Some(now);
-        }
+    fn handle_interrupt_request(&mut self, ctx: &egui::Context) {
+        self.interrupt_pending_since = update::handle_interrupt_request(
+            &self.session_manager,
+            self.backend.as_ref(),
+            self.interrupt_pending_since,
+            ctx,
+        );
     }
 
     /// Check if interrupt confirmation has timed out and clear it
     fn check_interrupt_timeout(&mut self) {
-        if let Some(pending_since) = self.interrupt_pending_since {
-            if Instant::now().duration_since(pending_since).as_secs_f32()
-                >= Self::INTERRUPT_CONFIRM_TIMEOUT_SECS
-            {
-                self.interrupt_pending_since = None;
-            }
-        }
+        self.interrupt_pending_since = update::check_interrupt_timeout(self.interrupt_pending_since);
     }
 
     /// Returns true if an interrupt is pending confirmation
@@ -1024,624 +971,121 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Handle an interrupt action - stop the current AI operation
-    fn handle_interrupt(&mut self, ui: &egui::Ui) {
-        if let Some(session) = self.session_manager.get_active_mut() {
-            let session_id = format!("dave-session-{}", session.id);
-            // Send interrupt to backend
-            self.backend.interrupt_session(session_id, ui.ctx().clone());
-            // Clear the incoming token receiver so we stop processing
-            session.incoming_tokens = None;
-            // Clear pending permissions since we're interrupting
-            if let Some(agentic) = &mut session.agentic {
-                agentic.pending_permissions.clear();
-            }
-            tracing::debug!("Interrupted session {}", session.id);
-        }
+    fn handle_interrupt(&mut self, ctx: &egui::Context) {
+        update::execute_interrupt(&mut self.session_manager, self.backend.as_ref(), ctx);
     }
 
     /// Toggle plan mode for the active session
     fn toggle_plan_mode(&mut self, ctx: &egui::Context) {
-        if let Some(session) = self.session_manager.get_active_mut() {
-            if let Some(agentic) = &mut session.agentic {
-                // Toggle between Plan and Default modes
-                let new_mode = match agentic.permission_mode {
-                    PermissionMode::Plan => PermissionMode::Default,
-                    _ => PermissionMode::Plan,
-                };
-                agentic.permission_mode = new_mode;
-
-                // Notify the backend
-                let session_id = format!("dave-session-{}", session.id);
-                self.backend
-                    .set_permission_mode(session_id, new_mode, ctx.clone());
-
-                tracing::debug!(
-                    "Toggled plan mode for session {} to {:?}",
-                    session.id,
-                    new_mode
-                );
-            }
-        }
+        update::toggle_plan_mode(&mut self.session_manager, self.backend.as_ref(), ctx);
     }
 
     /// Exit plan mode for the active session (switch to Default mode)
     fn exit_plan_mode(&mut self, ctx: &egui::Context) {
-        if let Some(session) = self.session_manager.get_active_mut() {
-            if let Some(agentic) = &mut session.agentic {
-                agentic.permission_mode = PermissionMode::Default;
-                let session_id = format!("dave-session-{}", session.id);
-                self.backend
-                    .set_permission_mode(session_id, PermissionMode::Default, ctx.clone());
-                tracing::debug!("Exited plan mode for session {}", session.id);
-            }
-        }
+        update::exit_plan_mode(&mut self.session_manager, self.backend.as_ref(), ctx);
     }
 
     /// Get the first pending permission request ID for the active session
     fn first_pending_permission(&self) -> Option<uuid::Uuid> {
-        self.session_manager
-            .get_active()
-            .and_then(|session| session.agentic.as_ref())
-            .and_then(|agentic| agentic.pending_permissions.keys().next().copied())
+        update::first_pending_permission(&self.session_manager)
     }
 
     /// Check if the first pending permission is an AskUserQuestion tool call
     fn has_pending_question(&self) -> bool {
-        self.pending_permission_tool_name() == Some("AskUserQuestion")
+        update::has_pending_question(&self.session_manager)
     }
 
     /// Check if the first pending permission is an ExitPlanMode tool call
     fn has_pending_exit_plan_mode(&self) -> bool {
-        self.pending_permission_tool_name() == Some("ExitPlanMode")
-    }
-
-    /// Get the tool name of the first pending permission request
-    fn pending_permission_tool_name(&self) -> Option<&str> {
-        let session = self.session_manager.get_active()?;
-        let agentic = session.agentic.as_ref()?;
-        let request_id = agentic.pending_permissions.keys().next()?;
-
-        for msg in &session.chat {
-            if let Message::PermissionRequest(req) = msg {
-                if &req.id == request_id {
-                    return Some(&req.tool_name);
-                }
-            }
-        }
-
-        None
+        update::has_pending_exit_plan_mode(&self.session_manager)
     }
 
     /// Handle a permission response (from UI button or keybinding)
     fn handle_permission_response(&mut self, request_id: uuid::Uuid, response: PermissionResponse) {
-        if let Some(session) = self.session_manager.get_active_mut() {
-            // Record the response type in the message for UI display
-            let response_type = match &response {
-                PermissionResponse::Allow { .. } => messages::PermissionResponseType::Allowed,
-                PermissionResponse::Deny { .. } => messages::PermissionResponseType::Denied,
-            };
-
-            // If Allow has a message, add it as a User message to the chat
-            // (SDK doesn't support message field on Allow, so we inject it as context)
-            if let PermissionResponse::Allow { message: Some(msg) } = &response {
-                if !msg.is_empty() {
-                    session.chat.push(Message::User(msg.clone()));
-                }
-            }
-
-            // Clear permission message state (agentic only)
-            if let Some(agentic) = &mut session.agentic {
-                agentic.permission_message_state = crate::session::PermissionMessageState::None;
-            }
-
-            for msg in &mut session.chat {
-                if let Message::PermissionRequest(req) = msg {
-                    if req.id == request_id {
-                        req.response = Some(response_type);
-                        break;
-                    }
-                }
-            }
-
-            if let Some(agentic) = &mut session.agentic {
-                if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
-                    if sender.send(response).is_err() {
-                        tracing::error!(
-                            "Failed to send permission response for request {}",
-                            request_id
-                        );
-                    }
-                } else {
-                    tracing::warn!("No pending permission found for request {}", request_id);
-                }
-            }
-        }
+        update::handle_permission_response(&mut self.session_manager, request_id, response);
     }
 
     /// Handle a user's response to an AskUserQuestion tool call
     fn handle_question_response(&mut self, request_id: uuid::Uuid, answers: Vec<QuestionAnswer>) {
-        use messages::{AnswerSummary, AnswerSummaryEntry};
-
-        if let Some(session) = self.session_manager.get_active_mut() {
-            // Find the original AskUserQuestion request to get the question labels
-            let questions_input = session.chat.iter().find_map(|msg| {
-                if let Message::PermissionRequest(req) = msg {
-                    if req.id == request_id && req.tool_name == "AskUserQuestion" {
-                        serde_json::from_value::<AskUserQuestionInput>(req.tool_input.clone()).ok()
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            });
-
-            // Format answers as JSON for the tool response, and build summary for display
-            let (formatted_response, answer_summary) = if let Some(ref questions) = questions_input
-            {
-                let mut answers_obj = serde_json::Map::new();
-                let mut summary_entries = Vec::with_capacity(questions.questions.len());
-
-                for (q_idx, (question, answer)) in
-                    questions.questions.iter().zip(answers.iter()).enumerate()
-                {
-                    let mut answer_obj = serde_json::Map::new();
-
-                    // Map selected indices to option labels
-                    let selected_labels: Vec<String> = answer
-                        .selected
-                        .iter()
-                        .filter_map(|&idx| question.options.get(idx).map(|o| o.label.clone()))
-                        .collect();
-
-                    answer_obj.insert(
-                        "selected".to_string(),
-                        serde_json::Value::Array(
-                            selected_labels
-                                .iter()
-                                .cloned()
-                                .map(serde_json::Value::String)
-                                .collect(),
-                        ),
-                    );
-
-                    // Build display text for summary
-                    let mut display_parts = selected_labels;
-                    if let Some(ref other) = answer.other_text {
-                        if !other.is_empty() {
-                            answer_obj.insert(
-                                "other".to_string(),
-                                serde_json::Value::String(other.clone()),
-                            );
-                            display_parts.push(format!("Other: {}", other));
-                        }
-                    }
-
-                    // Use header as the key, fall back to question index
-                    let key = if !question.header.is_empty() {
-                        question.header.clone()
-                    } else {
-                        format!("question_{}", q_idx)
-                    };
-                    answers_obj.insert(key.clone(), serde_json::Value::Object(answer_obj));
-
-                    summary_entries.push(AnswerSummaryEntry {
-                        header: key,
-                        answer: display_parts.join(", "),
-                    });
-                }
-
-                (
-                    serde_json::json!({ "answers": answers_obj }).to_string(),
-                    Some(AnswerSummary {
-                        entries: summary_entries,
-                    }),
-                )
-            } else {
-                // Fallback: just serialize the answers directly
-                (
-                    serde_json::to_string(&answers).unwrap_or_else(|_| "{}".to_string()),
-                    None,
-                )
-            };
-
-            // Mark the request as allowed in the UI and store the summary for display
-            for msg in &mut session.chat {
-                if let Message::PermissionRequest(req) = msg {
-                    if req.id == request_id {
-                        req.response = Some(messages::PermissionResponseType::Allowed);
-                        req.answer_summary = answer_summary.clone();
-                        break;
-                    }
-                }
-            }
-
-            // Clean up transient answer state and send response (agentic only)
-            if let Some(agentic) = &mut session.agentic {
-                agentic.question_answers.remove(&request_id);
-                agentic.question_index.remove(&request_id);
-
-                // Send the response through the permission channel
-                // AskUserQuestion responses are sent as Allow with the formatted answers as the message
-                if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
-                    let response = PermissionResponse::Allow {
-                        message: Some(formatted_response),
-                    };
-                    if sender.send(response).is_err() {
-                        tracing::error!(
-                            "Failed to send question response for request {}",
-                            request_id
-                        );
-                    }
-                } else {
-                    tracing::warn!("No pending permission found for request {}", request_id);
-                }
-            }
-        }
+        update::handle_question_response(&mut self.session_manager, request_id, answers);
     }
 
     /// Switch to agent by index in the ordered list (0-indexed)
     fn switch_to_agent_by_index(&mut self, index: usize) {
-        let ids = self.session_manager.session_ids();
-        if let Some(&id) = ids.get(index) {
-            self.session_manager.switch_to(id);
-            // Also update scene selection if in scene view
-            if self.show_scene {
-                self.scene.select(id);
-            }
-            // Focus input if no permission request is pending
-            if let Some(session) = self.session_manager.get_mut(id) {
-                if !session.has_pending_permissions() {
-                    session.focus_requested = true;
-                }
-            }
-        }
+        update::switch_to_agent_by_index(
+            &mut self.session_manager,
+            &mut self.scene,
+            self.show_scene,
+            index,
+        );
     }
 
     /// Cycle to the next agent
     fn cycle_next_agent(&mut self) {
-        let ids = self.session_manager.session_ids();
-        if ids.is_empty() {
-            return;
-        }
-        let current_idx = self
-            .session_manager
-            .active_id()
-            .and_then(|active| ids.iter().position(|&id| id == active))
-            .unwrap_or(0);
-        let next_idx = (current_idx + 1) % ids.len();
-        if let Some(&id) = ids.get(next_idx) {
-            self.session_manager.switch_to(id);
-            if self.show_scene {
-                self.scene.select(id);
-            }
-            // Focus input if no permission request is pending
-            if let Some(session) = self.session_manager.get_mut(id) {
-                if !session.has_pending_permissions() {
-                    session.focus_requested = true;
-                }
-            }
-        }
+        update::cycle_next_agent(&mut self.session_manager, &mut self.scene, self.show_scene);
     }
 
     /// Cycle to the previous agent
     fn cycle_prev_agent(&mut self) {
-        let ids = self.session_manager.session_ids();
-        if ids.is_empty() {
-            return;
-        }
-        let current_idx = self
-            .session_manager
-            .active_id()
-            .and_then(|active| ids.iter().position(|&id| id == active))
-            .unwrap_or(0);
-        let prev_idx = if current_idx == 0 {
-            ids.len() - 1
-        } else {
-            current_idx - 1
-        };
-        if let Some(&id) = ids.get(prev_idx) {
-            self.session_manager.switch_to(id);
-            if self.show_scene {
-                self.scene.select(id);
-            }
-            // Focus input if no permission request is pending
-            if let Some(session) = self.session_manager.get_mut(id) {
-                if !session.has_pending_permissions() {
-                    session.focus_requested = true;
-                }
-            }
-        }
+        update::cycle_prev_agent(&mut self.session_manager, &mut self.scene, self.show_scene);
     }
 
     /// Navigate to the next item in the focus queue
     fn focus_queue_next(&mut self) {
-        if let Some(session_id) = self.focus_queue.next() {
-            self.session_manager.switch_to(session_id);
-            if self.show_scene {
-                self.scene.select(session_id);
-                if let Some(session) = self.session_manager.get(session_id) {
-                    if let Some(agentic) = &session.agentic {
-                        self.scene.focus_on(agentic.scene_position);
-                    }
-                }
-            }
-            // Focus input if no permission request is pending
-            if let Some(session) = self.session_manager.get_mut(session_id) {
-                if !session.has_pending_permissions() {
-                    session.focus_requested = true;
-                }
-            }
-        }
+        update::focus_queue_next(
+            &mut self.session_manager,
+            &mut self.focus_queue,
+            &mut self.scene,
+            self.show_scene,
+        );
     }
 
     /// Navigate to the previous item in the focus queue
     fn focus_queue_prev(&mut self) {
-        if let Some(session_id) = self.focus_queue.prev() {
-            self.session_manager.switch_to(session_id);
-            if self.show_scene {
-                self.scene.select(session_id);
-                if let Some(session) = self.session_manager.get(session_id) {
-                    if let Some(agentic) = &session.agentic {
-                        self.scene.focus_on(agentic.scene_position);
-                    }
-                }
-            }
-            // Focus input if no permission request is pending
-            if let Some(session) = self.session_manager.get_mut(session_id) {
-                if !session.has_pending_permissions() {
-                    session.focus_requested = true;
-                }
-            }
-        }
+        update::focus_queue_prev(
+            &mut self.session_manager,
+            &mut self.focus_queue,
+            &mut self.scene,
+            self.show_scene,
+        );
     }
 
     /// Toggle Done status for the current focus queue item.
-    /// If the item is Done, remove it from the queue.
     fn focus_queue_toggle_done(&mut self) {
-        if let Some(entry) = self.focus_queue.current() {
-            if entry.priority == FocusPriority::Done {
-                self.focus_queue.dequeue(entry.session_id);
-            }
-        }
+        update::focus_queue_toggle_done(&mut self.focus_queue);
     }
 
     /// Toggle auto-steal focus mode
     fn toggle_auto_steal(&mut self) {
-        self.auto_steal_focus = !self.auto_steal_focus;
-
-        if self.auto_steal_focus {
-            // Enabling: record current session as home
-            self.home_session = self.session_manager.active_id();
-            tracing::debug!(
-                "Auto-steal focus enabled, home session: {:?}",
-                self.home_session
-            );
-        } else {
-            // Disabling: switch back to home session if set
-            if let Some(home_id) = self.home_session.take() {
-                self.session_manager.switch_to(home_id);
-                if self.show_scene {
-                    self.scene.select(home_id);
-                    if let Some(session) = self.session_manager.get(home_id) {
-                        if let Some(agentic) = &session.agentic {
-                            self.scene.focus_on(agentic.scene_position);
-                        }
-                    }
-                }
-                tracing::debug!("Auto-steal focus disabled, returned to home session");
-            }
-        }
-
-        // Request focus on input after toggle
-        if let Some(session) = self.session_manager.get_active_mut() {
-            session.focus_requested = true;
-        }
+        self.auto_steal_focus = update::toggle_auto_steal(
+            &mut self.session_manager,
+            &mut self.scene,
+            self.show_scene,
+            self.auto_steal_focus,
+            &mut self.home_session,
+        );
     }
 
     /// Open an external editor for composing the input text (non-blocking)
     fn open_external_editor(&mut self) {
-        use crate::session::EditorJob;
-        use std::process::Command;
-
-        // Don't spawn another editor if one is already pending
-        if self.session_manager.pending_editor.is_some() {
-            tracing::warn!("External editor already in progress");
-            return;
-        }
-
-        let Some(session) = self.session_manager.get_active_mut() else {
-            return;
-        };
-        let session_id = session.id;
-        let input_content = session.input.clone();
-
-        // Create temp file with current input content
-        let temp_path = std::env::temp_dir().join("notedeck_input.txt");
-        if let Err(e) = std::fs::write(&temp_path, &input_content) {
-            tracing::error!("Failed to write temp file for external editor: {}", e);
-            return;
-        }
-
-        // Try $VISUAL first (GUI editors), then fall back to terminal + $EDITOR
-        let visual = std::env::var("VISUAL").ok();
-        let editor = std::env::var("EDITOR").ok();
-
-        let spawn_result = if let Some(visual_editor) = visual {
-            // $VISUAL is set - use it directly (assumes GUI editor)
-            tracing::debug!("Opening external editor via $VISUAL: {}", visual_editor);
-            Command::new(&visual_editor).arg(&temp_path).spawn()
-        } else {
-            // Fall back to terminal + $EDITOR
-            let editor_cmd = editor.unwrap_or_else(|| "vim".to_string());
-            let terminal = std::env::var("TERMINAL")
-                .ok()
-                .or_else(Self::find_terminal)
-                .unwrap_or_else(|| "xterm".to_string());
-
-            tracing::debug!(
-                "Opening external editor via terminal: {} -e {} {}",
-                terminal,
-                editor_cmd,
-                temp_path.display()
-            );
-            Command::new(&terminal)
-                .arg("-e")
-                .arg(&editor_cmd)
-                .arg(&temp_path)
-                .spawn()
-        };
-
-        match spawn_result {
-            Ok(child) => {
-                self.session_manager.pending_editor = Some(EditorJob {
-                    child,
-                    temp_path,
-                    session_id,
-                });
-                tracing::debug!("External editor spawned for session {}", session_id);
-            }
-            Err(e) => {
-                tracing::error!("Failed to spawn external editor: {}", e);
-                // Clean up temp file on spawn failure
-                let _ = std::fs::remove_file(&temp_path);
-            }
-        }
+        update::open_external_editor(&mut self.session_manager);
     }
 
     /// Poll for external editor completion (called each frame)
     fn poll_editor_job(&mut self) {
-        let Some(ref mut job) = self.session_manager.pending_editor else {
-            return;
-        };
-
-        // Non-blocking check if child has exited
-        match job.child.try_wait() {
-            Ok(Some(status)) => {
-                // Editor has exited
-                let session_id = job.session_id;
-                let temp_path = job.temp_path.clone();
-
-                if status.success() {
-                    // Read the edited content back
-                    match std::fs::read_to_string(&temp_path) {
-                        Ok(content) => {
-                            if let Some(session) = self.session_manager.get_mut(session_id) {
-                                session.input = content;
-                                session.focus_requested = true;
-                                tracing::debug!(
-                                    "External editor completed, updated input for session {}",
-                                    session_id
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to read temp file after editing: {}", e);
-                        }
-                    }
-                } else {
-                    tracing::warn!("External editor exited with status: {}", status);
-                }
-
-                // Clean up temp file
-                if let Err(e) = std::fs::remove_file(&temp_path) {
-                    tracing::error!("Failed to remove temp file: {}", e);
-                }
-
-                // Clear the pending editor
-                self.session_manager.pending_editor = None;
-            }
-            Ok(None) => {
-                // Editor still running, nothing to do
-            }
-            Err(e) => {
-                tracing::error!("Failed to poll editor process: {}", e);
-                // Clean up on error
-                let temp_path = job.temp_path.clone();
-                let _ = std::fs::remove_file(&temp_path);
-                self.session_manager.pending_editor = None;
-            }
-        }
-    }
-
-    /// Try to find a common terminal emulator
-    fn find_terminal() -> Option<String> {
-        use std::process::Command;
-        let terminals = [
-            "alacritty",
-            "kitty",
-            "gnome-terminal",
-            "konsole",
-            "urxvtc",
-            "urxvt",
-            "xterm",
-        ];
-        for term in terminals {
-            if Command::new("which")
-                .arg(term)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-            {
-                return Some(term.to_string());
-            }
-        }
-        None
+        update::poll_editor_job(&mut self.session_manager);
     }
 
     /// Process auto-steal focus logic: switch to focus queue items as needed
     fn process_auto_steal_focus(&mut self) {
-        if !self.auto_steal_focus {
-            return;
-        }
-
-        let has_needs_input = self.focus_queue.has_needs_input();
-
-        if has_needs_input {
-            // There are NeedsInput items - check if we need to steal focus
-            let current_session = self.session_manager.active_id();
-            let current_priority =
-                current_session.and_then(|id| self.focus_queue.get_session_priority(id));
-            let already_on_needs_input = current_priority == Some(FocusPriority::NeedsInput);
-
-            if !already_on_needs_input {
-                // Save current session before stealing (only if we haven't saved yet)
-                if self.home_session.is_none() {
-                    self.home_session = current_session;
-                    tracing::debug!("Auto-steal: saved home session {:?}", self.home_session);
-                }
-
-                // Jump to first NeedsInput item
-                if let Some(idx) = self.focus_queue.first_needs_input_index() {
-                    self.focus_queue.set_cursor(idx);
-                    if let Some(entry) = self.focus_queue.current() {
-                        self.session_manager.switch_to(entry.session_id);
-                        if self.show_scene {
-                            self.scene.select(entry.session_id);
-                            if let Some(session) = self.session_manager.get(entry.session_id) {
-                                if let Some(agentic) = &session.agentic {
-                                    self.scene.focus_on(agentic.scene_position);
-                                }
-                            }
-                        }
-                        tracing::debug!("Auto-steal: switched to session {:?}", entry.session_id);
-                    }
-                }
-            }
-        } else if let Some(home_id) = self.home_session.take() {
-            // No more NeedsInput items - return to saved session
-            self.session_manager.switch_to(home_id);
-            if self.show_scene {
-                self.scene.select(home_id);
-                if let Some(session) = self.session_manager.get(home_id) {
-                    if let Some(agentic) = &session.agentic {
-                        self.scene.focus_on(agentic.scene_position);
-                    }
-                }
-            }
-            tracing::debug!("Auto-steal: returned to home session {:?}", home_id);
-        }
-        // If no NeedsInput and no home_session saved, do nothing - allow free navigation
+        update::process_auto_steal_focus(
+            &mut self.session_manager,
+            &mut self.focus_queue,
+            &mut self.scene,
+            self.show_scene,
+            self.auto_steal_focus,
+            &mut self.home_session,
+        );
     }
 
     /// Handle a keybinding action
@@ -1718,7 +1162,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.clone_active_agent();
             }
             KeyAction::Interrupt => {
-                self.handle_interrupt_request(ui);
+                self.handle_interrupt_request(ui.ctx());
             }
             KeyAction::ToggleView => {
                 self.show_scene = !self.show_scene;
@@ -1844,7 +1288,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.handle_permission_response(request_id, response);
             }
             DaveAction::Interrupt => {
-                self.handle_interrupt(ui);
+                self.handle_interrupt(ui.ctx());
             }
             DaveAction::TentativeAccept => {
                 // Enter tentative accept mode (from Shift+click)
@@ -1900,33 +1344,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         // Check for /cd command first (agentic only)
-        let cd_result = if let Some(session) = self.session_manager.get_active_mut() {
-            let input = session.input.trim().to_string();
-            if input.starts_with("/cd ") {
-                let path_str = input.strip_prefix("/cd ").unwrap().trim();
-                let path = PathBuf::from(path_str);
-                session.input.clear();
-                if path.exists() && path.is_dir() {
-                    if let Some(agentic) = &mut session.agentic {
-                        agentic.cwd = path.clone();
-                    }
-                    session.chat.push(Message::System(format!(
-                        "Working directory set to: {}",
-                        path.display()
-                    )));
-                    Some(Ok(path))
-                } else {
-                    session
-                        .chat
-                        .push(Message::Error(format!("Invalid directory: {}", path_str)));
-                    Some(Err(()))
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+        let cd_result = self
+            .session_manager
+            .get_active_mut()
+            .and_then(update::handle_cd_command);
 
         // If /cd command was processed, add to recent directories
         if let Some(Ok(path)) = cd_result {
