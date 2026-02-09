@@ -253,6 +253,11 @@ impl DirectoryPicker {
                                 paint_keybind_hint(ui, hint_center, "B", 18.0);
                             }
 
+                            #[cfg(any(
+                                target_os = "windows",
+                                target_os = "macos",
+                                target_os = "linux"
+                            ))]
                             if response
                                 .on_hover_text("Open folder picker dialog (B)")
                                 .clicked()
@@ -267,6 +272,17 @@ impl DirectoryPicker {
                                     ctx_clone.request_repaint();
                                 });
                                 self.pending_folder_pick = Some(rx);
+                            }
+
+                            // On platforms without rfd (e.g., Android), just show the button disabled
+                            #[cfg(not(any(
+                                target_os = "windows",
+                                target_os = "macos",
+                                target_os = "linux"
+                            )))]
+                            {
+                                let _ = response;
+                                let _ = trigger_browse;
                             }
                         });
 

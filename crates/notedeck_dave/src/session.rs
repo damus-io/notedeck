@@ -79,7 +79,12 @@ impl AgenticSessionData {
     }
 
     /// Update a subagent's output (appending new content, keeping only the tail)
-    pub fn update_subagent_output(&mut self, chat: &mut [Message], task_id: &str, new_output: &str) {
+    pub fn update_subagent_output(
+        &mut self,
+        chat: &mut [Message],
+        task_id: &str,
+        new_output: &str,
+    ) {
         if let Some(&idx) = self.subagent_indices.get(task_id) {
             if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
                 subagent.output.push_str(new_output);

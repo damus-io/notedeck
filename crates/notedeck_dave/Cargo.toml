@@ -20,7 +20,7 @@ serde = { workspace = true }
 nostrdb = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
-rand = "0.9.0"
+rand = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 bytemuck = "1.22.0"
 futures = "0.3.31"
@@ -28,8 +28,10 @@ dashmap = "6"
 #reqwest = "0.12.15"
 egui_extras = { workspace = true }
 similar = "2"
-rfd = "0.14"
 dirs = "5"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+rfd = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }

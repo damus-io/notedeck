@@ -61,7 +61,7 @@ oot_bitset = { workspace = true }
 human_format = "1.1.0"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
-rfd = "0.15"
+rfd = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

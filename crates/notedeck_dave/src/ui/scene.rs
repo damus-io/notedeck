@@ -268,7 +268,8 @@ impl AgentScene {
 
                 for session in session_manager.iter() {
                     if let Some(agentic) = &session.agentic {
-                        let agent_pos = Pos2::new(agentic.scene_position.x, agentic.scene_position.y);
+                        let agent_pos =
+                            Pos2::new(agentic.scene_position.x, agentic.scene_position.y);
                         if selection_rect.contains(agent_pos) {
                             self.selected.push(session.id);
                         }

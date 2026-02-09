@@ -618,7 +618,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     // Add agentic-specific UI state if available
                                     if let Some(agentic) = &mut session.agentic {
                                         ui_builder = ui_builder
-                                            .permission_message_state(agentic.permission_message_state)
+                                            .permission_message_state(
+                                                agentic.permission_message_state,
+                                            )
                                             .question_answers(&mut agentic.question_answers)
                                             .question_index(&mut agentic.question_index)
                                             .is_compacting(agentic.is_compacting);
@@ -714,8 +716,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             });
                             ui.separator();
                         }
-                        SessionListUi::new(&self.session_manager, &self.focus_queue, ctrl_held, self.ai_mode)
-                            .ui(ui)
+                        SessionListUi::new(
+                            &self.session_manager,
+                            &self.focus_queue,
+                            ctrl_held,
+                            self.ai_mode,
+                        )
+                        .ui(ui)
                     })
                     .inner
             })
@@ -783,7 +790,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::symmetric(8, 12))
                 .show(ui, |ui| {
-                    SessionListUi::new(&self.session_manager, &self.focus_queue, ctrl_held, self.ai_mode).ui(ui)
+                    SessionListUi::new(
+                        &self.session_manager,
+                        &self.focus_queue,
+                        ctrl_held,
+                        self.ai_mode,
+                    )
+                    .ui(ui)
                 })
                 .inner;
             if let Some(action) = session_action {
@@ -872,9 +885,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Add to recent directories
         self.directory_picker.add_recent(cwd.clone());
 
-        let id = self
-            .session_manager
-            .new_resumed_session(cwd, resume_session_id, title, self.ai_mode);
+        let id =
+            self.session_manager
+                .new_resumed_session(cwd, resume_session_id, title, self.ai_mode);
         // Request focus on the new session's input
         if let Some(session) = self.session_manager.get_mut(id) {
             session.focus_requested = true;
@@ -890,7 +903,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Clone the active agent, creating a new session with the same working directory
     fn clone_active_agent(&mut self) {
-        if let Some(cwd) = self.session_manager.get_active().and_then(|s| s.cwd().cloned()) {
+        if let Some(cwd) = self
+            .session_manager
+            .get_active()
+            .and_then(|s| s.cwd().cloned())
+        {
             self.create_session_with_cwd(cwd);
         }
     }
@@ -904,7 +921,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Drain all pending connections (non-blocking)
         while let Some(mut pending) = listener.try_recv() {
             // Create the session and get its ID
-            let id = self.session_manager.new_session(pending.cwd.clone(), self.ai_mode);
+            let id = self
+                .session_manager
+                .new_session(pending.cwd.clone(), self.ai_mode);
             self.directory_picker.add_recent(pending.cwd);
 
             // Focus on new session

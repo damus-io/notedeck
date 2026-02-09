@@ -130,7 +130,8 @@ pub fn check_keybindings(
     }
 
     // Ctrl+\ to toggle auto-steal focus mode (Ctrl+Space conflicts with macOS input source switching) - agentic only
-    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::Backslash)) {
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::Backslash))
+    {
         return Some(KeyAction::ToggleAutoSteal);
     }
 
@@ -178,7 +179,8 @@ pub fn check_keybindings(
     // IMPORTANT: Only handle these when no text input has focus, to avoid
     // capturing keypresses when user is typing a message in tentative state
     // AskUserQuestion uses number keys for option selection, so we skip these bindings
-    if is_agentic && has_pending_permission && !has_pending_question && !ctx.wants_keyboard_input() {
+    if is_agentic && has_pending_permission && !has_pending_question && !ctx.wants_keyboard_input()
+    {
         // Shift+1 = tentative accept, Shift+2 = tentative deny
         // Note: egui may report shifted keys as their symbol (e.g., Shift+1 as Exclamationmark)
         // We check for both the symbol key and Shift+Num key to handle different behaviors
