@@ -155,7 +155,11 @@ impl Chrome {
         stop_debug_mode(notedeck.options());
 
         let context = &mut notedeck.app_context();
-        let dave = Dave::new(cc.wgpu_render_state.as_ref());
+        let dave = Dave::new(
+            cc.wgpu_render_state.as_ref(),
+            context.ndb.clone(),
+            cc.egui_ctx.clone(),
+        );
         let mut chrome = Chrome::default();
 
         if !app_args.iter().any(|arg| arg == "--no-columns-app") {

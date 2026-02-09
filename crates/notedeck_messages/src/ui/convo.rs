@@ -431,7 +431,10 @@ fn self_chat_bubble(
     ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
         chat_bubble(ui, msg_type, true, bubble_fill, |ui| {
             ui.with_layout(Layout::top_down(Align::Max), |ui| {
-                ui.label(RichText::new(message).color(ui.visuals().text_color()));
+                ui.add(
+                    egui::Label::new(RichText::new(message).color(ui.visuals().text_color()))
+                        .selectable(true),
+                );
 
                 if msg_type == MessageType::Standalone || msg_type == MessageType::LastInSeries {
                     let timestamp_label =
@@ -474,7 +477,9 @@ fn other_chat_bubble(
             ui.with_layout(
                 Layout::left_to_right(Align::Max).with_main_wrap(true),
                 |ui| {
-                    ui.label(RichText::new(message).color(text_color));
+                    ui.add(
+                        egui::Label::new(RichText::new(message).color(text_color)).selectable(true),
+                    );
                     if msg_type == MessageType::Standalone || msg_type == MessageType::LastInSeries
                     {
                         ui.add_space(6.0);

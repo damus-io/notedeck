@@ -1,5 +1,724 @@
+mod ask_question;
+pub mod badge;
 mod dave;
+pub mod diff;
+pub mod directory_picker;
+pub mod keybind_hint;
+pub mod keybindings;
+pub mod path_utils;
+mod pill;
+mod query_ui;
+pub mod scene;
 pub mod session_list;
+pub mod session_picker;
+mod settings;
+mod top_buttons;
 
+pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use dave::{DaveAction, DaveResponse, DaveUi};
+pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
+pub use keybind_hint::{keybind_hint, paint_keybind_hint};
+pub use keybindings::{check_keybindings, KeyAction};
+pub use scene::{AgentScene, SceneAction, SceneResponse};
 pub use session_list::{SessionListAction, SessionListUi};
+pub use session_picker::{SessionPicker, SessionPickerAction};
+pub use settings::{DaveSettingsPanel, SettingsPanelAction};
+
+// =============================================================================
+// Standalone UI Functions
+// =============================================================================
+
+use crate::agent_status::AgentStatus;
+use crate::config::{AiMode, DaveSettings, ModelConfig};
+use crate::focus_queue::FocusQueue;
+use crate::messages::PermissionResponse;
+use crate::session::{PermissionMessageState, SessionId, SessionManager};
+use crate::session_discovery::discover_sessions;
+use crate::update;
+use crate::DaveOverlay;
+
+/// UI result from overlay rendering
+pub enum OverlayResult {
+    /// No action taken
+    None,
+    /// Close the overlay
+    Close,
+    /// Directory was selected (no resumable sessions)
+    DirectorySelected(std::path::PathBuf),
+    /// Show session picker for the given directory
+    ShowSessionPicker(std::path::PathBuf),
+    /// Resume a session
+    ResumeSession {
+        cwd: std::path::PathBuf,
+        session_id: String,
+        title: String,
+    },
+    /// Create a new session in the given directory
+    NewSession { cwd: std::path::PathBuf },
+    /// Go back to directory picker
+    BackToDirectoryPicker,
+    /// Apply new settings
+    ApplySettings(DaveSettings),
+}
+
+/// Render the settings overlay UI.
+pub fn settings_overlay_ui(
+    settings_panel: &mut DaveSettingsPanel,
+    settings: &DaveSettings,
+    ui: &mut egui::Ui,
+) -> OverlayResult {
+    if let Some(action) = settings_panel.overlay_ui(ui, settings) {
+        match action {
+            SettingsPanelAction::Save(new_settings) => {
+                return OverlayResult::ApplySettings(new_settings);
+            }
+            SettingsPanelAction::Cancel => {
+                return OverlayResult::Close;
+            }
+        }
+    }
+    OverlayResult::None
+}
+
+/// Render the directory picker overlay UI.
+pub fn directory_picker_overlay_ui(
+    directory_picker: &mut DirectoryPicker,
+    has_sessions: bool,
+    ui: &mut egui::Ui,
+) -> OverlayResult {
+    if let Some(action) = directory_picker.overlay_ui(ui, has_sessions) {
+        match action {
+            DirectoryPickerAction::DirectorySelected(path) => {
+                let resumable_sessions = discover_sessions(&path);
+                if resumable_sessions.is_empty() {
+                    return OverlayResult::DirectorySelected(path);
+                } else {
+                    return OverlayResult::ShowSessionPicker(path);
+                }
+            }
+            DirectoryPickerAction::Cancelled => {
+                if has_sessions {
+                    return OverlayResult::Close;
+                }
+            }
+            DirectoryPickerAction::BrowseRequested => {}
+        }
+    }
+    OverlayResult::None
+}
+
+/// Render the session picker overlay UI.
+pub fn session_picker_overlay_ui(
+    session_picker: &mut SessionPicker,
+    ui: &mut egui::Ui,
+) -> OverlayResult {
+    if let Some(action) = session_picker.overlay_ui(ui) {
+        match action {
+            SessionPickerAction::ResumeSession {
+                cwd,
+                session_id,
+                title,
+            } => {
+                return OverlayResult::ResumeSession {
+                    cwd,
+                    session_id,
+                    title,
+                };
+            }
+            SessionPickerAction::NewSession { cwd } => {
+                return OverlayResult::NewSession { cwd };
+            }
+            SessionPickerAction::BackToDirectoryPicker => {
+                return OverlayResult::BackToDirectoryPicker;
+            }
+        }
+    }
+    OverlayResult::None
+}
+
+/// Scene view action returned after rendering
+pub enum SceneViewAction {
+    None,
+    ToggleToListView,
+    SpawnAgent,
+    DeleteSelected(Vec<SessionId>),
+}
+
+/// Render the scene view with RTS-style agent visualization and chat side panel.
+#[allow(clippy::too_many_arguments)]
+pub fn scene_ui(
+    session_manager: &mut SessionManager,
+    scene: &mut AgentScene,
+    focus_queue: &FocusQueue,
+    model_config: &ModelConfig,
+    is_interrupt_pending: bool,
+    auto_steal_focus: bool,
+    app_ctx: &mut notedeck::AppContext,
+    ui: &mut egui::Ui,
+) -> (DaveResponse, SceneViewAction) {
+    use egui_extras::{Size, StripBuilder};
+
+    let mut dave_response = DaveResponse::default();
+    let mut scene_response_opt: Option<SceneResponse> = None;
+    let mut view_action = SceneViewAction::None;
+
+    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+
+    StripBuilder::new(ui)
+        .size(Size::relative(0.25))
+        .size(Size::remainder())
+        .clip(true)
+        .horizontal(|mut strip| {
+            strip.cell(|ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("+ New Agent")
+                        .on_hover_text("Hold Ctrl to see keybindings")
+                        .clicked()
+                    {
+                        view_action = SceneViewAction::SpawnAgent;
+                    }
+                    if ctrl_held {
+                        keybind_hint(ui, "N");
+                    }
+                    ui.separator();
+                    if ui
+                        .button("List View")
+                        .on_hover_text("Ctrl+L to toggle views")
+                        .clicked()
+                    {
+                        view_action = SceneViewAction::ToggleToListView;
+                    }
+                    if ctrl_held {
+                        keybind_hint(ui, "L");
+                    }
+                });
+                ui.separator();
+                scene_response_opt = Some(scene.ui(session_manager, focus_queue, ui, ctrl_held));
+            });
+
+            strip.cell(|ui| {
+                egui::Frame::new()
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::symmetric(8, 12))
+                    .show(ui, |ui| {
+                        if let Some(selected_id) = scene.primary_selection() {
+                            if let Some(session) = session_manager.get_mut(selected_id) {
+                                ui.heading(&session.title);
+                                ui.separator();
+
+                                let is_working = session.status() == AgentStatus::Working;
+                                let has_pending_permission = session.has_pending_permissions();
+                                let plan_mode_active = session.is_plan_mode();
+
+                                let mut ui_builder = DaveUi::new(
+                                    model_config.trial,
+                                    &session.chat,
+                                    &mut session.input,
+                                    &mut session.focus_requested,
+                                    session.ai_mode,
+                                )
+                                .compact(true)
+                                .is_working(is_working)
+                                .interrupt_pending(is_interrupt_pending)
+                                .has_pending_permission(has_pending_permission)
+                                .plan_mode_active(plan_mode_active)
+                                .auto_steal_focus(auto_steal_focus);
+
+                                if let Some(agentic) = &mut session.agentic {
+                                    ui_builder = ui_builder
+                                        .permission_message_state(agentic.permission_message_state)
+                                        .question_answers(&mut agentic.question_answers)
+                                        .question_index(&mut agentic.question_index)
+                                        .is_compacting(agentic.is_compacting);
+                                }
+
+                                let response = ui_builder.ui(app_ctx, ui);
+                                if response.action.is_some() {
+                                    dave_response = response;
+                                }
+                            }
+                        } else {
+                            ui.centered_and_justified(|ui| {
+                                ui.label("Select an agent to view chat");
+                            });
+                        }
+                    });
+            });
+        });
+
+    // Handle scene actions
+    if let Some(response) = scene_response_opt {
+        if let Some(action) = response.action {
+            match action {
+                SceneAction::SelectionChanged(ids) => {
+                    if let Some(id) = ids.first() {
+                        session_manager.switch_to(*id);
+                    }
+                }
+                SceneAction::SpawnAgent => {
+                    view_action = SceneViewAction::SpawnAgent;
+                }
+                SceneAction::DeleteSelected => {
+                    view_action = SceneViewAction::DeleteSelected(scene.selected.clone());
+                }
+                SceneAction::AgentMoved { id, position } => {
+                    if let Some(session) = session_manager.get_mut(id) {
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.scene_position = position;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (dave_response, view_action)
+}
+
+/// Desktop layout with sidebar for session list.
+#[allow(clippy::too_many_arguments)]
+pub fn desktop_ui(
+    session_manager: &mut SessionManager,
+    focus_queue: &FocusQueue,
+    model_config: &ModelConfig,
+    is_interrupt_pending: bool,
+    auto_steal_focus: bool,
+    ai_mode: AiMode,
+    app_ctx: &mut notedeck::AppContext,
+    ui: &mut egui::Ui,
+) -> (DaveResponse, Option<SessionListAction>, bool) {
+    let available = ui.available_rect_before_wrap();
+    let sidebar_width = 280.0;
+    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+    let mut toggle_scene = false;
+
+    let sidebar_rect =
+        egui::Rect::from_min_size(available.min, egui::vec2(sidebar_width, available.height()));
+    let chat_rect = egui::Rect::from_min_size(
+        egui::pos2(available.min.x + sidebar_width, available.min.y),
+        egui::vec2(available.width() - sidebar_width, available.height()),
+    );
+
+    let session_action = ui
+        .allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
+            egui::Frame::new()
+                .fill(ui.visuals().faint_bg_color)
+                .inner_margin(egui::Margin::symmetric(8, 12))
+                .show(ui, |ui| {
+                    if ai_mode == AiMode::Agentic {
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button("Scene View")
+                                .on_hover_text("Ctrl+L to toggle views")
+                                .clicked()
+                            {
+                                toggle_scene = true;
+                            }
+                            if ctrl_held {
+                                keybind_hint(ui, "L");
+                            }
+                        });
+                        ui.separator();
+                    }
+                    SessionListUi::new(session_manager, focus_queue, ctrl_held, ai_mode).ui(ui)
+                })
+                .inner
+        })
+        .inner;
+
+    let chat_response = ui
+        .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
+            if let Some(session) = session_manager.get_active_mut() {
+                let is_working = session.status() == AgentStatus::Working;
+                let has_pending_permission = session.has_pending_permissions();
+                let plan_mode_active = session.is_plan_mode();
+
+                let mut ui_builder = DaveUi::new(
+                    model_config.trial,
+                    &session.chat,
+                    &mut session.input,
+                    &mut session.focus_requested,
+                    session.ai_mode,
+                )
+                .is_working(is_working)
+                .interrupt_pending(is_interrupt_pending)
+                .has_pending_permission(has_pending_permission)
+                .plan_mode_active(plan_mode_active)
+                .auto_steal_focus(auto_steal_focus);
+
+                if let Some(agentic) = &mut session.agentic {
+                    ui_builder = ui_builder
+                        .permission_message_state(agentic.permission_message_state)
+                        .question_answers(&mut agentic.question_answers)
+                        .question_index(&mut agentic.question_index)
+                        .is_compacting(agentic.is_compacting);
+                }
+
+                ui_builder.ui(app_ctx, ui)
+            } else {
+                DaveResponse::default()
+            }
+        })
+        .inner;
+
+    (chat_response, session_action, toggle_scene)
+}
+
+/// Narrow/mobile layout - shows either session list or chat.
+#[allow(clippy::too_many_arguments)]
+pub fn narrow_ui(
+    session_manager: &mut SessionManager,
+    focus_queue: &FocusQueue,
+    model_config: &ModelConfig,
+    is_interrupt_pending: bool,
+    auto_steal_focus: bool,
+    ai_mode: AiMode,
+    show_session_list: bool,
+    app_ctx: &mut notedeck::AppContext,
+    ui: &mut egui::Ui,
+) -> (DaveResponse, Option<SessionListAction>) {
+    if show_session_list {
+        let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+        let session_action = egui::Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .inner_margin(egui::Margin::symmetric(8, 12))
+            .show(ui, |ui| {
+                SessionListUi::new(session_manager, focus_queue, ctrl_held, ai_mode).ui(ui)
+            })
+            .inner;
+        (DaveResponse::default(), session_action)
+    } else if let Some(session) = session_manager.get_active_mut() {
+        let is_working = session.status() == AgentStatus::Working;
+        let has_pending_permission = session.has_pending_permissions();
+        let plan_mode_active = session.is_plan_mode();
+
+        let mut ui_builder = DaveUi::new(
+            model_config.trial,
+            &session.chat,
+            &mut session.input,
+            &mut session.focus_requested,
+            session.ai_mode,
+        )
+        .is_working(is_working)
+        .interrupt_pending(is_interrupt_pending)
+        .has_pending_permission(has_pending_permission)
+        .plan_mode_active(plan_mode_active)
+        .auto_steal_focus(auto_steal_focus);
+
+        if let Some(agentic) = &mut session.agentic {
+            ui_builder = ui_builder
+                .permission_message_state(agentic.permission_message_state)
+                .question_answers(&mut agentic.question_answers)
+                .question_index(&mut agentic.question_index)
+                .is_compacting(agentic.is_compacting);
+        }
+
+        (ui_builder.ui(app_ctx, ui), None)
+    } else {
+        (DaveResponse::default(), None)
+    }
+}
+
+/// Result from handling a key action
+pub enum KeyActionResult {
+    None,
+    ToggleView,
+    HandleInterrupt,
+    CloneAgent,
+    DeleteSession(SessionId),
+    SetAutoSteal(bool),
+}
+
+/// Handle a keybinding action.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_key_action(
+    key_action: KeyAction,
+    session_manager: &mut SessionManager,
+    scene: &mut AgentScene,
+    focus_queue: &mut FocusQueue,
+    backend: &dyn crate::backend::AiBackend,
+    show_scene: bool,
+    auto_steal_focus: bool,
+    home_session: &mut Option<SessionId>,
+    active_overlay: &mut DaveOverlay,
+    ctx: &egui::Context,
+) -> KeyActionResult {
+    match key_action {
+        KeyAction::AcceptPermission => {
+            if let Some(request_id) = update::first_pending_permission(session_manager) {
+                update::handle_permission_response(
+                    session_manager,
+                    request_id,
+                    PermissionResponse::Allow { message: None },
+                );
+                if let Some(session) = session_manager.get_active_mut() {
+                    session.focus_requested = true;
+                }
+            }
+            KeyActionResult::None
+        }
+        KeyAction::DenyPermission => {
+            if let Some(request_id) = update::first_pending_permission(session_manager) {
+                update::handle_permission_response(
+                    session_manager,
+                    request_id,
+                    PermissionResponse::Deny {
+                        reason: "User denied".into(),
+                    },
+                );
+                if let Some(session) = session_manager.get_active_mut() {
+                    session.focus_requested = true;
+                }
+            }
+            KeyActionResult::None
+        }
+        KeyAction::TentativeAccept => {
+            if let Some(session) = session_manager.get_active_mut() {
+                if let Some(agentic) = &mut session.agentic {
+                    agentic.permission_message_state = PermissionMessageState::TentativeAccept;
+                }
+                session.focus_requested = true;
+            }
+            KeyActionResult::None
+        }
+        KeyAction::TentativeDeny => {
+            if let Some(session) = session_manager.get_active_mut() {
+                if let Some(agentic) = &mut session.agentic {
+                    agentic.permission_message_state = PermissionMessageState::TentativeDeny;
+                }
+                session.focus_requested = true;
+            }
+            KeyActionResult::None
+        }
+        KeyAction::CancelTentative => {
+            if let Some(session) = session_manager.get_active_mut() {
+                if let Some(agentic) = &mut session.agentic {
+                    agentic.permission_message_state = PermissionMessageState::None;
+                }
+            }
+            KeyActionResult::None
+        }
+        KeyAction::SwitchToAgent(index) => {
+            update::switch_to_agent_by_index(session_manager, scene, show_scene, index);
+            KeyActionResult::None
+        }
+        KeyAction::NextAgent => {
+            update::cycle_next_agent(session_manager, scene, show_scene);
+            KeyActionResult::None
+        }
+        KeyAction::PreviousAgent => {
+            update::cycle_prev_agent(session_manager, scene, show_scene);
+            KeyActionResult::None
+        }
+        KeyAction::NewAgent => {
+            *active_overlay = DaveOverlay::DirectoryPicker;
+            KeyActionResult::None
+        }
+        KeyAction::CloneAgent => KeyActionResult::CloneAgent,
+        KeyAction::Interrupt => KeyActionResult::HandleInterrupt,
+        KeyAction::ToggleView => KeyActionResult::ToggleView,
+        KeyAction::TogglePlanMode => {
+            update::toggle_plan_mode(session_manager, backend, ctx);
+            if let Some(session) = session_manager.get_active_mut() {
+                session.focus_requested = true;
+            }
+            KeyActionResult::None
+        }
+        KeyAction::DeleteActiveSession => {
+            if let Some(id) = session_manager.active_id() {
+                KeyActionResult::DeleteSession(id)
+            } else {
+                KeyActionResult::None
+            }
+        }
+        KeyAction::FocusQueueNext => {
+            update::focus_queue_next(session_manager, focus_queue, scene, show_scene);
+            KeyActionResult::None
+        }
+        KeyAction::FocusQueuePrev => {
+            update::focus_queue_prev(session_manager, focus_queue, scene, show_scene);
+            KeyActionResult::None
+        }
+        KeyAction::FocusQueueToggleDone => {
+            update::focus_queue_toggle_done(focus_queue);
+            KeyActionResult::None
+        }
+        KeyAction::ToggleAutoSteal => {
+            let new_state = update::toggle_auto_steal(
+                session_manager,
+                scene,
+                show_scene,
+                auto_steal_focus,
+                home_session,
+            );
+            KeyActionResult::SetAutoSteal(new_state)
+        }
+        KeyAction::OpenExternalEditor => {
+            update::open_external_editor(session_manager);
+            KeyActionResult::None
+        }
+    }
+}
+
+/// Result from handling a send action
+pub enum SendActionResult {
+    /// Permission response was sent, no further action needed
+    Handled,
+    /// Normal send - caller should send the user message
+    SendMessage,
+}
+
+/// Handle the Send action, including tentative permission states.
+pub fn handle_send_action(
+    session_manager: &mut SessionManager,
+    backend: &dyn crate::backend::AiBackend,
+    ctx: &egui::Context,
+) -> SendActionResult {
+    let tentative_state = session_manager
+        .get_active()
+        .and_then(|s| s.agentic.as_ref())
+        .map(|a| a.permission_message_state)
+        .unwrap_or(PermissionMessageState::None);
+
+    match tentative_state {
+        PermissionMessageState::TentativeAccept => {
+            let is_exit_plan_mode = update::has_pending_exit_plan_mode(session_manager);
+            if let Some(request_id) = update::first_pending_permission(session_manager) {
+                let message = session_manager
+                    .get_active()
+                    .map(|s| s.input.clone())
+                    .filter(|m| !m.is_empty());
+                if let Some(session) = session_manager.get_active_mut() {
+                    session.input.clear();
+                }
+                if is_exit_plan_mode {
+                    update::exit_plan_mode(session_manager, backend, ctx);
+                }
+                update::handle_permission_response(
+                    session_manager,
+                    request_id,
+                    PermissionResponse::Allow { message },
+                );
+            }
+            SendActionResult::Handled
+        }
+        PermissionMessageState::TentativeDeny => {
+            if let Some(request_id) = update::first_pending_permission(session_manager) {
+                let reason = session_manager
+                    .get_active()
+                    .map(|s| s.input.clone())
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or_else(|| "User denied".into());
+                if let Some(session) = session_manager.get_active_mut() {
+                    session.input.clear();
+                }
+                update::handle_permission_response(
+                    session_manager,
+                    request_id,
+                    PermissionResponse::Deny { reason },
+                );
+            }
+            SendActionResult::Handled
+        }
+        PermissionMessageState::None => SendActionResult::SendMessage,
+    }
+}
+
+/// Result from handling a UI action
+pub enum UiActionResult {
+    /// Action was fully handled
+    Handled,
+    /// Send action - caller should handle send
+    SendAction,
+    /// Return an AppAction
+    AppAction(notedeck::AppAction),
+}
+
+/// Handle a UI action from DaveUi.
+#[allow(clippy::too_many_arguments)]
+pub fn handle_ui_action(
+    action: DaveAction,
+    session_manager: &mut SessionManager,
+    backend: &dyn crate::backend::AiBackend,
+    active_overlay: &mut DaveOverlay,
+    show_session_list: &mut bool,
+    ctx: &egui::Context,
+) -> UiActionResult {
+    match action {
+        DaveAction::ToggleChrome => UiActionResult::AppAction(notedeck::AppAction::ToggleChrome),
+        DaveAction::Note(n) => UiActionResult::AppAction(notedeck::AppAction::Note(n)),
+        DaveAction::NewChat => {
+            *active_overlay = DaveOverlay::DirectoryPicker;
+            UiActionResult::Handled
+        }
+        DaveAction::Send => UiActionResult::SendAction,
+        DaveAction::ShowSessionList => {
+            *show_session_list = !*show_session_list;
+            UiActionResult::Handled
+        }
+        DaveAction::OpenSettings => {
+            *active_overlay = DaveOverlay::Settings;
+            UiActionResult::Handled
+        }
+        DaveAction::UpdateSettings(_settings) => UiActionResult::Handled,
+        DaveAction::PermissionResponse {
+            request_id,
+            response,
+        } => {
+            update::handle_permission_response(session_manager, request_id, response);
+            UiActionResult::Handled
+        }
+        DaveAction::Interrupt => {
+            update::execute_interrupt(session_manager, backend, ctx);
+            UiActionResult::Handled
+        }
+        DaveAction::TentativeAccept => {
+            if let Some(session) = session_manager.get_active_mut() {
+                if let Some(agentic) = &mut session.agentic {
+                    agentic.permission_message_state = PermissionMessageState::TentativeAccept;
+                }
+                session.focus_requested = true;
+            }
+            UiActionResult::Handled
+        }
+        DaveAction::TentativeDeny => {
+            if let Some(session) = session_manager.get_active_mut() {
+                if let Some(agentic) = &mut session.agentic {
+                    agentic.permission_message_state = PermissionMessageState::TentativeDeny;
+                }
+                session.focus_requested = true;
+            }
+            UiActionResult::Handled
+        }
+        DaveAction::QuestionResponse {
+            request_id,
+            answers,
+        } => {
+            update::handle_question_response(session_manager, request_id, answers);
+            UiActionResult::Handled
+        }
+        DaveAction::ExitPlanMode {
+            request_id,
+            approved,
+        } => {
+            if approved {
+                update::exit_plan_mode(session_manager, backend, ctx);
+                update::handle_permission_response(
+                    session_manager,
+                    request_id,
+                    PermissionResponse::Allow { message: None },
+                );
+            } else {
+                update::handle_permission_response(
+                    session_manager,
+                    request_id,
+                    PermissionResponse::Deny {
+                        reason: "User rejected plan".into(),
+                    },
+                );
+            }
+            UiActionResult::Handled
+        }
+    }
+}

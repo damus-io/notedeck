@@ -1,54 +1,104 @@
+mod agent_status;
+mod auto_accept;
 mod avatar;
+mod backend;
 mod config;
+pub mod file_update;
+mod focus_queue;
+pub mod ipc;
 pub(crate) mod mesh;
 mod messages;
 mod quaternion;
 pub mod session;
+pub mod session_discovery;
 mod tools;
 mod ui;
+mod update;
 mod vec3;
 
-use async_openai::{
-    config::OpenAIConfig,
-    types::{ChatCompletionRequestMessage, CreateChatCompletionRequest},
-    Client,
-};
+use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend};
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
-use futures::StreamExt;
+use focus_queue::FocusQueue;
 use nostrdb::Transaction;
 use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::string::ToString;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub use avatar::DaveAvatar;
-pub use config::ModelConfig;
-pub use messages::{DaveApiResponse, Message};
+pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig};
+pub use messages::{
+    AskUserQuestionInput, DaveApiResponse, Message, PermissionResponse, PermissionResponseType,
+    QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus, ToolResult,
+};
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
+pub use session_discovery::{discover_sessions, format_relative_time, ResumableSession};
 pub use tools::{
     PartialToolCall, QueryCall, QueryResponse, Tool, ToolCall, ToolCalls, ToolResponse,
     ToolResponses,
 };
-pub use ui::{DaveAction, DaveResponse, DaveUi, SessionListAction, SessionListUi};
+pub use ui::{
+    check_keybindings, AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi,
+    DirectoryPicker, DirectoryPickerAction, KeyAction, KeyActionResult, OverlayResult, SceneAction,
+    SceneResponse, SceneViewAction, SendActionResult, SessionListAction, SessionListUi,
+    SessionPicker, SessionPickerAction, SettingsPanelAction, UiActionResult,
+};
 pub use vec3::Vec3;
 
+/// Represents which full-screen overlay (if any) is currently active
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DaveOverlay {
+    #[default]
+    None,
+    Settings,
+    DirectoryPicker,
+    SessionPicker,
+}
+
 pub struct Dave {
+    /// AI interaction mode (Chat vs Agentic)
+    ai_mode: AiMode,
     /// Manages multiple chat sessions
     session_manager: SessionManager,
     /// A 3d representation of dave.
     avatar: Option<DaveAvatar>,
     /// Shared tools available to all sessions
     tools: Arc<HashMap<String, Tool>>,
-    /// Shared API client
-    client: async_openai::Client<OpenAIConfig>,
+    /// AI backend (OpenAI, Claude, etc.)
+    backend: Box<dyn AiBackend>,
     /// Model configuration
     model_config: ModelConfig,
     /// Whether to show session list on mobile
     show_session_list: bool,
+    /// User settings
+    settings: DaveSettings,
+    /// Settings panel UI state
+    settings_panel: DaveSettingsPanel,
+    /// RTS-style scene view
+    scene: AgentScene,
+    /// Whether to show scene view (vs classic chat view)
+    show_scene: bool,
+    /// Tracks when first Escape was pressed for interrupt confirmation
+    interrupt_pending_since: Option<Instant>,
+    /// Focus queue for agents needing attention
+    focus_queue: FocusQueue,
+    /// Auto-steal focus mode: automatically cycle through focus queue items
+    auto_steal_focus: bool,
+    /// The session ID to return to after processing all NeedsInput items
+    home_session: Option<SessionId>,
+    /// Directory picker for selecting working directory when creating sessions
+    directory_picker: DirectoryPicker,
+    /// Session picker for resuming existing Claude sessions
+    session_picker: SessionPicker,
+    /// Current overlay taking over the UI (if any)
+    active_overlay: DaveOverlay,
+    /// IPC listener for external spawn-agent commands
+    ipc_listener: Option<ipc::IpcListener>,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -69,7 +119,7 @@ impl Dave {
         self.avatar.as_mut()
     }
 
-    fn system_prompt() -> Message {
+    fn _system_prompt() -> Message {
         let now = Local::now();
         let yesterday = now - Duration::hours(24);
         let date = now.format("%Y-%m-%d %H:%M:%S");
@@ -93,10 +143,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ))
     }
 
-    pub fn new(render_state: Option<&RenderState>) -> Self {
+    pub fn new(render_state: Option<&RenderState>, ndb: nostrdb::Ndb, ctx: egui::Context) -> Self {
         let model_config = ModelConfig::default();
         //let model_config = ModelConfig::ollama();
-        let client = Client::with_config(model_config.to_api());
+
+        // Determine AI mode from backend type
+        let ai_mode = model_config.ai_mode();
+
+        // Create backend based on configuration
+        let backend: Box<dyn AiBackend> = match model_config.backend {
+            BackendType::OpenAI => {
+                use async_openai::Client;
+                let client = Client::with_config(model_config.to_api());
+                Box::new(OpenAiBackend::new(client, ndb.clone()))
+            }
+            BackendType::Claude => {
+                let api_key = model_config
+                    .anthropic_api_key
+                    .as_ref()
+                    .expect("Claude backend requires ANTHROPIC_API_KEY or CLAUDE_API_KEY");
+                Box::new(ClaudeBackend::new(api_key.clone()))
+            }
+        };
 
         let avatar = render_state.map(DaveAvatar::new);
         let mut tools: HashMap<String, Tool> = HashMap::new();
@@ -104,145 +172,375 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools.insert(tool.name().to_string(), tool);
         }
 
+        let settings = DaveSettings::from_model_config(&model_config);
+
+        let directory_picker = DirectoryPicker::new();
+
+        // Create IPC listener for external spawn-agent commands
+        let ipc_listener = ipc::create_listener(ctx);
+
+        // In Chat mode, create a default session immediately and skip directory picker
+        // In Agentic mode, show directory picker on startup
+        let (session_manager, active_overlay) = match ai_mode {
+            AiMode::Chat => {
+                let mut manager = SessionManager::new();
+                // Create a default session with current directory
+                manager.new_session(std::env::current_dir().unwrap_or_default(), ai_mode);
+                (manager, DaveOverlay::None)
+            }
+            AiMode::Agentic => (SessionManager::new(), DaveOverlay::DirectoryPicker),
+        };
+
         Dave {
-            client,
+            ai_mode,
+            backend,
             avatar,
-            session_manager: SessionManager::new(),
+            session_manager,
             tools: Arc::new(tools),
             model_config,
             show_session_list: false,
+            settings,
+            settings_panel: DaveSettingsPanel::new(),
+            scene: AgentScene::new(),
+            show_scene: false, // Default to list view
+            interrupt_pending_since: None,
+            focus_queue: FocusQueue::new(),
+            auto_steal_focus: false,
+            home_session: None,
+            directory_picker,
+            session_picker: SessionPicker::new(),
+            active_overlay,
+            ipc_listener,
         }
     }
 
-    /// Process incoming tokens from the ai backend
-    fn process_events(&mut self, app_ctx: &AppContext) -> bool {
-        // Should we continue sending requests? Set this to true if
-        // we have tool responses to send back to the ai
-        let mut should_send = false;
+    /// Get current settings for persistence
+    pub fn settings(&self) -> &DaveSettings {
+        &self.settings
+    }
 
-        // Take the receiver out to avoid borrow conflicts
-        let recvr = {
-            let Some(session) = self.session_manager.get_active_mut() else {
-                return should_send;
+    /// Apply new settings. Note: Provider changes require app restart to take effect.
+    pub fn apply_settings(&mut self, settings: DaveSettings) {
+        self.model_config = ModelConfig::from_settings(&settings);
+        self.settings = settings;
+    }
+
+    /// Process incoming tokens from the ai backend for ALL sessions
+    /// Returns a set of session IDs that need to send tool responses
+    fn process_events(&mut self, app_ctx: &AppContext) -> HashSet<SessionId> {
+        // Track which sessions need to send tool responses
+        let mut needs_send: HashSet<SessionId> = HashSet::new();
+        let active_id = self.session_manager.active_id();
+
+        // Get all session IDs to process
+        let session_ids = self.session_manager.session_ids();
+
+        for session_id in session_ids {
+            // Take the receiver out to avoid borrow conflicts
+            let recvr = {
+                let Some(session) = self.session_manager.get_mut(session_id) else {
+                    continue;
+                };
+                session.incoming_tokens.take()
             };
-            session.incoming_tokens.take()
-        };
 
-        let Some(recvr) = recvr else {
-            return should_send;
-        };
-
-        while let Ok(res) = recvr.try_recv() {
-            if let Some(avatar) = &mut self.avatar {
-                avatar.random_nudge();
-            }
-
-            let Some(session) = self.session_manager.get_active_mut() else {
-                break;
+            let Some(recvr) = recvr else {
+                continue;
             };
 
-            match res {
-                DaveApiResponse::Failed(err) => session.chat.push(Message::Error(err)),
+            while let Ok(res) = recvr.try_recv() {
+                // Nudge avatar only for active session
+                if active_id == Some(session_id) {
+                    if let Some(avatar) = &mut self.avatar {
+                        avatar.random_nudge();
+                    }
+                }
 
-                DaveApiResponse::Token(token) => match session.chat.last_mut() {
-                    Some(Message::Assistant(msg)) => *msg = msg.clone() + &token,
-                    Some(_) => session.chat.push(Message::Assistant(token)),
-                    None => {}
-                },
+                let Some(session) = self.session_manager.get_mut(session_id) else {
+                    break;
+                };
 
-                DaveApiResponse::ToolCalls(toolcalls) => {
-                    tracing::info!("got tool calls: {:?}", toolcalls);
-                    session.chat.push(Message::ToolCalls(toolcalls.clone()));
+                match res {
+                    DaveApiResponse::Failed(err) => session.chat.push(Message::Error(err)),
 
-                    let txn = Transaction::new(app_ctx.ndb).unwrap();
-                    for call in &toolcalls {
-                        // execute toolcall
-                        match call.calls() {
-                            ToolCalls::PresentNotes(present) => {
-                                session.chat.push(Message::ToolResponse(ToolResponse::new(
-                                    call.id().to_owned(),
-                                    ToolResponses::PresentNotes(present.note_ids.len() as i32),
-                                )));
+                    DaveApiResponse::Token(token) => match session.chat.last_mut() {
+                        Some(Message::Assistant(msg)) => msg.push_str(&token),
+                        Some(_) => session.chat.push(Message::Assistant(token)),
+                        None => {}
+                    },
 
-                                should_send = true;
-                            }
+                    DaveApiResponse::ToolCalls(toolcalls) => {
+                        tracing::info!("got tool calls: {:?}", toolcalls);
+                        session.chat.push(Message::ToolCalls(toolcalls.clone()));
 
-                            ToolCalls::Invalid(invalid) => {
-                                should_send = true;
+                        let txn = Transaction::new(app_ctx.ndb).unwrap();
+                        for call in &toolcalls {
+                            // execute toolcall
+                            match call.calls() {
+                                ToolCalls::PresentNotes(present) => {
+                                    session.chat.push(Message::ToolResponse(ToolResponse::new(
+                                        call.id().to_owned(),
+                                        ToolResponses::PresentNotes(present.note_ids.len() as i32),
+                                    )));
 
-                                session.chat.push(Message::tool_error(
-                                    call.id().to_string(),
-                                    invalid.error.clone(),
-                                ));
-                            }
+                                    needs_send.insert(session_id);
+                                }
 
-                            ToolCalls::Query(search_call) => {
-                                should_send = true;
+                                ToolCalls::Invalid(invalid) => {
+                                    session.chat.push(Message::tool_error(
+                                        call.id().to_string(),
+                                        invalid.error.clone(),
+                                    ));
 
-                                let resp = search_call.execute(&txn, app_ctx.ndb);
-                                session.chat.push(Message::ToolResponse(ToolResponse::new(
-                                    call.id().to_owned(),
-                                    ToolResponses::Query(resp),
-                                )))
+                                    needs_send.insert(session_id);
+                                }
+
+                                ToolCalls::Query(search_call) => {
+                                    let resp = search_call.execute(&txn, app_ctx.ndb);
+                                    session.chat.push(Message::ToolResponse(ToolResponse::new(
+                                        call.id().to_owned(),
+                                        ToolResponses::Query(resp),
+                                    )));
+
+                                    needs_send.insert(session_id);
+                                }
                             }
                         }
+                    }
+
+                    DaveApiResponse::PermissionRequest(pending) => {
+                        tracing::info!(
+                            "Permission request for tool '{}': {:?}",
+                            pending.request.tool_name,
+                            pending.request.tool_input
+                        );
+
+                        // Store the response sender for later (agentic only)
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic
+                                .pending_permissions
+                                .insert(pending.request.id, pending.response_tx);
+                        }
+
+                        // Add the request to chat for UI display
+                        session
+                            .chat
+                            .push(Message::PermissionRequest(pending.request));
+                    }
+
+                    DaveApiResponse::ToolResult(result) => {
+                        tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
+                        session.chat.push(Message::ToolResult(result));
+                    }
+
+                    DaveApiResponse::SessionInfo(info) => {
+                        tracing::debug!(
+                            "Session info: model={:?}, tools={}, agents={}",
+                            info.model,
+                            info.tools.len(),
+                            info.agents.len()
+                        );
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.session_info = Some(info);
+                        }
+                    }
+
+                    DaveApiResponse::SubagentSpawned(subagent) => {
+                        tracing::debug!(
+                            "Subagent spawned: {} ({}) - {}",
+                            subagent.task_id,
+                            subagent.subagent_type,
+                            subagent.description
+                        );
+                        let task_id = subagent.task_id.clone();
+                        let idx = session.chat.len();
+                        session.chat.push(Message::Subagent(subagent));
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.subagent_indices.insert(task_id, idx);
+                        }
+                    }
+
+                    DaveApiResponse::SubagentOutput { task_id, output } => {
+                        session.update_subagent_output(&task_id, &output);
+                    }
+
+                    DaveApiResponse::SubagentCompleted { task_id, result } => {
+                        tracing::debug!("Subagent completed: {}", task_id);
+                        session.complete_subagent(&task_id, &result);
+                    }
+
+                    DaveApiResponse::CompactionStarted => {
+                        tracing::debug!("Compaction started for session {}", session_id);
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.is_compacting = true;
+                        }
+                    }
+
+                    DaveApiResponse::CompactionComplete(info) => {
+                        tracing::debug!(
+                            "Compaction completed for session {}: pre_tokens={}",
+                            session_id,
+                            info.pre_tokens
+                        );
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.is_compacting = false;
+                            agentic.last_compaction = Some(info.clone());
+                        }
+                        session.chat.push(Message::CompactionComplete(info));
+                    }
+                }
+            }
+
+            // Check if channel is disconnected (stream ended)
+            match recvr.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // Stream ended, clear task state
+                    if let Some(session) = self.session_manager.get_mut(session_id) {
+                        session.task_handle = None;
+                        // Don't restore incoming_tokens - leave it None
+                    }
+                }
+                _ => {
+                    // Channel still open, put receiver back
+                    if let Some(session) = self.session_manager.get_mut(session_id) {
+                        session.incoming_tokens = Some(recvr);
                     }
                 }
             }
         }
 
-        // Put the receiver back
-        if let Some(session) = self.session_manager.get_active_mut() {
-            session.incoming_tokens = Some(recvr);
-        }
-
-        should_send
+        needs_send
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        // Check overlays first - they take over the entire UI
+        match self.active_overlay {
+            DaveOverlay::Settings => {
+                match ui::settings_overlay_ui(&mut self.settings_panel, &self.settings, ui) {
+                    OverlayResult::ApplySettings(new_settings) => {
+                        self.apply_settings(new_settings.clone());
+                        self.active_overlay = DaveOverlay::None;
+                        return DaveResponse::new(DaveAction::UpdateSettings(new_settings));
+                    }
+                    OverlayResult::Close => {
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                    _ => {}
+                }
+                return DaveResponse::default();
+            }
+            DaveOverlay::DirectoryPicker => {
+                let has_sessions = !self.session_manager.is_empty();
+                match ui::directory_picker_overlay_ui(&mut self.directory_picker, has_sessions, ui)
+                {
+                    OverlayResult::DirectorySelected(path) => {
+                        self.create_session_with_cwd(path);
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                    OverlayResult::ShowSessionPicker(path) => {
+                        self.session_picker.open(path);
+                        self.active_overlay = DaveOverlay::SessionPicker;
+                    }
+                    OverlayResult::Close => {
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                    _ => {}
+                }
+                return DaveResponse::default();
+            }
+            DaveOverlay::SessionPicker => {
+                match ui::session_picker_overlay_ui(&mut self.session_picker, ui) {
+                    OverlayResult::ResumeSession {
+                        cwd,
+                        session_id,
+                        title,
+                    } => {
+                        self.create_resumed_session_with_cwd(cwd, session_id, title);
+                        self.session_picker.close();
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                    OverlayResult::NewSession { cwd } => {
+                        self.create_session_with_cwd(cwd);
+                        self.session_picker.close();
+                        self.active_overlay = DaveOverlay::None;
+                    }
+                    OverlayResult::BackToDirectoryPicker => {
+                        self.session_picker.close();
+                        self.active_overlay = DaveOverlay::DirectoryPicker;
+                    }
+                    _ => {}
+                }
+                return DaveResponse::default();
+            }
+            DaveOverlay::None => {}
+        }
+
+        // Normal routing
         if is_narrow(ui.ctx()) {
             self.narrow_ui(app_ctx, ui)
+        } else if self.show_scene {
+            self.scene_ui(app_ctx, ui)
         } else {
             self.desktop_ui(app_ctx, ui)
         }
     }
 
-    /// Desktop layout with sidebar for session list
-    fn desktop_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        let available = ui.available_rect_before_wrap();
-        let sidebar_width = 280.0;
-
-        let sidebar_rect =
-            egui::Rect::from_min_size(available.min, egui::vec2(sidebar_width, available.height()));
-        let chat_rect = egui::Rect::from_min_size(
-            egui::pos2(available.min.x + sidebar_width, available.min.y),
-            egui::vec2(available.width() - sidebar_width, available.height()),
+    /// Scene view with RTS-style agent visualization and chat side panel
+    fn scene_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let is_interrupt_pending = self.is_interrupt_pending();
+        let (dave_response, view_action) = ui::scene_ui(
+            &mut self.session_manager,
+            &mut self.scene,
+            &self.focus_queue,
+            &self.model_config,
+            is_interrupt_pending,
+            self.auto_steal_focus,
+            app_ctx,
+            ui,
         );
 
-        // Render sidebar first - borrow released after this
-        let session_action = ui
-            .allocate_new_ui(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-                egui::Frame::new()
-                    .fill(ui.visuals().faint_bg_color)
-                    .inner_margin(egui::Margin::symmetric(8, 12))
-                    .show(ui, |ui| SessionListUi::new(&self.session_manager).ui(ui))
-                    .inner
-            })
-            .inner;
-
-        // Now we can mutably borrow for chat
-        let chat_response = ui
-            .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
-                if let Some(session) = self.session_manager.get_active_mut() {
-                    DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
-                        .ui(app_ctx, ui)
-                } else {
-                    DaveResponse::default()
+        // Handle view actions
+        match view_action {
+            SceneViewAction::ToggleToListView => {
+                self.show_scene = false;
+            }
+            SceneViewAction::SpawnAgent => {
+                return DaveResponse::new(DaveAction::NewChat);
+            }
+            SceneViewAction::DeleteSelected(ids) => {
+                for id in ids {
+                    self.delete_session(id);
                 }
-            })
-            .inner;
+                if let Some(session) = self.session_manager.sessions_ordered().first() {
+                    self.scene.select(session.id);
+                } else {
+                    self.scene.clear_selection();
+                }
+            }
+            SceneViewAction::None => {}
+        }
 
-        // Handle actions after rendering
+        dave_response
+    }
+
+    /// Desktop layout with sidebar for session list
+    fn desktop_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let is_interrupt_pending = self.is_interrupt_pending();
+        let (chat_response, session_action, toggle_scene) = ui::desktop_ui(
+            &mut self.session_manager,
+            &self.focus_queue,
+            &self.model_config,
+            is_interrupt_pending,
+            self.auto_steal_focus,
+            self.ai_mode,
+            app_ctx,
+            ui,
+        );
+
+        if toggle_scene {
+            self.show_scene = true;
+        }
+
         if let Some(action) = session_action {
             match action {
                 SessionListAction::NewSession => return DaveResponse::new(DaveAction::NewChat),
@@ -250,7 +548,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     self.session_manager.switch_to(id);
                 }
                 SessionListAction::Delete(id) => {
-                    self.session_manager.delete_session(id);
+                    self.delete_session(id);
                 }
             }
         }
@@ -260,190 +558,299 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Narrow/mobile layout - shows either session list or chat
     fn narrow_ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        if self.show_session_list {
-            // Show session list
-            let session_action = egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
-                .inner_margin(egui::Margin::symmetric(8, 12))
-                .show(ui, |ui| SessionListUi::new(&self.session_manager).ui(ui))
-                .inner;
-            if let Some(action) = session_action {
-                match action {
-                    SessionListAction::NewSession => {
-                        self.session_manager.new_session();
-                        self.show_session_list = false;
-                    }
-                    SessionListAction::SwitchTo(id) => {
-                        self.session_manager.switch_to(id);
-                        self.show_session_list = false;
-                    }
-                    SessionListAction::Delete(id) => {
-                        self.session_manager.delete_session(id);
-                    }
+        let is_interrupt_pending = self.is_interrupt_pending();
+        let (dave_response, session_action) = ui::narrow_ui(
+            &mut self.session_manager,
+            &self.focus_queue,
+            &self.model_config,
+            is_interrupt_pending,
+            self.auto_steal_focus,
+            self.ai_mode,
+            self.show_session_list,
+            app_ctx,
+            ui,
+        );
+
+        if let Some(action) = session_action {
+            match action {
+                SessionListAction::NewSession => {
+                    self.handle_new_chat();
+                    self.show_session_list = false;
+                }
+                SessionListAction::SwitchTo(id) => {
+                    self.session_manager.switch_to(id);
+                    self.show_session_list = false;
+                }
+                SessionListAction::Delete(id) => {
+                    self.delete_session(id);
                 }
             }
-            DaveResponse::default()
-        } else {
-            // Show chat
-            if let Some(session) = self.session_manager.get_active_mut() {
-                DaveUi::new(self.model_config.trial, &session.chat, &mut session.input)
-                    .ui(app_ctx, ui)
-            } else {
-                DaveResponse::default()
-            }
         }
+
+        dave_response
     }
 
     fn handle_new_chat(&mut self) {
-        self.session_manager.new_session();
+        // Show the directory picker overlay
+        self.active_overlay = DaveOverlay::DirectoryPicker;
+    }
+
+    /// Create a new session with the given cwd (called after directory picker selection)
+    fn create_session_with_cwd(&mut self, cwd: PathBuf) {
+        update::create_session_with_cwd(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+            cwd,
+        );
+    }
+
+    /// Create a new session that resumes an existing Claude conversation
+    fn create_resumed_session_with_cwd(
+        &mut self,
+        cwd: PathBuf,
+        resume_session_id: String,
+        title: String,
+    ) {
+        update::create_resumed_session_with_cwd(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+            cwd,
+            resume_session_id,
+            title,
+        );
+    }
+
+    /// Clone the active agent, creating a new session with the same working directory
+    fn clone_active_agent(&mut self) {
+        update::clone_active_agent(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+        );
+    }
+
+    /// Poll for IPC spawn-agent commands from external tools
+    fn poll_ipc_commands(&mut self) {
+        let Some(listener) = self.ipc_listener.as_ref() else {
+            return;
+        };
+
+        // Drain all pending connections (non-blocking)
+        while let Some(mut pending) = listener.try_recv() {
+            // Create the session and get its ID
+            let id = self
+                .session_manager
+                .new_session(pending.cwd.clone(), self.ai_mode);
+            self.directory_picker.add_recent(pending.cwd);
+
+            // Focus on new session
+            if let Some(session) = self.session_manager.get_mut(id) {
+                session.focus_requested = true;
+                if self.show_scene {
+                    self.scene.select(id);
+                    if let Some(agentic) = &session.agentic {
+                        self.scene.focus_on(agentic.scene_position);
+                    }
+                }
+            }
+
+            // Close directory picker if open
+            if self.active_overlay == DaveOverlay::DirectoryPicker {
+                self.active_overlay = DaveOverlay::None;
+            }
+
+            // Send success response back to the client
+            #[cfg(unix)]
+            {
+                let response = ipc::SpawnResponse::ok(id);
+                let _ = ipc::send_response(&mut pending.stream, &response);
+            }
+
+            tracing::info!("Spawned agent via IPC (session {})", id);
+        }
+    }
+
+    /// Delete a session and clean up backend resources
+    fn delete_session(&mut self, id: SessionId) {
+        update::delete_session(
+            &mut self.session_manager,
+            &mut self.focus_queue,
+            self.backend.as_ref(),
+            &mut self.directory_picker,
+            id,
+        );
+    }
+
+    /// Handle an interrupt request - requires double-Escape to confirm
+    fn handle_interrupt_request(&mut self, ctx: &egui::Context) {
+        self.interrupt_pending_since = update::handle_interrupt_request(
+            &self.session_manager,
+            self.backend.as_ref(),
+            self.interrupt_pending_since,
+            ctx,
+        );
+    }
+
+    /// Check if interrupt confirmation has timed out and clear it
+    fn check_interrupt_timeout(&mut self) {
+        self.interrupt_pending_since =
+            update::check_interrupt_timeout(self.interrupt_pending_since);
+    }
+
+    /// Returns true if an interrupt is pending confirmation
+    pub fn is_interrupt_pending(&self) -> bool {
+        self.interrupt_pending_since.is_some()
+    }
+
+    /// Get the first pending permission request ID for the active session
+    fn first_pending_permission(&self) -> Option<uuid::Uuid> {
+        update::first_pending_permission(&self.session_manager)
+    }
+
+    /// Check if the first pending permission is an AskUserQuestion tool call
+    fn has_pending_question(&self) -> bool {
+        update::has_pending_question(&self.session_manager)
+    }
+
+    /// Handle a keybinding action
+    fn handle_key_action(&mut self, key_action: KeyAction, ui: &egui::Ui) {
+        match ui::handle_key_action(
+            key_action,
+            &mut self.session_manager,
+            &mut self.scene,
+            &mut self.focus_queue,
+            self.backend.as_ref(),
+            self.show_scene,
+            self.auto_steal_focus,
+            &mut self.home_session,
+            &mut self.active_overlay,
+            ui.ctx(),
+        ) {
+            KeyActionResult::ToggleView => {
+                self.show_scene = !self.show_scene;
+            }
+            KeyActionResult::HandleInterrupt => {
+                self.handle_interrupt_request(ui.ctx());
+            }
+            KeyActionResult::CloneAgent => {
+                self.clone_active_agent();
+            }
+            KeyActionResult::DeleteSession(id) => {
+                self.delete_session(id);
+            }
+            KeyActionResult::SetAutoSteal(new_state) => {
+                self.auto_steal_focus = new_state;
+            }
+            KeyActionResult::None => {}
+        }
+    }
+
+    /// Handle the Send action, including tentative permission states
+    fn handle_send_action(&mut self, ctx: &AppContext, ui: &egui::Ui) {
+        match ui::handle_send_action(&mut self.session_manager, self.backend.as_ref(), ui.ctx()) {
+            SendActionResult::SendMessage => {
+                self.handle_user_send(ctx, ui);
+            }
+            SendActionResult::Handled => {}
+        }
+    }
+
+    /// Handle a UI action from DaveUi
+    fn handle_ui_action(
+        &mut self,
+        action: DaveAction,
+        ctx: &AppContext,
+        ui: &egui::Ui,
+    ) -> Option<AppAction> {
+        match ui::handle_ui_action(
+            action,
+            &mut self.session_manager,
+            self.backend.as_ref(),
+            &mut self.active_overlay,
+            &mut self.show_session_list,
+            ui.ctx(),
+        ) {
+            UiActionResult::AppAction(app_action) => Some(app_action),
+            UiActionResult::SendAction => {
+                self.handle_send_action(ctx, ui);
+                None
+            }
+            UiActionResult::Handled => None,
+        }
     }
 
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
+        // Check for /cd command first (agentic only)
+        let cd_result = self
+            .session_manager
+            .get_active_mut()
+            .and_then(update::handle_cd_command);
+
+        // If /cd command was processed, add to recent directories
+        if let Some(Ok(path)) = cd_result {
+            self.directory_picker.add_recent(path);
+            return;
+        } else if cd_result.is_some() {
+            // Error case - already handled above
+            return;
+        }
+
+        // Normal message handling
         if let Some(session) = self.session_manager.get_active_mut() {
             session.chat.push(Message::User(session.input.clone()));
             session.input.clear();
-            session.update_title_from_first_message();
+            session.update_title_from_last_message();
         }
         self.send_user_message(app_ctx, ui.ctx());
     }
 
     fn send_user_message(&mut self, app_ctx: &AppContext, ctx: &egui::Context) {
-        let Some(session) = self.session_manager.get_active_mut() else {
+        let Some(active_id) = self.session_manager.active_id() else {
+            return;
+        };
+        self.send_user_message_for(active_id, app_ctx, ctx);
+    }
+
+    /// Send a message for a specific session by ID
+    fn send_user_message_for(&mut self, sid: SessionId, app_ctx: &AppContext, ctx: &egui::Context) {
+        let Some(session) = self.session_manager.get_mut(sid) else {
             return;
         };
 
-        let messages: Vec<ChatCompletionRequestMessage> = {
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
-            session
-                .chat
-                .iter()
-                .filter_map(|c| c.to_api_msg(&txn, app_ctx.ndb))
-                .collect()
-        };
-        tracing::debug!("sending messages, latest: {:?}", messages.last().unwrap());
-
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
-
-        let ctx = ctx.clone();
-        let client = self.client.clone();
+        let session_id = format!("dave-session-{}", session.id);
+        let messages = session.chat.clone();
+        let cwd = session.agentic.as_ref().map(|a| a.cwd.clone());
+        let resume_session_id = session
+            .agentic
+            .as_ref()
+            .and_then(|a| a.resume_session_id.clone());
         let tools = self.tools.clone();
         let model_name = self.model_config.model().to_owned();
+        let ctx = ctx.clone();
 
-        let (tx, rx) = mpsc::channel();
+        // Use backend to stream request
+        let (rx, task_handle) = self.backend.stream_request(
+            messages,
+            tools,
+            model_name,
+            user_id,
+            session_id,
+            cwd,
+            resume_session_id,
+            ctx,
+        );
         session.incoming_tokens = Some(rx);
-
-        tokio::spawn(async move {
-            let mut token_stream = match client
-                .chat()
-                .create_stream(CreateChatCompletionRequest {
-                    model: model_name,
-                    stream: Some(true),
-                    messages,
-                    tools: Some(tools::dave_tools().iter().map(|t| t.to_api()).collect()),
-                    user: Some(user_id),
-                    ..Default::default()
-                })
-                .await
-            {
-                Err(err) => {
-                    tracing::error!("openai chat error: {err}");
-                    return;
-                }
-
-                Ok(stream) => stream,
-            };
-
-            let mut all_tool_calls: HashMap<u32, PartialToolCall> = HashMap::new();
-
-            while let Some(token) = token_stream.next().await {
-                let token = match token {
-                    Ok(token) => token,
-                    Err(err) => {
-                        tracing::error!("failed to get token: {err}");
-                        let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
-                        return;
-                    }
-                };
-
-                for choice in &token.choices {
-                    let resp = &choice.delta;
-
-                    // if we have tool call arg chunks, collect them here
-                    if let Some(tool_calls) = &resp.tool_calls {
-                        for tool in tool_calls {
-                            let entry = all_tool_calls.entry(tool.index).or_default();
-
-                            if let Some(id) = &tool.id {
-                                entry.id_mut().get_or_insert(id.clone());
-                            }
-
-                            if let Some(name) = tool.function.as_ref().and_then(|f| f.name.as_ref())
-                            {
-                                entry.name_mut().get_or_insert(name.to_string());
-                            }
-
-                            if let Some(argchunk) =
-                                tool.function.as_ref().and_then(|f| f.arguments.as_ref())
-                            {
-                                entry
-                                    .arguments_mut()
-                                    .get_or_insert_with(String::new)
-                                    .push_str(argchunk);
-                            }
-                        }
-                    }
-
-                    if let Some(content) = &resp.content {
-                        if let Err(err) = tx.send(DaveApiResponse::Token(content.to_owned())) {
-                            tracing::error!("failed to send dave response token to ui: {err}");
-                        }
-                        ctx.request_repaint();
-                    }
-                }
-            }
-
-            let mut parsed_tool_calls = vec![];
-            for (_index, partial) in all_tool_calls {
-                let Some(unknown_tool_call) = partial.complete() else {
-                    tracing::error!("could not complete partial tool call: {:?}", partial);
-                    continue;
-                };
-
-                match unknown_tool_call.parse(&tools) {
-                    Ok(tool_call) => {
-                        parsed_tool_calls.push(tool_call);
-                    }
-                    Err(err) => {
-                        // TODO: we should be
-                        tracing::error!(
-                            "failed to parse tool call {:?}: {}",
-                            unknown_tool_call,
-                            err,
-                        );
-
-                        if let Some(id) = partial.id() {
-                            // we have an id, so we can communicate the error
-                            // back to the ai
-                            parsed_tool_calls.push(ToolCall::invalid(
-                                id.to_string(),
-                                partial.name,
-                                partial.arguments,
-                                err.to_string(),
-                            ));
-                        }
-                    }
-                };
-            }
-
-            if !parsed_tool_calls.is_empty() {
-                tx.send(DaveApiResponse::ToolCalls(parsed_tool_calls))
-                    .unwrap();
-                ctx.request_repaint();
-            }
-
-            tracing::debug!("stream closed");
-        });
+        session.task_handle = task_handle;
     }
 }
 
@@ -451,37 +858,64 @@ impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut app_action: Option<AppAction> = None;
 
-        // always insert system prompt if we have no context in active session
-        if let Some(session) = self.session_manager.get_active_mut() {
-            if session.chat.is_empty() {
-                session.chat.push(Dave::system_prompt());
-            }
+        // Poll for external spawn-agent commands via IPC
+        self.poll_ipc_commands();
+
+        // Poll for external editor completion
+        update::poll_editor_job(&mut self.session_manager);
+
+        // Handle global keybindings (when no text input has focus)
+        let has_pending_permission = self.first_pending_permission().is_some();
+        let has_pending_question = self.has_pending_question();
+        let in_tentative_state = self
+            .session_manager
+            .get_active()
+            .and_then(|s| s.agentic.as_ref())
+            .map(|a| a.permission_message_state != crate::session::PermissionMessageState::None)
+            .unwrap_or(false);
+        if let Some(key_action) = check_keybindings(
+            ui.ctx(),
+            has_pending_permission,
+            has_pending_question,
+            in_tentative_state,
+            self.ai_mode,
+        ) {
+            self.handle_key_action(key_action, ui);
         }
 
-        //update_dave(self, ctx, ui.ctx());
-        let should_send = self.process_events(ctx);
+        // Check if interrupt confirmation has timed out
+        self.check_interrupt_timeout();
+
+        // Process incoming AI responses for all sessions
+        let sessions_needing_send = self.process_events(ctx);
+
+        // Update all session statuses after processing events
+        self.session_manager.update_all_statuses();
+
+        // Update focus queue based on status changes
+        let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));
+        self.focus_queue.update_from_statuses(status_iter);
+
+        // Process auto-steal focus mode
+        update::process_auto_steal_focus(
+            &mut self.session_manager,
+            &mut self.focus_queue,
+            &mut self.scene,
+            self.show_scene,
+            self.auto_steal_focus,
+            &mut self.home_session,
+        );
+
+        // Render UI and handle actions
         if let Some(action) = self.ui(ctx, ui).action {
-            match action {
-                DaveAction::ToggleChrome => {
-                    app_action = Some(AppAction::ToggleChrome);
-                }
-                DaveAction::Note(n) => {
-                    app_action = Some(AppAction::Note(n));
-                }
-                DaveAction::NewChat => {
-                    self.handle_new_chat();
-                }
-                DaveAction::Send => {
-                    self.handle_user_send(ctx, ui);
-                }
-                DaveAction::ShowSessionList => {
-                    self.show_session_list = !self.show_session_list;
-                }
+            if let Some(returned_action) = self.handle_ui_action(action, ctx, ui) {
+                app_action = Some(returned_action);
             }
         }
 
-        if should_send {
-            self.send_user_message(ctx, ui.ctx());
+        // Send continuation messages for all sessions that have tool responses
+        for session_id in sessions_needing_send {
+            self.send_user_message_for(session_id, ctx, ui.ctx());
         }
 
         AppResponse::action(app_action)
