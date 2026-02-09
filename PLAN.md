@@ -406,6 +406,7 @@ Registering a new app in notedeck requires changes across multiple crates:
 - Implement `App` trait using `AppContext` for ndb/pool/accounts access
 - Register in `NotedeckApp` enum with icon/label metadata + sidebar integration
 - Reuse `notedeck_ui` components for visual consistency via `NoteContext`
+- Use [`shadcn-egui`](https://github.com/alltheseas/shadcn-egui) components for Discord-like UI polish — buttons (6 variants), badges, avatars, cards, modals, context menus, command palette, toasts, tabs, collapsible sidebars, resizable panels, data tables, dropdowns, and toggle groups. Apply theming via `NotedeckTheme::apply(ctx, dark_mode)`
 - Subscribe to NIP-29 kinds through `RelayPool` mirroring existing patterns
 - Store lightweight view state internally; persist only user preferences
 - Respect `ctx.style()` for colors/fonts, support narrow layouts
@@ -423,3 +424,4 @@ Registering a new app in notedeck requires changes across multiple crates:
 - **notedeck_dave** (`notedeck/crates/notedeck_dave/`): Template for notedeck app structure — App trait impl, session management, responsive UI, async streaming
 - **notedeck_columns** (`notedeck/crates/notedeck_columns/`): Timeline/subscription patterns, filter state management, multi-relay fan-out
 - **NIP-29 spec** (`nips/29.md`): Protocol specification for relay-based groups
+- **shadcn-egui** ([github.com/alltheseas/shadcn-egui](https://github.com/alltheseas/shadcn-egui)): shadcn/ui design system ported to egui — provides Discord-appropriate components: modal dialogs (room settings), context menus (message actions), command palette (quick navigation), toasts (notifications), collapsible sidebar (room list), resizable panels (chat/member split), avatars, badges (roles/unread), tabs, dropdowns, and cards. Themed with Notedeck purple (#CC43C5)
