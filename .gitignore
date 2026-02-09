@@ -1,5 +1,4 @@
 .DS_Store
-crates/notedeck_dave/.planning/
 .buildcmd
 TODO.bak
 android-config.json
@@ -24,4 +23,3 @@ scripts/macos_build_secrets.sh
 .lsp
 .idea
 local.properties
-.claude/
