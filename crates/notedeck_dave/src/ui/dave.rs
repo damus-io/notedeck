@@ -1015,11 +1015,11 @@ impl<'a> DaveUi<'a> {
                             super::badge::BadgeVariant::Default
                         });
                     if ctrl_held {
-                        auto_badge = auto_badge.keybind("⎵");
+                        auto_badge = auto_badge.keybind("\\");
                     }
                     auto_badge
                         .show(ui)
-                        .on_hover_text("Ctrl+Space to toggle auto-focus mode");
+                        .on_hover_text("Ctrl+\\ to toggle auto-focus mode");
                 }
 
                 let r = ui.add(

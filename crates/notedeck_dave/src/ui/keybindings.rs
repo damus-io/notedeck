@@ -36,7 +36,7 @@ pub enum KeyAction {
     FocusQueuePrev,
     /// Toggle Done status for current focus queue item (Ctrl+D)
     FocusQueueToggleDone,
-    /// Toggle auto-steal focus mode (Ctrl+Space)
+    /// Toggle auto-steal focus mode (Ctrl+\)
     ToggleAutoSteal,
     /// Open external editor for composing input (Ctrl+G)
     OpenExternalEditor,
@@ -129,8 +129,8 @@ pub fn check_keybindings(
         return Some(KeyAction::FocusQueueToggleDone);
     }
 
-    // Ctrl+Space to toggle auto-steal focus mode - agentic only
-    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::Space)) {
+    // Ctrl+\ to toggle auto-steal focus mode (Ctrl+Space conflicts with macOS input source switching) - agentic only
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::Backslash)) {
         return Some(KeyAction::ToggleAutoSteal);
     }
 
