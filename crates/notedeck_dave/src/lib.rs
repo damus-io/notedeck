@@ -940,9 +940,7 @@ fn activate_app(ctx: &egui::Context) {
     #[cfg(target_os = "macos")]
     {
         use objc2::MainThreadMarker;
-        use objc2_app_kit::{
-            NSApplication, NSApplicationActivationOptions, NSRunningApplication,
-        };
+        use objc2_app_kit::{NSApplication, NSApplicationActivationOptions, NSRunningApplication};
 
         // Safety: UI update runs on the main thread
         if let Some(mtm) = MainThreadMarker::new() {
@@ -951,9 +949,7 @@ fn activate_app(ctx: &egui::Context) {
             // Activate via NSRunningApplication for per-process activation
             let current = unsafe { NSRunningApplication::currentApplication() };
             unsafe {
-                current.activateWithOptions(
-                    NSApplicationActivationOptions::ActivateAllWindows,
-                );
+                current.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
             };
 
             // Also force the key window to front regardless of Stage Manager

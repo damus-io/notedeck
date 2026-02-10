@@ -878,6 +878,7 @@ mod preview {
                 pool: app.pool,
                 jobs: app.media_jobs.sender(),
                 unknown_ids: app.unknown_ids,
+                nip05_cache: app.nip05_cache,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
             };

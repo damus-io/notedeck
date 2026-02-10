@@ -18,6 +18,7 @@ pub mod media;
 mod muted;
 pub mod name;
 pub mod nav;
+pub mod nip05;
 mod nip51_set;
 pub mod note;
 mod notecache;
@@ -69,6 +70,7 @@ pub use media::{
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
 pub use nav::DragResponse;
+pub use nip05::{Nip05Cache, Nip05Status};
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
     get_p_tags, BroadcastContext, ContextSelection, NoteAction, NoteContext, NoteContextSelection,

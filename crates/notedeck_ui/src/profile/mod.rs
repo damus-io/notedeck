@@ -44,16 +44,16 @@ pub fn display_name_widget<'a>(
                     )
                 });
 
-                if name.username.is_some() && name.nip05.is_some() {
+                let nip05_verified = name.nip05.filter(|_| name.nip05_valid);
+
+                if name.username.is_some() && nip05_verified.is_some() {
                     ui.end_row();
                 }
 
-                let nip05_resp = name.nip05.map(|nip05| {
+                let nip05_resp = nip05_verified.map(|nip05| {
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 2.0;
-
                         ui.add(app_images::verified_image());
-
                         ui.label(RichText::new(nip05).size(16.0).color(crate::colors::TEAL))
                             .on_hover_text(nip05)
                     })
