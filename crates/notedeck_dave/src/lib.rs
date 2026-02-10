@@ -908,8 +908,7 @@ impl notedeck::App for Dave {
 
         // Raise the OS window when auto-steal switches to a NeedsInput session
         if stole_focus {
-            ui.ctx()
-                .send_viewport_cmd(egui::ViewportCommand::Focus);
+            activate_app(ui.ctx());
         }
 
         // Render UI and handle actions
@@ -925,5 +924,26 @@ impl notedeck::App for Dave {
         }
 
         AppResponse::action(app_action)
+    }
+}
+
+/// Bring the application to the front.
+///
+/// On macOS, egui's ViewportCommand::Focus focuses the window but doesn't
+/// always activate the app (bring it in front of other apps), so we also
+/// call NSApplication::activateIgnoringOtherApps.
+fn activate_app(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2::MainThreadMarker;
+        use objc2_app_kit::NSApplication;
+
+        // Safety: UI update runs on the main thread
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            unsafe { app.activate() };
+        }
     }
 }
