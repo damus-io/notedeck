@@ -30,9 +30,7 @@ use uuid::Uuid;
 fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_json::Value {
     match content {
         Some(ToolResultContent::Text(s)) => serde_json::Value::String(s.clone()),
-        Some(ToolResultContent::Blocks(blocks)) => {
-            serde_json::Value::Array(blocks.to_vec())
-        }
+        Some(ToolResultContent::Blocks(blocks)) => serde_json::Value::Array(blocks.to_vec()),
         None => serde_json::Value::Null,
     }
 }
