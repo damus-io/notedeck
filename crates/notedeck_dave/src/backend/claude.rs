@@ -12,7 +12,8 @@ use crate::tools::Tool;
 use crate::Message;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
-    PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolUseBlock, UserContentBlock,
+    PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolResultContent, ToolUseBlock,
+    UserContentBlock,
 };
 use dashmap::DashMap;
 use futures::future::BoxFuture;
@@ -24,6 +25,17 @@ use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+/// Convert a ToolResultContent to a serde_json::Value for use with tool summary formatting
+fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_json::Value {
+    match content {
+        Some(ToolResultContent::Text(s)) => serde_json::Value::String(s.clone()),
+        Some(ToolResultContent::Blocks(blocks)) => {
+            serde_json::Value::Array(blocks.iter().cloned().collect())
+        }
+        None => serde_json::Value::Null,
+    }
+}
 
 /// Commands sent to a session's actor task
 enum SessionCommand {
@@ -457,21 +469,30 @@ async fn session_actor(
                                             stream_done = true;
                                         }
                                         ClaudeMessage::User(user_msg) => {
-                                            if let Some(tool_use_result) = user_msg.extra.get("tool_use_result") {
-                                                let tool_use_id = user_msg
-                                                    .extra
-                                                    .get("message")
-                                                    .and_then(|m| m.get("content"))
-                                                    .and_then(|c| c.as_array())
-                                                    .and_then(|arr| arr.first())
-                                                    .and_then(|item| item.get("tool_use_id"))
-                                                    .and_then(|id| id.as_str());
+                                            // Tool results are nested in extra["message"]["content"]
+                                            // since the SDK's UserMessage.content field doesn't
+                                            // capture the inner message's content array.
+                                            let content_blocks: Vec<ContentBlock> = user_msg
+                                                .extra
+                                                .get("message")
+                                                .and_then(|m| m.get("content"))
+                                                .and_then(|c| c.as_array())
+                                                .map(|arr| {
+                                                    arr.iter()
+                                                        .filter_map(|v| serde_json::from_value::<ContentBlock>(v.clone()).ok())
+                                                        .collect()
+                                                })
+                                                .unwrap_or_default();
 
-                                                if let Some(tool_use_id) = tool_use_id {
+                                            for block in &content_blocks {
+                                                if let ContentBlock::ToolResult(tool_result_block) = block {
+                                                    let tool_use_id = &tool_result_block.tool_use_id;
                                                     if let Some((tool_name, tool_input)) = pending_tools.remove(tool_use_id) {
+                                                        let result_value = tool_result_content_to_value(&tool_result_block.content);
+
                                                         // Check if this is a Task tool completion
                                                         if tool_name == "Task" {
-                                                            let result_text = extract_response_content(tool_use_result)
+                                                            let result_text = extract_response_content(&result_value)
                                                                 .unwrap_or_else(|| "completed".to_string());
                                                             let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
                                                                 task_id: tool_use_id.to_string(),
@@ -479,7 +500,7 @@ async fn session_actor(
                                                             });
                                                         }
 
-                                                        let summary = format_tool_summary(&tool_name, &tool_input, tool_use_result);
+                                                        let summary = format_tool_summary(&tool_name, &tool_input, &result_value);
                                                         let tool_result = ToolResult { tool_name, summary };
                                                         let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
                                                         ctx.request_repaint();
