@@ -255,7 +255,19 @@ fn profile_body(
 
             ui.add_space(18.0);
 
-            ui.add(display_name_widget(&get_display_name(profile), false));
+            let mut name = get_display_name(profile);
+            if let Some(raw_nip05) = profile
+                .and_then(|p| p.record().profile())
+                .and_then(|p| p.nip05())
+            {
+                note_context
+                    .nip05_cache
+                    .request_validation(*pubkey, raw_nip05);
+                if note_context.nip05_cache.status(pubkey) == Some(&notedeck::Nip05Status::Valid) {
+                    name.nip05_valid = true;
+                }
+            }
+            ui.add(display_name_widget(&name, false));
 
             ui.add_space(8.0);
 

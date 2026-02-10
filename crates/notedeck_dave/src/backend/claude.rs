@@ -31,7 +31,7 @@ fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_js
     match content {
         Some(ToolResultContent::Text(s)) => serde_json::Value::String(s.clone()),
         Some(ToolResultContent::Blocks(blocks)) => {
-            serde_json::Value::Array(blocks.iter().cloned().collect())
+            serde_json::Value::Array(blocks.to_vec())
         }
         None => serde_json::Value::Null,
     }

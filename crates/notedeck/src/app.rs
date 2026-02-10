@@ -1,5 +1,6 @@
 use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
+use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::unknowns::unknown_id_send;
 use crate::wallet::GlobalWallet;
@@ -79,6 +80,7 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     media_jobs: MediaJobs,
+    nip05_cache: Nip05Cache,
     i18n: Localization,
 
     #[cfg(target_os = "android")]
@@ -130,6 +132,8 @@ impl eframe::App for Notedeck {
         self.media_jobs.deliver_all_completed(|completed| {
             crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
         });
+
+        self.nip05_cache.poll();
 
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
@@ -326,6 +330,7 @@ impl Notedeck {
             zaps,
             job_pool,
             media_jobs: media_job_cache,
+            nip05_cache: Nip05Cache::new(),
             i18n,
             #[cfg(target_os = "android")]
             android_app: None,
@@ -392,6 +397,7 @@ impl Notedeck {
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
             media_jobs: &mut self.media_jobs,
+            nip05_cache: &mut self.nip05_cache,
             i18n: &mut self.i18n,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
