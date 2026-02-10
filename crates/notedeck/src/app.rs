@@ -354,22 +354,6 @@ impl Notedeck {
         );
     }
 
-    /// ensure we recognized all the arguments
-    pub fn check_args(&self, other_app_args: &BTreeSet<String>) -> Result<(), Error> {
-        let completely_unrecognized: Vec<String> = self
-            .unrecognized_args()
-            .intersection(other_app_args)
-            .cloned()
-            .collect();
-        if !completely_unrecognized.is_empty() {
-            let err = format!("Unrecognized arguments: {completely_unrecognized:?}");
-            tracing::error!("{}", &err);
-            return Err(Error::Generic(err));
-        }
-
-        Ok(())
-    }
-
     #[inline]
     pub fn options(&self) -> NotedeckOptions {
         self.args.options
@@ -385,26 +369,35 @@ impl Notedeck {
     }
 
     pub fn app_context(&mut self) -> AppContext<'_> {
-        AppContext {
-            ndb: &mut self.ndb,
-            img_cache: &mut self.img_cache,
-            unknown_ids: &mut self.unknown_ids,
-            pool: &mut self.pool,
-            note_cache: &mut self.note_cache,
-            accounts: &mut self.accounts,
-            global_wallet: &mut self.global_wallet,
-            path: &self.path,
-            args: &self.args,
-            settings: &mut self.settings,
-            clipboard: &mut self.clipboard,
-            zaps: &mut self.zaps,
-            frame_history: &mut self.frame_history,
-            job_pool: &mut self.job_pool,
-            media_jobs: &mut self.media_jobs,
-            nip05_cache: &mut self.nip05_cache,
-            i18n: &mut self.i18n,
-            #[cfg(target_os = "android")]
-            android: self.android_app.as_ref().unwrap().clone(),
+        self.notedeck_ref().app_ctx
+    }
+
+    pub fn notedeck_ref<'a>(&'a mut self) -> NotedeckRef<'a> {
+        NotedeckRef {
+            app_ctx: AppContext {
+                ndb: &mut self.ndb,
+                img_cache: &mut self.img_cache,
+                unknown_ids: &mut self.unknown_ids,
+                pool: &mut self.pool,
+                note_cache: &mut self.note_cache,
+                accounts: &mut self.accounts,
+                global_wallet: &mut self.global_wallet,
+                path: &self.path,
+                args: &self.args,
+                settings: &mut self.settings,
+                clipboard: &mut self.clipboard,
+                zaps: &mut self.zaps,
+                frame_history: &mut self.frame_history,
+                job_pool: &mut self.job_pool,
+                media_jobs: &mut self.media_jobs,
+                nip05_cache: &mut self.nip05_cache,
+                i18n: &mut self.i18n,
+                #[cfg(target_os = "android")]
+                android: self.android_app.as_ref().unwrap().clone(),
+            },
+            internals: NotedeckInternals {
+                unrecognized_args: &self.unrecognized_args,
+            },
         }
     }
 
@@ -454,6 +447,33 @@ pub fn install_crypto() {
     {
         let provider = rustls::crypto::aws_lc_rs::default_provider();
         let _ = provider.install_default();
+    }
+}
+
+pub struct NotedeckRef<'a> {
+    pub app_ctx: AppContext<'a>,
+    pub internals: NotedeckInternals<'a>,
+}
+
+pub struct NotedeckInternals<'a> {
+    pub unrecognized_args: &'a BTreeSet<String>,
+}
+
+impl<'a> NotedeckInternals<'a> {
+    /// ensure we recognized all the arguments
+    pub fn check_args(&self, other_app_args: &BTreeSet<String>) -> Result<(), Error> {
+        let completely_unrecognized: Vec<String> = self
+            .unrecognized_args
+            .intersection(other_app_args)
+            .cloned()
+            .collect();
+        if !completely_unrecognized.is_empty() {
+            let err = format!("Unrecognized arguments: {completely_unrecognized:?}");
+            tracing::error!("{}", &err);
+            return Err(Error::Generic(err));
+        }
+
+        Ok(())
     }
 }
 

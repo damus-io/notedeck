@@ -154,12 +154,12 @@ impl Chrome {
     ) -> Result<Self, Error> {
         stop_debug_mode(notedeck.options());
 
-        let context = &mut notedeck.app_context();
+        let notedeck_ref = &mut notedeck.notedeck_ref();
         let dave = Dave::new(
             cc.wgpu_render_state.as_ref(),
-            context.ndb.clone(),
+            notedeck_ref.app_ctx.ndb.clone(),
             cc.egui_ctx.clone(),
-            context.path,
+            notedeck_ref.app_ctx.path,
         );
         #[cfg(feature = "wasm")]
         let wasm_dir = context
@@ -169,8 +169,10 @@ impl Chrome {
         let mut chrome = Chrome::default();
 
         if !app_args.iter().any(|arg| arg == "--no-columns-app") {
-            let columns = Damus::new(context, app_args);
-            notedeck.check_args(columns.unrecognized_args())?;
+            let columns = Damus::new(&mut notedeck_ref.app_ctx, app_args);
+            notedeck_ref
+                .internals
+                .check_args(columns.unrecognized_args())?;
             chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         }
 
