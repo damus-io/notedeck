@@ -80,12 +80,16 @@ impl NewPostAction {
 
             PostType::Reply(target) => {
                 let replying_to = ndb.get_note_by_id(txn, target.bytes())?;
-                self.post.to_reply(&seckey, &replying_to)
+                // Get relay hint from where we saw this note (NIP-10)
+                let relay_hint = replying_to.relays(txn).next();
+                self.post.to_reply(&seckey, &replying_to, relay_hint)
             }
 
             PostType::Quote(target) => {
                 let quoting = ndb.get_note_by_id(txn, target.bytes())?;
-                self.post.to_quote(&seckey, &quoting)
+                // Get relay hint from where we saw this note (NIP-10)
+                let relay_hint = quoting.relays(txn).next();
+                self.post.to_quote(&seckey, &quoting, relay_hint)
             }
         };
 

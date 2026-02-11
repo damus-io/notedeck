@@ -3,6 +3,10 @@ use nostrdb::{Ndb, Note, NoteBuilder, Transaction};
 
 use crate::{nav::RouterAction, Route};
 
+/// Generate a kind:6 repost event for the given note.
+///
+/// The relay hint is taken from where the note was actually seen (per NIP-10),
+/// falling back to the first relay in the pool if unavailable.
 pub fn generate_repost_event<'a>(
     ndb: &'a Ndb,
     noteid_to_repost: &NoteId,
@@ -21,13 +25,17 @@ pub fn generate_repost_event<'a>(
         ));
     }
 
-    let urls = pool.urls();
-    let Some(relay) = urls.first() else {
-        return Err(
+    // Prefer relay hint from where we actually saw the note (NIP-10),
+    // fall back to first connected relay if unavailable
+    let relay_hint: String = note_to_repost
+        .relays(&txn)
+        .next()
+        .map(|s| s.to_owned())
+        .or_else(|| pool.urls().into_iter().next())
+        .ok_or_else(|| {
             "relay pool does not have any relays. This makes meeting the repost spec impossible"
-                .to_owned(),
-        );
-    };
+                .to_owned()
+        })?;
 
     let note_to_repost_content = note_to_repost
         .json()
@@ -39,7 +47,7 @@ pub fn generate_repost_event<'a>(
         .start_tag()
         .tag_str("e")
         .tag_id(note_to_repost.id())
-        .tag_str(relay)
+        .tag_str(&relay_hint)
         .start_tag()
         .tag_str("p")
         .tag_id(note_to_repost.pubkey())
