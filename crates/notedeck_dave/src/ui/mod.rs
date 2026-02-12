@@ -3,6 +3,7 @@ pub mod badge;
 mod dave;
 pub mod diff;
 pub mod directory_picker;
+mod git_status_ui;
 pub mod keybind_hint;
 pub mod keybindings;
 pub mod path_utils;
@@ -230,7 +231,8 @@ pub fn scene_ui(
                                         .permission_message_state(agentic.permission_message_state)
                                         .question_answers(&mut agentic.question_answers)
                                         .question_index(&mut agentic.question_index)
-                                        .is_compacting(agentic.is_compacting);
+                                        .is_compacting(agentic.is_compacting)
+                                        .git_status(&mut agentic.git_status);
                                 }
 
                                 let response = ui_builder.ui(app_ctx, ui);
@@ -352,7 +354,8 @@ pub fn desktop_ui(
                         .permission_message_state(agentic.permission_message_state)
                         .question_answers(&mut agentic.question_answers)
                         .question_index(&mut agentic.question_index)
-                        .is_compacting(agentic.is_compacting);
+                        .is_compacting(agentic.is_compacting)
+                        .git_status(&mut agentic.git_status);
                 }
 
                 ui_builder.ui(app_ctx, ui)
@@ -411,7 +414,8 @@ pub fn narrow_ui(
                 .permission_message_state(agentic.permission_message_state)
                 .question_answers(&mut agentic.question_answers)
                 .question_index(&mut agentic.question_index)
-                .is_compacting(agentic.is_compacting);
+                .is_compacting(agentic.is_compacting)
+                .git_status(&mut agentic.git_status);
         }
 
         (ui_builder.ui(app_ctx, ui), None)

@@ -5,6 +5,7 @@ mod backend;
 mod config;
 pub mod file_update;
 mod focus_queue;
+pub(crate) mod git_status;
 pub mod ipc;
 pub(crate) mod mesh;
 mod messages;
@@ -330,6 +331,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                     DaveApiResponse::ToolResult(result) => {
                         tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
+                        // Invalidate git status after file-modifying tools.
+                        // tool_name is a String from the Claude SDK, no enum available.
+                        if matches!(result.tool_name.as_str(), "Bash" | "Write" | "Edit") {
+                            if let Some(agentic) = &mut session.agentic {
+                                agentic.git_status.invalidate();
+                            }
+                        }
                         session.chat.push(Message::ToolResult(result));
                     }
 
@@ -888,6 +896,14 @@ impl notedeck::App for Dave {
 
         // Process incoming AI responses for all sessions
         let sessions_needing_send = self.process_events(ctx);
+
+        // Poll git status for all agentic sessions
+        for session in self.session_manager.iter_mut() {
+            if let Some(agentic) = &mut session.agentic {
+                agentic.git_status.poll();
+                agentic.git_status.maybe_auto_refresh();
+            }
+        }
 
         // Update all session statuses after processing events
         self.session_manager.update_all_statuses();

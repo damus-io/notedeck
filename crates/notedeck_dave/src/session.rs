@@ -4,6 +4,7 @@ use std::sync::mpsc::Receiver;
 
 use crate::agent_status::AgentStatus;
 use crate::config::AiMode;
+use crate::git_status::GitStatusCache;
 use crate::messages::{
     CompactionInfo, PermissionResponse, QuestionAnswer, SessionInfo, SubagentStatus,
 };
@@ -52,6 +53,8 @@ pub struct AgenticSessionData {
     /// Claude session ID to resume (UUID from Claude CLI's session storage)
     /// When set, the backend will use --resume to continue this session
     pub resume_session_id: Option<String>,
+    /// Git status cache for this session's working directory
+    pub git_status: GitStatusCache,
 }
 
 impl AgenticSessionData {
@@ -61,6 +64,8 @@ impl AgenticSessionData {
         let row = (id as i32 - 1) / 4;
         let x = col as f32 * 150.0 - 225.0; // Center around origin
         let y = row as f32 * 150.0 - 75.0;
+
+        let git_status = GitStatusCache::new(cwd.clone());
 
         AgenticSessionData {
             pending_permissions: HashMap::new(),
@@ -75,6 +80,7 @@ impl AgenticSessionData {
             is_compacting: false,
             last_compaction: None,
             resume_session_id: None,
+            git_status,
         }
     }
 

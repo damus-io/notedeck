@@ -1,10 +1,12 @@
 use super::badge::{BadgeVariant, StatusBadge};
 use super::diff;
+use super::git_status_ui;
 use super::query_ui::query_call_ui;
 use super::top_buttons::top_buttons_ui;
 use crate::{
     config::{AiMode, DaveSettings},
     file_update::FileUpdate,
+    git_status::GitStatusCache,
     messages::{
         AskUserQuestionInput, CompactionInfo, Message, PermissionRequest, PermissionResponse,
         PermissionResponseType, QuestionAnswer, SubagentInfo, SubagentStatus, ToolResult,
@@ -42,6 +44,8 @@ pub struct DaveUi<'a> {
     auto_steal_focus: bool,
     /// AI interaction mode (Chat vs Agentic)
     ai_mode: AiMode,
+    /// Git status cache for current session (agentic only)
+    git_status: Option<&'a mut GitStatusCache>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -141,6 +145,7 @@ impl<'a> DaveUi<'a> {
             is_compacting: false,
             auto_steal_focus: false,
             ai_mode,
+            git_status: None,
         }
     }
 
@@ -186,6 +191,13 @@ impl<'a> DaveUi<'a> {
 
     pub fn is_compacting(mut self, is_compacting: bool) -> Self {
         self.is_compacting = is_compacting;
+        self
+    }
+
+    /// Set the git status cache. Mutable because the UI toggles
+    /// expand/collapse and triggers refresh on button click.
+    pub fn git_status(mut self, cache: &'a mut GitStatusCache) -> Self {
+        self.git_status = Some(cache);
         self
     }
 
@@ -239,6 +251,25 @@ impl<'a> DaveUi<'a> {
                         .corner_radius(12.0)
                         .show(ui, |ui| self.inputbox(app_ctx.i18n, ui))
                         .inner;
+
+                    if let Some(git_status) = &mut self.git_status {
+                        // Explicitly reserve height so bottom_up layout
+                        // keeps the chat ScrollArea from overlapping.
+                        let h = if git_status.expanded { 200.0 } else { 30.0 };
+                        let w = ui.available_width();
+                        ui.allocate_ui(egui::vec2(w, h), |ui| {
+                            egui::Frame::new()
+                                .outer_margin(egui::Margin {
+                                    left: margin,
+                                    right: margin,
+                                    top: 0,
+                                    bottom: 4,
+                                })
+                                .show(ui, |ui| {
+                                    git_status_ui::git_status_bar_ui(git_status, ui);
+                                });
+                        });
+                    }
 
                     let chat_response = egui::ScrollArea::vertical()
                         .id_salt("dave_chat_scroll")
