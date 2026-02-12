@@ -17,13 +17,17 @@ pub fn git_status_bar_ui(cache: &mut GitStatusCache, ui: &mut Ui) {
             // preventing the parent's bottom_up layout from pushing the
             // expanded file list above the header into the chat area.
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    // Expand/collapse toggle
+                let is_dirty = matches!(cache.current(), Some(Ok(data)) if !data.is_clean());
+
+                // Only show expand toggle when there are files to list
+                if is_dirty {
                     let arrow = if cache.expanded { "\u{25BC}" } else { "\u{25B6}" };
                     if ui.small_button(arrow).clicked() {
                         cache.expanded = !cache.expanded;
                     }
+                }
 
+                ui.horizontal(|ui| {
                     match cache.current() {
                         Some(Ok(data)) => {
                             // Branch name
