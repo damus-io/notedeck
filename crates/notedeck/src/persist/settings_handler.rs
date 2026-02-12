@@ -14,6 +14,7 @@ const DEFAULT_LOCALE: &str = "en-US";
 const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
+const DEFAULT_TOS_VERSION: &str = "1.0";
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -40,10 +41,22 @@ pub struct Settings {
     #[serde(default = "default_animate_nav_transitions")]
     pub animate_nav_transitions: bool,
     pub max_hashtags_per_note: usize,
+    #[serde(default)]
+    pub tos_accepted: bool,
+    #[serde(default)]
+    pub tos_accepted_at: Option<u64>,
+    #[serde(default = "default_tos_version")]
+    pub tos_version: String,
+    #[serde(default)]
+    pub age_verified: bool,
 }
 
 fn default_animate_nav_transitions() -> bool {
     true
+}
+
+fn default_tos_version() -> String {
+    DEFAULT_TOS_VERSION.to_string()
 }
 
 impl Default for Settings {
@@ -57,6 +70,10 @@ impl Default for Settings {
             note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
             animate_nav_transitions: default_animate_nav_transitions(),
             max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
+            tos_accepted: false,
+            tos_accepted_at: None,
+            tos_version: default_tos_version(),
+            age_verified: false,
         }
     }
 }
@@ -276,5 +293,20 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.max_hashtags_per_note)
             .unwrap_or(DEFAULT_MAX_HASHTAGS_PER_NOTE)
+    }
+
+    pub fn tos_accepted(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.tos_accepted)
+            .unwrap_or(false)
+    }
+
+    pub fn accept_tos(&mut self) {
+        let settings = self.get_settings_mut();
+        settings.tos_accepted = true;
+        settings.tos_accepted_at = Some(crate::time::unix_time_secs());
+        settings.age_verified = true;
+        self.try_save_settings();
     }
 }
