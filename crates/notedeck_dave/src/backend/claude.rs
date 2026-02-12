@@ -30,9 +30,7 @@ use uuid::Uuid;
 fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_json::Value {
     match content {
         Some(ToolResultContent::Text(s)) => serde_json::Value::String(s.clone()),
-        Some(ToolResultContent::Blocks(blocks)) => {
-            serde_json::Value::Array(blocks.to_vec())
-        }
+        Some(ToolResultContent::Blocks(blocks)) => serde_json::Value::Array(blocks.to_vec()),
         None => serde_json::Value::Null,
     }
 }
@@ -525,6 +523,7 @@ async fn session_actor(
                                                 // status: null means compaction finished (handled by compact_boundary)
                                             } else if system_msg.subtype == "compact_boundary" {
                                                 // Compaction completed - extract token savings info
+                                                tracing::debug!("compact_boundary data: {:?}", system_msg.data);
                                                 let pre_tokens = system_msg.data.get("pre_tokens")
                                                     .and_then(|v| v.as_u64())
                                                     .unwrap_or(0);
