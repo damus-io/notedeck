@@ -277,7 +277,9 @@ impl ChatSession {
             // Check if the last meaningful message was from assistant
             for msg in self.chat.iter().rev() {
                 match msg {
-                    Message::Assistant(_) => return AgentStatus::Done,
+                    Message::Assistant(_) | Message::CompactionComplete(_) => {
+                        return AgentStatus::Done
+                    }
                     Message::User(_) => return AgentStatus::Idle, // Waiting for response
                     Message::Error(_) => return AgentStatus::Error,
                     _ => continue,
