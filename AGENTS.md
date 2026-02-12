@@ -124,7 +124,7 @@ This document captures the current architecture, coding conventions, and design 
 19. Commits which have code which contain fixes or refactors which were introduced in the same PR should be **rebased such that the fixes are added to the original code history**.
 20. **Verify that existing code that can do the job is not ignored** (in lieu of creating code that performs the same function of existing code).
 21. **Do not accrue duplicate code.** Always revisit how existing code can be applied and/or refactored in solving new issues.
-22. **Always prefer simplicity** One line of code is better than ten. Ten is better than a hundred. A commit with ten thousand lines of code is not reviewable by a human developer.
+22. **Always prefer simplicity.** One line of code is better than ten. Ten is better than a hundred. A commit with ten thousand lines of code is not reviewable by a human developer.
 
 
 
