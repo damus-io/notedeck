@@ -4,6 +4,7 @@ pub enum ProfileContextSelection {
     AddProfileColumn,
     CopyLink,
     ViewAs,
+    MuteUser,
 }
 
 pub struct ProfileContext {
@@ -21,7 +22,9 @@ impl ProfileContextSelection {
 
                 ctx.copy_text(format!("https://damus.io/{npub}"));
             }
-            ProfileContextSelection::ViewAs | ProfileContextSelection::AddProfileColumn => {
+            ProfileContextSelection::ViewAs
+            | ProfileContextSelection::AddProfileColumn
+            | ProfileContextSelection::MuteUser => {
                 // handled separately in profile.rs
             }
         }

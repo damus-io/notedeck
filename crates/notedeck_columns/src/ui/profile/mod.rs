@@ -166,9 +166,20 @@ fn profile_body(
         };
 
         let context_resp = ProfileContextWidget::new(place_context).context_button(ui, pubkey);
-        if let Some(selection) =
-            ProfileContextWidget::context_menu(ui, note_context.i18n, context_resp)
-        {
+        let can_sign = note_context
+            .accounts
+            .get_selected_account()
+            .key
+            .secret_key
+            .is_some();
+        let is_muted = note_context.accounts.mute().is_pk_muted(pubkey.bytes());
+        if let Some(selection) = ProfileContextWidget::context_menu(
+            ui,
+            note_context.i18n,
+            context_resp,
+            can_sign,
+            is_muted,
+        ) {
             action = Some(ProfileViewAction::Context(ProfileContext {
                 profile: *pubkey,
                 selection,

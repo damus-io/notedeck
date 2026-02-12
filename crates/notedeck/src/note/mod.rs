@@ -1,8 +1,10 @@
 mod action;
 mod context;
+pub mod publish;
 
 pub use action::{NoteAction, ReactAction, ScrollInfo, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
+pub use publish::{builder_from_note, send_mute_event, send_note_builder, send_unmute_event};
 
 use crate::jobs::MediaJobSender;
 use crate::nip05::Nip05Cache;

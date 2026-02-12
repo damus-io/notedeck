@@ -1,6 +1,8 @@
 use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
-use nostrdb::{Note, NoteKey, Transaction};
+use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use tracing::error;
+
+use crate::Accounts;
 
 /// When broadcasting notes, this determines whether to broadcast
 /// over the local network via multicast, or globally
@@ -19,6 +21,7 @@ pub enum NoteContextSelection {
     CopyNoteJSON,
     Broadcast(BroadcastContext),
     CopyNeventLink,
+    MuteUser,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -47,8 +50,10 @@ impl NoteContextSelection {
         &self,
         ui: &mut egui::Ui,
         note: &Note<'_>,
+        ndb: &Ndb,
         pool: &mut RelayPool,
         txn: &Transaction,
+        accounts: &Accounts,
     ) {
         match self {
             NoteContextSelection::Broadcast(context) => {
@@ -90,6 +95,18 @@ impl NoteContextSelection {
                 // Fallback to event id without relay hints if encoding fails.
                 if let Some(bech) = NoteId::new(*note.id()).to_bech() {
                     ui.ctx().copy_text(damus_url(bech));
+                }
+            }
+            NoteContextSelection::MuteUser => {
+                let target = Pubkey::new(*note.pubkey());
+                let Some(kp) = accounts.get_selected_account().key.to_full() else {
+                    return;
+                };
+                let muted = accounts.mute();
+                if muted.is_pk_muted(target.bytes()) {
+                    super::publish::send_unmute_event(ndb, txn, pool, kp, &muted, &target);
+                } else {
+                    super::publish::send_mute_event(ndb, txn, pool, kp, &muted, &target);
                 }
             }
         }

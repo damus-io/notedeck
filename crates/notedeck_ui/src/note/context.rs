@@ -65,6 +65,8 @@ impl NoteContextButton {
         ui: &mut egui::Ui,
         i18n: &mut Localization,
         button_response: egui::Response,
+        can_sign: bool,
+        is_muted: bool,
     ) -> Option<NoteContextSelection> {
         let mut context_selection: Option<NoteContextSelection> = None;
 
@@ -153,6 +155,18 @@ impl NoteContextButton {
                     BroadcastContext::LocalNetwork,
                 ));
                 ui.close_menu();
+            }
+
+            if can_sign {
+                let label = if is_muted {
+                    tr!(i18n, "Unmute User", "Unmute the author of this note")
+                } else {
+                    tr!(i18n, "Mute User", "Mute the author of this note")
+                };
+                if ui.button(label).clicked() {
+                    context_selection = Some(NoteContextSelection::MuteUser);
+                    ui.close_menu();
+                }
             }
         });
 
