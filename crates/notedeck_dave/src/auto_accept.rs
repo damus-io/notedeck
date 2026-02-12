@@ -36,9 +36,11 @@ impl AutoAcceptRule {
                     return false;
                 };
                 let command_trimmed = command.trim();
-                prefixes
-                    .iter()
-                    .any(|prefix| command_trimmed.starts_with(prefix))
+                prefixes.iter().any(|prefix| {
+                    command_trimmed.starts_with(prefix)
+                        && (command_trimmed.len() == prefix.len()
+                            || command_trimmed.as_bytes()[prefix.len()].is_ascii_whitespace())
+                })
             }
             AutoAcceptRule::ReadOnlyTool { tools } => tools.iter().any(|t| t == tool_name),
         }
@@ -67,39 +69,22 @@ impl Default for AutoAcceptRules {
                         "cargo run".into(),
                         "cargo doc".into(),
                         // Read-only bash commands
-                        "grep ".into(),
-                        "grep\t".into(),
-                        "rg ".into(),
-                        "rg\t".into(),
-                        "find ".into(),
-                        "find\t".into(),
+                        "grep".into(),
+                        "rg".into(),
+                        "find".into(),
                         "ls".into(),
-                        "ls ".into(),
-                        "ls\t".into(),
-                        "cat ".into(),
-                        "cat\t".into(),
-                        "head ".into(),
-                        "head\t".into(),
-                        "tail ".into(),
-                        "tail\t".into(),
-                        "wc ".into(),
-                        "wc\t".into(),
-                        "file ".into(),
-                        "file\t".into(),
-                        "stat ".into(),
-                        "stat\t".into(),
-                        "which ".into(),
-                        "which\t".into(),
-                        "type ".into(),
-                        "type\t".into(),
+                        "cat".into(),
+                        "head".into(),
+                        "tail".into(),
+                        "wc".into(),
+                        "file".into(),
+                        "stat".into(),
+                        "which".into(),
+                        "type".into(),
                         "pwd".into(),
                         "tree".into(),
-                        "tree ".into(),
-                        "tree\t".into(),
-                        "du ".into(),
-                        "du\t".into(),
-                        "df ".into(),
-                        "df\t".into(),
+                        "du".into(),
+                        "df".into(),
                         // Git read-only commands
                         "git status".into(),
                         "git log".into(),
@@ -110,6 +95,8 @@ impl Default for AutoAcceptRules {
                         "git rev-parse".into(),
                         "git ls-files".into(),
                         "git describe".into(),
+                        // Beads issue tracker
+                        "bd".into(),
                     ],
                 },
                 AutoAcceptRule::ReadOnlyTool {
