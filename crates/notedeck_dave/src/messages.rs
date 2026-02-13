@@ -1,6 +1,6 @@
 use crate::tools::{ToolCall, ToolResponse};
 use async_openai::types::*;
-use egui_md_stream::{MdElement, Partial, StreamParser};
+use md_stream::{MdElement, Partial, StreamParser};
 use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;

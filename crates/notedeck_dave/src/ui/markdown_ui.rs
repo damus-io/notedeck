@@ -1,7 +1,7 @@
 //! Markdown rendering for assistant messages using egui.
 
 use egui::{Color32, RichText, Ui};
-use egui_md_stream::{
+use md_stream::{
     parse_inline, CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Partial, PartialKind,
 };
 
