@@ -33,8 +33,8 @@ use std::time::Instant;
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig};
 pub use messages::{
-    AskUserQuestionInput, DaveApiResponse, Message, PermissionResponse, PermissionResponseType,
-    QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus, ToolResult,
+    AskUserQuestionInput, AssistantMessage, DaveApiResponse, Message, PermissionResponse,
+    PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus, ToolResult,
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -265,8 +265,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::Failed(err) => session.chat.push(Message::Error(err)),
 
                     DaveApiResponse::Token(token) => match session.chat.last_mut() {
-                        Some(Message::Assistant(msg)) => msg.push_str(&token),
-                        Some(_) => session.chat.push(Message::Assistant(token)),
+                        Some(Message::Assistant(msg)) => msg.push_token(&token),
+                        Some(_) => {
+                            let mut msg = messages::AssistantMessage::new();
+                            msg.push_token(&token);
+                            session.chat.push(Message::Assistant(msg));
+                        }
                         None => {}
                     },
 
@@ -404,6 +408,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     // Stream ended, clear task state
                     if let Some(session) = self.session_manager.get_mut(session_id) {
+                        // Finalize any active assistant message to cache parsed elements
+                        if let Some(Message::Assistant(msg)) = session.chat.last_mut() {
+                            msg.finalize();
+                        }
                         session.task_handle = None;
                         // Don't restore incoming_tokens - leave it None
                     }

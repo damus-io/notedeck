@@ -1,5 +1,6 @@
 use crate::tools::{ToolCall, ToolResponse};
 use async_openai::types::*;
+use egui_md_stream::{MdElement, Partial, StreamParser};
 use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -148,12 +149,136 @@ pub struct SubagentInfo {
     pub max_output_size: usize,
 }
 
+/// An assistant message with incremental markdown parsing support.
+///
+/// During streaming, tokens are pushed to the parser incrementally.
+/// After finalization (stream end), parsed elements are cached.
+pub struct AssistantMessage {
+    /// Raw accumulated text (kept for API serialization)
+    text: String,
+    /// Incremental parser for this message (None after finalization)
+    parser: Option<StreamParser>,
+    /// Cached parsed elements (populated after finalization)
+    cached_elements: Option<Vec<MdElement>>,
+}
+
+impl std::fmt::Debug for AssistantMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AssistantMessage")
+            .field("text", &self.text)
+            .field("is_streaming", &self.parser.is_some())
+            .field(
+                "cached_elements",
+                &self.cached_elements.as_ref().map(|e| e.len()),
+            )
+            .finish()
+    }
+}
+
+impl Clone for AssistantMessage {
+    fn clone(&self) -> Self {
+        // StreamParser doesn't implement Clone, so we need special handling.
+        // For cloned messages (which are typically finalized), we just clone
+        // the text and cached elements. If there's an active parser, we
+        // re-parse from the raw text.
+        if let Some(cached) = &self.cached_elements {
+            Self {
+                text: self.text.clone(),
+                parser: None,
+                cached_elements: Some(cached.clone()),
+            }
+        } else {
+            // Active streaming - re-parse from text
+            let mut parser = StreamParser::new();
+            parser.push(&self.text);
+            Self {
+                text: self.text.clone(),
+                parser: Some(parser),
+                cached_elements: None,
+            }
+        }
+    }
+}
+
+impl AssistantMessage {
+    /// Create a new assistant message with a fresh parser.
+    pub fn new() -> Self {
+        Self {
+            text: String::new(),
+            parser: Some(StreamParser::new()),
+            cached_elements: None,
+        }
+    }
+
+    /// Create from existing text (e.g., when loading from storage).
+    pub fn from_text(text: String) -> Self {
+        let mut parser = StreamParser::new();
+        parser.push(&text);
+        parser.finalize();
+        let cached = parser.parsed().to_vec();
+        Self {
+            text,
+            parser: None,
+            cached_elements: Some(cached),
+        }
+    }
+
+    /// Push a new token and update the parser.
+    pub fn push_token(&mut self, token: &str) {
+        self.text.push_str(token);
+        if let Some(parser) = &mut self.parser {
+            parser.push(token);
+        }
+    }
+
+    /// Finalize the message (call when stream ends).
+    /// This caches the parsed elements and drops the parser.
+    pub fn finalize(&mut self) {
+        if let Some(mut parser) = self.parser.take() {
+            parser.finalize();
+            self.cached_elements = Some(parser.parsed().to_vec());
+        }
+    }
+
+    /// Get the raw text content.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Get parsed markdown elements.
+    pub fn parsed_elements(&self) -> &[MdElement] {
+        if let Some(cached) = &self.cached_elements {
+            cached
+        } else if let Some(parser) = &self.parser {
+            parser.parsed()
+        } else {
+            &[]
+        }
+    }
+
+    /// Get the current partial (in-progress) element, if any.
+    pub fn partial(&self) -> Option<&Partial> {
+        self.parser.as_ref().and_then(|p| p.partial())
+    }
+
+    /// Check if the message is still being streamed.
+    pub fn is_streaming(&self) -> bool {
+        self.parser.is_some()
+    }
+}
+
+impl Default for AssistantMessage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     System(String),
     Error(String),
     User(String),
-    Assistant(String),
+    Assistant(AssistantMessage),
     ToolCalls(Vec<ToolCall>),
     ToolResponse(ToolResponse),
     /// A permission request from the AI that needs user response
@@ -222,7 +347,7 @@ impl Message {
             Message::Assistant(msg) => Some(ChatCompletionRequestMessage::Assistant(
                 ChatCompletionRequestAssistantMessage {
                     content: Some(ChatCompletionRequestAssistantMessageContent::Text(
-                        msg.clone(),
+                        msg.text().to_string(),
                     )),
                     ..Default::default()
                 },

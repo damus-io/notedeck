@@ -1,6 +1,7 @@
 use super::badge::{BadgeVariant, StatusBadge};
 use super::diff;
 use super::git_status_ui;
+use super::markdown_ui;
 use super::query_ui::query_call_ui;
 use super::top_buttons::top_buttons_ui;
 use crate::{
@@ -8,8 +9,9 @@ use crate::{
     file_update::FileUpdate,
     git_status::GitStatusCache,
     messages::{
-        AskUserQuestionInput, CompactionInfo, Message, PermissionRequest, PermissionResponse,
-        PermissionResponseType, QuestionAnswer, SubagentInfo, SubagentStatus, ToolResult,
+        AskUserQuestionInput, AssistantMessage, CompactionInfo, Message, PermissionRequest,
+        PermissionResponse, PermissionResponseType, QuestionAnswer, SubagentInfo, SubagentStatus,
+        ToolResult,
     },
     session::PermissionMessageState,
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse},
@@ -1117,13 +1119,9 @@ impl<'a> DaveUi<'a> {
         });
     }
 
-    fn assistant_chat(&self, msg: &str, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.add(
-                egui::Label::new(msg)
-                    .wrap_mode(egui::TextWrapMode::Wrap)
-                    .selectable(true),
-            );
-        });
+    fn assistant_chat(&self, msg: &AssistantMessage, ui: &mut egui::Ui) {
+        let elements = msg.parsed_elements();
+        let partial = msg.partial();
+        markdown_ui::render_assistant_message(elements, partial, ui);
     }
 }

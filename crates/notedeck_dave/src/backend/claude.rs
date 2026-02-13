@@ -98,7 +98,7 @@ impl ClaudeBackend {
                 }
                 Message::Assistant(content) => {
                     prompt.push_str("Assistant: ");
-                    prompt.push_str(content);
+                    prompt.push_str(content.text());
                     prompt.push_str("\n\n");
                 }
                 Message::ToolCalls(_)
