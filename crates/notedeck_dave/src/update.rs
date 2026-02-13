@@ -602,35 +602,13 @@ pub fn process_auto_steal_focus(
 // External Editor
 // =============================================================================
 
-/// Try to find a common terminal emulator.
-pub fn find_terminal() -> Option<String> {
-    use std::process::Command;
-    let terminals = [
-        "alacritty",
-        "kitty",
-        "gnome-terminal",
-        "konsole",
-        "urxvtc",
-        "urxvt",
-        "xterm",
-    ];
-    for term in terminals {
-        if Command::new("which")
-            .arg(term)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return Some(term.to_string());
-        }
-    }
-    None
-}
-
 /// Open an external editor for composing the input text (non-blocking).
+///
+/// Launches `$VISUAL` or `$EDITOR` (default: vim) in a **new** terminal
+/// window so it never hijacks the terminal notedeck was launched from.
+/// On macOS, uses `$TERM_PROGRAM` to detect the user's terminal; on
+/// Linux, checks `$TERMINAL` then probes common emulators.
 pub fn open_external_editor(session_manager: &mut SessionManager) {
-    use std::process::Command;
-
     // Don't spawn another editor if one is already pending
     if session_manager.pending_editor.is_some() {
         tracing::warn!("External editor already in progress");
@@ -650,33 +628,16 @@ pub fn open_external_editor(session_manager: &mut SessionManager) {
         return;
     }
 
-    // Try $VISUAL first (GUI editors), then fall back to terminal + $EDITOR
-    let visual = std::env::var("VISUAL").ok();
-    let editor = std::env::var("EDITOR").ok();
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vim".to_string());
 
-    let spawn_result = if let Some(visual_editor) = visual {
-        // $VISUAL is set - use it directly (assumes GUI editor)
-        tracing::debug!("Opening external editor via $VISUAL: {}", visual_editor);
-        Command::new(&visual_editor).arg(&temp_path).spawn()
+    // Always open in a new terminal window so we never steal the
+    // launching terminal's tty (which breaks when the app is disowned).
+    let spawn_result = if cfg!(target_os = "macos") {
+        spawn_macos_editor(&editor, &temp_path)
     } else {
-        // Fall back to terminal + $EDITOR
-        let editor_cmd = editor.unwrap_or_else(|| "vim".to_string());
-        let terminal = std::env::var("TERMINAL")
-            .ok()
-            .or_else(find_terminal)
-            .unwrap_or_else(|| "xterm".to_string());
-
-        tracing::debug!(
-            "Opening external editor via terminal: {} -e {} {}",
-            terminal,
-            editor_cmd,
-            temp_path.display()
-        );
-        Command::new(&terminal)
-            .arg("-e")
-            .arg(&editor_cmd)
-            .arg(&temp_path)
-            .spawn()
+        spawn_linux_editor(&editor, &temp_path)
     };
 
     match spawn_result {
@@ -693,6 +654,145 @@ pub fn open_external_editor(session_manager: &mut SessionManager) {
             let _ = std::fs::remove_file(&temp_path);
         }
     }
+}
+
+/// macOS: open the editor in a new terminal window.
+///
+/// Uses `$TERM_PROGRAM` to detect the running terminal and launch a new
+/// window with the right CLI invocation. Falls back to `open -W -t`
+/// (system default text editor) if the terminal is unknown.
+fn spawn_macos_editor(
+    editor: &str,
+    file: &std::path::Path,
+) -> std::io::Result<std::process::Child> {
+    use std::process::{Command, Stdio};
+
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    tracing::debug!("macOS TERM_PROGRAM={}, editor={}", term_program, editor);
+
+    match term_program.as_str() {
+        "WezTerm" => {
+            let bin = find_macos_bin("wezterm", "WezTerm");
+            Command::new(&bin)
+                .args(["start", "--always-new-process", "--"])
+                .arg(editor)
+                .arg(file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        }
+        "kitty" => {
+            let bin = find_macos_bin("kitty", "kitty");
+            Command::new(&bin)
+                .arg(editor)
+                .arg(file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        }
+        "Alacritty" | "alacritty" => {
+            let bin = find_macos_bin("alacritty", "Alacritty");
+            Command::new(&bin)
+                .arg("-e")
+                .arg(editor)
+                .arg(file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        }
+        _ => {
+            // Unknown terminal — open in system default text editor
+            tracing::debug!(
+                "Unknown TERM_PROGRAM '{}', using `open -W -t`",
+                term_program
+            );
+            Command::new("open")
+                .arg("-W")
+                .arg("-t")
+                .arg(file)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+        }
+    }
+}
+
+/// Find a binary on PATH or inside /Applications/<app>.app/Contents/MacOS/.
+fn find_macos_bin(bin_name: &str, app_name: &str) -> String {
+    use std::process::Command;
+
+    // Try PATH first
+    if let Ok(output) = Command::new("which").arg(bin_name).output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return path;
+            }
+        }
+    }
+
+    // Check app bundle
+    let bundle = format!("/Applications/{}.app/Contents/MacOS/{}", app_name, bin_name);
+    if std::path::Path::new(&bundle).exists() {
+        return bundle;
+    }
+
+    bin_name.to_string()
+}
+
+/// Linux: spawn a terminal emulator with the editor.
+fn spawn_linux_editor(
+    editor: &str,
+    file: &std::path::Path,
+) -> std::io::Result<std::process::Child> {
+    use std::process::Command;
+
+    if let Ok(terminal) = std::env::var("TERMINAL") {
+        return Command::new(&terminal)
+            .arg("-e")
+            .arg(editor)
+            .arg(file)
+            .spawn();
+    }
+
+    // Auto-detect. Each terminal has different exec syntax.
+    let terminals: &[(&str, &[&str])] = &[
+        ("wezterm", &["start", "--always-new-process", "--"]),
+        ("alacritty", &["-e"]),
+        ("kitty", &[]),
+        ("gnome-terminal", &["--"]),
+        ("konsole", &["-e"]),
+        ("urxvtc", &["-e"]),
+        ("urxvt", &["-e"]),
+        ("xterm", &["-e"]),
+    ];
+
+    for (name, prefix_args) in terminals {
+        let found = Command::new("which")
+            .arg(name)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+        if found {
+            tracing::debug!("Opening editor via {}: {} {}", name, editor, file.display());
+            let mut cmd = Command::new(name);
+            for arg in *prefix_args {
+                cmd.arg(arg);
+            }
+            cmd.arg(editor).arg(file);
+            return cmd.spawn();
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "No terminal emulator found. Set $TERMINAL or $VISUAL.",
+    ))
 }
 
 /// Poll for external editor completion (called each frame).
