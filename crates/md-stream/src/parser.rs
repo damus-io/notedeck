@@ -60,6 +60,11 @@ impl StreamParser {
         &self.parsed
     }
 
+    /// Consume the parser and return the completed elements.
+    pub fn into_parsed(self) -> Vec<MdElement> {
+        self.parsed
+    }
+
     /// Get the current partial state (for speculative rendering).
     pub fn partial(&self) -> Option<&Partial> {
         self.partial.as_ref()

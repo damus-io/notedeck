@@ -679,14 +679,6 @@ impl<'a> DaveUi<'a> {
         let inner_margin = 12.0;
         let corner_radius = 8.0;
 
-        // The plan content is in tool_input.plan field
-        let plan_content = request
-            .tool_input
-            .get("plan")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
         egui::Frame::new()
             .fill(ui.visuals().widgets.noninteractive.bg_fill)
             .inner_margin(inner_margin)
@@ -705,16 +697,15 @@ impl<'a> DaveUi<'a> {
 
                     ui.add_space(8.0);
 
-                    // Display the plan content as plain text (TODO: markdown rendering)
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(&plan_content)
-                                .monospace()
-                                .size(11.0)
-                                .color(ui.visuals().text_color()),
-                        )
-                        .wrap_mode(egui::TextWrapMode::Wrap),
-                    );
+                    // Render plan content as markdown (pre-parsed at construction)
+                    if let Some(elements) = &request.cached_plan_elements {
+                        markdown_ui::render_assistant_message(elements, None, ui);
+                    } else if let Some(plan) =
+                        request.tool_input.get("plan").and_then(|v| v.as_str())
+                    {
+                        // Fallback: render as plain text
+                        ui.label(plan);
+                    }
 
                     ui.add_space(8.0);
 

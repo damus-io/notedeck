@@ -341,12 +341,26 @@ async fn session_actor(
                             let request_id = Uuid::new_v4();
                             let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
 
+                            let cached_plan_elements = if perm_req.tool_name == "ExitPlanMode" {
+                                perm_req.tool_input.get("plan")
+                                    .and_then(|v| v.as_str())
+                                    .map(|plan| {
+                                        let mut parser = md_stream::StreamParser::new();
+                                        parser.push(plan);
+                                        parser.finalize();
+                                        parser.into_parsed()
+                                    })
+                            } else {
+                                None
+                            };
+
                             let request = PermissionRequest {
                                 id: request_id,
                                 tool_name: perm_req.tool_name.clone(),
                                 tool_input: perm_req.tool_input.clone(),
                                 response: None,
                                 answer_summary: None,
+                                cached_plan_elements,
                             };
 
                             let pending = PendingPermission {

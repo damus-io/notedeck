@@ -52,6 +52,8 @@ pub struct PermissionRequest {
     pub response: Option<PermissionResponseType>,
     /// For AskUserQuestion: pre-computed summary of answers for display
     pub answer_summary: Option<AnswerSummary>,
+    /// For ExitPlanMode: pre-parsed markdown elements from the plan content
+    pub cached_plan_elements: Option<Vec<MdElement>>,
 }
 
 /// A single entry in an answer summary
