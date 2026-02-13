@@ -621,8 +621,15 @@ pub fn open_external_editor(session_manager: &mut SessionManager) {
     let session_id = session.id;
     let input_content = session.input.clone();
 
-    // Create temp file with current input content
-    let temp_path = std::env::temp_dir().join("notedeck_input.txt");
+    // Create temp file with a unique name to avoid vim swap file conflicts
+    let temp_path = std::env::temp_dir().join(format!(
+        "notedeck_input_{}.txt",
+        std::process::id()
+            ^ (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u32)
+                .unwrap_or(0))
+    ));
     if let Err(e) = std::fs::write(&temp_path, &input_content) {
         tracing::error!("Failed to write temp file for external editor: {}", e);
         return;
