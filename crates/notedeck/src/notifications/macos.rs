@@ -50,6 +50,12 @@ use std::path::Path;
 use std::sync::OnceLock;
 use tracing::{debug, error, info, warn};
 
+/// Safely truncate a string to at most `n` characters, avoiding panics on
+/// short strings or multi-byte UTF-8 boundaries.
+fn safe_prefix(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
 /// Check if the current thread is the main thread.
 ///
 /// On macOS, uses `NSThread.isMainThread` class method for accurate detection.
@@ -519,7 +525,7 @@ impl NotificationBackend for MacOSBackend {
             debug!(
                 "Skipping notification (no bundle): kind={} id={}",
                 event.kind,
-                &event.id.chars().take(8).collect::<String>()
+                safe_prefix(&event.id, 8),
             );
             return;
         }
@@ -527,9 +533,9 @@ impl NotificationBackend for MacOSBackend {
         info!(
             "Sending macOS notification: kind={} id={} target={} picture={:?}",
             event.kind,
-            &event.id.chars().take(8).collect::<String>(),
-            &target_account.chars().take(8).collect::<String>(),
-            picture_path.map(|s| &s[..s.len().min(50)])
+            safe_prefix(&event.id, 8),
+            safe_prefix(target_account, 8),
+            picture_path.map(|s| safe_prefix(s, 50)),
         );
 
         let title = self.format_title(event, author_name);

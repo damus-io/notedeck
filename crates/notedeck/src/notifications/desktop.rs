@@ -6,6 +6,12 @@ use super::backend::NotificationBackend;
 use super::types::ExtractedEvent;
 use tracing::{debug, error, info};
 
+/// Safely truncate a string to at most `n` characters, avoiding panics on
+/// short strings or multi-byte UTF-8 boundaries.
+fn safe_prefix(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
 /// Desktop notification backend using notify-rust.
 ///
 /// Displays native system notifications on macOS and Linux.
@@ -44,7 +50,14 @@ impl Default for DesktopBackend {
 impl DesktopBackend {
     /// Format notification title based on event kind.
     fn format_title(&self, event: &ExtractedEvent, author_name: Option<&str>) -> String {
-        let author = author_name.unwrap_or(&event.pubkey[..8]);
+        let fallback: String;
+        let author = match author_name {
+            Some(name) => name,
+            None => {
+                fallback = safe_prefix(&event.pubkey, 8);
+                &fallback
+            }
+        };
 
         match event.kind {
             1 => format!("{} mentioned you", author),
@@ -99,8 +112,8 @@ impl NotificationBackend for DesktopBackend {
         info!(
             "Sending desktop notification: kind={} id={} target={}",
             event.kind,
-            &event.id[..8],
-            &target_account[..8.min(target_account.len())]
+            safe_prefix(&event.id, 8),
+            safe_prefix(target_account, 8),
         );
 
         let title = self.format_title(event, author_name);

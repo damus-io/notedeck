@@ -158,15 +158,17 @@ impl SettingsAction {
                 };
                 #[cfg(not(target_os = "android"))]
                 let result = {
-                    let mgr =
-                        notification_manager.expect("notification_manager required on desktop");
-                    // Desktop: events forwarded from main loop via channel (no relay_urls needed)
+                    let Some(mgr) = notification_manager else {
+                        tracing::error!(
+                            "Cannot enable notifications: notification_manager is None"
+                        );
+                        return route_action;
+                    };
                     notedeck::platform::enable_notifications(mgr, &pubkey.hex())
                 };
                 if let Err(e) = result {
                     tracing::error!("Failed to enable notifications: {}", e);
                 } else {
-                    // Persist the setting so notifications auto-start on app launch
                     settings.set_notifications_enabled(true);
                 }
             }
@@ -175,14 +177,17 @@ impl SettingsAction {
                 let result = notedeck::platform::disable_notifications();
                 #[cfg(not(target_os = "android"))]
                 let result = {
-                    let mgr =
-                        notification_manager.expect("notification_manager required on desktop");
+                    let Some(mgr) = notification_manager else {
+                        tracing::error!(
+                            "Cannot disable notifications: notification_manager is None"
+                        );
+                        return route_action;
+                    };
                     notedeck::platform::disable_notifications(mgr)
                 };
                 if let Err(e) = result {
                     tracing::error!("Failed to disable notifications: {}", e);
                 } else {
-                    // Persist the setting
                     settings.set_notifications_enabled(false);
                 }
             }

@@ -293,12 +293,13 @@ impl NotificationImageCache {
         }
     }
 
-    /// Clean up old cached files.
+    /// Clean up old cached files and synchronize the in-memory cache.
     ///
-    /// Removes files older than `CACHE_MAX_AGE`. Call periodically to
-    /// prevent unbounded cache growth.
+    /// Removes files older than `CACHE_MAX_AGE` from disk, then removes
+    /// any stale entries from the in-memory cache that reference deleted files.
     pub fn cleanup_old_entries(&self) -> std::io::Result<usize> {
         let mut removed = 0;
+        let mut removed_paths = Vec::new();
         let now = SystemTime::now();
 
         for entry in std::fs::read_dir(&self.cache_dir)? {
@@ -313,6 +314,7 @@ impl NotificationImageCache {
                 if let Ok(modified) = metadata.modified() {
                     if let Ok(age) = now.duration_since(modified) {
                         if age > CACHE_MAX_AGE && std::fs::remove_file(&path).is_ok() {
+                            removed_paths.push(path);
                             removed += 1;
                         }
                     }
@@ -320,7 +322,13 @@ impl NotificationImageCache {
             }
         }
 
-        if removed > 0 {
+        // Synchronize memory cache: remove entries pointing to deleted files
+        if !removed_paths.is_empty() {
+            self.runtime.block_on(async {
+                let mut cache = self.memory_cache.write().await;
+                cache.retain(|_key, cached_path| !removed_paths.contains(cached_path));
+            });
+
             info!(
                 "Cleaned up {} old notification image cache entries",
                 removed

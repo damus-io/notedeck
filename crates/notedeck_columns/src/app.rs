@@ -253,8 +253,15 @@ fn try_process_event(
 /// If a user tapped a notification while the app was closed or in background,
 /// navigate to the corresponding note thread.
 ///
-/// Guards against calling `get_selected_router()` when no columns exist to avoid panics.
+/// Checks that columns exist before consuming the deep link to avoid dropping
+/// cold-start deep links when the app is still initializing.
 fn handle_pending_deep_link(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
+    // Check columns first — don't consume the deep link if we can't route yet
+    let columns = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
+    if columns.columns().is_empty() {
+        return;
+    }
+
     let Some(deep_link) = notedeck::platform::take_pending_deep_link() else {
         return;
     };
@@ -264,16 +271,6 @@ fn handle_pending_deep_link(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
         &deep_link.event_id[..8.min(deep_link.event_id.len())],
         deep_link.event_kind
     );
-
-    // Get columns and check if any exist before routing
-    let columns = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
-    if columns.columns().is_empty() {
-        // Columns don't exist yet (app still initializing), defer navigation.
-        // The deep link info is already consumed; a future enhancement could
-        // re-queue it, but for now we log and return.
-        warn!("Deep link received but no columns exist yet, cannot navigate");
-        return;
-    }
 
     // Convert hex event_id to NoteId
     let note_id = match enostr::NoteId::from_hex(&deep_link.event_id) {
