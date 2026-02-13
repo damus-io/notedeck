@@ -1,117 +1,34 @@
-//! BOLT11 invoice parsing for zap amount extraction.
+//! Zap amount extraction from BOLT11 invoices in notification events.
 //!
-//! Extracts payment amounts from Lightning Network invoices embedded in zap receipts.
+//! Uses the `lightning_invoice` crate's `Bolt11Invoice` parser (the same
+//! parser used by `crate::zaps::zap`) instead of custom parsing.
 
-/// Parse amount from a BOLT11 invoice string.
+use lightning_invoice::Bolt11Invoice;
+
+/// Extract zap amount in satoshis from a kind 9735 event's bolt11 tag.
 ///
-/// BOLT11 format: `ln<prefix><amount><multiplier>1<data>`
-/// - prefix: bc (mainnet), tb (testnet), bs (signet)
-/// - amount: optional digits
-/// - multiplier: optional m/u/n/p
-/// - 1: separator (always present, and unique since bech32 data excludes '1')
-/// - data: timestamp and tagged fields (bech32 encoded)
-///
-/// # Examples
-/// - `lnbc1...` = no amount (1 is separator)
-/// - `lnbc1000u1...` = 1000 micro-BTC = 100,000 sats
-/// - `lnbc1m1...` = 1 milli-BTC = 100,000 sats
-/// - `lnbc21...` = 2 whole BTC (rare, but valid)
+/// Parses the BOLT11 invoice using `lightning_invoice::Bolt11Invoice` and
+/// converts the amount from millisatoshis to satoshis.
 ///
 /// # Returns
-/// The amount in satoshis, or `None` if parsing fails or no amount specified.
-pub fn parse_bolt11_amount(bolt11: &str) -> Option<i64> {
-    let lower = bolt11.to_lowercase();
-
-    // Find the amount portion after prefix (ln + 2-char network prefix)
-    let after_prefix = lower
-        .strip_prefix("lnbc")
-        .or_else(|| lower.strip_prefix("lntb"))
-        .or_else(|| lower.strip_prefix("lnbs"))?;
-
-    // Find the bech32 separator '1' - it's always the LAST '1' in the string
-    // because bech32 data encoding doesn't use the character '1'
-    let separator_pos = after_prefix.rfind('1')?;
-
-    // The human-readable amount part is everything before the separator
-    let amount_part = &after_prefix[..separator_pos];
-
-    if amount_part.is_empty() {
-        // No amount specified (e.g., "lnbc1..." where '1' is immediately the separator)
-        return None;
-    }
-
-    // Parse digits and optional multiplier from the amount part
-    let chars: Vec<char> = amount_part.chars().collect();
-
-    // Find where digits end
-    let mut digit_end = 0;
-    for (i, &c) in chars.iter().enumerate() {
-        if c.is_ascii_digit() {
-            digit_end = i + 1;
-        } else {
-            break;
-        }
-    }
-
-    if digit_end == 0 {
-        // No digits found - invalid amount
-        return None;
-    }
-
-    // Check for multiplier after digits
-    let multiplier_char = if digit_end < chars.len() {
-        let c = chars[digit_end];
-        match c {
-            'm' | 'u' | 'n' | 'p' => Some(c),
-            _ => return None, // Invalid character after digits
-        }
-    } else {
-        None // No multiplier - amount is in whole bitcoin
-    };
-
-    let amount_str: String = chars[..digit_end].iter().collect();
-    let amount: i64 = amount_str.parse().ok()?;
-
-    // Convert to millisatoshis based on multiplier, then to satoshis
-    let msats = match multiplier_char {
-        Some('m') => amount * 100_000_000, // milli-bitcoin = 0.001 BTC = 100,000 sats
-        Some('u') => amount * 100_000,     // micro-bitcoin = 0.000001 BTC = 100 sats
-        Some('n') => amount * 100,         // nano-bitcoin = 0.000000001 BTC = 0.1 sats
-        Some('p') => amount / 10,          // pico-bitcoin = 0.000000000001 BTC
-        None => amount * 100_000_000_000,  // whole bitcoin (rare in practice)
-        Some(_) => unreachable!("multiplier already validated as m/u/n/p"),
-    };
-
-    // Convert millisatoshis to satoshis
-    Some(msats / 1000)
-}
-
-/// Extract zap amount from a kind 9735 event's tags.
-///
-/// Looks for bolt11 tag and parses the invoice amount.
+/// Amount in satoshis, or `None` if no bolt11 tag or no amount specified.
 pub fn extract_zap_amount(event: &serde_json::Map<String, serde_json::Value>) -> Option<i64> {
     let tags = event.get("tags")?.as_array()?;
 
     for tag in tags {
-        let tag_arr = match tag.as_array() {
-            Some(arr) => arr,
-            None => continue,
-        };
+        let tag_arr = tag.as_array()?;
         if tag_arr.len() < 2 {
             continue;
         }
-        let tag_name = match tag_arr[0].as_str() {
-            Some(name) => name,
-            None => continue,
-        };
-        if tag_name != "bolt11" {
+        if tag_arr[0].as_str() != Some("bolt11") {
             continue;
         }
-        let bolt11 = match tag_arr[1].as_str() {
-            Some(s) => s,
-            None => continue,
-        };
-        return parse_bolt11_amount(bolt11);
+        let bolt11 = tag_arr[1].as_str()?;
+        return bolt11
+            .parse::<Bolt11Invoice>()
+            .ok()
+            .and_then(|inv| inv.amount_milli_satoshis())
+            .map(|msats| (msats / 1000) as i64);
     }
     None
 }
@@ -120,42 +37,32 @@ pub fn extract_zap_amount(event: &serde_json::Map<String, serde_json::Value>) ->
 mod tests {
     use super::*;
 
+    fn make_zap_event(bolt11: &str) -> serde_json::Map<String, serde_json::Value> {
+        let json = serde_json::json!({
+            "tags": [["bolt11", bolt11]]
+        });
+        json.as_object().unwrap().clone()
+    }
+
     #[test]
-    fn test_bolt11_amount_parsing() {
-        // Test micro-bitcoin (u) - 1000u = 100,000 sats
-        assert_eq!(parse_bolt11_amount("lnbc1000u1pj9qrs"), Some(100_000));
+    fn test_extract_zap_amount_real_invoice() {
+        // Real invoice from the zap.rs test data (330 sats)
+        let bolt11 = "lnbc330n1pn7dlrrpp566sfk69zda849huwjw6wepw3uzxxp4mp9np54qx49ruw8cuv86ushp52te27l4jadsz0u76jvgsk5uekl04tujpjkt9cc7duu0jfzp9zdtscqzzsxqyz5vqsp5m3tzc7ryp5f9fv90v27uyrrd4qfmj5lrwv9rvmvum3v50kdph23s9qxpqysgqut2ssf0m7nmtd73cwqk7qfw4sw6zlj598sjdxmdsepmvn0ptamnhf45c425h26juzcfupegltefwsf8qav2ldell7v9fpc0y23nl0kgqtf432g";
+        let event = make_zap_event(bolt11);
+        // 330 nano-BTC = 33 sats
+        assert_eq!(extract_zap_amount(&event), Some(33));
+    }
 
-        // Test milli-bitcoin (m) - 10m = 1,000,000 sats
-        assert_eq!(parse_bolt11_amount("lnbc10m1pj9qrs"), Some(1_000_000));
+    #[test]
+    fn test_extract_zap_amount_no_bolt11_tag() {
+        let json = serde_json::json!({ "tags": [["p", "abc123"]] });
+        let event = json.as_object().unwrap();
+        assert_eq!(extract_zap_amount(event), None);
+    }
 
-        // Test nano-bitcoin (n) - 1000000n = 100,000 sats
-        // 1 nano-BTC = 10^-9 BTC, so 1000000n = 10^-3 BTC = 100,000 sats
-        assert_eq!(parse_bolt11_amount("lnbc1000000n1pj9qrs"), Some(100_000));
-
-        // Test no-amount invoice (1 is separator, not amount)
-        assert_eq!(parse_bolt11_amount("lnbc1pj9qrs"), None);
-
-        // Test whole BTC with milli multiplier - 2000m = 2 BTC
-        assert_eq!(parse_bolt11_amount("lnbc2000m1pj9qrs"), Some(200_000_000));
-
-        // Test whole BTC without multiplier - uses rfind('1') to find separator
-        // 2 whole BTC = 200,000,000 sats
-        assert_eq!(parse_bolt11_amount("lnbc21pj9qrs"), Some(200_000_000));
-
-        // Test whole BTC where amount contains '1' - the last '1' is the separator
-        // "lnbc100001pj9qrs" -> amount = 10000 whole BTC = 1,000,000,000,000 sats
-        assert_eq!(
-            parse_bolt11_amount("lnbc100001pj9qrs"),
-            Some(1_000_000_000_000)
-        );
-
-        // Test invalid prefix
-        assert_eq!(parse_bolt11_amount("invalid"), None);
-
-        // Test testnet prefix
-        assert_eq!(parse_bolt11_amount("lntb1000u1pj9qrs"), Some(100_000));
-
-        // Test signet prefix
-        assert_eq!(parse_bolt11_amount("lnbs500u1pj9qrs"), Some(50_000));
+    #[test]
+    fn test_extract_zap_amount_invalid_invoice() {
+        let event = make_zap_event("not_a_real_invoice");
+        assert_eq!(extract_zap_amount(&event), None);
     }
 }

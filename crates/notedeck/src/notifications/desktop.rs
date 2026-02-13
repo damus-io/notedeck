@@ -195,16 +195,34 @@ fn show_macos_notification(title: &str, body: &str, _picture_url: Option<&str>) 
 
 /// Prevent macOS App Nap from suspending the notification worker.
 ///
-/// App Nap is a macOS power-saving feature that can suspend background apps.
-/// We need to prevent this to maintain relay connections.
-///
-/// Note: This is a one-way operation - once called, App Nap remains disabled
-/// for the lifetime of the process. This is intentional for a notification
-/// worker that needs to maintain persistent relay connections.
+/// Uses `NSProcessInfo.beginActivityWithOptions:reason:` to disable App Nap.
+/// This is a one-way operation for the lifetime of the returned activity token.
+/// We intentionally leak the token so App Nap stays disabled for the process.
 #[cfg(target_os = "macos")]
 pub fn disable_app_nap() {
-    macos_app_nap::prevent();
-    info!("App Nap disabled for notification worker");
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+
+    unsafe {
+        // NSActivityUserInitiatedAllowingIdleSystemSleep = 0x00FFFFFFULL
+        // This prevents App Nap while allowing the system to sleep.
+        let options: u64 = 0x00FF_FFFF;
+        let reason = NSString::from_str("Maintaining relay connections for notifications");
+
+        let process_info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+        let activity: Retained<AnyObject> = msg_send![
+            process_info,
+            beginActivityWithOptions: options,
+            reason: &*reason
+        ];
+
+        // Leak the activity token so App Nap stays disabled for the process lifetime
+        std::mem::forget(activity);
+    }
+
+    info!("App Nap disabled for notification worker via NSProcessInfo");
 }
 
 #[cfg(not(target_os = "macos"))]

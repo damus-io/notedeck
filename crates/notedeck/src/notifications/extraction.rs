@@ -215,10 +215,8 @@ mod tests {
 
     #[test]
     fn test_extract_zap_event_with_amount() {
-        // Use a realistic BOLT11 invoice format (1000 micro-BTC = 100,000 sats)
-        // The parser only needs: prefix + amount + multiplier + '1' separator
-        // The rest of the invoice (timestamp, tags, signature) is not parsed for amount
-        let bolt11 = "lnbc1000u1pn8kdx5pp5abcdefghijklmnopqrstuvwxyz";
+        // Real BOLT11 invoice from zap.rs test data (330 nano-BTC = 33 sats)
+        let bolt11 = "lnbc330n1pn7dlrrpp566sfk69zda849huwjw6wepw3uzxxp4mp9np54qx49ruw8cuv86ushp52te27l4jadsz0u76jvgsk5uekl04tujpjkt9cc7duu0jfzp9zdtscqzzsxqyz5vqsp5m3tzc7ryp5f9fv90v27uyrrd4qfmj5lrwv9rvmvum3v50kdph23s9qxpqysgqut2ssf0m7nmtd73cwqk7qfw4sw6zlj598sjdxmdsepmvn0ptamnhf45c425h26juzcfupegltefwsf8qav2ldell7v9fpc0y23nl0kgqtf432g";
         let relay_msg = format!(
             r#"["EVENT","sub_id",{{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":9735,"content":"","tags":[["bolt11","{}"]]}}]"#,
             bolt11
@@ -227,6 +225,6 @@ mod tests {
         assert!(event.is_some());
         let event = event.unwrap();
         assert_eq!(event.kind, 9735);
-        assert_eq!(event.zap_amount_sats, Some(100_000)); // 1000 micro-BTC = 100,000 sats
+        assert_eq!(event.zap_amount_sats, Some(33)); // 330 nano-BTC = 33 sats
     }
 }
