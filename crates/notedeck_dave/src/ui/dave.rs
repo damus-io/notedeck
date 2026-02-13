@@ -255,15 +255,15 @@ impl<'a> DaveUi<'a> {
                     if let Some(git_status) = &mut self.git_status {
                         // Explicitly reserve height so bottom_up layout
                         // keeps the chat ScrollArea from overlapping.
-                        let h = if git_status.expanded { 200.0 } else { 30.0 };
+                        let h = if git_status.expanded { 200.0 } else { 24.0 };
                         let w = ui.available_width();
                         ui.allocate_ui(egui::vec2(w, h), |ui| {
                             egui::Frame::new()
                                 .outer_margin(egui::Margin {
                                     left: margin,
                                     right: margin,
-                                    top: 0,
-                                    bottom: 4,
+                                    top: 4,
+                                    bottom: 0,
                                 })
                                 .show(ui, |ui| {
                                     git_status_ui::git_status_bar_ui(git_status, ui);
