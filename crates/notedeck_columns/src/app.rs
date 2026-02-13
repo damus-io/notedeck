@@ -20,9 +20,9 @@ use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::Transaction;
 use notedeck::{
-    tr, try_process_events_core, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse,
-    DataPath, DataPathType, FilterState, Images, Localization, MediaJobSender, NotedeckOptions,
-    SettingsHandler,
+    tr, try_process_events_core, ui::is_compiled_as_mobile, ui::is_narrow, Accounts, AppAction,
+    AppContext, AppResponse, DataPath, DataPathType, FilterState, Images, Localization,
+    MediaJobSender, NotedeckOptions, SettingsHandler,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -256,7 +256,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
                 warn!("update_damus init: {err}");
             }
 
-            if !app_ctx.settings.tos_accepted() {
+            if is_compiled_as_mobile() && !app_ctx.settings.tos_accepted() {
                 damus
                     .columns_mut(app_ctx.i18n, app_ctx.accounts)
                     .get_selected_router()
