@@ -29,6 +29,10 @@ pub struct ViewState {
 
     /// Keep track of checkbox state of follow pack onboarding
     pub follow_packs: Nip51SetUiCache,
+
+    /// TOS acceptance screen checkbox state
+    pub tos_age_confirmed: bool,
+    pub tos_confirmed: bool,
 }
 
 impl ViewState {

@@ -1025,6 +1025,23 @@ fn render_nav_body(
             })
         }
         Route::FollowedBy(_pubkey) => DragResponse::none(),
+        Route::TosAcceptance => {
+            let resp = ui::tos::TosAcceptanceView::new(
+                ctx.i18n,
+                &mut app.view_state.tos_age_confirmed,
+                &mut app.view_state.tos_confirmed,
+            )
+            .show(ui);
+
+            if let Some(ui::tos::TosAcceptanceResponse::Accept) = resp {
+                ctx.settings.accept_tos();
+                app.view_state.tos_age_confirmed = false;
+                app.view_state.tos_confirmed = false;
+                return DragResponse::output(Some(RenderNavAction::Back));
+            }
+
+            DragResponse::none()
+        }
         Route::Wallet(wallet_type) => {
             let state = match wallet_type {
                 notedeck::WalletType::Auto => 's: {

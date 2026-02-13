@@ -548,6 +548,7 @@ impl<'a> NavTitle<'a> {
             Route::RepostDecision(_) => None,
             Route::Following(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
             Route::FollowedBy(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
+            Route::TosAcceptance => None,
         }
     }
 

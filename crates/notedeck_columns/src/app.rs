@@ -255,6 +255,13 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
             ) {
                 warn!("update_damus init: {err}");
             }
+
+            if !app_ctx.settings.tos_accepted() {
+                damus
+                    .columns_mut(app_ctx.i18n, app_ctx.accounts)
+                    .get_selected_router()
+                    .route_to(Route::TosAcceptance);
+            }
         }
 
         DamusState::Initialized => (),
@@ -832,6 +839,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::RepostDecision(_) => false,
         Route::Following(_) => false,
         Route::FollowedBy(_) => false,
+        Route::TosAcceptance => false,
     }
 }
 

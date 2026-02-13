@@ -37,6 +37,7 @@ pub enum Route {
     CustomizeZapAmount(NoteZapTargetOwned),
     Following(Pubkey),
     FollowedBy(Pubkey),
+    TosAcceptance,
 }
 
 impl Route {
@@ -151,6 +152,9 @@ impl Route {
             Route::FollowedBy(pubkey) => {
                 writer.write_token("followed_by");
                 writer.write_token(&pubkey.hex());
+            }
+            Route::TosAcceptance => {
+                writer.write_token("tos");
             }
         }
     }
@@ -289,6 +293,12 @@ impl Route {
                         Ok(Route::FollowedBy(pubkey))
                     })
                 },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("tos")?;
+                        Ok(Route::TosAcceptance)
+                    })
+                },
             ],
         )
     }
@@ -415,6 +425,11 @@ impl Route {
             Route::FollowedBy(_) => {
                 ColumnTitle::formatted(tr!(i18n, "Followed by", "Column title for followers"))
             }
+            Route::TosAcceptance => ColumnTitle::formatted(tr!(
+                i18n,
+                "Terms of Service",
+                "Column title for TOS acceptance screen"
+            )),
         }
     }
 }
