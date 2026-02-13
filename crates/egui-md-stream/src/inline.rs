@@ -371,16 +371,25 @@ fn parse_link(text: &str) -> Option<(String, String, usize)> {
 
 /// Collapse adjacent Text elements into one.
 fn collapse_text_elements(elements: &mut Vec<InlineElement>) {
-    let mut i = 0;
-    while i + 1 < elements.len() {
-        if let (InlineElement::Text(a), InlineElement::Text(b)) = (&elements[i], &elements[i + 1]) {
+    if elements.len() < 2 {
+        return;
+    }
+
+    let mut write = 0;
+    for read in 1..elements.len() {
+        if let (InlineElement::Text(a), InlineElement::Text(b)) =
+            (&elements[write], &elements[read])
+        {
             let combined = format!("{}{}", a, b);
-            elements[i] = InlineElement::Text(combined);
-            elements.remove(i + 1);
+            elements[write] = InlineElement::Text(combined);
         } else {
-            i += 1;
+            write += 1;
+            if write != read {
+                elements.swap(write, read);
+            }
         }
     }
+    elements.truncate(write + 1);
 }
 
 /// Streaming inline parser state.
