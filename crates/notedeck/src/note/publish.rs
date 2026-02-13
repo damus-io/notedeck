@@ -1,8 +1,57 @@
-use enostr::{FilledKeypair, Pubkey, RelayPool};
+use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 use tracing::info;
 
 use crate::Muted;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ReportType {
+    Spam,
+    Nudity,
+    Profanity,
+    Illegal,
+    Impersonation,
+    Other,
+}
+
+impl ReportType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReportType::Spam => "spam",
+            ReportType::Nudity => "nudity",
+            ReportType::Profanity => "profanity",
+            ReportType::Illegal => "illegal",
+            ReportType::Impersonation => "impersonation",
+            ReportType::Other => "other",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            ReportType::Spam => "Spam",
+            ReportType::Nudity => "Nudity",
+            ReportType::Profanity => "Profanity",
+            ReportType::Illegal => "Illegal",
+            ReportType::Impersonation => "Impersonation",
+            ReportType::Other => "Other",
+        }
+    }
+
+    pub const ALL: &'static [ReportType] = &[
+        ReportType::Spam,
+        ReportType::Nudity,
+        ReportType::Profanity,
+        ReportType::Illegal,
+        ReportType::Impersonation,
+        ReportType::Other,
+    ];
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ReportTarget {
+    pub pubkey: Pubkey,
+    pub note_id: Option<NoteId>,
+}
 
 pub fn builder_from_note<F>(note: Note<'_>, skip_tag: Option<F>) -> NoteBuilder<'_>
 where
@@ -150,6 +199,35 @@ pub fn send_mute_event(
             .tag_str("p")
             .tag_str(&target.hex())
     };
+
+    send_note_builder(builder, ndb, pool, kp);
+}
+
+pub fn send_report_event(
+    ndb: &Ndb,
+    pool: &mut RelayPool,
+    kp: FilledKeypair,
+    target: &ReportTarget,
+    report_type: ReportType,
+) {
+    let report_str = report_type.as_str();
+
+    let mut builder = NoteBuilder::new()
+        .content("")
+        .kind(1984)
+        .options(NoteBuildOptions::default())
+        .start_tag()
+        .tag_str("p")
+        .tag_str(&target.pubkey.hex())
+        .tag_str(report_str);
+
+    if let Some(note_id) = &target.note_id {
+        builder = builder
+            .start_tag()
+            .tag_str("e")
+            .tag_str(&note_id.hex())
+            .tag_str(report_str);
+    }
 
     send_note_builder(builder, ndb, pool, kp);
 }

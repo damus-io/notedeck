@@ -1122,6 +1122,22 @@ fn render_nav_body(
             DragResponse::output(RepostDecisionView::new(note_id).show(ui))
                 .map_output(RenderNavAction::RepostAction)
         }
+        Route::Report(target) => {
+            let Some(kp) = ctx.accounts.selected_filled() else {
+                return DragResponse::output(Some(RenderNavAction::Back));
+            };
+
+            let resp =
+                ui::report::ReportView::new(&mut app.view_state.selected_report_type).show(ui);
+
+            if let Some(report_type) = resp {
+                notedeck::send_report_event(ctx.ndb, ctx.pool, kp, target, report_type);
+                app.view_state.selected_report_type = None;
+                return DragResponse::output(Some(RenderNavAction::Back));
+            }
+
+            DragResponse::none()
+        }
     }
 }
 

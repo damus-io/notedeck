@@ -5,6 +5,7 @@ pub enum ProfileContextSelection {
     CopyLink,
     ViewAs,
     MuteUser,
+    ReportUser,
 }
 
 pub struct ProfileContext {
@@ -24,9 +25,8 @@ impl ProfileContextSelection {
             }
             ProfileContextSelection::ViewAs
             | ProfileContextSelection::AddProfileColumn
-            | ProfileContextSelection::MuteUser => {
-                // handled separately in profile.rs
-            }
+            | ProfileContextSelection::MuteUser
+            | ProfileContextSelection::ReportUser => {}
         }
     }
 }

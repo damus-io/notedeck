@@ -91,7 +91,6 @@ impl NoteContextButton {
                 "Copy Text",
                 "Copy the text content of the note to clipboard"
             );
-            tracing::debug!("Copy Text translation: '{}'", copy_text);
 
             if ui.button(copy_text).clicked() {
                 context_selection = Some(NoteContextSelection::CopyText);
@@ -165,6 +164,18 @@ impl NoteContextButton {
                 };
                 if ui.button(label).clicked() {
                     context_selection = Some(NoteContextSelection::MuteUser);
+                    ui.close_menu();
+                }
+
+                if ui
+                    .button(tr!(
+                        i18n,
+                        "Report Note",
+                        "Report this note for objectionable content"
+                    ))
+                    .clicked()
+                {
+                    context_selection = Some(NoteContextSelection::ReportUser);
                     ui.close_menu();
                 }
             }

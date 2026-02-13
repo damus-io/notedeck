@@ -209,9 +209,20 @@ fn execute_note_action(
         NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
             Err(err) => tracing::error!("{err}"),
             Ok(note) => {
-                context
-                    .action
-                    .process_selection(ui, &note, ndb, pool, txn, accounts);
+                if matches!(context.action, notedeck::NoteContextSelection::ReportUser) {
+                    let target = notedeck::ReportTarget {
+                        pubkey: Pubkey::new(*note.pubkey()),
+                        note_id: Some(NoteId::new(*note.id())),
+                    };
+                    router_action = Some(RouterAction::route_to_sheet(
+                        Route::Report(target),
+                        egui_nav::Split::AbsoluteFromBottom(300.0),
+                    ));
+                } else {
+                    context
+                        .action
+                        .process_selection(ui, &note, ndb, pool, txn, accounts);
+                }
             }
         },
         NoteAction::Media(media_action) => {

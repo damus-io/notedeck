@@ -78,6 +78,18 @@ impl ProfileContextWidget {
                     context_selection = Some(ProfileContextSelection::MuteUser);
                     ui.close_menu();
                 }
+
+                if ui
+                    .button(tr!(
+                        i18n,
+                        "Report User",
+                        "Report this user for objectionable content"
+                    ))
+                    .clicked()
+                {
+                    context_selection = Some(ProfileContextSelection::ReportUser);
+                    ui.close_menu();
+                }
             }
         });
 

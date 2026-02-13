@@ -2,7 +2,8 @@ use egui_nav::{Percent, ReturnType};
 use enostr::{NoteId, Pubkey, RelayPool};
 use nostrdb::Ndb;
 use notedeck::{
-    tr, Localization, NoteZapTargetOwned, ReplacementType, RootNoteIdBuf, Router, WalletType,
+    tr, Localization, NoteZapTargetOwned, ReplacementType, ReportTarget, RootNoteIdBuf, Router,
+    WalletType,
 };
 use std::ops::Range;
 
@@ -38,6 +39,7 @@ pub enum Route {
     Following(Pubkey),
     FollowedBy(Pubkey),
     TosAcceptance,
+    Report(ReportTarget),
 }
 
 impl Route {
@@ -155,6 +157,13 @@ impl Route {
             }
             Route::TosAcceptance => {
                 writer.write_token("tos");
+            }
+            Route::Report(target) => {
+                writer.write_token("report");
+                writer.write_token(&target.pubkey.hex());
+                if let Some(note_id) = &target.note_id {
+                    writer.write_token(&note_id.hex());
+                }
             }
         }
     }
@@ -299,6 +308,15 @@ impl Route {
                         Ok(Route::TosAcceptance)
                     })
                 },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("report")?;
+                        let pubkey = Pubkey::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        let note_id = p.pull_token().ok().and_then(|t| NoteId::from_hex(t).ok());
+                        Ok(Route::Report(ReportTarget { pubkey, note_id }))
+                    })
+                },
             ],
         )
     }
@@ -430,6 +448,9 @@ impl Route {
                 "Terms of Service",
                 "Column title for TOS acceptance screen"
             )),
+            Route::Report(_) => {
+                ColumnTitle::formatted(tr!(i18n, "Report", "Column title for report screen"))
+            }
         }
     }
 }

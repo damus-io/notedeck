@@ -133,6 +133,16 @@ impl ProfileAction {
                         }
                         None
                     }
+                    ProfileContextSelection::ReportUser => {
+                        let target = notedeck::ReportTarget {
+                            pubkey: profile_context.profile,
+                            note_id: None,
+                        };
+                        Some(RouterAction::route_to_sheet(
+                            Route::Report(target),
+                            egui_nav::Split::AbsoluteFromBottom(340.0),
+                        ))
+                    }
                     _ => {
                         profile_context
                             .selection

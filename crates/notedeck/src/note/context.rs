@@ -22,6 +22,7 @@ pub enum NoteContextSelection {
     Broadcast(BroadcastContext),
     CopyNeventLink,
     MuteUser,
+    ReportUser,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -109,6 +110,7 @@ impl NoteContextSelection {
                     super::publish::send_mute_event(ndb, txn, pool, kp, &muted, &target);
                 }
             }
+            NoteContextSelection::ReportUser => {}
         }
     }
 }
