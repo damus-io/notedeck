@@ -553,6 +553,52 @@ async fn oneshot_subscription_removed_after_eose() {
     );
 }
 
+/// Oneshot subscriptions across multiple relays should fully clean up after all EOSEs.
+#[tokio::test]
+async fn oneshot_multi_relay_fully_removed_after_eose() {
+    let (_relay1, url1) = create_test_relay().await;
+    let (_relay2, url2) = create_test_relay().await;
+
+    let mut pool = OutboxPool::default();
+
+    let mut urls = HashSet::new();
+    urls.insert(url1.clone());
+    urls.insert(url2.clone());
+    let url_pkgs = RelayUrlPkgs::new(urls);
+
+    let id = {
+        let mut handler = pool.start_session(MockWakeup::default());
+        handler.oneshot(trivial_filter(), url_pkgs);
+        let session = handler.export();
+        let id = *session
+            .tasks
+            .keys()
+            .next()
+            .expect("oneshot should create a task");
+        OutboxSessionHandler::import(&mut pool, session, MockWakeup::default());
+        id
+    };
+
+    let got_all_eose = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+        pool.all_have_eose(&id)
+    })
+    .await;
+    assert!(got_all_eose, "oneshot should receive EOSE from all relays");
+
+    {
+        let _ = pool.start_session(MockWakeup::default());
+    }
+
+    assert!(
+        pool.filters(&id).is_none(),
+        "oneshot metadata should be removed after EOSE processing"
+    );
+    assert!(
+        pool.status(&id).is_empty(),
+        "oneshot should be fully unsubscribed on all relays after EOSE processing"
+    );
+}
+
 // ==================== Since Optimization After EOSE ====================
 
 fn filter_has_since(filter: &Filter) -> bool {
@@ -603,5 +649,52 @@ async fn eose_applies_since_to_filters() {
     assert!(
         filter_has_since(&optimized_filters[0]),
         "filters should have since after EOSE"
+    );
+}
+
+/// Since optimization should wait until every relay for the subscription reaches EOSE.
+#[tokio::test]
+async fn since_optimization_waits_for_all_relays_eose() {
+    let (_relay, live_url) = create_test_relay().await;
+    let dead_url = NormRelayUrl::new("wss://127.0.0.1:1").expect("valid dead relay url");
+
+    let mut pool = OutboxPool::default();
+
+    let mut urls = HashSet::new();
+    urls.insert(live_url);
+    urls.insert(dead_url);
+    let mut url_pkgs = RelayUrlPkgs::new(urls);
+    url_pkgs.use_transparent = true;
+
+    let id = {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(
+            vec![Filter::new().kinds(vec![1]).limit(10).build()],
+            url_pkgs,
+        )
+    };
+
+    let initial_filters = pool.filters(&id).expect("subscription exists");
+    assert!(
+        !filter_has_since(&initial_filters[0]),
+        "filters should not have since before any EOSE"
+    );
+
+    let got_any_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&id)).await;
+    assert!(got_any_eose, "live relay should produce EOSE");
+    assert!(
+        !pool.all_have_eose(&id),
+        "all relays should not have EOSE when one relay is unreachable"
+    );
+
+    // Trigger EOSE queue processing.
+    {
+        let _ = pool.start_session(MockWakeup::default());
+    }
+
+    let filters = pool.filters(&id).expect("subscription still exists");
+    assert!(
+        !filter_has_since(&filters[0]),
+        "since should not be optimized until every relay reaches EOSE"
     );
 }
