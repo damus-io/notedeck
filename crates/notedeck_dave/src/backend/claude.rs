@@ -467,28 +467,41 @@ async fn session_actor(
                                             stream_done = true;
                                         }
                                         ClaudeMessage::User(user_msg) => {
-                                            if let Some(content_blocks) = &user_msg.content {
-                                                for block in content_blocks {
-                                                    if let ContentBlock::ToolResult(tool_result_block) = block {
-                                                        let tool_use_id = &tool_result_block.tool_use_id;
-                                                        if let Some((tool_name, tool_input)) = pending_tools.remove(tool_use_id) {
-                                                            let result_value = tool_result_content_to_value(&tool_result_block.content);
+                                            // Tool results are nested in extra["message"]["content"]
+                                            // since the SDK's UserMessage.content field doesn't
+                                            // capture the inner message's content array.
+                                            let content_blocks: Vec<ContentBlock> = user_msg
+                                                .extra
+                                                .get("message")
+                                                .and_then(|m| m.get("content"))
+                                                .and_then(|c| c.as_array())
+                                                .map(|arr| {
+                                                    arr.iter()
+                                                        .filter_map(|v| serde_json::from_value::<ContentBlock>(v.clone()).ok())
+                                                        .collect()
+                                                })
+                                                .unwrap_or_default();
 
-                                                            // Check if this is a Task tool completion
-                                                            if tool_name == "Task" {
-                                                                let result_text = extract_response_content(&result_value)
-                                                                    .unwrap_or_else(|| "completed".to_string());
-                                                                let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
-                                                                    task_id: tool_use_id.to_string(),
-                                                                    result: truncate_output(&result_text, 2000),
-                                                                });
-                                                            }
+                                            for block in &content_blocks {
+                                                if let ContentBlock::ToolResult(tool_result_block) = block {
+                                                    let tool_use_id = &tool_result_block.tool_use_id;
+                                                    if let Some((tool_name, tool_input)) = pending_tools.remove(tool_use_id) {
+                                                        let result_value = tool_result_content_to_value(&tool_result_block.content);
 
-                                                            let summary = format_tool_summary(&tool_name, &tool_input, &result_value);
-                                                            let tool_result = ToolResult { tool_name, summary };
-                                                            let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
-                                                            ctx.request_repaint();
+                                                        // Check if this is a Task tool completion
+                                                        if tool_name == "Task" {
+                                                            let result_text = extract_response_content(&result_value)
+                                                                .unwrap_or_else(|| "completed".to_string());
+                                                            let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
+                                                                task_id: tool_use_id.to_string(),
+                                                                result: truncate_output(&result_text, 2000),
+                                                            });
                                                         }
+
+                                                        let summary = format_tool_summary(&tool_name, &tool_input, &result_value);
+                                                        let tool_result = ToolResult { tool_name, summary };
+                                                        let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
+                                                        ctx.request_repaint();
                                                     }
                                                 }
                                             }
@@ -510,6 +523,7 @@ async fn session_actor(
                                                 // status: null means compaction finished (handled by compact_boundary)
                                             } else if system_msg.subtype == "compact_boundary" {
                                                 // Compaction completed - extract token savings info
+                                                tracing::debug!("compact_boundary data: {:?}", system_msg.data);
                                                 let pre_tokens = system_msg.data.get("pre_tokens")
                                                     .and_then(|v| v.as_u64())
                                                     .unwrap_or(0);
