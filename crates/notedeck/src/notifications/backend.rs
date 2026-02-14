@@ -19,16 +19,20 @@ use super::types::ExtractedEvent;
 pub trait NotificationBackend {
     /// Send a notification for a Nostr event.
     ///
+    /// Title and body are pre-formatted (and localized) by the caller.
+    ///
     /// # Arguments
-    /// * `event` - The extracted event data
+    /// * `title` - Localized notification title
+    /// * `body` - Localized notification body
+    /// * `event` - The extracted event data (for logging / platform urgency)
     /// * `target_account` - Hex pubkey of the account this notification targets
-    /// * `author_name` - Optional display name from cached profile
-    /// * `picture_url` - Optional profile picture URL from cached profile
+    /// * `picture_url` - Optional profile picture URL or local path
     fn send_notification(
         &self,
+        title: &str,
+        body: &str,
         event: &ExtractedEvent,
         target_account: &str,
-        author_name: Option<&str>,
         picture_url: Option<&str>,
     );
 
@@ -47,9 +51,10 @@ pub struct NoopBackend;
 impl NotificationBackend for NoopBackend {
     fn send_notification(
         &self,
+        _title: &str,
+        _body: &str,
         _event: &ExtractedEvent,
         _target_account: &str,
-        _author_name: Option<&str>,
         _picture_url: Option<&str>,
     ) {
         // Do nothing
@@ -68,23 +73,22 @@ pub struct LoggingBackend;
 impl NotificationBackend for LoggingBackend {
     fn send_notification(
         &self,
+        title: &str,
+        body: &str,
         event: &ExtractedEvent,
         target_account: &str,
-        author_name: Option<&str>,
         _picture_url: Option<&str>,
     ) {
-        // Use safe slicing to avoid panics on malformed/short strings
         let id_preview = event.id.get(..8).unwrap_or(&event.id);
-        let pubkey_preview = event.pubkey.get(..8).unwrap_or(&event.pubkey);
         let target_preview = target_account.get(..8).unwrap_or(target_account);
 
         tracing::info!(
-            "Notification: kind={} id={} from={} target={} author_name={:?}",
+            "Notification: kind={} id={} target={} title={:?} body={:?}",
             event.kind,
             id_preview,
-            pubkey_preview,
             target_preview,
-            author_name
+            title,
+            body,
         );
     }
 

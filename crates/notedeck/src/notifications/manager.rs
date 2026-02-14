@@ -4,7 +4,10 @@
 //! without using global statics. Designed to be owned by `Notedeck` and accessed
 //! via `AppContext`.
 
+use super::types::ExtractedEvent;
 use super::{NotificationData, NotificationService, PlatformBackend};
+use crate::i18n::Localization;
+use crate::tr;
 use nostrdb::{Ndb, Transaction};
 use tracing::{debug, info, warn};
 
@@ -149,7 +152,8 @@ impl NotificationManager {
     /// Process a relay message and forward to the worker if relevant.
     ///
     /// Extracts the event, checks kind and p-tag mentions, resolves the
-    /// author profile via nostrdb, then sends to the worker channel.
+    /// author profile via nostrdb, formats a localized title/body, then
+    /// sends to the worker channel.
     #[cfg(not(target_os = "android"))]
     #[profiling::function]
     pub fn process_relay_message(
@@ -157,6 +161,7 @@ impl NotificationManager {
         relay_message: &str,
         ndb: &Ndb,
         monitored_pubkeys: &[String],
+        i18n: &mut Localization,
     ) {
         if !self.is_running() {
             return;
@@ -194,9 +199,13 @@ impl NotificationManager {
 
         let (author_name, author_picture_url) = lookup_profile(ndb, &event.pubkey);
 
+        let title = format_title(&event, author_name.as_deref(), i18n);
+        let body = format_body(&event, i18n);
+
         let notification_data = NotificationData {
             event,
-            author_name,
+            title,
+            body,
             author_picture_url,
             target_pubkey_hex,
         };
@@ -218,6 +227,61 @@ impl Drop for NotificationManager {
         if self.is_running() {
             self.stop();
         }
+    }
+}
+
+/// Format a localized notification title from event data.
+#[cfg(not(target_os = "android"))]
+fn format_title(
+    event: &ExtractedEvent,
+    author_name: Option<&str>,
+    i18n: &mut Localization,
+) -> String {
+    let fallback: String;
+    let author = match author_name {
+        Some(name) => name,
+        None => {
+            fallback = event.pubkey.chars().take(8).collect();
+            &fallback
+        }
+    };
+
+    match event.kind {
+        1 => tr!(i18n, "{name} mentioned you", "notification title for mention", name = author),
+        4 => tr!(i18n, "DM from {name}", "notification title for direct message", name = author),
+        6 => tr!(i18n, "{name} reposted your note", "notification title for repost", name = author),
+        7 => tr!(i18n, "{name} reacted to your note", "notification title for reaction", name = author),
+        1059 => tr!(i18n, "Encrypted message from {name}", "notification title for encrypted DM", name = author),
+        9735 => {
+            if let Some(sats) = event.zap_amount_sats {
+                tr!(i18n, "{name} zapped you {sats} sats", "notification title for zap with amount", name = author, sats = sats)
+            } else {
+                tr!(i18n, "{name} zapped you", "notification title for zap", name = author)
+            }
+        }
+        _ => tr!(i18n, "Notification from {name}", "notification title fallback", name = author),
+    }
+}
+
+/// Format a localized notification body from event data.
+#[cfg(not(target_os = "android"))]
+fn format_body(event: &ExtractedEvent, i18n: &mut Localization) -> String {
+    if event.kind == 4 || event.kind == 1059 {
+        return tr!(i18n, "Tap to view", "notification body for encrypted content");
+    }
+
+    let max_chars = 200;
+    if event.content.chars().count() > max_chars {
+        let truncated: String = event.content.chars().take(max_chars).collect();
+        format!("{}...", truncated)
+    } else if event.content.is_empty() {
+        if event.kind == 7 {
+            "\u{2764}\u{fe0f}".to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        event.content.clone()
     }
 }
 

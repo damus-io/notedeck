@@ -57,14 +57,17 @@ pub struct ExtractedEvent {
 /// A notification ready to be displayed.
 ///
 /// Contains all the data needed to show a notification, including
-/// pre-resolved profile information. This is sent from the main
-/// event loop to the notification worker.
+/// pre-resolved profile information and pre-formatted (localized)
+/// title and body.  This is sent from the main event loop to the
+/// notification worker via an `mpsc` channel.
 #[derive(Clone, Debug)]
 pub struct NotificationData {
     /// The extracted event data
     pub event: ExtractedEvent,
-    /// Author's display name (from nostrdb profile lookup)
-    pub author_name: Option<String>,
+    /// Localized notification title (e.g. "Alice mentioned you")
+    pub title: String,
+    /// Localized notification body (event content or placeholder)
+    pub body: String,
     /// Author's profile picture URL (from nostrdb profile lookup)
     pub author_picture_url: Option<String>,
     /// Which of our accounts this notification is for

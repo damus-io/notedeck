@@ -315,60 +315,6 @@ fn request_permission() {
 }
 
 impl MacOSBackend {
-    /// Format notification title based on event kind.
-    fn format_title(&self, event: &ExtractedEvent, author_name: Option<&str>) -> String {
-        // Build author string - use provided name or truncated pubkey as fallback
-        let fallback_author: String;
-        let author = match author_name {
-            Some(name) => name,
-            None => {
-                // Safe UTF-8 truncation for fallback
-                fallback_author = event.pubkey.chars().take(8).collect();
-                &fallback_author
-            }
-        };
-
-        match event.kind {
-            1 => format!("{} mentioned you", author),
-            4 => format!("DM from {}", author),
-            6 => format!("{} reposted your note", author),
-            7 => format!("{} reacted to your note", author),
-            1059 => format!("Encrypted message from {}", author),
-            9735 => {
-                if let Some(sats) = event.zap_amount_sats {
-                    format!("⚡ {} zapped you {} sats", author, sats)
-                } else {
-                    format!("⚡ {} zapped you", author)
-                }
-            }
-            _ => format!("Notification from {}", author),
-        }
-    }
-
-    /// Format notification body based on event content.
-    fn format_body(&self, event: &ExtractedEvent) -> String {
-        // For DMs and encrypted messages, don't show content
-        if event.kind == 4 || event.kind == 1059 {
-            return "Tap to view".to_string();
-        }
-
-        // Truncate long content (UTF-8 safe)
-        let max_chars = 200;
-        if event.content.chars().count() > max_chars {
-            let truncated: String = event.content.chars().take(max_chars).collect();
-            format!("{}...", truncated)
-        } else if event.content.is_empty() {
-            // Reactions often have empty content or just an emoji
-            if event.kind == 7 {
-                "❤️".to_string()
-            } else {
-                String::new()
-            }
-        } else {
-            event.content.clone()
-        }
-    }
-
     /// Send a notification using UNUserNotificationCenter.
     ///
     /// # Arguments
@@ -515,12 +461,12 @@ impl Default for MacOSBackend {
 impl NotificationBackend for MacOSBackend {
     fn send_notification(
         &self,
+        title: &str,
+        body: &str,
         event: &ExtractedEvent,
         target_account: &str,
-        author_name: Option<&str>,
         picture_path: Option<&str>,
     ) {
-        // Skip if not in a valid bundle
         if !self.is_bundle_valid {
             debug!(
                 "Skipping notification (no bundle): kind={} id={}",
@@ -538,14 +484,8 @@ impl NotificationBackend for MacOSBackend {
             picture_path.map(|s| safe_prefix(s, 50)),
         );
 
-        let title = self.format_title(event, author_name);
-        let body = self.format_body(event);
-
-        // picture_path is a local file path (downloaded by the worker)
         let image_path = picture_path.map(std::path::Path::new);
-
-        // Use event ID as notification identifier for deduplication
-        self.send_native_notification(&title, &body, image_path, &event.id);
+        self.send_native_notification(title, body, image_path, &event.id);
     }
 
     fn on_relay_status_changed(&self, connected_count: i32) {

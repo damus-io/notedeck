@@ -47,66 +47,13 @@ impl Default for DesktopBackend {
     }
 }
 
-impl DesktopBackend {
-    /// Format notification title based on event kind.
-    fn format_title(&self, event: &ExtractedEvent, author_name: Option<&str>) -> String {
-        let fallback: String;
-        let author = match author_name {
-            Some(name) => name,
-            None => {
-                fallback = safe_prefix(&event.pubkey, 8);
-                &fallback
-            }
-        };
-
-        match event.kind {
-            1 => format!("{} mentioned you", author),
-            4 => format!("DM from {}", author),
-            6 => format!("{} reposted your note", author),
-            7 => format!("{} reacted to your note", author),
-            1059 => format!("Encrypted message from {}", author),
-            9735 => {
-                if let Some(sats) = event.zap_amount_sats {
-                    format!("⚡ {} zapped you {} sats", author, sats)
-                } else {
-                    format!("⚡ {} zapped you", author)
-                }
-            }
-            _ => format!("Notification from {}", author),
-        }
-    }
-
-    /// Format notification body based on event content.
-    fn format_body(&self, event: &ExtractedEvent) -> String {
-        // For DMs and encrypted messages, don't show content
-        if event.kind == 4 || event.kind == 1059 {
-            return "Tap to view".to_string();
-        }
-
-        // Truncate long content (UTF-8 safe)
-        let max_chars = 200;
-        if event.content.chars().count() > max_chars {
-            let truncated: String = event.content.chars().take(max_chars).collect();
-            format!("{}...", truncated)
-        } else if event.content.is_empty() {
-            // Reactions often have empty content or just an emoji
-            if event.kind == 7 {
-                "❤️".to_string()
-            } else {
-                String::new()
-            }
-        } else {
-            event.content.clone()
-        }
-    }
-}
-
 impl NotificationBackend for DesktopBackend {
     fn send_notification(
         &self,
+        title: &str,
+        body: &str,
         event: &ExtractedEvent,
         target_account: &str,
-        author_name: Option<&str>,
         _picture_url: Option<&str>,
     ) {
         info!(
@@ -116,23 +63,19 @@ impl NotificationBackend for DesktopBackend {
             safe_prefix(target_account, 8),
         );
 
-        let title = self.format_title(event, author_name);
-        let body = self.format_body(event);
-
         #[cfg(target_os = "linux")]
         {
             use notify_rust::{Notification, Urgency};
 
             let urgency = match event.kind {
                 4 | 1059 => Urgency::Critical, // DMs are high priority
-                9735 => Urgency::Normal,       // Zaps
                 _ => Urgency::Normal,
             };
 
             match Notification::new()
                 .appname(&self.app_name)
-                .summary(&title)
-                .body(&body)
+                .summary(title)
+                .body(body)
                 .urgency(urgency)
                 .show()
             {
@@ -143,7 +86,7 @@ impl NotificationBackend for DesktopBackend {
 
         #[cfg(target_os = "macos")]
         {
-            show_macos_notification(&title, &body, _picture_url);
+            show_macos_notification(title, body, _picture_url);
         }
 
         #[cfg(target_os = "android")]
@@ -155,7 +98,6 @@ impl NotificationBackend for DesktopBackend {
 
     fn on_relay_status_changed(&self, connected_count: i32) {
         debug!("Relay status: {} connected", connected_count);
-        // Desktop doesn't need to update a service notification like Android does
     }
 }
 

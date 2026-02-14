@@ -127,11 +127,12 @@ fn process_notification<B: NotificationBackend>(
     #[cfg(not(target_os = "macos"))]
     let picture_path: Option<String> = data.author_picture_url.clone();
 
-    // Display the notification
+    // Display the notification with pre-formatted title/body
     backend.send_notification(
+        &data.title,
+        &data.body,
         &data.event,
         &data.target_pubkey_hex,
-        data.author_name.as_deref(),
         picture_path.as_deref(),
     );
 }
