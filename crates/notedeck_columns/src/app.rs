@@ -188,23 +188,19 @@ fn try_process_event(
         RelayEvent::Message(msg) => {
             process_message(damus, app_ctx, &ev.relay, &msg);
 
-            // Forward notification-relevant events to desktop notification worker
+            // Forward notification-relevant events to the notification manager
             #[cfg(not(target_os = "android"))]
             if let RelayMessage::Event(_subid, relay_msg) = msg {
-                // Get monitored pubkeys from all accounts
-                let monitored_pubkeys: Vec<String> = app_ctx
-                    .accounts
-                    .cache
-                    .accounts()
-                    .map(|a| a.key.pubkey.hex())
-                    .collect();
+                if let Some(mgr) = app_ctx.notification_manager.as_ref() {
+                    let monitored_pubkeys: Vec<String> = app_ctx
+                        .accounts
+                        .cache
+                        .accounts()
+                        .map(|a| a.key.pubkey.hex())
+                        .collect();
 
-                notedeck::notifications::process_relay_message_for_notifications(
-                    relay_msg,
-                    app_ctx.ndb,
-                    app_ctx.notification_manager,
-                    &monitored_pubkeys,
-                );
+                    mgr.process_relay_message(relay_msg, app_ctx.ndb, &monitored_pubkeys);
+                }
             }
         }
         _ => {}

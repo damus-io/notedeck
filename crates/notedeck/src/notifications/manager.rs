@@ -5,7 +5,8 @@
 //! via `AppContext`.
 
 use super::{NotificationData, NotificationService, PlatformBackend};
-use tracing::{info, warn};
+use nostrdb::{Ndb, Transaction};
+use tracing::{debug, info, warn};
 
 // =============================================================================
 // macOS delegate wrapper (reduces unsafe surface area)
@@ -144,6 +145,66 @@ impl NotificationManager {
             .map(|s| s.is_running())
             .unwrap_or(false)
     }
+
+    /// Process a relay message and forward to the worker if relevant.
+    ///
+    /// Extracts the event, checks kind and p-tag mentions, resolves the
+    /// author profile via nostrdb, then sends to the worker channel.
+    #[cfg(not(target_os = "android"))]
+    #[profiling::function]
+    pub fn process_relay_message(
+        &self,
+        relay_message: &str,
+        ndb: &Ndb,
+        monitored_pubkeys: &[String],
+    ) {
+        if !self.is_running() {
+            return;
+        }
+
+        let Some(event) = super::extraction::extract_event(relay_message) else {
+            return;
+        };
+
+        if !super::types::is_notification_kind(event.kind) {
+            return;
+        }
+
+        let target_pubkey_hex = event
+            .p_tags
+            .iter()
+            .find(|p| monitored_pubkeys.contains(p))
+            .cloned();
+
+        let Some(target_pubkey_hex) = target_pubkey_hex else {
+            return;
+        };
+
+        // Don't notify for our own events
+        if monitored_pubkeys.contains(&event.pubkey) {
+            return;
+        }
+
+        debug!(
+            "Notification-relevant event: kind={} id={} target={}",
+            event.kind,
+            &event.id[..8.min(event.id.len())],
+            &target_pubkey_hex[..8.min(target_pubkey_hex.len())]
+        );
+
+        let (author_name, author_picture_url) = lookup_profile(ndb, &event.pubkey);
+
+        let notification_data = NotificationData {
+            event,
+            author_name,
+            author_picture_url,
+            target_pubkey_hex,
+        };
+
+        if let Err(e) = self.send(notification_data) {
+            debug!("Failed to send notification: {}", e);
+        }
+    }
 }
 
 impl Default for NotificationManager {
@@ -158,4 +219,37 @@ impl Drop for NotificationManager {
             self.stop();
         }
     }
+}
+
+/// Look up a profile's display name and picture URL from nostrdb.
+#[cfg(not(target_os = "android"))]
+fn lookup_profile(ndb: &Ndb, pubkey_hex: &str) -> (Option<String>, Option<String>) {
+    let Ok(pubkey_bytes) = hex::decode(pubkey_hex) else {
+        return (None, None);
+    };
+    if pubkey_bytes.len() != 32 {
+        return (None, None);
+    }
+
+    let Ok(txn) = Transaction::new(ndb) else {
+        return (None, None);
+    };
+
+    let pubkey_arr: [u8; 32] = pubkey_bytes.try_into().unwrap();
+    let Ok(profile) = ndb.get_profile_by_pubkey(&txn, &pubkey_arr) else {
+        return (None, None);
+    };
+
+    let record = profile.record();
+    let name = record
+        .profile()
+        .and_then(|p| p.display_name().or_else(|| p.name()))
+        .map(|s| s.to_string());
+
+    let picture = record
+        .profile()
+        .and_then(|p| p.picture())
+        .map(|s| s.to_string());
+
+    (name, picture)
 }

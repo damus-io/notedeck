@@ -3,10 +3,18 @@
 //! Downloads remote images and caches them locally for use with native
 //! notification APIs that require local file URLs.
 //!
+//! # Why not `MediaCache`?
+//!
+//! `MediaCache` (in `imgcache.rs`) re-encodes every image to WebP for use
+//! as egui textures.  macOS `UNNotificationAttachment` requires a local
+//! file whose extension matches the actual image format (jpg, png, etc.).
+//! A WebP-only cache cannot satisfy that, so notifications keep their own
+//! lightweight on-disk cache that preserves the original format.
+//!
 //! # Platform Requirements
 //!
-//! - **macOS**: `UNNotificationAttachment` only accepts local file URLs.
-//!   Remote images cannot be loaded directly (OS-level restriction).
+//! - **macOS**: `UNNotificationAttachment` only accepts local file URLs
+//!   with a correct extension.  Remote images cannot be loaded directly.
 //! - **Linux**: `notify-rust` supports images directly, but caching still
 //!   improves performance and offline reliability.
 //!
