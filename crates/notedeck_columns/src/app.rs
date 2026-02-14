@@ -199,7 +199,12 @@ fn try_process_event(
                         .map(|a| a.key.pubkey.hex())
                         .collect();
 
-                    mgr.process_relay_message(relay_msg, app_ctx.ndb, &monitored_pubkeys, app_ctx.i18n);
+                    mgr.process_relay_message(
+                        relay_msg,
+                        app_ctx.ndb,
+                        &monitored_pubkeys,
+                        app_ctx.i18n,
+                    );
                 }
             }
         }

@@ -1,24 +1,21 @@
 //! Desktop notification backend using notify-rust.
 //!
-//! Provides native desktop notifications on macOS and Linux.
+//! Provides native desktop notifications on Linux. On macOS, the
+//! `MacOSBackend` is used instead (via `PlatformBackend` type alias).
 
 use super::backend::NotificationBackend;
-use super::types::ExtractedEvent;
-use tracing::{debug, error, info};
+use super::types::{safe_prefix, ExtractedEvent};
+#[cfg(target_os = "linux")]
+use tracing::error;
+use tracing::{debug, info};
 
-/// Safely truncate a string to at most `n` characters, avoiding panics on
-/// short strings or multi-byte UTF-8 boundaries.
-fn safe_prefix(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
-}
-
-/// Desktop notification backend using notify-rust.
+/// Desktop notification backend using notify-rust (Linux).
 ///
-/// Displays native system notifications on macOS and Linux.
-/// On macOS, also handles App Nap prevention to keep relay connections alive.
+/// On macOS, `MacOSBackend` handles notifications via `UNUserNotificationCenter`.
+/// This backend also provides the cross-platform `disable_app_nap()` helper.
 pub struct DesktopBackend {
-    /// App name shown in notifications (used on Linux)
-    #[allow(dead_code)]
+    /// App name shown in notifications
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     app_name: String,
 }
 
@@ -50,8 +47,8 @@ impl Default for DesktopBackend {
 impl NotificationBackend for DesktopBackend {
     fn send_notification(
         &self,
-        title: &str,
-        body: &str,
+        #[cfg_attr(not(target_os = "linux"), allow(unused))] title: &str,
+        #[cfg_attr(not(target_os = "linux"), allow(unused))] body: &str,
         event: &ExtractedEvent,
         target_account: &str,
         _picture_url: Option<&str>,
@@ -83,55 +80,10 @@ impl NotificationBackend for DesktopBackend {
                 Err(e) => error!("Failed to show desktop notification: {}", e),
             }
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            show_macos_notification(title, body, _picture_url);
-        }
-
-        #[cfg(target_os = "android")]
-        {
-            // Should not reach here - Android uses JNI backend
-            debug!("Desktop backend called on Android - ignoring");
-        }
     }
 
     fn on_relay_status_changed(&self, connected_count: i32) {
         debug!("Relay status: {} connected", connected_count);
-    }
-}
-
-/// Show a native macOS notification using osascript.
-///
-/// We use osascript instead of notify-rust because notify-rust's macOS
-/// implementation (mac-notification-sys) sets up action handlers that cause
-/// a "Where is use_default?" dialog when clicked outside of a proper .app bundle.
-/// osascript works reliably in all scenarios.
-#[cfg(target_os = "macos")]
-fn show_macos_notification(title: &str, body: &str, _picture_url: Option<&str>) {
-    use std::process::Command;
-
-    // Escape special characters for AppleScript string
-    let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
-    let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
-
-    let script = format!(
-        r#"display notification "{}" with title "{}""#,
-        escaped_body, escaped_title
-    );
-
-    match Command::new("osascript").args(["-e", &script]).output() {
-        Ok(output) => {
-            if output.status.success() {
-                debug!("macOS notification displayed");
-            } else {
-                error!(
-                    "osascript failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-        }
-        Err(e) => error!("Failed to show macOS notification: {}", e),
     }
 }
 

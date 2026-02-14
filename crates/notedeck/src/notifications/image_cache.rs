@@ -268,7 +268,7 @@ impl NotificationImageCache {
 
         // Write to cache
         let cache_path = self.get_cache_path(url);
-        if let Err(e) = std::fs::write(&cache_path, &response.bytes) {
+        if let Err(e) = tokio::fs::write(&cache_path, &response.bytes).await {
             error!("Failed to write cached notification image: {}", e);
             return None;
         }

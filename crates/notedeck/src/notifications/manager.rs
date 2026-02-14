@@ -75,10 +75,9 @@ impl NotificationManager {
     /// **This should be called on the main thread** for the permission dialog to work.
     pub fn new() -> Self {
         #[cfg(target_os = "macos")]
-        debug_assert!(
-            super::macos::is_main_thread(),
-            "NotificationManager::new() should be called on the main thread on macOS"
-        );
+        if !super::macos::is_main_thread() {
+            warn!("NotificationManager::new() should be called on the main thread on macOS");
+        }
 
         #[cfg(target_os = "macos")]
         let macos_delegate = MacOSDelegate::new();
@@ -247,19 +246,60 @@ fn format_title(
     };
 
     match event.kind {
-        1 => tr!(i18n, "{name} mentioned you", "notification title for mention", name = author),
-        4 => tr!(i18n, "DM from {name}", "notification title for direct message", name = author),
-        6 => tr!(i18n, "{name} reposted your note", "notification title for repost", name = author),
-        7 => tr!(i18n, "{name} reacted to your note", "notification title for reaction", name = author),
-        1059 => tr!(i18n, "Encrypted message from {name}", "notification title for encrypted DM", name = author),
+        1 => tr!(
+            i18n,
+            "{name} mentioned you",
+            "notification title for mention",
+            name = author
+        ),
+        4 => tr!(
+            i18n,
+            "DM from {name}",
+            "notification title for direct message",
+            name = author
+        ),
+        6 => tr!(
+            i18n,
+            "{name} reposted your note",
+            "notification title for repost",
+            name = author
+        ),
+        7 => tr!(
+            i18n,
+            "{name} reacted to your note",
+            "notification title for reaction",
+            name = author
+        ),
+        1059 => tr!(
+            i18n,
+            "Encrypted message from {name}",
+            "notification title for encrypted DM",
+            name = author
+        ),
         9735 => {
             if let Some(sats) = event.zap_amount_sats {
-                tr!(i18n, "{name} zapped you {sats} sats", "notification title for zap with amount", name = author, sats = sats)
+                tr!(
+                    i18n,
+                    "{name} zapped you {sats} sats",
+                    "notification title for zap with amount",
+                    name = author,
+                    sats = sats
+                )
             } else {
-                tr!(i18n, "{name} zapped you", "notification title for zap", name = author)
+                tr!(
+                    i18n,
+                    "{name} zapped you",
+                    "notification title for zap",
+                    name = author
+                )
             }
         }
-        _ => tr!(i18n, "Notification from {name}", "notification title fallback", name = author),
+        _ => tr!(
+            i18n,
+            "Notification from {name}",
+            "notification title fallback",
+            name = author
+        ),
     }
 }
 
@@ -267,7 +307,11 @@ fn format_title(
 #[cfg(not(target_os = "android"))]
 fn format_body(event: &ExtractedEvent, i18n: &mut Localization) -> String {
     if event.kind == 4 || event.kind == 1059 {
-        return tr!(i18n, "Tap to view", "notification body for encrypted content");
+        return tr!(
+            i18n,
+            "Tap to view",
+            "notification body for encrypted content"
+        );
     }
 
     let max_chars = 200;

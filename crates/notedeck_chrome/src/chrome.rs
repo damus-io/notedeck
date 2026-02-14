@@ -207,6 +207,8 @@ impl Chrome {
             return;
         }
 
+        // SAFETY: AccountCache guarantees a fallback account always exists,
+        // so selected_account_pubkey() will never panic.
         let pubkey_hex = context.accounts.selected_account_pubkey().hex();
         #[cfg(target_os = "android")]
         let relay_urls = context.accounts.get_selected_account_relay_urls();

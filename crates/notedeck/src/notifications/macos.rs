@@ -42,19 +42,13 @@
 //! need to interact with the delegate after installation.
 
 use super::backend::NotificationBackend;
-use super::types::ExtractedEvent;
+use super::types::{safe_prefix, ExtractedEvent};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Sel};
 use objc2::{class, msg_send, sel};
 use std::path::Path;
 use std::sync::OnceLock;
 use tracing::{debug, error, info, warn};
-
-/// Safely truncate a string to at most `n` characters, avoiding panics on
-/// short strings or multi-byte UTF-8 boundaries.
-fn safe_prefix(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
-}
 
 /// Check if the current thread is the main thread.
 ///

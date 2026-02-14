@@ -148,3 +148,9 @@ pub const NOTIFICATION_KINDS: &[i32] = &[
 pub fn is_notification_kind(kind: i32) -> bool {
     NOTIFICATION_KINDS.contains(&kind)
 }
+
+/// Safely truncate a string to at most `n` characters, avoiding panics on
+/// short strings or multi-byte UTF-8 boundaries.
+pub(super) fn safe_prefix(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
