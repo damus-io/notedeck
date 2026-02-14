@@ -1,4 +1,5 @@
 use crate::media::network::HyperHttpResponse;
+use crate::PixelDimensions;
 use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
 use image::imageops::FilterType;
 use image::FlatSamples;
@@ -134,7 +135,7 @@ pub fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> Color
         ImageType::Content(size_hint) => {
             let image = match size_hint {
                 None => resize_image_if_too_big(image, MAX_IMG_LENGTH, FILTER_TYPE),
-                Some((w, h)) => image.resize(w, h, FILTER_TYPE),
+                Some(pixels) => image.resize(pixels.x, pixels.y, FILTER_TYPE),
             };
 
             let image_buffer = image.into_rgba8();
@@ -180,7 +181,7 @@ pub fn parse_img_response(
     let content_type = response.content_type.unwrap_or_default();
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
-        ImageType::Content(Some((w, h))) => SizeHint::Size(w, h),
+        ImageType::Content(Some(pixels)) => SizeHint::Size(pixels.x, pixels.y),
         ImageType::Content(None) => SizeHint::default(),
     };
 
@@ -220,5 +221,5 @@ pub enum ImageType {
     /// Profile Image (size)
     Profile(u32),
     /// Content Image with optional size hint
-    Content(Option<(u32, u32)>),
+    Content(Option<PixelDimensions>),
 }

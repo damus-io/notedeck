@@ -1,7 +1,10 @@
 use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
-use notedeck::{Accounts, ContactState, DataPath, Localization, ProfileContext};
+use notedeck::{
+    builder_from_note, send_mute_event, send_note_builder, Accounts, ContactState, DataPath,
+    Localization, ProfileContext,
+};
 use tracing::info;
 
 use crate::{column::Column, nav::RouterAction, route::Route, storage, Damus};
@@ -112,6 +115,34 @@ impl ProfileAction {
 
                         None
                     }
+                    ProfileContextSelection::MuteUser => {
+                        let kp = accounts.get_selected_account().key.to_full()?;
+                        let muted = accounts.mute();
+                        let txn = Transaction::new(ndb).expect("txn");
+                        if muted.is_pk_muted(profile_context.profile.bytes()) {
+                            notedeck::send_unmute_event(
+                                ndb,
+                                &txn,
+                                pool,
+                                kp,
+                                &muted,
+                                &profile_context.profile,
+                            );
+                        } else {
+                            send_mute_event(ndb, &txn, pool, kp, &muted, &profile_context.profile);
+                        }
+                        None
+                    }
+                    ProfileContextSelection::ReportUser => {
+                        let target = notedeck::ReportTarget {
+                            pubkey: profile_context.profile,
+                            note_id: None,
+                        };
+                        Some(RouterAction::route_to_sheet(
+                            Route::Report(target),
+                            egui_nav::Split::AbsoluteFromBottom(340.0),
+                        ))
+                    }
                     _ => {
                         profile_context
                             .selection
@@ -140,36 +171,6 @@ impl ProfileAction {
     ) {
         send_kind_3_event(ndb, pool, accounts, FollowAction::Unfollow(target_key));
     }
-}
-
-pub fn builder_from_note<F>(note: Note<'_>, skip_tag: Option<F>) -> NoteBuilder<'_>
-where
-    F: Fn(&nostrdb::Tag<'_>) -> bool,
-{
-    let mut builder = NoteBuilder::new();
-
-    builder = builder.content(note.content());
-    builder = builder.options(NoteBuildOptions::default());
-    builder = builder.kind(note.kind());
-    builder = builder.pubkey(note.pubkey());
-
-    for tag in note.tags() {
-        if let Some(skip) = &skip_tag {
-            if skip(&tag) {
-                continue;
-            }
-        }
-
-        builder = builder.start_tag();
-        for tag_item in tag {
-            builder = match tag_item.variant() {
-                nostrdb::NdbStrVariant::Id(i) => builder.tag_id(i),
-                nostrdb::NdbStrVariant::Str(s) => builder.tag_str(s),
-            };
-        }
-    }
-
-    builder
 }
 
 enum FollowAction<'a> {
@@ -238,27 +239,6 @@ fn send_kind_3_event(ndb: &Ndb, pool: &mut RelayPool, accounts: &Accounts, actio
     };
 
     send_note_builder(builder, ndb, pool, kp);
-}
-
-fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, kp: FilledKeypair) {
-    let note = builder
-        .sign(&kp.secret_key.secret_bytes())
-        .build()
-        .expect("build note");
-
-    let Ok(event) = &enostr::ClientMessage::event(&note) else {
-        tracing::error!("send_note_builder: failed to build json");
-        return;
-    };
-
-    let Ok(json) = event.to_json() else {
-        tracing::error!("send_note_builder: failed to build json");
-        return;
-    };
-
-    let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
-    info!("sending {}", &json);
-    pool.send(event);
 }
 
 pub fn send_new_contact_list(

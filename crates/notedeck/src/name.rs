@@ -4,6 +4,7 @@ pub struct NostrName<'a> {
     pub username: Option<&'a str>,
     pub display_name: Option<&'a str>,
     pub nip05: Option<&'a str>,
+    pub nip05_valid: bool,
 }
 
 impl<'a> NostrName<'a> {
@@ -34,6 +35,7 @@ impl<'a> NostrName<'a> {
             username: None,
             display_name: None,
             nip05: None,
+            nip05_valid: false,
         }
     }
 }
@@ -72,5 +74,6 @@ pub fn get_display_name<'a>(record: Option<&ProfileRecord<'a>>) -> NostrName<'a>
         username,
         display_name,
         nip05,
+        nip05_valid: false,
     }
 }

@@ -641,8 +641,25 @@ impl<'a, 'd> NoteView<'a, 'd> {
             };
 
             let resp = ui.add(NoteContextButton::new(note_key).place_at(context_pos));
-            if let Some(action) = NoteContextButton::menu(ui, self.note_context.i18n, resp.clone())
-            {
+            let can_sign = self
+                .note_context
+                .accounts
+                .get_selected_account()
+                .key
+                .secret_key
+                .is_some();
+            let is_muted = self
+                .note_context
+                .accounts
+                .mute()
+                .is_pk_muted(self.note.pubkey());
+            if let Some(action) = NoteContextButton::menu(
+                ui,
+                self.note_context.i18n,
+                resp.clone(),
+                can_sign,
+                is_muted,
+            ) {
                 note_action = Some(NoteAction::Context(ContextSelection { note_key, action }));
             }
         }
@@ -1046,11 +1063,7 @@ fn like_button(
             app_images::like_image()
         };
 
-        if ui.visuals().dark_mode {
-            img.tint(ui.visuals().text_color())
-        } else {
-            img
-        }
+        img.tint(ui.visuals().text_color())
     };
 
     let (rect, size, resp) =

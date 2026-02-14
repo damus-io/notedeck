@@ -1,5 +1,6 @@
 use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
+use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::unknowns::unknown_id_send;
 use crate::wallet::GlobalWallet;
@@ -79,6 +80,7 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     media_jobs: MediaJobs,
+    nip05_cache: Nip05Cache,
     i18n: Localization,
 
     #[cfg(target_os = "android")]
@@ -130,6 +132,8 @@ impl eframe::App for Notedeck {
         self.media_jobs.deliver_all_completed(|completed| {
             crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
         });
+
+        self.nip05_cache.poll();
 
         // handle account updates
         self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
@@ -326,6 +330,7 @@ impl Notedeck {
             zaps,
             job_pool,
             media_jobs: media_job_cache,
+            nip05_cache: Nip05Cache::new(),
             i18n,
             #[cfg(target_os = "android")]
             android_app: None,
@@ -392,6 +397,7 @@ impl Notedeck {
             frame_history: &mut self.frame_history,
             job_pool: &mut self.job_pool,
             media_jobs: &mut self.media_jobs,
+            nip05_cache: &mut self.nip05_cache,
             i18n: &mut self.i18n,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
@@ -423,9 +429,28 @@ impl Notedeck {
     }
 }
 
+/// Installs the default TLS crypto provider for rustls.
+///
+/// This function selects the crypto provider based on the target platform:
+/// - **Windows**: Uses `ring` because `aws-lc-rs` requires cmake and NASM,
+///   which adds significant friction for Windows developers.
+/// - **Other platforms**: Uses `aws-lc-rs` for optimal performance.
+///
+/// Must be called once at application startup before any TLS operations.
 pub fn install_crypto() {
-    let provider = rustls::crypto::aws_lc_rs::default_provider();
-    let _ = provider.install_default();
+    // On Windows, use ring (fewer build requirements than aws-lc-rs which needs cmake/NASM)
+    #[cfg(windows)]
+    {
+        let provider = rustls::crypto::ring::default_provider();
+        let _ = provider.install_default();
+    }
+
+    // On non-Windows platforms, use aws-lc-rs for optimal performance
+    #[cfg(not(windows))]
+    {
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        let _ = provider.install_default();
+    }
 }
 
 #[profiling::function]

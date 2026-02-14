@@ -1,6 +1,8 @@
+use egui_nav::ReturnType;
 use notedeck::AppContext;
 
 use crate::{
+    route::cleanup_popped_route,
     timeline::{kind::ListKind, TimelineKind},
     Damus, Route,
 };
@@ -55,8 +57,14 @@ impl ToolbarAction {
             return;
         };
 
-        match cols.select_by_route(route) {
-            crate::column::SelectionResult::AlreadySelected(_) => {} // great! no need to go to top yet
+        let selection_result = cols.select_by_route(route);
+
+        match selection_result {
+            crate::column::SelectionResult::AlreadySelected(col_index) => {
+                // We're already on this toolbar view, so pop all routes to go to top
+                pop_to_root(app, ctx, col_index);
+                app.scroll_to_top();
+            }
             crate::column::SelectionResult::NewSelection(_) => {
                 // we already selected this, so scroll to top
                 app.scroll_to_top();
@@ -65,6 +73,39 @@ impl ToolbarAction {
                 // oh no, something went wrong
                 // TODO(jb55): handle tab selection failure
             }
+        }
+    }
+}
+
+/// Pop all routes in the column until we're back at depth 1 (the base route).
+/// This is used when clicking a toolbar button for a view we're already on
+/// to immediately return to the top level regardless of navigation depth.
+fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
+    let Some(cols) = app.decks_cache.active_columns_mut(ctx.i18n, ctx.accounts) else {
+        return;
+    };
+
+    let column = cols.column_mut(col_index);
+
+    // Close any open sheets first
+    if column.sheet_router.route().is_some() {
+        column.sheet_router.go_back();
+    }
+
+    // Pop all routes except the base route
+    while column.router().routes().len() > 1 {
+        if let Some(popped) = column.router_mut().pop() {
+            // Clean up resources for the popped route
+            cleanup_popped_route(
+                &popped,
+                &mut app.timeline_cache,
+                &mut app.threads,
+                &mut app.view_state,
+                ctx.ndb,
+                ctx.pool,
+                ReturnType::Click,
+                col_index,
+            );
         }
     }
 }

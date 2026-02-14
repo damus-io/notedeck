@@ -69,7 +69,26 @@ fn execute_note_action(
 
     match action {
         NoteAction::Scroll(ref scroll_info) => {
-            tracing::trace!("timeline scroll {scroll_info:?}")
+            tracing::trace!("timeline scroll {scroll_info:?}");
+
+            // Update toolbar visibility based on scroll velocity
+            let toolbar_visible_id = egui::Id::new("toolbar_visible");
+            let velocity_threshold = 50.0; // pixels per second
+
+            let viewable_content_height = scroll_info.viewable_content_rect.height();
+            let scrollable_distance = scroll_info.full_content_size.y - viewable_content_height;
+
+            // velocity.y > 0 means scrolling up (content moving down) - show toolbar
+            // velocity.y < 0 means scrolling down (content moving up) - hide toolbar
+            if scroll_info.velocity.y > velocity_threshold
+                || scrollable_distance < viewable_content_height
+            {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+            } else if scroll_info.velocity.y < -velocity_threshold {
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(toolbar_visible_id, false));
+            }
         }
 
         NoteAction::Reply(note_id) => {
@@ -190,7 +209,20 @@ fn execute_note_action(
         NoteAction::Context(context) => match ndb.get_note_by_key(txn, context.note_key) {
             Err(err) => tracing::error!("{err}"),
             Ok(note) => {
-                context.action.process_selection(ui, &note, pool, txn);
+                if matches!(context.action, notedeck::NoteContextSelection::ReportUser) {
+                    let target = notedeck::ReportTarget {
+                        pubkey: Pubkey::new(*note.pubkey()),
+                        note_id: Some(NoteId::new(*note.id())),
+                    };
+                    router_action = Some(RouterAction::route_to_sheet(
+                        Route::Report(target),
+                        egui_nav::Split::AbsoluteFromBottom(300.0),
+                    ));
+                } else {
+                    context
+                        .action
+                        .process_selection(ui, &note, ndb, pool, txn, accounts);
+                }
             }
         },
         NoteAction::Media(media_action) => {

@@ -525,10 +525,13 @@ impl<'a, 'd> PostView<'a, 'd> {
     fn show_media(&mut self, ui: &mut egui::Ui) {
         let mut to_remove = Vec::new();
         for (i, media) in self.draft.uploaded_media.iter().enumerate() {
-            let (width, height) = if let Some(dims) = media.dimensions {
-                (dims.0, dims.1)
+            let pixel_dims = if let Some(dims) = media.dimensions {
+                PixelDimensions {
+                    x: dims.0,
+                    y: dims.1,
+                }
             } else {
-                (300, 300)
+                PixelDimensions { x: 300, y: 300 }
             };
 
             let Some(cache_type) =
@@ -552,7 +555,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                     ui.ctx(),
                     url,
                     cache_type,
-                    notedeck::ImageType::Content(Some((width, height))),
+                    notedeck::ImageType::Content(Some(pixel_dims)),
                     self.animation_mode,
                 );
 
@@ -561,8 +564,7 @@ impl<'a, 'd> PostView<'a, 'd> {
                 &mut self.draft.upload_errors,
                 &mut to_remove,
                 i,
-                width,
-                height,
+                pixel_dims,
                 cur_state,
             )
         }
@@ -647,8 +649,7 @@ fn render_post_view_media(
     upload_errors: &mut Vec<String>,
     to_remove: &mut Vec<usize>,
     cur_index: usize,
-    width: u32,
-    height: u32,
+    pixel_dims: PixelDimensions,
     render_state: LatestImageTex,
 ) {
     match render_state {
@@ -661,13 +662,10 @@ fn render_post_view_media(
         }
         LatestImageTex::Loaded(tex) => {
             let max_size = 300;
-            let size = if width > max_size || height > max_size {
+            let size = if pixel_dims.x > max_size || pixel_dims.y > max_size {
                 PixelDimensions { x: 300, y: 300 }
             } else {
-                PixelDimensions {
-                    x: width,
-                    y: height,
-                }
+                pixel_dims
             }
             .to_points(ui.pixels_per_point())
             .to_vec();
@@ -880,6 +878,7 @@ mod preview {
                 pool: app.pool,
                 jobs: app.media_jobs.sender(),
                 unknown_ids: app.unknown_ids,
+                nip05_cache: app.nip05_cache,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
             };

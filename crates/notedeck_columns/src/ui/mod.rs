@@ -12,6 +12,7 @@ pub mod post;
 pub mod preview;
 pub mod profile;
 pub mod relay;
+pub mod report;
 pub mod repost;
 pub mod search;
 pub mod settings;
@@ -20,6 +21,7 @@ pub mod support;
 pub mod thread;
 pub mod timeline;
 pub mod toolbar;
+pub mod tos;
 pub mod wallet;
 pub mod widgets;
 

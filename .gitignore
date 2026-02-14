@@ -1,5 +1,6 @@
 .DS_Store
 .buildcmd
+.claude/
 TODO.bak
 android-config.json
 logcat.txt
@@ -22,4 +23,7 @@ scripts/macos_build_secrets.sh
 .zed
 .lsp
 .idea
-local.propertiesFCM/
+local.properties
+keystore.properties
+.beads
+*.keystore

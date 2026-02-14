@@ -7,7 +7,7 @@ use crate::{
     options::AppOptions,
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
-    route::{ColumnsRouter, Route, SingletonRouter},
+    route::{cleanup_popped_route, ColumnsRouter, Route, SingletonRouter},
     subscriptions::Subscriptions,
     timeline::{
         kind::ListKind,
@@ -41,9 +41,7 @@ use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
     NoteAction, NoteCache, NoteContext, RelayAction,
 };
-use notedeck_ui::{
-    contacts_list::ContactsCollection, ContactsListAction, ContactsListView, NoteOptions,
-};
+use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
 use tracing::error;
 
 /// The result of processing a nav response
@@ -277,32 +275,40 @@ fn process_nav_resp(
     if let Some(action) = response.action {
         match action {
             NavAction::Returned(return_type) => {
+                // Reset toolbar visibility when returning from a route
+                let toolbar_visible_id = egui::Id::new("toolbar_visible");
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+
                 let r = app
                     .columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
                     .router_mut()
                     .pop();
 
-                if let Some(Route::Timeline(kind)) = &r {
-                    if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.pool) {
-                        error!("popping timeline had an error: {err} for {:?}", kind);
-                    }
-                };
-
-                if let Some(Route::Thread(selection)) = &r {
-                    app.threads
-                        .close(ctx.ndb, ctx.pool, selection, return_type, col);
-                }
-
-                // we should remove profile state once we've returned
-                if let Some(Route::EditProfile(pk)) = &r {
-                    app.view_state.pubkey_to_profile_state.remove(pk);
+                // Clean up resources for the popped route
+                if let Some(route) = &r {
+                    cleanup_popped_route(
+                        route,
+                        &mut app.timeline_cache,
+                        &mut app.threads,
+                        &mut app.view_state,
+                        ctx.ndb,
+                        ctx.pool,
+                        return_type,
+                        col,
+                    );
                 }
 
                 process_result = Some(ProcessNavResult::SwitchOccurred);
             }
 
             NavAction::Navigated => {
+                // Reset toolbar visibility when navigating to a new route
+                let toolbar_visible_id = egui::Id::new("toolbar_visible");
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
                 handle_navigating_timeline(
                     ctx.ndb,
@@ -638,6 +644,7 @@ fn render_nav_body(
         pool: ctx.pool,
         jobs: ctx.media_jobs.sender(),
         unknown_ids: ctx.unknown_ids,
+        nip05_cache: ctx.nip05_cache,
         clipboard: ctx.clipboard,
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
@@ -1004,11 +1011,12 @@ fn render_nav_body(
             };
 
             ContactsListView::new(
-                ContactsCollection::Vec(&contacts),
+                &contacts,
                 note_context.jobs,
                 note_context.ndb,
                 note_context.img_cache,
                 &txn,
+                note_context.i18n,
             )
             .ui(ui)
             .map_output(|action| match action {
@@ -1018,6 +1026,23 @@ fn render_nav_body(
             })
         }
         Route::FollowedBy(_pubkey) => DragResponse::none(),
+        Route::TosAcceptance => {
+            let resp = ui::tos::TosAcceptanceView::new(
+                ctx.i18n,
+                &mut app.view_state.tos_age_confirmed,
+                &mut app.view_state.tos_confirmed,
+            )
+            .show(ui);
+
+            if let Some(ui::tos::TosAcceptanceResponse::Accept) = resp {
+                ctx.settings.accept_tos();
+                app.view_state.tos_age_confirmed = false;
+                app.view_state.tos_confirmed = false;
+                return DragResponse::output(Some(RenderNavAction::Back));
+            }
+
+            DragResponse::none()
+        }
         Route::Wallet(wallet_type) => {
             let state = match wallet_type {
                 notedeck::WalletType::Auto => 's: {
@@ -1097,6 +1122,22 @@ fn render_nav_body(
         Route::RepostDecision(note_id) => {
             DragResponse::output(RepostDecisionView::new(note_id).show(ui))
                 .map_output(RenderNavAction::RepostAction)
+        }
+        Route::Report(target) => {
+            let Some(kp) = ctx.accounts.selected_filled() else {
+                return DragResponse::output(Some(RenderNavAction::Back));
+            };
+
+            let resp =
+                ui::report::ReportView::new(&mut app.view_state.selected_report_type).show(ui);
+
+            if let Some(report_type) = resp {
+                notedeck::send_report_event(ctx.ndb, ctx.pool, kp, target, report_type);
+                app.view_state.selected_report_type = None;
+                return DragResponse::output(Some(RenderNavAction::Back));
+            }
+
+            DragResponse::none()
         }
     }
 }

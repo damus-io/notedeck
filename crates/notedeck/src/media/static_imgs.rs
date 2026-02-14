@@ -15,7 +15,7 @@ use crate::{
 };
 use crate::{
     media::{
-        images::{buffer_to_color_image, parse_img_response},
+        images::{buffer_to_color_image, parse_img_response, process_image},
         load_texture_checked,
         network::http_req,
     },
@@ -75,7 +75,7 @@ impl StaticImgTexCache {
                 MediaJobKind::StaticImg,
                 RunType::Output(JobRun::Sync(Box::new(move || {
                     JobOutput::Complete(CompleteResponse::new(MediaJobResult::StaticImg(
-                        fetch_static_img_from_disk(ctx.clone(), &url, &path),
+                        fetch_static_img_from_disk(ctx.clone(), &url, imgtype, &path),
                     )))
                 }))),
             )) {
@@ -102,9 +102,11 @@ impl StaticImgTexCache {
     }
 }
 
+/// Loads a cached static image, resizing only when the stored image exceeds the requested [`ImageType`].
 pub fn fetch_static_img_from_disk(
     ctx: egui::Context,
     url: &str,
+    img_type: ImageType,
     path: &Path,
 ) -> Result<egui::TextureHandle, crate::Error> {
     tracing::trace!("Starting job static img from disk for {url}");
@@ -119,11 +121,14 @@ pub fn fetch_static_img_from_disk(
         }
     };
 
-    let img = buffer_to_color_image(
-        image_buffer.as_flat_samples_u8(),
-        image_buffer.width(),
-        image_buffer.height(),
-    );
+    let width = image_buffer.width();
+    let height = image_buffer.height();
+
+    let img = if needs_resize(img_type, width, height) {
+        process_image(img_type, image_buffer)
+    } else {
+        buffer_to_color_image(image_buffer.as_flat_samples_u8(), width, height)
+    };
 
     Ok(load_texture_checked(&ctx, url, img, Default::default()))
 }
@@ -169,4 +174,12 @@ async fn fetch_static_img_from_net(
             ),
         )
     })))
+}
+
+fn needs_resize(img_type: ImageType, width: u32, height: u32) -> bool {
+    match img_type {
+        ImageType::Profile(size) => width > size || height > size,
+        ImageType::Content(Some(dimensions)) => width > dimensions.x || height > dimensions.y,
+        ImageType::Content(None) => false,
+    }
 }

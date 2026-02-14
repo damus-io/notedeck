@@ -17,13 +17,20 @@ mod username;
 pub mod widgets;
 
 pub use anim::{rolling_number, AnimationHelper, PulseAlpha};
-pub use contacts_list::{ContactsListAction, ContactsListView};
+pub use contacts_list::{
+    profile_row, profile_row_widget, search_profiles, ContactsListAction, ContactsListView,
+    ProfileRowOptions, ProfileSearchResult,
+};
 pub use debug::debug_slider;
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};
 pub use mention::Mention;
 pub use note::{NoteContents, NoteOptions, NoteView};
 pub use profile::{ProfilePic, ProfilePreview};
 pub use username::Username;
+pub use widgets::{
+    search_input_box, search_input_frame, side_panel_active_bg, side_panel_icon_tint,
+    SEARCH_INPUT_HEIGHT,
+};
 
 use egui::{Label, Margin, Pos2, RichText};
 

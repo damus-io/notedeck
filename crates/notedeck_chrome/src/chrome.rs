@@ -30,6 +30,9 @@ use notedeck_dave::{Dave, DaveAvatar};
 #[cfg(feature = "messages")]
 use notedeck_messages::MessagesApp;
 
+#[cfg(feature = "dashboard")]
+use notedeck_dashboard::Dashboard;
+
 #[cfg(feature = "clndash")]
 use notedeck_ui::expanding_button;
 
@@ -152,17 +155,26 @@ impl Chrome {
         stop_debug_mode(notedeck.options());
 
         let context = &mut notedeck.app_context();
-        let dave = Dave::new(cc.wgpu_render_state.as_ref());
-        let columns = Damus::new(context, app_args);
+        let dave = Dave::new(
+            cc.wgpu_render_state.as_ref(),
+            context.ndb.clone(),
+            cc.egui_ctx.clone(),
+        );
         let mut chrome = Chrome::default();
 
-        notedeck.check_args(columns.unrecognized_args())?;
+        if !app_args.iter().any(|arg| arg == "--no-columns-app") {
+            let columns = Damus::new(context, app_args);
+            notedeck.check_args(columns.unrecognized_args())?;
+            chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+        }
 
-        chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
         #[cfg(feature = "messages")]
         chrome.add_app(NotedeckApp::Messages(Box::new(MessagesApp::new())));
+
+        #[cfg(feature = "dashboard")]
+        chrome.add_app(NotedeckApp::Dashboard(Box::new(Dashboard::default())));
 
         #[cfg(feature = "notebook")]
         chrome.add_app(NotedeckApp::Notebook(Box::default()));
@@ -404,7 +416,7 @@ fn milestone_name<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {
 
 #[cfg(feature = "clndash")]
 fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
-    expanding_button(
+    notedeck_ui::expanding_button(
         "clndash-button",
         24.0,
         app_images::cln_image(),
@@ -416,7 +428,7 @@ fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
 
 #[cfg(feature = "notebook")]
 fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
-    expanding_button(
+    notedeck_ui::expanding_button(
         "notebook-button",
         40.0,
         app_images::algo_image(),
@@ -787,6 +799,11 @@ fn topdown_sidebar(
                 tr!(loc, "Messaging", "Button to go to the messaging app")
             }
 
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(_) => {
+                tr!(loc, "Dashboard", "Button to go to the dashboard app")
+            }
+
             #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(_) => {
                 tr!(loc, "Notebook", "Button to go to the Notebook app")
@@ -819,6 +836,11 @@ fn topdown_sidebar(
                                             vec2(30.0, 30.0),
                                         ),
                                     );
+                                }
+
+                                #[cfg(feature = "dashboard")]
+                                NotedeckApp::Dashboard(_columns_app) => {
+                                    ui.add(app_images::algo_image());
                                 }
 
                                 #[cfg(feature = "messages")]

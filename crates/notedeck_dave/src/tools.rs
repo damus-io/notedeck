@@ -14,6 +14,10 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
+    pub fn new(id: String, typ: ToolCalls) -> Self {
+        Self { id, typ }
+    }
+
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -86,7 +90,7 @@ impl PartialToolCall {
 /// The query response from nostrdb for a given context
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
-    notes: Vec<u64>,
+    pub notes: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,7 +165,16 @@ impl ToolCalls {
         }
     }
 
-    fn arguments(&self) -> String {
+    /// Returns the tool name as defined in the tool registry (for prompt-based tool calls)
+    pub fn tool_name(&self) -> &'static str {
+        match self {
+            Self::Query(_) => "query",
+            Self::Invalid(_) => "invalid",
+            Self::PresentNotes(_) => "present_notes",
+        }
+    }
+
+    pub fn arguments(&self) -> String {
         match self {
             Self::Query(search) => serde_json::to_string(search).unwrap(),
             Self::Invalid(partial) => serde_json::to_string(partial).unwrap(),
@@ -230,6 +243,14 @@ pub struct Tool {
 impl Tool {
     pub fn name(&self) -> &'static str {
         self.name
+    }
+
+    pub fn description(&self) -> &'static str {
+        self.description
+    }
+
+    pub fn parse_call(&self) -> fn(&str) -> Result<ToolCalls, ToolCallError> {
+        self.parse_call
     }
 
     pub fn to_function_object(&self) -> FunctionObject {

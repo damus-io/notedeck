@@ -20,9 +20,9 @@ use egui_extras::{Size, StripBuilder};
 use enostr::{ClientMessage, Pubkey, RelayEvent, RelayMessage};
 use nostrdb::Transaction;
 use notedeck::{
-    tr, try_process_events_core, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse,
-    DataPath, DataPathType, FilterState, Images, Localization, MediaJobSender, NotedeckOptions,
-    SettingsHandler,
+    tr, try_process_events_core, ui::is_compiled_as_mobile, ui::is_narrow, Accounts, AppAction,
+    AppContext, AppResponse, DataPath, DataPathType, FilterState, Images, Localization,
+    MediaJobSender, NotedeckOptions, SettingsHandler,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -254,6 +254,13 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
                 app_ctx.unknown_ids,
             ) {
                 warn!("update_damus init: {err}");
+            }
+
+            if is_compiled_as_mobile() && !app_ctx.settings.tos_accepted() {
+                damus
+                    .columns_mut(app_ctx.i18n, app_ctx.accounts)
+                    .get_selected_router()
+                    .route_to(Route::TosAcceptance);
             }
         }
 
@@ -632,6 +639,42 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 }
 */
 
+/// Logic that handles toolbar visibility
+fn toolbar_visibility_height(skb_rect: Option<egui::Rect>, ui: &mut egui::Ui) -> f32 {
+    // Auto-hide toolbar when scrolling down
+    let toolbar_visible_id = egui::Id::new("toolbar_visible");
+
+    // Detect scroll direction using egui input state
+    let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+    let velocity_threshold = 1.0;
+
+    // Update toolbar visibility based on scroll direction
+    if scroll_delta > velocity_threshold {
+        // Scrolling up (content moving down) - show toolbar
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+    } else if scroll_delta < -velocity_threshold {
+        // Scrolling down (content moving up) - hide toolbar
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(toolbar_visible_id, false));
+    }
+
+    let toolbar_visible = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(toolbar_visible_id))
+        .unwrap_or(true); // Default to visible
+
+    let toolbar_anim = ui
+        .ctx()
+        .animate_bool_responsive(toolbar_visible_id.with("anim"), toolbar_visible);
+
+    if skb_rect.is_none() {
+        Damus::toolbar_height() * toolbar_anim
+    } else {
+        0.0
+    }
+}
+
 #[profiling::function]
 fn render_damus_mobile(
     app: &mut Damus,
@@ -648,12 +691,8 @@ fn render_damus_mobile(
         ui.ctx().screen_rect(),
         notedeck::SoftKeyboardContext::platform(ui.ctx()),
     );
-    let toolbar_height = if skb_rect.is_none() {
-        Damus::toolbar_height()
-    } else {
-        0.0
-    };
 
+    let toolbar_height = toolbar_visibility_height(skb_rect, ui);
     StripBuilder::new(ui)
         .size(Size::remainder()) // top cell
         .size(Size::exact(toolbar_height)) // bottom cell
@@ -800,6 +839,8 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::RepostDecision(_) => false,
         Route::Following(_) => false,
         Route::FollowedBy(_) => false,
+        Route::TosAcceptance => false,
+        Route::Report(_) => false,
     }
 }
 
@@ -851,6 +892,10 @@ fn timelines_view(
         .horizontal(|mut strip| {
             strip.cell(|ui| {
                 let rect = ui.available_rect_before_wrap();
+                // Clone the route to avoid holding a borrow on app.decks_cache
+                let current_route = get_active_columns(ctx.accounts, &app.decks_cache)
+                    .selected()
+                    .map(|col| col.router().top().clone());
                 let side_panel = DesktopSidePanel::new(
                     ctx.accounts.get_selected_account(),
                     &app.decks_cache,
@@ -858,6 +903,8 @@ fn timelines_view(
                     ctx.ndb,
                     ctx.img_cache,
                     ctx.media_jobs.sender(),
+                    current_route.as_ref(),
+                    ctx.pool,
                 )
                 .show(ui);
 

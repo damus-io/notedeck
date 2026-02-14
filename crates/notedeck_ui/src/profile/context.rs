@@ -28,6 +28,8 @@ impl ProfileContextWidget {
         ui: &mut egui::Ui,
         i18n: &mut Localization,
         button_response: egui::Response,
+        can_sign: bool,
+        is_muted: bool,
     ) -> Option<ProfileContextSelection> {
         let mut context_selection: Option<ProfileContextSelection> = None;
 
@@ -64,6 +66,30 @@ impl ProfileContextWidget {
             {
                 context_selection = Some(ProfileContextSelection::CopyLink);
                 ui.close_menu();
+            }
+
+            if can_sign {
+                let label = if is_muted {
+                    tr!(i18n, "Unmute User", "Unmute this user's content")
+                } else {
+                    tr!(i18n, "Mute User", "Mute this user's content")
+                };
+                if ui.button(label).clicked() {
+                    context_selection = Some(ProfileContextSelection::MuteUser);
+                    ui.close_menu();
+                }
+
+                if ui
+                    .button(tr!(
+                        i18n,
+                        "Report User",
+                        "Report this user for objectionable content"
+                    ))
+                    .clicked()
+                {
+                    context_selection = Some(ProfileContextSelection::ReportUser);
+                    ui.close_menu();
+                }
             }
         });
 

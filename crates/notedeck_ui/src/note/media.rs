@@ -4,11 +4,11 @@ use egui::{
     TextureHandle, Vec2,
 };
 use notedeck::media::latest::ObfuscatedTexture;
-use notedeck::MediaJobSender;
 use notedeck::{
     fonts::get_font_size, show_one_error_message, tr, Images, Localization, MediaAction,
     MediaCacheType, NotedeckTextStyle, RenderableMedia,
 };
+use notedeck::{MediaJobSender, PointDimensions};
 
 use crate::NoteOptions;
 use notedeck::media::images::ImageType;
@@ -96,7 +96,9 @@ pub fn image_carousel(
                                 media_infos,
                                 i,
                                 img_cache,
-                                ImageType::Content(Some((size.x as u32, size.y as u32))),
+                                ImageType::Content(Some(
+                                    PointDimensions::from_vec(size).to_pixels(ui),
+                                )),
                             );
                         }
                     })
@@ -142,7 +144,7 @@ pub fn render_media(
             ui,
             url,
             *media_type,
-            ImageType::Content(None),
+            ImageType::Content(Some(PointDimensions::from_vec(size).to_pixels(ui))),
             animation_mode,
             blur_type,
             size,
