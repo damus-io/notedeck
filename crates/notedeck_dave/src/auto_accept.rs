@@ -113,7 +113,13 @@ impl Default for AutoAcceptRules {
                     ],
                 },
                 AutoAcceptRule::ReadOnlyTool {
-                    tools: vec!["Glob".into(), "Grep".into(), "Read".into()],
+                    tools: vec![
+                        "Glob".into(),
+                        "Grep".into(),
+                        "Read".into(),
+                        "WebSearch".into(),
+                        "WebFetch".into(),
+                    ],
                 },
             ],
         }
