@@ -1,6 +1,7 @@
 //! Markdown rendering for assistant messages using egui.
 
-use egui::{Color32, RichText, Ui};
+use egui::text::LayoutJob;
+use egui::{Color32, FontFamily, FontId, RichText, TextFormat, Ui};
 use md_stream::{
     parse_inline, CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Partial, PartialKind,
 };
@@ -9,6 +10,7 @@ use md_stream::{
 pub struct MdTheme {
     pub heading_sizes: [f32; 6],
     pub code_bg: Color32,
+    pub inline_code_bg: Color32,
     pub code_text: Color32,
     pub link_color: Color32,
     pub blockquote_border: Color32,
@@ -17,10 +19,18 @@ pub struct MdTheme {
 
 impl MdTheme {
     pub fn from_visuals(visuals: &egui::Visuals) -> Self {
+        let bg = visuals.panel_fill;
+        // Inline code bg: slightly lighter than panel background
+        let inline_code_bg = Color32::from_rgb(
+            bg.r().saturating_add(15),
+            bg.g().saturating_add(15),
+            bg.b().saturating_add(15),
+        );
         Self {
             heading_sizes: [24.0, 20.0, 18.0, 16.0, 14.0, 12.0],
             code_bg: visuals.extreme_bg_color,
-            code_text: visuals.text_color(),
+            inline_code_bg,
+            code_text: Color32::from_rgb(0xD4, 0xA5, 0x74), // Muted amber/sand
             link_color: Color32::from_rgb(100, 149, 237), // Cornflower blue
             blockquote_border: visuals.widgets.noninteractive.bg_stroke.color,
             blockquote_bg: visuals.faint_bg_color,
@@ -102,45 +112,93 @@ fn render_element(element: &MdElement, theme: &MdTheme, ui: &mut Ui) {
     }
 }
 
+/// Flush a LayoutJob as a wrapped label if it has any content.
+fn flush_job(job: &mut LayoutJob, ui: &mut Ui) {
+    if !job.text.is_empty() {
+        job.wrap.max_width = ui.available_width();
+        ui.add(egui::Label::new(std::mem::take(job)).wrap());
+    }
+}
+
 fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, ui: &mut Ui) {
+    let font_size = ui.style().text_styles[&egui::TextStyle::Body].size;
+    let text_color = ui.visuals().text_color();
+
+    let text_fmt = TextFormat {
+        font_id: FontId::new(font_size, FontFamily::Proportional),
+        color: text_color,
+        ..Default::default()
+    };
+
+    let code_fmt = TextFormat {
+        font_id: FontId::new(font_size, FontFamily::Monospace),
+        color: theme.code_text,
+        background: theme.inline_code_bg,
+        ..Default::default()
+    };
+
+    let italic_fmt = TextFormat {
+        font_id: FontId::new(font_size, FontFamily::Proportional),
+        color: text_color,
+        italics: true,
+        ..Default::default()
+    };
+
+    let strikethrough_fmt = TextFormat {
+        font_id: FontId::new(font_size, FontFamily::Proportional),
+        color: text_color,
+        strikethrough: egui::Stroke::new(1.0, text_color),
+        ..Default::default()
+    };
+
+    let mut job = LayoutJob::default();
+
     for inline in inlines {
         match inline {
             InlineElement::Text(text) => {
-                ui.label(text);
-            }
-
-            InlineElement::Styled { style, content } => {
-                let rt = match style {
-                    InlineStyle::Bold => RichText::new(content).strong(),
-                    InlineStyle::Italic => RichText::new(content).italics(),
-                    InlineStyle::BoldItalic => RichText::new(content).strong().italics(),
-                    InlineStyle::Strikethrough => RichText::new(content).strikethrough(),
-                };
-                ui.label(rt);
+                job.append(text, 0.0, text_fmt.clone());
             }
 
             InlineElement::Code(code) => {
-                ui.label(
-                    RichText::new(code)
-                        .monospace()
-                        .background_color(theme.code_bg),
-                );
+                job.append(code, 0.0, code_fmt.clone());
             }
 
+            InlineElement::Styled { style, content } => match style {
+                InlineStyle::Italic => {
+                    job.append(content, 0.0, italic_fmt.clone());
+                }
+                InlineStyle::Strikethrough => {
+                    job.append(content, 0.0, strikethrough_fmt.clone());
+                }
+                InlineStyle::Bold | InlineStyle::BoldItalic => {
+                    // TextFormat has no bold/weight — flush and render as separate label
+                    flush_job(&mut job, ui);
+                    let rt = if matches!(style, InlineStyle::BoldItalic) {
+                        RichText::new(content).strong().italics()
+                    } else {
+                        RichText::new(content).strong()
+                    };
+                    ui.label(rt);
+                }
+            },
+
             InlineElement::Link { text, url } => {
+                flush_job(&mut job, ui);
                 ui.hyperlink_to(RichText::new(text).color(theme.link_color), url);
             }
 
             InlineElement::Image { alt, url } => {
-                // Render as link for now; full image support can be added later
+                flush_job(&mut job, ui);
                 ui.hyperlink_to(format!("[Image: {}]", alt), url);
             }
 
             InlineElement::LineBreak => {
-                ui.end_row();
+                job.append("\n", 0.0, text_fmt.clone());
             }
         }
     }
+
+    flush_job(&mut job, ui);
 }
 
 fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui: &mut Ui) {
