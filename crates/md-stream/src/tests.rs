@@ -432,6 +432,71 @@ fn test_paragraph_finalize_emits_content() {
 }
 
 #[test]
+fn test_inline_code_with_angle_brackets() {
+    // Test parse_inline directly
+    let input = "Generic Rust: `impl Iterator<Item = &str>` returns a `Result<(), anyhow::Error>`";
+    let result = crate::parse_inline(input);
+    eprintln!("parse_inline result: {:#?}", result);
+
+    let code_elements: Vec<_> = result
+        .iter()
+        .filter(|e| matches!(e, InlineElement::Code(_)))
+        .collect();
+    assert_eq!(code_elements.len(), 2, "Expected 2 code spans, got: {:#?}", result);
+}
+
+#[test]
+fn test_streaming_inline_code_with_angle_brackets() {
+    // Test streaming parser with token-by-token delivery
+    let mut parser = StreamParser::new();
+    let input = "5. Generic Rust: `impl Iterator<Item = &str>` returns a `Result<(), anyhow::Error>`\n\n";
+
+    // Simulate streaming token by token
+    for ch in input.chars() {
+        parser.push(&ch.to_string());
+    }
+
+    eprintln!("Parsed elements: {:#?}", parser.parsed());
+    eprintln!("Partial: {:#?}", parser.partial());
+
+    // Should have one paragraph with code spans
+    assert!(!parser.parsed().is_empty(), "Should have parsed elements");
+
+    if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let code_elements: Vec<_> = inlines
+            .iter()
+            .filter(|e| matches!(e, InlineElement::Code(_)))
+            .collect();
+        assert_eq!(code_elements.len(), 2, "Expected 2 code spans, got: {:#?}", inlines);
+    } else {
+        panic!("Expected paragraph, got: {:?}", parser.parsed()[0]);
+    }
+}
+
+#[test]
+fn test_streaming_multiple_code_spans_with_angle_brackets() {
+    // From the screenshot: multiple code spans with nested angle brackets
+    let mut parser = StreamParser::new();
+    let input = "use `HashMap<K, V>` or `Vec<String>` or `Option<Box<dyn Error>>` in your types\n\n";
+
+    for ch in input.chars() {
+        parser.push(&ch.to_string());
+    }
+
+    assert!(!parser.parsed().is_empty(), "Should have parsed elements");
+
+    if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let code_elements: Vec<_> = inlines
+            .iter()
+            .filter(|e| matches!(e, InlineElement::Code(_)))
+            .collect();
+        assert_eq!(code_elements.len(), 3, "Expected 3 code spans, got: {:#?}", inlines);
+    } else {
+        panic!("Expected paragraph, got: {:?}", parser.parsed()[0]);
+    }
+}
+
+#[test]
 fn test_heading_partial_kind_distinct_from_paragraph() {
     let mut parser = StreamParser::new();
     parser.push("# Heading without newline");

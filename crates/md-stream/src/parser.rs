@@ -318,6 +318,26 @@ impl StreamParser {
 
     /// Process inline content.
     fn process_inline(&mut self, text: &str) -> bool {
+        // Check for paragraph break split across tokens:
+        // partial content ends with \n and new text starts with \n
+        if text.starts_with('\n') {
+            if let Some(ref partial) = self.partial {
+                if partial.content.ends_with('\n') {
+                    // Double newline split across token boundary — emit paragraph
+                    let para_text = std::mem::take(&mut self.partial.as_mut().unwrap().content);
+                    self.partial = None;
+
+                    if !para_text.trim().is_empty() {
+                        let inline_elements = parse_inline(para_text.trim());
+                        self.parsed.push(MdElement::Paragraph(inline_elements));
+                    }
+                    self.at_line_start = true;
+                    self.advance(1); // consume the \n
+                    return true;
+                }
+            }
+        }
+
         if let Some(nl_pos) = text.find("\n\n") {
             // Double newline = paragraph break
             // Combine accumulated partial content with text before \n\n
