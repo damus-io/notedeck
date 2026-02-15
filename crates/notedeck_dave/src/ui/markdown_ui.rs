@@ -10,7 +10,6 @@ use md_stream::{
 pub struct MdTheme {
     pub heading_sizes: [f32; 6],
     pub code_bg: Color32,
-    pub inline_code_bg: Color32,
     pub code_text: Color32,
     pub link_color: Color32,
     pub blockquote_border: Color32,
@@ -20,16 +19,15 @@ pub struct MdTheme {
 impl MdTheme {
     pub fn from_visuals(visuals: &egui::Visuals) -> Self {
         let bg = visuals.panel_fill;
-        // Inline code bg: slightly lighter than panel background
-        let inline_code_bg = Color32::from_rgb(
+        // Code bg: slightly lighter than panel background
+        let code_bg = Color32::from_rgb(
             bg.r().saturating_add(15),
             bg.g().saturating_add(15),
             bg.b().saturating_add(15),
         );
         Self {
             heading_sizes: [24.0, 20.0, 18.0, 16.0, 14.0, 12.0],
-            code_bg: visuals.extreme_bg_color,
-            inline_code_bg,
+            code_bg,
             code_text: Color32::from_rgb(0xD4, 0xA5, 0x74), // Muted amber/sand
             link_color: Color32::from_rgb(100, 149, 237), // Cornflower blue
             blockquote_border: visuals.widgets.noninteractive.bg_stroke.color,
@@ -133,7 +131,7 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, ui: &mut Ui) {
     let code_fmt = TextFormat {
         font_id: FontId::new(font_size, FontFamily::Monospace),
         color: theme.code_text,
-        background: theme.inline_code_bg,
+        background: theme.code_bg,
         ..Default::default()
     };
 
