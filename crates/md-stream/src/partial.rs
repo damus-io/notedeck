@@ -7,32 +7,18 @@ pub struct Partial {
     /// What kind of element we're building
     pub kind: PartialKind,
 
-    /// Index into the token buffer where this element starts.
-    /// Used to resume parsing from the right spot.
-    pub start_idx: usize,
-
-    /// Byte offset within the starting token (for mid-token starts)
-    pub byte_offset: usize,
+    /// Byte offset into the buffer where this element starts
+    pub start_pos: usize,
 
     /// Accumulated content so far (for elements that need it)
     pub content: String,
 }
 
 impl Partial {
-    pub fn new(kind: PartialKind, start_idx: usize) -> Self {
+    pub fn new(kind: PartialKind, start_pos: usize) -> Self {
         Self {
             kind,
-            start_idx,
-            byte_offset: 0,
-            content: String::new(),
-        }
-    }
-
-    pub fn with_offset(kind: PartialKind, start_idx: usize, byte_offset: usize) -> Self {
-        Self {
-            kind,
-            start_idx,
-            byte_offset,
+            start_pos,
             content: String::new(),
         }
     }

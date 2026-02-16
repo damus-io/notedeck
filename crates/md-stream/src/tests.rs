@@ -497,6 +497,54 @@ fn test_streaming_multiple_code_spans_with_angle_brackets() {
 }
 
 #[test]
+fn test_code_block_after_paragraph_single_newline() {
+    // Reproduces: paragraph text ending with ":\n" then "```\n" code block
+    // This is the common pattern: "All events share these common tags:\n```\n..."
+    let mut parser = StreamParser::new();
+    let input = "All events share these common tags:\n```\n[\"d\", \"<session-id>\"]\n```\n";
+    parser.push(input);
+
+    eprintln!("Before finalize - parsed: {:#?}", parser.parsed());
+    eprintln!("Before finalize - partial: {:#?}", parser.partial());
+
+    parser.finalize();
+
+    eprintln!("After finalize - parsed: {:#?}", parser.parsed());
+
+    // Should have: paragraph + code block
+    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_code_block = parser.parsed().iter().any(|e| matches!(e, MdElement::CodeBlock(_)));
+
+    assert!(has_paragraph, "Missing paragraph element");
+    assert!(has_code_block, "Missing code block element");
+}
+
+#[test]
+fn test_code_block_after_paragraph_single_newline_streaming() {
+    // Same test but streaming char-by-char (how LLM tokens arrive)
+    let mut parser = StreamParser::new();
+    let input = "All events share these common tags:\n```\n[\"d\", \"<session-id>\"]\n```\n";
+
+    for ch in input.chars() {
+        parser.push(&ch.to_string());
+    }
+
+    eprintln!("Before finalize - parsed: {:#?}", parser.parsed());
+    eprintln!("Before finalize - partial: {:#?}", parser.partial());
+    eprintln!("Before finalize - in_code_block: {}", parser.in_code_block());
+
+    parser.finalize();
+
+    eprintln!("After finalize - parsed: {:#?}", parser.parsed());
+
+    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_code_block = parser.parsed().iter().any(|e| matches!(e, MdElement::CodeBlock(_)));
+
+    assert!(has_paragraph, "Missing paragraph element");
+    assert!(has_code_block, "Missing code block element");
+}
+
+#[test]
 fn test_heading_partial_kind_distinct_from_paragraph() {
     let mut parser = StreamParser::new();
     parser.push("# Heading without newline");
