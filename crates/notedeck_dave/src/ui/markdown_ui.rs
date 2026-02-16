@@ -226,20 +226,22 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: 
 }
 
 fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui: &mut Ui) {
+    use egui_extras::syntax_highlighting::{self, CodeTheme};
+
     egui::Frame::default()
         .fill(theme.code_bg)
         .inner_margin(8.0)
         .corner_radius(4.0)
         .show(ui, |ui| {
-            // Language label if present
             if let Some(lang) = language {
                 ui.label(RichText::new(lang).small().weak());
             }
 
-            // Code content
-            ui.add(
-                egui::Label::new(RichText::new(content).monospace().color(theme.code_text)).wrap(),
-            );
+            let lang = language.unwrap_or("text");
+            let code_theme = CodeTheme::from_style(ui.style());
+            let layout_job =
+                syntax_highlighting::highlight(ui.ctx(), ui.style(), &code_theme, content, lang);
+            ui.add(egui::Label::new(layout_job).wrap());
         });
     ui.add_space(8.0);
 }
@@ -319,20 +321,28 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
 
     match &partial.kind {
         PartialKind::CodeFence { language, .. } => {
-            // Show incomplete code block
+            use egui_extras::syntax_highlighting::{self, CodeTheme};
+
             egui::Frame::default()
                 .fill(theme.code_bg)
                 .inner_margin(8.0)
                 .corner_radius(4.0)
                 .show(ui, |ui| {
-                    if let Some(lang) = language {
-                        ui.label(RichText::new(lang.resolve(buffer)).small().weak());
+                    let lang_str = language.map(|s| s.resolve(buffer));
+                    if let Some(lang) = lang_str {
+                        ui.label(RichText::new(lang).small().weak());
                     }
-                    ui.add(
-                        egui::Label::new(RichText::new(content).monospace().color(theme.code_text))
-                            .wrap(),
+
+                    let lang = lang_str.unwrap_or("text");
+                    let code_theme = CodeTheme::from_style(ui.style());
+                    let layout_job = syntax_highlighting::highlight(
+                        ui.ctx(),
+                        ui.style(),
+                        &code_theme,
+                        content,
+                        lang,
                     );
-                    // Blinking cursor indicator would require animation; just show underscore
+                    ui.add(egui::Label::new(layout_job).wrap());
                     ui.label(RichText::new("_").weak());
                 });
         }
