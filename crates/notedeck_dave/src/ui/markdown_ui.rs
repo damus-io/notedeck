@@ -271,7 +271,11 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
 
     let cell_padding = egui::Margin::symmetric(8, 4);
 
-    let mut builder = TableBuilder::new(ui).vscroll(false);
+    // Use first header's byte offset as id_salt so multiple tables don't clash
+    let salt = headers.first().map_or(0, |h| h.start);
+    let mut builder = TableBuilder::new(ui)
+        .id_salt(salt)
+        .vscroll(false);
     for _ in 0..num_cols {
         builder = builder.column(Column::auto().resizable(true));
     }
