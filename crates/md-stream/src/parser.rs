@@ -1,6 +1,6 @@
 //! Core streaming parser implementation.
 
-use crate::element::{CodeBlock, MdElement};
+use crate::element::{CodeBlock, MdElement, Span};
 use crate::inline::parse_inline;
 use crate::partial::{Partial, PartialKind};
 
@@ -23,6 +23,17 @@ pub struct StreamParser {
 
     /// Are we at the start of a line? (for block-level detection)
     at_line_start: bool,
+}
+
+/// Lightweight dispatch tag for partial state, avoiding Clone on PartialKind
+/// which contains Vecs (table headers/rows).
+#[derive(Clone, Copy)]
+enum PartialDispatch {
+    CodeFence { fence_char: char, fence_len: usize },
+    Heading { level: u8 },
+    Table,
+    Paragraph,
+    Other,
 }
 
 impl StreamParser {
@@ -51,6 +62,16 @@ impl StreamParser {
         &self.parsed
     }
 
+    /// Get the parser's buffer for resolving spans.
+    pub fn buffer(&self) -> &str {
+        &self.buffer
+    }
+
+    /// Consume the parser and return the completed elements and buffer.
+    pub fn into_parts(self) -> (Vec<MdElement>, String) {
+        (self.parsed, self.buffer)
+    }
+
     /// Consume the parser and return the completed elements.
     pub fn into_parsed(self) -> Vec<MdElement> {
         self.parsed
@@ -64,7 +85,7 @@ impl StreamParser {
     /// Get the speculative content that would render from partial state.
     /// Returns the raw accumulated text that isn't yet a complete element.
     pub fn partial_content(&self) -> Option<&str> {
-        self.partial.as_ref().map(|p| p.content.as_str())
+        self.partial.as_ref().map(|p| p.content(&self.buffer))
     }
 
     /// Check if we're currently inside a code block.
@@ -80,50 +101,78 @@ impl StreamParser {
         &self.buffer[self.process_pos..]
     }
 
+    /// Compute a trimmed span (strip leading/trailing whitespace).
+    fn trim_span(&self, span: Span) -> Span {
+        let s = &self.buffer[span.start..span.end];
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return Span::new(span.start, span.start);
+        }
+        let ltrim = s.len() - s.trim_start().len();
+        Span::new(span.start + ltrim, span.start + ltrim + trimmed.len())
+    }
+
+    /// Extract the dispatch info from the current partial state.
+    /// Returns only small Copy data to avoid cloning Vecs in PartialKind::Table.
+    fn partial_dispatch(&self) -> Option<PartialDispatch> {
+        self.partial.as_ref().map(|p| match &p.kind {
+            PartialKind::CodeFence {
+                fence_char,
+                fence_len,
+                ..
+            } => PartialDispatch::CodeFence {
+                fence_char: *fence_char,
+                fence_len: *fence_len,
+            },
+            PartialKind::Heading { level } => PartialDispatch::Heading { level: *level },
+            PartialKind::Table { .. } => PartialDispatch::Table,
+            PartialKind::Paragraph => PartialDispatch::Paragraph,
+            _ => PartialDispatch::Other,
+        })
+    }
+
     /// Process newly added content.
     fn process_new_content(&mut self) {
         while self.process_pos < self.buffer.len() {
-            let remaining = self.remaining().to_string();
-
             // Handle based on current partial state
-            let partial_kind = self.partial.as_ref().map(|p| p.kind.clone());
-            if let Some(kind) = partial_kind {
-                match kind {
-                    PartialKind::CodeFence {
+            if let Some(dispatch) = self.partial_dispatch() {
+                match dispatch {
+                    PartialDispatch::CodeFence {
                         fence_char,
                         fence_len,
-                        ..
                     } => {
-                        if self.process_code_fence(fence_char, fence_len, &remaining) {
+                        if self.process_code_fence(fence_char, fence_len) {
                             continue;
                         }
                         return; // Need more input
                     }
-                    PartialKind::Heading { level } => {
-                        if self.process_heading(level, &remaining) {
+                    PartialDispatch::Heading { level } => {
+                        if self.process_heading(level) {
                             continue;
                         }
                         return;
                     }
-                    PartialKind::Table { .. } => {
-                        if self.process_table(&remaining) {
+                    PartialDispatch::Table => {
+                        if self.process_table() {
                             continue;
                         }
                         return;
                     }
-                    PartialKind::Paragraph => {
+                    PartialDispatch::Paragraph => {
                         // For paragraphs, check if we're at a line start that could be a block element
                         if self.at_line_start {
                             // Take the paragraph partial first — try_block_start may
                             // replace self.partial with the new block element
                             let para_partial = self.partial.take();
 
-                            if let Some(consumed) = self.try_block_start(&remaining) {
+                            if let Some(consumed) = self.try_block_start() {
                                 // Emit the saved paragraph before the new block
                                 if let Some(partial) = para_partial {
-                                    let trimmed = partial.content.trim();
+                                    let span = partial.content_span();
+                                    let trimmed = self.trim_span(span);
                                     if !trimmed.is_empty() {
-                                        let inline_elements = parse_inline(trimmed);
+                                        let content = trimmed.resolve(&self.buffer);
+                                        let inline_elements = parse_inline(content, trimmed.start);
                                         self.parsed.push(MdElement::Paragraph(inline_elements));
                                     }
                                 }
@@ -136,19 +185,19 @@ impl StreamParser {
                             // If remaining could be the start of a block element but we
                             // don't have enough chars yet, wait for more input rather than
                             // consuming into the paragraph (e.g. "`" could become "```")
-                            if self.could_be_block_start(&remaining) {
+                            if self.could_be_block_start() {
                                 return;
                             }
                         }
                         // Continue with inline processing
-                        if self.process_inline(&remaining) {
+                        if self.process_inline() {
                             continue;
                         }
                         return;
                     }
-                    _ => {
+                    PartialDispatch::Other => {
                         // For other inline elements, process character by character
-                        if self.process_inline(&remaining) {
+                        if self.process_inline() {
                             continue;
                         }
                         return;
@@ -158,28 +207,28 @@ impl StreamParser {
 
             // No partial state - detect new elements
             if self.at_line_start {
-                if let Some(consumed) = self.try_block_start(&remaining) {
+                if let Some(consumed) = self.try_block_start() {
                     self.advance(consumed);
                     continue;
                 }
-                if self.could_be_block_start(&remaining) {
+                if self.could_be_block_start() {
                     return;
                 }
             }
 
             // Fall back to inline processing
-            if self.process_inline(&remaining) {
+            if self.process_inline() {
                 continue;
             }
             return;
         }
     }
 
-    /// Check if text could be the start of a block element but we don't
+    /// Check if remaining text could be the start of a block element but we don't
     /// have enough characters to confirm yet. Used to defer consuming
     /// ambiguous prefixes like "`" or "``" that might become "```".
-    fn could_be_block_start(&self, text: &str) -> bool {
-        let trimmed = text.trim_start();
+    fn could_be_block_start(&self) -> bool {
+        let trimmed = self.remaining().trim_start();
         if trimmed.is_empty() {
             return false;
         }
@@ -211,7 +260,8 @@ impl StreamParser {
 
     /// Try to detect a block-level element at line start.
     /// Returns bytes consumed if successful.
-    fn try_block_start(&mut self, text: &str) -> Option<usize> {
+    fn try_block_start(&mut self) -> Option<usize> {
+        let text = self.remaining();
         let trimmed = text.trim_start();
         let leading_space = text.len() - trimmed.len();
 
@@ -221,12 +271,17 @@ impl StreamParser {
             if level <= 6 {
                 if let Some(rest) = trimmed.get(level..) {
                     if rest.starts_with(' ') || rest.is_empty() {
-                        self.partial = Some(Partial::new(
+                        let consumed = leading_space + level + rest.starts_with(' ') as usize;
+                        let content_start = self.process_pos + consumed;
+                        let mut partial = Partial::new(
                             PartialKind::Heading { level: level as u8 },
                             self.process_pos,
-                        ));
+                        );
+                        partial.content_start = content_start;
+                        partial.content_end = content_start;
+                        self.partial = Some(partial);
                         self.at_line_start = false;
-                        return Some(leading_space + level + rest.starts_with(' ') as usize);
+                        return Some(consumed);
                     }
                 }
             }
@@ -241,37 +296,49 @@ impl StreamParser {
                 let after_fence = &trimmed[fence_len..];
                 let (language, consumed_lang) = if let Some(nl_pos) = after_fence.find('\n') {
                     let lang = after_fence[..nl_pos].trim();
-                    (
-                        if lang.is_empty() {
-                            None
-                        } else {
-                            Some(lang.to_string())
-                        },
-                        nl_pos + 1,
-                    )
+                    let lang_span = if lang.is_empty() {
+                        None
+                    } else {
+                        // Compute absolute span for the language
+                        let lang_start_in_after = after_fence[..nl_pos].as_ptr() as usize
+                            - after_fence.as_ptr() as usize
+                            + (after_fence[..nl_pos].len()
+                                - after_fence[..nl_pos].trim_start().len());
+                        let abs_start =
+                            self.process_pos + leading_space + fence_len + lang_start_in_after;
+                        Some(Span::new(abs_start, abs_start + lang.len()))
+                    };
+                    (lang_span, nl_pos + 1)
                 } else {
                     // No newline yet - language might be incomplete
                     let lang = after_fence.trim();
-                    (
-                        if lang.is_empty() {
-                            None
-                        } else {
-                            Some(lang.to_string())
-                        },
-                        after_fence.len(),
-                    )
+                    let lang_span = if lang.is_empty() {
+                        None
+                    } else {
+                        let lang_start_in_after =
+                            after_fence.len() - after_fence.trim_start().len();
+                        let abs_start =
+                            self.process_pos + leading_space + fence_len + lang_start_in_after;
+                        Some(Span::new(abs_start, abs_start + lang.len()))
+                    };
+                    (lang_span, after_fence.len())
                 };
 
-                self.partial = Some(Partial::new(
+                let consumed = leading_space + fence_len + consumed_lang;
+                let content_start = self.process_pos + consumed;
+                let mut partial = Partial::new(
                     PartialKind::CodeFence {
                         fence_char,
                         fence_len,
                         language,
                     },
                     self.process_pos,
-                ));
+                );
+                partial.content_start = content_start;
+                partial.content_end = content_start;
+                self.partial = Some(partial);
                 self.at_line_start = false;
-                return Some(leading_space + fence_len + consumed_lang);
+                return Some(consumed);
             }
         }
 
@@ -296,16 +363,20 @@ impl StreamParser {
         if trimmed.starts_with('|') {
             if let Some(nl_pos) = trimmed.find('\n') {
                 let line = &trimmed[..nl_pos];
-                let cells = parse_table_row(line);
+                let line_abs_offset = self.process_pos + leading_space;
+                let cells = parse_table_row(line, line_abs_offset);
                 if !cells.is_empty() {
-                    self.partial = Some(Partial::new(
+                    let mut partial = Partial::new(
                         PartialKind::Table {
                             headers: cells,
                             rows: Vec::new(),
                             seen_separator: false,
                         },
                         self.process_pos,
-                    ));
+                    );
+                    partial.content_start = self.process_pos;
+                    partial.content_end = self.process_pos + leading_space + nl_pos;
+                    self.partial = Some(partial);
                     self.at_line_start = true;
                     return Some(leading_space + nl_pos + 1);
                 }
@@ -317,40 +388,56 @@ impl StreamParser {
 
     /// Process content inside a code fence.
     /// Returns true if we should continue processing, false if we need more input.
-    fn process_code_fence(&mut self, fence_char: char, fence_len: usize, text: &str) -> bool {
-        let partial = self.partial.as_mut().unwrap();
+    fn process_code_fence(&mut self, fence_char: char, fence_len: usize) -> bool {
+        let text_start = self.process_pos;
+        let text_end = self.buffer.len();
+        let mut pos = text_start;
 
-        for line in text.split_inclusive('\n') {
+        while pos < text_end {
+            // Find next line boundary
+            let line_end = self.buffer[pos..text_end]
+                .find('\n')
+                .map(|i| pos + i + 1)
+                .unwrap_or(text_end);
+            let line = &self.buffer[pos..line_end];
+
+            let partial = self.partial.as_mut().unwrap();
+
             // Check if we're at a line start within the code fence
             let at_content_line_start =
-                partial.content.is_empty() || partial.content.ends_with('\n');
+                partial.content_is_empty() || self.buffer[..partial.content_end].ends_with('\n');
 
             if at_content_line_start {
                 let trimmed = line.trim_start();
 
                 // Check for closing fence
                 if trimmed.len() >= fence_len
-                    && trimmed.as_bytes().iter().take(fence_len).all(|&b| b == fence_char as u8)
+                    && trimmed
+                        .as_bytes()
+                        .iter()
+                        .take(fence_len)
+                        .all(|&b| b == fence_char as u8)
                 {
                     let after_fence = &trimmed[fence_len..];
                     if after_fence.trim().is_empty() || after_fence.starts_with('\n') {
                         // Found closing fence! Complete the code block
                         let language =
                             if let PartialKind::CodeFence { language, .. } = &partial.kind {
-                                language.clone()
+                                *language
                             } else {
                                 None
                             };
 
-                        let content = std::mem::take(&mut partial.content);
-                        self.parsed
-                            .push(MdElement::CodeBlock(CodeBlock { language, content }));
+                        let content_span = partial.content_span();
+                        self.parsed.push(MdElement::CodeBlock(CodeBlock {
+                            language,
+                            content: content_span,
+                        }));
                         self.partial = None;
                         self.at_line_start = true;
 
                         // Advance past the closing fence line
-                        let consumed = text.find(line).unwrap() + line.len();
-                        self.advance(consumed);
+                        self.advance(line_end - text_start);
                         return true;
                     }
                 }
@@ -367,46 +454,63 @@ impl StreamParser {
                 }
             }
 
-            // Not a closing fence - add to content
-            partial.content.push_str(line);
+            // Not a closing fence - extend content span to include this line
+            partial.content_end += line.len();
+            pos = line_end;
         }
 
         // Consumed all available text, need more
-        self.advance(text.len());
+        self.advance(text_end - text_start);
         false
     }
 
     /// Process heading content until newline.
-    fn process_heading(&mut self, level: u8, text: &str) -> bool {
-        if let Some(nl_pos) = text.find('\n') {
+    fn process_heading(&mut self, level: u8) -> bool {
+        let remaining = self.remaining();
+        if let Some(nl_pos) = remaining.find('\n') {
             let partial = self.partial.as_mut().unwrap();
-            partial.content.push_str(&text[..nl_pos]);
+            partial.content_end += nl_pos;
 
-            let content = std::mem::take(&mut partial.content).trim().to_string();
-            self.parsed.push(MdElement::Heading { level, content });
+            let content_span = partial.content_span();
+            let trimmed = self.trim_span(content_span);
+            self.parsed.push(MdElement::Heading {
+                level,
+                content: trimmed,
+            });
             self.partial = None;
             self.at_line_start = true;
             self.advance(nl_pos + 1);
             true
         } else {
             // No newline yet - accumulate
+            let len = remaining.len();
             let partial = self.partial.as_mut().unwrap();
-            partial.content.push_str(text);
-            self.advance(text.len());
+            partial.content_end += len;
+            self.advance(len);
             false
         }
     }
 
     /// Process table content line by line.
     /// Returns true if we should continue processing, false if we need more input.
-    fn process_table(&mut self, text: &str) -> bool {
+    fn process_table(&mut self) -> bool {
+        let remaining = self.remaining();
         // We need at least one complete line to process
-        if let Some(nl_pos) = text.find('\n') {
-            let line = &text[..nl_pos];
+        if let Some(nl_pos) = remaining.find('\n') {
+            let line = &remaining[..nl_pos];
             let trimmed = line.trim();
 
             // Check if this line continues the table
             if trimmed.starts_with('|') {
+                // Capture everything we need from remaining before dropping the borrow
+                let is_sep = is_separator_row(trimmed);
+                let line_abs_offset = self.process_pos;
+                let trim_offset = line.len() - trimmed.len();
+                let trimmed_span = Span::new(
+                    self.process_pos + trim_offset,
+                    self.process_pos + trim_offset + trimmed.len(),
+                );
+                let cells = parse_table_row(trimmed, line_abs_offset + trim_offset);
                 let partial = self.partial.as_mut().unwrap();
                 if let PartialKind::Table {
                     ref mut rows,
@@ -417,15 +521,22 @@ impl StreamParser {
                 {
                     if !*seen_separator {
                         // Expecting separator row
-                        if is_separator_row(trimmed) {
+                        if is_sep {
                             *seen_separator = true;
                         } else {
                             // Not a valid table — emit header as paragraph
-                            let header_text = format!("| {} |", headers.join(" | "));
-                            let row_text = trimmed.to_string();
+                            let header_text = format!(
+                                "| {} |",
+                                headers
+                                    .iter()
+                                    .map(|s| s.resolve(&self.buffer))
+                                    .collect::<Vec<_>>()
+                                    .join(" | ")
+                            );
+                            let row_text = trimmed_span.resolve(&self.buffer);
                             self.partial = None;
                             let combined = format!("{}\n{}", header_text, row_text);
-                            let inlines = parse_inline(&combined);
+                            let inlines = parse_inline(&combined, 0);
                             self.parsed.push(MdElement::Paragraph(inlines));
                             self.at_line_start = true;
                             self.advance(nl_pos + 1);
@@ -433,7 +544,6 @@ impl StreamParser {
                         }
                     } else {
                         // Data row
-                        let cells = parse_table_row(trimmed);
                         rows.push(cells);
                     }
                 }
@@ -453,8 +563,15 @@ impl StreamParser {
                     self.parsed.push(MdElement::Table { headers, rows });
                 } else {
                     // Never saw separator — emit as paragraph
-                    let text = format!("| {} |", headers.join(" | "));
-                    let inlines = parse_inline(&text);
+                    let text = format!(
+                        "| {} |",
+                        headers
+                            .iter()
+                            .map(|s| s.resolve(&self.buffer))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    );
+                    let inlines = parse_inline(&text, 0);
                     self.parsed.push(MdElement::Paragraph(inlines));
                 }
             }
@@ -465,7 +582,7 @@ impl StreamParser {
 
         // No newline yet — check if we have a partial line starting with |
         // If so, wait for more input. If not, table is done.
-        let trimmed = text.trim();
+        let trimmed = remaining.trim();
         if trimmed.starts_with('|') || trimmed.is_empty() {
             // Could be another table row, wait for newline
             return false;
@@ -482,8 +599,15 @@ impl StreamParser {
             if seen_separator {
                 self.parsed.push(MdElement::Table { headers, rows });
             } else {
-                let text = format!("| {} |", headers.join(" | "));
-                let inlines = parse_inline(&text);
+                let text = format!(
+                    "| {} |",
+                    headers
+                        .iter()
+                        .map(|s| s.resolve(&self.buffer))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                );
+                let inlines = parse_inline(&text, 0);
                 self.parsed.push(MdElement::Paragraph(inlines));
             }
         }
@@ -492,18 +616,22 @@ impl StreamParser {
     }
 
     /// Process inline content.
-    fn process_inline(&mut self, text: &str) -> bool {
+    fn process_inline(&mut self) -> bool {
+        let remaining = self.remaining();
+
         // Check for paragraph break split across tokens:
         // partial content ends with \n and new text starts with \n
-        if text.starts_with('\n') {
+        if remaining.starts_with('\n') {
             if let Some(ref partial) = self.partial {
-                if partial.content.ends_with('\n') {
+                if self.buffer[..partial.content_end].ends_with('\n') {
                     // Double newline split across token boundary — emit paragraph
-                    let para_text = std::mem::take(&mut self.partial.as_mut().unwrap().content);
+                    let span = partial.content_span();
+                    let trimmed = self.trim_span(span);
                     self.partial = None;
 
-                    if !para_text.trim().is_empty() {
-                        let inline_elements = parse_inline(para_text.trim());
+                    if !trimmed.is_empty() {
+                        let content = trimmed.resolve(&self.buffer);
+                        let inline_elements = parse_inline(content, trimmed.start);
                         self.parsed.push(MdElement::Paragraph(inline_elements));
                     }
                     self.at_line_start = true;
@@ -513,13 +641,11 @@ impl StreamParser {
             }
         }
 
-        if let Some(nl_pos) = text.find('\n') {
-            let after_nl = &text[nl_pos + 1..];
+        if let Some(nl_pos) = remaining.find('\n') {
+            let after_nl = &remaining[nl_pos + 1..];
 
             // Check if text after the newline starts a block element (code fence, heading, etc.)
             // If so, emit the current paragraph and let the block parser handle the rest.
-            // This must happen before the \n\n check so that block starts aren't
-            // gobbled into paragraph text by a later double-newline.
             if !after_nl.is_empty() {
                 let trimmed_after = after_nl.trim_start();
                 let is_block_start = trimmed_after.starts_with("```")
@@ -528,17 +654,28 @@ impl StreamParser {
                     || trimmed_after.starts_with('|');
                 if is_block_start {
                     // Accumulate text before the newline into the paragraph
-                    let para_text = if let Some(ref mut partial) = self.partial {
-                        partial.content.push_str(&text[..nl_pos]);
-                        std::mem::take(&mut partial.content)
-                    } else {
-                        text[..nl_pos].to_string()
-                    };
-                    self.partial = None;
+                    if let Some(ref mut partial) = self.partial {
+                        partial.content_end += nl_pos;
+                        let span = partial.content_span();
+                        let trimmed = self.trim_span(span);
+                        self.partial = None;
 
-                    if !para_text.trim().is_empty() {
-                        let inline_elements = parse_inline(para_text.trim());
-                        self.parsed.push(MdElement::Paragraph(inline_elements));
+                        if !trimmed.is_empty() {
+                            let content = trimmed.resolve(&self.buffer);
+                            let inline_elements = parse_inline(content, trimmed.start);
+                            self.parsed.push(MdElement::Paragraph(inline_elements));
+                        }
+                    } else {
+                        let start = self.process_pos;
+                        let end = self.process_pos + nl_pos;
+                        let span = Span::new(start, end);
+                        let trimmed = self.trim_span(span);
+
+                        if !trimmed.is_empty() {
+                            let content = trimmed.resolve(&self.buffer);
+                            let inline_elements = parse_inline(content, trimmed.start);
+                            self.parsed.push(MdElement::Paragraph(inline_elements));
+                        }
                     }
                     self.at_line_start = true;
                     self.advance(nl_pos + 1);
@@ -547,39 +684,53 @@ impl StreamParser {
             }
         }
 
-        if let Some(nl_pos) = text.find("\n\n") {
+        // Re-borrow remaining since prior branches may not have taken
+        let remaining = self.remaining();
+
+        if let Some(nl_pos) = remaining.find("\n\n") {
             // Double newline = paragraph break
             // Combine accumulated partial content with text before \n\n
-            let para_text = if let Some(ref mut partial) = self.partial {
-                partial.content.push_str(&text[..nl_pos]);
-                std::mem::take(&mut partial.content)
-            } else {
-                text[..nl_pos].to_string()
-            };
-            self.partial = None;
+            if let Some(ref mut partial) = self.partial {
+                partial.content_end += nl_pos;
+                let span = partial.content_span();
+                let trimmed = self.trim_span(span);
+                self.partial = None;
 
-            if !para_text.trim().is_empty() {
-                // Parse inline elements from the full paragraph text
-                let inline_elements = parse_inline(para_text.trim());
-                self.parsed.push(MdElement::Paragraph(inline_elements));
+                if !trimmed.is_empty() {
+                    let content = trimmed.resolve(&self.buffer);
+                    let inline_elements = parse_inline(content, trimmed.start);
+                    self.parsed.push(MdElement::Paragraph(inline_elements));
+                }
+            } else {
+                let start = self.process_pos;
+                let end = self.process_pos + nl_pos;
+                let span = Span::new(start, end);
+                let trimmed = self.trim_span(span);
+
+                if !trimmed.is_empty() {
+                    let content = trimmed.resolve(&self.buffer);
+                    let inline_elements = parse_inline(content, trimmed.start);
+                    self.parsed.push(MdElement::Paragraph(inline_elements));
+                }
             }
             self.at_line_start = true;
             self.advance(nl_pos + 2);
             return true;
         }
 
-        if let Some(nl_pos) = text.find('\n') {
-
+        if let Some(nl_pos) = remaining.find('\n') {
             // Single newline - continue accumulating but track position
             if let Some(ref mut partial) = self.partial {
-                partial.content.push_str(&text[..=nl_pos]);
+                partial.content_end += nl_pos + 1;
             } else {
                 // Start accumulating paragraph
-                let content = text[..=nl_pos].to_string();
+                let content_start = self.process_pos;
+                let content_end = self.process_pos + nl_pos + 1;
                 self.partial = Some(Partial {
                     kind: PartialKind::Paragraph,
                     start_pos: self.process_pos,
-                    content,
+                    content_start,
+                    content_end,
                 });
             }
             self.at_line_start = true;
@@ -588,17 +739,21 @@ impl StreamParser {
         }
 
         // No newline - accumulate
+        let len = remaining.len();
         if let Some(ref mut partial) = self.partial {
-            partial.content.push_str(text);
+            partial.content_end += len;
         } else {
+            let content_start = self.process_pos;
+            let content_end = self.process_pos + len;
             self.partial = Some(Partial {
                 kind: PartialKind::Paragraph,
                 start_pos: self.process_pos,
-                content: text.to_string(),
+                content_start,
+                content_end,
             });
         }
         self.at_line_start = false;
-        self.advance(text.len());
+        self.advance(len);
         false
     }
 
@@ -616,13 +771,14 @@ impl StreamParser {
                     // Unclosed code block - emit what we have
                     self.parsed.push(MdElement::CodeBlock(CodeBlock {
                         language,
-                        content: partial.content,
+                        content: partial.content_span(),
                     }));
                 }
                 PartialKind::Heading { level } => {
+                    let trimmed = self.trim_span(partial.content_span());
                     self.parsed.push(MdElement::Heading {
                         level,
-                        content: partial.content.trim().to_string(),
+                        content: trimmed,
                     });
                 }
                 PartialKind::Table {
@@ -634,21 +790,32 @@ impl StreamParser {
                         self.parsed.push(MdElement::Table { headers, rows });
                     } else {
                         // Never saw separator — not a real table, emit as paragraph
-                        let text = format!("| {} |", headers.join(" | "));
-                        let inlines = parse_inline(&text);
+                        let text = format!(
+                            "| {} |",
+                            headers
+                                .iter()
+                                .map(|s| s.resolve(&self.buffer))
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        );
+                        let inlines = parse_inline(&text, 0);
                         self.parsed.push(MdElement::Paragraph(inlines));
                     }
                 }
                 PartialKind::Paragraph => {
-                    if !partial.content.trim().is_empty() {
-                        let inline_elements = parse_inline(partial.content.trim());
+                    let trimmed = self.trim_span(partial.content_span());
+                    if !trimmed.is_empty() {
+                        let content = trimmed.resolve(&self.buffer);
+                        let inline_elements = parse_inline(content, trimmed.start);
                         self.parsed.push(MdElement::Paragraph(inline_elements));
                     }
                 }
                 _ => {
                     // Other partial kinds (lists, blockquotes, etc.) - emit as paragraph for now
-                    if !partial.content.trim().is_empty() {
-                        let inline_elements = parse_inline(partial.content.trim());
+                    let trimmed = self.trim_span(partial.content_span());
+                    if !trimmed.is_empty() {
+                        let content = trimmed.resolve(&self.buffer);
+                        let inline_elements = parse_inline(content, trimmed.start);
                         self.parsed.push(MdElement::Paragraph(inline_elements));
                     }
                 }
@@ -663,21 +830,51 @@ impl Default for StreamParser {
     }
 }
 
-/// Parse a table row into cells by splitting on `|`.
-/// Strips outer pipes and trims each cell.
-fn parse_table_row(line: &str) -> Vec<String> {
+/// Parse a table row into cell spans by splitting on `|`.
+/// `line_offset` is the absolute buffer position of `line`.
+fn parse_table_row(line: &str, line_offset: usize) -> Vec<Span> {
     let trimmed = line.trim();
-    let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
-    let inner = inner.strip_suffix('|').unwrap_or(inner);
-    inner.split('|').map(|c| c.trim().to_string()).collect()
+    let trim_start = line.len() - line.trim_start().len();
+    let base = line_offset + trim_start;
+
+    let inner_start;
+    let inner;
+    if let Some(stripped) = trimmed.strip_prefix('|') {
+        inner_start = base + 1;
+        inner = stripped.strip_suffix('|').unwrap_or(stripped);
+    } else {
+        inner_start = base;
+        inner = trimmed.strip_suffix('|').unwrap_or(trimmed);
+    };
+
+    let mut result = Vec::new();
+    let mut pos = 0;
+    for cell in inner.split('|') {
+        let cell_start = inner_start + pos;
+        let cell_trimmed = cell.trim();
+        if cell_trimmed.is_empty() {
+            // Empty cell — use a zero-length span at the position
+            result.push(Span::new(cell_start, cell_start));
+        } else {
+            let ltrim = cell.len() - cell.trim_start().len();
+            let span_start = cell_start + ltrim;
+            let span_end = span_start + cell_trimmed.len();
+            result.push(Span::new(span_start, span_end));
+        }
+        pos += cell.len() + 1; // +1 for the | delimiter
+    }
+    result
 }
 
 /// Check if a line is a table separator row (e.g. `|---|---|`).
 fn is_separator_row(line: &str) -> bool {
-    let cells = parse_table_row(line);
+    let trimmed = line.trim();
+    let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let cells: Vec<&str> = inner.split('|').map(|c| c.trim()).collect();
     !cells.is_empty()
         && cells.iter().all(|c| {
-            let t = c.trim().trim_matches(':');
+            let t = c.trim_matches(':');
             !t.is_empty() && t.chars().all(|ch| ch == '-')
         })
 }

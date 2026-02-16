@@ -1,14 +1,15 @@
 //! Inline element parsing for bold, italic, code, links, etc.
 
-use crate::element::{InlineElement, InlineStyle};
+use crate::element::{InlineElement, InlineStyle, Span};
 use crate::partial::PartialKind;
 
 /// Parses inline elements from text.
-/// Returns a vector of inline elements.
+/// `base_offset` is the position of `text` within the parser's buffer.
+/// All returned Spans are absolute buffer positions.
 ///
 /// Note: This is called on complete paragraph text, not streaming.
 /// For streaming, we use PartialKind to track incomplete markers.
-pub fn parse_inline(text: &str) -> Vec<InlineElement> {
+pub fn parse_inline(text: &str, base_offset: usize) -> Vec<InlineElement> {
     let mut result = Vec::new();
     let mut chars = text.char_indices().peekable();
     let mut plain_start = 0;
@@ -19,7 +20,10 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
             '`' => {
                 // Flush any pending plain text
                 if i > plain_start {
-                    result.push(InlineElement::Text(text[plain_start..i].to_string()));
+                    result.push(InlineElement::Text(Span::new(
+                        base_offset + plain_start,
+                        base_offset + i,
+                    )));
                 }
 
                 // Count backticks
@@ -33,17 +37,22 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
                 // Find closing backticks (same count)
                 if let Some(end_pos) = find_closing_backticks(&text[start_pos..], backtick_count) {
-                    let code_content = &text[start_pos..start_pos + end_pos];
+                    let code_start = start_pos;
+                    let code_end = start_pos + end_pos;
+                    let code_content = &text[code_start..code_end];
                     // Strip single leading/trailing space if present (CommonMark rule)
-                    let trimmed = if code_content.starts_with(' ')
+                    let (trim_start, trim_end) = if code_content.starts_with(' ')
                         && code_content.ends_with(' ')
                         && code_content.len() > 1
                     {
-                        &code_content[1..code_content.len() - 1]
+                        (code_start + 1, code_end - 1)
                     } else {
-                        code_content
+                        (code_start, code_end)
                     };
-                    result.push(InlineElement::Code(trimmed.to_string()));
+                    result.push(InlineElement::Code(Span::new(
+                        base_offset + trim_start,
+                        base_offset + trim_end,
+                    )));
 
                     // Advance past closing backticks
                     let skip_to = start_pos + end_pos + backtick_count;
@@ -93,14 +102,15 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                 let content_start = marker_start + count;
 
                 // Look for closing marker
-                if let Some((content, close_len, end_pos)) =
+                if let Some((content_end_local, close_len)) =
                     find_closing_emphasis(&text[content_start..], marker, effective_count)
                 {
                     // Flush pending plain text
                     if marker_start > plain_start {
-                        result.push(InlineElement::Text(
-                            text[plain_start..marker_start].to_string(),
-                        ));
+                        result.push(InlineElement::Text(Span::new(
+                            base_offset + plain_start,
+                            base_offset + marker_start,
+                        )));
                     }
 
                     let style = match close_len {
@@ -111,11 +121,14 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
                     result.push(InlineElement::Styled {
                         style,
-                        content: content.to_string(),
+                        content: Span::new(
+                            base_offset + content_start,
+                            base_offset + content_start + content_end_local,
+                        ),
                     });
 
                     // Advance past the content and closing marker
-                    let skip_to = content_start + end_pos + close_len;
+                    let skip_to = content_start + content_end_local + close_len;
                     while chars.peek().map(|(idx, _)| *idx < skip_to).unwrap_or(false) {
                         chars.next();
                     }
@@ -131,17 +144,22 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
                     // Flush pending text
                     if i > plain_start {
-                        result.push(InlineElement::Text(text[plain_start..i].to_string()));
+                        result.push(InlineElement::Text(Span::new(
+                            base_offset + plain_start,
+                            base_offset + i,
+                        )));
                     }
 
                     let content_start = i + 2;
 
                     // Find closing ~~
                     if let Some(end_pos) = text[content_start..].find("~~") {
-                        let content = &text[content_start..content_start + end_pos];
                         result.push(InlineElement::Styled {
                             style: InlineStyle::Strikethrough,
-                            content: content.to_string(),
+                            content: Span::new(
+                                base_offset + content_start,
+                                base_offset + content_start + end_pos,
+                            ),
                         });
 
                         let skip_to = content_start + end_pos + 2;
@@ -160,13 +178,18 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
             '[' => {
                 // Flush pending text
                 if i > plain_start {
-                    result.push(InlineElement::Text(text[plain_start..i].to_string()));
+                    result.push(InlineElement::Text(Span::new(
+                        base_offset + plain_start,
+                        base_offset + i,
+                    )));
                 }
 
-                if let Some((text_content, url, total_len)) = parse_link(&text[i..]) {
+                if let Some((text_span, url_span, total_len)) =
+                    parse_link(&text[i..], base_offset + i)
+                {
                     result.push(InlineElement::Link {
-                        text: text_content,
-                        url,
+                        text: text_span,
+                        url: url_span,
                     });
 
                     let skip_to = i + total_len;
@@ -185,13 +208,21 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                 if chars.peek().map(|(_, c)| *c == '[').unwrap_or(false) {
                     // Flush pending text
                     if i > plain_start {
-                        result.push(InlineElement::Text(text[plain_start..i].to_string()));
+                        result.push(InlineElement::Text(Span::new(
+                            base_offset + plain_start,
+                            base_offset + i,
+                        )));
                     }
 
                     chars.next(); // consume [
 
-                    if let Some((alt, url, link_len)) = parse_link(&text[i + 1..]) {
-                        result.push(InlineElement::Image { alt, url });
+                    if let Some((alt_span, url_span, link_len)) =
+                        parse_link(&text[i + 1..], base_offset + i + 1)
+                    {
+                        result.push(InlineElement::Image {
+                            alt: alt_span,
+                            url: url_span,
+                        });
 
                         let skip_to = i + 1 + link_len;
                         while chars.peek().map(|(idx, _)| *idx < skip_to).unwrap_or(false) {
@@ -212,7 +243,10 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
                     // Flush text without trailing spaces
                     let text_end = i - 2;
                     if text_end > plain_start {
-                        result.push(InlineElement::Text(text[plain_start..text_end].to_string()));
+                        result.push(InlineElement::Text(Span::new(
+                            base_offset + plain_start,
+                            base_offset + text_end,
+                        )));
                     }
                     result.push(InlineElement::LineBreak);
                     plain_start = i + 1;
@@ -228,10 +262,10 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
     // Flush remaining plain text
     if plain_start < text.len() {
-        let remaining = &text[plain_start..];
-        if !remaining.is_empty() {
-            result.push(InlineElement::Text(remaining.to_string()));
-        }
+        result.push(InlineElement::Text(Span::new(
+            base_offset + plain_start,
+            base_offset + text.len(),
+        )));
     }
 
     // Collapse adjacent Text elements
@@ -242,21 +276,23 @@ pub fn parse_inline(text: &str) -> Vec<InlineElement> {
 
 /// Find closing backticks matching the opening count.
 fn find_closing_backticks(text: &str, count: usize) -> Option<usize> {
-    let target: String = "`".repeat(count);
+    let bytes = text.as_bytes();
     let mut i = 0;
 
-    while i < text.len() {
-        if text[i..].starts_with(&target) {
-            // Make sure it's exactly this many backticks
-            let after = i + count;
-            if after >= text.len() || !text[after..].starts_with('`') {
-                return Some(i);
-            }
-            // More backticks - skip them
-            while i < text.len() && text[i..].starts_with('`') {
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            // Count consecutive backticks at this position
+            let run_start = i;
+            while i < bytes.len() && bytes[i] == b'`' {
                 i += 1;
             }
+            let run_len = i - run_start;
+            if run_len == count {
+                return Some(run_start);
+            }
+            // Not the right count, continue
         } else {
+            // Skip non-backtick character (handle UTF-8)
             i += text[i..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
         }
     }
@@ -264,53 +300,40 @@ fn find_closing_backticks(text: &str, count: usize) -> Option<usize> {
 }
 
 /// Find closing emphasis marker.
-/// Returns (content, actual_close_len, end_position) if found.
-fn find_closing_emphasis(
-    text: &str,
-    marker: char,
-    open_count: usize,
-) -> Option<(&str, usize, usize)> {
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
-    let mut i = 0;
+/// Returns (end_position, actual_close_len) if found.
+fn find_closing_emphasis(text: &str, marker: char, open_count: usize) -> Option<(usize, usize)> {
+    let mut chars = text.char_indices().peekable();
 
-    while i < chars.len() {
-        let (pos, c) = chars[i];
-
+    while let Some((pos, c)) = chars.next() {
         if c == marker {
             // Count consecutive markers
             let mut count = 1;
-            while i + count < chars.len() && chars[i + count].1 == marker {
+            while chars.peek().map(|(_, ch)| *ch == marker).unwrap_or(false) {
+                chars.next();
                 count += 1;
             }
 
             // Check if this could close (not followed by alphanumeric for _)
             let can_close = if marker == '_' {
-                i + count >= chars.len() || {
-                    let next_char = chars.get(i + count).map(|(_, c)| *c);
-                    next_char
-                        .map(|c| c.is_whitespace() || c.is_ascii_punctuation())
-                        .unwrap_or(true)
-                }
+                chars.peek().is_none_or(|(_, next_c)| {
+                    next_c.is_whitespace() || next_c.is_ascii_punctuation()
+                })
             } else {
                 true
             };
 
             if can_close && count >= open_count.min(3) {
                 let close_len = count.min(open_count).min(3);
-                return Some((&text[..pos], close_len, pos));
+                return Some((pos, close_len));
             }
-
-            i += count;
-        } else {
-            i += 1;
         }
     }
     None
 }
 
 /// Parse a link starting with [
-/// Returns (text, url, total_bytes_consumed)
-fn parse_link(text: &str) -> Option<(String, String, usize)> {
+/// Returns (text_span, url_span, total_bytes_consumed)
+fn parse_link(text: &str, base_offset: usize) -> Option<(Span, Span, usize)> {
     if !text.starts_with('[') {
         return None;
     }
@@ -334,7 +357,6 @@ fn parse_link(text: &str) -> Option<(String, String, usize)> {
     }
 
     let bracket_end = bracket_end?;
-    let link_text = &text[1..bracket_end];
 
     // Check for ( immediately after ]
     let rest = &text[bracket_end + 1..];
@@ -361,12 +383,18 @@ fn parse_link(text: &str) -> Option<(String, String, usize)> {
     }
 
     let paren_end = paren_end?;
-    let url = &rest[1..paren_end];
+
+    // text_span: content between [ and ]
+    let text_span = Span::new(base_offset + 1, base_offset + bracket_end);
+    // url_span: content between ( and )
+    let url_start = bracket_end + 1 + 1; // ] + (
+    let url_end = bracket_end + 1 + paren_end; // position of )
+    let url_span = Span::new(base_offset + url_start, base_offset + url_end);
 
     // Total consumed: [ + text + ] + ( + url + )
     let total = bracket_end + 1 + paren_end + 1;
 
-    Some((link_text.to_string(), url.to_string(), total))
+    Some((text_span, url_span, total))
 }
 
 /// Collapse adjacent Text elements into one.
@@ -380,8 +408,9 @@ fn collapse_text_elements(elements: &mut Vec<InlineElement>) {
         if let (InlineElement::Text(a), InlineElement::Text(b)) =
             (&elements[write], &elements[read])
         {
-            let combined = format!("{}{}", a, b);
-            elements[write] = InlineElement::Text(combined);
+            // Merge spans — contiguous or not, just extend to cover both
+            let merged = Span::new(a.start, b.end);
+            elements[write] = InlineElement::Text(merged);
         } else {
             write += 1;
             if write != read {
@@ -434,18 +463,12 @@ impl InlineState {
 
     /// Finalize - return whatever we have as parsed elements.
     pub fn finalize(self) -> Vec<InlineElement> {
-        parse_inline(&self.buffer)
+        parse_inline(&self.buffer, 0)
     }
 
     /// Extract complete inline elements from the buffer.
     fn extract_complete(&mut self) -> Vec<InlineElement> {
-        // For streaming, we're conservative - only return elements when
-        // we're confident they won't change.
-        //
-        // Strategy: Parse the whole buffer, but only return elements that
-        // end before any trailing ambiguous characters.
-
-        let result = parse_inline(&self.buffer);
+        let result = parse_inline(&self.buffer, 0);
 
         // Check if the buffer might have incomplete markers at the end
         if self.has_incomplete_tail() {
@@ -494,62 +517,74 @@ impl Default for InlineState {
 mod tests {
     use super::*;
 
+    fn resolve<'a>(span: &Span, text: &'a str) -> &'a str {
+        span.resolve(text)
+    }
+
     #[test]
     fn test_inline_code() {
-        let result = parse_inline("some `code` here");
-        assert!(result
-            .iter()
-            .any(|e| matches!(e, InlineElement::Code(s) if s == "code")));
+        let text = "some `code` here";
+        let result = parse_inline(text, 0);
+        assert!(result.iter().any(|e| matches!(
+            e,
+            InlineElement::Code(s) if resolve(s, text) == "code"
+        )));
     }
 
     #[test]
     fn test_bold() {
-        let result = parse_inline("some **bold** text");
+        let text = "some **bold** text";
+        let result = parse_inline(text, 0);
         assert!(result.iter().any(|e| matches!(
             e,
-            InlineElement::Styled { style: InlineStyle::Bold, content } if content == "bold"
+            InlineElement::Styled { style: InlineStyle::Bold, content } if resolve(content, text) == "bold"
         )));
     }
 
     #[test]
     fn test_italic() {
-        let result = parse_inline("some *italic* text");
+        let text = "some *italic* text";
+        let result = parse_inline(text, 0);
         assert!(result.iter().any(|e| matches!(
             e,
-            InlineElement::Styled { style: InlineStyle::Italic, content } if content == "italic"
+            InlineElement::Styled { style: InlineStyle::Italic, content } if resolve(content, text) == "italic"
         )));
     }
 
     #[test]
     fn test_link() {
-        let result = parse_inline("check [this](https://example.com) out");
+        let text = "check [this](https://example.com) out";
+        let result = parse_inline(text, 0);
         assert!(result.iter().any(|e| matches!(
             e,
-            InlineElement::Link { text, url } if text == "this" && url == "https://example.com"
+            InlineElement::Link { text: t, url } if resolve(t, text) == "this" && resolve(url, text) == "https://example.com"
         )));
     }
 
     #[test]
     fn test_image() {
-        let result = parse_inline("see ![alt](img.png) here");
+        let text = "see ![alt](img.png) here";
+        let result = parse_inline(text, 0);
         assert!(result.iter().any(|e| matches!(
             e,
-            InlineElement::Image { alt, url } if alt == "alt" && url == "img.png"
+            InlineElement::Image { alt, url } if resolve(alt, text) == "alt" && resolve(url, text) == "img.png"
         )));
     }
 
     #[test]
     fn test_strikethrough() {
-        let result = parse_inline("some ~~deleted~~ text");
+        let text = "some ~~deleted~~ text";
+        let result = parse_inline(text, 0);
         assert!(result.iter().any(|e| matches!(
             e,
-            InlineElement::Styled { style: InlineStyle::Strikethrough, content } if content == "deleted"
+            InlineElement::Styled { style: InlineStyle::Strikethrough, content } if resolve(content, text) == "deleted"
         )));
     }
 
     #[test]
     fn test_mixed() {
-        let result = parse_inline("**bold** and *italic* and `code`");
+        let text = "**bold** and *italic* and `code`";
+        let result = parse_inline(text, 0);
         assert_eq!(
             result
                 .iter()

@@ -1,5 +1,7 @@
 //! Partial state tracking for incomplete markdown elements.
 
+use crate::element::Span;
+
 /// Tracks an in-progress markdown element that might be completed
 /// when more tokens arrive.
 #[derive(Debug, Clone)]
@@ -10,8 +12,11 @@ pub struct Partial {
     /// Byte offset into the buffer where this element starts
     pub start_pos: usize,
 
-    /// Accumulated content so far (for elements that need it)
-    pub content: String,
+    /// Start of content region (after markers like "# ")
+    pub content_start: usize,
+
+    /// End of content accumulated so far
+    pub content_end: usize,
 }
 
 impl Partial {
@@ -19,8 +24,24 @@ impl Partial {
         Self {
             kind,
             start_pos,
-            content: String::new(),
+            content_start: start_pos,
+            content_end: start_pos,
         }
+    }
+
+    /// Get the content span
+    pub fn content_span(&self) -> Span {
+        Span::new(self.content_start, self.content_end)
+    }
+
+    /// Get the content as a string slice from the buffer
+    pub fn content<'a>(&self, buffer: &'a str) -> &'a str {
+        &buffer[self.content_start..self.content_end]
+    }
+
+    /// Check if content is empty
+    pub fn content_is_empty(&self) -> bool {
+        self.content_start == self.content_end
     }
 }
 
@@ -32,7 +53,7 @@ pub enum PartialKind {
     CodeFence {
         fence_char: char, // ` or ~
         fence_len: usize, // typically 3
-        language: Option<String>,
+        language: Option<Span>,
     },
 
     /// Inline code waiting for closing backtick(s)
@@ -54,10 +75,10 @@ pub enum PartialKind {
 
     /// Link: seen [, waiting for ](url)
     /// States: text, post-bracket, url
-    Link { state: LinkState, text: String },
+    Link { state: LinkState, text: Span },
 
     /// Image: seen ![, waiting for ](url)
-    Image { state: LinkState, alt: String },
+    Image { state: LinkState, alt: Span },
 
     /// Heading started with # at line start, collecting content
     Heading { level: u8 },
@@ -74,8 +95,8 @@ pub enum PartialKind {
 
     /// Table being accumulated row by row
     Table {
-        headers: Vec<String>,
-        rows: Vec<Vec<String>>,
+        headers: Vec<Span>,
+        rows: Vec<Vec<Span>>,
         seen_separator: bool,
     },
 
@@ -91,5 +112,5 @@ pub enum LinkState {
     /// Seen ], expecting (
     PostBracket,
     /// Collecting URL between ( and )
-    Url(String),
+    Url(Span),
 }

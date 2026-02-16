@@ -698,13 +698,18 @@ impl<'a> DaveUi<'a> {
                     ui.add_space(8.0);
 
                     // Render plan content as markdown (pre-parsed at construction)
-                    if let Some(elements) = &request.cached_plan_elements {
-                        markdown_ui::render_assistant_message(elements, None, ui);
-                    } else if let Some(plan) =
+                    if let Some(plan) = &request.cached_plan {
+                        markdown_ui::render_assistant_message(
+                            &plan.elements,
+                            None,
+                            &plan.source,
+                            ui,
+                        );
+                    } else if let Some(plan_text) =
                         request.tool_input.get("plan").and_then(|v| v.as_str())
                     {
                         // Fallback: render as plain text
-                        ui.label(plan);
+                        ui.label(plan_text);
                     }
 
                     ui.add_space(8.0);
@@ -1113,6 +1118,7 @@ impl<'a> DaveUi<'a> {
     fn assistant_chat(&self, msg: &AssistantMessage, ui: &mut egui::Ui) {
         let elements = msg.parsed_elements();
         let partial = msg.partial();
-        markdown_ui::render_assistant_message(elements, partial, ui);
+        let buffer = msg.buffer();
+        markdown_ui::render_assistant_message(elements, partial, buffer, ui);
     }
 }

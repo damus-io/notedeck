@@ -5,8 +5,8 @@ use crate::backend::tool_summary::{
 };
 use crate::backend::traits::AiBackend;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse,
-    SubagentInfo, SubagentStatus, ToolResult,
+    CompactionInfo, DaveApiResponse, ParsedMarkdown, PendingPermission, PermissionRequest,
+    PermissionResponse, SubagentInfo, SubagentStatus, ToolResult,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -341,14 +341,15 @@ async fn session_actor(
                             let request_id = Uuid::new_v4();
                             let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
 
-                            let cached_plan_elements = if perm_req.tool_name == "ExitPlanMode" {
+                            let cached_plan = if perm_req.tool_name == "ExitPlanMode" {
                                 perm_req.tool_input.get("plan")
                                     .and_then(|v| v.as_str())
                                     .map(|plan| {
                                         let mut parser = md_stream::StreamParser::new();
                                         parser.push(plan);
                                         parser.finalize();
-                                        parser.into_parsed()
+                                        let (elements, source) = parser.into_parts();
+                                        ParsedMarkdown { source, elements }
                                     })
                             } else {
                                 None
@@ -360,7 +361,7 @@ async fn session_actor(
                                 tool_input: perm_req.tool_input.clone(),
                                 response: None,
                                 answer_summary: None,
-                                cached_plan_elements,
+                                cached_plan,
                             };
 
                             let pending = PendingPermission {

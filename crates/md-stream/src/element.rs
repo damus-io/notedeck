@@ -1,10 +1,36 @@
 //! Markdown elements - the stable output of parsing.
 
+/// A byte range into the parser's source buffer. Zero-copy reference to content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn new(start: usize, end: usize) -> Self {
+        debug_assert!(start <= end);
+        Self { start, end }
+    }
+
+    pub fn resolve<'a>(&self, buffer: &'a str) -> &'a str {
+        &buffer[self.start..self.end]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.start == self.end
+    }
+
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+}
+
 /// A complete, stable markdown element ready for rendering.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MdElement {
     /// Heading with level (1-6) and content
-    Heading { level: u8, content: String },
+    Heading { level: u8, content: Span },
 
     /// Paragraph of text (may contain inline elements)
     Paragraph(Vec<InlineElement>),
@@ -23,22 +49,22 @@ pub enum MdElement {
 
     /// Markdown table with headers and data rows
     Table {
-        headers: Vec<String>,
-        rows: Vec<Vec<String>>,
+        headers: Vec<Span>,
+        rows: Vec<Vec<Span>>,
     },
 
     /// Thematic break (---, ***, ___)
     ThematicBreak,
 
     /// Raw text (when nothing else matches)
-    Text(String),
+    Text(Span),
 }
 
 /// A fenced code block with optional language.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeBlock {
-    pub language: Option<String>,
-    pub content: String,
+    pub language: Option<Span>,
+    pub content: Span,
 }
 
 /// A list item (may contain nested elements).
@@ -52,19 +78,19 @@ pub struct ListItem {
 #[derive(Debug, Clone, PartialEq)]
 pub enum InlineElement {
     /// Plain text
-    Text(String),
+    Text(Span),
 
     /// Styled text (bold, italic, etc.)
-    Styled { style: InlineStyle, content: String },
+    Styled { style: InlineStyle, content: Span },
 
     /// Inline code (`code`)
-    Code(String),
+    Code(Span),
 
     /// Link [text](url)
-    Link { text: String, url: String },
+    Link { text: Span, url: Span },
 
     /// Image ![alt](url)
-    Image { alt: String, url: String },
+    Image { alt: Span, url: Span },
 
     /// Hard line break
     LineBreak,

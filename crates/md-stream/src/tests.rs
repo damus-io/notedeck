@@ -1,7 +1,13 @@
 //! Tests for streaming parser behavior.
 
+use crate::element::Span;
 use crate::partial::PartialKind;
 use crate::{InlineElement, InlineStyle, MdElement, StreamParser};
+
+/// Helper to resolve a Span against a parser's buffer.
+fn r<'a>(span: &Span, buf: &'a str) -> &'a str {
+    span.resolve(buf)
+}
 
 #[test]
 fn test_heading_complete() {
@@ -9,13 +15,13 @@ fn test_heading_complete() {
     parser.push("# Hello World\n");
 
     assert_eq!(parser.parsed().len(), 1);
-    assert_eq!(
-        parser.parsed()[0],
-        MdElement::Heading {
-            level: 1,
-            content: "Hello World".to_string()
+    match &parser.parsed()[0] {
+        MdElement::Heading { level, content } => {
+            assert_eq!(*level, 1);
+            assert_eq!(r(content, parser.buffer()), "Hello World");
         }
-    );
+        other => panic!("Expected heading, got {:?}", other),
+    }
 }
 
 #[test]
@@ -32,13 +38,13 @@ fn test_heading_streaming() {
 
     parser.push("ld\n");
     assert_eq!(parser.parsed().len(), 1);
-    assert_eq!(
-        parser.parsed()[0],
-        MdElement::Heading {
-            level: 1,
-            content: "Hello World".to_string()
+    match &parser.parsed()[0] {
+        MdElement::Heading { level, content } => {
+            assert_eq!(*level, 1);
+            assert_eq!(r(content, parser.buffer()), "Hello World");
         }
-    );
+        other => panic!("Expected heading, got {:?}", other),
+    }
 }
 
 #[test]
@@ -49,8 +55,8 @@ fn test_code_block_complete() {
     assert_eq!(parser.parsed().len(), 1);
     match &parser.parsed()[0] {
         MdElement::CodeBlock(cb) => {
-            assert_eq!(cb.language.as_deref(), Some("rust"));
-            assert_eq!(cb.content, "fn main() {}\n");
+            assert_eq!(cb.language.map(|s| r(&s, parser.buffer())), Some("rust"));
+            assert_eq!(r(&cb.content, parser.buffer()), "fn main() {}\n");
         }
         _ => panic!("Expected code block"),
     }
@@ -104,7 +110,7 @@ fn test_finalize_incomplete_code() {
     assert_eq!(parser.parsed().len(), 1);
     match &parser.parsed()[0] {
         MdElement::CodeBlock(cb) => {
-            assert!(cb.content.contains("unclosed code"));
+            assert!(r(&cb.content, parser.buffer()).contains("unclosed code"));
         }
         _ => panic!("Expected code block"),
     }
@@ -198,10 +204,11 @@ fn test_inline_bold() {
 
     assert_eq!(parser.parsed().len(), 1);
     if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let buf = parser.buffer();
         assert!(
             inlines.iter().any(|e| matches!(
                 e,
-                InlineElement::Styled { style: InlineStyle::Bold, content } if content == "bold"
+                InlineElement::Styled { style: InlineStyle::Bold, content } if r(content, buf) == "bold"
             )),
             "Expected bold element, got: {:?}",
             inlines
@@ -218,10 +225,11 @@ fn test_inline_italic() {
 
     assert_eq!(parser.parsed().len(), 1);
     if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let buf = parser.buffer();
         assert!(
             inlines.iter().any(|e| matches!(
                 e,
-                InlineElement::Styled { style: InlineStyle::Italic, content } if content == "italic"
+                InlineElement::Styled { style: InlineStyle::Italic, content } if r(content, buf) == "italic"
             )),
             "Expected italic element, got: {:?}",
             inlines
@@ -238,10 +246,11 @@ fn test_inline_code() {
 
     assert_eq!(parser.parsed().len(), 1);
     if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let buf = parser.buffer();
         assert!(
             inlines.iter().any(|e| matches!(
                 e,
-                InlineElement::Code(s) if s == "code"
+                InlineElement::Code(s) if r(s, buf) == "code"
             )),
             "Expected code element, got: {:?}",
             inlines
@@ -258,9 +267,10 @@ fn test_inline_link() {
 
     assert_eq!(parser.parsed().len(), 1);
     if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let buf = parser.buffer();
         assert!(inlines.iter().any(|e| matches!(
             e,
-            InlineElement::Link { text, url } if text == "this link" && url == "https://example.com"
+            InlineElement::Link { text, url } if r(text, buf) == "this link" && r(url, buf) == "https://example.com"
         )), "Expected link element, got: {:?}", inlines);
     } else {
         panic!("Expected paragraph");
@@ -274,10 +284,11 @@ fn test_inline_image() {
 
     assert_eq!(parser.parsed().len(), 1);
     if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let buf = parser.buffer();
         assert!(
             inlines.iter().any(|e| matches!(
                 e,
-                InlineElement::Image { alt, url } if alt == "alt text" && url == "image.png"
+                InlineElement::Image { alt, url } if r(alt, buf) == "alt text" && r(url, buf) == "image.png"
             )),
             "Expected image element, got: {:?}",
             inlines
@@ -294,9 +305,10 @@ fn test_inline_strikethrough() {
 
     assert_eq!(parser.parsed().len(), 1);
     if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let buf = parser.buffer();
         assert!(inlines.iter().any(|e| matches!(
             e,
-            InlineElement::Styled { style: InlineStyle::Strikethrough, content } if content == "deleted"
+            InlineElement::Styled { style: InlineStyle::Strikethrough, content } if r(content, buf) == "deleted"
         )), "Expected strikethrough element, got: {:?}", inlines);
     } else {
         panic!("Expected paragraph");
@@ -351,9 +363,10 @@ fn test_inline_finalize() {
     // Now should have parsed with inline formatting
     assert_eq!(parser.parsed().len(), 1);
     if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let buf = parser.buffer();
         assert!(inlines.iter().any(|e| matches!(
             e,
-            InlineElement::Styled { style: InlineStyle::Bold, content } if content == "bold"
+            InlineElement::Styled { style: InlineStyle::Bold, content } if r(content, buf) == "bold"
         )));
     } else {
         panic!("Expected paragraph");
@@ -422,9 +435,10 @@ fn test_paragraph_finalize_emits_content() {
 
     assert_eq!(parser.parsed().len(), 1);
     if let MdElement::Paragraph(inlines) = &parser.parsed()[0] {
+        let buf = parser.buffer();
         assert!(inlines.iter().any(|e| matches!(
             e,
-            InlineElement::Text(s) if s.contains("Incomplete paragraph")
+            InlineElement::Text(s) if r(s, buf).contains("Incomplete paragraph")
         )));
     } else {
         panic!("Expected paragraph");
@@ -435,21 +449,27 @@ fn test_paragraph_finalize_emits_content() {
 fn test_inline_code_with_angle_brackets() {
     // Test parse_inline directly
     let input = "Generic Rust: `impl Iterator<Item = &str>` returns a `Result<(), anyhow::Error>`";
-    let result = crate::parse_inline(input);
+    let result = crate::parse_inline(input, 0);
     eprintln!("parse_inline result: {:#?}", result);
 
     let code_elements: Vec<_> = result
         .iter()
         .filter(|e| matches!(e, InlineElement::Code(_)))
         .collect();
-    assert_eq!(code_elements.len(), 2, "Expected 2 code spans, got: {:#?}", result);
+    assert_eq!(
+        code_elements.len(),
+        2,
+        "Expected 2 code spans, got: {:#?}",
+        result
+    );
 }
 
 #[test]
 fn test_streaming_inline_code_with_angle_brackets() {
     // Test streaming parser with token-by-token delivery
     let mut parser = StreamParser::new();
-    let input = "5. Generic Rust: `impl Iterator<Item = &str>` returns a `Result<(), anyhow::Error>`\n\n";
+    let input =
+        "5. Generic Rust: `impl Iterator<Item = &str>` returns a `Result<(), anyhow::Error>`\n\n";
 
     // Simulate streaming token by token
     for ch in input.chars() {
@@ -467,7 +487,12 @@ fn test_streaming_inline_code_with_angle_brackets() {
             .iter()
             .filter(|e| matches!(e, InlineElement::Code(_)))
             .collect();
-        assert_eq!(code_elements.len(), 2, "Expected 2 code spans, got: {:#?}", inlines);
+        assert_eq!(
+            code_elements.len(),
+            2,
+            "Expected 2 code spans, got: {:#?}",
+            inlines
+        );
     } else {
         panic!("Expected paragraph, got: {:?}", parser.parsed()[0]);
     }
@@ -477,7 +502,8 @@ fn test_streaming_inline_code_with_angle_brackets() {
 fn test_streaming_multiple_code_spans_with_angle_brackets() {
     // From the screenshot: multiple code spans with nested angle brackets
     let mut parser = StreamParser::new();
-    let input = "use `HashMap<K, V>` or `Vec<String>` or `Option<Box<dyn Error>>` in your types\n\n";
+    let input =
+        "use `HashMap<K, V>` or `Vec<String>` or `Option<Box<dyn Error>>` in your types\n\n";
 
     for ch in input.chars() {
         parser.push(&ch.to_string());
@@ -490,7 +516,12 @@ fn test_streaming_multiple_code_spans_with_angle_brackets() {
             .iter()
             .filter(|e| matches!(e, InlineElement::Code(_)))
             .collect();
-        assert_eq!(code_elements.len(), 3, "Expected 3 code spans, got: {:#?}", inlines);
+        assert_eq!(
+            code_elements.len(),
+            3,
+            "Expected 3 code spans, got: {:#?}",
+            inlines
+        );
     } else {
         panic!("Expected paragraph, got: {:?}", parser.parsed()[0]);
     }
@@ -499,7 +530,6 @@ fn test_streaming_multiple_code_spans_with_angle_brackets() {
 #[test]
 fn test_code_block_after_paragraph_single_newline() {
     // Reproduces: paragraph text ending with ":\n" then "```\n" code block
-    // This is the common pattern: "All events share these common tags:\n```\n..."
     let mut parser = StreamParser::new();
     let input = "All events share these common tags:\n```\n[\"d\", \"<session-id>\"]\n```\n";
     parser.push(input);
@@ -512,8 +542,14 @@ fn test_code_block_after_paragraph_single_newline() {
     eprintln!("After finalize - parsed: {:#?}", parser.parsed());
 
     // Should have: paragraph + code block
-    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
-    let has_code_block = parser.parsed().iter().any(|e| matches!(e, MdElement::CodeBlock(_)));
+    let has_paragraph = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_code_block = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::CodeBlock(_)));
 
     assert!(has_paragraph, "Missing paragraph element");
     assert!(has_code_block, "Missing code block element");
@@ -531,14 +567,23 @@ fn test_code_block_after_paragraph_single_newline_streaming() {
 
     eprintln!("Before finalize - parsed: {:#?}", parser.parsed());
     eprintln!("Before finalize - partial: {:#?}", parser.partial());
-    eprintln!("Before finalize - in_code_block: {}", parser.in_code_block());
+    eprintln!(
+        "Before finalize - in_code_block: {}",
+        parser.in_code_block()
+    );
 
     parser.finalize();
 
     eprintln!("After finalize - parsed: {:#?}", parser.parsed());
 
-    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
-    let has_code_block = parser.parsed().iter().any(|e| matches!(e, MdElement::CodeBlock(_)));
+    let has_paragraph = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_code_block = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::CodeBlock(_)));
 
     assert!(has_paragraph, "Missing paragraph element");
     assert!(has_code_block, "Missing code block element");
@@ -564,14 +609,27 @@ fn test_table_basic_batch() {
     let mut parser = StreamParser::new();
     parser.push("| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |\n\n");
 
-    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
-    assert_eq!(tables.len(), 1, "Expected 1 table, got: {:#?}", parser.parsed());
+    let tables: Vec<_> = parser
+        .parsed()
+        .iter()
+        .filter(|e| matches!(e, MdElement::Table { .. }))
+        .collect();
+    assert_eq!(
+        tables.len(),
+        1,
+        "Expected 1 table, got: {:#?}",
+        parser.parsed()
+    );
 
     if let MdElement::Table { headers, rows } = &tables[0] {
-        assert_eq!(headers, &["Name", "Age"]);
+        let buf = parser.buffer();
+        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        assert_eq!(h, &["Name", "Age"]);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], &["Alice", "30"]);
-        assert_eq!(rows[1], &["Bob", "25"]);
+        let r0: Vec<&str> = rows[0].iter().map(|s| r(s, buf)).collect();
+        let r1: Vec<&str> = rows[1].iter().map(|s| r(s, buf)).collect();
+        assert_eq!(r0, &["Alice", "30"]);
+        assert_eq!(r1, &["Bob", "25"]);
     }
 }
 
@@ -584,14 +642,27 @@ fn test_table_streaming_char_by_char() {
         parser.push(&ch.to_string());
     }
 
-    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
-    assert_eq!(tables.len(), 1, "Expected 1 table, got: {:#?}", parser.parsed());
+    let tables: Vec<_> = parser
+        .parsed()
+        .iter()
+        .filter(|e| matches!(e, MdElement::Table { .. }))
+        .collect();
+    assert_eq!(
+        tables.len(),
+        1,
+        "Expected 1 table, got: {:#?}",
+        parser.parsed()
+    );
 
     if let MdElement::Table { headers, rows } = &tables[0] {
-        assert_eq!(headers, &["Name", "Age"]);
+        let buf = parser.buffer();
+        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        assert_eq!(h, &["Name", "Age"]);
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], &["Alice", "30"]);
-        assert_eq!(rows[1], &["Bob", "25"]);
+        let r0: Vec<&str> = rows[0].iter().map(|s| r(s, buf)).collect();
+        let r1: Vec<&str> = rows[1].iter().map(|s| r(s, buf)).collect();
+        assert_eq!(r0, &["Alice", "30"]);
+        assert_eq!(r1, &["Bob", "25"]);
     }
 }
 
@@ -600,10 +671,20 @@ fn test_table_after_paragraph() {
     let mut parser = StreamParser::new();
     parser.push("Here is a comparison:\n| A | B |\n|---|---|\n| 1 | 2 |\n\n");
 
-    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
-    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+    let has_paragraph = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_table = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Table { .. }));
 
-    assert!(has_paragraph, "Missing paragraph, got: {:#?}", parser.parsed());
+    assert!(
+        has_paragraph,
+        "Missing paragraph, got: {:#?}",
+        parser.parsed()
+    );
     assert!(has_table, "Missing table, got: {:#?}", parser.parsed());
 }
 
@@ -616,10 +697,20 @@ fn test_table_after_paragraph_streaming() {
         parser.push(&ch.to_string());
     }
 
-    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
-    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+    let has_paragraph = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_table = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Table { .. }));
 
-    assert!(has_paragraph, "Missing paragraph, got: {:#?}", parser.parsed());
+    assert!(
+        has_paragraph,
+        "Missing paragraph, got: {:#?}",
+        parser.parsed()
+    );
     assert!(has_table, "Missing table, got: {:#?}", parser.parsed());
 }
 
@@ -628,11 +719,21 @@ fn test_table_then_paragraph() {
     let mut parser = StreamParser::new();
     parser.push("| X | Y |\n|---|---|\n| a | b |\n\nSome text after.\n\n");
 
-    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
-    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_table = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Table { .. }));
+    let has_paragraph = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Paragraph(_)));
 
     assert!(has_table, "Missing table, got: {:#?}", parser.parsed());
-    assert!(has_paragraph, "Missing paragraph, got: {:#?}", parser.parsed());
+    assert!(
+        has_paragraph,
+        "Missing paragraph, got: {:#?}",
+        parser.parsed()
+    );
 }
 
 #[test]
@@ -641,8 +742,15 @@ fn test_table_no_separator_not_a_table() {
     // Two pipe rows but no separator — should not be a table
     parser.push("| foo | bar |\n| baz | qux |\n\n");
 
-    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
-    assert!(!has_table, "Should NOT be a table without separator row, got: {:#?}", parser.parsed());
+    let has_table = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Table { .. }));
+    assert!(
+        !has_table,
+        "Should NOT be a table without separator row, got: {:#?}",
+        parser.parsed()
+    );
 }
 
 #[test]
@@ -650,7 +758,11 @@ fn test_table_uneven_columns() {
     let mut parser = StreamParser::new();
     parser.push("| A | B | C |\n|---|---|---|\n| 1 | 2 |\n| x | y | z |\n\n");
 
-    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    let tables: Vec<_> = parser
+        .parsed()
+        .iter()
+        .filter(|e| matches!(e, MdElement::Table { .. }))
+        .collect();
     assert_eq!(tables.len(), 1);
 
     if let MdElement::Table { headers, rows } = &tables[0] {
@@ -666,13 +778,25 @@ fn test_table_with_alignment() {
     let mut parser = StreamParser::new();
     parser.push("| Left | Center | Right |\n|:-----|:------:|------:|\n| a | b | c |\n\n");
 
-    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
-    assert_eq!(tables.len(), 1, "Expected table with alignment separators, got: {:#?}", parser.parsed());
+    let tables: Vec<_> = parser
+        .parsed()
+        .iter()
+        .filter(|e| matches!(e, MdElement::Table { .. }))
+        .collect();
+    assert_eq!(
+        tables.len(),
+        1,
+        "Expected table with alignment separators, got: {:#?}",
+        parser.parsed()
+    );
 
     if let MdElement::Table { headers, rows } = &tables[0] {
-        assert_eq!(headers, &["Left", "Center", "Right"]);
+        let buf = parser.buffer();
+        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        assert_eq!(h, &["Left", "Center", "Right"]);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0], &["a", "b", "c"]);
+        let r0: Vec<&str> = rows[0].iter().map(|s| r(s, buf)).collect();
+        assert_eq!(r0, &["a", "b", "c"]);
     }
 }
 
@@ -686,8 +810,15 @@ fn test_table_finalize_incomplete() {
 
     parser.finalize();
 
-    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
-    assert!(has_table, "Finalize should emit the table, got: {:#?}", parser.parsed());
+    let has_table = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Table { .. }));
+    assert!(
+        has_table,
+        "Finalize should emit the table, got: {:#?}",
+        parser.parsed()
+    );
 }
 
 #[test]
@@ -695,11 +826,17 @@ fn test_table_single_column() {
     let mut parser = StreamParser::new();
     parser.push("| Item |\n|------|\n| Apple |\n| Banana |\n\n");
 
-    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    let tables: Vec<_> = parser
+        .parsed()
+        .iter()
+        .filter(|e| matches!(e, MdElement::Table { .. }))
+        .collect();
     assert_eq!(tables.len(), 1);
 
     if let MdElement::Table { headers, rows } = &tables[0] {
-        assert_eq!(headers, &["Item"]);
+        let buf = parser.buffer();
+        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        assert_eq!(h, &["Item"]);
         assert_eq!(rows.len(), 2);
     }
 }
@@ -709,13 +846,21 @@ fn test_table_empty_cells() {
     let mut parser = StreamParser::new();
     parser.push("| A | B |\n|---|---|\n|  | val |\n| val |  |\n\n");
 
-    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    let tables: Vec<_> = parser
+        .parsed()
+        .iter()
+        .filter(|e| matches!(e, MdElement::Table { .. }))
+        .collect();
     assert_eq!(tables.len(), 1);
 
     if let MdElement::Table { headers, rows } = &tables[0] {
-        assert_eq!(headers, &["A", "B"]);
-        assert_eq!(rows[0], &["", "val"]);
-        assert_eq!(rows[1], &["val", ""]);
+        let buf = parser.buffer();
+        let h: Vec<&str> = headers.iter().map(|s| r(s, buf)).collect();
+        assert_eq!(h, &["A", "B"]);
+        let r0: Vec<&str> = rows[0].iter().map(|s| r(s, buf)).collect();
+        let r1: Vec<&str> = rows[1].iter().map(|s| r(s, buf)).collect();
+        assert_eq!(r0, &["", "val"]);
+        assert_eq!(r1, &["val", ""]);
     }
 }
 
@@ -747,13 +892,27 @@ fn test_table_streaming_realistic_llm_chunks() {
     }
     parser.finalize();
 
-    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
-    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+    let has_paragraph = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_table = parser
+        .parsed()
+        .iter()
+        .any(|e| matches!(e, MdElement::Table { .. }));
 
-    assert!(has_paragraph, "Missing paragraph, got: {:#?}", parser.parsed());
+    assert!(
+        has_paragraph,
+        "Missing paragraph, got: {:#?}",
+        parser.parsed()
+    );
     assert!(has_table, "Missing table, got: {:#?}", parser.parsed());
 
-    if let Some(MdElement::Table { headers, rows }) = parser.parsed().iter().find(|e| matches!(e, MdElement::Table { .. })) {
+    if let Some(MdElement::Table { headers, rows }) = parser
+        .parsed()
+        .iter()
+        .find(|e| matches!(e, MdElement::Table { .. }))
+    {
         assert_eq!(headers.len(), 3, "Expected 3 headers, got: {:?}", headers);
         assert_eq!(rows.len(), 2, "Expected 2 rows, got: {:?}", rows);
     }
@@ -768,7 +927,13 @@ fn test_table_partial_shows_during_streaming() {
     // Should have a table partial with seen_separator=true
     let partial = parser.partial().expect("Should have partial");
     assert!(
-        matches!(&partial.kind, PartialKind::Table { seen_separator: true, .. }),
+        matches!(
+            &partial.kind,
+            PartialKind::Table {
+                seen_separator: true,
+                ..
+            }
+        ),
         "Expected table partial with seen_separator=true, got: {:?}",
         partial.kind
     );

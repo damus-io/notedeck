@@ -1,6 +1,13 @@
 use crate::tools::{ToolCall, ToolResponse};
 use async_openai::types::*;
 use md_stream::{MdElement, Partial, StreamParser};
+
+/// Pre-parsed markdown with source text for span resolution.
+#[derive(Debug, Clone)]
+pub struct ParsedMarkdown {
+    pub source: String,
+    pub elements: Vec<MdElement>,
+}
 use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -52,8 +59,8 @@ pub struct PermissionRequest {
     pub response: Option<PermissionResponseType>,
     /// For AskUserQuestion: pre-computed summary of answers for display
     pub answer_summary: Option<AnswerSummary>,
-    /// For ExitPlanMode: pre-parsed markdown elements from the plan content
-    pub cached_plan_elements: Option<Vec<MdElement>>,
+    /// For ExitPlanMode: pre-parsed markdown with source text for span resolution
+    pub cached_plan: Option<ParsedMarkdown>,
 }
 
 /// A single entry in an answer summary
@@ -244,6 +251,13 @@ impl AssistantMessage {
 
     /// Get the raw text content.
     pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Get the buffer for resolving spans in parsed elements.
+    /// This is the same as text() — both the parser and AssistantMessage
+    /// maintain identical buffers via push_str(token).
+    pub fn buffer(&self) -> &str {
         &self.text
     }
 
