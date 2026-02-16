@@ -72,6 +72,13 @@ pub enum PartialKind {
     /// Blockquote started with >, collecting content
     BlockQuote { depth: usize },
 
+    /// Table being accumulated row by row
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+        seen_separator: bool,
+    },
+
     /// Paragraph being accumulated (waiting for double newline)
     Paragraph,
 }

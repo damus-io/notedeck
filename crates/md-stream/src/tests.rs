@@ -556,3 +556,220 @@ fn test_heading_partial_kind_distinct_from_paragraph() {
         partial.kind
     );
 }
+
+// Table tests
+
+#[test]
+fn test_table_basic_batch() {
+    let mut parser = StreamParser::new();
+    parser.push("| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |\n\n");
+
+    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    assert_eq!(tables.len(), 1, "Expected 1 table, got: {:#?}", parser.parsed());
+
+    if let MdElement::Table { headers, rows } = &tables[0] {
+        assert_eq!(headers, &["Name", "Age"]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], &["Alice", "30"]);
+        assert_eq!(rows[1], &["Bob", "25"]);
+    }
+}
+
+#[test]
+fn test_table_streaming_char_by_char() {
+    let mut parser = StreamParser::new();
+    let input = "| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 25 |\n\n";
+
+    for ch in input.chars() {
+        parser.push(&ch.to_string());
+    }
+
+    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    assert_eq!(tables.len(), 1, "Expected 1 table, got: {:#?}", parser.parsed());
+
+    if let MdElement::Table { headers, rows } = &tables[0] {
+        assert_eq!(headers, &["Name", "Age"]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], &["Alice", "30"]);
+        assert_eq!(rows[1], &["Bob", "25"]);
+    }
+}
+
+#[test]
+fn test_table_after_paragraph() {
+    let mut parser = StreamParser::new();
+    parser.push("Here is a comparison:\n| A | B |\n|---|---|\n| 1 | 2 |\n\n");
+
+    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+
+    assert!(has_paragraph, "Missing paragraph, got: {:#?}", parser.parsed());
+    assert!(has_table, "Missing table, got: {:#?}", parser.parsed());
+}
+
+#[test]
+fn test_table_after_paragraph_streaming() {
+    let mut parser = StreamParser::new();
+    let input = "Here is a comparison:\n| A | B |\n|---|---|\n| 1 | 2 |\n\n";
+
+    for ch in input.chars() {
+        parser.push(&ch.to_string());
+    }
+
+    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+
+    assert!(has_paragraph, "Missing paragraph, got: {:#?}", parser.parsed());
+    assert!(has_table, "Missing table, got: {:#?}", parser.parsed());
+}
+
+#[test]
+fn test_table_then_paragraph() {
+    let mut parser = StreamParser::new();
+    parser.push("| X | Y |\n|---|---|\n| a | b |\n\nSome text after.\n\n");
+
+    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
+
+    assert!(has_table, "Missing table, got: {:#?}", parser.parsed());
+    assert!(has_paragraph, "Missing paragraph, got: {:#?}", parser.parsed());
+}
+
+#[test]
+fn test_table_no_separator_not_a_table() {
+    let mut parser = StreamParser::new();
+    // Two pipe rows but no separator — should not be a table
+    parser.push("| foo | bar |\n| baz | qux |\n\n");
+
+    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+    assert!(!has_table, "Should NOT be a table without separator row, got: {:#?}", parser.parsed());
+}
+
+#[test]
+fn test_table_uneven_columns() {
+    let mut parser = StreamParser::new();
+    parser.push("| A | B | C |\n|---|---|---|\n| 1 | 2 |\n| x | y | z |\n\n");
+
+    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    assert_eq!(tables.len(), 1);
+
+    if let MdElement::Table { headers, rows } = &tables[0] {
+        assert_eq!(headers.len(), 3);
+        assert_eq!(rows[0].len(), 2); // Fewer cells than headers
+        assert_eq!(rows[1].len(), 3);
+    }
+}
+
+#[test]
+fn test_table_with_alignment() {
+    // Separator with alignment colons should still be recognized
+    let mut parser = StreamParser::new();
+    parser.push("| Left | Center | Right |\n|:-----|:------:|------:|\n| a | b | c |\n\n");
+
+    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    assert_eq!(tables.len(), 1, "Expected table with alignment separators, got: {:#?}", parser.parsed());
+
+    if let MdElement::Table { headers, rows } = &tables[0] {
+        assert_eq!(headers, &["Left", "Center", "Right"]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], &["a", "b", "c"]);
+    }
+}
+
+#[test]
+fn test_table_finalize_incomplete() {
+    // Table without trailing blank line — finalize should emit it
+    let mut parser = StreamParser::new();
+    parser.push("| H1 | H2 |\n|---|---|\n| v1 | v2 |");
+
+    assert_eq!(parser.parsed().len(), 0, "Table shouldn't be complete yet");
+
+    parser.finalize();
+
+    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+    assert!(has_table, "Finalize should emit the table, got: {:#?}", parser.parsed());
+}
+
+#[test]
+fn test_table_single_column() {
+    let mut parser = StreamParser::new();
+    parser.push("| Item |\n|------|\n| Apple |\n| Banana |\n\n");
+
+    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    assert_eq!(tables.len(), 1);
+
+    if let MdElement::Table { headers, rows } = &tables[0] {
+        assert_eq!(headers, &["Item"]);
+        assert_eq!(rows.len(), 2);
+    }
+}
+
+#[test]
+fn test_table_empty_cells() {
+    let mut parser = StreamParser::new();
+    parser.push("| A | B |\n|---|---|\n|  | val |\n| val |  |\n\n");
+
+    let tables: Vec<_> = parser.parsed().iter().filter(|e| matches!(e, MdElement::Table { .. })).collect();
+    assert_eq!(tables.len(), 1);
+
+    if let MdElement::Table { headers, rows } = &tables[0] {
+        assert_eq!(headers, &["A", "B"]);
+        assert_eq!(rows[0], &["", "val"]);
+        assert_eq!(rows[1], &["val", ""]);
+    }
+}
+
+#[test]
+fn test_table_streaming_realistic_llm_chunks() {
+    // Simulate LLM-style token delivery
+    let mut parser = StreamParser::new();
+    let chunks = [
+        "Here's",
+        " the comparison:\n",
+        "| Feature",
+        " | ",
+        "Rust | ",
+        "Go |\n",
+        "|---",
+        "---|",
+        "------|------|\n",
+        "| Speed",
+        " | Fast",
+        " | Fast |\n",
+        "| Safety",
+        " | Yes | No |\n",
+        "\nThat's",
+        " the table.",
+    ];
+
+    for chunk in chunks {
+        parser.push(chunk);
+    }
+    parser.finalize();
+
+    let has_paragraph = parser.parsed().iter().any(|e| matches!(e, MdElement::Paragraph(_)));
+    let has_table = parser.parsed().iter().any(|e| matches!(e, MdElement::Table { .. }));
+
+    assert!(has_paragraph, "Missing paragraph, got: {:#?}", parser.parsed());
+    assert!(has_table, "Missing table, got: {:#?}", parser.parsed());
+
+    if let Some(MdElement::Table { headers, rows }) = parser.parsed().iter().find(|e| matches!(e, MdElement::Table { .. })) {
+        assert_eq!(headers.len(), 3, "Expected 3 headers, got: {:?}", headers);
+        assert_eq!(rows.len(), 2, "Expected 2 rows, got: {:?}", rows);
+    }
+}
+
+#[test]
+fn test_table_partial_shows_during_streaming() {
+    let mut parser = StreamParser::new();
+    // Push header + separator, then start a data row
+    parser.push("| A | B |\n|---|---|\n");
+
+    // Should have a table partial with seen_separator=true
+    let partial = parser.partial().expect("Should have partial");
+    assert!(
+        matches!(&partial.kind, PartialKind::Table { seen_separator: true, .. }),
+        "Expected table partial with seen_separator=true, got: {:?}",
+        partial.kind
+    );
+}

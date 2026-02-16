@@ -21,9 +21,9 @@ impl MdTheme {
         let bg = visuals.panel_fill;
         // Code bg: slightly lighter than panel background
         let code_bg = Color32::from_rgb(
-            bg.r().saturating_add(15),
-            bg.g().saturating_add(15),
-            bg.b().saturating_add(15),
+            bg.r().saturating_add(25),
+            bg.g().saturating_add(25),
+            bg.b().saturating_add(25),
         );
         Self {
             heading_sizes: [24.0, 20.0, 18.0, 16.0, 14.0, 12.0],
@@ -97,6 +97,10 @@ fn render_element(element: &MdElement, theme: &MdTheme, ui: &mut Ui) {
                 render_list_item(item, &marker, theme, ui);
             }
             ui.add_space(8.0);
+        }
+
+        MdElement::Table { headers, rows } => {
+            render_table(headers, rows, theme, ui);
         }
 
         MdElement::ThematicBreak => {
@@ -235,6 +239,53 @@ fn render_list_item(item: &ListItem, marker: &str, theme: &MdTheme, ui: &mut Ui)
     });
 }
 
+fn render_table(headers: &[String], rows: &[Vec<String>], theme: &MdTheme, ui: &mut Ui) {
+    use egui_extras::{Column, TableBuilder};
+
+    let num_cols = headers.len();
+    if num_cols == 0 {
+        return;
+    }
+
+    let cell_padding = egui::Margin::symmetric(8, 4);
+
+    let mut builder = TableBuilder::new(ui).vscroll(false);
+    for _ in 0..num_cols {
+        builder = builder.column(Column::auto().resizable(true));
+    }
+
+    let header_bg = theme.code_bg;
+
+    builder
+        .header(28.0, |mut header| {
+            for h in headers {
+                header.col(|ui| {
+                    ui.painter()
+                        .rect_filled(ui.max_rect(), 0.0, header_bg);
+                    egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
+                        ui.strong(h);
+                    });
+                });
+            }
+        })
+        .body(|mut body| {
+            for row in rows {
+                body.row(28.0, |mut table_row| {
+                    for i in 0..num_cols {
+                        table_row.col(|ui| {
+                            egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
+                                if let Some(cell) = row.get(i) {
+                                    ui.label(cell);
+                                }
+                            });
+                        });
+                    }
+                });
+            }
+        });
+    ui.add_space(8.0);
+}
+
 fn render_partial(partial: &Partial, theme: &MdTheme, ui: &mut Ui) {
     let content = &partial.content;
     if content.is_empty() {
@@ -264,6 +315,18 @@ fn render_partial(partial: &Partial, theme: &MdTheme, ui: &mut Ui) {
         PartialKind::Heading { level } => {
             let size = theme.heading_sizes[(*level as usize).saturating_sub(1).min(5)];
             ui.add(egui::Label::new(RichText::new(content).size(size).strong()).wrap());
+        }
+
+        PartialKind::Table {
+            headers,
+            rows,
+            seen_separator,
+        } => {
+            if *seen_separator {
+                render_table(headers, rows, theme, ui);
+            } else {
+                ui.label(content);
+            }
         }
 
         PartialKind::Paragraph => {

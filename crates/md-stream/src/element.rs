@@ -21,6 +21,12 @@ pub enum MdElement {
     /// Ordered list (starting number)
     OrderedList { start: u32, items: Vec<ListItem> },
 
+    /// Markdown table with headers and data rows
+    Table {
+        headers: Vec<String>,
+        rows: Vec<Vec<String>>,
+    },
+
     /// Thematic break (---, ***, ___)
     ThematicBreak,
 
