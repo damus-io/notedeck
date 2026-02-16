@@ -1382,13 +1382,19 @@ impl notedeck::App for Dave {
         let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));
         self.focus_queue.update_from_statuses(status_iter);
 
+        // Suppress auto-steal while the user is typing (non-empty input)
+        let user_is_typing = self
+            .session_manager
+            .get_active()
+            .is_some_and(|s| !s.input.is_empty());
+
         // Process auto-steal focus mode
         let stole_focus = update::process_auto_steal_focus(
             &mut self.session_manager,
             &mut self.focus_queue,
             &mut self.scene,
             self.show_scene,
-            self.auto_steal_focus,
+            self.auto_steal_focus && !user_is_typing,
             &mut self.home_session,
         );
 
