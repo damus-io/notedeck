@@ -1033,47 +1033,91 @@ impl notedeck::App for Dave {
 
         // Process pending archive conversion (JSONL → nostr events)
         if let Some((file_path, dave_sid, claude_sid)) = self.pending_archive_convert.take() {
-            let keypair = ctx.accounts.get_selected_account().keypair();
-            if let Some(sk) = keypair.secret_key {
-                // Subscribe for 1988 events BEFORE ingesting so we catch them
-                let filter = nostrdb::Filter::new()
-                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
-                    .tags([claude_sid.as_str()], 'd')
-                    .build();
+            // Check if events already exist for this session in ndb
+            let txn = Transaction::new(ctx.ndb).expect("txn");
+            let filter = nostrdb::Filter::new()
+                .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                .tags([claude_sid.as_str()], 'd')
+                .limit(1)
+                .build();
+            let already_exists = ctx
+                .ndb
+                .query(&txn, &[filter], 1)
+                .map(|r| !r.is_empty())
+                .unwrap_or(false);
+            drop(txn);
 
-                match ctx.ndb.subscribe(&[filter]) {
-                    Ok(sub) => {
-                        let sb = sk.as_secret_bytes();
-                        let secret_bytes: [u8; 32] =
-                            sb.try_into().expect("secret key is 32 bytes");
-                        match session_converter::convert_session_to_events(
-                            &file_path,
-                            ctx.ndb,
-                            &secret_bytes,
-                        ) {
-                            Ok(note_ids) => {
-                                tracing::info!(
-                                    "archived session: {} events from {}, awaiting indexing",
-                                    note_ids.len(),
-                                    file_path.display()
-                                );
-                                self.pending_message_load = Some(PendingMessageLoad {
-                                    sub,
-                                    dave_session_id: dave_sid,
-                                    claude_session_id: claude_sid,
-                                });
-                            }
-                            Err(e) => {
-                                tracing::error!("archive conversion failed: {}", e);
-                            }
+            if already_exists {
+                // Events already in ndb (from previous conversion or live events).
+                // Skip archive conversion and load directly.
+                tracing::info!(
+                    "session {} already has events in ndb, skipping archive conversion",
+                    claude_sid
+                );
+                let loaded_txn = Transaction::new(ctx.ndb).expect("txn");
+                let loaded = session_loader::load_session_messages(
+                    ctx.ndb,
+                    &loaded_txn,
+                    &claude_sid,
+                );
+                if let Some(session) = self.session_manager.get_mut(dave_sid) {
+                    tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
+                    session.chat = loaded.messages;
+
+                    if let (Some(root), Some(last)) =
+                        (loaded.root_note_id, loaded.last_note_id)
+                    {
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.live_threading.seed(root, last, loaded.event_count);
                         }
-                    }
-                    Err(e) => {
-                        tracing::error!("failed to subscribe for archive events: {:?}", e);
                     }
                 }
             } else {
-                tracing::warn!("no secret key available for archive conversion");
+                let keypair = ctx.accounts.get_selected_account().keypair();
+                if let Some(sk) = keypair.secret_key {
+                    // Subscribe for 1988 events BEFORE ingesting so we catch them
+                    let sub_filter = nostrdb::Filter::new()
+                        .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                        .tags([claude_sid.as_str()], 'd')
+                        .build();
+
+                    match ctx.ndb.subscribe(&[sub_filter]) {
+                        Ok(sub) => {
+                            let sb = sk.as_secret_bytes();
+                            let secret_bytes: [u8; 32] =
+                                sb.try_into().expect("secret key is 32 bytes");
+                            match session_converter::convert_session_to_events(
+                                &file_path,
+                                ctx.ndb,
+                                &secret_bytes,
+                            ) {
+                                Ok(note_ids) => {
+                                    tracing::info!(
+                                        "archived session: {} events from {}, awaiting indexing",
+                                        note_ids.len(),
+                                        file_path.display()
+                                    );
+                                    self.pending_message_load = Some(PendingMessageLoad {
+                                        sub,
+                                        dave_session_id: dave_sid,
+                                        claude_session_id: claude_sid,
+                                    });
+                                }
+                                Err(e) => {
+                                    tracing::error!("archive conversion failed: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "failed to subscribe for archive events: {:?}",
+                                e
+                            );
+                        }
+                    }
+                } else {
+                    tracing::warn!("no secret key available for archive conversion");
+                }
             }
         }
 

@@ -116,8 +116,12 @@ impl ThreadingState {
     }
 
     /// Record a built event's note ID, associated with a JSONL uuid.
-    fn record(&mut self, uuid: Option<&str>, note_id: [u8; 32]) {
-        if self.root_note_id.is_none() {
+    ///
+    /// `can_be_root`: if true, this event may become the conversation root.
+    /// Metadata events (queue-operation, progress, etc.) should pass false
+    /// so they don't become the root of the threading chain.
+    pub fn record(&mut self, uuid: Option<&str>, note_id: [u8; 32], can_be_root: bool) {
+        if can_be_root && self.root_note_id.is_none() {
             self.root_note_id = Some(note_id);
         }
         if let Some(uuid) = uuid {
@@ -126,6 +130,11 @@ impl ThreadingState {
         self.last_note_id = Some(note_id);
         self.seq += 1;
     }
+}
+
+/// Whether a role represents a conversation message (not metadata).
+pub fn is_conversation_role(role: &str) -> bool {
+    matches!(role, "user" | "assistant" | "tool_call" | "tool_result")
 }
 
 /// Build nostr events from a single JSONL line.
@@ -188,7 +197,7 @@ pub fn build_events(
                 threading,
                 secret_key,
             )?;
-            threading.record(line.uuid(), event.note_id);
+            threading.record(line.uuid(), event.note_id, is_conversation_role(role));
             events.push(event);
         }
         events
@@ -224,7 +233,7 @@ pub fn build_events(
             threading,
             secret_key,
         )?;
-        threading.record(line.uuid(), event.note_id);
+        threading.record(line.uuid(), event.note_id, is_conversation_role(role));
         vec![event]
     };
 
@@ -481,7 +490,7 @@ pub fn build_live_event(
         secret_key,
     )?;
 
-    threading.record(None, event.note_id);
+    threading.record(None, event.note_id, true);
     Ok(event)
 }
 

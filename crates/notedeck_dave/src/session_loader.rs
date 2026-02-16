@@ -5,7 +5,7 @@
 //! for populating the chat UI.
 
 use crate::messages::{AssistantMessage, ToolResult};
-use crate::session_events::{get_tag_value, AI_CONVERSATION_KIND};
+use crate::session_events::{get_tag_value, is_conversation_role, AI_CONVERSATION_KIND};
 use crate::Message;
 use nostrdb::{Filter, Ndb, Transaction};
 
@@ -54,7 +54,17 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
     notes.sort_by_key(|note| note.created_at());
 
     let event_count = notes.len() as u32;
-    let root_note_id = notes.first().map(|n| *n.id());
+
+    // Find the first conversation note (skip metadata like queue-operation)
+    // so the threading root is a real message.
+    let root_note_id = notes
+        .iter()
+        .find(|n| {
+            get_tag_value(n, "role")
+                .map(is_conversation_role)
+                .unwrap_or(false)
+        })
+        .map(|n| *n.id());
     let last_note_id = notes.last().map(|n| *n.id());
 
     let mut messages = Vec::new();
