@@ -220,7 +220,13 @@ impl Notedeck {
 
         let settings = SettingsHandler::new(&path).load();
 
-        let config = Config::new().set_ingester_threads(2).set_mapsize(map_size);
+        let config = Config::new()
+            .set_ingester_threads(2)
+            .set_mapsize(map_size)
+            .set_sub_callback({
+                let ctx = ctx.clone();
+                move |_| ctx.request_repaint()
+            });
 
         let keystore = if parsed_args.options.contains(NotedeckOptions::UseKeystore) {
             let keys_path = path.path(DataPathType::Keys);

@@ -28,7 +28,7 @@ use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
-use nostrdb::Transaction;
+use nostrdb::{Subscription, Transaction};
 use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -106,9 +106,21 @@ pub struct Dave {
     active_overlay: DaveOverlay,
     /// IPC listener for external spawn-agent commands
     ipc_listener: Option<ipc::IpcListener>,
-    /// JSONL file path pending archive conversion to nostr events.
+    /// Pending archive conversion: (jsonl_path, dave_session_id, claude_session_id).
     /// Set when resuming a session; processed in update() where AppContext is available.
-    pending_archive_convert: Option<std::path::PathBuf>,
+    pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
+    /// Waiting for ndb to finish indexing 1988 events so we can load messages.
+    pending_message_load: Option<PendingMessageLoad>,
+}
+
+/// Subscription waiting for ndb to index 1988 conversation events.
+struct PendingMessageLoad {
+    /// ndb subscription for kind-1988 events matching the session
+    sub: Subscription,
+    /// Dave's internal session ID
+    dave_session_id: SessionId,
+    /// Claude session ID (the `d` tag value)
+    claude_session_id: String,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -222,6 +234,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             active_overlay,
             ipc_listener,
             pending_archive_convert: None,
+            pending_message_load: None,
         }
     }
 
@@ -482,8 +495,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         title,
                         file_path,
                     } => {
-                        self.create_resumed_session_with_cwd(cwd, session_id, title);
-                        self.pending_archive_convert = Some(file_path);
+                        let claude_session_id = session_id.clone();
+                        let sid = self.create_resumed_session_with_cwd(cwd, session_id, title);
+                        self.pending_archive_convert =
+                            Some((file_path, sid, claude_session_id));
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::None;
                     }
@@ -641,7 +656,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         cwd: PathBuf,
         resume_session_id: String,
         title: String,
-    ) {
+    ) -> SessionId {
         update::create_resumed_session_with_cwd(
             &mut self.session_manager,
             &mut self.directory_picker,
@@ -651,7 +666,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             cwd,
             resume_session_id,
             title,
-        );
+        )
     }
 
     /// Clone the active agent, creating a new session with the same working directory
@@ -893,29 +908,66 @@ impl notedeck::App for Dave {
         update::poll_editor_job(&mut self.session_manager);
 
         // Process pending archive conversion (JSONL → nostr events)
-        if let Some(file_path) = self.pending_archive_convert.take() {
+        if let Some((file_path, dave_sid, claude_sid)) = self.pending_archive_convert.take() {
             let keypair = ctx.accounts.get_selected_account().keypair();
             if let Some(sk) = keypair.secret_key {
-                let sb = sk.as_secret_bytes();
-                let secret_bytes: [u8; 32] = sb.try_into().expect("secret key is 32 bytes");
-                match session_converter::convert_session_to_events(
-                    &file_path,
-                    ctx.ndb,
-                    &secret_bytes,
-                ) {
-                    Ok(note_ids) => {
-                        tracing::info!(
-                            "archived session: {} events from {}",
-                            note_ids.len(),
-                            file_path.display()
-                        );
+                // Subscribe for 1988 events BEFORE ingesting so we catch them
+                let filter = nostrdb::Filter::new()
+                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                    .tags([claude_sid.as_str()], 'd')
+                    .build();
+
+                match ctx.ndb.subscribe(&[filter]) {
+                    Ok(sub) => {
+                        let sb = sk.as_secret_bytes();
+                        let secret_bytes: [u8; 32] =
+                            sb.try_into().expect("secret key is 32 bytes");
+                        match session_converter::convert_session_to_events(
+                            &file_path,
+                            ctx.ndb,
+                            &secret_bytes,
+                        ) {
+                            Ok(note_ids) => {
+                                tracing::info!(
+                                    "archived session: {} events from {}, awaiting indexing",
+                                    note_ids.len(),
+                                    file_path.display()
+                                );
+                                self.pending_message_load = Some(PendingMessageLoad {
+                                    sub,
+                                    dave_session_id: dave_sid,
+                                    claude_session_id: claude_sid,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!("archive conversion failed: {}", e);
+                            }
+                        }
                     }
                     Err(e) => {
-                        tracing::error!("archive conversion failed: {}", e);
+                        tracing::error!("failed to subscribe for archive events: {:?}", e);
                     }
                 }
             } else {
                 tracing::warn!("no secret key available for archive conversion");
+            }
+        }
+
+        // Poll pending message load — wait for ndb to index 1988 events
+        if let Some(pending) = &self.pending_message_load {
+            let notes = ctx.ndb.poll_for_notes(pending.sub, 4096);
+            if !notes.is_empty() {
+                let txn = Transaction::new(ctx.ndb).expect("txn");
+                let messages = session_loader::load_session_messages(
+                    ctx.ndb,
+                    &txn,
+                    &pending.claude_session_id,
+                );
+                if let Some(session) = self.session_manager.get_mut(pending.dave_session_id) {
+                    tracing::info!("loaded {} messages into chat UI", messages.len());
+                    session.chat = messages;
+                }
+                self.pending_message_load = None;
             }
         }
 

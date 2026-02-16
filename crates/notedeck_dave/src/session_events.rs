@@ -54,6 +54,10 @@ pub struct ThreadingState {
     last_note_id: Option<[u8; 32]>,
     /// Monotonic sequence counter for unambiguous ordering.
     seq: u32,
+    /// Last seen session ID (carried forward for lines that lack it).
+    session_id: Option<String>,
+    /// Last seen timestamp in seconds (carried forward for lines that lack it).
+    last_timestamp: Option<u64>,
 }
 
 impl Default for ThreadingState {
@@ -69,12 +73,36 @@ impl ThreadingState {
             root_note_id: None,
             last_note_id: None,
             seq: 0,
+            session_id: None,
+            last_timestamp: None,
         }
     }
 
     /// The current sequence number.
     pub fn seq(&self) -> u32 {
         self.seq
+    }
+
+    /// Update session context from a JSONL line (session_id, timestamp).
+    fn update_context(&mut self, line: &JsonlLine) {
+        if let Some(sid) = line.session_id() {
+            self.session_id = Some(sid.to_string());
+        }
+        if let Some(ts) = line.timestamp_secs() {
+            self.last_timestamp = Some(ts);
+        }
+    }
+
+    /// Get the session ID for the current line, falling back to the last seen.
+    fn session_id_for(&self, line: &JsonlLine) -> Option<String> {
+        line.session_id()
+            .map(|s| s.to_string())
+            .or_else(|| self.session_id.clone())
+    }
+
+    /// Get the timestamp for the current line, falling back to the last seen.
+    fn timestamp_for(&self, line: &JsonlLine) -> Option<u64> {
+        line.timestamp_secs().or(self.last_timestamp)
     }
 
     /// Record a built event's note ID, associated with a JSONL uuid.
@@ -101,6 +129,12 @@ pub fn build_events(
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<Vec<BuiltEvent>, EventBuildError> {
+    // Resolve session_id and timestamp with fallback to last seen values,
+    // then update context for subsequent lines.
+    let session_id = threading.session_id_for(line);
+    let timestamp = threading.timestamp_for(line);
+    threading.update_context(line);
+
     let msg = line.message();
     let is_assistant = line.line_type() == Some("assistant");
 
@@ -137,6 +171,8 @@ pub fn build_events(
                 role,
                 Some((i, total)),
                 tool_id,
+                session_id.as_deref(),
+                timestamp,
                 threading,
                 secret_key,
             )?;
@@ -169,6 +205,8 @@ pub fn build_events(
             role,
             None,
             tool_id.as_deref(),
+            session_id.as_deref(),
+            timestamp,
             threading,
             secret_key,
         )?;
@@ -178,8 +216,14 @@ pub fn build_events(
 
     // Build a kind-1989 source-data companion event linked to the first 1988 event.
     let first_note_id = events[0].note_id;
-    let source_data_event =
-        build_source_data_event(line, &first_note_id, threading.seq() - 1, secret_key)?;
+    let source_data_event = build_source_data_event(
+        line,
+        &first_note_id,
+        threading.seq() - 1,
+        session_id.as_deref(),
+        timestamp,
+        secret_key,
+    )?;
     events.push(source_data_event);
 
     Ok(events)
@@ -208,6 +252,8 @@ fn build_source_data_event(
     line: &JsonlLine,
     conversation_note_id: &[u8; 32],
     seq: u32,
+    session_id: Option<&str>,
+    timestamp: Option<u64>,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     let raw_json = line.to_json();
@@ -218,7 +264,7 @@ fn build_source_data_event(
         .content("")
         .options(NoteBuildOptions::default());
 
-    if let Some(ts) = line.timestamp_secs() {
+    if let Some(ts) = timestamp {
         builder = builder.created_at(ts);
     }
 
@@ -228,8 +274,7 @@ fn build_source_data_event(
         .tag_str("e")
         .tag_id(conversation_note_id);
 
-    // Same session ID for querying
-    if let Some(session_id) = line.session_id() {
+    if let Some(session_id) = session_id {
         builder = builder.start_tag().tag_str("d").tag_str(session_id);
     }
 
@@ -275,6 +320,8 @@ fn build_single_event(
     role: &str,
     split_index: Option<(usize, usize)>,
     tool_id: Option<&str>,
+    session_id: Option<&str>,
+    timestamp: Option<u64>,
     threading: &ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
@@ -283,13 +330,12 @@ fn build_single_event(
         .content(content)
         .options(NoteBuildOptions::default());
 
-    // Set timestamp from JSONL
-    if let Some(ts) = line.timestamp_secs() {
+    if let Some(ts) = timestamp {
         builder = builder.created_at(ts);
     }
 
     // -- Session identity tags --
-    if let Some(session_id) = line.session_id() {
+    if let Some(session_id) = session_id {
         builder = builder.start_tag().tag_str("d").tag_str(session_id);
     }
     if let Some(slug) = line.slug() {
@@ -700,5 +746,34 @@ mod tests {
                 i, original, reconstructed
             );
         }
+    }
+
+    #[test]
+    fn test_file_history_snapshot_inherits_context() {
+        // file-history-snapshot lines lack sessionId and top-level timestamp.
+        // They should inherit session_id from a prior line and get timestamp
+        // from snapshot.timestamp.
+        let lines = vec![
+            r#"{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"ctx-test","timestamp":"2026-02-09T20:00:00Z","cwd":"/tmp","version":"2.0.64","message":{"role":"user","content":"hello"}}"#,
+            r#"{"type":"file-history-snapshot","messageId":"abc","snapshot":{"messageId":"abc","trackedFileBackups":{},"timestamp":"2026-02-11T01:29:31.555Z"},"isSnapshotUpdate":false}"#,
+        ];
+
+        let mut threading = ThreadingState::new();
+        let sk = test_secret_key();
+
+        // First line sets context
+        let line = JsonlLine::parse(lines[0]).unwrap();
+        let events = build_events(&line, &mut threading, &sk).unwrap();
+        assert!(events[0].json.contains(r#""d","ctx-test"#));
+
+        // Second line (file-history-snapshot) should inherit session_id
+        let line = JsonlLine::parse(lines[1]).unwrap();
+        assert!(line.session_id().is_none()); // no top-level sessionId
+        let events = build_events(&line, &mut threading, &sk).unwrap();
+
+        // 1988 event should have inherited d tag
+        assert!(events[0].json.contains(r#""d","ctx-test"#));
+        // Should have snapshot timestamp (1770773371), not the user's
+        assert!(events[0].json.contains(r#""created_at":1770773371"#));
     }
 }

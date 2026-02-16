@@ -57,7 +57,14 @@ impl JsonlLine {
     }
 
     pub fn timestamp(&self) -> Option<&str> {
-        self.get_str("timestamp")
+        // Top-level timestamp, falling back to snapshot.timestamp
+        // (file-history-snapshot lines nest it there)
+        self.get_str("timestamp").or_else(|| {
+            self.0
+                .get("snapshot")
+                .and_then(|s| s.get("timestamp"))
+                .and_then(|v| v.as_str())
+        })
     }
 
     /// Parse the timestamp as a unix timestamp (seconds).
@@ -426,6 +433,15 @@ mod tests {
     fn test_timestamp_secs() {
         let line = r#"{"type":"user","timestamp":"2026-02-09T20:43:35.675Z","sessionId":"abc"}"#;
         let parsed = JsonlLine::parse(line).unwrap();
+        assert!(parsed.timestamp_secs().is_some());
+    }
+
+    #[test]
+    fn test_timestamp_fallback_snapshot() {
+        // file-history-snapshot lines have timestamp nested in snapshot
+        let line = r#"{"type":"file-history-snapshot","messageId":"abc","snapshot":{"messageId":"abc","trackedFileBackups":{},"timestamp":"2026-02-11T01:29:31.555Z"},"isSnapshotUpdate":false}"#;
+        let parsed = JsonlLine::parse(line).unwrap();
+        assert_eq!(parsed.timestamp(), Some("2026-02-11T01:29:31.555Z"));
         assert!(parsed.timestamp_secs().is_some());
     }
 
