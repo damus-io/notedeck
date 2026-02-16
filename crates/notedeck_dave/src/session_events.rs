@@ -33,15 +33,22 @@ pub fn get_tag_value<'a>(note: &'a nostrdb::Note<'a>, tag_name: &str) -> Option<
     None
 }
 
-/// A built nostr event ready for ingestion, with its note ID.
+/// A built nostr event ready for ingestion and relay publishing.
 #[derive(Debug)]
 pub struct BuiltEvent {
-    /// The full JSON string: `["EVENT", {…}]`
-    pub json: String,
+    /// The bare event JSON `{…}` — for relay publishing and ndb ingestion.
+    pub note_json: String,
     /// The 32-byte note ID (from the signed event).
     pub note_id: [u8; 32],
     /// The nostr event kind (1988 or 1989).
     pub kind: u32,
+}
+
+impl BuiltEvent {
+    /// Format as `["EVENT", {…}]` for ndb ingestion via `process_event_with`.
+    pub fn to_event_json(&self) -> String {
+        format!("[\"EVENT\", {}]", self.note_json)
+    }
 }
 
 /// Maintains threading state across a session's events.
@@ -317,15 +324,12 @@ fn build_source_data_event(
 
     let note_id: [u8; 32] = *note.id();
 
-    let event = enostr::ClientMessage::event(&note)
-        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
-
-    let json = event
-        .to_json()
+    let note_json = note
+        .json()
         .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
 
     Ok(BuiltEvent {
-        json,
+        note_json,
         note_id,
         kind: AI_SOURCE_DATA_KIND,
     })
@@ -442,15 +446,12 @@ fn build_single_event(
 
     let note_id: [u8; 32] = *note.id();
 
-    let event = enostr::ClientMessage::event(&note)
-        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
-
-    let json = event
-        .to_json()
+    let note_json = note
+        .json()
         .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
 
     Ok(BuiltEvent {
-        json,
+        note_json,
         note_id,
         kind: AI_CONVERSATION_KIND,
     })
@@ -494,6 +495,173 @@ pub fn build_live_event(
     Ok(event)
 }
 
+/// Build a kind-1988 permission request event.
+///
+/// Published to relays so remote clients (phone) can see pending permission
+/// requests and respond. Tags include `perm-id` (UUID), `tool-name`, and
+/// `t: ai-permission` for filtering.
+///
+/// Does NOT participate in threading — permission events are ancillary.
+pub fn build_permission_request_event(
+    perm_id: &uuid::Uuid,
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    session_id: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Content is a JSON summary for display on remote clients
+    let content = serde_json::json!({
+        "tool_name": tool_name,
+        "tool_input": tool_input,
+    })
+    .to_string();
+
+    let perm_id_str = perm_id.to_string();
+
+    let mut builder = NoteBuilder::new()
+        .kind(AI_CONVERSATION_KIND)
+        .content(&content)
+        .options(NoteBuildOptions::default())
+        .created_at(now);
+
+    // Session identity
+    builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Permission-specific tags
+    builder = builder
+        .start_tag()
+        .tag_str("perm-id")
+        .tag_str(&perm_id_str);
+    builder = builder
+        .start_tag()
+        .tag_str("tool-name")
+        .tag_str(tool_name);
+    builder = builder
+        .start_tag()
+        .tag_str("role")
+        .tag_str("permission_request");
+    builder = builder
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+
+    // Discoverability
+    builder = builder
+        .start_tag()
+        .tag_str("t")
+        .tag_str("ai-conversation");
+    builder = builder
+        .start_tag()
+        .tag_str("t")
+        .tag_str("ai-permission");
+
+    let note = builder
+        .sign(secret_key)
+        .build()
+        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
+
+    let note_id: [u8; 32] = *note.id();
+    let note_json = note
+        .json()
+        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
+
+    Ok(BuiltEvent {
+        note_json,
+        note_id,
+        kind: AI_CONVERSATION_KIND,
+    })
+}
+
+/// Build a kind-1988 permission response event.
+///
+/// Published by remote clients (phone) to allow/deny a permission request.
+/// The desktop subscribes for these and routes them through the existing
+/// oneshot channel, racing with the local UI.
+///
+/// Tags include `perm-id` (matching the request), `e` tag linking to the
+/// request event, and `t: ai-permission` for filtering.
+pub fn build_permission_response_event(
+    perm_id: &uuid::Uuid,
+    request_note_id: &[u8; 32],
+    allowed: bool,
+    message: Option<&str>,
+    session_id: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let content = serde_json::json!({
+        "decision": if allowed { "allow" } else { "deny" },
+        "message": message.unwrap_or(""),
+    })
+    .to_string();
+
+    let perm_id_str = perm_id.to_string();
+
+    let mut builder = NoteBuilder::new()
+        .kind(AI_CONVERSATION_KIND)
+        .content(&content)
+        .options(NoteBuildOptions::default())
+        .created_at(now);
+
+    // Session identity
+    builder = builder.start_tag().tag_str("d").tag_str(session_id);
+
+    // Link to the request event
+    builder = builder
+        .start_tag()
+        .tag_str("e")
+        .tag_id(request_note_id);
+
+    // Permission-specific tags
+    builder = builder
+        .start_tag()
+        .tag_str("perm-id")
+        .tag_str(&perm_id_str);
+    builder = builder
+        .start_tag()
+        .tag_str("role")
+        .tag_str("permission_response");
+    builder = builder
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+
+    // Discoverability
+    builder = builder
+        .start_tag()
+        .tag_str("t")
+        .tag_str("ai-conversation");
+    builder = builder
+        .start_tag()
+        .tag_str("t")
+        .tag_str("ai-permission");
+
+    let note = builder
+        .sign(secret_key)
+        .build()
+        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
+
+    let note_id: [u8; 32] = *note.id();
+    let note_json = note
+        .json()
+        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
+
+    Ok(BuiltEvent {
+        note_json,
+        note_id,
+        kind: AI_CONVERSATION_KIND,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,7 +691,7 @@ mod tests {
         assert_eq!(threading.root_note_id, Some(events[0].note_id));
 
         // 1988 event has kind and tags but NO source-data
-        let json = &events[0].json;
+        let json = &events[0].note_json;
         assert!(json.contains("1988"));
         assert!(json.contains("source"));
         assert!(json.contains("claude-code"));
@@ -532,7 +700,7 @@ mod tests {
         assert!(!json.contains("source-data"));
 
         // 1989 event has source-data
-        assert!(events[1].json.contains("source-data"));
+        assert!(events[1].note_json.contains("source-data"));
     }
 
     #[test]
@@ -553,7 +721,7 @@ mod tests {
         assert_eq!(events[0].kind, AI_CONVERSATION_KIND);
         assert_eq!(events[1].kind, AI_SOURCE_DATA_KIND);
 
-        let json = &events[0].json;
+        let json = &events[0].note_json;
         assert!(json.contains("assistant"));
         assert!(json.contains("claude-opus-4-5-20251101")); // model tag
     }
@@ -609,11 +777,11 @@ mod tests {
 
         // First event should be root (no e tags)
         // Subsequent events should reference root + previous
-        assert!(!conv_events[0].json.contains("root"));
-        assert!(conv_events[1].json.contains("root"));
-        assert!(conv_events[1].json.contains("reply"));
-        assert!(conv_events[2].json.contains("root"));
-        assert!(conv_events[2].json.contains("reply"));
+        assert!(!conv_events[0].note_json.contains("root"));
+        assert!(conv_events[1].note_json.contains("root"));
+        assert!(conv_events[1].note_json.contains("reply"));
+        assert!(conv_events[2].note_json.contains("root"));
+        assert!(conv_events[2].note_json.contains("reply"));
     }
 
     #[test]
@@ -627,12 +795,12 @@ mod tests {
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
 
         // 1988 event should NOT have source-data
-        assert!(!events[0].json.contains("source-data"));
+        assert!(!events[0].note_json.contains("source-data"));
 
         // 1989 event should have source-data with raw paths preserved
         let sd_event = events.iter().find(|e| e.kind == AI_SOURCE_DATA_KIND).unwrap();
-        assert!(sd_event.json.contains("source-data"));
-        assert!(sd_event.json.contains("/Users/jb55/dev/notedeck"));
+        assert!(sd_event.note_json.contains("source-data"));
+        assert!(sd_event.note_json.contains("/Users/jb55/dev/notedeck"));
     }
 
     #[test]
@@ -647,7 +815,7 @@ mod tests {
         // 1 conversation (1988) + 1 source-data (1989)
         assert_eq!(events.len(), 2);
 
-        let json = &events[0].json;
+        let json = &events[0].note_json;
         assert!(json.contains("queue-operation"));
     }
 
@@ -669,16 +837,16 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(threading.seq(), 1);
         // First 1988 event should have seq=0
-        assert!(events[0].json.contains(r#""seq","0"#));
+        assert!(events[0].note_json.contains(r#""seq","0"#));
         // 1989 event should also have seq=0 (matches its 1988 event)
-        assert!(events[1].json.contains(r#""seq","0"#));
+        assert!(events[1].note_json.contains(r#""seq","0"#));
 
         let line = JsonlLine::parse(lines[1]).unwrap();
         let events = build_events(&line, &mut threading, &sk).unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(threading.seq(), 2);
         // Second 1988 event should have seq=1
-        assert!(events[0].json.contains(r#""seq","1"#));
+        assert!(events[0].note_json.contains(r#""seq","1"#));
     }
 
     #[test]
@@ -694,17 +862,17 @@ mod tests {
         assert_eq!(events.len(), 3);
 
         // First event (text): split 0/2, NO source-data (moved to 1989)
-        assert!(events[0].json.contains(r#""split","0/2"#));
-        assert!(!events[0].json.contains("source-data"));
+        assert!(events[0].note_json.contains(r#""split","0/2"#));
+        assert!(!events[0].note_json.contains("source-data"));
 
         // Second event (tool_call): split 1/2, NO source-data, has tool-id
-        assert!(events[1].json.contains(r#""split","1/2"#));
-        assert!(!events[1].json.contains("source-data"));
-        assert!(events[1].json.contains(r#""tool-id","t1"#));
+        assert!(events[1].note_json.contains(r#""split","1/2"#));
+        assert!(!events[1].note_json.contains("source-data"));
+        assert!(events[1].note_json.contains(r#""tool-id","t1"#));
 
         // Third event (1989): has source-data
         assert_eq!(events[2].kind, AI_SOURCE_DATA_KIND);
-        assert!(events[2].json.contains("source-data"));
+        assert!(events[2].note_json.contains("source-data"));
     }
 
     #[test]
@@ -718,7 +886,7 @@ mod tests {
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
 
         assert!(events[0]
-            .json
+            .note_json
             .contains(r#""cwd","/Users/jb55/dev/notedeck"#));
     }
 
@@ -733,7 +901,7 @@ mod tests {
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
         // 1 conversation + 1 source-data
         assert_eq!(events.len(), 2);
-        assert!(events[0].json.contains(r#""tool-id","toolu_abc"#));
+        assert!(events[0].note_json.contains(r#""tool-id","toolu_abc"#));
     }
 
     #[tokio::test]
@@ -770,7 +938,7 @@ mod tests {
             let events = build_events(&line, &mut threading, &sk).unwrap();
             for event in &events {
                 let sub_id = ndb.subscribe(&[filter.clone()]).unwrap();
-                ndb.process_event_with(&event.json, IngestMetadata::new().client(true))
+                ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                     .expect("ingest failed");
                 let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();
                 total_events += 1;
@@ -830,7 +998,7 @@ mod tests {
         // First line sets context
         let line = JsonlLine::parse(lines[0]).unwrap();
         let events = build_events(&line, &mut threading, &sk).unwrap();
-        assert!(events[0].json.contains(r#""d","ctx-test"#));
+        assert!(events[0].note_json.contains(r#""d","ctx-test"#));
 
         // Second line (file-history-snapshot) should inherit session_id
         let line = JsonlLine::parse(lines[1]).unwrap();
@@ -838,8 +1006,89 @@ mod tests {
         let events = build_events(&line, &mut threading, &sk).unwrap();
 
         // 1988 event should have inherited d tag
-        assert!(events[0].json.contains(r#""d","ctx-test"#));
+        assert!(events[0].note_json.contains(r#""d","ctx-test"#));
         // Should have snapshot timestamp (1770773371), not the user's
-        assert!(events[0].json.contains(r#""created_at":1770773371"#));
+        assert!(events[0].note_json.contains(r#""created_at":1770773371"#));
+    }
+
+    #[test]
+    fn test_build_permission_request_event() {
+        let perm_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let tool_input = serde_json::json!({"command": "rm -rf /tmp/test"});
+        let sk = test_secret_key();
+
+        let event = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &tool_input,
+            "sess-perm-test",
+            &sk,
+        )
+        .unwrap();
+
+        assert_eq!(event.kind, AI_CONVERSATION_KIND);
+
+        let json = &event.note_json;
+        // Has permission-specific tags
+        assert!(json.contains(r#""perm-id","550e8400-e29b-41d4-a716-446655440000"#));
+        assert!(json.contains(r#""tool-name","Bash"#));
+        assert!(json.contains(r#""role","permission_request"#));
+        // Has session identity
+        assert!(json.contains(r#""d","sess-perm-test"#));
+        // Has discoverability tags
+        assert!(json.contains(r#""t","ai-conversation"#));
+        assert!(json.contains(r#""t","ai-permission"#));
+        // Content has tool info
+        assert!(json.contains("rm -rf"));
+    }
+
+    #[test]
+    fn test_build_permission_response_event() {
+        let perm_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let request_note_id = [42u8; 32];
+        let sk = test_secret_key();
+
+        // Test allow response
+        let event = build_permission_response_event(
+            &perm_id,
+            &request_note_id,
+            true,
+            Some("looks safe"),
+            "sess-perm-test",
+            &sk,
+        )
+        .unwrap();
+
+        assert_eq!(event.kind, AI_CONVERSATION_KIND);
+
+        let json = &event.note_json;
+        assert!(json.contains(r#""perm-id","550e8400-e29b-41d4-a716-446655440000"#));
+        assert!(json.contains(r#""role","permission_response"#));
+        assert!(json.contains(r#""d","sess-perm-test"#));
+        assert!(json.contains("allow"));
+        assert!(json.contains("looks safe"));
+        // Has e tag linking to request
+        assert!(json.contains(r#""e""#));
+    }
+
+    #[test]
+    fn test_permission_response_deny() {
+        let perm_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let request_note_id = [42u8; 32];
+        let sk = test_secret_key();
+
+        let event = build_permission_response_event(
+            &perm_id,
+            &request_note_id,
+            false,
+            Some("too dangerous"),
+            "sess-perm-test",
+            &sk,
+        )
+        .unwrap();
+
+        let json = &event.note_json;
+        assert!(json.contains("deny"));
+        assert!(json.contains("too dangerous"));
     }
 }

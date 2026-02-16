@@ -111,6 +111,8 @@ pub struct Dave {
     pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
     /// Waiting for ndb to finish indexing 1988 events so we can load messages.
     pending_message_load: Option<PendingMessageLoad>,
+    /// Events waiting to be published to relays (queued from non-pool contexts).
+    pending_relay_events: Vec<session_events::BuiltEvent>,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -126,7 +128,7 @@ struct PendingMessageLoad {
 /// Build and ingest a live kind-1988 event into ndb.
 ///
 /// Extracts cwd and session ID from the session's agentic data,
-/// builds the event, and ingests it. Logs errors without propagating.
+/// builds the event, ingests it, and returns the event for relay publishing.
 fn ingest_live_event(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -134,15 +136,9 @@ fn ingest_live_event(
     content: &str,
     role: &str,
     tool_id: Option<&str>,
-) {
-    let Some(agentic) = &mut session.agentic else {
-        return;
-    };
-
-    let Some(session_id) = agentic.event_session_id().map(|s| s.to_string()) else {
-        return;
-    };
-
+) -> Option<session_events::BuiltEvent> {
+    let agentic = session.agentic.as_mut()?;
+    let session_id = agentic.event_session_id().map(|s| s.to_string())?;
     let cwd = agentic.cwd.to_str();
 
     match session_events::build_live_event(
@@ -155,14 +151,17 @@ fn ingest_live_event(
         secret_key,
     ) {
         Ok(event) => {
-            if let Err(e) = ndb
-                .process_event_with(&event.json, nostrdb::IngestMetadata::new().client(true))
-            {
+            if let Err(e) = ndb.process_event_with(
+                &event.to_event_json(),
+                nostrdb::IngestMetadata::new().client(true),
+            ) {
                 tracing::warn!("failed to ingest live event: {:?}", e);
             }
+            Some(event)
         }
         Err(e) => {
             tracing::warn!("failed to build live event: {}", e);
+            None
         }
     }
 }
@@ -279,6 +278,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             ipc_listener,
             pending_archive_convert: None,
             pending_message_load: None,
+            pending_relay_events: Vec::new(),
         }
     }
 
@@ -293,11 +293,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.settings = settings;
     }
 
-    /// Process incoming tokens from the ai backend for ALL sessions
-    /// Returns a set of session IDs that need to send tool responses
-    fn process_events(&mut self, app_ctx: &AppContext) -> HashSet<SessionId> {
+    /// Process incoming tokens from the ai backend for ALL sessions.
+    /// Returns (sessions needing tool responses, events to publish to relays).
+    fn process_events(
+        &mut self,
+        app_ctx: &AppContext,
+    ) -> (HashSet<SessionId>, Vec<session_events::BuiltEvent>) {
         // Track which sessions need to send tool responses
         let mut needs_send: HashSet<SessionId> = HashSet::new();
+        let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
         let active_id = self.session_manager.active_id();
 
         // Extract secret key once for live event generation
@@ -343,7 +347,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 match res {
                     DaveApiResponse::Failed(ref err) => {
                         if let Some(sk) = &secret_key {
-                            ingest_live_event(session, app_ctx.ndb, sk, err, "error", None);
+                            if let Some(evt) = ingest_live_event(session, app_ctx.ndb, sk, err, "error", None) {
+                                events_to_publish.push(evt);
+                            }
                         }
                         session.chat.push(Message::Error(err.to_string()));
                     }
@@ -404,20 +410,44 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             pending.request.tool_input
                         );
 
-                        // Generate live event for permission request
+                        // Build and publish a proper permission request event
+                        // with perm-id, tool-name tags for remote clients
                         if let Some(sk) = &secret_key {
-                            let content = format!(
-                                "Permission request: {}",
-                                pending.request.tool_name
-                            );
-                            ingest_live_event(
-                                session,
-                                app_ctx.ndb,
-                                sk,
-                                &content,
-                                "permission_request",
-                                None,
-                            );
+                            let event_session_id = session
+                                .agentic
+                                .as_ref()
+                                .and_then(|a| a.event_session_id().map(|s| s.to_string()));
+
+                            if let Some(sid) = event_session_id {
+                                match session_events::build_permission_request_event(
+                                    &pending.request.id,
+                                    &pending.request.tool_name,
+                                    &pending.request.tool_input,
+                                    &sid,
+                                    sk,
+                                ) {
+                                    Ok(evt) => {
+                                        // Ingest into local ndb
+                                        if let Err(e) = app_ctx.ndb.process_event_with(
+                                            &evt.to_event_json(),
+                                            nostrdb::IngestMetadata::new().client(true),
+                                        ) {
+                                            tracing::warn!("failed to ingest permission request: {:?}", e);
+                                        }
+                                        // Store note_id for linking responses
+                                        if let Some(agentic) = &mut session.agentic {
+                                            agentic.perm_request_note_ids.insert(
+                                                pending.request.id,
+                                                evt.note_id,
+                                            );
+                                        }
+                                        events_to_publish.push(evt);
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("failed to build permission request event: {}", e);
+                                    }
+                                }
+                            }
                         }
 
                         // Store the response sender for later (agentic only)
@@ -440,14 +470,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         if let Some(sk) = &secret_key {
                             let content =
                                 format!("{}: {}", result.tool_name, result.summary);
-                            ingest_live_event(
+                            if let Some(evt) = ingest_live_event(
                                 session,
                                 app_ctx.ndb,
                                 sk,
                                 &content,
                                 "tool_result",
                                 None,
-                            );
+                            ) {
+                                events_to_publish.push(evt);
+                            }
                         }
 
                         // Invalidate git status after file-modifying tools.
@@ -467,7 +499,33 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             info.tools.len(),
                             info.agents.len()
                         );
+                        // Set up permission response subscription when we learn
+                        // the claude session ID (used as `d` tag for filtering)
                         if let Some(agentic) = &mut session.agentic {
+                            if agentic.perm_response_sub.is_none() {
+                                if let Some(ref csid) = info.claude_session_id {
+                                    let filter = nostrdb::Filter::new()
+                                        .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                                        .tags([csid.as_str()], 'd')
+                                        .tags(["ai-permission"], 't')
+                                        .build();
+                                    match app_ctx.ndb.subscribe(&[filter]) {
+                                        Ok(sub) => {
+                                            tracing::info!(
+                                                "subscribed for remote permission responses (session {})",
+                                                csid
+                                            );
+                                            agentic.perm_response_sub = Some(sub);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "failed to subscribe for permission responses: {:?}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                             agentic.session_info = Some(info);
                         }
                     }
@@ -533,14 +591,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             if let Some(Message::Assistant(msg)) = session.chat.last() {
                                 let text = msg.text().to_string();
                                 if !text.is_empty() {
-                                    ingest_live_event(
+                                    if let Some(evt) = ingest_live_event(
                                         session,
                                         app_ctx.ndb,
                                         sk,
                                         &text,
                                         "assistant",
                                         None,
-                                    );
+                                    ) {
+                                        events_to_publish.push(evt);
+                                    }
                                 }
                             }
                         }
@@ -558,7 +618,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
-        needs_send
+        (needs_send, events_to_publish)
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
@@ -831,6 +891,119 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Poll for remote permission responses arriving via nostr relays.
+    ///
+    /// Remote clients (phone) publish kind-1988 events with
+    /// `role=permission_response` and a `perm-id` tag. We poll each
+    /// session's subscription and route matching responses through the
+    /// existing oneshot channel, racing with the local UI.
+    fn poll_remote_permission_responses(&mut self, ndb: &nostrdb::Ndb) {
+        let session_ids = self.session_manager.session_ids();
+        for session_id in session_ids {
+            let Some(session) = self.session_manager.get_mut(session_id) else {
+                continue;
+            };
+            let Some(agentic) = &mut session.agentic else {
+                continue;
+            };
+            let Some(sub) = agentic.perm_response_sub else {
+                continue;
+            };
+
+            // Poll for new notes (non-blocking)
+            let note_keys = ndb.poll_for_notes(sub, 64);
+            if note_keys.is_empty() {
+                continue;
+            }
+
+            let txn = match Transaction::new(ndb) {
+                Ok(txn) => txn,
+                Err(_) => continue,
+            };
+
+            for key in note_keys {
+                let Ok(note) = ndb.get_note_by_key(&txn, key) else {
+                    continue;
+                };
+
+                // Only process permission_response events
+                let role = session_events::get_tag_value(&note, "role");
+                if role != Some("permission_response") {
+                    continue;
+                }
+
+                // Extract perm-id
+                let Some(perm_id_str) = session_events::get_tag_value(&note, "perm-id") else {
+                    tracing::warn!("permission_response event missing perm-id tag");
+                    continue;
+                };
+                let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) else {
+                    tracing::warn!("invalid perm-id UUID: {}", perm_id_str);
+                    continue;
+                };
+
+                // Parse the content to determine allow/deny
+                let content = note.content();
+                let (allowed, message) = match serde_json::from_str::<serde_json::Value>(content) {
+                    Ok(v) => {
+                        let decision = v
+                            .get("decision")
+                            .and_then(|d| d.as_str())
+                            .unwrap_or("deny");
+                        let msg = v
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string());
+                        (decision == "allow", msg)
+                    }
+                    Err(_) => (false, None),
+                };
+
+                // Route through the existing oneshot channel (first-response-wins)
+                if let Some(sender) = agentic.pending_permissions.remove(&perm_id) {
+                    let response = if allowed {
+                        PermissionResponse::Allow { message }
+                    } else {
+                        PermissionResponse::Deny {
+                            reason: message.unwrap_or_else(|| "Denied by remote".to_string()),
+                        }
+                    };
+
+                    // Mark in UI
+                    let response_type = if allowed {
+                        crate::messages::PermissionResponseType::Allowed
+                    } else {
+                        crate::messages::PermissionResponseType::Denied
+                    };
+                    for msg in &mut session.chat {
+                        if let Message::PermissionRequest(req) = msg {
+                            if req.id == perm_id {
+                                req.response = Some(response_type);
+                                break;
+                            }
+                        }
+                    }
+
+                    if sender.send(response).is_err() {
+                        tracing::warn!(
+                            "failed to send remote permission response for {}",
+                            perm_id
+                        );
+                    } else {
+                        tracing::info!(
+                            "remote permission response for {}: {}",
+                            perm_id,
+                            if allowed { "allowed" } else { "denied" }
+                        );
+                    }
+                }
+                // If sender not found, either local UI already responded or
+                // this is a stale event — just ignore it silently.
+            }
+        }
+    }
+
     /// Delete a session and clean up backend resources
     fn delete_session(&mut self, id: SessionId) {
         update::delete_session(
@@ -971,7 +1144,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             {
                 let sb = sk.as_secret_bytes();
                 let secret_bytes: [u8; 32] = sb.try_into().expect("secret key is 32 bytes");
-                ingest_live_event(session, app_ctx.ndb, &secret_bytes, &user_text, "user", None);
+                if let Some(evt) = ingest_live_event(session, app_ctx.ndb, &secret_bytes, &user_text, "user", None) {
+                    self.pending_relay_events.push(evt);
+                }
             }
 
             session.chat.push(Message::User(user_text));
@@ -1172,7 +1347,22 @@ impl notedeck::App for Dave {
         self.check_interrupt_timeout();
 
         // Process incoming AI responses for all sessions
-        let sessions_needing_send = self.process_events(ctx);
+        let (sessions_needing_send, events_to_publish) = self.process_events(ctx);
+
+        // Publish events to relay pool for remote session control.
+        // Includes events from process_events() and any queued from handle_user_send().
+        let pending = std::mem::take(&mut self.pending_relay_events);
+        for event in events_to_publish.iter().chain(pending.iter()) {
+            match enostr::ClientMessage::event_json(event.note_json.clone()) {
+                Ok(msg) => ctx.pool.send(&msg),
+                Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
+            }
+        }
+
+        // Poll for remote permission responses from relay events.
+        // These arrive as kind-1988 events with role=permission_response,
+        // published by phone/remote clients. First-response-wins with local UI.
+        self.poll_remote_permission_responses(ctx.ndb);
 
         // Poll git status for all agentic sessions
         for session in self.session_manager.iter_mut() {

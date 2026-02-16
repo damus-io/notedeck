@@ -47,7 +47,7 @@ pub fn convert_session_to_events(
 
 /// Ingest a single built event into the local ndb.
 fn ingest_event(ndb: &Ndb, event: &BuiltEvent) -> Result<(), ConvertError> {
-    ndb.process_event_with(&event.json, IngestMetadata::new().client(true))
+    ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
         .map_err(|e| ConvertError::Ingest(format!("{:?}", e)))?;
     Ok(())
 }

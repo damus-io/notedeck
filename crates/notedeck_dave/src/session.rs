@@ -58,6 +58,12 @@ pub struct AgenticSessionData {
     pub git_status: GitStatusCache,
     /// Threading state for live kind-1988 event generation.
     pub live_threading: ThreadingState,
+    /// Maps permission request UUID → note ID of the published request event.
+    /// Used to link permission response events back to their requests.
+    pub perm_request_note_ids: HashMap<Uuid, [u8; 32]>,
+    /// Subscription for remote permission response events (kind-1988, t=ai-permission).
+    /// Set up once when the session's claude_session_id becomes known.
+    pub perm_response_sub: Option<nostrdb::Subscription>,
 }
 
 impl AgenticSessionData {
@@ -85,6 +91,8 @@ impl AgenticSessionData {
             resume_session_id: None,
             git_status,
             live_threading: ThreadingState::new(),
+            perm_request_note_ids: HashMap::new(),
+            perm_response_sub: None,
         }
     }
 
