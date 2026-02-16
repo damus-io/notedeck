@@ -10,6 +10,9 @@
 
 /// Replace all occurrences of `cwd` prefix in absolute paths with relative paths.
 ///
+/// Not currently used (Phase 1 stores raw paths), kept for future Phase 2.
+#[allow(dead_code)]
+///
 /// For example, with cwd = "/Users/jb55/dev/notedeck":
 ///   "/Users/jb55/dev/notedeck/src/main.rs" → "src/main.rs"
 ///   "/Users/jb55/dev/notedeck" → "."
@@ -37,6 +40,9 @@ pub fn normalize_paths(json: &str, cwd: &str) -> String {
 /// Note: This is not perfectly inverse — it will also expand any unrelated
 /// "." occurrences that happen to match. In practice, the cwd field is the
 /// main target, and relative paths in tool inputs/outputs are the rest.
+///
+/// Not currently used (Phase 1 stores raw paths), kept for future Phase 2.
+#[allow(dead_code)]
 pub fn denormalize_paths(json: &str, local_cwd: &str) -> String {
     if local_cwd.is_empty() {
         return json.to_string();
@@ -77,12 +83,10 @@ mod tests {
 
     #[test]
     fn test_normalize_absolute_paths() {
-        let json = r#"{"cwd":"/Users/jb55/dev/notedeck","file":"/Users/jb55/dev/notedeck/src/main.rs"}"#;
+        let json =
+            r#"{"cwd":"/Users/jb55/dev/notedeck","file":"/Users/jb55/dev/notedeck/src/main.rs"}"#;
         let normalized = normalize_paths(json, "/Users/jb55/dev/notedeck");
-        assert_eq!(
-            normalized,
-            r#"{"cwd":".","file":"src/main.rs"}"#
-        );
+        assert_eq!(normalized, r#"{"cwd":".","file":"src/main.rs"}"#);
     }
 
     #[test]
@@ -112,7 +116,8 @@ mod tests {
 
     #[test]
     fn test_normalize_multiple_occurrences() {
-        let json = r#"{"old":"/Users/jb55/dev/notedeck/a.rs","new":"/Users/jb55/dev/notedeck/b.rs"}"#;
+        let json =
+            r#"{"old":"/Users/jb55/dev/notedeck/a.rs","new":"/Users/jb55/dev/notedeck/b.rs"}"#;
         let normalized = normalize_paths(json, "/Users/jb55/dev/notedeck");
         assert_eq!(normalized, r#"{"old":"a.rs","new":"b.rs"}"#);
     }
@@ -121,10 +126,7 @@ mod tests {
     fn test_denormalize_cwd_field() {
         let json = r#"{"cwd":"."}"#;
         let denormalized = denormalize_paths(json, "/Users/jb55/dev/notedeck");
-        assert_eq!(
-            denormalized,
-            r#"{"cwd":"/Users/jb55/dev/notedeck"}"#
-        );
+        assert_eq!(denormalized, r#"{"cwd":"/Users/jb55/dev/notedeck"}"#);
     }
 
     #[test]

@@ -239,9 +239,7 @@ pub fn extract_display_content(line: &JsonlLine) -> String {
                         .iter()
                         .filter_map(|b| match b {
                             ContentBlock::ToolResult { content, .. } => match content {
-                                Value::String(s) => {
-                                    Some(truncate_str(s, 500))
-                                }
+                                Value::String(s) => Some(truncate_str(s, 500)),
                                 _ => Some("[tool result]".to_string()),
                             },
                             _ => None,
@@ -262,11 +260,7 @@ pub fn extract_display_content(line: &JsonlLine) -> String {
             if let Some(msg) = line.message() {
                 // For assistant messages, we'll produce content for each block.
                 // The caller handles splitting into multiple events for mixed content.
-                if let Some(text) = msg.text_content() {
-                    text
-                } else {
-                    String::new()
-                }
+                msg.text_content().unwrap_or_default()
             } else {
                 String::new()
             }
@@ -330,7 +324,10 @@ mod tests {
 
         let msg = parsed.message().unwrap();
         assert_eq!(msg.role(), Some("user"));
-        assert_eq!(msg.text_content(), Some("Human: Hello world\n\n".to_string()));
+        assert_eq!(
+            msg.text_content(),
+            Some("Human: Hello world\n\n".to_string())
+        );
 
         let content = extract_display_content(&parsed);
         assert_eq!(content, "Hello world\n\n");
@@ -365,7 +362,10 @@ mod tests {
             ContentBlock::ToolUse { id, name, input } => {
                 assert_eq!(*id, "toolu_123");
                 assert_eq!(*name, "Read");
-                assert_eq!(input.get("file_path").unwrap().as_str(), Some("/tmp/test.rs"));
+                assert_eq!(
+                    input.get("file_path").unwrap().as_str(),
+                    Some("/tmp/test.rs")
+                );
             }
             _ => panic!("expected ToolUse block"),
         }
@@ -439,7 +439,10 @@ mod tests {
         assert_eq!(blocks.len(), 2);
 
         // First block is text
-        assert!(matches!(blocks[0], ContentBlock::Text("Here is what I found:")));
+        assert!(matches!(
+            blocks[0],
+            ContentBlock::Text("Here is what I found:")
+        ));
 
         // Second block is tool use
         match &blocks[1] {

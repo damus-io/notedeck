@@ -5,7 +5,7 @@
 //! for populating the chat UI.
 
 use crate::messages::{AssistantMessage, ToolResult};
-use crate::session_events::AI_CONVERSATION_KIND;
+use crate::session_events::{get_tag_value, AI_CONVERSATION_KIND};
 use crate::Message;
 use nostrdb::{Filter, Ndb, Transaction};
 
@@ -13,11 +13,7 @@ use nostrdb::{Filter, Ndb, Transaction};
 ///
 /// Returns messages in chronological order, suitable for populating
 /// `ChatSession.chat` before streaming begins.
-pub fn load_session_messages(
-    ndb: &Ndb,
-    txn: &Transaction,
-    session_id: &str,
-) -> Vec<Message> {
+pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> Vec<Message> {
     let filter = Filter::new()
         .kinds([AI_CONVERSATION_KIND as u64])
         .tags([session_id], 'd')
@@ -32,9 +28,7 @@ pub fn load_session_messages(
     // Collect notes with their created_at for sorting
     let mut notes: Vec<_> = results
         .iter()
-        .filter_map(|qr| {
-            ndb.get_note_by_key(txn, qr.note_key).ok()
-        })
+        .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
         .collect();
 
     // Sort by created_at (chronological order)
@@ -45,13 +39,11 @@ pub fn load_session_messages(
         let content = note.content();
         let role = get_tag_value(note, "role");
 
-        let msg = match role.as_deref() {
+        let msg = match role {
             Some("user") => Some(Message::User(content.to_string())),
-            Some("assistant") => {
-                Some(Message::Assistant(AssistantMessage::from_text(
-                    content.to_string(),
-                )))
-            }
+            Some("assistant") => Some(Message::Assistant(AssistantMessage::from_text(
+                content.to_string(),
+            ))),
             Some("tool_call") => {
                 // Tool calls are displayed as assistant messages in the UI
                 Some(Message::Assistant(AssistantMessage::from_text(
@@ -63,10 +55,7 @@ pub fn load_session_messages(
                 // Content format is the tool output text
                 let tool_name = "tool".to_string();
                 let summary = truncate(content, 100);
-                Some(Message::ToolResult(ToolResult {
-                    tool_name,
-                    summary,
-                }))
+                Some(Message::ToolResult(ToolResult { tool_name, summary }))
             }
             // Skip progress, queue-operation, file-history-snapshot for UI
             _ => None,
@@ -78,20 +67,6 @@ pub fn load_session_messages(
     }
 
     messages
-}
-
-/// Extract the value of a named tag from a note.
-fn get_tag_value<'a>(note: &'a nostrdb::Note<'a>, tag_name: &str) -> Option<String> {
-    for tag in note.tags() {
-        if tag.count() >= 2 {
-            if let Some(name) = tag.get_str(0) {
-                if name == tag_name {
-                    return tag.get_str(1).map(|s| s.to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

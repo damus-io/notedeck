@@ -5,7 +5,7 @@
 
 use crate::session_events::{self, BuiltEvent, ThreadingState};
 use crate::session_jsonl::JsonlLine;
-use nostrdb::{Ndb, IngestMetadata};
+use nostrdb::{IngestMetadata, Ndb};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
@@ -30,9 +30,8 @@ pub fn convert_session_to_events(
             continue;
         }
 
-        let parsed = JsonlLine::parse(&line).map_err(|e| {
-            ConvertError::Parse(format!("line {}: {}", line_num + 1, e))
-        })?;
+        let parsed = JsonlLine::parse(&line)
+            .map_err(|e| ConvertError::Parse(format!("line {}: {}", line_num + 1, e)))?;
 
         let events = session_events::build_events(&parsed, &mut threading, secret_key)
             .map_err(|e| ConvertError::Build(format!("line {}: {}", line_num + 1, e)))?;
