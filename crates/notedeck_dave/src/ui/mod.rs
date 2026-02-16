@@ -54,6 +54,8 @@ pub enum OverlayResult {
         cwd: std::path::PathBuf,
         session_id: String,
         title: String,
+        /// Path to the JSONL file for archive conversion
+        file_path: std::path::PathBuf,
     },
     /// Create a new session in the given directory
     NewSession { cwd: std::path::PathBuf },
@@ -120,11 +122,13 @@ pub fn session_picker_overlay_ui(
                 cwd,
                 session_id,
                 title,
+                file_path,
             } => {
                 return OverlayResult::ResumeSession {
                     cwd,
                     session_id,
                     title,
+                    file_path,
                 };
             }
             SessionPickerAction::NewSession { cwd } => {

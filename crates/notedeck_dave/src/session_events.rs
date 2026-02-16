@@ -11,6 +11,11 @@ use std::collections::HashMap;
 /// Nostr event kind for AI conversation notes.
 pub const AI_CONVERSATION_KIND: u32 = 1988;
 
+/// Nostr event kind for source-data companion events (archive).
+/// Each 1989 event carries the raw JSONL for one line, linked to the
+/// corresponding 1988 event via an `e` tag.
+pub const AI_SOURCE_DATA_KIND: u32 = 1989;
+
 /// Extract the value of a named tag from a note.
 pub fn get_tag_value<'a>(note: &'a nostrdb::Note<'a>, tag_name: &str) -> Option<&'a str> {
     for tag in note.tags() {
@@ -35,6 +40,8 @@ pub struct BuiltEvent {
     pub json: String,
     /// The 32-byte note ID (from the signed event).
     pub note_id: [u8; 32],
+    /// The nostr event kind (1988 or 1989).
+    pub kind: u32,
 }
 
 /// Maintains threading state across a session's events.
@@ -107,7 +114,7 @@ pub fn build_events(
 
     let should_split = is_assistant && blocks.len() > 1;
 
-    if should_split {
+    let mut events = if should_split {
         // Build one event per content block
         let total = blocks.len();
         let mut events = Vec::with_capacity(total);
@@ -136,7 +143,7 @@ pub fn build_events(
             threading.record(line.uuid(), event.note_id);
             events.push(event);
         }
-        Ok(events)
+        events
     } else {
         // Single event for the line
         let content = session_jsonl::extract_display_content(line);
@@ -166,8 +173,16 @@ pub fn build_events(
             secret_key,
         )?;
         threading.record(line.uuid(), event.note_id);
-        Ok(vec![event])
-    }
+        vec![event]
+    };
+
+    // Build a kind-1989 source-data companion event linked to the first 1988 event.
+    let first_note_id = events[0].note_id;
+    let source_data_event =
+        build_source_data_event(line, &first_note_id, threading.seq() - 1, secret_key)?;
+    events.push(source_data_event);
+
+    Ok(events)
 }
 
 #[derive(Debug)]
@@ -185,10 +200,73 @@ impl std::fmt::Display for EventBuildError {
     }
 }
 
+/// Build a kind-1989 source-data companion event.
+///
+/// Contains the raw JSONL line and links to the corresponding 1988 event.
+/// Does NOT participate in threading (no root/reply, no seq increment).
+fn build_source_data_event(
+    line: &JsonlLine,
+    conversation_note_id: &[u8; 32],
+    seq: u32,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let raw_json = line.to_json();
+    let seq_str = seq.to_string();
+
+    let mut builder = NoteBuilder::new()
+        .kind(AI_SOURCE_DATA_KIND)
+        .content("")
+        .options(NoteBuildOptions::default());
+
+    if let Some(ts) = line.timestamp_secs() {
+        builder = builder.created_at(ts);
+    }
+
+    // Link to the corresponding 1988 event
+    builder = builder
+        .start_tag()
+        .tag_str("e")
+        .tag_id(conversation_note_id);
+
+    // Same session ID for querying
+    if let Some(session_id) = line.session_id() {
+        builder = builder.start_tag().tag_str("d").tag_str(session_id);
+    }
+
+    // Same seq as the first 1988 event from this line
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
+
+    // The raw JSONL data
+    builder = builder
+        .start_tag()
+        .tag_str("source-data")
+        .tag_str(&raw_json);
+
+    let note = builder
+        .sign(secret_key)
+        .build()
+        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
+
+    let note_id: [u8; 32] = *note.id();
+
+    let event = enostr::ClientMessage::event(&note)
+        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
+
+    let json = event
+        .to_json()
+        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
+
+    Ok(BuiltEvent {
+        json,
+        note_id,
+        kind: AI_SOURCE_DATA_KIND,
+    })
+}
+
 /// Build a single nostr event from a JSONL line.
 ///
 /// `split_index`: `Some((i, total))` when this event is part of a split
-/// assistant message. Only the first event in a split group gets source-data.
+/// assistant message.
 ///
 /// `tool_id`: The tool use/result ID for tool_call and tool_result events.
 fn build_single_event(
@@ -282,21 +360,6 @@ fn build_single_event(
     // -- Discoverability --
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
 
-    // -- Source data (lossless) --
-    // Only include source-data on non-split events or first event of a split group.
-    // Store raw JSON verbatim (no path normalization).
-    let include_source_data = match split_index {
-        Some((i, _)) => i == 0,
-        None => true,
-    };
-    if include_source_data {
-        let raw_json = line.to_json();
-        builder = builder
-            .start_tag()
-            .tag_str("source-data")
-            .tag_str(&raw_json);
-    }
-
     // Sign and build
     let note = builder
         .sign(secret_key)
@@ -312,7 +375,11 @@ fn build_single_event(
         .to_json()
         .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
 
-    Ok(BuiltEvent { json, note_id })
+    Ok(BuiltEvent {
+        json,
+        note_id,
+        kind: AI_CONVERSATION_KIND,
+    })
 }
 
 #[cfg(test)]
@@ -336,18 +403,24 @@ mod tests {
         let mut threading = ThreadingState::new();
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
 
-        assert_eq!(events.len(), 1);
+        // 1 conversation event (1988) + 1 source-data event (1989)
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, AI_CONVERSATION_KIND);
+        assert_eq!(events[1].kind, AI_SOURCE_DATA_KIND);
         assert!(threading.root_note_id.is_some());
         assert_eq!(threading.root_note_id, Some(events[0].note_id));
 
-        // Verify the JSON contains our kind and tags
+        // 1988 event has kind and tags but NO source-data
         let json = &events[0].json;
         assert!(json.contains("1988"));
         assert!(json.contains("source"));
         assert!(json.contains("claude-code"));
         assert!(json.contains("role"));
         assert!(json.contains("user"));
-        assert!(json.contains("source-data"));
+        assert!(!json.contains("source-data"));
+
+        // 1989 event has source-data
+        assert!(events[1].json.contains("source-data"));
     }
 
     #[test]
@@ -363,7 +436,10 @@ mod tests {
         threading.last_note_id = Some([1u8; 32]);
 
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
-        assert_eq!(events.len(), 1);
+        // 1 conversation (1988) + 1 source-data (1989)
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, AI_CONVERSATION_KIND);
+        assert_eq!(events[1].kind, AI_SOURCE_DATA_KIND);
 
         let json = &events[0].json;
         assert!(json.contains("assistant"));
@@ -380,11 +456,15 @@ mod tests {
         let mut threading = ThreadingState::new();
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
 
-        // Should produce 2 events: one text, one tool_call
-        assert_eq!(events.len(), 2);
+        // 2 conversation events (1988) + 1 source-data (1989)
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, AI_CONVERSATION_KIND);
+        assert_eq!(events[1].kind, AI_CONVERSATION_KIND);
+        assert_eq!(events[2].kind, AI_SOURCE_DATA_KIND);
 
-        // Both should have unique note IDs
+        // All should have unique note IDs
         assert_ne!(events[0].note_id, events[1].note_id);
+        assert_ne!(events[0].note_id, events[2].note_id);
     }
 
     #[test]
@@ -405,17 +485,23 @@ mod tests {
             all_events.extend(events);
         }
 
-        assert_eq!(all_events.len(), 3);
+        // 3 lines × (1 conversation + 1 source-data) = 6 events
+        assert_eq!(all_events.len(), 6);
+
+        // Filter to only 1988 events for threading checks
+        let conv_events: Vec<_> = all_events
+            .iter()
+            .filter(|e| e.kind == AI_CONVERSATION_KIND)
+            .collect();
+        assert_eq!(conv_events.len(), 3);
 
         // First event should be root (no e tags)
         // Subsequent events should reference root + previous
-        // We can't easily inspect the binary note, but we can verify
-        // the JSON contains "root" and "reply" markers
-        assert!(!all_events[0].json.contains("root"));
-        assert!(all_events[1].json.contains("root"));
-        assert!(all_events[1].json.contains("reply"));
-        assert!(all_events[2].json.contains("root"));
-        assert!(all_events[2].json.contains("reply"));
+        assert!(!conv_events[0].json.contains("root"));
+        assert!(conv_events[1].json.contains("root"));
+        assert!(conv_events[1].json.contains("reply"));
+        assert!(conv_events[2].json.contains("root"));
+        assert!(conv_events[2].json.contains("reply"));
     }
 
     #[test]
@@ -428,10 +514,13 @@ mod tests {
         let mut threading = ThreadingState::new();
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
 
-        let json = &events[0].json;
-        assert!(json.contains("source-data"));
-        // Raw paths should be preserved (no normalization)
-        assert!(json.contains("/Users/jb55/dev/notedeck"));
+        // 1988 event should NOT have source-data
+        assert!(!events[0].json.contains("source-data"));
+
+        // 1989 event should have source-data with raw paths preserved
+        let sd_event = events.iter().find(|e| e.kind == AI_SOURCE_DATA_KIND).unwrap();
+        assert!(sd_event.json.contains("source-data"));
+        assert!(sd_event.json.contains("/Users/jb55/dev/notedeck"));
     }
 
     #[test]
@@ -443,7 +532,8 @@ mod tests {
 
         let mut threading = ThreadingState::new();
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
-        assert_eq!(events.len(), 1);
+        // 1 conversation (1988) + 1 source-data (1989)
+        assert_eq!(events.len(), 2);
 
         let json = &events[0].json;
         assert!(json.contains("queue-operation"));
@@ -463,16 +553,19 @@ mod tests {
 
         let line = JsonlLine::parse(lines[0]).unwrap();
         let events = build_events(&line, &mut threading, &sk).unwrap();
-        assert_eq!(events.len(), 1);
+        // 1 conversation + 1 source-data
+        assert_eq!(events.len(), 2);
         assert_eq!(threading.seq(), 1);
-        // First event should have seq=0
+        // First 1988 event should have seq=0
         assert!(events[0].json.contains(r#""seq","0"#));
+        // 1989 event should also have seq=0 (matches its 1988 event)
+        assert!(events[1].json.contains(r#""seq","0"#));
 
         let line = JsonlLine::parse(lines[1]).unwrap();
         let events = build_events(&line, &mut threading, &sk).unwrap();
-        assert_eq!(events.len(), 1);
+        assert_eq!(events.len(), 2);
         assert_eq!(threading.seq(), 2);
-        // Second event should have seq=1
+        // Second 1988 event should have seq=1
         assert!(events[0].json.contains(r#""seq","1"#));
     }
 
@@ -485,16 +578,21 @@ mod tests {
 
         let mut threading = ThreadingState::new();
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
-        assert_eq!(events.len(), 2);
+        // 2 conversation (1988) + 1 source-data (1989)
+        assert_eq!(events.len(), 3);
 
-        // First event (text): split 0/2, has source-data
+        // First event (text): split 0/2, NO source-data (moved to 1989)
         assert!(events[0].json.contains(r#""split","0/2"#));
-        assert!(events[0].json.contains("source-data"));
+        assert!(!events[0].json.contains("source-data"));
 
         // Second event (tool_call): split 1/2, NO source-data, has tool-id
         assert!(events[1].json.contains(r#""split","1/2"#));
         assert!(!events[1].json.contains("source-data"));
         assert!(events[1].json.contains(r#""tool-id","t1"#));
+
+        // Third event (1989): has source-data
+        assert_eq!(events[2].kind, AI_SOURCE_DATA_KIND);
+        assert!(events[2].json.contains("source-data"));
     }
 
     #[test]
@@ -521,7 +619,8 @@ mod tests {
 
         let mut threading = ThreadingState::new();
         let events = build_events(&line, &mut threading, &test_secret_key()).unwrap();
-        assert_eq!(events.len(), 1);
+        // 1 conversation + 1 source-data
+        assert_eq!(events.len(), 2);
         assert!(events[0].json.contains(r#""tool-id","toolu_abc"#));
     }
 
@@ -551,7 +650,7 @@ mod tests {
         let mut total_events = 0;
 
         let filter = nostrdb::Filter::new()
-            .kinds([AI_CONVERSATION_KIND as u64])
+            .kinds([AI_CONVERSATION_KIND as u64, AI_SOURCE_DATA_KIND as u64])
             .build();
 
         for line_str in &jsonl_lines {
@@ -566,9 +665,14 @@ mod tests {
             }
         }
 
-        // The split assistant message (line 3) produces 2 events,
-        // others produce 1 each = 4 + 2 = 6
-        assert_eq!(total_events, 6);
+        // Each JSONL line produces N conversation events + 1 source-data event.
+        // Line 1 (queue-op): 1 conv + 1 sd = 2
+        // Line 2 (user): 1 conv + 1 sd = 2
+        // Line 3 (assistant split): 2 conv + 1 sd = 3
+        // Line 4 (user tool_result): 1 conv + 1 sd = 2
+        // Line 5 (assistant): 1 conv + 1 sd = 2
+        // Total: 11
+        assert_eq!(total_events, 11);
 
         // Reconstruct JSONL from ndb
         let txn = Transaction::new(&ndb).unwrap();

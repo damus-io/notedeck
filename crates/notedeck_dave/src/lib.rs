@@ -106,6 +106,9 @@ pub struct Dave {
     active_overlay: DaveOverlay,
     /// IPC listener for external spawn-agent commands
     ipc_listener: Option<ipc::IpcListener>,
+    /// JSONL file path pending archive conversion to nostr events.
+    /// Set when resuming a session; processed in update() where AppContext is available.
+    pending_archive_convert: Option<std::path::PathBuf>,
 }
 
 /// Calculate an anonymous user_id from a keypair
@@ -218,6 +221,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_picker: SessionPicker::new(),
             active_overlay,
             ipc_listener,
+            pending_archive_convert: None,
         }
     }
 
@@ -476,8 +480,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         cwd,
                         session_id,
                         title,
+                        file_path,
                     } => {
                         self.create_resumed_session_with_cwd(cwd, session_id, title);
+                        self.pending_archive_convert = Some(file_path);
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::None;
                     }
@@ -885,6 +891,33 @@ impl notedeck::App for Dave {
 
         // Poll for external editor completion
         update::poll_editor_job(&mut self.session_manager);
+
+        // Process pending archive conversion (JSONL → nostr events)
+        if let Some(file_path) = self.pending_archive_convert.take() {
+            let keypair = ctx.accounts.get_selected_account().keypair();
+            if let Some(sk) = keypair.secret_key {
+                let sb = sk.as_secret_bytes();
+                let secret_bytes: [u8; 32] = sb.try_into().expect("secret key is 32 bytes");
+                match session_converter::convert_session_to_events(
+                    &file_path,
+                    ctx.ndb,
+                    &secret_bytes,
+                ) {
+                    Ok(note_ids) => {
+                        tracing::info!(
+                            "archived session: {} events from {}",
+                            note_ids.len(),
+                            file_path.display()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("archive conversion failed: {}", e);
+                    }
+                }
+            } else {
+                tracing::warn!("no secret key available for archive conversion");
+            }
+        }
 
         // Handle global keybindings (when no text input has focus)
         let has_pending_permission = self.first_pending_permission().is_some();

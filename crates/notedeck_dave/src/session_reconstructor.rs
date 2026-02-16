@@ -1,9 +1,9 @@
-//! Reconstruct JSONL from kind-1988 nostr events stored in ndb.
+//! Reconstruct JSONL from kind-1989 source-data nostr events stored in ndb.
 //!
 //! Queries events by session ID (`d` tag), sorts by `seq` tag,
 //! extracts `source-data` tags, and returns the original JSONL lines.
 
-use crate::session_events::{get_tag_value, AI_CONVERSATION_KIND};
+use crate::session_events::{get_tag_value, AI_SOURCE_DATA_KIND};
 use nostrdb::{Filter, Ndb, Transaction};
 
 #[derive(Debug)]
@@ -31,7 +31,7 @@ pub fn reconstruct_jsonl_lines(
     session_id: &str,
 ) -> Result<Vec<String>, ReconstructError> {
     let filters = [Filter::new()
-        .kinds([AI_CONVERSATION_KIND as u64])
+        .kinds([AI_SOURCE_DATA_KIND as u64])
         .tags([session_id], 'd')
         .limit(10000)
         .build()];
