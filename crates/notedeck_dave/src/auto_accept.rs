@@ -110,6 +110,7 @@ impl Default for AutoAcceptRules {
                         "gh release view".into(),
                         // Beads issue tracker
                         "bd".into(),
+                        "beads list".into(),
                     ],
                 },
                 AutoAcceptRule::ReadOnlyTool {
