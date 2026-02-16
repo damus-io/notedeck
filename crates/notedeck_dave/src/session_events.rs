@@ -166,12 +166,14 @@ pub fn build_events(
             };
 
             let event = build_single_event(
-                line,
+                Some(line),
                 &content,
                 role,
+                "claude-code",
                 Some((i, total)),
                 tool_id,
                 session_id.as_deref(),
+                None,
                 timestamp,
                 threading,
                 secret_key,
@@ -200,12 +202,14 @@ pub fn build_events(
         });
 
         let event = build_single_event(
-            line,
+            Some(line),
             &content,
             role,
+            "claude-code",
             None,
             tool_id.as_deref(),
             session_id.as_deref(),
+            None,
             timestamp,
             threading,
             secret_key,
@@ -308,19 +312,25 @@ fn build_source_data_event(
     })
 }
 
-/// Build a single nostr event from a JSONL line.
+/// Build a single kind-1988 nostr event.
+///
+/// When `line` is provided (archive path), extracts slug, version, model,
+/// line_type, and cwd from the JSONL line. When `None` (live path), only
+/// uses the explicitly passed parameters.
 ///
 /// `split_index`: `Some((i, total))` when this event is part of a split
 /// assistant message.
 ///
 /// `tool_id`: The tool use/result ID for tool_call and tool_result events.
 fn build_single_event(
-    line: &JsonlLine,
+    line: Option<&JsonlLine>,
     content: &str,
     role: &str,
+    source: &str,
     split_index: Option<(usize, usize)>,
     tool_id: Option<&str>,
     session_id: Option<&str>,
+    cwd: Option<&str>,
     timestamp: Option<u64>,
     threading: &ThreadingState,
     secret_key: &[u8; 32],
@@ -338,7 +348,7 @@ fn build_single_event(
     if let Some(session_id) = session_id {
         builder = builder.start_tag().tag_str("d").tag_str(session_id);
     }
-    if let Some(slug) = line.slug() {
+    if let Some(slug) = line.and_then(|l| l.slug()) {
         builder = builder.start_tag().tag_str("session-slug").tag_str(slug);
     }
 
@@ -365,9 +375,9 @@ fn build_single_event(
     builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
 
     // -- Message metadata tags --
-    builder = builder.start_tag().tag_str("source").tag_str("claude-code");
+    builder = builder.start_tag().tag_str("source").tag_str(source);
 
-    if let Some(version) = line.version() {
+    if let Some(version) = line.and_then(|l| l.version()) {
         builder = builder
             .start_tag()
             .tag_str("source-version")
@@ -377,18 +387,17 @@ fn build_single_event(
     builder = builder.start_tag().tag_str("role").tag_str(role);
 
     // Model tag (for assistant messages)
-    if let Some(msg) = line.message() {
-        if let Some(model) = msg.model() {
-            builder = builder.start_tag().tag_str("model").tag_str(model);
-        }
+    if let Some(model) = line.and_then(|l| l.message()).and_then(|m| m.model()) {
+        builder = builder.start_tag().tag_str("model").tag_str(model);
     }
 
-    if let Some(line_type) = line.line_type() {
+    if let Some(line_type) = line.and_then(|l| l.line_type()) {
         builder = builder.start_tag().tag_str("turn-type").tag_str(line_type);
     }
 
     // -- CWD tag --
-    if let Some(cwd) = line.cwd() {
+    let resolved_cwd = cwd.or_else(|| line.and_then(|l| l.cwd()));
+    if let Some(cwd) = resolved_cwd {
         builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
     }
 
@@ -426,6 +435,44 @@ fn build_single_event(
         note_id,
         kind: AI_CONVERSATION_KIND,
     })
+}
+
+/// Build a kind-1988 event for a live conversation message.
+///
+/// Unlike `build_events()` which works from JSONL lines, this builds directly
+/// from role + content strings. No kind-1989 source-data events are created.
+///
+/// Calls `threading.record()` internally.
+pub fn build_live_event(
+    content: &str,
+    role: &str,
+    session_id: &str,
+    cwd: Option<&str>,
+    tool_id: Option<&str>,
+    threading: &mut ThreadingState,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let event = build_single_event(
+        None,
+        content,
+        role,
+        "notedeck-dave",
+        None,
+        tool_id,
+        Some(session_id),
+        cwd,
+        Some(now),
+        threading,
+        secret_key,
+    )?;
+
+    threading.record(None, event.note_id);
+    Ok(event)
 }
 
 #[cfg(test)]

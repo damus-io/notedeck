@@ -8,6 +8,7 @@ use crate::git_status::GitStatusCache;
 use crate::messages::{
     CompactionInfo, PermissionResponse, QuestionAnswer, SessionInfo, SubagentStatus,
 };
+use crate::session_events::ThreadingState;
 use crate::{DaveApiResponse, Message};
 use claude_agent_sdk_rs::PermissionMode;
 use tokio::sync::oneshot;
@@ -55,6 +56,8 @@ pub struct AgenticSessionData {
     pub resume_session_id: Option<String>,
     /// Git status cache for this session's working directory
     pub git_status: GitStatusCache,
+    /// Threading state for live kind-1988 event generation.
+    pub live_threading: ThreadingState,
 }
 
 impl AgenticSessionData {
@@ -81,7 +84,18 @@ impl AgenticSessionData {
             last_compaction: None,
             resume_session_id: None,
             git_status,
+            live_threading: ThreadingState::new(),
         }
+    }
+
+    /// Get the session ID to use for live kind-1988 events.
+    ///
+    /// Prefers claude_session_id from SessionInfo, falls back to resume_session_id.
+    pub fn event_session_id(&self) -> Option<&str> {
+        self.session_info
+            .as_ref()
+            .and_then(|i| i.claude_session_id.as_deref())
+            .or(self.resume_session_id.as_deref())
     }
 
     /// Update a subagent's output (appending new content, keeping only the tail)

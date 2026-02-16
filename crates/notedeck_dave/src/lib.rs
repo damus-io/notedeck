@@ -123,6 +123,50 @@ struct PendingMessageLoad {
     claude_session_id: String,
 }
 
+/// Build and ingest a live kind-1988 event into ndb.
+///
+/// Extracts cwd and session ID from the session's agentic data,
+/// builds the event, and ingests it. Logs errors without propagating.
+fn ingest_live_event(
+    session: &mut ChatSession,
+    ndb: &nostrdb::Ndb,
+    secret_key: &[u8; 32],
+    content: &str,
+    role: &str,
+    tool_id: Option<&str>,
+) {
+    let Some(agentic) = &mut session.agentic else {
+        return;
+    };
+
+    let Some(session_id) = agentic.event_session_id().map(|s| s.to_string()) else {
+        return;
+    };
+
+    let cwd = agentic.cwd.to_str();
+
+    match session_events::build_live_event(
+        content,
+        role,
+        &session_id,
+        cwd,
+        tool_id,
+        &mut agentic.live_threading,
+        secret_key,
+    ) {
+        Ok(event) => {
+            if let Err(e) = ndb
+                .process_event_with(&event.json, nostrdb::IngestMetadata::new().client(true))
+            {
+                tracing::warn!("failed to ingest live event: {:?}", e);
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to build live event: {}", e);
+        }
+    }
+}
+
 /// Calculate an anonymous user_id from a keypair
 fn calculate_user_id(keypair: KeypairUnowned) -> String {
     use sha2::{Digest, Sha256};
@@ -256,6 +300,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let mut needs_send: HashSet<SessionId> = HashSet::new();
         let active_id = self.session_manager.active_id();
 
+        // Extract secret key once for live event generation
+        let secret_key: Option<[u8; 32]> = app_ctx
+            .accounts
+            .get_selected_account()
+            .keypair()
+            .secret_key
+            .map(|sk| {
+                sk.as_secret_bytes()
+                    .try_into()
+                    .expect("secret key is 32 bytes")
+            });
+
         // Get all session IDs to process
         let session_ids = self.session_manager.session_ids();
 
@@ -285,7 +341,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 };
 
                 match res {
-                    DaveApiResponse::Failed(err) => session.chat.push(Message::Error(err)),
+                    DaveApiResponse::Failed(ref err) => {
+                        if let Some(sk) = &secret_key {
+                            ingest_live_event(session, app_ctx.ndb, sk, err, "error", None);
+                        }
+                        session.chat.push(Message::Error(err.to_string()));
+                    }
 
                     DaveApiResponse::Token(token) => match session.chat.last_mut() {
                         Some(Message::Assistant(msg)) => msg.push_token(&token),
@@ -343,6 +404,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             pending.request.tool_input
                         );
 
+                        // Generate live event for permission request
+                        if let Some(sk) = &secret_key {
+                            let content = format!(
+                                "Permission request: {}",
+                                pending.request.tool_name
+                            );
+                            ingest_live_event(
+                                session,
+                                app_ctx.ndb,
+                                sk,
+                                &content,
+                                "permission_request",
+                                None,
+                            );
+                        }
+
                         // Store the response sender for later (agentic only)
                         if let Some(agentic) = &mut session.agentic {
                             agentic
@@ -358,6 +435,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                     DaveApiResponse::ToolResult(result) => {
                         tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
+
+                        // Generate live event for tool result
+                        if let Some(sk) = &secret_key {
+                            let content =
+                                format!("{}: {}", result.tool_name, result.summary);
+                            ingest_live_event(
+                                session,
+                                app_ctx.ndb,
+                                sk,
+                                &content,
+                                "tool_result",
+                                None,
+                            );
+                        }
+
                         // Invalidate git status after file-modifying tools.
                         // tool_name is a String from the Claude SDK, no enum available.
                         if matches!(result.tool_name.as_str(), "Bash" | "Write" | "Edit") {
@@ -435,6 +527,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         if let Some(Message::Assistant(msg)) = session.chat.last_mut() {
                             msg.finalize();
                         }
+
+                        // Generate live event for the finalized assistant message
+                        if let Some(sk) = &secret_key {
+                            if let Some(Message::Assistant(msg)) = session.chat.last() {
+                                let text = msg.text().to_string();
+                                if !text.is_empty() {
+                                    ingest_live_event(
+                                        session,
+                                        app_ctx.ndb,
+                                        sk,
+                                        &text,
+                                        "assistant",
+                                        None,
+                                    );
+                                }
+                            }
+                        }
+
                         session.task_handle = None;
                         // Don't restore incoming_tokens - leave it None
                     }
@@ -849,8 +959,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Normal message handling
         if let Some(session) = self.session_manager.get_active_mut() {
-            session.chat.push(Message::User(session.input.clone()));
+            let user_text = session.input.clone();
             session.input.clear();
+
+            // Generate live event for user message
+            if let Some(sk) = app_ctx
+                .accounts
+                .get_selected_account()
+                .keypair()
+                .secret_key
+            {
+                let sb = sk.as_secret_bytes();
+                let secret_bytes: [u8; 32] = sb.try_into().expect("secret key is 32 bytes");
+                ingest_live_event(session, app_ctx.ndb, &secret_bytes, &user_text, "user", None);
+            }
+
+            session.chat.push(Message::User(user_text));
             session.update_title_from_last_message();
         }
         self.send_user_message(app_ctx, ui.ctx());
