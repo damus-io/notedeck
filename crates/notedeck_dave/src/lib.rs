@@ -1347,17 +1347,20 @@ impl notedeck::App for Dave {
         self.check_interrupt_timeout();
 
         // Process incoming AI responses for all sessions
-        let (sessions_needing_send, events_to_publish) = self.process_events(ctx);
+        let (sessions_needing_send, _events_to_publish) = self.process_events(ctx);
 
-        // Publish events to relay pool for remote session control.
-        // Includes events from process_events() and any queued from handle_user_send().
-        let pending = std::mem::take(&mut self.pending_relay_events);
-        for event in events_to_publish.iter().chain(pending.iter()) {
-            match enostr::ClientMessage::event_json(event.note_json.clone()) {
-                Ok(msg) => ctx.pool.send(&msg),
-                Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
-            }
-        }
+        // TODO: Publish events to relay pool for remote session control.
+        // Disabled until NIP-PNS wrapping is implemented — we must not
+        // broadcast plaintext AI conversation events to relays.
+        //
+        // let pending = std::mem::take(&mut self.pending_relay_events);
+        // for event in events_to_publish.iter().chain(pending.iter()) {
+        //     match enostr::ClientMessage::event_json(event.note_json.clone()) {
+        //         Ok(msg) => ctx.pool.send(&msg),
+        //         Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
+        //     }
+        // }
+        self.pending_relay_events.clear();
 
         // Poll for remote permission responses from relay events.
         // These arrive as kind-1988 events with role=permission_response,
