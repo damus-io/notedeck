@@ -105,6 +105,16 @@ impl ThreadingState {
         line.timestamp_secs().or(self.last_timestamp)
     }
 
+    /// Seed threading state from existing events (e.g. loaded from ndb).
+    ///
+    /// Sets root and last note IDs so that subsequent live events
+    /// thread correctly as replies to the existing conversation.
+    pub fn seed(&mut self, root_note_id: [u8; 32], last_note_id: [u8; 32], event_count: u32) {
+        self.root_note_id = Some(root_note_id);
+        self.last_note_id = Some(last_note_id);
+        self.seq = event_count;
+    }
+
     /// Record a built event's note ID, associated with a JSONL uuid.
     fn record(&mut self, uuid: Option<&str>, note_id: [u8; 32]) {
         if self.root_note_id.is_none() {

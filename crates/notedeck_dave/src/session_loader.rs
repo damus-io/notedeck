@@ -9,11 +9,23 @@ use crate::session_events::{get_tag_value, AI_CONVERSATION_KIND};
 use crate::Message;
 use nostrdb::{Filter, Ndb, Transaction};
 
+/// Result of loading session messages, including threading info for live events.
+pub struct LoadedSession {
+    pub messages: Vec<Message>,
+    /// Root note ID of the conversation (first event chronologically).
+    pub root_note_id: Option<[u8; 32]>,
+    /// Last note ID of the conversation (most recent event).
+    pub last_note_id: Option<[u8; 32]>,
+    /// Total number of events found.
+    pub event_count: u32,
+}
+
 /// Load conversation messages from ndb for a given session ID.
 ///
 /// Returns messages in chronological order, suitable for populating
-/// `ChatSession.chat` before streaming begins.
-pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> Vec<Message> {
+/// `ChatSession.chat` before streaming begins. Also returns note IDs
+/// for seeding live threading state.
+pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> LoadedSession {
     let filter = Filter::new()
         .kinds([AI_CONVERSATION_KIND as u64])
         .tags([session_id], 'd')
@@ -22,7 +34,14 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
 
     let results = match ndb.query(txn, &[filter], 10000) {
         Ok(r) => r,
-        Err(_) => return vec![],
+        Err(_) => {
+            return LoadedSession {
+                messages: vec![],
+                root_note_id: None,
+                last_note_id: None,
+                event_count: 0,
+            }
+        }
     };
 
     // Collect notes with their created_at for sorting
@@ -33,6 +52,10 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
 
     // Sort by created_at (chronological order)
     notes.sort_by_key(|note| note.created_at());
+
+    let event_count = notes.len() as u32;
+    let root_note_id = notes.first().map(|n| *n.id());
+    let last_note_id = notes.last().map(|n| *n.id());
 
     let mut messages = Vec::new();
     for note in &notes {
@@ -66,7 +89,12 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         }
     }
 
-    messages
+    LoadedSession {
+        messages,
+        root_note_id,
+        last_note_id,
+        event_count,
+    }
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {

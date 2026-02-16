@@ -1082,14 +1082,24 @@ impl notedeck::App for Dave {
             let notes = ctx.ndb.poll_for_notes(pending.sub, 4096);
             if !notes.is_empty() {
                 let txn = Transaction::new(ctx.ndb).expect("txn");
-                let messages = session_loader::load_session_messages(
+                let loaded = session_loader::load_session_messages(
                     ctx.ndb,
                     &txn,
                     &pending.claude_session_id,
                 );
                 if let Some(session) = self.session_manager.get_mut(pending.dave_session_id) {
-                    tracing::info!("loaded {} messages into chat UI", messages.len());
-                    session.chat = messages;
+                    tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
+                    session.chat = loaded.messages;
+
+                    // Seed live threading from archive events so new events
+                    // thread as replies to the existing conversation.
+                    if let (Some(root), Some(last)) =
+                        (loaded.root_note_id, loaded.last_note_id)
+                    {
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.live_threading.seed(root, last, loaded.event_count);
+                        }
+                    }
                 }
                 self.pending_message_load = None;
             }
