@@ -255,6 +255,20 @@ impl FocusQueue {
             .any(|e| e.priority == FocusPriority::NeedsInput)
     }
 
+    /// Find the first entry with Done priority and return its index
+    pub fn first_done_index(&self) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|e| e.priority == FocusPriority::Done)
+    }
+
+    /// Check if there are any Done items in the queue
+    pub fn has_done(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.priority == FocusPriority::Done)
+    }
+
     pub fn ui_info(&self) -> Option<(usize, usize, FocusPriority)> {
         let entry = self.current()?;
         Some((self.current_position()?, self.len(), entry.priority))

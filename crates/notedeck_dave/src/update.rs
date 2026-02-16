@@ -534,7 +534,7 @@ pub fn toggle_auto_steal(
 }
 
 /// Process auto-steal focus logic: switch to focus queue items as needed.
-/// Returns true if focus was stolen (switched to a NeedsInput session),
+/// Returns true if focus was stolen (switched to a NeedsInput or Done session),
 /// which can be used to raise the OS window.
 pub fn process_auto_steal_focus(
     session_manager: &mut SessionManager,
@@ -549,6 +549,7 @@ pub fn process_auto_steal_focus(
     }
 
     let has_needs_input = focus_queue.has_needs_input();
+    let has_done = focus_queue.has_done();
 
     if has_needs_input {
         // There are NeedsInput items - check if we need to steal focus
@@ -581,8 +582,39 @@ pub fn process_auto_steal_focus(
                 }
             }
         }
+    } else if has_done {
+        // No NeedsInput but there are Done items - auto-focus those
+        let current_session = session_manager.active_id();
+        let current_priority = current_session.and_then(|id| focus_queue.get_session_priority(id));
+        let already_on_done = current_priority == Some(FocusPriority::Done);
+
+        if !already_on_done {
+            // Save current session before stealing (only if we haven't saved yet)
+            if home_session.is_none() {
+                *home_session = current_session;
+                tracing::debug!("Auto-steal: saved home session {:?}", home_session);
+            }
+
+            // Jump to first Done item
+            if let Some(idx) = focus_queue.first_done_index() {
+                focus_queue.set_cursor(idx);
+                if let Some(entry) = focus_queue.current() {
+                    session_manager.switch_to(entry.session_id);
+                    if show_scene {
+                        scene.select(entry.session_id);
+                        if let Some(session) = session_manager.get(entry.session_id) {
+                            if let Some(agentic) = &session.agentic {
+                                scene.focus_on(agentic.scene_position);
+                            }
+                        }
+                    }
+                    tracing::debug!("Auto-steal: switched to Done session {:?}", entry.session_id);
+                    return true;
+                }
+            }
+        }
     } else if let Some(home_id) = home_session.take() {
-        // No more NeedsInput items - return to saved session
+        // No more NeedsInput or Done items - return to saved session
         session_manager.switch_to(home_id);
         if show_scene {
             scene.select(home_id);
