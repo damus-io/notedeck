@@ -3,6 +3,7 @@ mod error;
 mod filter;
 mod keypair;
 mod note;
+pub mod pns;
 mod profile;
 mod pubkey;
 mod relay;

@@ -1845,16 +1845,19 @@ checksum = "a3d8a32ae18130a3c84dd492d4215c3d913c3b07c6b63c2eb3eb7ff1101ab7bf"
 name = "enostr"
 version = "0.3.0"
 dependencies = [
+ "base64 0.22.1",
  "bech32",
  "ewebsock",
  "hashbrown 0.15.4",
  "hex",
+ "hkdf",
  "mio",
  "nostr 0.37.0",
  "nostrdb",
  "serde",
  "serde_derive",
  "serde_json",
+ "sha2",
  "thiserror 2.0.12",
  "tokenator",
  "tokio",
@@ -2729,6 +2732,15 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+
+[[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac",
+]
 
 [[package]]
 name = "hmac"
