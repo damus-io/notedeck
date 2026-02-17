@@ -404,6 +404,32 @@ pub fn handle_question_response(
 // Agent Navigation
 // =============================================================================
 
+/// Switch to a session and optionally focus it in the scene.
+///
+/// Handles the common pattern of: switch_to → scene.select → scene.focus_on → focus_requested.
+/// Used by navigation, focus queue, and auto-steal-focus operations.
+pub fn switch_and_focus_session(
+    session_manager: &mut SessionManager,
+    scene: &mut AgentScene,
+    show_scene: bool,
+    id: SessionId,
+) {
+    session_manager.switch_to(id);
+    if show_scene {
+        scene.select(id);
+        if let Some(session) = session_manager.get(id) {
+            if let Some(agentic) = &session.agentic {
+                scene.focus_on(agentic.scene_position);
+            }
+        }
+    }
+    if let Some(session) = session_manager.get_mut(id) {
+        if !session.has_pending_permissions() {
+            session.focus_requested = true;
+        }
+    }
+}
+
 /// Switch to agent by index in the ordered list (0-indexed).
 pub fn switch_to_agent_by_index(
     session_manager: &mut SessionManager,
@@ -413,15 +439,28 @@ pub fn switch_to_agent_by_index(
 ) {
     let ids = session_manager.session_ids();
     if let Some(&id) = ids.get(index) {
-        session_manager.switch_to(id);
-        if show_scene {
-            scene.select(id);
-        }
-        if let Some(session) = session_manager.get_mut(id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
+        switch_and_focus_session(session_manager, scene, show_scene, id);
+    }
+}
+
+/// Cycle agents using a direction function that computes the next index.
+fn cycle_agent(
+    session_manager: &mut SessionManager,
+    scene: &mut AgentScene,
+    show_scene: bool,
+    index_fn: impl FnOnce(usize, usize) -> usize,
+) {
+    let ids = session_manager.session_ids();
+    if ids.is_empty() {
+        return;
+    }
+    let current_idx = session_manager
+        .active_id()
+        .and_then(|active| ids.iter().position(|&id| id == active))
+        .unwrap_or(0);
+    let next_idx = index_fn(current_idx, ids.len());
+    if let Some(&id) = ids.get(next_idx) {
+        switch_and_focus_session(session_manager, scene, show_scene, id);
     }
 }
 
@@ -431,26 +470,9 @@ pub fn cycle_next_agent(
     scene: &mut AgentScene,
     show_scene: bool,
 ) {
-    let ids = session_manager.session_ids();
-    if ids.is_empty() {
-        return;
-    }
-    let current_idx = session_manager
-        .active_id()
-        .and_then(|active| ids.iter().position(|&id| id == active))
-        .unwrap_or(0);
-    let next_idx = (current_idx + 1) % ids.len();
-    if let Some(&id) = ids.get(next_idx) {
-        session_manager.switch_to(id);
-        if show_scene {
-            scene.select(id);
-        }
-        if let Some(session) = session_manager.get_mut(id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
-    }
+    cycle_agent(session_manager, scene, show_scene, |idx, len| {
+        (idx + 1) % len
+    });
 }
 
 /// Cycle to the previous agent.
@@ -459,30 +481,9 @@ pub fn cycle_prev_agent(
     scene: &mut AgentScene,
     show_scene: bool,
 ) {
-    let ids = session_manager.session_ids();
-    if ids.is_empty() {
-        return;
-    }
-    let current_idx = session_manager
-        .active_id()
-        .and_then(|active| ids.iter().position(|&id| id == active))
-        .unwrap_or(0);
-    let prev_idx = if current_idx == 0 {
-        ids.len() - 1
-    } else {
-        current_idx - 1
-    };
-    if let Some(&id) = ids.get(prev_idx) {
-        session_manager.switch_to(id);
-        if show_scene {
-            scene.select(id);
-        }
-        if let Some(session) = session_manager.get_mut(id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
-    }
+    cycle_agent(session_manager, scene, show_scene, |idx, len| {
+        if idx == 0 { len - 1 } else { idx - 1 }
+    });
 }
 
 // =============================================================================
@@ -497,20 +498,7 @@ pub fn focus_queue_next(
     show_scene: bool,
 ) {
     if let Some(session_id) = focus_queue.next() {
-        session_manager.switch_to(session_id);
-        if show_scene {
-            scene.select(session_id);
-            if let Some(session) = session_manager.get(session_id) {
-                if let Some(agentic) = &session.agentic {
-                    scene.focus_on(agentic.scene_position);
-                }
-            }
-        }
-        if let Some(session) = session_manager.get_mut(session_id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
+        switch_and_focus_session(session_manager, scene, show_scene, session_id);
     }
 }
 
@@ -522,20 +510,7 @@ pub fn focus_queue_prev(
     show_scene: bool,
 ) {
     if let Some(session_id) = focus_queue.prev() {
-        session_manager.switch_to(session_id);
-        if show_scene {
-            scene.select(session_id);
-            if let Some(session) = session_manager.get(session_id) {
-                if let Some(agentic) = &session.agentic {
-                    scene.focus_on(agentic.scene_position);
-                }
-            }
-        }
-        if let Some(session) = session_manager.get_mut(session_id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
+        switch_and_focus_session(session_manager, scene, show_scene, session_id);
     }
 }
 
@@ -566,15 +541,7 @@ pub fn toggle_auto_steal(
     } else {
         // Disabling: switch back to home session if set
         if let Some(home_id) = home_session.take() {
-            session_manager.switch_to(home_id);
-            if show_scene {
-                scene.select(home_id);
-                if let Some(session) = session_manager.get(home_id) {
-                    if let Some(agentic) = &session.agentic {
-                        scene.focus_on(agentic.scene_position);
-                    }
-                }
-            }
+            switch_and_focus_session(session_manager, scene, show_scene, home_id);
             tracing::debug!("Auto-steal focus disabled, returned to home session");
         }
     }
@@ -622,15 +589,7 @@ pub fn process_auto_steal_focus(
             if let Some(idx) = focus_queue.first_needs_input_index() {
                 focus_queue.set_cursor(idx);
                 if let Some(entry) = focus_queue.current() {
-                    session_manager.switch_to(entry.session_id);
-                    if show_scene {
-                        scene.select(entry.session_id);
-                        if let Some(session) = session_manager.get(entry.session_id) {
-                            if let Some(agentic) = &session.agentic {
-                                scene.focus_on(agentic.scene_position);
-                            }
-                        }
-                    }
+                    switch_and_focus_session(session_manager, scene, show_scene, entry.session_id);
                     tracing::debug!("Auto-steal: switched to session {:?}", entry.session_id);
                     return true;
                 }
@@ -653,15 +612,7 @@ pub fn process_auto_steal_focus(
             if let Some(idx) = focus_queue.first_done_index() {
                 focus_queue.set_cursor(idx);
                 if let Some(entry) = focus_queue.current() {
-                    session_manager.switch_to(entry.session_id);
-                    if show_scene {
-                        scene.select(entry.session_id);
-                        if let Some(session) = session_manager.get(entry.session_id) {
-                            if let Some(agentic) = &session.agentic {
-                                scene.focus_on(agentic.scene_position);
-                            }
-                        }
-                    }
+                    switch_and_focus_session(session_manager, scene, show_scene, entry.session_id);
                     tracing::debug!("Auto-steal: switched to Done session {:?}", entry.session_id);
                     return true;
                 }
@@ -669,15 +620,7 @@ pub fn process_auto_steal_focus(
         }
     } else if let Some(home_id) = home_session.take() {
         // No more NeedsInput or Done items - return to saved session
-        session_manager.switch_to(home_id);
-        if show_scene {
-            scene.select(home_id);
-            if let Some(session) = session_manager.get(home_id) {
-                if let Some(agentic) = &session.agentic {
-                    scene.focus_on(agentic.scene_position);
-                }
-            }
-        }
+        switch_and_focus_session(session_manager, scene, show_scene, home_id);
         tracing::debug!("Auto-steal: returned to home session {:?}", home_id);
     }
 

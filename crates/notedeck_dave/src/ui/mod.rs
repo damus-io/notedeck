@@ -34,10 +34,58 @@ use crate::agent_status::AgentStatus;
 use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
-use crate::session::{PermissionMessageState, SessionId, SessionManager};
+use crate::session::{ChatSession, PermissionMessageState, SessionId, SessionManager};
 use crate::session_discovery::discover_sessions;
 use crate::update;
 use crate::DaveOverlay;
+
+/// Build a DaveUi from a session, wiring up all the common builder fields.
+fn build_dave_ui<'a>(
+    session: &'a mut ChatSession,
+    model_config: &ModelConfig,
+    is_interrupt_pending: bool,
+    auto_steal_focus: bool,
+) -> DaveUi<'a> {
+    let is_working = session.status() == AgentStatus::Working;
+    let has_pending_permission = session.has_pending_permissions();
+    let plan_mode_active = session.is_plan_mode();
+    let is_remote = session.is_remote();
+
+    let mut ui_builder = DaveUi::new(
+        model_config.trial,
+        &session.chat,
+        &mut session.input,
+        &mut session.focus_requested,
+        session.ai_mode,
+    )
+    .is_working(is_working)
+    .interrupt_pending(is_interrupt_pending)
+    .has_pending_permission(has_pending_permission)
+    .plan_mode_active(plan_mode_active)
+    .auto_steal_focus(auto_steal_focus)
+    .is_remote(is_remote);
+
+    if let Some(agentic) = &mut session.agentic {
+        ui_builder = ui_builder
+            .permission_message_state(agentic.permission_message_state)
+            .question_answers(&mut agentic.question_answers)
+            .question_index(&mut agentic.question_index)
+            .is_compacting(agentic.is_compacting)
+            .git_status(&mut agentic.git_status);
+    }
+
+    ui_builder
+}
+
+/// Set tentative permission state on the active session's agentic data.
+fn set_tentative_state(session_manager: &mut SessionManager, state: PermissionMessageState) {
+    if let Some(session) = session_manager.get_active_mut() {
+        if let Some(agentic) = &mut session.agentic {
+            agentic.permission_message_state = state;
+        }
+        session.focus_requested = true;
+    }
+}
 
 /// UI result from overlay rendering
 pub enum OverlayResult {
@@ -213,36 +261,14 @@ pub fn scene_ui(
                                 ui.heading(&session.title);
                                 ui.separator();
 
-                                let is_working = session.status() == AgentStatus::Working;
-                                let has_pending_permission = session.has_pending_permissions();
-                                let plan_mode_active = session.is_plan_mode();
-                                let is_remote = session.is_remote();
-
-                                let mut ui_builder = DaveUi::new(
-                                    model_config.trial,
-                                    &session.chat,
-                                    &mut session.input,
-                                    &mut session.focus_requested,
-                                    session.ai_mode,
+                                let response = build_dave_ui(
+                                    session,
+                                    model_config,
+                                    is_interrupt_pending,
+                                    auto_steal_focus,
                                 )
                                 .compact(true)
-                                .is_working(is_working)
-                                .interrupt_pending(is_interrupt_pending)
-                                .has_pending_permission(has_pending_permission)
-                                .plan_mode_active(plan_mode_active)
-                                .auto_steal_focus(auto_steal_focus)
-                                .is_remote(is_remote);
-
-                                if let Some(agentic) = &mut session.agentic {
-                                    ui_builder = ui_builder
-                                        .permission_message_state(agentic.permission_message_state)
-                                        .question_answers(&mut agentic.question_answers)
-                                        .question_index(&mut agentic.question_index)
-                                        .is_compacting(agentic.is_compacting)
-                                        .git_status(&mut agentic.git_status);
-                                }
-
-                                let response = ui_builder.ui(app_ctx, ui);
+                                .ui(app_ctx, ui);
                                 if response.action.is_some() {
                                     dave_response = response;
                                 }
@@ -339,35 +365,8 @@ pub fn desktop_ui(
     let chat_response = ui
         .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
             if let Some(session) = session_manager.get_active_mut() {
-                let is_working = session.status() == AgentStatus::Working;
-                let has_pending_permission = session.has_pending_permissions();
-                let plan_mode_active = session.is_plan_mode();
-                let is_remote = session.is_remote();
-
-                let mut ui_builder = DaveUi::new(
-                    model_config.trial,
-                    &session.chat,
-                    &mut session.input,
-                    &mut session.focus_requested,
-                    session.ai_mode,
-                )
-                .is_working(is_working)
-                .interrupt_pending(is_interrupt_pending)
-                .has_pending_permission(has_pending_permission)
-                .plan_mode_active(plan_mode_active)
-                .auto_steal_focus(auto_steal_focus)
-                .is_remote(is_remote);
-
-                if let Some(agentic) = &mut session.agentic {
-                    ui_builder = ui_builder
-                        .permission_message_state(agentic.permission_message_state)
-                        .question_answers(&mut agentic.question_answers)
-                        .question_index(&mut agentic.question_index)
-                        .is_compacting(agentic.is_compacting)
-                        .git_status(&mut agentic.git_status);
-                }
-
-                ui_builder.ui(app_ctx, ui)
+                build_dave_ui(session, model_config, is_interrupt_pending, auto_steal_focus)
+                    .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
             }
@@ -401,35 +400,10 @@ pub fn narrow_ui(
             .inner;
         (DaveResponse::default(), session_action)
     } else if let Some(session) = session_manager.get_active_mut() {
-        let is_working = session.status() == AgentStatus::Working;
-        let has_pending_permission = session.has_pending_permissions();
-        let plan_mode_active = session.is_plan_mode();
-        let is_remote = session.is_remote();
-
-        let mut ui_builder = DaveUi::new(
-            model_config.trial,
-            &session.chat,
-            &mut session.input,
-            &mut session.focus_requested,
-            session.ai_mode,
-        )
-        .is_working(is_working)
-        .interrupt_pending(is_interrupt_pending)
-        .has_pending_permission(has_pending_permission)
-        .plan_mode_active(plan_mode_active)
-        .auto_steal_focus(auto_steal_focus)
-        .is_remote(is_remote);
-
-        if let Some(agentic) = &mut session.agentic {
-            ui_builder = ui_builder
-                .permission_message_state(agentic.permission_message_state)
-                .question_answers(&mut agentic.question_answers)
-                .question_index(&mut agentic.question_index)
-                .is_compacting(agentic.is_compacting)
-                .git_status(&mut agentic.git_status);
-        }
-
-        (ui_builder.ui(app_ctx, ui), None)
+        let response =
+            build_dave_ui(session, model_config, is_interrupt_pending, auto_steal_focus)
+                .ui(app_ctx, ui);
+        (response, None)
     } else {
         (DaveResponse::default(), None)
     }
@@ -519,21 +493,11 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         KeyAction::TentativeAccept => {
-            if let Some(session) = session_manager.get_active_mut() {
-                if let Some(agentic) = &mut session.agentic {
-                    agentic.permission_message_state = PermissionMessageState::TentativeAccept;
-                }
-                session.focus_requested = true;
-            }
+            set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
             KeyActionResult::None
         }
         KeyAction::TentativeDeny => {
-            if let Some(session) = session_manager.get_active_mut() {
-                if let Some(agentic) = &mut session.agentic {
-                    agentic.permission_message_state = PermissionMessageState::TentativeDeny;
-                }
-                session.focus_requested = true;
-            }
+            set_tentative_state(session_manager, PermissionMessageState::TentativeDeny);
             KeyActionResult::None
         }
         KeyAction::CancelTentative => {
@@ -769,21 +733,11 @@ pub fn handle_ui_action(
             UiActionResult::Handled
         }
         DaveAction::TentativeAccept => {
-            if let Some(session) = session_manager.get_active_mut() {
-                if let Some(agentic) = &mut session.agentic {
-                    agentic.permission_message_state = PermissionMessageState::TentativeAccept;
-                }
-                session.focus_requested = true;
-            }
+            set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
             UiActionResult::Handled
         }
         DaveAction::TentativeDeny => {
-            if let Some(session) = session_manager.get_active_mut() {
-                if let Some(agentic) = &mut session.agentic {
-                    agentic.permission_message_state = PermissionMessageState::TentativeDeny;
-                }
-                session.focus_requested = true;
-            }
+            set_tentative_state(session_manager, PermissionMessageState::TentativeDeny);
             UiActionResult::Handled
         }
         DaveAction::QuestionResponse {

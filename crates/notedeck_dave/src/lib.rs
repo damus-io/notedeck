@@ -62,6 +62,15 @@ pub use vec3::Vec3;
 /// TODO: make this configurable in the UI
 const PNS_RELAY_URL: &str = "ws://relay.jb55.com";
 
+/// Extract a 32-byte secret key from a keypair.
+fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
+    keypair.secret_key.map(|sk| {
+        sk.as_secret_bytes()
+            .try_into()
+            .expect("secret key is 32 bytes")
+    })
+}
+
 /// Represents which full-screen overlay (if any) is currently active
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DaveOverlay {
@@ -364,16 +373,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let active_id = self.session_manager.active_id();
 
         // Extract secret key once for live event generation
-        let secret_key: Option<[u8; 32]> = app_ctx
-            .accounts
-            .get_selected_account()
-            .keypair()
-            .secret_key
-            .map(|sk| {
-                sk.as_secret_bytes()
-                    .try_into()
-                    .expect("secret key is 32 bytes")
-            });
+        let secret_key = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
 
         // Get all session IDs to process
         let session_ids = self.session_manager.session_ids();
@@ -1066,18 +1066,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Publish kind-31988 state events for sessions whose status changed.
     fn publish_dirty_session_states(&mut self, ctx: &mut AppContext<'_>) {
-        let secret_key: Option<[u8; 32]> = ctx
-            .accounts
-            .get_selected_account()
-            .keypair()
-            .secret_key
-            .map(|sk| {
-                sk.as_secret_bytes()
-                    .try_into()
-                    .expect("secret key is 32 bytes")
-            });
-
-        let Some(sk) = secret_key else {
+        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
             return;
         };
 
@@ -1130,18 +1119,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        let secret_key: Option<[u8; 32]> = ctx
-            .accounts
-            .get_selected_account()
-            .keypair()
-            .secret_key
-            .map(|sk| {
-                sk.as_secret_bytes()
-                    .try_into()
-                    .expect("secret key is 32 bytes")
-            });
-
-        let Some(sk) = secret_key else {
+        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
             return;
         };
 
@@ -1175,18 +1153,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        let secret_key: Option<[u8; 32]> = ctx
-            .accounts
-            .get_selected_account()
-            .keypair()
-            .secret_key
-            .map(|sk| {
-                sk.as_secret_bytes()
-                    .try_into()
-                    .expect("secret key is 32 bytes")
-            });
-
-        let Some(sk) = secret_key else {
+        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
             tracing::warn!("no secret key for publishing permission responses");
             self.pending_perm_responses.clear();
             return;
@@ -1838,15 +1805,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session.input.clear();
 
             // Generate live event for user message
-            if let Some(sk) = app_ctx
-                .accounts
-                .get_selected_account()
-                .keypair()
-                .secret_key
-            {
-                let sb = sk.as_secret_bytes();
-                let secret_bytes: [u8; 32] = sb.try_into().expect("secret key is 32 bytes");
-                if let Some(evt) = ingest_live_event(session, app_ctx.ndb, &secret_bytes, &user_text, "user", None) {
+            if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
+                if let Some(evt) = ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None) {
                     self.pending_relay_events.push(evt);
                 }
             }
@@ -2027,8 +1987,7 @@ impl notedeck::App for Dave {
                     }
                 }
             } else {
-                let keypair = ctx.accounts.get_selected_account().keypair();
-                if let Some(sk) = keypair.secret_key {
+                if let Some(secret_bytes) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) {
                     // Subscribe for 1988 events BEFORE ingesting so we catch them
                     let sub_filter = nostrdb::Filter::new()
                         .kinds([session_events::AI_CONVERSATION_KIND as u64])
@@ -2037,9 +1996,6 @@ impl notedeck::App for Dave {
 
                     match ctx.ndb.subscribe(&[sub_filter]) {
                         Ok(sub) => {
-                            let sb = sk.as_secret_bytes();
-                            let secret_bytes: [u8; 32] =
-                                sb.try_into().expect("secret key is 32 bytes");
                             match session_converter::convert_session_to_events(
                                 &file_path,
                                 ctx.ndb,

@@ -67,24 +67,10 @@ pub fn wrap_pns(
     let ciphertext = enostr::pns::encrypt(&pns_keys.conversation_key, inner_json)
         .map_err(|e| EventBuildError::Serialize(format!("PNS encrypt: {e}")))?;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
     let pns_secret = pns_keys.keypair.secret_key.secret_bytes();
-
-    let note = NoteBuilder::new()
-        .kind(enostr::pns::PNS_KIND)
-        .content(&ciphertext)
-        .options(NoteBuildOptions::default())
-        .created_at(now)
-        .sign(&pns_secret)
-        .build()
-        .ok_or_else(|| EventBuildError::Build("PNS NoteBuilder::build returned None".into()))?;
-
-    note.json()
-        .map_err(|e| EventBuildError::Serialize(format!("PNS json: {e:?}")))
+    let builder = init_note_builder(enostr::pns::PNS_KIND, &ciphertext, Some(now_secs()));
+    let event = finalize_built_event(builder, &pns_secret, enostr::pns::PNS_KIND)?;
+    Ok(event.note_json)
 }
 
 /// Maintains threading state across a session's events.
@@ -173,6 +159,52 @@ impl ThreadingState {
         self.last_note_id = Some(note_id);
         self.seq += 1;
     }
+}
+
+/// Get the current Unix timestamp in seconds.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Initialize a NoteBuilder with kind, content, and optional timestamp.
+fn init_note_builder(kind: u32, content: &str, timestamp: Option<u64>) -> NoteBuilder<'_> {
+    let mut builder = NoteBuilder::new()
+        .kind(kind)
+        .content(content)
+        .options(NoteBuildOptions::default());
+
+    if let Some(ts) = timestamp {
+        builder = builder.created_at(ts);
+    }
+
+    builder
+}
+
+/// Sign, build, and serialize a NoteBuilder into a BuiltEvent.
+fn finalize_built_event(
+    builder: NoteBuilder,
+    secret_key: &[u8; 32],
+    kind: u32,
+) -> Result<BuiltEvent, EventBuildError> {
+    let note = builder
+        .sign(secret_key)
+        .build()
+        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
+
+    let note_id: [u8; 32] = *note.id();
+
+    let note_json = note
+        .json()
+        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
+
+    Ok(BuiltEvent {
+        note_json,
+        note_id,
+        kind,
+    })
 }
 
 /// Whether a role represents a conversation message (not metadata).
@@ -325,14 +357,7 @@ fn build_source_data_event(
     let raw_json = line.to_json();
     let seq_str = seq.to_string();
 
-    let mut builder = NoteBuilder::new()
-        .kind(AI_SOURCE_DATA_KIND)
-        .content("")
-        .options(NoteBuildOptions::default());
-
-    if let Some(ts) = timestamp {
-        builder = builder.created_at(ts);
-    }
+    let mut builder = init_note_builder(AI_SOURCE_DATA_KIND, "", timestamp);
 
     // Link to the corresponding 1988 event
     builder = builder
@@ -353,22 +378,7 @@ fn build_source_data_event(
         .tag_str("source-data")
         .tag_str(&raw_json);
 
-    let note = builder
-        .sign(secret_key)
-        .build()
-        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
-
-    let note_id: [u8; 32] = *note.id();
-
-    let note_json = note
-        .json()
-        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
-
-    Ok(BuiltEvent {
-        note_json,
-        note_id,
-        kind: AI_SOURCE_DATA_KIND,
-    })
+    finalize_built_event(builder, secret_key, AI_SOURCE_DATA_KIND)
 }
 
 /// Build a single kind-1988 nostr event.
@@ -394,14 +404,7 @@ fn build_single_event(
     threading: &ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let mut builder = NoteBuilder::new()
-        .kind(AI_CONVERSATION_KIND)
-        .content(content)
-        .options(NoteBuildOptions::default());
-
-    if let Some(ts) = timestamp {
-        builder = builder.created_at(ts);
-    }
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, content, timestamp);
 
     // -- Session identity tags --
     if let Some(session_id) = session_id {
@@ -474,23 +477,7 @@ fn build_single_event(
     // -- Discoverability --
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
 
-    // Sign and build
-    let note = builder
-        .sign(secret_key)
-        .build()
-        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
-
-    let note_id: [u8; 32] = *note.id();
-
-    let note_json = note
-        .json()
-        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
-
-    Ok(BuiltEvent {
-        note_json,
-        note_id,
-        kind: AI_CONVERSATION_KIND,
-    })
+    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
 
 /// Build a kind-1988 event for a live conversation message.
@@ -508,11 +495,6 @@ pub fn build_live_event(
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
     let event = build_single_event(
         None,
         content,
@@ -522,7 +504,7 @@ pub fn build_live_event(
         tool_id,
         Some(session_id),
         cwd,
-        Some(now),
+        Some(now_secs()),
         threading,
         secret_key,
     )?;
@@ -545,11 +527,6 @@ pub fn build_permission_request_event(
     session_id: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
     // Content is a JSON summary for display on remote clients
     let content = serde_json::json!({
         "tool_name": tool_name,
@@ -559,11 +536,7 @@ pub fn build_permission_request_event(
 
     let perm_id_str = perm_id.to_string();
 
-    let mut builder = NoteBuilder::new()
-        .kind(AI_CONVERSATION_KIND)
-        .content(&content)
-        .options(NoteBuildOptions::default())
-        .created_at(now);
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
@@ -596,21 +569,7 @@ pub fn build_permission_request_event(
         .tag_str("t")
         .tag_str("ai-permission");
 
-    let note = builder
-        .sign(secret_key)
-        .build()
-        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
-
-    let note_id: [u8; 32] = *note.id();
-    let note_json = note
-        .json()
-        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
-
-    Ok(BuiltEvent {
-        note_json,
-        note_id,
-        kind: AI_CONVERSATION_KIND,
-    })
+    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
 
 /// Build a kind-1988 permission response event.
@@ -629,11 +588,6 @@ pub fn build_permission_response_event(
     session_id: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
     let content = serde_json::json!({
         "decision": if allowed { "allow" } else { "deny" },
         "message": message.unwrap_or(""),
@@ -642,11 +596,7 @@ pub fn build_permission_response_event(
 
     let perm_id_str = perm_id.to_string();
 
-    let mut builder = NoteBuilder::new()
-        .kind(AI_CONVERSATION_KIND)
-        .content(&content)
-        .options(NoteBuildOptions::default())
-        .created_at(now);
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
 
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
@@ -681,21 +631,7 @@ pub fn build_permission_response_event(
         .tag_str("t")
         .tag_str("ai-permission");
 
-    let note = builder
-        .sign(secret_key)
-        .build()
-        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
-
-    let note_id: [u8; 32] = *note.id();
-    let note_json = note
-        .json()
-        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
-
-    Ok(BuiltEvent {
-        note_json,
-        note_id,
-        kind: AI_CONVERSATION_KIND,
-    })
+    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
 
 /// Build a kind-31988 session state event (parameterized replaceable).
@@ -710,16 +646,7 @@ pub fn build_session_state_event(
     status: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let mut builder = NoteBuilder::new()
-        .kind(AI_SESSION_STATE_KIND)
-        .content("")
-        .options(NoteBuildOptions::default())
-        .created_at(now);
+    let mut builder = init_note_builder(AI_SESSION_STATE_KIND, "", Some(now_secs()));
 
     // Session identity (makes this a parameterized replaceable event)
     builder = builder.start_tag().tag_str("d").tag_str(claude_session_id);
@@ -743,21 +670,7 @@ pub fn build_session_state_event(
         .tag_str("source")
         .tag_str("notedeck-dave");
 
-    let note = builder
-        .sign(secret_key)
-        .build()
-        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
-
-    let note_id: [u8; 32] = *note.id();
-    let note_json = note
-        .json()
-        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
-
-    Ok(BuiltEvent {
-        note_json,
-        note_id,
-        kind: AI_SESSION_STATE_KIND,
-    })
+    finalize_built_event(builder, secret_key, AI_SESSION_STATE_KIND)
 }
 
 #[cfg(test)]
