@@ -163,6 +163,7 @@ impl<'a> SessionListUi<'a> {
             session.status(),
             queue_priority,
             session.ai_mode,
+            session.is_remote(),
         );
 
         let mut action = None;
@@ -189,11 +190,13 @@ impl<'a> SessionListUi<'a> {
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
         session_ai_mode: AiMode,
+        is_remote: bool,
     ) -> egui::Response {
-        // Per-session: Chat sessions get shorter height (no CWD), no status bar
-        // Agentic sessions get taller height with CWD and status bar
-        let show_cwd = session_ai_mode == AiMode::Agentic;
-        let show_status_bar = session_ai_mode == AiMode::Agentic;
+        // Per-session: Chat sessions get shorter height (no CWD), no status bar.
+        // Remote agentic sessions also hide CWD/status since they are not local.
+        let is_local_agentic = session_ai_mode == AiMode::Agentic && !is_remote;
+        let show_cwd = is_local_agentic;
+        let show_status_bar = is_local_agentic;
 
         let item_height = if show_cwd { 48.0 } else { 32.0 };
         let desired_size = egui::vec2(ui.available_width(), item_height);
