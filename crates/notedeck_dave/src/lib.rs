@@ -1451,12 +1451,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Poll for new kind-1988 conversation events on remote sessions.
+    /// Poll for new kind-1988 conversation events.
     ///
-    /// Remote sessions subscribe to conversation events via ndb. When new
-    /// events arrive (from PNS unwrapping), this converts them to Messages
-    /// and appends them to the chat, keeping the phone UI in sync with the
-    /// desktop's conversation.
+    /// For remote sessions: process all roles (user, assistant, tool_call, etc.)
+    /// to keep the phone UI in sync with the desktop's conversation.
+    ///
+    /// For local sessions: only process `role=user` messages arriving from
+    /// remote clients (phone), collecting them for backend dispatch.
     fn poll_remote_conversation_events(&mut self, ndb: &nostrdb::Ndb) {
         let session_ids = self.session_manager.session_ids();
         for session_id in session_ids {
@@ -1835,8 +1836,27 @@ impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut app_action: Option<AppAction> = None;
 
-        // Process relay events into ndb (needed when dave is the active app)
-        try_process_events_core(ctx, ui.ctx(), |_, _| {});
+        // Process relay events into ndb (needed when dave is the active app).
+        // Re-send PNS subscription when the relay (re)connects.
+        let pns_sub_id = self.pns_relay_sub.clone();
+        try_process_events_core(ctx, ui.ctx(), |app_ctx, ev| {
+            if let enostr::RelayEvent::Opened = (&ev.event).into() {
+                if ev.relay == PNS_RELAY_URL {
+                    if let Some(sub_id) = &pns_sub_id {
+                        if let Some(sk) = app_ctx.accounts.get_selected_account().keypair().secret_key {
+                            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
+                            let pns_filter = nostrdb::Filter::new()
+                                .kinds([enostr::pns::PNS_KIND as u64])
+                                .authors([pns_keys.keypair.pubkey.bytes()])
+                                .build();
+                            let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
+                            app_ctx.pool.send_to(&req, PNS_RELAY_URL);
+                            tracing::info!("re-subscribed for PNS events after relay reconnect");
+                        }
+                    }
+                }
+            }
+        });
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
