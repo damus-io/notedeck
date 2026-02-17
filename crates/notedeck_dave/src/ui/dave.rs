@@ -391,11 +391,14 @@ impl<'a> DaveUi<'a> {
                         .color(ui.visuals().weak_text_color())
                         .italics(),
                 );
-                ui.label(
-                    egui::RichText::new("(press esc to interrupt)")
-                        .color(ui.visuals().weak_text_color())
-                        .small(),
-                );
+                // Don't show interrupt hint for remote sessions
+                if !self.is_remote {
+                    ui.label(
+                        egui::RichText::new("(press esc to interrupt)")
+                            .color(ui.visuals().weak_text_color())
+                            .small(),
+                    );
+                }
             });
         }
 

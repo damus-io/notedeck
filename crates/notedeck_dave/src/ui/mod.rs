@@ -70,8 +70,12 @@ fn build_dave_ui<'a>(
             .permission_message_state(agentic.permission_message_state)
             .question_answers(&mut agentic.question_answers)
             .question_index(&mut agentic.question_index)
-            .is_compacting(agentic.is_compacting)
-            .git_status(&mut agentic.git_status);
+            .is_compacting(agentic.is_compacting);
+
+        // Only show git status for local sessions
+        if !is_remote {
+            ui_builder = ui_builder.git_status(&mut agentic.git_status);
+        }
     }
 
     ui_builder
