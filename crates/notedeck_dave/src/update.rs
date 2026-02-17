@@ -220,16 +220,13 @@ pub fn handle_permission_response(
         PermissionResponse::Deny { .. } => crate::messages::PermissionResponseType::Denied,
     };
 
-    // Extract relay-publish info before we move `response`
-    let relay_info = if is_remote {
-        let allowed = matches!(&response, PermissionResponse::Allow { .. });
-        let message = match &response {
-            PermissionResponse::Allow { message } => message.clone(),
-            PermissionResponse::Deny { reason } => Some(reason.clone()),
-        };
-        Some((allowed, message))
-    } else {
-        None
+    // Extract relay-publish info before we move `response`.
+    // Both local and remote sessions publish permission response events
+    // so that resolved state persists across session reloads.
+    let allowed = matches!(&response, PermissionResponse::Allow { .. });
+    let message = match &response {
+        PermissionResponse::Allow { message } => message.clone(),
+        PermissionResponse::Deny { reason } => Some(reason.clone()),
     };
 
     // If Allow has a message, add it as a User message to the chat
@@ -272,14 +269,10 @@ pub fn handle_permission_response(
         }
     }
 
-    if let Some((allowed, message)) = relay_info {
-        PermissionResponseResult::NeedsRelayPublish {
-            perm_id: request_id,
-            allowed,
-            message,
-        }
-    } else {
-        PermissionResponseResult::Local
+    PermissionResponseResult::NeedsRelayPublish {
+        perm_id: request_id,
+        allowed,
+        message,
     }
 }
 
