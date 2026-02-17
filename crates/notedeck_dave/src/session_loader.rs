@@ -7,19 +7,59 @@
 use crate::messages::{AssistantMessage, PermissionRequest, PermissionResponseType, ToolResult};
 use crate::session_events::{get_tag_value, is_conversation_role, AI_CONVERSATION_KIND};
 use crate::Message;
-use nostrdb::{Filter, Ndb, Transaction};
+use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use std::collections::HashSet;
+
+/// Query replaceable events via `ndb.fold`, deduplicating by `d` tag.
+///
+/// nostrdb doesn't deduplicate replaceable events internally, so multiple
+/// revisions of the same (kind, pubkey, d-tag) tuple may exist. This
+/// folds over all matching notes and keeps only the one with the highest
+/// `created_at` for each unique `d` tag value.
+///
+/// Returns a Vec of `NoteKey`s for the winning notes (one per unique d-tag).
+pub fn query_replaceable(
+    ndb: &Ndb,
+    txn: &Transaction,
+    filters: &[Filter],
+) -> Vec<NoteKey> {
+    // Fold: for each d-tag value, track (created_at, NoteKey) of the latest
+    let best = ndb.fold(
+        txn,
+        filters,
+        std::collections::HashMap::<String, (u64, NoteKey)>::new(),
+        |mut acc, note| {
+            let Some(d_tag) = get_tag_value(&note, "d") else {
+                return acc;
+            };
+
+            let created_at = note.created_at() as u64;
+
+            if let Some((existing_ts, _)) = acc.get(d_tag) {
+                if created_at <= *existing_ts {
+                    return acc;
+                }
+            }
+
+            acc.insert(d_tag.to_string(), (created_at, note.key().expect("note key")));
+            acc
+        },
+    );
+
+    match best {
+        Ok(map) => map.into_values().map(|(_, key)| key).collect(),
+        Err(_) => vec![],
+    }
+}
 
 /// Result of loading session messages, including threading info for live events.
 pub struct LoadedSession {
     pub messages: Vec<Message>,
-    /// Root note ID of the conversation (first event chronologically).
     pub root_note_id: Option<[u8; 32]>,
-    /// Last note ID of the conversation (most recent event).
     pub last_note_id: Option<[u8; 32]>,
-    /// Total number of events found.
     pub event_count: u32,
-    /// Permission IDs that already have response events.
+    /// Set of perm-id UUIDs that have already been responded to.
+    /// Used by remote sessions to know which permission requests are already handled.
     pub responded_perm_ids: HashSet<uuid::Uuid>,
     /// Map of perm_id -> note_id for permission request events.
     /// Used by remote sessions to link responses back to requests.
@@ -30,14 +70,12 @@ pub struct LoadedSession {
 
 /// Load conversation messages from ndb for a given session ID.
 ///
-/// Returns messages in chronological order, suitable for populating
-/// `ChatSession.chat` before streaming begins. Also returns note IDs
-/// for seeding live threading state.
+/// This queries for kind-1988 events with a `d` tag matching the session ID,
+/// sorts them chronologically, and converts relevant roles into Messages.
 pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> LoadedSession {
     let filter = Filter::new()
         .kinds([AI_CONVERSATION_KIND as u64])
         .tags([session_id], 'd')
-        .limit(10000)
         .build();
 
     let results = match ndb.query(txn, &[filter], 10000) {
@@ -79,11 +117,9 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         .map(|n| *n.id());
     let last_note_id = notes.last().map(|n| *n.id());
 
-    // First pass: collect responded perm IDs and request note IDs
-    let mut responded_perm_ids: HashSet<uuid::Uuid> = HashSet::new();
-    let mut perm_request_note_ids: std::collections::HashMap<uuid::Uuid, [u8; 32]> =
-        std::collections::HashMap::new();
-
+    // First pass: collect responded permission IDs and perm request note IDs
+    let mut responded_perm_ids = HashSet::new();
+    let mut perm_request_note_ids = std::collections::HashMap::new();
     for note in &notes {
         let role = get_tag_value(note, "role");
         if role == Some("permission_response") {
@@ -101,7 +137,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         }
     }
 
-    // Second pass: build messages
+    // Second pass: convert to messages
     let mut messages = Vec::new();
     for note in &notes {
         let content = note.content();
@@ -109,21 +145,17 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
 
         let msg = match role {
             Some("user") => Some(Message::User(content.to_string())),
-            Some("assistant") => Some(Message::Assistant(AssistantMessage::from_text(
-                content.to_string(),
-            ))),
-            Some("tool_call") => {
-                // Tool calls are displayed as assistant messages in the UI
-                Some(Message::Assistant(AssistantMessage::from_text(
-                    content.to_string(),
-                )))
-            }
+            Some("assistant") | Some("tool_call") => Some(Message::Assistant(
+                AssistantMessage::from_text(content.to_string()),
+            )),
             Some("tool_result") => {
-                // Extract tool name from content if possible
-                // Content format is the tool output text
-                let tool_name = "tool".to_string();
-                let summary = truncate(content, 100);
-                Some(Message::ToolResult(ToolResult { tool_name, summary }))
+                let summary = truncate(content, 200);
+                Some(Message::ToolResult(ToolResult {
+                    tool_name: get_tag_value(note, "tool-name")
+                        .unwrap_or("tool")
+                        .to_string(),
+                    summary,
+                }))
             }
             Some("permission_request") => {
                 if let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) {
@@ -187,9 +219,8 @@ pub struct SessionState {
 
 /// Load all session states from kind-31988 events in ndb.
 ///
-/// Returns one `SessionState` per unique session. Since these are
-/// parameterized replaceable events, nostrdb keeps only the latest
-/// version for each (kind, pubkey, d-tag) tuple.
+/// Uses `query_replaceable` to deduplicate by d-tag, keeping only the
+/// most recent revision of each session state.
 pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
     use crate::session_events::AI_SESSION_STATE_KIND;
 
@@ -198,14 +229,11 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
         .tags(["ai-session-state"], 't')
         .build();
 
-    let results = match ndb.query(txn, &[filter], 100) {
-        Ok(r) => r,
-        Err(_) => return vec![],
-    };
+    let note_keys = query_replaceable(ndb, txn, &[filter]);
 
     let mut states = Vec::new();
-    for qr in &results {
-        let Ok(note) = ndb.get_note_by_key(txn, qr.note_key) else {
+    for key in note_keys {
+        let Ok(note) = ndb.get_note_by_key(txn, key) else {
             continue;
         };
 
