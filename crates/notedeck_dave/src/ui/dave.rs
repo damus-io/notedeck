@@ -542,8 +542,6 @@ impl<'a> DaveUi<'a> {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&request.tool_name).strong());
                                     ui.label(desc);
-
-                                    self.permission_buttons(request, ui, &mut action);
                                 });
                                 // Command on next line if present
                                 if let Some(cmd) = command {
@@ -557,16 +555,10 @@ impl<'a> DaveUi<'a> {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&request.tool_name).strong());
                                     ui.label(egui::RichText::new(value).monospace());
-
-                                    self.permission_buttons(request, ui, &mut action);
                                 });
                             } else {
                                 // Fallback: show JSON
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(&request.tool_name).strong());
-
-                                    self.permission_buttons(request, ui, &mut action);
-                                });
+                                ui.label(egui::RichText::new(&request.tool_name).strong());
                                 let formatted = serde_json::to_string_pretty(&request.tool_input)
                                     .unwrap_or_else(|_| request.tool_input.to_string());
                                 ui.add(
@@ -576,6 +568,11 @@ impl<'a> DaveUi<'a> {
                                     .wrap_mode(egui::TextWrapMode::Wrap),
                                 );
                             }
+
+                            // Buttons on their own line
+                            ui.horizontal(|ui| {
+                                self.permission_buttons(request, ui, &mut action);
+                            });
                         });
                 }
             }
@@ -725,29 +722,8 @@ impl<'a> DaveUi<'a> {
                     // Approve/Reject buttons with shift support for adding message
                     let shift_held = ui.input(|i| i.modifiers.shift);
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
-
-                        // Reject button (red)
-                        let reject_response = super::badge::ActionButton::new(
-                            "Reject",
-                            egui::Color32::from_rgb(178, 34, 34),
-                            button_text_color,
-                        )
-                        .keybind("2")
-                        .show(ui)
-                        .on_hover_text("Press 2 to reject, Shift+2 to reject with message");
-
-                        if reject_response.clicked() {
-                            if shift_held {
-                                action = Some(DaveAction::TentativeDeny);
-                            } else {
-                                action = Some(DaveAction::ExitPlanMode {
-                                    request_id: request.id,
-                                    approved: false,
-                                });
-                            }
-                        }
 
                         // Approve button (green)
                         let approve_response = super::badge::ActionButton::new(
@@ -766,6 +742,27 @@ impl<'a> DaveUi<'a> {
                                 action = Some(DaveAction::ExitPlanMode {
                                     request_id: request.id,
                                     approved: true,
+                                });
+                            }
+                        }
+
+                        // Reject button (red)
+                        let reject_response = super::badge::ActionButton::new(
+                            "Reject",
+                            egui::Color32::from_rgb(178, 34, 34),
+                            button_text_color,
+                        )
+                        .keybind("2")
+                        .show(ui)
+                        .on_hover_text("Press 2 to reject, Shift+2 to reject with message");
+
+                        if reject_response.clicked() {
+                            if shift_held {
+                                action = Some(DaveAction::TentativeDeny);
+                            } else {
+                                action = Some(DaveAction::ExitPlanMode {
+                                    request_id: request.id,
+                                    approved: false,
                                 });
                             }
                         }
