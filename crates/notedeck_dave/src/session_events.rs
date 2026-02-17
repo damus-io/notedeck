@@ -391,6 +391,7 @@ fn build_source_data_event(
 /// assistant message.
 ///
 /// `tool_id`: The tool use/result ID for tool_call and tool_result events.
+#[allow(clippy::too_many_arguments)]
 fn build_single_event(
     line: Option<&JsonlLine>,
     content: &str,
@@ -542,14 +543,8 @@ pub fn build_permission_request_event(
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
 
     // Permission-specific tags
-    builder = builder
-        .start_tag()
-        .tag_str("perm-id")
-        .tag_str(&perm_id_str);
-    builder = builder
-        .start_tag()
-        .tag_str("tool-name")
-        .tag_str(tool_name);
+    builder = builder.start_tag().tag_str("perm-id").tag_str(&perm_id_str);
+    builder = builder.start_tag().tag_str("tool-name").tag_str(tool_name);
     builder = builder
         .start_tag()
         .tag_str("role")
@@ -560,14 +555,8 @@ pub fn build_permission_request_event(
         .tag_str("notedeck-dave");
 
     // Discoverability
-    builder = builder
-        .start_tag()
-        .tag_str("t")
-        .tag_str("ai-conversation");
-    builder = builder
-        .start_tag()
-        .tag_str("t")
-        .tag_str("ai-permission");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-permission");
 
     finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
@@ -602,16 +591,10 @@ pub fn build_permission_response_event(
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
 
     // Link to the request event
-    builder = builder
-        .start_tag()
-        .tag_str("e")
-        .tag_id(request_note_id);
+    builder = builder.start_tag().tag_str("e").tag_id(request_note_id);
 
     // Permission-specific tags
-    builder = builder
-        .start_tag()
-        .tag_str("perm-id")
-        .tag_str(&perm_id_str);
+    builder = builder.start_tag().tag_str("perm-id").tag_str(&perm_id_str);
     builder = builder
         .start_tag()
         .tag_str("role")
@@ -622,14 +605,8 @@ pub fn build_permission_response_event(
         .tag_str("notedeck-dave");
 
     // Discoverability
-    builder = builder
-        .start_tag()
-        .tag_str("t")
-        .tag_str("ai-conversation");
-    builder = builder
-        .start_tag()
-        .tag_str("t")
-        .tag_str("ai-permission");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-permission");
 
     finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
@@ -657,14 +634,8 @@ pub fn build_session_state_event(
     builder = builder.start_tag().tag_str("status").tag_str(status);
 
     // Discoverability
-    builder = builder
-        .start_tag()
-        .tag_str("t")
-        .tag_str("ai-session-state");
-    builder = builder
-        .start_tag()
-        .tag_str("t")
-        .tag_str("ai-conversation");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-session-state");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
     builder = builder
         .start_tag()
         .tag_str("source")
@@ -809,7 +780,10 @@ mod tests {
         assert!(!events[0].note_json.contains("source-data"));
 
         // 1989 event should have source-data with raw paths preserved
-        let sd_event = events.iter().find(|e| e.kind == AI_SOURCE_DATA_KIND).unwrap();
+        let sd_event = events
+            .iter()
+            .find(|e| e.kind == AI_SOURCE_DATA_KIND)
+            .unwrap();
         assert!(sd_event.note_json.contains("source-data"));
         assert!(sd_event.note_json.contains("/Users/jb55/dev/notedeck"));
     }
@@ -1028,14 +1002,9 @@ mod tests {
         let tool_input = serde_json::json!({"command": "rm -rf /tmp/test"});
         let sk = test_secret_key();
 
-        let event = build_permission_request_event(
-            &perm_id,
-            "Bash",
-            &tool_input,
-            "sess-perm-test",
-            &sk,
-        )
-        .unwrap();
+        let event =
+            build_permission_request_event(&perm_id, "Bash", &tool_input, "sess-perm-test", &sk)
+                .unwrap();
 
         assert_eq!(event.kind, AI_CONVERSATION_KIND);
 

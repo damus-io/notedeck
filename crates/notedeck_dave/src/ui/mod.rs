@@ -319,7 +319,6 @@ pub fn desktop_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
-    ai_mode: AiMode,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> (DaveResponse, Option<SessionListAction>, bool) {
@@ -341,7 +340,11 @@ pub fn desktop_ui(
                 .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::symmetric(8, 12))
                 .show(ui, |ui| {
-                    if ai_mode == AiMode::Agentic {
+                    let has_agentic = session_manager
+                        .sessions_ordered()
+                        .iter()
+                        .any(|s| s.ai_mode == AiMode::Agentic);
+                    if has_agentic {
                         ui.horizontal(|ui| {
                             if ui
                                 .button("Scene View")
@@ -356,7 +359,7 @@ pub fn desktop_ui(
                         });
                         ui.separator();
                     }
-                    SessionListUi::new(session_manager, focus_queue, ctrl_held, ai_mode).ui(ui)
+                    SessionListUi::new(session_manager, focus_queue, ctrl_held).ui(ui)
                 })
                 .inner
         })
@@ -365,8 +368,13 @@ pub fn desktop_ui(
     let chat_response = ui
         .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
             if let Some(session) = session_manager.get_active_mut() {
-                build_dave_ui(session, model_config, is_interrupt_pending, auto_steal_focus)
-                    .ui(app_ctx, ui)
+                build_dave_ui(
+                    session,
+                    model_config,
+                    is_interrupt_pending,
+                    auto_steal_focus,
+                )
+                .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
             }
@@ -384,7 +392,6 @@ pub fn narrow_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
-    ai_mode: AiMode,
     show_session_list: bool,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
@@ -395,14 +402,18 @@ pub fn narrow_ui(
             .fill(ui.visuals().faint_bg_color)
             .inner_margin(egui::Margin::symmetric(8, 12))
             .show(ui, |ui| {
-                SessionListUi::new(session_manager, focus_queue, ctrl_held, ai_mode).ui(ui)
+                SessionListUi::new(session_manager, focus_queue, ctrl_held).ui(ui)
             })
             .inner;
         (DaveResponse::default(), session_action)
     } else if let Some(session) = session_manager.get_active_mut() {
-        let response =
-            build_dave_ui(session, model_config, is_interrupt_pending, auto_steal_focus)
-                .ui(app_ctx, ui);
+        let response = build_dave_ui(
+            session,
+            model_config,
+            is_interrupt_pending,
+            auto_steal_focus,
+        )
+        .ui(app_ctx, ui);
         (response, None)
     } else {
         (DaveResponse::default(), None)
@@ -711,8 +722,7 @@ pub fn handle_ui_action(
             request_id,
             response,
         } => {
-            let result =
-                update::handle_permission_response(session_manager, request_id, response);
+            let result = update::handle_permission_response(session_manager, request_id, response);
             if let update::PermissionResponseResult::NeedsRelayPublish {
                 perm_id,
                 allowed,

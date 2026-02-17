@@ -110,7 +110,7 @@ impl DaveSettings {
     /// Create settings from an existing ModelConfig (preserves env var values)
     pub fn from_model_config(config: &ModelConfig) -> Self {
         let provider = match config.backend {
-            BackendType::OpenAI => AiProvider::OpenAI,
+            BackendType::OpenAI | BackendType::Remote => AiProvider::OpenAI,
             BackendType::Claude => AiProvider::Anthropic,
         };
 
@@ -182,11 +182,13 @@ impl Default for ModelConfig {
                 }
             }
         } else {
-            // Auto-detect: prefer Claude if key is available, otherwise OpenAI
+            // Auto-detect: prefer Claude if key is available, then OpenAI, then Remote
             if anthropic_api_key.is_some() {
                 BackendType::Claude
-            } else {
+            } else if api_key.is_some() {
                 BackendType::OpenAI
+            } else {
+                BackendType::Remote
             }
         };
 
@@ -203,6 +205,7 @@ impl Default for ModelConfig {
             .unwrap_or_else(|| match backend {
                 BackendType::OpenAI => "gpt-4o".to_string(),
                 BackendType::Claude => "claude-sonnet-4.5".to_string(),
+                BackendType::Remote => String::new(),
             });
 
         ModelConfig {
@@ -220,7 +223,7 @@ impl ModelConfig {
     pub fn ai_mode(&self) -> AiMode {
         match self.backend {
             BackendType::Claude => AiMode::Agentic,
-            BackendType::OpenAI => AiMode::Chat,
+            BackendType::OpenAI | BackendType::Remote => AiMode::Chat,
         }
     }
 

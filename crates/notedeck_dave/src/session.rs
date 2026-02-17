@@ -263,14 +263,10 @@ impl ChatSession {
     pub fn has_pending_permissions(&self) -> bool {
         if self.is_remote() {
             // Remote: check for unresponded PermissionRequest messages in chat
-            let responded = self
-                .agentic
-                .as_ref()
-                .map(|a| &a.responded_perm_ids);
+            let responded = self.agentic.as_ref().map(|a| &a.responded_perm_ids);
             return self.chat.iter().any(|msg| {
                 if let Message::PermissionRequest(req) = msg {
-                    req.response.is_none()
-                        && responded.map_or(true, |ids| !ids.contains(&req.id))
+                    req.response.is_none() && responded.is_none_or(|ids| !ids.contains(&req.id))
                 } else {
                     false
                 }

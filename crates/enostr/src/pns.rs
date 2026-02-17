@@ -55,8 +55,7 @@ pub fn derive_pns_keys(device_key: &[u8; 32]) -> PnsKeys {
 /// Returns base64-encoded NIP-44 v2 ciphertext suitable for the
 /// `content` field of a kind-1080 event.
 pub fn encrypt(conversation_key: &ConversationKey, inner_json: &str) -> Result<String, PnsError> {
-    let payload =
-        v2::encrypt_to_bytes(conversation_key, inner_json).map_err(PnsError::Encrypt)?;
+    let payload = v2::encrypt_to_bytes(conversation_key, inner_json).map_err(PnsError::Encrypt)?;
     Ok(BASE64.encode(payload))
 }
 

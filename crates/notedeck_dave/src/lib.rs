@@ -24,7 +24,7 @@ mod update;
 mod vec3;
 
 use agent_status::AgentStatus;
-use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend};
+use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend, RemoteOnlyBackend};
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
@@ -171,11 +171,7 @@ struct PendingMessageLoad {
 ///
 /// ndb's `process_pns` will unwrap it internally, making the inner
 /// event queryable. This ensures 1080 events exist in ndb for relay sync.
-fn pns_ingest(
-    ndb: &nostrdb::Ndb,
-    event_json: &str,
-    secret_key: &[u8; 32],
-) {
+fn pns_ingest(ndb: &nostrdb::Ndb, event_json: &str, secret_key: &[u8; 32]) {
     let pns_keys = enostr::pns::derive_pns_keys(secret_key);
     match session_events::wrap_pns(event_json, &pns_keys) {
         Ok(pns_json) => {
@@ -292,6 +288,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .expect("Claude backend requires ANTHROPIC_API_KEY or CLAUDE_API_KEY");
                 Box::new(ClaudeBackend::new(api_key.clone()))
             }
+            BackendType::Remote => Box::new(RemoteOnlyBackend),
         };
 
         let avatar = render_state.map(DaveAvatar::new);
@@ -406,7 +403,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 match res {
                     DaveApiResponse::Failed(ref err) => {
                         if let Some(sk) = &secret_key {
-                            if let Some(evt) = ingest_live_event(session, app_ctx.ndb, sk, err, "error", None) {
+                            if let Some(evt) =
+                                ingest_live_event(session, app_ctx.ndb, sk, err, "error", None)
+                            {
                                 events_to_publish.push(evt);
                             }
                         }
@@ -490,15 +489,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         pns_ingest(app_ctx.ndb, &evt.note_json, sk);
                                         // Store note_id for linking responses
                                         if let Some(agentic) = &mut session.agentic {
-                                            agentic.perm_request_note_ids.insert(
-                                                pending.request.id,
-                                                evt.note_id,
-                                            );
+                                            agentic
+                                                .perm_request_note_ids
+                                                .insert(pending.request.id, evt.note_id);
                                         }
                                         events_to_publish.push(evt);
                                     }
                                     Err(e) => {
-                                        tracing::warn!("failed to build permission request event: {}", e);
+                                        tracing::warn!(
+                                            "failed to build permission request event: {}",
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -522,8 +523,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                         // Generate live event for tool result
                         if let Some(sk) = &secret_key {
-                            let content =
-                                format!("{}: {}", result.tool_name, result.summary);
+                            let content = format!("{}: {}", result.tool_name, result.summary);
                             if let Some(evt) = ingest_live_event(
                                 session,
                                 app_ctx.ndb,
@@ -723,8 +723,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     } => {
                         let claude_session_id = session_id.clone();
                         let sid = self.create_resumed_session_with_cwd(cwd, session_id, title);
-                        self.pending_archive_convert =
-                            Some((file_path, sid, claude_session_id));
+                        self.pending_archive_convert = Some((file_path, sid, claude_session_id));
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::None;
                     }
@@ -801,7 +800,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal_focus,
-            self.ai_mode,
             app_ctx,
             ui,
         );
@@ -834,7 +832,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal_focus,
-            self.ai_mode,
             self.show_session_list,
             app_ctx,
             ui,
@@ -1006,10 +1003,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let content = note.content();
                 let (allowed, message) = match serde_json::from_str::<serde_json::Value>(content) {
                     Ok(v) => {
-                        let decision = v
-                            .get("decision")
-                            .and_then(|d| d.as_str())
-                            .unwrap_or("deny");
+                        let decision = v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny");
                         let msg = v
                             .get("message")
                             .and_then(|m| m.as_str())
@@ -1046,10 +1040,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
 
                     if sender.send(response).is_err() {
-                        tracing::warn!(
-                            "failed to send remote permission response for {}",
-                            perm_id
-                        );
+                        tracing::warn!("failed to send remote permission response for {}", perm_id);
                     } else {
                         tracing::info!(
                             "remote permission response for {}: {}",
@@ -1095,11 +1086,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 &sk,
             ) {
                 Ok(evt) => {
-                    tracing::info!(
-                        "publishing session state: {} -> {}",
-                        claude_sid,
-                        status,
-                    );
+                    tracing::info!("publishing session state: {} -> {}", claude_sid, status,);
                     pns_ingest(ctx.ndb, &evt.note_json, &sk);
                     self.pending_relay_events.push(evt);
                 }
@@ -1236,11 +1223,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
 
             // Load conversation history from kind-1988 events
-            let loaded = session_loader::load_session_messages(
-                ctx.ndb,
-                &txn,
-                &state.claude_session_id,
-            );
+            let loaded =
+                session_loader::load_session_messages(ctx.ndb, &txn, &state.claude_session_id);
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 tracing::info!(
@@ -1258,18 +1242,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let is_remote = session.is_remote();
 
                 if let Some(agentic) = &mut session.agentic {
-                    if let (Some(root), Some(last)) =
-                        (loaded.root_note_id, loaded.last_note_id)
-                    {
+                    if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
                     // Load permission state and dedup set from events
                     agentic.responded_perm_ids = loaded.responded_perm_ids;
-                    agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
+                    agentic
+                        .perm_request_note_ids
+                        .extend(loaded.perm_request_note_ids);
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status from state event
-                    agentic.remote_status =
-                        AgentStatus::from_status_str(&state.status);
+                    agentic.remote_status = AgentStatus::from_status_str(&state.status);
 
                     // Set up live conversation subscription for remote sessions
                     if is_remote && agentic.live_conversation_sub.is_none() {
@@ -1350,9 +1333,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .session_manager
                         .iter()
                         .filter(|s| {
-                            s.agentic
-                                .as_ref()
-                                .and_then(|a| a.event_session_id())
+                            s.agentic.as_ref().and_then(|a| a.event_session_id())
                                 == Some(claude_sid)
                         })
                         .map(|s| s.id)
@@ -1385,7 +1366,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             }
 
-            let title = session_events::get_tag_value(&note, "title").unwrap_or("Untitled").to_string();
+            let title = session_events::get_tag_value(&note, "title")
+                .unwrap_or("Untitled")
+                .to_string();
             let cwd_str = session_events::get_tag_value(&note, "cwd").unwrap_or("");
             let cwd = std::path::PathBuf::from(cwd_str);
 
@@ -1403,11 +1386,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
 
             // Load any conversation history that arrived with it
-            let loaded = session_loader::load_session_messages(
-                ctx.ndb,
-                &txn,
-                claude_sid,
-            );
+            let loaded = session_loader::load_session_messages(ctx.ndb, &txn, claude_sid);
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 if !loaded.messages.is_empty() {
@@ -1426,14 +1405,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let is_remote = session.is_remote();
 
                 if let Some(agentic) = &mut session.agentic {
-                    if let (Some(root), Some(last)) =
-                        (loaded.root_note_id, loaded.last_note_id)
-                    {
+                    if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
                     // Load permission state and dedup set
                     agentic.responded_perm_ids = loaded.responded_perm_ids;
-                    agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
+                    agentic
+                        .perm_request_note_ids
+                        .extend(loaded.perm_request_note_ids);
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status
                     agentic.remote_status = AgentStatus::from_status_str(status_str);
@@ -1522,22 +1501,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 match role {
                     Some("user") => {
-                        session
-                            .chat
-                            .push(Message::User(content.to_string()));
+                        session.chat.push(Message::User(content.to_string()));
                     }
                     Some("assistant") => {
                         session.chat.push(Message::Assistant(
-                            crate::messages::AssistantMessage::from_text(
-                                content.to_string(),
-                            ),
+                            crate::messages::AssistantMessage::from_text(content.to_string()),
                         ));
                     }
                     Some("tool_call") => {
                         session.chat.push(Message::Assistant(
-                            crate::messages::AssistantMessage::from_text(
-                                content.to_string(),
-                            ),
+                            crate::messages::AssistantMessage::from_text(content.to_string()),
                         ));
                     }
                     Some("tool_result") => {
@@ -1547,16 +1520,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         } else {
                             content.to_string()
                         };
-                        session.chat.push(Message::ToolResult(
-                            crate::messages::ToolResult {
+                        session
+                            .chat
+                            .push(Message::ToolResult(crate::messages::ToolResult {
                                 tool_name: "tool".to_string(),
                                 summary,
-                            },
-                        ));
+                            }));
                     }
                     Some("permission_request") => {
-                        if let Ok(content_json) =
-                            serde_json::from_str::<serde_json::Value>(content)
+                        if let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content)
                         {
                             let tool_name = content_json["tool_name"]
                                 .as_str()
@@ -1566,25 +1538,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 .get("tool_input")
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
-                            let perm_id =
-                                session_events::get_tag_value(note, "perm-id")
-                                    .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                                    .unwrap_or_else(uuid::Uuid::new_v4);
+                            let perm_id = session_events::get_tag_value(note, "perm-id")
+                                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                                .unwrap_or_else(uuid::Uuid::new_v4);
 
                             // Check if we already responded
-                            let response =
-                                if agentic.responded_perm_ids.contains(&perm_id) {
-                                    Some(
-                                        crate::messages::PermissionResponseType::Allowed,
-                                    )
-                                } else {
-                                    None
-                                };
+                            let response = if agentic.responded_perm_ids.contains(&perm_id) {
+                                Some(crate::messages::PermissionResponseType::Allowed)
+                            } else {
+                                None
+                            };
 
                             // Store the note ID for linking responses
-                            agentic
-                                .perm_request_note_ids
-                                .insert(perm_id, *note.id());
+                            agentic.perm_request_note_ids.insert(perm_id, *note.id());
 
                             session.chat.push(Message::PermissionRequest(
                                 crate::messages::PermissionRequest {
@@ -1600,9 +1566,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                     Some("permission_response") => {
                         // Track that this permission was responded to
-                        if let Some(perm_id_str) =
-                            session_events::get_tag_value(note, "perm-id")
-                        {
+                        if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
                             if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
                                 agentic.responded_perm_ids.insert(perm_id);
                                 // Update the matching PermissionRequest in chat
@@ -1806,7 +1770,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             // Generate live event for user message
             if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-                if let Some(evt) = ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None) {
+                if let Some(evt) =
+                    ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None)
+                {
                     self.pending_relay_events.push(evt);
                 }
             }
@@ -1871,7 +1837,7 @@ impl notedeck::App for Dave {
         self.poll_ipc_commands();
 
         // One-time initialization on first update
-        if !self.sessions_restored && self.ai_mode == AiMode::Agentic {
+        if !self.sessions_restored {
             self.sessions_restored = true;
 
             // Process any PNS-wrapped events already in ndb
@@ -1891,14 +1857,8 @@ impl notedeck::App for Dave {
             // Subscribe to PNS events on relays for session discovery from other devices.
             // Also subscribe locally in ndb for kind-31988 session state events
             // so we detect new sessions appearing after PNS unwrapping.
-            if let Some(sk) = ctx
-                .accounts
-                .get_selected_account()
-                .keypair()
-                .secret_key
-            {
-                let pns_keys =
-                    enostr::pns::derive_pns_keys(&sk.secret_bytes());
+            if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
+                let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
 
                 // Ensure the PNS relay is in the pool
                 let egui_ctx = ui.ctx().clone();
@@ -1968,66 +1928,61 @@ impl notedeck::App for Dave {
                     claude_sid
                 );
                 let loaded_txn = Transaction::new(ctx.ndb).expect("txn");
-                let loaded = session_loader::load_session_messages(
-                    ctx.ndb,
-                    &loaded_txn,
-                    &claude_sid,
-                );
+                let loaded =
+                    session_loader::load_session_messages(ctx.ndb, &loaded_txn, &claude_sid);
                 if let Some(session) = self.session_manager.get_mut(dave_sid) {
                     tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
                     session.chat = loaded.messages;
 
                     if let Some(agentic) = &mut session.agentic {
-                        if let (Some(root), Some(last)) =
-                            (loaded.root_note_id, loaded.last_note_id)
+                        if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id)
                         {
                             agentic.live_threading.seed(root, last, loaded.event_count);
                         }
-                        agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
+                        agentic
+                            .perm_request_note_ids
+                            .extend(loaded.perm_request_note_ids);
+                    }
+                }
+            } else if let Some(secret_bytes) =
+                secret_key_bytes(ctx.accounts.get_selected_account().keypair())
+            {
+                // Subscribe for 1988 events BEFORE ingesting so we catch them
+                let sub_filter = nostrdb::Filter::new()
+                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                    .tags([claude_sid.as_str()], 'd')
+                    .build();
+
+                match ctx.ndb.subscribe(&[sub_filter]) {
+                    Ok(sub) => {
+                        match session_converter::convert_session_to_events(
+                            &file_path,
+                            ctx.ndb,
+                            &secret_bytes,
+                        ) {
+                            Ok(note_ids) => {
+                                tracing::info!(
+                                    "archived session: {} events from {}, awaiting indexing",
+                                    note_ids.len(),
+                                    file_path.display()
+                                );
+                                self.pending_message_load = Some(PendingMessageLoad {
+                                    sub,
+                                    dave_session_id: dave_sid,
+                                    claude_session_id: claude_sid,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!("archive conversion failed: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("failed to subscribe for archive events: {:?}", e);
                     }
                 }
             } else {
-                if let Some(secret_bytes) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) {
-                    // Subscribe for 1988 events BEFORE ingesting so we catch them
-                    let sub_filter = nostrdb::Filter::new()
-                        .kinds([session_events::AI_CONVERSATION_KIND as u64])
-                        .tags([claude_sid.as_str()], 'd')
-                        .build();
-
-                    match ctx.ndb.subscribe(&[sub_filter]) {
-                        Ok(sub) => {
-                            match session_converter::convert_session_to_events(
-                                &file_path,
-                                ctx.ndb,
-                                &secret_bytes,
-                            ) {
-                                Ok(note_ids) => {
-                                    tracing::info!(
-                                        "archived session: {} events from {}, awaiting indexing",
-                                        note_ids.len(),
-                                        file_path.display()
-                                    );
-                                    self.pending_message_load = Some(PendingMessageLoad {
-                                        sub,
-                                        dave_session_id: dave_sid,
-                                        claude_session_id: claude_sid,
-                                    });
-                                }
-                                Err(e) => {
-                                    tracing::error!("archive conversion failed: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                "failed to subscribe for archive events: {:?}",
-                                e
-                            );
-                        }
-                    }
-                } else {
-                    tracing::warn!("no secret key available for archive conversion");
-                }
+                tracing::warn!("no secret key available for archive conversion");
             }
         }
 
@@ -2048,12 +2003,13 @@ impl notedeck::App for Dave {
                     // Seed live threading from archive events so new events
                     // thread as replies to the existing conversation.
                     if let Some(agentic) = &mut session.agentic {
-                        if let (Some(root), Some(last)) =
-                            (loaded.root_note_id, loaded.last_note_id)
+                        if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id)
                         {
                             agentic.live_threading.seed(root, last, loaded.event_count);
                         }
-                        agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
+                        agentic
+                            .perm_request_note_ids
+                            .extend(loaded.perm_request_note_ids);
                     }
                 }
                 self.pending_message_load = None;
@@ -2069,12 +2025,17 @@ impl notedeck::App for Dave {
             .and_then(|s| s.agentic.as_ref())
             .map(|a| a.permission_message_state != crate::session::PermissionMessageState::None)
             .unwrap_or(false);
+        let active_ai_mode = self
+            .session_manager
+            .get_active()
+            .map(|s| s.ai_mode)
+            .unwrap_or(self.ai_mode);
         if let Some(key_action) = check_keybindings(
             ui.ctx(),
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
-            self.ai_mode,
+            active_ai_mode,
         ) {
             self.handle_key_action(key_action, ui);
         }
@@ -2091,21 +2052,14 @@ impl notedeck::App for Dave {
         // PNS-wrap and publish events to relays
         let pending = std::mem::take(&mut self.pending_relay_events);
         let all_events = events_to_publish.iter().chain(pending.iter());
-        if let Some(sk) = ctx
-            .accounts
-            .get_selected_account()
-            .keypair()
-            .secret_key
-        {
+        if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
             let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
             for event in all_events {
                 match session_events::wrap_pns(&event.note_json, &pns_keys) {
-                    Ok(pns_json) => {
-                        match enostr::ClientMessage::event_json(pns_json) {
-                            Ok(msg) => ctx.pool.send_to(&msg, PNS_RELAY_URL),
-                            Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
-                        }
-                    }
+                    Ok(pns_json) => match enostr::ClientMessage::event_json(pns_json) {
+                        Ok(msg) => ctx.pool.send_to(&msg, PNS_RELAY_URL),
+                        Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
+                    },
                     Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
                 }
             }

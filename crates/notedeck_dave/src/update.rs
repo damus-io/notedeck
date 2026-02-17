@@ -141,15 +141,10 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
     let session = session_manager.get_active()?;
     if session.is_remote() {
         // Remote: find first unresponded PermissionRequest in chat
-        let responded = session
-            .agentic
-            .as_ref()
-            .map(|a| &a.responded_perm_ids);
+        let responded = session.agentic.as_ref().map(|a| &a.responded_perm_ids);
         for msg in &session.chat {
             if let Message::PermissionRequest(req) = msg {
-                if req.response.is_none()
-                    && responded.map_or(true, |ids| !ids.contains(&req.id))
-                {
+                if req.response.is_none() && responded.is_none_or(|ids| !ids.contains(&req.id)) {
                     return Some(req.id);
                 }
             }
@@ -482,7 +477,11 @@ pub fn cycle_prev_agent(
     show_scene: bool,
 ) {
     cycle_agent(session_manager, scene, show_scene, |idx, len| {
-        if idx == 0 { len - 1 } else { idx - 1 }
+        if idx == 0 {
+            len - 1
+        } else {
+            idx - 1
+        }
     });
 }
 
@@ -613,7 +612,10 @@ pub fn process_auto_steal_focus(
                 focus_queue.set_cursor(idx);
                 if let Some(entry) = focus_queue.current() {
                     switch_and_focus_session(session_manager, scene, show_scene, entry.session_id);
-                    tracing::debug!("Auto-steal: switched to Done session {:?}", entry.session_id);
+                    tracing::debug!(
+                        "Auto-steal: switched to Done session {:?}",
+                        entry.session_id
+                    );
                     return true;
                 }
             }

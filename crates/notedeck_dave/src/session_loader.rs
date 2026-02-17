@@ -18,11 +18,7 @@ use std::collections::HashSet;
 /// `created_at` for each unique `d` tag value.
 ///
 /// Returns a Vec of `NoteKey`s for the winning notes (one per unique d-tag).
-pub fn query_replaceable(
-    ndb: &Ndb,
-    txn: &Transaction,
-    filters: &[Filter],
-) -> Vec<NoteKey> {
+pub fn query_replaceable(ndb: &Ndb, txn: &Transaction, filters: &[Filter]) -> Vec<NoteKey> {
     query_replaceable_filtered(ndb, txn, filters, |_| true)
 }
 
@@ -47,7 +43,7 @@ pub fn query_replaceable_filtered(
                 return acc;
             };
 
-            let created_at = note.created_at() as u64;
+            let created_at = note.created_at();
 
             if let Some((existing_ts, _)) = acc.get(d_tag) {
                 if created_at <= *existing_ts {
@@ -56,7 +52,10 @@ pub fn query_replaceable_filtered(
             }
 
             if predicate(&note) {
-                acc.insert(d_tag.to_string(), (created_at, note.key().expect("note key")));
+                acc.insert(
+                    d_tag.to_string(),
+                    (created_at, note.key().expect("note key")),
+                );
             } else {
                 // Latest revision rejected — remove any older revision we kept
                 acc.remove(d_tag);
@@ -275,7 +274,9 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
 
         states.push(SessionState {
             claude_session_id: claude_session_id.to_string(),
-            title: get_tag_value(&note, "title").unwrap_or("Untitled").to_string(),
+            title: get_tag_value(&note, "title")
+                .unwrap_or("Untitled")
+                .to_string(),
             cwd: get_tag_value(&note, "cwd").unwrap_or("").to_string(),
             status: get_tag_value(&note, "status").unwrap_or("idle").to_string(),
         });
