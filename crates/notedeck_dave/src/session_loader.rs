@@ -249,11 +249,19 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
         .tags(["ai-session-state"], 't')
         .build();
 
-    let not_deleted = |note: &nostrdb::Note| {
-        get_tag_value(note, "status") != Some("deleted")
+    let is_valid = |note: &nostrdb::Note| {
+        // Skip deleted sessions
+        if get_tag_value(note, "status") == Some("deleted") {
+            return false;
+        }
+        // Skip old JSON-content format events
+        if note.content().starts_with('{') {
+            return false;
+        }
+        true
     };
 
-    let note_keys = query_replaceable_filtered(ndb, txn, &[filter], not_deleted);
+    let note_keys = query_replaceable_filtered(ndb, txn, &[filter], is_valid);
 
     let mut states = Vec::new();
     for key in note_keys {
