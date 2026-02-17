@@ -835,8 +835,11 @@ impl<'a> DaveUi<'a> {
         });
     }
 
-    /// Render a single subagent's status
+    /// Render a single subagent's status with expandable tool results
     fn subagent_ui(info: &SubagentInfo, ui: &mut egui::Ui) {
+        let tool_count = info.tool_results.len();
+        let has_tools = tool_count > 0;
+
         ui.horizontal(|ui| {
             // Status badge with color based on status
             let variant = match info.status {
@@ -859,7 +862,41 @@ impl<'a> DaveUi<'a> {
             if info.status == SubagentStatus::Running {
                 ui.add(egui::Spinner::new().size(11.0));
             }
+
+            // Tool count indicator (clickable to expand)
+            if has_tools {
+                let id = ui.id().with(&info.task_id);
+                let expanded = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+                let arrow = if expanded { "▾" } else { "▸" };
+                let label = format!("{} ({} tools)", arrow, tool_count);
+                if ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(label)
+                                .size(10.0)
+                                .color(ui.visuals().text_color().gamma_multiply(0.4)),
+                        )
+                        .sense(egui::Sense::click()),
+                    )
+                    .clicked()
+                {
+                    ui.data_mut(|d| d.insert_temp(id, !expanded));
+                }
+            }
         });
+
+        // Expanded tool results
+        if has_tools {
+            let id = ui.id().with(&info.task_id);
+            let expanded = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+            if expanded {
+                ui.indent(("subagent_tools", &info.task_id), |ui| {
+                    for result in &info.tool_results {
+                        Self::tool_result_ui(result, ui);
+                    }
+                });
+            }
+        }
     }
 
     fn search_call_ui(

@@ -593,7 +593,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 agentic.git_status.invalidate();
                             }
                         }
-                        session.chat.push(Message::ToolResult(result));
+                        if let Some(result) = session.fold_tool_result(result) {
+                            session.chat.push(Message::ToolResult(result));
+                        }
                     }
 
                     DaveApiResponse::SessionInfo(info) => {
@@ -1658,6 +1660,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             .push(Message::ToolResult(crate::messages::ToolResult {
                                 tool_name,
                                 summary,
+                                parent_task_id: None,
                             }));
                     }
                     Some("permission_request") => {

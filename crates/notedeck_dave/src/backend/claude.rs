@@ -278,6 +278,9 @@ async fn session_actor(
                 // Track pending tool uses: tool_use_id -> (tool_name, tool_input)
                 let mut pending_tools: HashMap<String, (String, serde_json::Value)> =
                     HashMap::new();
+                // Track active subagent nesting: tool results emitted while
+                // a Task is in-flight belong to the top-of-stack subagent.
+                let mut subagent_stack: Vec<String> = Vec::new();
 
                 // Stream response with select! to handle stream, permission requests, and interrupts
                 let mut stream = client.receive_response();
@@ -439,6 +442,7 @@ async fn session_actor(
                                                             .unwrap_or("unknown")
                                                             .to_string();
 
+                                                        subagent_stack.push(id.clone());
                                                         let subagent_info = SubagentInfo {
                                                             task_id: id.clone(),
                                                             description,
@@ -446,6 +450,7 @@ async fn session_actor(
                                                             status: SubagentStatus::Running,
                                                             output: String::new(),
                                                             max_output_size: 4000,
+                                                            tool_results: Vec::new(),
                                                         };
                                                         let _ = response_tx.send(DaveApiResponse::SubagentSpawned(subagent_info));
                                                         ctx.request_repaint();
@@ -505,6 +510,8 @@ async fn session_actor(
 
                                                         // Check if this is a Task tool completion
                                                         if tool_name == "Task" {
+                                                            // Pop this subagent from the stack
+                                                            subagent_stack.retain(|id| id != tool_use_id);
                                                             let result_text = extract_response_content(&result_value)
                                                                 .unwrap_or_else(|| "completed".to_string());
                                                             let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
@@ -513,8 +520,10 @@ async fn session_actor(
                                                             });
                                                         }
 
+                                                        // Attach parent subagent context (top of stack)
+                                                        let parent_task_id = subagent_stack.last().cloned();
                                                         let summary = format_tool_summary(&tool_name, &tool_input, &result_value);
-                                                        let tool_result = ToolResult { tool_name, summary };
+                                                        let tool_result = ToolResult { tool_name, summary, parent_task_id };
                                                         let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
                                                         ctx.request_repaint();
                                                     }

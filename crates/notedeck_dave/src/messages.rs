@@ -107,6 +107,8 @@ pub enum PermissionResponseType {
 pub struct ToolResult {
     pub tool_name: String,
     pub summary: String, // e.g., "154 lines", "exit 0", "3 matches"
+    /// Which subagent (Task tool_use_id) produced this result, if any
+    pub parent_task_id: Option<String>,
 }
 
 /// Session initialization info from Claude Code CLI
@@ -156,6 +158,8 @@ pub struct SubagentInfo {
     pub output: String,
     /// Maximum output size to keep (for size-restricted window)
     pub max_output_size: usize,
+    /// Tool results produced by this subagent
+    pub tool_results: Vec<ToolResult>,
 }
 
 /// An assistant message with incremental markdown parsing support.

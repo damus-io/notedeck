@@ -169,6 +169,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                         .unwrap_or("tool")
                         .to_string(),
                     summary,
+                    parent_task_id: None,
                 }))
             }
             Some("permission_request") => {

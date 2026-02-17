@@ -7,7 +7,7 @@ use crate::config::AiMode;
 use crate::git_status::GitStatusCache;
 use crate::messages::{
     AnswerSummary, CompactionInfo, PermissionResponse, PermissionResponseType, QuestionAnswer,
-    SessionInfo, SubagentStatus,
+    SessionInfo, SubagentStatus, ToolResult,
 };
 use crate::session_events::ThreadingState;
 use crate::{DaveApiResponse, Message};
@@ -245,6 +245,19 @@ impl AgenticSessionData {
             }
         }
     }
+
+    /// Try to fold a tool result into its parent subagent.
+    /// Returns None if folded, Some(result) if it couldn't be folded.
+    pub fn fold_tool_result(&self, chat: &mut [Message], result: ToolResult) -> Option<ToolResult> {
+        let parent_id = result.parent_task_id.as_ref()?;
+        let &idx = self.subagent_indices.get(parent_id)?;
+        if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
+            subagent.tool_results.push(result);
+            None
+        } else {
+            Some(result)
+        }
+    }
 }
 
 /// A single chat session with Dave
@@ -389,6 +402,16 @@ impl ChatSession {
     pub fn complete_subagent(&mut self, task_id: &str, result: &str) {
         if let Some(ref mut agentic) = self.agentic {
             agentic.complete_subagent(&mut self.chat, task_id, result);
+        }
+    }
+
+    /// Try to fold a tool result into its parent subagent.
+    /// Returns None if folded, Some(result) if it couldn't be folded.
+    pub fn fold_tool_result(&mut self, result: ToolResult) -> Option<ToolResult> {
+        if let Some(ref agentic) = self.agentic {
+            agentic.fold_tool_result(&mut self.chat, result)
+        } else {
+            Some(result)
         }
     }
 
