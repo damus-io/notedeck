@@ -160,7 +160,10 @@ fn pns_ingest(
     let pns_keys = enostr::pns::derive_pns_keys(secret_key);
     match session_events::wrap_pns(event_json, &pns_keys) {
         Ok(pns_json) => {
-            if let Err(e) = ndb.process_event(&pns_json) {
+            // wrap_pns returns bare {…} JSON, but process_client_event
+            // expects ["EVENT", {…}] format
+            let wrapped = format!("[\"EVENT\", {}]", pns_json);
+            if let Err(e) = ndb.process_client_event(&wrapped) {
                 tracing::warn!("failed to ingest PNS event: {:?}", e);
             }
         }
