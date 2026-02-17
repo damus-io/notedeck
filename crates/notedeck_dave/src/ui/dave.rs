@@ -13,7 +13,7 @@ use crate::{
         PermissionResponse, PermissionResponseType, QuestionAnswer, SubagentInfo, SubagentStatus,
         ToolResult,
     },
-    session::PermissionMessageState,
+    session::{PermissionMessageState, SessionId},
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse},
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
@@ -34,6 +34,8 @@ pub struct DaveUi<'a> {
     has_pending_permission: bool,
     focus_requested: &'a mut bool,
     plan_mode_active: bool,
+    /// Session ID for per-session scroll state
+    session_id: SessionId,
     /// State for tentative permission response (waiting for message)
     permission_message_state: PermissionMessageState,
     /// State for AskUserQuestion responses (selected options per question)
@@ -132,6 +134,7 @@ pub enum DaveAction {
 impl<'a> DaveUi<'a> {
     pub fn new(
         trial: bool,
+        session_id: SessionId,
         chat: &'a [Message],
         input: &'a mut String,
         focus_requested: &'a mut bool,
@@ -139,6 +142,7 @@ impl<'a> DaveUi<'a> {
     ) -> Self {
         DaveUi {
             trial,
+            session_id,
             chat,
             input,
             compact: false,
@@ -314,7 +318,7 @@ impl<'a> DaveUi<'a> {
                     }
 
                     let chat_response = egui::ScrollArea::vertical()
-                        .id_salt("dave_chat_scroll")
+                        .id_salt(("dave_chat_scroll", self.session_id))
                         .stick_to_bottom(true)
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {

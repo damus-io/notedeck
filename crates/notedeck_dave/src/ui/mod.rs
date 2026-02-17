@@ -53,6 +53,7 @@ fn build_dave_ui<'a>(
 
     let mut ui_builder = DaveUi::new(
         model_config.trial,
+        session.id,
         &session.chat,
         &mut session.input,
         &mut session.focus_requested,
