@@ -115,6 +115,12 @@ pub struct Dave {
     pending_relay_events: Vec<session_events::BuiltEvent>,
     /// Whether sessions have been restored from ndb on startup.
     sessions_restored: bool,
+    /// Remote relay subscription ID for PNS events (kind-1080).
+    /// Used to discover session state events from other devices.
+    pns_relay_sub: Option<String>,
+    /// Local ndb subscription for kind-31988 session state events.
+    /// Fires when new session states are unwrapped from PNS events.
+    session_state_sub: Option<nostrdb::Subscription>,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -282,6 +288,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_message_load: None,
             pending_relay_events: Vec::new(),
             sessions_restored: false,
+            pns_relay_sub: None,
+            session_state_sub: None,
         }
     }
 
@@ -1125,6 +1133,104 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.active_overlay = DaveOverlay::None;
     }
 
+    /// Poll for new kind-31988 session state events from the ndb subscription.
+    ///
+    /// When PNS events arrive from relays and get unwrapped, new session state
+    /// events may appear. This detects them and creates sessions we don't already have.
+    fn poll_session_state_events(&mut self, ctx: &mut AppContext<'_>) {
+        let Some(sub) = self.session_state_sub else {
+            return;
+        };
+
+        let note_keys = ctx.ndb.poll_for_notes(sub, 32);
+        if note_keys.is_empty() {
+            return;
+        }
+
+        let txn = match Transaction::new(ctx.ndb) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        // Collect existing claude session IDs to avoid duplicates
+        let existing_ids: std::collections::HashSet<String> = self
+            .session_manager
+            .iter()
+            .filter_map(|s| {
+                s.agentic
+                    .as_ref()
+                    .and_then(|a| a.event_session_id().map(|id| id.to_string()))
+            })
+            .collect();
+
+        for key in note_keys {
+            let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
+                continue;
+            };
+
+            let content = note.content();
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(content) else {
+                continue;
+            };
+
+            let Some(claude_sid) = json["claude_session_id"].as_str() else {
+                continue;
+            };
+
+            // Skip sessions we already know about
+            if existing_ids.contains(claude_sid) {
+                continue;
+            }
+
+            let title = json["title"].as_str().unwrap_or("Untitled").to_string();
+            let cwd_str = json["cwd"].as_str().unwrap_or("");
+            let cwd = std::path::PathBuf::from(cwd_str);
+
+            tracing::info!(
+                "discovered new session from relay: '{}' ({})",
+                title,
+                claude_sid
+            );
+
+            let dave_sid = self.session_manager.new_resumed_session(
+                cwd,
+                claude_sid.to_string(),
+                title,
+                AiMode::Agentic,
+            );
+
+            // Load any conversation history that arrived with it
+            let loaded = session_loader::load_session_messages(
+                ctx.ndb,
+                &txn,
+                claude_sid,
+            );
+
+            if let Some(session) = self.session_manager.get_mut(dave_sid) {
+                if !loaded.messages.is_empty() {
+                    tracing::info!(
+                        "loaded {} messages for discovered session",
+                        loaded.messages.len()
+                    );
+                    session.chat = loaded.messages;
+                }
+
+                if let (Some(root), Some(last)) =
+                    (loaded.root_note_id, loaded.last_note_id)
+                {
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic.live_threading.seed(root, last, loaded.event_count);
+                    }
+                }
+            }
+
+            // If we were showing the directory picker, switch to showing sessions
+            if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
+                self.active_overlay = DaveOverlay::None;
+            }
+        }
+    }
+
     /// Delete a session and clean up backend resources
     fn delete_session(&mut self, id: SessionId) {
         update::delete_session(
@@ -1341,10 +1447,51 @@ impl notedeck::App for Dave {
             }
 
             self.restore_sessions_from_ndb(ctx);
+
+            // Subscribe to PNS events on relays for session discovery from other devices.
+            // Also subscribe locally in ndb for kind-31988 session state events
+            // so we detect new sessions appearing after PNS unwrapping.
+            if let Some(sk) = ctx
+                .accounts
+                .get_selected_account()
+                .keypair()
+                .secret_key
+            {
+                let pns_keys =
+                    enostr::pns::derive_pns_keys(&sk.secret_bytes());
+
+                // Remote: subscribe on relays for kind-1080 authored by our PNS pubkey
+                let pns_filter = nostrdb::Filter::new()
+                    .kinds([enostr::pns::PNS_KIND as u64])
+                    .authors([pns_keys.keypair.pubkey.bytes()])
+                    .build();
+                let sub_id = uuid::Uuid::new_v4().to_string();
+                ctx.pool.subscribe(sub_id.clone(), vec![pns_filter]);
+                self.pns_relay_sub = Some(sub_id);
+                tracing::info!("subscribed for PNS events on relays");
+
+                // Local: subscribe in ndb for kind-31988 session state events
+                let state_filter = nostrdb::Filter::new()
+                    .kinds([session_events::AI_SESSION_STATE_KIND as u64])
+                    .tags(["ai-session-state"], 't')
+                    .build();
+                match ctx.ndb.subscribe(&[state_filter]) {
+                    Ok(sub) => {
+                        self.session_state_sub = Some(sub);
+                        tracing::info!("subscribed for session state events in ndb");
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to subscribe for session state events: {:?}", e);
+                    }
+                }
+            }
         }
 
         // Poll for external editor completion
         update::poll_editor_job(&mut self.session_manager);
+
+        // Poll for new session states from PNS-unwrapped relay events
+        self.poll_session_state_events(ctx);
 
         // Process pending archive conversion (JSONL → nostr events)
         if let Some((file_path, dave_sid, claude_sid)) = self.pending_archive_convert.take() {
