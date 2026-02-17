@@ -82,6 +82,10 @@ pub struct AgenticSessionData {
     pub live_conversation_sub: Option<nostrdb::Subscription>,
     /// Set of perm-id UUIDs that we (the remote/phone) have already responded to.
     pub responded_perm_ids: HashSet<Uuid>,
+    /// Note IDs we've already processed from live conversation polling.
+    /// Prevents duplicate messages when events are loaded during restore
+    /// and then appear again via the subscription.
+    pub seen_note_ids: HashSet<[u8; 32]>,
 }
 
 impl AgenticSessionData {
@@ -114,6 +118,7 @@ impl AgenticSessionData {
             remote_status: None,
             live_conversation_sub: None,
             responded_perm_ids: HashSet::new(),
+            seen_note_ids: HashSet::new(),
         }
     }
 

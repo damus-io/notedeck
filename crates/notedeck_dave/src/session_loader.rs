@@ -24,6 +24,8 @@ pub struct LoadedSession {
     /// Map of perm_id -> note_id for permission request events.
     /// Used by remote sessions to link responses back to requests.
     pub perm_request_note_ids: std::collections::HashMap<uuid::Uuid, [u8; 32]>,
+    /// All note IDs found, for seeding dedup in live polling.
+    pub note_ids: HashSet<[u8; 32]>,
 }
 
 /// Load conversation messages from ndb for a given session ID.
@@ -48,6 +50,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                 event_count: 0,
                 responded_perm_ids: HashSet::new(),
                 perm_request_note_ids: std::collections::HashMap::new(),
+                note_ids: HashSet::new(),
             }
         }
     };
@@ -62,6 +65,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
     notes.sort_by_key(|note| note.created_at());
 
     let event_count = notes.len() as u32;
+    let note_ids: HashSet<[u8; 32]> = notes.iter().map(|n| *n.id()).collect();
 
     // Find the first conversation note (skip metadata like queue-operation)
     // so the threading root is a real message.
@@ -169,6 +173,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         event_count,
         responded_perm_ids,
         perm_request_note_ids,
+        note_ids,
     }
 }
 
