@@ -1324,9 +1324,22 @@ impl notedeck::App for Dave {
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
 
-        // Restore sessions from kind-31988 events on first update
+        // One-time initialization on first update
         if !self.sessions_restored && self.ai_mode == AiMode::Agentic {
             self.sessions_restored = true;
+
+            // Process any PNS-wrapped events already in ndb
+            let pns_ndb = ctx.ndb.clone();
+            if let Err(e) = std::thread::Builder::new()
+                .name("process_pns".into())
+                .spawn(move || {
+                    let txn = Transaction::new(&pns_ndb).expect("txn");
+                    pns_ndb.process_pns(&txn);
+                })
+            {
+                tracing::error!("failed to spawn process_pns thread: {e}");
+            }
+
             self.restore_sessions_from_ndb(ctx);
         }
 
