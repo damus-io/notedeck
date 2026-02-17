@@ -56,6 +56,37 @@ impl BuiltEvent {
     }
 }
 
+/// Wrap an inner event in a kind-1080 PNS envelope for relay publishing.
+///
+/// Encrypts the inner event JSON with the PNS conversation key and signs
+/// the outer event with the PNS keypair. Returns the kind-1080 event JSON.
+pub fn wrap_pns(
+    inner_json: &str,
+    pns_keys: &enostr::pns::PnsKeys,
+) -> Result<String, EventBuildError> {
+    let ciphertext = enostr::pns::encrypt(&pns_keys.conversation_key, inner_json)
+        .map_err(|e| EventBuildError::Serialize(format!("PNS encrypt: {e}")))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let pns_secret = pns_keys.keypair.secret_key.secret_bytes();
+
+    let note = NoteBuilder::new()
+        .kind(enostr::pns::PNS_KIND)
+        .content(&ciphertext)
+        .options(NoteBuildOptions::default())
+        .created_at(now)
+        .sign(&pns_secret)
+        .build()
+        .ok_or_else(|| EventBuildError::Build("PNS NoteBuilder::build returned None".into()))?;
+
+    note.json()
+        .map_err(|e| EventBuildError::Serialize(format!("PNS json: {e:?}")))
+}
+
 /// Maintains threading state across a session's events.
 pub struct ThreadingState {
     /// Maps JSONL uuid → nostr note ID (32 bytes).
@@ -1190,5 +1221,21 @@ mod tests {
         assert!(json.contains("Fix the login bug"));
         assert!(json.contains("working"));
         assert!(json.contains("/tmp/project"));
+    }
+
+    #[test]
+    fn test_wrap_pns() {
+        let sk = test_secret_key();
+        let pns_keys = enostr::pns::derive_pns_keys(&sk);
+
+        let inner = r#"{"kind":1988,"content":"hello","tags":[],"created_at":0,"pubkey":"abc","id":"def","sig":"ghi"}"#;
+        let wrapped = wrap_pns(inner, &pns_keys).unwrap();
+
+        // Outer event should be kind 1080
+        assert!(wrapped.contains("1080"));
+        // Should NOT contain the plaintext inner content
+        assert!(!wrapped.contains("hello"));
+        // Should be valid JSON
+        assert!(serde_json::from_str::<serde_json::Value>(&wrapped).is_ok());
     }
 }
