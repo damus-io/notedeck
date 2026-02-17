@@ -8,13 +8,18 @@ const LINE_NUMBER_COLOR: Color32 = Color32::from_rgb(128, 128, 128);
 
 /// Render a file update diff view
 pub fn file_update_ui(update: &FileUpdate, ui: &mut Ui) {
-    // Code block frame - no scroll, just show full diff height
     egui::Frame::new()
         .fill(ui.visuals().extreme_bg_color)
         .inner_margin(8.0)
         .corner_radius(4.0)
         .show(ui, |ui| {
-            render_diff_lines(update.diff_lines(), &update.update_type, ui);
+            let max_height = ui.available_height().min(400.0);
+            egui::ScrollArea::both()
+                .max_height(max_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    render_diff_lines(update.diff_lines(), &update.update_type, ui);
+                });
         });
 }
 

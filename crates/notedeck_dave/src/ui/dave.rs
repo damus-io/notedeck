@@ -509,13 +509,10 @@ impl<'a> DaveUi<'a> {
                             // Diff view
                             diff::file_update_ui(&file_update, ui);
 
-                            // Approve/deny buttons at the bottom right
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    self.permission_buttons(request, ui, &mut action);
-                                },
-                            );
+                            // Approve/deny buttons at the bottom left
+                            ui.horizontal(|ui| {
+                                self.permission_buttons(request, ui, &mut action);
+                            });
                         });
                 } else {
                     // Parse tool input for display (existing logic)
