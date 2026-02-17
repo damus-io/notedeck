@@ -30,7 +30,7 @@ use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
-use notedeck::{ui::is_narrow, AppAction, AppContext, AppResponse};
+use notedeck::{try_process_events_core, ui::is_narrow, AppAction, AppContext, AppResponse};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::string::ToString;
@@ -1304,7 +1304,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         // Collect existing claude session IDs to avoid duplicates
-        let existing_ids: std::collections::HashSet<String> = self
+        let mut existing_ids: std::collections::HashSet<String> = self
             .session_manager
             .iter()
             .filter_map(|s| {
@@ -1377,6 +1377,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 title,
                 claude_sid
             );
+
+            existing_ids.insert(claude_sid.to_string());
 
             let dave_sid = self.session_manager.new_resumed_session(
                 cwd,
@@ -1832,6 +1834,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let mut app_action: Option<AppAction> = None;
+
+        // Process relay events into ndb (needed when dave is the active app)
+        try_process_events_core(ctx, ui.ctx(), |_, _| {});
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
