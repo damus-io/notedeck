@@ -60,7 +60,7 @@ pub use vec3::Vec3;
 
 /// Relay URL used for PNS event publishing and subscription.
 /// TODO: make this configurable in the UI
-const PNS_RELAY_URL: &str = "ws://relay.jb55.com";
+const PNS_RELAY_URL: &str = "ws://relay.jb55.com/";
 
 /// Extract a 32-byte secret key from a keypair.
 fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
