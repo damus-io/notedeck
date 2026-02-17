@@ -48,6 +48,8 @@ pub struct DaveUi<'a> {
     ai_mode: AiMode,
     /// Git status cache for current session (agentic only)
     git_status: Option<&'a mut GitStatusCache>,
+    /// Whether this is a remote session (no local Claude process)
+    is_remote: bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -148,6 +150,7 @@ impl<'a> DaveUi<'a> {
             auto_steal_focus: false,
             ai_mode,
             git_status: None,
+            is_remote: false,
         }
     }
 
@@ -205,6 +208,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn auto_steal_focus(mut self, auto_steal_focus: bool) -> Self {
         self.auto_steal_focus = auto_steal_focus;
+        self
+    }
+
+    pub fn is_remote(mut self, is_remote: bool) -> Self {
+        self.is_remote = is_remote;
         self
     }
 

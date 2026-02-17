@@ -138,21 +138,40 @@ pub fn exit_plan_mode(
 
 /// Get the first pending permission request ID for the active session.
 pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid::Uuid> {
-    session_manager
-        .get_active()
-        .and_then(|session| session.agentic.as_ref())
-        .and_then(|agentic| agentic.pending_permissions.keys().next().copied())
+    let session = session_manager.get_active()?;
+    if session.is_remote() {
+        // Remote: find first unresponded PermissionRequest in chat
+        let responded = session
+            .agentic
+            .as_ref()
+            .map(|a| &a.responded_perm_ids);
+        for msg in &session.chat {
+            if let Message::PermissionRequest(req) = msg {
+                if req.response.is_none()
+                    && responded.map_or(true, |ids| !ids.contains(&req.id))
+                {
+                    return Some(req.id);
+                }
+            }
+        }
+        None
+    } else {
+        // Local: check oneshot senders
+        session
+            .agentic
+            .as_ref()
+            .and_then(|a| a.pending_permissions.keys().next().copied())
+    }
 }
 
 /// Get the tool name of the first pending permission request.
 pub fn pending_permission_tool_name(session_manager: &SessionManager) -> Option<&str> {
+    let request_id = first_pending_permission(session_manager)?;
     let session = session_manager.get_active()?;
-    let agentic = session.agentic.as_ref()?;
-    let request_id = agentic.pending_permissions.keys().next()?;
 
     for msg in &session.chat {
         if let Message::PermissionRequest(req) = msg {
-            if &req.id == request_id {
+            if req.id == request_id {
                 return Some(&req.tool_name);
             }
         }
@@ -171,20 +190,46 @@ pub fn has_pending_exit_plan_mode(session_manager: &SessionManager) -> bool {
     pending_permission_tool_name(session_manager) == Some("ExitPlanMode")
 }
 
+/// Result of handling a permission response.
+pub enum PermissionResponseResult {
+    /// Handled locally (oneshot sent to Claude process).
+    Local,
+    /// Needs relay publishing (remote session, no local process).
+    NeedsRelayPublish {
+        perm_id: uuid::Uuid,
+        allowed: bool,
+        message: Option<String>,
+    },
+}
+
 /// Handle a permission response (from UI button or keybinding).
 pub fn handle_permission_response(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
     response: PermissionResponse,
-) {
+) -> PermissionResponseResult {
     let Some(session) = session_manager.get_active_mut() else {
-        return;
+        return PermissionResponseResult::Local;
     };
+
+    let is_remote = session.is_remote();
 
     // Record the response type in the message for UI display
     let response_type = match &response {
         PermissionResponse::Allow { .. } => crate::messages::PermissionResponseType::Allowed,
         PermissionResponse::Deny { .. } => crate::messages::PermissionResponseType::Denied,
+    };
+
+    // Extract relay-publish info before we move `response`
+    let relay_info = if is_remote {
+        let allowed = matches!(&response, PermissionResponse::Allow { .. });
+        let message = match &response {
+            PermissionResponse::Allow { message } => message.clone(),
+            PermissionResponse::Deny { reason } => Some(reason.clone()),
+        };
+        Some((allowed, message))
+    } else {
+        None
     };
 
     // If Allow has a message, add it as a User message to the chat
@@ -209,16 +254,32 @@ pub fn handle_permission_response(
     }
 
     if let Some(agentic) = &mut session.agentic {
-        if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
-            if sender.send(response).is_err() {
-                tracing::error!(
-                    "Failed to send permission response for request {}",
-                    request_id
-                );
-            }
+        if is_remote {
+            // Remote: mark as responded, signal relay publish needed
+            agentic.responded_perm_ids.insert(request_id);
         } else {
-            tracing::warn!("No pending permission found for request {}", request_id);
+            // Local: send through oneshot channel to Claude process
+            if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
+                if sender.send(response).is_err() {
+                    tracing::error!(
+                        "Failed to send permission response for request {}",
+                        request_id
+                    );
+                }
+            } else {
+                tracing::warn!("No pending permission found for request {}", request_id);
+            }
         }
+    }
+
+    if let Some((allowed, message)) = relay_info {
+        PermissionResponseResult::NeedsRelayPublish {
+            perm_id: request_id,
+            allowed,
+            message,
+        }
+    } else {
+        PermissionResponseResult::Local
     }
 }
 

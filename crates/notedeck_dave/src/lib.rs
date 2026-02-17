@@ -23,6 +23,7 @@ mod ui;
 mod update;
 mod vec3;
 
+use agent_status::AgentStatus;
 use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend};
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
@@ -121,6 +122,16 @@ pub struct Dave {
     /// Local ndb subscription for kind-31988 session state events.
     /// Fires when new session states are unwrapped from PNS events.
     session_state_sub: Option<nostrdb::Subscription>,
+    /// Permission responses queued for relay publishing (from remote sessions).
+    /// Built and published in the update loop where AppContext is available.
+    pending_perm_responses: Vec<PendingPermResponse>,
+}
+
+/// A permission response queued for relay publishing.
+struct PendingPermResponse {
+    perm_id: uuid::Uuid,
+    allowed: bool,
+    message: Option<String>,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -290,6 +301,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             sessions_restored: false,
             pns_relay_sub: None,
             session_state_sub: None,
+            pending_perm_responses: Vec::new(),
         }
     }
 
@@ -916,6 +928,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
             };
+            // Only local sessions poll for remote responses
+            if session.is_remote() {
+                continue;
+            }
             let Some(agentic) = &mut session.agentic else {
                 continue;
             };
@@ -1035,7 +1051,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         for session in self.session_manager.iter_mut() {
-            if !session.state_dirty {
+            if !session.state_dirty || session.is_remote() {
                 continue;
             }
 
@@ -1074,6 +1090,79 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
 
             session.state_dirty = false;
+        }
+    }
+
+    /// Build and queue permission response events from remote sessions.
+    /// Called in the update loop where AppContext is available.
+    fn publish_pending_perm_responses(&mut self, ctx: &AppContext<'_>) {
+        if self.pending_perm_responses.is_empty() {
+            return;
+        }
+
+        let secret_key: Option<[u8; 32]> = ctx
+            .accounts
+            .get_selected_account()
+            .keypair()
+            .secret_key
+            .map(|sk| {
+                sk.as_secret_bytes()
+                    .try_into()
+                    .expect("secret key is 32 bytes")
+            });
+
+        let Some(sk) = secret_key else {
+            tracing::warn!("no secret key for publishing permission responses");
+            self.pending_perm_responses.clear();
+            return;
+        };
+
+        let pending = std::mem::take(&mut self.pending_perm_responses);
+
+        // Get session info from the active session
+        let session = match self.session_manager.get_active() {
+            Some(s) => s,
+            None => return,
+        };
+        let agentic = match &session.agentic {
+            Some(a) => a,
+            None => return,
+        };
+        let session_id = match agentic.event_session_id() {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+
+        for resp in pending {
+            let request_note_id = match agentic.perm_request_note_ids.get(&resp.perm_id) {
+                Some(id) => id,
+                None => {
+                    tracing::warn!("no request note_id for perm_id {}", resp.perm_id);
+                    continue;
+                }
+            };
+
+            match session_events::build_permission_response_event(
+                &resp.perm_id,
+                request_note_id,
+                resp.allowed,
+                resp.message.as_deref(),
+                &session_id,
+                &sk,
+            ) {
+                Ok(evt) => {
+                    tracing::info!(
+                        "queued remote permission response for {} ({})",
+                        resp.perm_id,
+                        if resp.allowed { "allow" } else { "deny" }
+                    );
+                    let _ = ctx.ndb.process_event(&evt.note_json);
+                    self.pending_relay_events.push(evt);
+                }
+                Err(e) => {
+                    tracing::error!("failed to build permission response event: {}", e);
+                }
+            }
         }
     }
 
@@ -1119,12 +1208,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 );
                 session.chat = loaded.messages;
 
-                if let (Some(root), Some(last)) =
-                    (loaded.root_note_id, loaded.last_note_id)
-                {
-                    if let Some(agentic) = &mut session.agentic {
+                // Determine if this is a remote session (cwd doesn't exist locally)
+                let cwd = std::path::PathBuf::from(&state.cwd);
+                if !cwd.exists() {
+                    session.source = session::SessionSource::Remote;
+                }
+
+                if let Some(agentic) = &mut session.agentic {
+                    if let (Some(root), Some(last)) =
+                        (loaded.root_note_id, loaded.last_note_id)
+                    {
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
+                    // Load permission state from events
+                    agentic.responded_perm_ids = loaded.responded_perm_ids;
+                    agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
+                    // Set remote status from state event
+                    agentic.remote_status =
+                        AgentStatus::from_status_str(&state.status);
                 }
             }
         }
@@ -1215,12 +1316,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.chat = loaded.messages;
                 }
 
-                if let (Some(root), Some(last)) =
-                    (loaded.root_note_id, loaded.last_note_id)
-                {
-                    if let Some(agentic) = &mut session.agentic {
+                // Determine if this is a remote session
+                let cwd_path = std::path::PathBuf::from(cwd_str);
+                if !cwd_path.exists() {
+                    session.source = session::SessionSource::Remote;
+                }
+
+                if let Some(agentic) = &mut session.agentic {
+                    if let (Some(root), Some(last)) =
+                        (loaded.root_note_id, loaded.last_note_id)
+                    {
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
+                    // Load permission state
+                    agentic.responded_perm_ids = loaded.responded_perm_ids;
+                    agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
+                    // Set remote status
+                    let status_str = json["status"].as_str().unwrap_or("idle");
+                    agentic.remote_status = AgentStatus::from_status_str(status_str);
                 }
             }
 
@@ -1302,6 +1415,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             KeyActionResult::SetAutoSteal(new_state) => {
                 self.auto_steal_focus = new_state;
             }
+            KeyActionResult::PublishPermissionResponse {
+                perm_id,
+                allowed,
+                message,
+            } => {
+                self.pending_perm_responses.push(PendingPermResponse {
+                    perm_id,
+                    allowed,
+                    message,
+                });
+            }
             KeyActionResult::None => {}
         }
     }
@@ -1311,6 +1435,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         match ui::handle_send_action(&mut self.session_manager, self.backend.as_ref(), ui.ctx()) {
             SendActionResult::SendMessage => {
                 self.handle_user_send(ctx, ui);
+            }
+            SendActionResult::NeedsRelayPublish {
+                perm_id,
+                allowed,
+                message,
+            } => {
+                self.pending_perm_responses.push(PendingPermResponse {
+                    perm_id,
+                    allowed,
+                    message,
+                });
             }
             SendActionResult::Handled => {}
         }
@@ -1334,6 +1469,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             UiActionResult::AppAction(app_action) => Some(app_action),
             UiActionResult::SendAction => {
                 self.handle_send_action(ctx, ui);
+                None
+            }
+            UiActionResult::PublishPermissionResponse {
+                perm_id,
+                allowed,
+                message,
+            } => {
+                self.pending_perm_responses.push(PendingPermResponse {
+                    perm_id,
+                    allowed,
+                    message,
+                });
                 None
             }
             UiActionResult::Handled => None,
@@ -1378,6 +1525,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             session.chat.push(Message::User(user_text));
             session.update_title_from_last_message();
+
+            // Remote sessions: publish user message to relay but don't send to local backend
+            if session.is_remote() {
+                return;
+            }
         }
         self.send_user_message(app_ctx, ui.ctx());
     }
@@ -1526,12 +1678,13 @@ impl notedeck::App for Dave {
                     tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
                     session.chat = loaded.messages;
 
-                    if let (Some(root), Some(last)) =
-                        (loaded.root_note_id, loaded.last_note_id)
-                    {
-                        if let Some(agentic) = &mut session.agentic {
+                    if let Some(agentic) = &mut session.agentic {
+                        if let (Some(root), Some(last)) =
+                            (loaded.root_note_id, loaded.last_note_id)
+                        {
                             agentic.live_threading.seed(root, last, loaded.event_count);
                         }
+                        agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
                     }
                 }
             } else {
@@ -1599,12 +1752,13 @@ impl notedeck::App for Dave {
 
                     // Seed live threading from archive events so new events
                     // thread as replies to the existing conversation.
-                    if let (Some(root), Some(last)) =
-                        (loaded.root_note_id, loaded.last_note_id)
-                    {
-                        if let Some(agentic) = &mut session.agentic {
+                    if let Some(agentic) = &mut session.agentic {
+                        if let (Some(root), Some(last)) =
+                            (loaded.root_note_id, loaded.last_note_id)
+                        {
                             agentic.live_threading.seed(root, last, loaded.event_count);
                         }
+                        agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
                     }
                 }
                 self.pending_message_load = None;
@@ -1636,6 +1790,9 @@ impl notedeck::App for Dave {
         // Process incoming AI responses for all sessions
         let (sessions_needing_send, events_to_publish) = self.process_events(ctx);
 
+        // Build permission response events from remote sessions
+        self.publish_pending_perm_responses(ctx);
+
         // PNS-wrap and publish events to relays
         let pending = std::mem::take(&mut self.pending_relay_events);
         let all_events = events_to_publish.iter().chain(pending.iter());
@@ -1664,8 +1821,11 @@ impl notedeck::App for Dave {
         // published by phone/remote clients. First-response-wins with local UI.
         self.poll_remote_permission_responses(ctx.ndb);
 
-        // Poll git status for all agentic sessions
+        // Poll git status for local agentic sessions
         for session in self.session_manager.iter_mut() {
+            if session.is_remote() {
+                continue;
+            }
             if let Some(agentic) = &mut session.agentic {
                 agentic.git_status.poll();
                 agentic.git_status.maybe_auto_refresh();

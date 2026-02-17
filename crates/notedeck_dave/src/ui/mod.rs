@@ -216,6 +216,7 @@ pub fn scene_ui(
                                 let is_working = session.status() == AgentStatus::Working;
                                 let has_pending_permission = session.has_pending_permissions();
                                 let plan_mode_active = session.is_plan_mode();
+                                let is_remote = session.is_remote();
 
                                 let mut ui_builder = DaveUi::new(
                                     model_config.trial,
@@ -229,7 +230,8 @@ pub fn scene_ui(
                                 .interrupt_pending(is_interrupt_pending)
                                 .has_pending_permission(has_pending_permission)
                                 .plan_mode_active(plan_mode_active)
-                                .auto_steal_focus(auto_steal_focus);
+                                .auto_steal_focus(auto_steal_focus)
+                                .is_remote(is_remote);
 
                                 if let Some(agentic) = &mut session.agentic {
                                     ui_builder = ui_builder
@@ -340,6 +342,7 @@ pub fn desktop_ui(
                 let is_working = session.status() == AgentStatus::Working;
                 let has_pending_permission = session.has_pending_permissions();
                 let plan_mode_active = session.is_plan_mode();
+                let is_remote = session.is_remote();
 
                 let mut ui_builder = DaveUi::new(
                     model_config.trial,
@@ -352,7 +355,8 @@ pub fn desktop_ui(
                 .interrupt_pending(is_interrupt_pending)
                 .has_pending_permission(has_pending_permission)
                 .plan_mode_active(plan_mode_active)
-                .auto_steal_focus(auto_steal_focus);
+                .auto_steal_focus(auto_steal_focus)
+                .is_remote(is_remote);
 
                 if let Some(agentic) = &mut session.agentic {
                     ui_builder = ui_builder
@@ -400,6 +404,7 @@ pub fn narrow_ui(
         let is_working = session.status() == AgentStatus::Working;
         let has_pending_permission = session.has_pending_permissions();
         let plan_mode_active = session.is_plan_mode();
+        let is_remote = session.is_remote();
 
         let mut ui_builder = DaveUi::new(
             model_config.trial,
@@ -412,7 +417,8 @@ pub fn narrow_ui(
         .interrupt_pending(is_interrupt_pending)
         .has_pending_permission(has_pending_permission)
         .plan_mode_active(plan_mode_active)
-        .auto_steal_focus(auto_steal_focus);
+        .auto_steal_focus(auto_steal_focus)
+        .is_remote(is_remote);
 
         if let Some(agentic) = &mut session.agentic {
             ui_builder = ui_builder
@@ -437,6 +443,12 @@ pub enum KeyActionResult {
     CloneAgent,
     DeleteSession(SessionId),
     SetAutoSteal(bool),
+    /// Permission response needs relay publishing (remote session).
+    PublishPermissionResponse {
+        perm_id: uuid::Uuid,
+        allowed: bool,
+        message: Option<String>,
+    },
 }
 
 /// Handle a keybinding action.
@@ -456,7 +468,7 @@ pub fn handle_key_action(
     match key_action {
         KeyAction::AcceptPermission => {
             if let Some(request_id) = update::first_pending_permission(session_manager) {
-                update::handle_permission_response(
+                let result = update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Allow { message: None },
@@ -464,12 +476,24 @@ pub fn handle_key_action(
                 if let Some(session) = session_manager.get_active_mut() {
                     session.focus_requested = true;
                 }
+                if let update::PermissionResponseResult::NeedsRelayPublish {
+                    perm_id,
+                    allowed,
+                    message,
+                } = result
+                {
+                    return KeyActionResult::PublishPermissionResponse {
+                        perm_id,
+                        allowed,
+                        message,
+                    };
+                }
             }
             KeyActionResult::None
         }
         KeyAction::DenyPermission => {
             if let Some(request_id) = update::first_pending_permission(session_manager) {
-                update::handle_permission_response(
+                let result = update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Deny {
@@ -478,6 +502,18 @@ pub fn handle_key_action(
                 );
                 if let Some(session) = session_manager.get_active_mut() {
                     session.focus_requested = true;
+                }
+                if let update::PermissionResponseResult::NeedsRelayPublish {
+                    perm_id,
+                    allowed,
+                    message,
+                } = result
+                {
+                    return KeyActionResult::PublishPermissionResponse {
+                        perm_id,
+                        allowed,
+                        message,
+                    };
                 }
             }
             KeyActionResult::None
@@ -576,6 +612,12 @@ pub enum SendActionResult {
     Handled,
     /// Normal send - caller should send the user message
     SendMessage,
+    /// Permission response needs relay publishing (remote session).
+    NeedsRelayPublish {
+        perm_id: uuid::Uuid,
+        allowed: bool,
+        message: Option<String>,
+    },
 }
 
 /// Handle the Send action, including tentative permission states.
@@ -604,11 +646,23 @@ pub fn handle_send_action(
                 if is_exit_plan_mode {
                     update::exit_plan_mode(session_manager, backend, ctx);
                 }
-                update::handle_permission_response(
+                let result = update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Allow { message },
                 );
+                if let update::PermissionResponseResult::NeedsRelayPublish {
+                    perm_id,
+                    allowed,
+                    message,
+                } = result
+                {
+                    return SendActionResult::NeedsRelayPublish {
+                        perm_id,
+                        allowed,
+                        message,
+                    };
+                }
             }
             SendActionResult::Handled
         }
@@ -622,11 +676,23 @@ pub fn handle_send_action(
                 if let Some(session) = session_manager.get_active_mut() {
                     session.input.clear();
                 }
-                update::handle_permission_response(
+                let result = update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Deny { reason },
                 );
+                if let update::PermissionResponseResult::NeedsRelayPublish {
+                    perm_id,
+                    allowed,
+                    message,
+                } = result
+                {
+                    return SendActionResult::NeedsRelayPublish {
+                        perm_id,
+                        allowed,
+                        message,
+                    };
+                }
             }
             SendActionResult::Handled
         }
@@ -642,6 +708,12 @@ pub enum UiActionResult {
     SendAction,
     /// Return an AppAction
     AppAction(notedeck::AppAction),
+    /// Permission response needs relay publishing (remote session).
+    PublishPermissionResponse {
+        perm_id: uuid::Uuid,
+        allowed: bool,
+        message: Option<String>,
+    },
 }
 
 /// Handle a UI action from DaveUi.
@@ -675,8 +747,22 @@ pub fn handle_ui_action(
             request_id,
             response,
         } => {
-            update::handle_permission_response(session_manager, request_id, response);
-            UiActionResult::Handled
+            let result =
+                update::handle_permission_response(session_manager, request_id, response);
+            if let update::PermissionResponseResult::NeedsRelayPublish {
+                perm_id,
+                allowed,
+                message,
+            } = result
+            {
+                UiActionResult::PublishPermissionResponse {
+                    perm_id,
+                    allowed,
+                    message,
+                }
+            } else {
+                UiActionResult::Handled
+            }
         }
         DaveAction::Interrupt => {
             update::execute_interrupt(session_manager, backend, ctx);
@@ -711,13 +797,13 @@ pub fn handle_ui_action(
             request_id,
             approved,
         } => {
-            if approved {
+            let result = if approved {
                 update::exit_plan_mode(session_manager, backend, ctx);
                 update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Allow { message: None },
-                );
+                )
             } else {
                 update::handle_permission_response(
                     session_manager,
@@ -725,9 +811,22 @@ pub fn handle_ui_action(
                     PermissionResponse::Deny {
                         reason: "User rejected plan".into(),
                     },
-                );
+                )
+            };
+            if let update::PermissionResponseResult::NeedsRelayPublish {
+                perm_id,
+                allowed,
+                message,
+            } = result
+            {
+                UiActionResult::PublishPermissionResponse {
+                    perm_id,
+                    allowed,
+                    message,
+                }
+            } else {
+                UiActionResult::Handled
             }
-            UiActionResult::Handled
         }
     }
 }

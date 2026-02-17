@@ -4,10 +4,11 @@
 //! orders them by created_at, and converts them into `Message` variants
 //! for populating the chat UI.
 
-use crate::messages::{AssistantMessage, ToolResult};
+use crate::messages::{AssistantMessage, PermissionRequest, PermissionResponseType, ToolResult};
 use crate::session_events::{get_tag_value, is_conversation_role, AI_CONVERSATION_KIND};
 use crate::Message;
 use nostrdb::{Filter, Ndb, Transaction};
+use std::collections::HashSet;
 
 /// Result of loading session messages, including threading info for live events.
 pub struct LoadedSession {
@@ -18,6 +19,11 @@ pub struct LoadedSession {
     pub last_note_id: Option<[u8; 32]>,
     /// Total number of events found.
     pub event_count: u32,
+    /// Permission IDs that already have response events.
+    pub responded_perm_ids: HashSet<uuid::Uuid>,
+    /// Map of perm_id -> note_id for permission request events.
+    /// Used by remote sessions to link responses back to requests.
+    pub perm_request_note_ids: std::collections::HashMap<uuid::Uuid, [u8; 32]>,
 }
 
 /// Load conversation messages from ndb for a given session ID.
@@ -40,6 +46,8 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                 root_note_id: None,
                 last_note_id: None,
                 event_count: 0,
+                responded_perm_ids: HashSet::new(),
+                perm_request_note_ids: std::collections::HashMap::new(),
             }
         }
     };
@@ -67,6 +75,29 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         .map(|n| *n.id());
     let last_note_id = notes.last().map(|n| *n.id());
 
+    // First pass: collect responded perm IDs and request note IDs
+    let mut responded_perm_ids: HashSet<uuid::Uuid> = HashSet::new();
+    let mut perm_request_note_ids: std::collections::HashMap<uuid::Uuid, [u8; 32]> =
+        std::collections::HashMap::new();
+
+    for note in &notes {
+        let role = get_tag_value(note, "role");
+        if role == Some("permission_response") {
+            if let Some(perm_id_str) = get_tag_value(note, "perm-id") {
+                if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
+                    responded_perm_ids.insert(perm_id);
+                }
+            }
+        } else if role == Some("permission_request") {
+            if let Some(perm_id_str) = get_tag_value(note, "perm-id") {
+                if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
+                    perm_request_note_ids.insert(perm_id, *note.id());
+                }
+            }
+        }
+    }
+
+    // Second pass: build messages
     let mut messages = Vec::new();
     for note in &notes {
         let content = note.content();
@@ -90,7 +121,39 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                 let summary = truncate(content, 100);
                 Some(Message::ToolResult(ToolResult { tool_name, summary }))
             }
-            // Skip progress, queue-operation, file-history-snapshot for UI
+            Some("permission_request") => {
+                if let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) {
+                    let tool_name = content_json["tool_name"]
+                        .as_str()
+                        .unwrap_or("unknown")
+                        .to_string();
+                    let tool_input = content_json
+                        .get("tool_input")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    let perm_id = get_tag_value(note, "perm-id")
+                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                        .unwrap_or_else(uuid::Uuid::new_v4);
+
+                    let response = if responded_perm_ids.contains(&perm_id) {
+                        Some(PermissionResponseType::Allowed)
+                    } else {
+                        None
+                    };
+
+                    Some(Message::PermissionRequest(PermissionRequest {
+                        id: perm_id,
+                        tool_name,
+                        tool_input,
+                        response,
+                        answer_summary: None,
+                        cached_plan: None,
+                    }))
+                } else {
+                    None
+                }
+            }
+            // Skip permission_response, progress, queue-operation, etc.
             _ => None,
         };
 
@@ -104,6 +167,8 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         root_note_id,
         last_note_id,
         event_count,
+        responded_perm_ids,
+        perm_request_note_ids,
     }
 }
 

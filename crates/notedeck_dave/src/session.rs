@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
@@ -15,6 +15,16 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 pub type SessionId = u32;
+
+/// Whether this session runs locally or is observed remotely via relays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SessionSource {
+    /// Local Claude process running on this machine.
+    #[default]
+    Local,
+    /// Remote session observed via relay events (no local process).
+    Remote,
+}
 
 /// State for permission response with message
 #[derive(Default, Clone, Copy, PartialEq)]
@@ -64,6 +74,14 @@ pub struct AgenticSessionData {
     /// Subscription for remote permission response events (kind-1988, t=ai-permission).
     /// Set up once when the session's claude_session_id becomes known.
     pub perm_response_sub: Option<nostrdb::Subscription>,
+    /// Status as reported by the remote desktop's kind-31988 event.
+    /// Only meaningful when session source is Remote.
+    pub remote_status: Option<AgentStatus>,
+    /// Subscription for live kind-1988 conversation events from relays.
+    /// Used by remote sessions to receive new messages in real-time.
+    pub live_conversation_sub: Option<nostrdb::Subscription>,
+    /// Set of perm-id UUIDs that we (the remote/phone) have already responded to.
+    pub responded_perm_ids: HashSet<Uuid>,
 }
 
 impl AgenticSessionData {
@@ -93,6 +111,9 @@ impl AgenticSessionData {
             live_threading: ThreadingState::new(),
             perm_request_note_ids: HashMap::new(),
             perm_response_sub: None,
+            remote_status: None,
+            live_conversation_sub: None,
+            responded_perm_ids: HashSet::new(),
         }
     }
 
@@ -156,6 +177,8 @@ pub struct ChatSession {
     pub ai_mode: AiMode,
     /// Agentic-mode specific data (None in Chat mode)
     pub agentic: Option<AgenticSessionData>,
+    /// Whether this session is local (has a Claude process) or remote (relay-only).
+    pub source: SessionSource,
 }
 
 impl Drop for ChatSession {
@@ -185,6 +208,7 @@ impl ChatSession {
             focus_requested: false,
             ai_mode,
             agentic,
+            source: SessionSource::Local,
         }
     }
 
@@ -225,8 +249,29 @@ impl ChatSession {
         self.agentic.is_some()
     }
 
+    /// Check if this is a remote session (observed via relay, no local process)
+    pub fn is_remote(&self) -> bool {
+        self.source == SessionSource::Remote
+    }
+
     /// Check if session has pending permission requests
     pub fn has_pending_permissions(&self) -> bool {
+        if self.is_remote() {
+            // Remote: check for unresponded PermissionRequest messages in chat
+            let responded = self
+                .agentic
+                .as_ref()
+                .map(|a| &a.responded_perm_ids);
+            return self.chat.iter().any(|msg| {
+                if let Message::PermissionRequest(req) = msg {
+                    req.response.is_none()
+                        && responded.map_or(true, |ids| !ids.contains(&req.id))
+                } else {
+                    false
+                }
+            });
+        }
+        // Local: check oneshot senders
         self.agentic
             .as_ref()
             .is_some_and(|a| !a.pending_permissions.is_empty())
@@ -298,6 +343,19 @@ impl ChatSession {
 
     /// Derive status from the current session state
     fn derive_status(&self) -> AgentStatus {
+        // Remote sessions derive status from the kind-31988 state event,
+        // but override to NeedsInput if there are unresponded permission requests.
+        if self.is_remote() {
+            if self.has_pending_permissions() {
+                return AgentStatus::NeedsInput;
+            }
+            return self
+                .agentic
+                .as_ref()
+                .and_then(|a| a.remote_status)
+                .unwrap_or(AgentStatus::Idle);
+        }
+
         // Check for pending permission requests (needs input) - agentic only
         if self.has_pending_permissions() {
             return AgentStatus::NeedsInput;

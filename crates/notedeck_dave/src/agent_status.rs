@@ -47,4 +47,16 @@ impl AgentStatus {
             AgentStatus::Done => "done",
         }
     }
+
+    /// Parse a status string from a nostr event (kind-31988 content).
+    pub fn from_status_str(s: &str) -> Option<Self> {
+        match s {
+            "idle" => Some(AgentStatus::Idle),
+            "working" => Some(AgentStatus::Working),
+            "needs_input" => Some(AgentStatus::NeedsInput),
+            "error" => Some(AgentStatus::Error),
+            "done" => Some(AgentStatus::Done),
+            _ => None,
+        }
+    }
 }
