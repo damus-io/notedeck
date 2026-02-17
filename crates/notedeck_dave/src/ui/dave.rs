@@ -236,6 +236,9 @@ impl<'a> DaveUi<'a> {
 
     /// The main render function. Call this to render Dave
     pub fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        // Override Truncate wrap mode that StripBuilder sets when clip=true
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+
         // Skip top buttons in compact mode (scene panel has its own controls)
         let action = if self.compact {
             None
