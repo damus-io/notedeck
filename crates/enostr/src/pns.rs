@@ -69,18 +69,15 @@ pub fn decrypt(conversation_key: &ConversationKey, content: &str) -> Result<Stri
     String::from_utf8(plaintext).map_err(PnsError::Utf8)
 }
 
-/// HKDF-Extract: HMAC-SHA256(salt, ikm) → 32-byte PRK.
+/// HMAC-SHA256(key=salt, msg=ikm) → 32-byte key.
+///
+/// This matches the nostrdb C implementation which uses raw HMAC-SHA256
+/// (i.e. HKDF-Extract only, without HKDF-Expand).
 fn hkdf_extract(ikm: &[u8; 32], salt: &[u8]) -> [u8; 32] {
-    let hk = Hkdf::<Sha256>::new(Some(salt), ikm);
-    let mut prk = [0u8; 32];
-    // HKDF extract output is the PRK itself. We use expand with empty
-    // info to get the 32-byte output matching the spec's hkdf_extract.
-    //
-    // Note: Hkdf::new() does extract internally. The PRK is stored in
-    // the Hkdf struct. We extract it via expand with empty info.
-    hk.expand(&[], &mut prk)
-        .expect("32 bytes is valid for HMAC-SHA256");
-    prk
+    let (prk, _) = Hkdf::<Sha256>::extract(Some(salt), ikm);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&prk);
+    out
 }
 
 /// Derive a secp256k1 keypair from 32 bytes of key material.
@@ -183,6 +180,34 @@ mod tests {
 
         // Different key should fail to decrypt
         assert!(decrypt(&keys2.conversation_key, &encrypted).is_err());
+    }
+
+    #[test]
+    fn test_matches_nostrdb_c_test_vector() {
+        // Same device key as nostrdb's test_pns_unwrap in test.c:
+        //   unsigned char device_sec[32] = {0,...,0,2};
+        let mut device_key = [0u8; 32];
+        device_key[31] = 0x02;
+
+        let keys = derive_pns_keys(&device_key);
+
+        // The C test expects PNS pubkey:
+        //   "fa22d53e9d38ca7af1e66dcf88f5fb2444368df6bd16580b5827c8cfbc622d4e"
+        let expected_pns_pubkey =
+            "fa22d53e9d38ca7af1e66dcf88f5fb2444368df6bd16580b5827c8cfbc622d4e";
+        let actual_pns_pubkey = hex::encode(keys.keypair.pubkey.bytes());
+        assert_eq!(
+            actual_pns_pubkey, expected_pns_pubkey,
+            "PNS pubkey must match nostrdb C implementation"
+        );
+
+        // Also verify device pubkey matches (sanity check):
+        //   c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5
+        let device_sk = nostr::SecretKey::from_slice(&device_key).unwrap();
+        let (device_xopk, _) = device_sk.x_only_public_key(&nostr::SECP256K1);
+        let expected_device_pubkey =
+            "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
+        assert_eq!(hex::encode(device_xopk.serialize()), expected_device_pubkey);
     }
 
     #[test]
