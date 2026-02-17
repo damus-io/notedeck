@@ -215,6 +215,8 @@ fn ingest_live_event(
         secret_key,
     ) {
         Ok(event) => {
+            // Mark as seen so we don't double-process when it echoes back from the relay
+            agentic.seen_note_ids.insert(event.note_id);
             pns_ingest(ndb, &event.note_json, secret_key);
             Some(event)
         }
@@ -553,11 +555,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             info.tools.len(),
                             info.agents.len()
                         );
-                        // Set up permission response subscription when we learn
-                        // the claude session ID (used as `d` tag for filtering)
+                        // Set up subscriptions when we learn the claude session ID
                         if let Some(agentic) = &mut session.agentic {
-                            if agentic.perm_response_sub.is_none() {
-                                if let Some(ref csid) = info.claude_session_id {
+                            if let Some(ref csid) = info.claude_session_id {
+                                // Permission response subscription (filtered to ai-permission tag)
+                                if agentic.perm_response_sub.is_none() {
                                     let filter = nostrdb::Filter::new()
                                         .kinds([session_events::AI_CONVERSATION_KIND as u64])
                                         .tags([csid.as_str()], 'd')
@@ -574,6 +576,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         Err(e) => {
                                             tracing::warn!(
                                                 "failed to subscribe for permission responses: {:?}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                }
+                                // Conversation subscription for incoming remote user messages
+                                if agentic.live_conversation_sub.is_none() {
+                                    let filter = nostrdb::Filter::new()
+                                        .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                                        .tags([csid.as_str()], 'd')
+                                        .build();
+                                    match app_ctx.ndb.subscribe(&[filter]) {
+                                        Ok(sub) => {
+                                            tracing::info!(
+                                                "subscribed for conversation events (session {})",
+                                                csid
+                                            );
+                                            agentic.live_conversation_sub = Some(sub);
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "failed to subscribe for conversation events: {:?}",
                                                 e
                                             );
                                         }
@@ -1458,21 +1482,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///
     /// For local sessions: only process `role=user` messages arriving from
     /// remote clients (phone), collecting them for backend dispatch.
-    fn poll_remote_conversation_events(&mut self, ndb: &nostrdb::Ndb) {
+    fn poll_remote_conversation_events(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+    ) -> Vec<(SessionId, String)> {
+        let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let session_ids = self.session_manager.session_ids();
         for session_id in session_ids {
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
             };
-            // Only remote sessions need to poll for conversation events
-            if !session.is_remote() {
-                continue;
-            }
-            let Some(agentic) = &mut session.agentic else {
-                continue;
-            };
-            let Some(sub) = agentic.live_conversation_sub else {
-                continue;
+            let is_remote = session.is_remote();
+
+            // Get sub without holding agentic borrow
+            let sub = match session.agentic.as_ref().and_then(|a| a.live_conversation_sub) {
+                Some(s) => s,
+                None => continue,
             };
 
             let note_keys = ndb.poll_for_notes(sub, 128);
@@ -1495,12 +1520,32 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             for note in &notes {
                 // Skip events we've already processed (dedup)
                 let note_id = *note.id();
-                if !agentic.seen_note_ids.insert(note_id) {
+                let dominated = session
+                    .agentic
+                    .as_mut()
+                    .map(|a| !a.seen_note_ids.insert(note_id))
+                    .unwrap_or(true);
+                if dominated {
                     continue;
                 }
 
                 let content = note.content();
                 let role = session_events::get_tag_value(note, "role");
+
+                // Local sessions: only process incoming user messages from remote clients
+                if !is_remote {
+                    if role == Some("user") {
+                        tracing::info!("received remote user message for local session");
+                        session.chat.push(Message::User(content.to_string()));
+                        session.update_title_from_last_message();
+                        remote_user_messages.push((session_id, content.to_string()));
+                    }
+                    continue;
+                }
+
+                let Some(agentic) = &mut session.agentic else {
+                    continue;
+                };
 
                 match role {
                     Some("user") => {
@@ -1591,6 +1636,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             }
         }
+        remote_user_messages
     }
 
     /// Delete a session and clean up backend resources
@@ -1926,8 +1972,12 @@ impl notedeck::App for Dave {
         // Poll for new session states from PNS-unwrapped relay events
         self.poll_session_state_events(ctx);
 
-        // Poll for live conversation events on remote sessions
-        self.poll_remote_conversation_events(ctx.ndb);
+        // Poll for live conversation events on all sessions.
+        // Returns user messages from remote clients that need backend dispatch.
+        let remote_user_msgs = self.poll_remote_conversation_events(ctx.ndb);
+        for (sid, _msg) in remote_user_msgs {
+            self.send_user_message_for(sid, ctx, ui.ctx());
+        }
 
         // Process pending archive conversion (JSONL → nostr events)
         if let Some((file_path, dave_sid, claude_sid)) = self.pending_archive_convert.take() {
