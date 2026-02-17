@@ -225,9 +225,236 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: 
     flush_job(&mut job, ui);
 }
 
-fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui: &mut Ui) {
-    use egui_extras::syntax_highlighting::{self, CodeTheme};
+/// Sand-themed syntax highlighting colors (warm, Claude-Code-esque palette)
+struct SandCodeTheme {
+    comment: Color32,
+    keyword: Color32,
+    literal: Color32,
+    string: Color32,
+    punctuation: Color32,
+    plain: Color32,
+}
 
+impl SandCodeTheme {
+    fn from_visuals(visuals: &egui::Visuals) -> Self {
+        if visuals.dark_mode {
+            Self {
+                comment: Color32::from_rgb(0x8A, 0x80, 0x72), // Warm gray-brown
+                keyword: Color32::from_rgb(0xD4, 0xA5, 0x74), // Amber sand
+                literal: Color32::from_rgb(0xC4, 0x8A, 0x6A), // Terra cotta
+                string: Color32::from_rgb(0xC6, 0xB4, 0x6A),  // Golden wheat
+                punctuation: Color32::from_rgb(0xA0, 0x96, 0x88), // Light sand
+                plain: Color32::from_rgb(0xD5, 0xCE, 0xC4),   // Warm off-white
+            }
+        } else {
+            Self {
+                comment: Color32::from_rgb(0x8A, 0x7E, 0x6E), // Warm gray
+                keyword: Color32::from_rgb(0x9A, 0x60, 0x2A), // Dark amber
+                literal: Color32::from_rgb(0x8B, 0x4C, 0x30), // Dark terra cotta
+                string: Color32::from_rgb(0x6B, 0x5C, 0x1A),  // Dark golden
+                punctuation: Color32::from_rgb(0x6E, 0x64, 0x56), // Dark sand
+                plain: Color32::from_rgb(0x3A, 0x35, 0x2E),   // Dark brown-black
+            }
+        }
+    }
+
+    fn format(&self, token: SandToken, font_id: &FontId) -> TextFormat {
+        let color = match token {
+            SandToken::Comment => self.comment,
+            SandToken::Keyword => self.keyword,
+            SandToken::Literal => self.literal,
+            SandToken::String => self.string,
+            SandToken::Punctuation => self.punctuation,
+            SandToken::Plain => self.plain,
+            SandToken::Whitespace => Color32::TRANSPARENT,
+        };
+        TextFormat::simple(font_id.clone(), color)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SandToken {
+    Comment,
+    Keyword,
+    Literal,
+    String,
+    Punctuation,
+    Plain,
+    Whitespace,
+}
+
+struct LangConfig<'a> {
+    keywords: &'a [&'a str],
+    double_slash_comments: bool,
+    hash_comments: bool,
+}
+
+impl<'a> LangConfig<'a> {
+    fn from_language(language: &str) -> Option<Self> {
+        match language.to_lowercase().as_str() {
+            "rs" | "rust" => Some(Self {
+                keywords: &[
+                    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else",
+                    "enum", "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
+                    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
+                    "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
+                    "while",
+                ],
+                double_slash_comments: true,
+                hash_comments: false,
+            }),
+            "c" | "h" | "hpp" | "cpp" | "c++" => Some(Self {
+                keywords: &[
+                    "auto",
+                    "break",
+                    "case",
+                    "char",
+                    "const",
+                    "continue",
+                    "default",
+                    "do",
+                    "double",
+                    "else",
+                    "enum",
+                    "extern",
+                    "false",
+                    "float",
+                    "for",
+                    "goto",
+                    "if",
+                    "inline",
+                    "int",
+                    "long",
+                    "namespace",
+                    "new",
+                    "nullptr",
+                    "return",
+                    "short",
+                    "signed",
+                    "sizeof",
+                    "static",
+                    "struct",
+                    "switch",
+                    "template",
+                    "this",
+                    "true",
+                    "typedef",
+                    "union",
+                    "unsigned",
+                    "using",
+                    "virtual",
+                    "void",
+                    "volatile",
+                    "while",
+                    "class",
+                    "public",
+                    "private",
+                    "protected",
+                ],
+                double_slash_comments: true,
+                hash_comments: false,
+            }),
+            "py" | "python" => Some(Self {
+                keywords: &[
+                    "and", "as", "assert", "break", "class", "continue", "def", "del", "elif",
+                    "else", "except", "False", "finally", "for", "from", "global", "if", "import",
+                    "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise",
+                    "return", "True", "try", "while", "with", "yield",
+                ],
+                double_slash_comments: false,
+                hash_comments: true,
+            }),
+            "toml" => Some(Self {
+                keywords: &[],
+                double_slash_comments: false,
+                hash_comments: true,
+            }),
+            "bash" | "sh" | "zsh" => Some(Self {
+                keywords: &[
+                    "if", "then", "else", "elif", "fi", "case", "esac", "for", "while", "until",
+                    "do", "done", "in", "function", "return", "local", "export", "set", "unset",
+                ],
+                double_slash_comments: false,
+                hash_comments: true,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// Tokenize source code into (token_type, text_slice) pairs.
+/// Separated from rendering so it can be unit tested.
+fn tokenize_code<'a>(code: &'a str, language: &str) -> Vec<(SandToken, &'a str)> {
+    let Some(lang) = LangConfig::from_language(language) else {
+        return vec![(SandToken::Plain, code)];
+    };
+
+    let mut tokens = Vec::new();
+    let mut text = code;
+
+    while !text.is_empty() {
+        if (lang.double_slash_comments && text.starts_with("//"))
+            || (lang.hash_comments && text.starts_with('#'))
+        {
+            let end = text.find('\n').unwrap_or(text.len());
+            tokens.push((SandToken::Comment, &text[..end]));
+            text = &text[end..];
+        } else if text.starts_with('"') {
+            let end = text[1..]
+                .find('"')
+                .map(|i| i + 2)
+                .or_else(|| text.find('\n'))
+                .unwrap_or(text.len());
+            tokens.push((SandToken::String, &text[..end]));
+            text = &text[end..];
+        } else if text.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_') {
+            let end = text[1..]
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .map_or_else(|| text.len(), |i| i + 1);
+            let word = &text[..end];
+            let token = if lang.keywords.contains(&word) {
+                SandToken::Keyword
+            } else {
+                SandToken::Literal
+            };
+            tokens.push((token, word));
+            text = &text[end..];
+        } else if text.starts_with(|c: char| c.is_ascii_whitespace()) {
+            let end = text[1..]
+                .find(|c: char| !c.is_ascii_whitespace())
+                .map_or_else(|| text.len(), |i| i + 1);
+            tokens.push((SandToken::Whitespace, &text[..end]));
+            text = &text[end..];
+        } else {
+            let mut it = text.char_indices();
+            it.next();
+            let end = it.next().map_or(text.len(), |(idx, _)| idx);
+            tokens.push((SandToken::Punctuation, &text[..end]));
+            text = &text[end..];
+        }
+    }
+
+    tokens
+}
+
+/// Simple syntax highlighter with sand-colored theme.
+/// Supports Rust, C/C++, Python, TOML, bash, and falls back to plain text.
+fn highlight_sand(code: &str, language: &str, ui: &Ui) -> LayoutJob {
+    let theme = SandCodeTheme::from_visuals(ui.visuals());
+    let font_id = ui
+        .style()
+        .override_font_id
+        .clone()
+        .unwrap_or_else(|| egui::TextStyle::Monospace.resolve(ui.style()));
+
+    let mut job = LayoutJob::default();
+    for (token, text) in tokenize_code(code, language) {
+        job.append(text, 0.0, theme.format(token, &font_id));
+    }
+    job
+}
+
+fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui: &mut Ui) {
     egui::Frame::default()
         .fill(theme.code_bg)
         .inner_margin(8.0)
@@ -238,9 +465,7 @@ fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui:
             }
 
             let lang = language.unwrap_or("text");
-            let code_theme = CodeTheme::from_style(ui.style());
-            let layout_job =
-                syntax_highlighting::highlight(ui.ctx(), ui.style(), &code_theme, content, lang);
+            let layout_job = highlight_sand(content, lang, ui);
             ui.add(egui::Label::new(layout_job).wrap());
         });
     ui.add_space(8.0);
@@ -319,8 +544,6 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
 
     match &partial.kind {
         PartialKind::CodeFence { language, .. } => {
-            use egui_extras::syntax_highlighting::{self, CodeTheme};
-
             egui::Frame::default()
                 .fill(theme.code_bg)
                 .inner_margin(8.0)
@@ -332,14 +555,7 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
                     }
 
                     let lang = lang_str.unwrap_or("text");
-                    let code_theme = CodeTheme::from_style(ui.style());
-                    let layout_job = syntax_highlighting::highlight(
-                        ui.ctx(),
-                        ui.style(),
-                        &code_theme,
-                        content,
-                        lang,
-                    );
+                    let layout_job = highlight_sand(content, lang, ui);
                     ui.add(egui::Label::new(layout_job).wrap());
                     ui.label(RichText::new("_").weak());
                 });
@@ -377,5 +593,260 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
                 render_inlines(&inlines, theme, buffer, ui);
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: collect (token, text) pairs
+    fn tokens<'a>(code: &'a str, lang: &str) -> Vec<(SandToken, &'a str)> {
+        tokenize_code(code, lang)
+    }
+
+    /// Reassembled tokens must equal the original input (no bytes lost or duplicated)
+    fn assert_roundtrip(code: &str, lang: &str) {
+        let result: String = tokenize_code(code, lang)
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect();
+        assert_eq!(result, code, "roundtrip failed for lang={lang}");
+    }
+
+    // ---- Basic token classification ----
+
+    #[test]
+    fn test_rust_keyword() {
+        let toks = tokens("fn main", "rust");
+        assert_eq!(toks[0], (SandToken::Keyword, "fn"));
+        assert_eq!(toks[1], (SandToken::Whitespace, " "));
+        assert_eq!(toks[2], (SandToken::Literal, "main"));
+    }
+
+    #[test]
+    fn test_rust_comment() {
+        let toks = tokens("// hello", "rust");
+        assert_eq!(toks, vec![(SandToken::Comment, "// hello")]);
+    }
+
+    #[test]
+    fn test_rust_string() {
+        let toks = tokens("\"hello world\"", "rust");
+        assert_eq!(toks, vec![(SandToken::String, "\"hello world\"")]);
+    }
+
+    #[test]
+    fn test_python_hash_comment() {
+        let toks = tokens("# comment", "python");
+        assert_eq!(toks, vec![(SandToken::Comment, "# comment")]);
+    }
+
+    #[test]
+    fn test_python_keyword() {
+        let toks = tokens("def foo", "py");
+        assert_eq!(toks[0], (SandToken::Keyword, "def"));
+    }
+
+    #[test]
+    fn test_punctuation() {
+        let toks = tokens("();", "rust");
+        assert_eq!(
+            toks,
+            vec![
+                (SandToken::Punctuation, "("),
+                (SandToken::Punctuation, ")"),
+                (SandToken::Punctuation, ";"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_underscore_identifier() {
+        let toks = tokens("_foo_bar", "rust");
+        assert_eq!(toks, vec![(SandToken::Literal, "_foo_bar")]);
+    }
+
+    // ---- Unsupported languages ----
+
+    #[test]
+    fn test_unknown_lang_plain() {
+        let toks = tokens("anything goes here", "brainfuck");
+        assert_eq!(toks, vec![(SandToken::Plain, "anything goes here")]);
+    }
+
+    #[test]
+    fn test_text_lang_plain() {
+        let toks = tokens("plain text", "text");
+        assert_eq!(toks, vec![(SandToken::Plain, "plain text")]);
+    }
+
+    // ---- Edge cases for string indexing ----
+
+    #[test]
+    fn test_empty_input() {
+        assert!(tokenize_code("", "rust").is_empty());
+    }
+
+    #[test]
+    fn test_single_char_keyword() {
+        // "if" is a keyword, "i" is not
+        let toks = tokens("i", "rust");
+        assert_eq!(toks, vec![(SandToken::Literal, "i")]);
+    }
+
+    #[test]
+    fn test_unclosed_string() {
+        // String that never closes — should consume to end of line or end of input
+        let toks = tokens("\"unclosed", "rust");
+        assert_eq!(toks, vec![(SandToken::String, "\"unclosed")]);
+    }
+
+    #[test]
+    fn test_unclosed_string_with_newline() {
+        let toks = tokens("\"unclosed\nnext", "rust");
+        // Should stop the string at the newline
+        assert_eq!(toks[0], (SandToken::String, "\"unclosed"));
+    }
+
+    #[test]
+    fn test_empty_string() {
+        let toks = tokens("\"\"", "rust");
+        assert_eq!(toks, vec![(SandToken::String, "\"\"")]);
+    }
+
+    #[test]
+    fn test_comment_at_end_no_newline() {
+        let toks = tokens("// no newline", "rust");
+        assert_eq!(toks, vec![(SandToken::Comment, "// no newline")]);
+    }
+
+    #[test]
+    fn test_comment_with_newline() {
+        let toks = tokens("// comment\ncode", "rust");
+        assert_eq!(toks[0], (SandToken::Comment, "// comment"));
+        assert_eq!(toks[1], (SandToken::Whitespace, "\n"));
+        assert_eq!(toks[2], (SandToken::Literal, "code"));
+    }
+
+    #[test]
+    fn test_multibyte_unicode_punctuation() {
+        // Ensure multi-byte chars don't cause panics from byte indexing
+        let toks = tokens("→", "rust");
+        assert_eq!(toks, vec![(SandToken::Punctuation, "→")]);
+    }
+
+    #[test]
+    fn test_mixed_unicode_and_ascii() {
+        let code = "let x = «val»;";
+        assert_roundtrip(code, "rust");
+    }
+
+    #[test]
+    fn test_only_whitespace() {
+        let toks = tokens("   \n\t", "rust");
+        assert_eq!(toks, vec![(SandToken::Whitespace, "   \n\t")]);
+    }
+
+    #[test]
+    fn test_only_punctuation() {
+        let toks = tokens("()", "rust");
+        assert_eq!(
+            toks,
+            vec![(SandToken::Punctuation, "("), (SandToken::Punctuation, ")"),]
+        );
+    }
+
+    // ---- Roundtrip (no bytes lost) ----
+
+    #[test]
+    fn test_roundtrip_rust() {
+        assert_roundtrip(
+            "fn main() {\n    let x = \"hello\";\n    // done\n}",
+            "rust",
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_python() {
+        assert_roundtrip("def foo():\n    # comment\n    return \"bar\"", "python");
+    }
+
+    #[test]
+    fn test_roundtrip_cpp() {
+        assert_roundtrip("#include <stdio.h>\nint main() { return 0; }", "cpp");
+    }
+
+    #[test]
+    fn test_roundtrip_unknown() {
+        assert_roundtrip("anything goes 🎉 here!", "unknown");
+    }
+
+    #[test]
+    fn test_roundtrip_empty() {
+        assert_roundtrip("", "rust");
+    }
+
+    #[test]
+    fn test_roundtrip_bash() {
+        assert_roundtrip(
+            "#!/bin/bash\nif [ -f \"$1\" ]; then\n  echo \"exists\"\nfi",
+            "bash",
+        );
+    }
+
+    // ---- Multi-line code blocks ----
+
+    #[test]
+    fn test_multiline_rust() {
+        let code = "use std::io;\n\nfn main() {\n    let x = 42;\n    println!(\"{}\", x);\n}";
+        assert_roundtrip(code, "rust");
+        let toks = tokens(code, "rust");
+        assert_eq!(toks[0], (SandToken::Keyword, "use"));
+    }
+
+    // ---- Language detection ----
+
+    #[test]
+    fn test_case_insensitive_language() {
+        let toks = tokens("fn test", "Rust");
+        assert_eq!(toks[0], (SandToken::Keyword, "fn"));
+
+        let toks = tokens("def test", "PYTHON");
+        assert_eq!(toks[0], (SandToken::Keyword, "def"));
+    }
+
+    // ---- Bash support ----
+
+    #[test]
+    fn test_bash_keywords() {
+        let toks = tokens("if then fi", "bash");
+        assert_eq!(toks[0], (SandToken::Keyword, "if"));
+        assert_eq!(toks[2], (SandToken::Keyword, "then"));
+        assert_eq!(toks[4], (SandToken::Keyword, "fi"));
+    }
+
+    #[test]
+    fn test_bash_hash_comment() {
+        let toks = tokens("# this is a comment", "sh");
+        assert_eq!(toks, vec![(SandToken::Comment, "# this is a comment")]);
+    }
+
+    // ---- TOML ----
+
+    #[test]
+    fn test_toml_hash_comment() {
+        let toks = tokens("# config", "toml");
+        assert_eq!(toks, vec![(SandToken::Comment, "# config")]);
+    }
+
+    #[test]
+    fn test_toml_key_value() {
+        let toks = tokens("name = \"notedeck\"", "toml");
+        assert_eq!(toks[0], (SandToken::Literal, "name"));
+        // = is punctuation
+        assert!(toks
+            .iter()
+            .any(|(t, s)| *t == SandToken::String && *s == "\"notedeck\""));
     }
 }
