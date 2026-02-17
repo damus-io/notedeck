@@ -148,10 +148,33 @@ struct PendingMessageLoad {
     claude_session_id: String,
 }
 
-/// Build and ingest a live kind-1988 event into ndb.
+/// PNS-wrap an event and ingest the 1080 wrapper into ndb.
+///
+/// ndb's `process_pns` will unwrap it internally, making the inner
+/// event queryable. This ensures 1080 events exist in ndb for relay sync.
+fn pns_ingest(
+    ndb: &nostrdb::Ndb,
+    event_json: &str,
+    secret_key: &[u8; 32],
+) {
+    let pns_keys = enostr::pns::derive_pns_keys(secret_key);
+    match session_events::wrap_pns(event_json, &pns_keys) {
+        Ok(pns_json) => {
+            if let Err(e) = ndb.process_event(&pns_json) {
+                tracing::warn!("failed to ingest PNS event: {:?}", e);
+            }
+        }
+        Err(e) => {
+            tracing::warn!("failed to PNS-wrap for local ingest: {}", e);
+        }
+    }
+}
+
+/// Build and ingest a live kind-1988 event into ndb (via PNS wrapping).
 ///
 /// Extracts cwd and session ID from the session's agentic data,
-/// builds the event, ingests it, and returns the event for relay publishing.
+/// builds the event, PNS-wraps and ingests it, and returns the event
+/// for relay publishing.
 fn ingest_live_event(
     session: &mut ChatSession,
     ndb: &nostrdb::Ndb,
@@ -174,12 +197,7 @@ fn ingest_live_event(
         secret_key,
     ) {
         Ok(event) => {
-            if let Err(e) = ndb.process_event_with(
-                &event.to_event_json(),
-                nostrdb::IngestMetadata::new().client(true),
-            ) {
-                tracing::warn!("failed to ingest live event: {:?}", e);
-            }
+            pns_ingest(ndb, &event.note_json, secret_key);
             Some(event)
         }
         Err(e) => {
@@ -454,13 +472,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     sk,
                                 ) {
                                     Ok(evt) => {
-                                        // Ingest into local ndb
-                                        if let Err(e) = app_ctx.ndb.process_event_with(
-                                            &evt.to_event_json(),
-                                            nostrdb::IngestMetadata::new().client(true),
-                                        ) {
-                                            tracing::warn!("failed to ingest permission request: {:?}", e);
-                                        }
+                                        // PNS-wrap and ingest into local ndb
+                                        pns_ingest(app_ctx.ndb, &evt.note_json, sk);
                                         // Store note_id for linking responses
                                         if let Some(agentic) = &mut session.agentic {
                                             agentic.perm_request_note_ids.insert(
@@ -1084,9 +1097,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         claude_sid,
                         status,
                     );
-                    let _ = ctx
-                        .ndb
-                        .process_event(&evt.note_json);
+                    pns_ingest(ctx.ndb, &evt.note_json, &sk);
+                    self.pending_relay_events.push(evt);
                 }
                 Err(e) => {
                     tracing::error!("failed to build session state event: {}", e);
@@ -1160,7 +1172,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         resp.perm_id,
                         if resp.allowed { "allow" } else { "deny" }
                     );
-                    let _ = ctx.ndb.process_event(&evt.note_json);
+                    pns_ingest(ctx.ndb, &evt.note_json, &sk);
                     self.pending_relay_events.push(evt);
                 }
                 Err(e) => {
