@@ -58,6 +58,10 @@ pub use ui::{
 };
 pub use vec3::Vec3;
 
+/// Relay URL used for PNS event publishing and subscription.
+/// TODO: make this configurable in the UI
+const PNS_RELAY_URL: &str = "ws://relay.jb55.com";
+
 /// Represents which full-screen overlay (if any) is currently active
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DaveOverlay {
@@ -1829,15 +1833,23 @@ impl notedeck::App for Dave {
                 let pns_keys =
                     enostr::pns::derive_pns_keys(&sk.secret_bytes());
 
-                // Remote: subscribe on relays for kind-1080 authored by our PNS pubkey
+                // Ensure the PNS relay is in the pool
+                let egui_ctx = ui.ctx().clone();
+                let wakeup = move || egui_ctx.request_repaint();
+                if let Err(e) = ctx.pool.add_url(PNS_RELAY_URL.to_string(), wakeup) {
+                    tracing::warn!("failed to add PNS relay {}: {:?}", PNS_RELAY_URL, e);
+                }
+
+                // Remote: subscribe on PNS relay for kind-1080 authored by our PNS pubkey
                 let pns_filter = nostrdb::Filter::new()
                     .kinds([enostr::pns::PNS_KIND as u64])
                     .authors([pns_keys.keypair.pubkey.bytes()])
                     .build();
                 let sub_id = uuid::Uuid::new_v4().to_string();
-                ctx.pool.subscribe(sub_id.clone(), vec![pns_filter]);
+                let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
+                ctx.pool.send_to(&req, PNS_RELAY_URL);
                 self.pns_relay_sub = Some(sub_id);
-                tracing::info!("subscribed for PNS events on relays");
+                tracing::info!("subscribed for PNS events on {}", PNS_RELAY_URL);
 
                 // Local: subscribe in ndb for kind-31988 session state events
                 let state_filter = nostrdb::Filter::new()
@@ -2027,7 +2039,7 @@ impl notedeck::App for Dave {
                 match session_events::wrap_pns(&event.note_json, &pns_keys) {
                     Ok(pns_json) => {
                         match enostr::ClientMessage::event_json(pns_json) {
-                            Ok(msg) => ctx.pool.send(&msg),
+                            Ok(msg) => ctx.pool.send_to(&msg, PNS_RELAY_URL),
                             Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
                         }
                     }
