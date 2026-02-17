@@ -218,9 +218,9 @@ impl<'a> DaveUi<'a> {
 
     fn chat_margin(&self, ctx: &egui::Context) -> i8 {
         if self.compact || notedeck::ui::is_narrow(ctx) {
-            20
+            8
         } else {
-            100
+            20
         }
     }
 
