@@ -245,15 +245,21 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
         let Some(claude_session_id) = json["claude_session_id"].as_str() else {
             continue;
         };
+        let status = json["status"].as_str().unwrap_or("idle");
+
+        // Skip sessions that have been deleted
+        if status == "deleted" {
+            continue;
+        }
+
         let title = json["title"].as_str().unwrap_or("Untitled").to_string();
         let cwd = json["cwd"].as_str().unwrap_or("").to_string();
-        let status = json["status"].as_str().unwrap_or("idle").to_string();
 
         states.push(SessionState {
             claude_session_id: claude_session_id.to_string(),
             title,
             cwd,
-            status,
+            status: status.to_string(),
         });
     }
 

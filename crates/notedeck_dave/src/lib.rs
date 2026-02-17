@@ -129,6 +129,9 @@ pub struct Dave {
     /// Permission responses queued for relay publishing (from remote sessions).
     /// Built and published in the update loop where AppContext is available.
     pending_perm_responses: Vec<PendingPermResponse>,
+    /// Sessions pending deletion state event publication.
+    /// Populated in delete_session(), drained in the update loop where AppContext is available.
+    pending_deletions: Vec<DeletedSessionInfo>,
 }
 
 /// A permission response queued for relay publishing.
@@ -136,6 +139,13 @@ struct PendingPermResponse {
     perm_id: uuid::Uuid,
     allowed: bool,
     message: Option<String>,
+}
+
+/// Info captured from a session before deletion, for publishing a "deleted" state event.
+struct DeletedSessionInfo {
+    claude_session_id: String,
+    title: String,
+    cwd: String,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -160,10 +170,10 @@ fn pns_ingest(
     let pns_keys = enostr::pns::derive_pns_keys(secret_key);
     match session_events::wrap_pns(event_json, &pns_keys) {
         Ok(pns_json) => {
-            // wrap_pns returns bare {…} JSON, but process_client_event
-            // expects ["EVENT", {…}] format
-            let wrapped = format!("[\"EVENT\", {}]", pns_json);
-            if let Err(e) = ndb.process_client_event(&wrapped) {
+            // wrap_pns returns bare {…} JSON; use relay format
+            // ["EVENT", "subid", {…}] so ndb triggers PNS unwrapping
+            let wrapped = format!("[\"EVENT\", \"_pns\", {}]", pns_json);
+            if let Err(e) = ndb.process_event(&wrapped) {
                 tracing::warn!("failed to ingest PNS event: {:?}", e);
             }
         }
@@ -327,6 +337,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pns_relay_sub: None,
             session_state_sub: None,
             pending_perm_responses: Vec::new(),
+            pending_deletions: Vec::new(),
         }
     }
 
@@ -1112,6 +1123,51 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Publish "deleted" state events for sessions that were deleted.
+    /// Called in the update loop where AppContext is available.
+    fn publish_pending_deletions(&mut self, ctx: &mut AppContext<'_>) {
+        if self.pending_deletions.is_empty() {
+            return;
+        }
+
+        let secret_key: Option<[u8; 32]> = ctx
+            .accounts
+            .get_selected_account()
+            .keypair()
+            .secret_key
+            .map(|sk| {
+                sk.as_secret_bytes()
+                    .try_into()
+                    .expect("secret key is 32 bytes")
+            });
+
+        let Some(sk) = secret_key else {
+            return;
+        };
+
+        for info in std::mem::take(&mut self.pending_deletions) {
+            match session_events::build_session_state_event(
+                &info.claude_session_id,
+                &info.title,
+                &info.cwd,
+                "deleted",
+                &sk,
+            ) {
+                Ok(evt) => {
+                    tracing::info!(
+                        "publishing deleted session state: {}",
+                        info.claude_session_id,
+                    );
+                    pns_ingest(ctx.ndb, &evt.note_json, &sk);
+                    self.pending_relay_events.push(evt);
+                }
+                Err(e) => {
+                    tracing::error!("failed to build deleted session state event: {}", e);
+                }
+            }
+        }
+    }
+
     /// Build and queue permission response events from remote sessions.
     /// Called in the update loop where AppContext is available.
     fn publish_pending_perm_responses(&mut self, ctx: &AppContext<'_>) {
@@ -1322,9 +1378,38 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             };
 
+            let status_str = json["status"].as_str().unwrap_or("idle");
+
+            // Skip deleted sessions entirely — don't create or keep them
+            if status_str == "deleted" {
+                // If we have this session locally, remove it
+                if existing_ids.contains(claude_sid) {
+                    let to_delete: Vec<SessionId> = self
+                        .session_manager
+                        .iter()
+                        .filter(|s| {
+                            s.agentic
+                                .as_ref()
+                                .and_then(|a| a.event_session_id())
+                                == Some(claude_sid)
+                        })
+                        .map(|s| s.id)
+                        .collect();
+                    for id in to_delete {
+                        update::delete_session(
+                            &mut self.session_manager,
+                            &mut self.focus_queue,
+                            self.backend.as_ref(),
+                            &mut self.directory_picker,
+                            id,
+                        );
+                    }
+                }
+                continue;
+            }
+
             // Update remote_status for existing remote sessions
             if existing_ids.contains(claude_sid) {
-                let status_str = json["status"].as_str().unwrap_or("idle");
                 let new_status = AgentStatus::from_status_str(status_str);
                 for session in self.session_manager.iter_mut() {
                     if session.is_remote() {
@@ -1582,6 +1667,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Delete a session and clean up backend resources
     fn delete_session(&mut self, id: SessionId) {
+        // Capture session info before deletion so we can publish a "deleted" state event
+        if let Some(session) = self.session_manager.get(id) {
+            if let Some(agentic) = &session.agentic {
+                if let Some(claude_sid) = agentic.event_session_id() {
+                    self.pending_deletions.push(DeletedSessionInfo {
+                        claude_session_id: claude_sid.to_string(),
+                        title: session.title.clone(),
+                        cwd: agentic.cwd.to_string_lossy().to_string(),
+                    });
+                }
+            }
+        }
+
         update::delete_session(
             &mut self.session_manager,
             &mut self.focus_queue,
@@ -2084,6 +2182,9 @@ impl notedeck::App for Dave {
 
         // Publish kind-31988 state events for sessions whose status changed
         self.publish_dirty_session_states(ctx);
+
+        // Publish "deleted" state events for recently deleted sessions
+        self.publish_pending_deletions(ctx);
 
         // Update focus queue based on status changes
         let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));
