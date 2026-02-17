@@ -16,6 +16,11 @@ pub const AI_CONVERSATION_KIND: u32 = 1988;
 /// corresponding 1988 event via an `e` tag.
 pub const AI_SOURCE_DATA_KIND: u32 = 1989;
 
+/// Nostr event kind for AI session state (parameterized replaceable, NIP-33).
+/// One event per session, auto-replaced by nostrdb on update.
+/// `d` tag = claude_session_id.
+pub const AI_SESSION_STATE_KIND: u32 = 31988;
+
 /// Extract the value of a named tag from a note.
 pub fn get_tag_value<'a>(note: &'a nostrdb::Note<'a>, tag_name: &str) -> Option<&'a str> {
     for tag in note.tags() {
@@ -662,6 +667,72 @@ pub fn build_permission_response_event(
     })
 }
 
+/// Build a kind-31988 session state event (parameterized replaceable).
+///
+/// Published on every status change so remote clients and startup restore
+/// can discover active sessions. nostrdb auto-replaces older versions
+/// with same (kind, pubkey, d-tag).
+pub fn build_session_state_event(
+    claude_session_id: &str,
+    title: &str,
+    cwd: &str,
+    status: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let content = serde_json::json!({
+        "claude_session_id": claude_session_id,
+        "title": title,
+        "cwd": cwd,
+        "status": status,
+        "last_active": now,
+    })
+    .to_string();
+
+    let mut builder = NoteBuilder::new()
+        .kind(AI_SESSION_STATE_KIND)
+        .content(&content)
+        .options(NoteBuildOptions::default())
+        .created_at(now);
+
+    // Session identity (makes this a parameterized replaceable event)
+    builder = builder.start_tag().tag_str("d").tag_str(claude_session_id);
+
+    // Discoverability
+    builder = builder
+        .start_tag()
+        .tag_str("t")
+        .tag_str("ai-session-state");
+    builder = builder
+        .start_tag()
+        .tag_str("t")
+        .tag_str("ai-conversation");
+    builder = builder
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+
+    let note = builder
+        .sign(secret_key)
+        .build()
+        .ok_or_else(|| EventBuildError::Build("NoteBuilder::build returned None".to_string()))?;
+
+    let note_id: [u8; 32] = *note.id();
+    let note_json = note
+        .json()
+        .map_err(|e| EventBuildError::Serialize(format!("{:?}", e)))?;
+
+    Ok(BuiltEvent {
+        note_json,
+        note_id,
+        kind: AI_SESSION_STATE_KIND,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1090,5 +1161,34 @@ mod tests {
         let json = &event.note_json;
         assert!(json.contains("deny"));
         assert!(json.contains("too dangerous"));
+    }
+
+    #[test]
+    fn test_build_session_state_event() {
+        let sk = test_secret_key();
+
+        let event = build_session_state_event(
+            "sess-state-test",
+            "Fix the login bug",
+            "/tmp/project",
+            "working",
+            &sk,
+        )
+        .unwrap();
+
+        assert_eq!(event.kind, AI_SESSION_STATE_KIND);
+
+        let json = &event.note_json;
+        // Kind 31988 (parameterized replaceable)
+        assert!(json.contains("31988"));
+        // Has d tag for replacement
+        assert!(json.contains(r#""d","sess-state-test"#));
+        // Has discoverability tags
+        assert!(json.contains(r#""t","ai-session-state"#));
+        assert!(json.contains(r#""t","ai-conversation"#));
+        // Content has state fields
+        assert!(json.contains("Fix the login bug"));
+        assert!(json.contains("working"));
+        assert!(json.contains("/tmp/project"));
     }
 }

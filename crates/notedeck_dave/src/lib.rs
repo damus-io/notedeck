@@ -113,6 +113,8 @@ pub struct Dave {
     pending_message_load: Option<PendingMessageLoad>,
     /// Events waiting to be published to relays (queued from non-pool contexts).
     pending_relay_events: Vec<session_events::BuiltEvent>,
+    /// Whether sessions have been restored from ndb on startup.
+    sessions_restored: bool,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -279,6 +281,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_archive_convert: None,
             pending_message_load: None,
             pending_relay_events: Vec::new(),
+            sessions_restored: false,
         }
     }
 
@@ -528,6 +531,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             }
                             agentic.session_info = Some(info);
                         }
+                        // Persist initial session state now that we know the claude_session_id
+                        session.state_dirty = true;
                     }
 
                     DaveApiResponse::SubagentSpawned(subagent) => {
@@ -1004,6 +1009,122 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Publish kind-31988 state events for sessions whose status changed.
+    fn publish_dirty_session_states(&mut self, ctx: &mut AppContext<'_>) {
+        let secret_key: Option<[u8; 32]> = ctx
+            .accounts
+            .get_selected_account()
+            .keypair()
+            .secret_key
+            .map(|sk| {
+                sk.as_secret_bytes()
+                    .try_into()
+                    .expect("secret key is 32 bytes")
+            });
+
+        let Some(sk) = secret_key else {
+            return;
+        };
+
+        for session in self.session_manager.iter_mut() {
+            if !session.state_dirty {
+                continue;
+            }
+
+            let Some(agentic) = &session.agentic else {
+                continue;
+            };
+
+            let Some(claude_sid) = agentic.event_session_id() else {
+                continue;
+            };
+            let claude_sid = claude_sid.to_string();
+
+            let cwd = agentic.cwd.to_string_lossy();
+            let status = session.status().as_str();
+
+            match session_events::build_session_state_event(
+                &claude_sid,
+                &session.title,
+                &cwd,
+                status,
+                &sk,
+            ) {
+                Ok(evt) => {
+                    tracing::info!(
+                        "publishing session state: {} -> {}",
+                        claude_sid,
+                        status,
+                    );
+                    let _ = ctx
+                        .ndb
+                        .process_event(&evt.note_json);
+                }
+                Err(e) => {
+                    tracing::error!("failed to build session state event: {}", e);
+                }
+            }
+
+            session.state_dirty = false;
+        }
+    }
+
+    /// Restore sessions from kind-31988 state events in ndb.
+    /// Called once on first `update()`.
+    fn restore_sessions_from_ndb(&mut self, ctx: &mut AppContext<'_>) {
+        let txn = match Transaction::new(ctx.ndb) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("failed to open txn for session restore: {:?}", e);
+                return;
+            }
+        };
+
+        let states = session_loader::load_session_states(ctx.ndb, &txn);
+        if states.is_empty() {
+            return;
+        }
+
+        tracing::info!("restoring {} sessions from ndb", states.len());
+
+        for state in &states {
+            let cwd = std::path::PathBuf::from(&state.cwd);
+            let dave_sid = self.session_manager.new_resumed_session(
+                cwd,
+                state.claude_session_id.clone(),
+                state.title.clone(),
+                AiMode::Agentic,
+            );
+
+            // Load conversation history from kind-1988 events
+            let loaded = session_loader::load_session_messages(
+                ctx.ndb,
+                &txn,
+                &state.claude_session_id,
+            );
+
+            if let Some(session) = self.session_manager.get_mut(dave_sid) {
+                tracing::info!(
+                    "restored session '{}': {} messages",
+                    state.title,
+                    loaded.messages.len(),
+                );
+                session.chat = loaded.messages;
+
+                if let (Some(root), Some(last)) =
+                    (loaded.root_note_id, loaded.last_note_id)
+                {
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic.live_threading.seed(root, last, loaded.event_count);
+                    }
+                }
+            }
+        }
+
+        // Skip the directory picker since we restored sessions
+        self.active_overlay = DaveOverlay::None;
+    }
+
     /// Delete a session and clean up backend resources
     fn delete_session(&mut self, id: SessionId) {
         update::delete_session(
@@ -1203,6 +1324,12 @@ impl notedeck::App for Dave {
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
 
+        // Restore sessions from kind-31988 events on first update
+        if !self.sessions_restored && self.ai_mode == AiMode::Agentic {
+            self.sessions_restored = true;
+            self.restore_sessions_from_ndb(ctx);
+        }
+
         // Poll for external editor completion
         update::poll_editor_job(&mut self.session_manager);
 
@@ -1377,6 +1504,9 @@ impl notedeck::App for Dave {
 
         // Update all session statuses after processing events
         self.session_manager.update_all_statuses();
+
+        // Publish kind-31988 state events for sessions whose status changed
+        self.publish_dirty_session_states(ctx);
 
         // Update focus queue based on status changes
         let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));

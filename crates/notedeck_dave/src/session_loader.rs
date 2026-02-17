@@ -107,6 +107,61 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
     }
 }
 
+/// A persisted session state from a kind-31988 event.
+pub struct SessionState {
+    pub claude_session_id: String,
+    pub title: String,
+    pub cwd: String,
+    pub status: String,
+}
+
+/// Load all session states from kind-31988 events in ndb.
+///
+/// Returns one `SessionState` per unique session. Since these are
+/// parameterized replaceable events, nostrdb keeps only the latest
+/// version for each (kind, pubkey, d-tag) tuple.
+pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
+    use crate::session_events::AI_SESSION_STATE_KIND;
+
+    let filter = Filter::new()
+        .kinds([AI_SESSION_STATE_KIND as u64])
+        .tags(["ai-session-state"], 't')
+        .build();
+
+    let results = match ndb.query(txn, &[filter], 100) {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    let mut states = Vec::new();
+    for qr in &results {
+        let Ok(note) = ndb.get_note_by_key(txn, qr.note_key) else {
+            continue;
+        };
+
+        let content = note.content();
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(content) else {
+            continue;
+        };
+
+        let Some(claude_session_id) = json["claude_session_id"].as_str() else {
+            continue;
+        };
+        let title = json["title"].as_str().unwrap_or("Untitled").to_string();
+        let cwd = json["cwd"].as_str().unwrap_or("").to_string();
+        let status = json["status"].as_str().unwrap_or("idle").to_string();
+
+        states.push(SessionState {
+            claude_session_id: claude_session_id.to_string(),
+            title,
+            cwd,
+            status,
+        });
+    }
+
+    states
+}
+
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()

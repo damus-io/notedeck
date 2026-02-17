@@ -148,6 +148,8 @@ pub struct ChatSession {
     pub task_handle: Option<tokio::task::JoinHandle<()>>,
     /// Cached status for the agent (derived from session state)
     cached_status: AgentStatus,
+    /// Set when cached_status changes, cleared after publishing state event
+    pub state_dirty: bool,
     /// Whether this session's input should be focused on the next frame
     pub focus_requested: bool,
     /// AI interaction mode for this session (Chat vs Agentic)
@@ -179,6 +181,7 @@ impl ChatSession {
             incoming_tokens: None,
             task_handle: None,
             cached_status: AgentStatus::Idle,
+            state_dirty: false,
             focus_requested: false,
             ai_mode,
             agentic,
@@ -265,11 +268,15 @@ impl ChatSession {
             };
             // Use first ~30 chars of last message as title
             let title: String = text.chars().take(30).collect();
-            self.title = if text.len() > 30 {
+            let new_title = if text.len() > 30 {
                 format!("{}...", title)
             } else {
                 title
             };
+            if new_title != self.title {
+                self.title = new_title;
+                self.state_dirty = true;
+            }
             break;
         }
     }
@@ -279,9 +286,14 @@ impl ChatSession {
         self.cached_status
     }
 
-    /// Update the cached status based on current session state
+    /// Update the cached status based on current session state.
+    /// Sets `state_dirty` when the status actually changes.
     pub fn update_status(&mut self) {
-        self.cached_status = self.derive_status();
+        let new_status = self.derive_status();
+        if new_status != self.cached_status {
+            self.cached_status = new_status;
+            self.state_dirty = true;
+        }
     }
 
     /// Derive status from the current session state

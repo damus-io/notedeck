@@ -36,4 +36,15 @@ impl AgentStatus {
             AgentStatus::Done => "Done",
         }
     }
+
+    /// Get the status as a lowercase string for serialization (nostr events).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentStatus::Idle => "idle",
+            AgentStatus::Working => "working",
+            AgentStatus::NeedsInput => "needs_input",
+            AgentStatus::Error => "error",
+            AgentStatus::Done => "done",
+        }
+    }
 }
