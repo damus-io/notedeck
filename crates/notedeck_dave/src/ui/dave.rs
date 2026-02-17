@@ -593,8 +593,18 @@ impl<'a> DaveUi<'a> {
     ) {
         let shift_held = ui.input(|i| i.modifiers.shift);
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
+
+            // Allow button (green) with integrated keybind hint
+            let allow_response = super::badge::ActionButton::new(
+                "Allow",
+                egui::Color32::from_rgb(34, 139, 34),
+                button_text_color,
+            )
+            .keybind("1")
+            .show(ui)
+            .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
 
             // Deny button (red) with integrated keybind hint
             let deny_response = super::badge::ActionButton::new(
@@ -620,16 +630,6 @@ impl<'a> DaveUi<'a> {
                     });
                 }
             }
-
-            // Allow button (green) with integrated keybind hint
-            let allow_response = super::badge::ActionButton::new(
-                "Allow",
-                egui::Color32::from_rgb(34, 139, 34),
-                button_text_color,
-            )
-            .keybind("1")
-            .show(ui)
-            .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
 
             if allow_response.clicked() {
                 if shift_held {
