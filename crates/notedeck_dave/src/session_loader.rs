@@ -23,6 +23,20 @@ pub fn query_replaceable(
     txn: &Transaction,
     filters: &[Filter],
 ) -> Vec<NoteKey> {
+    query_replaceable_filtered(ndb, txn, filters, |_| true)
+}
+
+/// Like `query_replaceable`, but with a predicate to filter notes.
+///
+/// The predicate is called on the latest revision of each d-tag group.
+/// If it returns false, that d-tag is removed from results (even if an
+/// older revision would have passed).
+pub fn query_replaceable_filtered(
+    ndb: &Ndb,
+    txn: &Transaction,
+    filters: &[Filter],
+    predicate: impl Fn(&nostrdb::Note) -> bool,
+) -> Vec<NoteKey> {
     // Fold: for each d-tag value, track (created_at, NoteKey) of the latest
     let best = ndb.fold(
         txn,
@@ -41,7 +55,13 @@ pub fn query_replaceable(
                 }
             }
 
-            acc.insert(d_tag.to_string(), (created_at, note.key().expect("note key")));
+            if predicate(&note) {
+                acc.insert(d_tag.to_string(), (created_at, note.key().expect("note key")));
+            } else {
+                // Latest revision rejected — remove any older revision we kept
+                acc.remove(d_tag);
+            }
+
             acc
         },
     );
@@ -219,8 +239,8 @@ pub struct SessionState {
 
 /// Load all session states from kind-31988 events in ndb.
 ///
-/// Uses `query_replaceable` to deduplicate by d-tag, keeping only the
-/// most recent revision of each session state.
+/// Uses `query_replaceable_filtered` to deduplicate by d-tag, keeping
+/// only the most recent non-deleted revision of each session state.
 pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
     use crate::session_events::AI_SESSION_STATE_KIND;
 
@@ -229,7 +249,11 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
         .tags(["ai-session-state"], 't')
         .build();
 
-    let note_keys = query_replaceable(ndb, txn, &[filter]);
+    let not_deleted = |note: &nostrdb::Note| {
+        get_tag_value(note, "status") != Some("deleted")
+    };
+
+    let note_keys = query_replaceable_filtered(ndb, txn, &[filter], not_deleted);
 
     let mut states = Vec::new();
     for key in note_keys {
@@ -237,29 +261,15 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
             continue;
         };
 
-        let content = note.content();
-        let Ok(json) = serde_json::from_str::<serde_json::Value>(content) else {
+        let Some(claude_session_id) = get_tag_value(&note, "d") else {
             continue;
         };
-
-        let Some(claude_session_id) = json["claude_session_id"].as_str() else {
-            continue;
-        };
-        let status = json["status"].as_str().unwrap_or("idle");
-
-        // Skip sessions that have been deleted
-        if status == "deleted" {
-            continue;
-        }
-
-        let title = json["title"].as_str().unwrap_or("Untitled").to_string();
-        let cwd = json["cwd"].as_str().unwrap_or("").to_string();
 
         states.push(SessionState {
             claude_session_id: claude_session_id.to_string(),
-            title,
-            cwd,
-            status: status.to_string(),
+            title: get_tag_value(&note, "title").unwrap_or("Untitled").to_string(),
+            cwd: get_tag_value(&note, "cwd").unwrap_or("").to_string(),
+            status: get_tag_value(&note, "status").unwrap_or("idle").to_string(),
         });
     }
 

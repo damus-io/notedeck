@@ -1369,16 +1369,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             };
 
-            let content = note.content();
-            let Ok(json) = serde_json::from_str::<serde_json::Value>(content) else {
+            let Some(claude_sid) = session_events::get_tag_value(&note, "d") else {
                 continue;
             };
 
-            let Some(claude_sid) = json["claude_session_id"].as_str() else {
-                continue;
-            };
-
-            let status_str = json["status"].as_str().unwrap_or("idle");
+            let status_str = session_events::get_tag_value(&note, "status").unwrap_or("idle");
 
             // Skip deleted sessions entirely — don't create or keep them
             if status_str == "deleted" {
@@ -1423,8 +1418,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             }
 
-            let title = json["title"].as_str().unwrap_or("Untitled").to_string();
-            let cwd_str = json["cwd"].as_str().unwrap_or("");
+            let title = session_events::get_tag_value(&note, "title").unwrap_or("Untitled").to_string();
+            let cwd_str = session_events::get_tag_value(&note, "cwd").unwrap_or("");
             let cwd = std::path::PathBuf::from(cwd_str);
 
             tracing::info!(
@@ -1474,7 +1469,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     agentic.perm_request_note_ids.extend(loaded.perm_request_note_ids);
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status
-                    let status_str = json["status"].as_str().unwrap_or("idle");
                     agentic.remote_status = AgentStatus::from_status_str(status_str);
 
                     // Set up live conversation subscription for remote sessions

@@ -715,23 +715,19 @@ pub fn build_session_state_event(
         .unwrap_or_default()
         .as_secs();
 
-    let content = serde_json::json!({
-        "claude_session_id": claude_session_id,
-        "title": title,
-        "cwd": cwd,
-        "status": status,
-        "last_active": now,
-    })
-    .to_string();
-
     let mut builder = NoteBuilder::new()
         .kind(AI_SESSION_STATE_KIND)
-        .content(&content)
+        .content("")
         .options(NoteBuildOptions::default())
         .created_at(now);
 
     // Session identity (makes this a parameterized replaceable event)
     builder = builder.start_tag().tag_str("d").tag_str(claude_session_id);
+
+    // Session metadata as tags
+    builder = builder.start_tag().tag_str("title").tag_str(title);
+    builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
+    builder = builder.start_tag().tag_str("status").tag_str(status);
 
     // Discoverability
     builder = builder
