@@ -895,11 +895,13 @@ pub fn create_session_with_cwd(
     show_scene: bool,
     ai_mode: AiMode,
     cwd: PathBuf,
+    hostname: &str,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
     let id = session_manager.new_session(cwd, ai_mode);
     if let Some(session) = session_manager.get_mut(id) {
+        session.hostname = hostname.to_string();
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -922,11 +924,13 @@ pub fn create_resumed_session_with_cwd(
     cwd: PathBuf,
     resume_session_id: String,
     title: String,
+    hostname: &str,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
     let id = session_manager.new_resumed_session(cwd, resume_session_id, title, ai_mode);
     if let Some(session) = session_manager.get_mut(id) {
+        session.hostname = hostname.to_string();
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -945,6 +949,7 @@ pub fn clone_active_agent(
     scene: &mut AgentScene,
     show_scene: bool,
     ai_mode: AiMode,
+    hostname: &str,
 ) -> Option<SessionId> {
     let cwd = session_manager
         .get_active()
@@ -956,6 +961,7 @@ pub fn clone_active_agent(
         show_scene,
         ai_mode,
         cwd,
+        hostname,
     ))
 }
 

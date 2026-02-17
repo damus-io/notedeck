@@ -234,6 +234,7 @@ pub struct SessionState {
     pub title: String,
     pub cwd: String,
     pub status: String,
+    pub hostname: String,
 }
 
 /// Load all session states from kind-31988 events in ndb.
@@ -279,6 +280,7 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
                 .to_string(),
             cwd: get_tag_value(&note, "cwd").unwrap_or("").to_string(),
             status: get_tag_value(&note, "status").unwrap_or("idle").to_string(),
+            hostname: get_tag_value(&note, "hostname").unwrap_or("").to_string(),
         });
     }
 

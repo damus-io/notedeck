@@ -184,6 +184,8 @@ pub struct ChatSession {
     pub agentic: Option<AgenticSessionData>,
     /// Whether this session is local (has a Claude process) or remote (relay-only).
     pub source: SessionSource,
+    /// Hostname of the machine where this session originated.
+    pub hostname: String,
 }
 
 impl Drop for ChatSession {
@@ -214,6 +216,7 @@ impl ChatSession {
             ai_mode,
             agentic,
             source: SessionSource::Local,
+            hostname: String::new(),
         }
     }
 

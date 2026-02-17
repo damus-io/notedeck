@@ -621,6 +621,7 @@ pub fn build_session_state_event(
     title: &str,
     cwd: &str,
     status: &str,
+    hostname: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     let mut builder = init_note_builder(AI_SESSION_STATE_KIND, "", Some(now_secs()));
@@ -632,6 +633,7 @@ pub fn build_session_state_event(
     builder = builder.start_tag().tag_str("title").tag_str(title);
     builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
     builder = builder.start_tag().tag_str("status").tag_str(status);
+    builder = builder.start_tag().tag_str("hostname").tag_str(hostname);
 
     // Discoverability
     builder = builder.start_tag().tag_str("t").tag_str("ai-session-state");
@@ -1081,6 +1083,7 @@ mod tests {
             "Fix the login bug",
             "/tmp/project",
             "working",
+            "my-laptop",
             &sk,
         )
         .unwrap();
@@ -1099,6 +1102,7 @@ mod tests {
         assert!(json.contains("Fix the login bug"));
         assert!(json.contains("working"));
         assert!(json.contains("/tmp/project"));
+        assert!(json.contains(r#""hostname","my-laptop"#));
     }
 
     #[test]
