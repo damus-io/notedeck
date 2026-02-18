@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn test_extract_zap_amount_real_invoice() {
-        // Real invoice from the zap.rs test data (330 sats)
+        // Real invoice from the zap.rs test data (330 nano-BTC = 33 sats)
         let bolt11 = "lnbc330n1pn7dlrrpp566sfk69zda849huwjw6wepw3uzxxp4mp9np54qx49ruw8cuv86ushp52te27l4jadsz0u76jvgsk5uekl04tujpjkt9cc7duu0jfzp9zdtscqzzsxqyz5vqsp5m3tzc7ryp5f9fv90v27uyrrd4qfmj5lrwv9rvmvum3v50kdph23s9qxpqysgqut2ssf0m7nmtd73cwqk7qfw4sw6zlj598sjdxmdsepmvn0ptamnhf45c425h26juzcfupegltefwsf8qav2ldell7v9fpc0y23nl0kgqtf432g";
         let event = make_zap_event(bolt11);
         // 330 nano-BTC = 33 sats

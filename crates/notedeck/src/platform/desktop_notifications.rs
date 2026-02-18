@@ -3,7 +3,13 @@
 //! Provides notification control functions that delegate to `NotificationManager`.
 
 use crate::notifications::NotificationManager;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::info;
+
+/// Whether macOS notification permission has been granted.
+/// On Linux, always true (no permission system). On macOS, updated
+/// by the authorization callback in `macos.rs`.
+static PERMISSION_GRANTED: AtomicBool = AtomicBool::new(cfg!(target_os = "linux"));
 
 /// Enable push notifications for the given pubkey.
 ///
@@ -50,9 +56,15 @@ pub fn is_notification_service_running(
 }
 
 /// Check if notification permission is granted.
-/// On desktop, always returns true (no permission system like Android).
+/// On Linux, always returns true (no permission system).
+/// On macOS, returns the result from the authorization request.
 pub fn is_notification_permission_granted() -> Result<bool, Box<dyn std::error::Error>> {
-    Ok(true)
+    Ok(PERMISSION_GRANTED.load(Ordering::SeqCst))
+}
+
+/// Set the notification permission state (called from macOS authorization callback).
+pub fn set_permission_granted(granted: bool) {
+    PERMISSION_GRANTED.store(granted, Ordering::SeqCst);
 }
 
 /// Request notification permission.
@@ -71,4 +83,14 @@ pub fn is_notification_permission_pending() -> bool {
 /// On desktop, always returns true.
 pub fn get_notification_permission_result() -> bool {
     true
+}
+
+/// Re-query the OS for the current notification permission state.
+/// On macOS, calls `getNotificationSettingsWithCompletionHandler`.
+/// On Linux, this is a no-op (permissions are always granted).
+pub fn refresh_notification_permission() {
+    #[cfg(target_os = "macos")]
+    {
+        crate::notifications::macos::refresh_permission_status();
+    }
 }

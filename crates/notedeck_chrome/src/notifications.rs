@@ -16,7 +16,9 @@ use jni::JNIEnv;
 
 use enostr::{Pubkey, RelayPool, RelayStatus};
 use nostrdb::Filter;
-use notedeck::notifications::{extract_event, CachedProfile, ExtractedEvent, NOTIFICATION_KINDS};
+use notedeck::notifications::{
+    extract_event, safe_prefix, CachedProfile, ExtractedEvent, NOTIFICATION_KINDS,
+};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -76,6 +78,12 @@ impl Default for SharedState {
 }
 
 /// Global shared state singleton.
+///
+/// **Why global?** JNI `extern "C"` functions have fixed signatures — they cannot
+/// receive custom Rust state as parameters. This is an unavoidable constraint of
+/// the Java Native Interface. The state is consolidated into a single `Arc<SharedState>`
+/// to minimize global surface area. See also `NOTIFICATION_BRIDGE` in `platform/android.rs`
+/// for the same JNI-constrained pattern.
 static SHARED_STATE: OnceLock<Arc<SharedState>> = OnceLock::new();
 
 /// Returns the shared state, initializing on first access.
@@ -298,7 +306,7 @@ fn setup_subscriptions(pool: &mut RelayPool, pubkey: &Pubkey, since: u64) {
 
     debug!(
         "Set up notification subscriptions for pubkey {}",
-        &pubkey_hex[..8]
+        safe_prefix(&pubkey_hex, 8)
     );
 }
 
@@ -388,7 +396,7 @@ fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str)
     }
 
     if !record_event_if_new(state, &event.id) {
-        debug!("Skipping duplicate event id={}", &event.id[..8]);
+        debug!("Skipping duplicate event id={}", safe_prefix(&event.id, 8));
         return;
     }
 
@@ -400,8 +408,8 @@ fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str)
     info!(
         "NEW EVENT: kind={} id={} from={} sub={}",
         event.kind,
-        &event.id[..8],
-        &event.pubkey[..8],
+        safe_prefix(&event.id, 8),
+        safe_prefix(&event.pubkey, 8),
         sub_id
     );
 
@@ -429,11 +437,11 @@ fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str)
     info!(
         "Notifying with profile: name={:?}, picture={:?}",
         author_name,
-        picture_url.as_ref().map(|s| &s[..s.len().min(50)])
+        picture_url.as_ref().map(|s| safe_prefix(s, 50))
     );
     info!(
         "Resolved content: {}",
-        &resolved_content[..resolved_content.len().min(100)]
+        safe_prefix(&resolved_content, 100)
     );
 
     // Create event with resolved content for notification
@@ -465,9 +473,9 @@ fn handle_profile_event(state: &mut WorkerState, event: &ExtractedEvent) {
 
     debug!(
         "Cached profile for {}: name={:?}, picture={:?}",
-        &event.pubkey[..8],
+        safe_prefix(&event.pubkey, 8),
         profile.name,
-        profile.picture_url.as_ref().map(|s| &s[..s.len().min(50)])
+        profile.picture_url.as_ref().map(|s| safe_prefix(s, 50))
     );
 
     // Remove from requested set since we now have the profile
@@ -488,7 +496,7 @@ fn extract_profile_info(content: &str) -> CachedProfile {
     // Log first 200 chars of profile content for debugging
     debug!(
         "Parsing profile content: {}",
-        &content[..content.len().min(200)]
+        safe_prefix(content, 200)
     );
 
     let value: serde_json::Value = match serde_json::from_str(content) {
@@ -549,7 +557,7 @@ fn request_profile_if_needed(state: &mut WorkerState, pubkey: &str) {
     if state.requested_profiles.len() >= 50 {
         debug!(
             "Too many pending profile requests, skipping {}",
-            &pubkey[..8]
+            safe_prefix(pubkey, 8)
         );
         return;
     }
@@ -569,9 +577,9 @@ fn request_profile_if_needed(state: &mut WorkerState, pubkey: &str) {
         .build();
 
     // Use unique subscription ID per pubkey to avoid overwriting previous requests
-    let sub_id = format!("{}_{}", SUB_PROFILES, &pubkey[..16]);
+    let sub_id = format!("{}_{}", SUB_PROFILES, safe_prefix(pubkey, 16));
     state.pool.subscribe(sub_id, vec![profile_filter]);
-    debug!("Requested profile for {}", &pubkey[..8]);
+    debug!("Requested profile for {}", safe_prefix(pubkey, 8));
 }
 
 /// Maximum number of event IDs to track for deduplication.
@@ -611,7 +619,7 @@ fn notify_nostr_event(
     info!(
         "notify_nostr_event called: kind={}, id={}",
         event.kind,
-        &event.id[..8]
+        safe_prefix(&event.id, 8)
     );
 
     #[cfg(target_os = "android")]
@@ -702,7 +710,7 @@ fn notify_nostr_event(
         debug!(
             "Nostr event (non-Android): kind={}, author={}, zap_sats={:?}",
             event.kind,
-            &event.pubkey[..8],
+            safe_prefix(&event.pubkey, 8),
             event.zap_amount_sats
         );
     }

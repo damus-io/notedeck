@@ -190,8 +190,8 @@ class MainActivity : GameActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        setupInsets()
         super.onCreate(savedInstanceState)
+        setupInsets()
         handleDeepLinkIntent(intent)
     }
 

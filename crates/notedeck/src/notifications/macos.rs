@@ -47,6 +47,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Sel};
 use objc2::{class, msg_send, sel};
 use std::path::Path;
+use std::ptr::NonNull;
 use std::sync::OnceLock;
 use tracing::{debug, error, info, warn};
 
@@ -206,16 +207,16 @@ unsafe extern "C" fn will_present_notification(
     _notification: *mut objc2::runtime::AnyObject,
     completion_handler: *mut objc2::runtime::AnyObject,
 ) {
-    // UNNotificationPresentationOptions:
-    // .badge  = 1 << 0 = 1
-    // .sound  = 1 << 1 = 2
-    // .alert  = 1 << 2 = 4  (macOS 10.14+, deprecated in 11 but still works)
-    // .list   = 1 << 3 = 8  (macOS 11+)
-    // .banner = 1 << 4 = 16 (macOS 11+)
-    //
+    // UNNotificationPresentationOptions bitmask constants
+    const PRESENTATION_SOUND: usize = 1 << 1; // .sound
+    const PRESENTATION_ALERT: usize = 1 << 2; // .alert (macOS 10.14+, deprecated in 11)
+    const PRESENTATION_LIST: usize = 1 << 3; // .list (macOS 11+)
+    const PRESENTATION_BANNER: usize = 1 << 4; // .banner (macOS 11+)
+
     // Include .alert for macOS 10.15 compatibility (our minimum target).
     // On macOS 11+, .banner takes precedence; .alert is ignored.
-    let options: usize = 4 | 2 | 16 | 8; // alert + sound + banner + list
+    let options: usize =
+        PRESENTATION_ALERT | PRESENTATION_SOUND | PRESENTATION_BANNER | PRESENTATION_LIST;
 
     debug!(
         "willPresentNotification called, returning options: {}",
@@ -284,17 +285,23 @@ fn request_permission() {
     let center = UNUserNotificationCenter::currentNotificationCenter();
 
     // Request alert + sound + badge permissions
-    let options = UNAuthorizationOptions(1 | 2 | 4); // Alert + Sound + Badge
+    let options = UNAuthorizationOptions::Badge
+        | UNAuthorizationOptions::Sound
+        | UNAuthorizationOptions::Alert;
 
     let completion_handler = block2::RcBlock::new(move |granted: Bool, error: *mut NSError| {
-        if granted.as_bool() {
+        let is_granted = granted.as_bool();
+        // Store the actual permission state for later querying
+        crate::platform::desktop_notifications::set_permission_granted(is_granted);
+
+        if is_granted {
             info!("macOS notification permission GRANTED");
         } else if !error.is_null() {
             // SAFETY: error is non-null, we can dereference it
             let err = unsafe { &*error };
             warn!(
                 "macOS notification permission result: granted={}, error: {} (code={})",
-                granted.as_bool(),
+                is_granted,
                 err.localizedDescription(),
                 err.code()
             );
@@ -306,6 +313,29 @@ fn request_permission() {
     center.requestAuthorizationWithOptions_completionHandler(options, &completion_handler);
 
     info!("Requested macOS notification permission");
+}
+
+/// Re-query macOS for the current notification authorization status.
+///
+/// This calls `getNotificationSettingsWithCompletionHandler` to get the
+/// live permission state from the OS, updating `PERMISSION_GRANTED`.
+/// Needed because the user can change permission in System Settings
+/// while the app is running.
+pub(crate) fn refresh_permission_status() {
+    use objc2_user_notifications::{
+        UNAuthorizationStatus, UNNotificationSettings, UNUserNotificationCenter,
+    };
+
+    let center = UNUserNotificationCenter::currentNotificationCenter();
+
+    let handler = block2::RcBlock::new(move |settings: NonNull<UNNotificationSettings>| {
+        // SAFETY: settings pointer is guaranteed non-null by the API
+        let settings = unsafe { settings.as_ref() };
+        let granted = settings.authorizationStatus() == UNAuthorizationStatus::Authorized;
+        crate::platform::desktop_notifications::set_permission_granted(granted);
+    });
+
+    center.getNotificationSettingsWithCompletionHandler(&handler);
 }
 
 impl MacOSBackend {
@@ -370,14 +400,14 @@ impl MacOSBackend {
                 if error.is_null() {
                     info!(
                         "macOS notification delivered successfully: {}",
-                        &notification_id_owned[..notification_id_owned.len().min(8)]
+                        safe_prefix(&notification_id_owned, 8)
                     );
                 } else {
                     // SAFETY: error is non-null, we can dereference it
                     let err = unsafe { &*error };
                     error!(
                         "macOS notification FAILED: {} - {} (code={})",
-                        &notification_id_owned[..notification_id_owned.len().min(8)],
+                        safe_prefix(&notification_id_owned, 8),
                         err.localizedDescription(),
                         err.code()
                     );

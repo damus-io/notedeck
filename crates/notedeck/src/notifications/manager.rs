@@ -347,7 +347,9 @@ fn lookup_profile(ndb: &Ndb, pubkey_hex: &str) -> (Option<String>, Option<String
         return (None, None);
     };
 
-    let pubkey_arr: [u8; 32] = pubkey_bytes.try_into().unwrap();
+    let Ok(pubkey_arr): Result<[u8; 32], _> = pubkey_bytes.try_into() else {
+        return (None, None);
+    };
     let Ok(profile) = ndb.get_profile_by_pubkey(&txn, &pubkey_arr) else {
         return (None, None);
     };

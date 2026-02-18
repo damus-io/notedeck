@@ -40,7 +40,7 @@ mod desktop;
 mod extraction;
 pub mod image_cache;
 #[cfg(target_os = "macos")]
-mod macos;
+pub(crate) mod macos;
 mod manager;
 mod profiles;
 mod types;
@@ -53,8 +53,8 @@ pub use macos::{initialize_on_main_thread as macos_init, MacOSBackend};
 pub use manager::NotificationManager;
 pub use profiles::{decode_npub, extract_mentioned_pubkeys, resolve_mentions};
 pub use types::{
-    is_notification_kind, CachedProfile, ExtractedEvent, NotificationAccount, NotificationData,
-    WorkerState, NOTIFICATION_KINDS,
+    is_notification_kind, safe_prefix, CachedProfile, ExtractedEvent, NotificationAccount,
+    NotificationData, WorkerState, NOTIFICATION_KINDS,
 };
 
 /// Type alias for the platform-appropriate notification backend.
@@ -133,12 +133,14 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
             .write()
             .map_err(|e| format!("Lock error: {e}"))?;
 
-        // Stop any previous worker
+        // Stop any previous worker — signal and detach to avoid blocking the caller
         if let Some(mut old_handle) = guard.take() {
             old_handle.running.store(false, Ordering::SeqCst);
-            if let Some(thread) = old_handle.thread.take() {
-                let _ = thread.join();
-            }
+            // Drop the sender so the worker's receiver wakes up immediately
+            drop(old_handle.sender);
+            // Don't join — the old thread will exit on its own when it checks the flag.
+            // Dropping the JoinHandle detaches it.
+            drop(old_handle.thread.take());
         }
 
         // Create channel for notification data
@@ -182,6 +184,9 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
     }
 
     /// Stop the notification worker.
+    ///
+    /// Signals the worker to stop and detaches the thread to avoid blocking
+    /// the caller (which may be the render loop or Drop).
     pub fn stop(&self) {
         let handle = {
             if let Ok(mut guard) = self.worker.write() {
@@ -191,23 +196,14 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
             }
         };
 
-        if let Some(mut handle) = handle {
+        if let Some(handle) = handle {
             handle.running.store(false, Ordering::SeqCst);
-            info!("Signaled notification worker to stop");
-
-            if let Some(thread) = handle.thread.take() {
-                let start = std::time::Instant::now();
-                while !thread.is_finished() && start.elapsed().as_secs() < 2 {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-
-                if thread.is_finished() {
-                    let _ = thread.join();
-                    info!("Notification worker stopped");
-                } else {
-                    info!("Notification worker didn't stop in time, detaching");
-                }
-            }
+            // Drop the sender to unblock the worker's recv() immediately
+            drop(handle.sender);
+            // Detach the thread — it will exit on its own when it checks the flag
+            // or when recv() returns Err (disconnected).
+            drop(handle.thread);
+            info!("Signaled notification worker to stop (detached)");
         }
     }
 

@@ -5,6 +5,7 @@
 use enostr::Pubkey;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
+use tracing::info;
 
 /// Cached profile information for notification display.
 #[derive(Clone, Default, Debug)]
@@ -105,8 +106,6 @@ impl WorkerState {
         accounts: HashMap<String, NotificationAccount>,
         event_receiver: mpsc::Receiver<NotificationData>,
     ) -> Self {
-        use tracing::info;
-
         info!("WorkerState created with {} accounts", accounts.len());
 
         Self {
@@ -153,6 +152,6 @@ pub fn is_notification_kind(kind: i32) -> bool {
 
 /// Safely truncate a string to at most `n` characters, avoiding panics on
 /// short strings or multi-byte UTF-8 boundaries.
-pub(super) fn safe_prefix(s: &str, n: usize) -> String {
+pub fn safe_prefix(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }

@@ -325,7 +325,7 @@ fn parse_nostr_event_for_notification(event_json: &str) -> Option<FcmNotificatio
 
     let (title, body) = match kind {
         1 => ("New mention".to_string(), truncate_content(content, 100)),
-        4 => (
+        4 | 1059 => (
             "New direct message".to_string(),
             "Contents are encrypted".to_string(),
         ),

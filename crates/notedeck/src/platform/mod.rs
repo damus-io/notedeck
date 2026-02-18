@@ -3,7 +3,7 @@ use crate::{platform::file::SelectedMedia, Error};
 #[cfg(target_os = "android")]
 pub mod android;
 #[cfg(not(target_os = "android"))]
-mod desktop_notifications;
+pub(crate) mod desktop_notifications;
 pub mod file;
 
 #[cfg(not(target_os = "android"))]
@@ -171,6 +171,16 @@ pub fn get_notification_permission_result() -> bool {
 pub fn get_notification_permission_result() -> bool {
     desktop_notifications::get_notification_permission_result()
 }
+
+/// Re-query the OS for the current notification permission state.
+/// On Android, this is a no-op (permission is managed via the Android API).
+#[cfg(not(target_os = "android"))]
+pub fn refresh_notification_permission() {
+    desktop_notifications::refresh_notification_permission();
+}
+
+#[cfg(target_os = "android")]
+pub fn refresh_notification_permission() {}
 
 /// Check if notifications are currently enabled.
 #[cfg(target_os = "android")]

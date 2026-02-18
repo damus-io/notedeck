@@ -264,7 +264,7 @@ impl Accounts {
         urls
     }
 
-    pub fn select_account(
+    pub(crate) fn select_account(
         &mut self,
         pk_to_select: &Pubkey,
         ndb: &mut Ndb,
