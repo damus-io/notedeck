@@ -20,6 +20,9 @@ use std::slice::from_ref;
 // TODO: remove this
 use std::sync::Arc;
 
+#[cfg(target_os = "android")]
+use crate::platform::android::set_signing_keypair;
+
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
 pub struct Accounts {
@@ -264,6 +267,13 @@ impl Accounts {
             if let Err(e) = key_store.select_key(Some(*pk_to_select)) {
                 tracing::error!("Could not select key {:?}: {e}", pk_to_select);
             }
+        }
+
+        // Update signing keypair for Android FCM/NIP-98 auth
+        #[cfg(target_os = "android")]
+        {
+            let keypair = self.cache.selected().key.to_full().map(|f| f.to_full());
+            set_signing_keypair(keypair);
         }
 
         self.get_selected_account_mut().data.query(ndb, txn);
