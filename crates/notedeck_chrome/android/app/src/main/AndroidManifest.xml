@@ -22,6 +22,20 @@
                 android:name="android.app.lib_name"
                 android:value="notedeck_chrome" />
         </activity>
+
+        <!-- Firebase Cloud Messaging Service -->
+        <service
+            android:name=".service.NotedeckFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <!-- Default notification channel metadata -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="notedeck_notifications" />
     </application>
 
     <queries>
@@ -38,4 +52,6 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Required for Android 13+ to show notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>
