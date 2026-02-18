@@ -264,67 +264,70 @@ fn try_process_event(
     Ok(())
 }
 
-/// Schedule an initial timeline load if it is not already in-flight or complete.
-fn schedule_timeline_load(
-    loader: &TimelineLoader,
-    inflight: &mut HashSet<TimelineKind>,
-    loaded: &HashSet<TimelineKind>,
-    ndb: &nostrdb::Ndb,
-    kind: &TimelineKind,
-    timeline: &mut timeline::Timeline,
-    account_pk: &Pubkey,
-) {
-    if loaded.contains(kind) || inflight.contains(kind) {
+/// Handle pending deep links from notification taps.
+/// If a user tapped a notification while the app was closed or in background,
+/// navigate to the corresponding note thread.
+///
+/// Checks that columns exist before consuming the deep link to avoid dropping
+/// cold-start deep links when the app is still initializing.
+fn handle_pending_deep_link(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
+    // Check columns first — don't consume the deep link if we can't route yet
+    let columns = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
+    if columns.columns().is_empty() {
         return;
     }
 
-    let FilterState::Ready(filter) = timeline.filter.clone() else {
+    let Some(deep_link) = notedeck::platform::take_pending_deep_link() else {
         return;
     };
 
-    if timeline.kind.should_subscribe_locally() {
-        timeline
-            .subscription
-            .try_add_local(*account_pk, ndb, &filter);
-    }
+    info!(
+        "Processing deep link: event_id={}, kind={}",
+        &deep_link.event_id[..8.min(deep_link.event_id.len())],
+        deep_link.event_kind
+    );
 
-    loader.load_timeline(kind.clone());
-    inflight.insert(kind.clone());
-}
-
-/// Drain timeline loader messages and apply them to the timeline cache.
-#[profiling::function]
-fn handle_timeline_loader_messages(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
-    let mut handled = 0;
-    while handled < MAX_TIMELINE_LOADER_MSGS_PER_FRAME {
-        let Some(msg) = damus.timeline_loader.try_recv() else {
-            break;
-        };
-        handled += 1;
-
-        match msg {
-            TimelineLoaderMsg::TimelineBatch { kind, notes } => {
-                let Some(timeline) = damus.timeline_cache.get_mut(&kind) else {
-                    warn!("timeline loader batch for missing timeline {:?}", kind);
-                    continue;
-                };
-                let txn = Transaction::new(app_ctx.ndb).expect("txn");
-                if let Some(pks) =
-                    timeline.insert_new(&txn, app_ctx.ndb, app_ctx.note_cache, &notes)
-                {
-                    pks.process(app_ctx.ndb, &txn, app_ctx.unknown_ids);
-                }
-            }
-            TimelineLoaderMsg::TimelineFinished { kind } => {
-                damus.inflight_timeline_loads.remove(&kind);
-                damus.loaded_timeline_loads.insert(kind);
-            }
-            TimelineLoaderMsg::Failed { kind, error } => {
-                warn!("timeline loader failed for {:?}: {}", kind, error);
-                damus.inflight_timeline_loads.remove(&kind);
-            }
+    // Convert hex event_id to NoteId
+    let note_id = match enostr::NoteId::from_hex(&deep_link.event_id) {
+        Ok(id) => id,
+        Err(e) => {
+            error!("Invalid event_id in deep link: {}", e);
+            return;
         }
-    }
+    };
+
+    // Create a thread selection with proper root note resolution
+    // This validates the note exists and finds the actual root if this is a reply
+    let txn = match Transaction::new(app_ctx.ndb) {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to create transaction for deep link: {}", e);
+            return;
+        }
+    };
+
+    let thread_selection = match timeline::ThreadSelection::from_note_id(
+        app_ctx.ndb,
+        app_ctx.note_cache,
+        &txn,
+        note_id,
+    ) {
+        Ok(selection) => selection,
+        Err(e) => {
+            // Note doesn't exist in DB yet - use the note_id as root (will be fetched)
+            warn!("Deep link note not in DB, using as root: {:?}", e);
+            timeline::ThreadSelection::from_root_id(notedeck::RootNoteIdBuf::new_unsafe(
+                *note_id.bytes(),
+            ))
+        }
+    };
+
+    let route = Route::Thread(thread_selection);
+
+    // Navigate to the thread in the currently selected column
+    columns.get_selected_router().route_to(route);
+
+    info!("Deep link navigation complete");
 }
 
 #[profiling::function]

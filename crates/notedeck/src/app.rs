@@ -89,6 +89,11 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
+    /// Desktop notification manager (macOS/Linux only).
+    /// Owns the notification service lifecycle.
+    #[cfg(not(target_os = "android"))]
+    notification_manager: Option<crate::notifications::NotificationManager>,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -342,6 +347,8 @@ impl Notedeck {
             media_jobs: media_job_cache,
             nip05_cache: Nip05Cache::new(),
             i18n,
+            #[cfg(not(target_os = "android"))]
+            notification_manager: None,
             #[cfg(target_os = "android")]
             android_app: None,
         };
@@ -373,46 +380,29 @@ impl Notedeck {
         self
     }
 
-    pub fn app_context(&mut self, ui_ctx: &egui::Context) -> AppContext<'_> {
-        self.notedeck_ref(ui_ctx, None).app_ctx
-    }
-
-    pub fn notedeck_ref<'a>(
-        &'a mut self,
-        ui_ctx: &egui::Context,
-        session: Option<OutboxSession>,
-    ) -> NotedeckRef<'a> {
-        let outbox = if let Some(session) = session {
-            OutboxSessionHandler::import(&mut self.pool, session, EguiWakeup::new(ui_ctx.clone()))
-        } else {
-            OutboxSessionHandler::new(&mut self.pool, EguiWakeup::new(ui_ctx.clone()))
-        };
-
-        NotedeckRef {
-            app_ctx: AppContext {
-                ndb: &mut self.ndb,
-                img_cache: &mut self.img_cache,
-                unknown_ids: &mut self.unknown_ids,
-                remote: RemoteApi::new(outbox, &mut self.scoped_sub_state),
-                note_cache: &mut self.note_cache,
-                accounts: &mut self.accounts,
-                global_wallet: &mut self.global_wallet,
-                path: &self.path,
-                args: &self.args,
-                settings: &mut self.settings,
-                clipboard: &mut self.clipboard,
-                zaps: &mut self.zaps,
-                frame_history: &mut self.frame_history,
-                job_pool: &mut self.job_pool,
-                media_jobs: &mut self.media_jobs,
-                nip05_cache: &mut self.nip05_cache,
-                i18n: &mut self.i18n,
-                #[cfg(target_os = "android")]
-                android: self.android_app.as_ref().unwrap().clone(),
-            },
-            internals: NotedeckInternals {
-                unrecognized_args: &self.unrecognized_args,
-            },
+    pub fn app_context(&mut self) -> AppContext<'_> {
+        AppContext {
+            ndb: &mut self.ndb,
+            img_cache: &mut self.img_cache,
+            unknown_ids: &mut self.unknown_ids,
+            pool: &mut self.pool,
+            note_cache: &mut self.note_cache,
+            accounts: &mut self.accounts,
+            global_wallet: &mut self.global_wallet,
+            path: &self.path,
+            args: &self.args,
+            settings: &mut self.settings,
+            clipboard: &mut self.clipboard,
+            zaps: &mut self.zaps,
+            frame_history: &mut self.frame_history,
+            job_pool: &mut self.job_pool,
+            media_jobs: &mut self.media_jobs,
+            nip05_cache: &mut self.nip05_cache,
+            i18n: &mut self.i18n,
+            #[cfg(not(target_os = "android"))]
+            notification_manager: &mut self.notification_manager,
+            #[cfg(target_os = "android")]
+            android: self.android_app.as_ref().unwrap().clone(),
         }
     }
 
@@ -437,14 +427,10 @@ impl Notedeck {
     }
 }
 
-/// Installs the default TLS crypto provider for rustls.
+/// Install the rustls crypto provider for TLS support.
 ///
-/// This function selects the crypto provider based on the target platform:
-/// - **Windows**: Uses `ring` because `aws-lc-rs` requires cmake and NASM,
-///   which adds significant friction for Windows developers.
-/// - **Other platforms**: Uses `aws-lc-rs` for optimal performance.
-///
-/// Must be called once at application startup before any TLS operations.
+/// Uses the ring crypto backend. Logs an error if installation fails,
+/// which can happen if a provider was already installed.
 pub fn install_crypto() {
     // On Windows, use ring (fewer build requirements than aws-lc-rs which needs cmake/NASM)
     #[cfg(windows)]
@@ -470,18 +456,43 @@ pub struct NotedeckInternals<'a> {
     pub unrecognized_args: &'a BTreeSet<String>,
 }
 
-impl<'a> NotedeckInternals<'a> {
-    /// ensure we recognized all the arguments
-    pub fn check_args(&self, other_app_args: &BTreeSet<String>) -> Result<(), Error> {
-        let completely_unrecognized: Vec<String> = self
-            .unrecognized_args
-            .intersection(other_app_args)
-            .cloned()
-            .collect();
-        if !completely_unrecognized.is_empty() {
-            let err = format!("Unrecognized arguments: {completely_unrecognized:?}");
-            tracing::error!("{}", &err);
-            return Err(Error::Generic(err));
+    // NOTE: we don't use the while let loop due to borrow issues
+    #[allow(clippy::while_let_loop)]
+    loop {
+        let ev = if let Some(ev) = app_ctx.pool.try_recv() {
+            ev.into_owned()
+        } else {
+            break;
+        };
+
+        match (&ev.event).into() {
+            RelayEvent::Opened => {
+                tracing::trace!("Opened relay {}", ev.relay);
+                app_ctx
+                    .accounts
+                    .send_initial_filters(app_ctx.pool, &ev.relay);
+            }
+            RelayEvent::Closed => tracing::warn!("{} connection closed", &ev.relay),
+            RelayEvent::Other(msg) => {
+                tracing::trace!("relay {} sent other event {:?}", ev.relay, &msg)
+            }
+            RelayEvent::Error(error) => error!("relay {} had error: {error:?}", &ev.relay),
+            RelayEvent::Message(ref msg) => {
+                process_message_core(app_ctx, &ev.relay, msg);
+
+                // Forward notification-relevant relay events to the manager
+                #[cfg(not(target_os = "android"))]
+                if let RelayMessage::Event(_subid, relay_msg) = msg {
+                    if let Some(mgr) = app_ctx.notification_manager.as_ref() {
+                        mgr.process_relay_message(
+                            relay_msg,
+                            app_ctx.ndb,
+                            &app_ctx.accounts,
+                            app_ctx.i18n,
+                        );
+                    }
+                }
+            }
         }
 
         Ok(())
