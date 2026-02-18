@@ -204,15 +204,12 @@ pub fn handle_permission_response(
 
     let is_remote = session.is_remote();
 
-    // Record the response type in the message for UI display
     let response_type = match &response {
         PermissionResponse::Allow { .. } => crate::messages::PermissionResponseType::Allowed,
         PermissionResponse::Deny { .. } => crate::messages::PermissionResponseType::Denied,
     };
 
     // Extract relay-publish info before we move `response`.
-    // Both local and remote sessions publish permission response events
-    // so that resolved state persists across session reloads.
     let allowed = matches!(&response, PermissionResponse::Allow { .. });
     let message = match &response {
         PermissionResponse::Allow { message } => message.clone(),
@@ -231,32 +228,16 @@ pub fn handle_permission_response(
         agentic.permission_message_state = PermissionMessageState::None;
     }
 
-    for msg in &mut session.chat {
-        if let Message::PermissionRequest(req) = msg {
-            if req.id == request_id {
-                req.response = Some(response_type);
-                break;
-            }
-        }
-    }
-
+    // Resolve through the single unified path
     if let Some(agentic) = &mut session.agentic {
-        if is_remote {
-            // Remote: mark as responded, signal relay publish needed
-            agentic.permissions.responded.insert(request_id);
-        } else {
-            // Local: send through oneshot channel to Claude process
-            if let Some(sender) = agentic.permissions.pending.remove(&request_id) {
-                if sender.send(response).is_err() {
-                    tracing::error!(
-                        "Failed to send permission response for request {}",
-                        request_id
-                    );
-                }
-            } else {
-                tracing::warn!("No pending permission found for request {}", request_id);
-            }
-        }
+        agentic.permissions.resolve(
+            &mut session.chat,
+            request_id,
+            response_type,
+            None,
+            is_remote,
+            Some(response),
+        );
     }
 
     Some(PermissionPublish {
@@ -359,41 +340,23 @@ pub fn handle_question_response(
         )
     };
 
-    // Mark the request as allowed in the UI and store the summary for display
-    for msg in &mut session.chat {
-        if let Message::PermissionRequest(req) = msg {
-            if req.id == request_id {
-                req.response = Some(crate::messages::PermissionResponseType::Allowed);
-                req.answer_summary = answer_summary.clone();
-                break;
-            }
-        }
-    }
-
-    // Clean up transient answer state and send response (agentic only)
+    // Clean up transient answer state
     if let Some(agentic) = &mut session.agentic {
         agentic.question_answers.remove(&request_id);
         agentic.question_index.remove(&request_id);
 
-        if is_remote {
-            // Remote: mark as responded, signal relay publish needed
-            agentic.permissions.responded.insert(request_id);
-        } else {
-            // Local: send through oneshot channel to Claude process
-            if let Some(sender) = agentic.permissions.pending.remove(&request_id) {
-                let response = PermissionResponse::Allow {
-                    message: Some(formatted_response.clone()),
-                };
-                if sender.send(response).is_err() {
-                    tracing::error!(
-                        "Failed to send question response for request {}",
-                        request_id
-                    );
-                }
-            } else {
-                tracing::warn!("No pending permission found for request {}", request_id);
-            }
-        }
+        // Resolve through the single unified path
+        let oneshot_response = PermissionResponse::Allow {
+            message: Some(formatted_response.clone()),
+        };
+        agentic.permissions.resolve(
+            &mut session.chat,
+            request_id,
+            crate::messages::PermissionResponseType::Allowed,
+            answer_summary,
+            is_remote,
+            Some(oneshot_response),
+        );
     }
 
     Some(PermissionPublish {

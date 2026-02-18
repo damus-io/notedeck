@@ -6,7 +6,8 @@ use crate::agent_status::AgentStatus;
 use crate::config::AiMode;
 use crate::git_status::GitStatusCache;
 use crate::messages::{
-    CompactionInfo, PermissionResponse, QuestionAnswer, SessionInfo, SubagentStatus,
+    AnswerSummary, CompactionInfo, PermissionResponse, PermissionResponseType, QuestionAnswer,
+    SessionInfo, SubagentStatus,
 };
 use crate::session_events::ThreadingState;
 use crate::{DaveApiResponse, Message};
@@ -63,6 +64,48 @@ impl PermissionTracker {
     /// Whether there are unresolved local permission requests.
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    /// Resolve a permission request. This is the ONLY place resolution state
+    /// is updated — both `handle_permission_response` and
+    /// `handle_question_response` funnel through here.
+    pub fn resolve(
+        &mut self,
+        chat: &mut [Message],
+        request_id: Uuid,
+        response_type: PermissionResponseType,
+        answer_summary: Option<AnswerSummary>,
+        is_remote: bool,
+        oneshot_response: Option<PermissionResponse>,
+    ) {
+        // 1. Update the PermissionRequest message in chat
+        for msg in chat.iter_mut() {
+            if let Message::PermissionRequest(req) = msg {
+                if req.id == request_id {
+                    req.response = Some(response_type);
+                    if answer_summary.is_some() {
+                        req.answer_summary = answer_summary;
+                    }
+                    break;
+                }
+            }
+        }
+
+        // 2. Update PermissionTracker state
+        if is_remote {
+            self.responded.insert(request_id);
+        } else if let Some(response) = oneshot_response {
+            if let Some(sender) = self.pending.remove(&request_id) {
+                if sender.send(response).is_err() {
+                    tracing::error!(
+                        "failed to send permission response for request {}",
+                        request_id
+                    );
+                }
+            } else {
+                tracing::warn!("no pending permission found for request {}", request_id);
+            }
+        }
     }
 
     /// Merge loaded permission state from restored events.
