@@ -1,6 +1,7 @@
 use crate::media::network::HyperHttpResponse;
 use crate::PixelDimensions;
 use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
+use hashbrown::{Equivalent, HashMap};
 use image::imageops::FilterType;
 use image::FlatSamples;
 use std::path::PathBuf;
@@ -215,8 +216,80 @@ pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>, crate::Error> {
     std::fs::read(path).map_err(|e| crate::Error::Generic(e.to_string()))
 }
 
+/// Prefix delimiter used in request keys so one URL can have multiple cached texture variants.
+const REQUEST_KEY_DELIMITER: &str = "::";
+
+/// A strongly typed texture request identity used by in-memory texture caches.
+///
+/// The string form is only used at the jobs boundary (`JobPackage` IDs).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TextureRequestKey {
+    pub url: String,
+    pub variant: TextureRequestVariant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextureRequestVariant {
+    Full,
+    Hint(PixelDimensions),
+    Profile(u32),
+}
+
+impl TextureRequestKey {
+    /// Build the request variant from the requested image type.
+    pub fn variant_for_image_type(img_type: ImageType) -> TextureRequestVariant {
+        match img_type {
+            ImageType::Profile(size) => TextureRequestVariant::Profile(size),
+            ImageType::Content(Some(pixels)) => TextureRequestVariant::Hint(pixels),
+            ImageType::Content(None) => TextureRequestVariant::Full,
+        }
+    }
+
+    /// Build a typed request key from a URL and request variant.
+    pub fn from_variant(url: &str, variant: TextureRequestVariant) -> Self {
+        Self {
+            url: url.to_owned(),
+            variant,
+        }
+    }
+
+    /// Encode this typed key into a stable jobs-compatible string ID.
+    pub fn to_job_id(&self) -> String {
+        let suffix = match self.variant {
+            TextureRequestVariant::Profile(size) => format!("profile-{size}"),
+            TextureRequestVariant::Hint(pixels) => format!("hint-{}x{}", pixels.x, pixels.y),
+            TextureRequestVariant::Full => "full".to_owned(),
+        };
+        format!("{}{REQUEST_KEY_DELIMITER}{suffix}", self.url)
+    }
+}
+
+#[derive(Hash, PartialEq, Eq)]
+struct TextureRequestLookup<'a> {
+    url: &'a str,
+    variant: TextureRequestVariant,
+}
+
+impl Equivalent<TextureRequestKey> for TextureRequestLookup<'_> {
+    fn equivalent(&self, key: &TextureRequestKey) -> bool {
+        key.url == self.url && key.variant == self.variant
+    }
+}
+
+/// Borrowed lookup for texture request maps keyed by `(url, variant)`.
+///
+/// This avoids building an owned [`TextureRequestKey`] on cache hits.
+pub fn get_cached_request_state<'a, V>(
+    cache: &'a HashMap<TextureRequestKey, V>,
+    url: &str,
+    variant: TextureRequestVariant,
+) -> Option<&'a V> {
+    let lookup = TextureRequestLookup { url, variant };
+    cache.get(&lookup)
+}
+
 /// Controls type-specific handling
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageType {
     /// Profile Image (size)
     Profile(u32),
