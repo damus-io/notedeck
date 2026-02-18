@@ -63,8 +63,10 @@ class NotificationsService : Service() {
         // Service state
         private val isRunning = AtomicBoolean(false)
 
+        @JvmStatic
         fun isServiceRunning(): Boolean = isRunning.get()
 
+        @JvmStatic
         fun start(context: Context) {
             val intent = Intent(context, NotificationsService::class.java).apply {
                 action = ACTION_START
@@ -76,6 +78,7 @@ class NotificationsService : Service() {
             }
         }
 
+        @JvmStatic
         fun stop(context: Context) {
             val intent = Intent(context, NotificationsService::class.java).apply {
                 action = ACTION_STOP
@@ -87,8 +90,8 @@ class NotificationsService : Service() {
     // Coroutine scope for async operations
     private var serviceScope: CoroutineScope? = null
 
-    // Event deduplication - bounded LRU cache to prevent memory leaks.
-    // Synchronized access required since it's accessed from JNI callback thread.
+    // Event deduplication - bounded LRU cache to prevent memory leaks
+    // Synchronized access required since it's accessed from JNI callback thread
     private val processedEvents = object : LinkedHashMap<String, Boolean>(100, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>?): Boolean {
             return size > MAX_DEDUP_CACHE
@@ -108,7 +111,7 @@ class NotificationsService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "Service onCreate")
+        Log.i(TAG, "Service onCreate")
 
         // Load native library - required for JNI calls
         try {
@@ -125,7 +128,7 @@ class NotificationsService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "Service onStartCommand: ${intent?.action}")
+        Log.i(TAG, "Service onStartCommand: ${intent?.action}")
 
         when (intent?.action) {
             ACTION_STOP -> {
@@ -144,7 +147,7 @@ class NotificationsService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        Log.d(TAG, "Service onDestroy")
+        Log.i(TAG, "Service onDestroy")
         isRunning.set(false)
 
         try {
@@ -251,7 +254,7 @@ class NotificationsService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_SERVICE)
             .setContentTitle("Notedeck")
             .setContentText("Listening for Nostr events ($connectedRelays relays)")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.mipmap.damusfg)
             .setContentIntent(pendingIntent)
             .addAction(0, "Stop", stopIntent)
             .setOngoing(true)
@@ -275,11 +278,14 @@ class NotificationsService : Service() {
             return
         }
 
-        try {
-            nativeStartSubscriptions(pubkeyHex, relayUrlsJson)
-            Log.d(TAG, "Started Nostr subscriptions for $pubkeyHex with relays: $relayUrlsJson")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start native subscriptions", e)
+        // Run native subscriptions on IO thread to avoid ANR
+        serviceScope?.launch(Dispatchers.IO) {
+            try {
+                nativeStartSubscriptions(pubkeyHex, relayUrlsJson)
+                Log.i(TAG, "Started Nostr subscriptions for $pubkeyHex with relays: $relayUrlsJson")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start native subscriptions", e)
+            }
         }
     }
 
@@ -300,7 +306,7 @@ class NotificationsService : Service() {
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()
-                Log.d(TAG, "Wake lock released")
+                Log.i(TAG, "Wake lock released")
             }
         }
         wakeLock = null
@@ -330,28 +336,43 @@ class NotificationsService : Service() {
         zapAmountSats: Long,
         rawJson: String
     ) {
-        Log.d(TAG, "Received Nostr event kind=$eventKind id=${eventId.take(8)} from ${authorPubkey.take(8)}")
+        Log.i(TAG, "Received Nostr event kind=$eventKind id=${eventId.take(8)} from ${authorPubkey.take(8)}")
 
         // Deduplicate using event ID directly (no JSON parsing needed)
         synchronized(processedEvents) {
             if (processedEvents.containsKey(eventId)) {
+                Log.i(TAG, "Skipping duplicate event id=${eventId.take(8)}")
                 return
             }
             processedEvents[eventId] = true
         }
 
+        Log.i(TAG, "Event is new, showing notification...")
+
         // Show notification using the helper (async for image loading)
-        serviceScope?.launch {
-            NotificationHelper.showNotification(
-                this@NotificationsService,
-                eventId,
-                eventKind,
-                authorPubkey,
-                content,
-                authorName,
-                authorPictureUrl,
-                if (zapAmountSats >= 0) zapAmountSats else null
-            )
+        val scope = serviceScope
+        if (scope == null) {
+            Log.e(TAG, "serviceScope is null! Cannot show notification")
+            return
+        }
+
+        scope.launch {
+            try {
+                Log.i(TAG, "Calling NotificationHelper.showNotification...")
+                NotificationHelper.showNotification(
+                    this@NotificationsService,
+                    eventId,
+                    eventKind,
+                    authorPubkey,
+                    content,
+                    authorName,
+                    authorPictureUrl,
+                    if (zapAmountSats >= 0) zapAmountSats else null
+                )
+                Log.i(TAG, "NotificationHelper.showNotification completed")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error showing notification", e)
+            }
         }
 
         // Broadcast to other Nostr apps (but NOT DMs for privacy)

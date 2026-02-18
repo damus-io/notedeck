@@ -599,6 +599,7 @@ fn process_render_nav_action(
             ctx.img_cache,
             ui.ctx(),
             ctx.accounts,
+            ctx.pool,
         ),
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)

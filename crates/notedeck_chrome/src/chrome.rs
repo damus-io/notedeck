@@ -184,6 +184,9 @@ impl Chrome {
 
         chrome.set_active(0);
 
+        // Auto-enable notifications if the setting was persisted from a previous session
+        Self::auto_enable_notifications(notedeck);
+
         Ok(chrome)
     }
 
@@ -197,34 +200,63 @@ impl Chrome {
             return;
         }
 
-        let context = notedeck.app_context();
+        #[cfg(target_os = "android")]
+        {
+            let persisted_mode = notedeck::platform::get_notification_mode();
+            if persisted_mode.is_disabled() {
+                return;
+            }
 
-        // Check if notifications were enabled in a previous session
-        if !context.settings.notifications_enabled() {
-            return;
+            // SAFETY: AccountCache guarantees a fallback account always exists,
+            // so selected_account_pubkey() will never panic.
+            let (pubkey_hex, relay_urls) = {
+                let context = notedeck.app_context();
+                (
+                    context.accounts.selected_account_pubkey().hex(),
+                    context.accounts.get_selected_account_relay_urls(),
+                )
+            };
+
+            tracing::info!(
+                "Auto-restoring notification mode {:?} for pubkey {}",
+                persisted_mode,
+                &pubkey_hex[..8.min(pubkey_hex.len())]
+            );
+
+            if let Err(e) =
+                notedeck::platform::set_notification_mode(persisted_mode, &pubkey_hex, &relay_urls)
+            {
+                tracing::error!("Failed to auto-restore notifications: {}", e);
+            }
         }
 
-        // SAFETY: AccountCache guarantees a fallback account always exists,
-        // so selected_account_pubkey() will never panic.
-        let pubkey_hex = context.accounts.selected_account_pubkey().hex();
-        #[cfg(target_os = "android")]
-        let relay_urls = context.accounts.get_selected_account_relay_urls();
-
-        tracing::info!(
-            "Auto-enabling notifications for pubkey {} (persisted setting)",
-            &pubkey_hex[..8.min(pubkey_hex.len())]
-        );
-
-        #[cfg(target_os = "android")]
-        let result = notedeck::platform::enable_notifications(&pubkey_hex, &relay_urls);
         #[cfg(not(target_os = "android"))]
-        let result = {
-            let context = notedeck.app_context();
-            notedeck::platform::enable_notifications(context.notification_manager, &pubkey_hex)
-        };
-        if let Err(e) = result {
-            tracing::error!("Failed to auto-enable notifications: {}", e);
-            // Don't clear the setting - user can try again manually
+        {
+            let (notifications_enabled, pubkey_hex) = {
+                let context = notedeck.app_context();
+                (
+                    context.settings.notifications_enabled(),
+                    context.accounts.selected_account_pubkey().hex(),
+                )
+            };
+
+            if !notifications_enabled {
+                return;
+            }
+
+            tracing::info!(
+                "Auto-enabling notifications for pubkey {} (persisted setting)",
+                &pubkey_hex[..8.min(pubkey_hex.len())]
+            );
+
+            let result = {
+                let context = notedeck.app_context();
+                notedeck::platform::enable_notifications(context.notification_manager, &pubkey_hex)
+            };
+            if let Err(e) = result {
+                tracing::error!("Failed to auto-enable notifications: {}", e);
+                // Don't clear the setting - user can try again manually
+            }
         }
     }
 

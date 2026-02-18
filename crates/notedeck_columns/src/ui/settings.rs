@@ -6,9 +6,9 @@ use egui_extras::{Size, StripBuilder};
 use enostr::NoteId;
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::richtext_small, DragResponse, Images, LanguageIdentifier, Localization, NoteContext,
-    NotedeckTextStyle, Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE,
-    DEFAULT_NOTE_BODY_FONT_SIZE,
+    platform::NotificationMode, tr, ui::richtext_small, DragResponse, Images, LanguageIdentifier,
+    Localization, NoteContext, NotedeckTextStyle, Settings, SettingsHandler,
+    DEFAULT_MAX_HASHTAGS_PER_NOTE, DEFAULT_NOTE_BODY_FONT_SIZE,
 };
 
 use notedeck_ui::{
@@ -36,9 +36,12 @@ pub enum SettingsAction {
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
+    SetNotificationMode(NotificationMode),
+    RequestNotificationPermission,
 }
 
 impl SettingsAction {
+    #[allow(clippy::too_many_arguments)]
     pub fn process_settings_action<'a>(
         self,
         app: &mut Damus,
@@ -47,6 +50,7 @@ impl SettingsAction {
         img_cache: &mut Images,
         ctx: &egui::Context,
         accounts: &mut notedeck::Accounts,
+        pool: &enostr::RelayPool,
     ) -> Option<RouterAction> {
         let mut route_action: Option<RouterAction> = None;
 
@@ -97,6 +101,24 @@ impl SettingsAction {
                 settings.set_max_hashtags_per_note(value);
                 accounts.update_max_hashtags_per_note(value);
             }
+            Self::SetNotificationMode(mode) => {
+                let pubkey_hex = accounts.selected_account_pubkey().hex();
+                let relay_urls: Vec<String> =
+                    pool.relays.iter().map(|r| r.url().to_string()).collect();
+
+                if let Err(e) =
+                    notedeck::platform::set_notification_mode(mode, &pubkey_hex, &relay_urls)
+                {
+                    tracing::error!("Failed to set notification mode: {}", e);
+                } else {
+                    settings.set_notifications_enabled(!mode.is_disabled());
+                }
+            }
+            Self::RequestNotificationPermission => {
+                if let Err(e) = notedeck::platform::request_notification_permission() {
+                    tracing::error!("Failed to request notification permission: {}", e);
+                }
+            }
         }
         route_action
     }
@@ -123,6 +145,228 @@ where
                 ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
 
                 contents(ui)
+            });
+        });
+}
+
+// =============================================================================
+// Notification UI Components (shadcn-inspired)
+// =============================================================================
+
+/// Badge component for status display
+fn notification_badge(ui: &mut egui::Ui, text: &str, color: Color32) {
+    let text_color = if color.r() as u16 + color.g() as u16 + color.b() as u16 > 382 {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+
+    Frame::new()
+        .fill(color)
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(text)
+                    .text_style(NotedeckTextStyle::Small.text_style())
+                    .color(text_color),
+            );
+        });
+}
+
+/// Radio option component with label and description
+/// Returns true if this option was clicked
+fn notification_radio_option(
+    ui: &mut egui::Ui,
+    selected: &mut usize,
+    index: usize,
+    label: impl AsRef<str>,
+    description: impl AsRef<str>,
+    enabled: bool,
+) -> bool {
+    let label = label.as_ref();
+    let description = description.as_ref();
+    let is_selected = *selected == index;
+    let mut clicked = false;
+
+    // Touch-friendly size (44px min height)
+    let response = ui.allocate_response(
+        vec2(ui.available_width(), 52.0),
+        if enabled {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        },
+    );
+
+    if response.clicked() && enabled {
+        *selected = index;
+        clicked = true;
+    }
+
+    // Draw background on hover/selection
+    let bg_color = if is_selected {
+        if ui.visuals().dark_mode {
+            Color32::from_rgb(30, 41, 59) // slate-800
+        } else {
+            Color32::from_rgb(241, 245, 249) // slate-100
+        }
+    } else if response.hovered() && enabled {
+        if ui.visuals().dark_mode {
+            Color32::from_rgba_unmultiplied(30, 41, 59, 128)
+        } else {
+            Color32::from_rgba_unmultiplied(241, 245, 249, 128)
+        }
+    } else {
+        Color32::TRANSPARENT
+    };
+
+    ui.painter()
+        .rect_filled(response.rect, CornerRadius::same(8), bg_color);
+
+    // Draw radio circle
+    let radio_size = 20.0;
+    let radio_center = egui::pos2(
+        response.rect.left() + 16.0 + radio_size / 2.0,
+        response.rect.center().y,
+    );
+
+    let border_color = if enabled {
+        if is_selected {
+            if ui.visuals().dark_mode {
+                Color32::from_rgb(139, 92, 246) // violet-500
+            } else {
+                Color32::from_rgb(124, 58, 237) // violet-600
+            }
+        } else if ui.visuals().dark_mode {
+            Color32::from_rgb(100, 116, 139) // slate-500
+        } else {
+            Color32::from_rgb(148, 163, 184) // slate-400
+        }
+    } else {
+        ui.visuals().gray_out(Color32::GRAY)
+    };
+
+    // Outer circle
+    ui.painter().circle_stroke(
+        radio_center,
+        radio_size / 2.0,
+        egui::Stroke::new(2.0, border_color),
+    );
+
+    // Inner dot when selected
+    if is_selected {
+        ui.painter().circle_filled(radio_center, 6.0, border_color);
+    }
+
+    // Draw label and description
+    let text_x = response.rect.left() + 16.0 + radio_size + 12.0;
+    let text_color = if enabled {
+        ui.visuals().text_color()
+    } else {
+        ui.visuals().gray_out(ui.visuals().text_color())
+    };
+
+    let label_pos = egui::pos2(text_x, response.rect.top() + 10.0);
+    ui.painter().text(
+        label_pos,
+        egui::Align2::LEFT_TOP,
+        label,
+        NotedeckTextStyle::Body.text_style().resolve(ui.style()),
+        text_color,
+    );
+
+    let desc_pos = egui::pos2(text_x, response.rect.top() + 30.0);
+    ui.painter().text(
+        desc_pos,
+        egui::Align2::LEFT_TOP,
+        description,
+        NotedeckTextStyle::Small.text_style().resolve(ui.style()),
+        ui.visuals().gray_out(text_color),
+    );
+
+    clicked
+}
+
+/// Privacy information panel showing FCM vs Native tradeoffs
+fn notification_privacy_info(ui: &mut egui::Ui, i18n: &mut Localization) {
+    let info_bg = if ui.visuals().dark_mode {
+        Color32::from_rgb(30, 41, 59) // slate-800
+    } else {
+        Color32::from_rgb(241, 245, 249) // slate-100
+    };
+
+    Frame::new()
+        .fill(info_bg)
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(12))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                // FCM section
+                ui.label(
+                    RichText::new(tr!(i18n, "Google Push:", "Privacy info FCM header"))
+                        .text_style(NotedeckTextStyle::Body.text_style())
+                        .strong(),
+                );
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "✅ Battery efficient - no persistent connection",
+                    "FCM pro 1"
+                )));
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "✅ Reliable delivery when app is closed",
+                    "FCM pro 2"
+                )));
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "⚠️ Requires Google Play Services",
+                    "FCM con 1"
+                )));
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "⚠️ Notification metadata visible to Google",
+                    "FCM con 2"
+                )));
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "⚠️ Event IDs visible to notification server",
+                    "FCM con 3"
+                )));
+
+                ui.add_space(8.0);
+
+                // Native section
+                ui.label(
+                    RichText::new(tr!(i18n, "Direct Relay:", "Privacy info Native header"))
+                        .text_style(NotedeckTextStyle::Body.text_style())
+                        .strong(),
+                );
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "✅ No third-party servers involved",
+                    "Native pro 1"
+                )));
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "✅ Direct connection to your relays",
+                    "Native pro 2"
+                )));
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "✅ Works without Google services",
+                    "Native pro 3"
+                )));
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "⚠️ Higher battery usage (foreground service)",
+                    "Native con 1"
+                )));
+                ui.label(richtext_small(tr!(
+                    i18n,
+                    "⚠️ May be killed by battery optimization",
+                    "Native con 2"
+                )));
             });
         });
 }
@@ -578,14 +822,35 @@ impl<'a> SettingsView<'a> {
                 )));
 
                 let (badge_text, badge_color) = if permission_granted {
-                    ("Granted", Color32::from_rgb(34, 197, 94)) // Green
+                    (
+                        tr!(
+                            self.note_context.i18n,
+                            "Granted",
+                            "Notification permission granted"
+                        ),
+                        Color32::from_rgb(34, 197, 94), // Green
+                    )
                 } else if permission_pending {
-                    ("Pending", Color32::from_rgb(234, 179, 8)) // Yellow
+                    (
+                        tr!(
+                            self.note_context.i18n,
+                            "Pending",
+                            "Notification permission pending"
+                        ),
+                        Color32::from_rgb(234, 179, 8), // Yellow
+                    )
                 } else {
-                    ("Required", Color32::from_rgb(239, 68, 68)) // Red
+                    (
+                        tr!(
+                            self.note_context.i18n,
+                            "Required",
+                            "Notification permission required"
+                        ),
+                        Color32::from_rgb(239, 68, 68), // Red
+                    )
                 };
 
-                notification_badge(ui, badge_text, badge_color);
+                notification_badge(ui, &badge_text, badge_color);
             });
 
             // Permission request button if needed
@@ -892,6 +1157,12 @@ impl<'a> SettingsView<'a> {
                     ui.add_space(5.0);
 
                     if let Some(new_action) = self.other_options_section(ui) {
+                        action = Some(new_action);
+                    }
+
+                    ui.add_space(5.0);
+
+                    if let Some(new_action) = self.notifications_section(ui) {
                         action = Some(new_action);
                     }
 
