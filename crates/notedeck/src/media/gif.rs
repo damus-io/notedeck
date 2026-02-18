@@ -247,29 +247,20 @@ fn generate_anim_pkg(
     gif_bytes: Vec<u8>,
     process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
 ) -> Result<AnimationPackage, Error> {
-    let decoder = {
-        let reader = Cursor::new(gif_bytes.as_slice());
-        GifDecoder::new(reader)?
-    };
+    let processed_frames = collect_processed_gif_frames(gif_bytes, process_to_egui)?;
 
-    let frames: VecDeque<Frame> = decoder
-        .into_frames()
-        .collect::<std::result::Result<VecDeque<_>, image::ImageError>>()
-        .map_err(|e| crate::Error::Generic(e.to_string()))?;
-
-    let mut imgs = Vec::new();
-    let mut other_frames = Vec::new();
+    let mut imgs = Vec::with_capacity(processed_frames.len());
+    let mut other_frames = Vec::with_capacity(processed_frames.len().saturating_sub(1));
 
     let mut first_frame = None;
-    for (i, frame) in frames.into_iter().enumerate() {
-        let delay = frame.delay();
-        let img = generate_color_img_frame(frame, process_to_egui);
+    for (i, processed) in processed_frames.into_iter().enumerate() {
+        let ProcessedColorFrame { delay, image: img } = processed;
         imgs.push(ImageFrame {
-            delay: delay.into(),
+            delay,
             image: img.clone(),
         });
 
-        let tex_frame = generate_animation_frame(&ctx, &url, i, delay.into(), img);
+        let tex_frame = generate_animation_frame(&ctx, &url, i, delay, img);
 
         if first_frame.is_none() {
             first_frame = Some(tex_frame);
@@ -296,6 +287,40 @@ fn generate_anim_pkg(
 struct AnimationPackage {
     anim: Animation,
     img_frames: Vec<ImageFrame>,
+}
+
+/// Decodes GIF bytes into ordered image frames while preserving timing metadata.
+fn decode_gif_frames(gif_bytes: Vec<u8>) -> Result<VecDeque<Frame>, Error> {
+    let decoder = {
+        let reader = Cursor::new(gif_bytes.as_slice());
+        GifDecoder::new(reader)?
+    };
+
+    decoder
+        .into_frames()
+        .collect::<std::result::Result<VecDeque<_>, image::ImageError>>()
+        .map_err(|e| crate::Error::Generic(e.to_string()))
+}
+
+struct ProcessedColorFrame {
+    delay: Duration,
+    image: ColorImage,
+}
+
+/// Decodes and processes all GIF frames into color images while preserving per-frame delays.
+fn collect_processed_gif_frames(
+    gif_bytes: Vec<u8>,
+    process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
+) -> Result<Vec<ProcessedColorFrame>, Error> {
+    let frames = decode_gif_frames(gif_bytes)?;
+    let mut processed_frames = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let delay: Duration = frame.delay().into();
+        let image = generate_color_img_frame(frame, process_to_egui);
+        processed_frames.push(ProcessedColorFrame { delay, image });
+    }
+
+    Ok(processed_frames)
 }
 
 fn generate_color_img_frame(
