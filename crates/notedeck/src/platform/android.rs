@@ -81,6 +81,30 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnFilePickedWithCon
     }
 }
 
+pub fn vibrate(duration_ms: i64) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let vm = get_jvm();
+    let mut env = vm.attach_current_thread()?;
+    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+    env.call_method(
+        context,
+        "vibrate",
+        "(J)V",
+        &[jni::objects::JValue::Long(duration_ms)],
+    )?;
+    Ok(())
+}
+
+pub fn try_vibrate() {
+    match vibrate(200) {
+        Ok(()) => {
+            info!("Vibration triggered");
+        }
+        Err(e) => {
+            error!("Failed to vibrate: {}", e);
+        }
+    }
+}
+
 pub fn try_open_file_picker() {
     match open_file_picker() {
         Ok(()) => {

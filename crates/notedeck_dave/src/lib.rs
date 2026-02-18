@@ -2259,7 +2259,12 @@ impl notedeck::App for Dave {
 
         // Update focus queue based on status changes
         let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));
-        self.focus_queue.update_from_statuses(status_iter);
+        let new_needs_input = self.focus_queue.update_from_statuses(status_iter);
+
+        // Vibrate on Android whenever a session transitions to NeedsInput
+        if new_needs_input {
+            notedeck::platform::try_vibrate();
+        }
 
         // Suppress auto-steal while the user is typing (non-empty input)
         let user_is_typing = self

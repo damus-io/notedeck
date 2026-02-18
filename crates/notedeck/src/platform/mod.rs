@@ -8,6 +8,16 @@ pub fn get_next_selected_file() -> Option<Result<SelectedMedia, Error>> {
     file::get_next_selected_file()
 }
 
+/// Trigger a short vibration on Android. No-op on other platforms.
+#[cfg(target_os = "android")]
+pub fn try_vibrate() {
+    android::try_vibrate();
+}
+
+/// Trigger a short vibration on Android. No-op on other platforms.
+#[cfg(not(target_os = "android"))]
+pub fn try_vibrate() {}
+
 const VIRT_HEIGHT: i32 = 400;
 
 #[cfg(target_os = "android")]

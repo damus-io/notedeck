@@ -6,6 +6,8 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.provider.OpenableColumns;
 import android.util.Log;
 import android.view.MotionEvent;
@@ -30,6 +32,15 @@ public class MainActivity extends GameActivity {
 
   private native void nativeOnFilePickedFailed(String uri, String e);
   private native void nativeOnFilePickedWithContent(Object[] uri_info, byte[] content);
+
+  public void vibrate(long durationMs) {
+        Vibrator vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        if (vibrator != null && vibrator.hasVibrator()) {
+            VibrationEffect effect = VibrationEffect.createOneShot(
+                durationMs, VibrationEffect.DEFAULT_AMPLITUDE);
+            vibrator.vibrate(effect);
+        }
+  }
 
   public void openFilePicker() {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);

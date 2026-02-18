@@ -274,21 +274,28 @@ impl FocusQueue {
         Some((self.current_position()?, self.len(), entry.priority))
     }
 
+    /// Update focus queue based on current session statuses.
+    /// Returns true if any session transitioned to NeedsInput.
     pub fn update_from_statuses(
         &mut self,
         sessions: impl Iterator<Item = (SessionId, AgentStatus)>,
-    ) {
+    ) -> bool {
+        let mut has_new_needs_input = false;
         for (session_id, status) in sessions {
             let prev = self.previous_statuses.get(&session_id).copied();
             if prev != Some(status) {
                 if let Some(priority) = FocusPriority::from_status(status) {
                     self.enqueue(session_id, priority);
+                    if priority == FocusPriority::NeedsInput {
+                        has_new_needs_input = true;
+                    }
                 } else {
                     self.dequeue(session_id);
                 }
             }
             self.previous_statuses.insert(session_id, status);
         }
+        has_new_needs_input
     }
 
     pub fn get_session_priority(&self, session_id: SessionId) -> Option<FocusPriority> {
