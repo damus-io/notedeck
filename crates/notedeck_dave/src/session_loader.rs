@@ -34,11 +34,14 @@ pub fn query_replaceable_filtered(
     filters: &[Filter],
     predicate: impl Fn(&nostrdb::Note) -> bool,
 ) -> Vec<NoteKey> {
-    // Fold: for each d-tag value, track (created_at, NoteKey) of the latest
+    // Fold: for each d-tag value, track the latest created_at and optionally
+    // a NoteKey (only if the latest revision passes the predicate).
+    // Notes may arrive in any order from ndb.fold, so we always track the
+    // highest timestamp and only keep a key when that revision is valid.
     let best = ndb.fold(
         txn,
         filters,
-        std::collections::HashMap::<String, (u64, NoteKey)>::new(),
+        std::collections::HashMap::<String, (u64, Option<NoteKey>)>::new(),
         |mut acc, note| {
             let Some(d_tag) = get_tag_value(&note, "d") else {
                 return acc;
@@ -52,22 +55,22 @@ pub fn query_replaceable_filtered(
                 }
             }
 
-            if predicate(&note) {
-                acc.insert(
-                    d_tag.to_string(),
-                    (created_at, note.key().expect("note key")),
-                );
+            let key = if predicate(&note) {
+                Some(note.key().expect("note key"))
             } else {
-                // Latest revision rejected — remove any older revision we kept
-                acc.remove(d_tag);
-            }
+                None
+            };
 
+            acc.insert(d_tag.to_string(), (created_at, key));
             acc
         },
     );
 
     match best {
-        Ok(map) => map.into_values().map(|(_, key)| key).collect(),
+        Ok(map) => map
+            .into_values()
+            .filter_map(|(_, key)| key)
+            .collect(),
         Err(_) => vec![],
     }
 }
