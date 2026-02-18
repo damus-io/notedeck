@@ -758,8 +758,22 @@ pub fn handle_ui_action(
             request_id,
             answers,
         } => {
-            update::handle_question_response(session_manager, request_id, answers);
-            UiActionResult::Handled
+            let result =
+                update::handle_question_response(session_manager, request_id, answers);
+            if let update::PermissionResponseResult::NeedsRelayPublish {
+                perm_id,
+                allowed,
+                message,
+            } = result
+            {
+                UiActionResult::PublishPermissionResponse {
+                    perm_id,
+                    allowed,
+                    message,
+                }
+            } else {
+                UiActionResult::Handled
+            }
         }
         DaveAction::ExitPlanMode {
             request_id,

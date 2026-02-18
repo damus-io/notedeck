@@ -276,10 +276,12 @@ pub fn handle_question_response(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
     answers: Vec<QuestionAnswer>,
-) {
+) -> PermissionResponseResult {
     let Some(session) = session_manager.get_active_mut() else {
-        return;
+        return PermissionResponseResult::Local;
     };
+
+    let is_remote = session.is_remote();
 
     // Find the original AskUserQuestion request to get the question labels
     let questions_input = session.chat.iter().find_map(|msg| {
@@ -378,20 +380,31 @@ pub fn handle_question_response(
         agentic.question_answers.remove(&request_id);
         agentic.question_index.remove(&request_id);
 
-        // Send the response through the permission channel
-        if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
-            let response = PermissionResponse::Allow {
-                message: Some(formatted_response),
-            };
-            if sender.send(response).is_err() {
-                tracing::error!(
-                    "Failed to send question response for request {}",
-                    request_id
-                );
-            }
+        if is_remote {
+            // Remote: mark as responded, signal relay publish needed
+            agentic.responded_perm_ids.insert(request_id);
         } else {
-            tracing::warn!("No pending permission found for request {}", request_id);
+            // Local: send through oneshot channel to Claude process
+            if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
+                let response = PermissionResponse::Allow {
+                    message: Some(formatted_response.clone()),
+                };
+                if sender.send(response).is_err() {
+                    tracing::error!(
+                        "Failed to send question response for request {}",
+                        request_id
+                    );
+                }
+            } else {
+                tracing::warn!("No pending permission found for request {}", request_id);
+            }
         }
+    }
+
+    PermissionResponseResult::NeedsRelayPublish {
+        perm_id: request_id,
+        allowed: true,
+        message: Some(formatted_response),
     }
 }
 
