@@ -39,12 +39,18 @@ mod bolt11;
 mod desktop;
 mod extraction;
 pub mod image_cache;
+#[cfg(target_os = "macos")]
+mod macos;
+mod manager;
 mod profiles;
 mod types;
 mod worker;
 
 pub use backend::{LoggingBackend, NoopBackend, NotificationBackend};
 pub use desktop::DesktopBackend;
+#[cfg(target_os = "macos")]
+pub use macos::{initialize_on_main_thread as macos_init, MacOSBackend};
+pub use manager::NotificationManager;
 pub use profiles::{decode_npub, extract_mentioned_pubkeys, resolve_mentions};
 pub use types::{
     is_notification_kind, CachedProfile, ExtractedEvent, NotificationAccount, NotificationData,
@@ -52,6 +58,10 @@ pub use types::{
 };
 
 /// Type alias for the platform-appropriate notification backend.
+#[cfg(target_os = "macos")]
+pub type PlatformBackend = MacOSBackend;
+
+#[cfg(not(target_os = "macos"))]
 pub type PlatformBackend = DesktopBackend;
 
 use enostr::Pubkey;
