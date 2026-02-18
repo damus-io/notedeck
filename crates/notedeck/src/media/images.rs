@@ -296,3 +296,70 @@ pub enum ImageType {
     /// Content Image with optional size hint
     Content(Option<PixelDimensions>),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{get_cached_request_state, TextureRequestKey, TextureRequestVariant};
+    use crate::PixelDimensions;
+    use hashbrown::HashMap;
+
+    #[test]
+    fn cached_request_state_hits_matching_url_and_variant() {
+        let mut cache = HashMap::new();
+        cache.insert(
+            TextureRequestKey::from_variant(
+                "https://example.com/image.png",
+                TextureRequestVariant::Hint(PixelDimensions { x: 640, y: 480 }),
+            ),
+            42usize,
+        );
+
+        let state = get_cached_request_state(
+            &cache,
+            "https://example.com/image.png",
+            TextureRequestVariant::Hint(PixelDimensions { x: 640, y: 480 }),
+        );
+
+        assert_eq!(state.copied(), Some(42));
+    }
+
+    #[test]
+    fn cached_request_state_misses_when_variant_differs() {
+        let mut cache = HashMap::new();
+        cache.insert(
+            TextureRequestKey::from_variant(
+                "https://example.com/image.png",
+                TextureRequestVariant::Full,
+            ),
+            1usize,
+        );
+
+        let miss = get_cached_request_state(
+            &cache,
+            "https://example.com/image.png",
+            TextureRequestVariant::Hint(PixelDimensions { x: 800, y: 600 }),
+        );
+
+        assert!(miss.is_none());
+    }
+
+    #[test]
+    fn cached_request_state_misses_when_url_differs() {
+        let mut cache = HashMap::new();
+        cache.insert(
+            TextureRequestKey::from_variant(
+                "https://example.com/image-a.png",
+                TextureRequestVariant::Full,
+            ),
+            7usize,
+        );
+
+        let miss = get_cached_request_state(
+            &cache,
+            "https://example.com/image-b.png",
+            TextureRequestVariant::Full,
+        );
+
+        assert!(miss.is_none());
+    }
+}
