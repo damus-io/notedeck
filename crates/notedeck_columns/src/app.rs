@@ -230,6 +230,72 @@ fn try_process_event(
     Ok(())
 }
 
+/// Handle pending deep links from notification taps.
+/// If a user tapped a notification while the app was closed or in background,
+/// navigate to the corresponding note thread.
+///
+/// Checks that columns exist before consuming the deep link to avoid dropping
+/// cold-start deep links when the app is still initializing.
+fn handle_pending_deep_link(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
+    // Check columns first — don't consume the deep link if we can't route yet
+    let columns = get_active_columns_mut(app_ctx.i18n, app_ctx.accounts, &mut damus.decks_cache);
+    if columns.columns().is_empty() {
+        return;
+    }
+
+    let Some(deep_link) = notedeck::platform::take_pending_deep_link() else {
+        return;
+    };
+
+    info!(
+        "Processing deep link: event_id={}, kind={}",
+        &deep_link.event_id[..8.min(deep_link.event_id.len())],
+        deep_link.event_kind
+    );
+
+    // Convert hex event_id to NoteId
+    let note_id = match enostr::NoteId::from_hex(&deep_link.event_id) {
+        Ok(id) => id,
+        Err(e) => {
+            error!("Invalid event_id in deep link: {}", e);
+            return;
+        }
+    };
+
+    // Create a thread selection with proper root note resolution
+    // This validates the note exists and finds the actual root if this is a reply
+    let txn = match Transaction::new(app_ctx.ndb) {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to create transaction for deep link: {}", e);
+            return;
+        }
+    };
+
+    let thread_selection = match timeline::ThreadSelection::from_note_id(
+        app_ctx.ndb,
+        app_ctx.note_cache,
+        &txn,
+        note_id,
+    ) {
+        Ok(selection) => selection,
+        Err(e) => {
+            // Note doesn't exist in DB yet - use the note_id as root (will be fetched)
+            warn!("Deep link note not in DB, using as root: {:?}", e);
+            timeline::ThreadSelection::from_root_id(notedeck::RootNoteIdBuf::new_unsafe(
+                *note_id.bytes(),
+            ))
+        }
+    };
+
+    let route = Route::Thread(thread_selection);
+
+    // Navigate to the thread in the currently selected column
+    columns.get_selected_router().route_to(route);
+
+    info!("Deep link navigation complete");
+}
+
 #[profiling::function]
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     app_ctx.img_cache.urls.cache.handle_io();

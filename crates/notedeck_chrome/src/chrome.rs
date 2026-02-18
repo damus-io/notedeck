@@ -187,6 +187,47 @@ impl Chrome {
         Ok(chrome)
     }
 
+    /// Auto-enable notifications if the persisted setting indicates they were enabled.
+    ///
+    /// This is called during app startup to restore the notification service
+    /// after the app is relaunched.
+    fn auto_enable_notifications(notedeck: &mut Notedeck) {
+        // Only auto-enable on platforms that support notifications
+        if !notedeck::platform::supports_notifications() {
+            return;
+        }
+
+        let context = notedeck.app_context();
+
+        // Check if notifications were enabled in a previous session
+        if !context.settings.notifications_enabled() {
+            return;
+        }
+
+        // SAFETY: AccountCache guarantees a fallback account always exists,
+        // so selected_account_pubkey() will never panic.
+        let pubkey_hex = context.accounts.selected_account_pubkey().hex();
+        #[cfg(target_os = "android")]
+        let relay_urls = context.accounts.get_selected_account_relay_urls();
+
+        tracing::info!(
+            "Auto-enabling notifications for pubkey {} (persisted setting)",
+            &pubkey_hex[..8.min(pubkey_hex.len())]
+        );
+
+        #[cfg(target_os = "android")]
+        let result = notedeck::platform::enable_notifications(&pubkey_hex, &relay_urls);
+        #[cfg(not(target_os = "android"))]
+        let result = {
+            let context = notedeck.app_context();
+            notedeck::platform::enable_notifications(context.notification_manager, &pubkey_hex)
+        };
+        if let Err(e) = result {
+            tracing::error!("Failed to auto-enable notifications: {}", e);
+            // Don't clear the setting - user can try again manually
+        }
+    }
+
     pub fn toggle(&mut self) {
         if self.nav.drawer_focused {
             self.nav.close();

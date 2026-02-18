@@ -10,6 +10,7 @@ use notedeck::{
     NotedeckTextStyle, Settings, SettingsHandler, DEFAULT_MAX_HASHTAGS_PER_NOTE,
     DEFAULT_NOTE_BODY_FONT_SIZE,
 };
+
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
     AnimationHelper, NoteOptions, NoteView,
@@ -541,6 +542,165 @@ impl<'a> SettingsView<'a> {
                     richtext_small(&text).color(ui.visuals().gray_out(ui.visuals().text_color())),
                 );
             });
+        });
+
+        action
+    }
+
+    /// Notifications section with FCM/Native/Disabled radio group.
+    fn notifications_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        // Only show on platforms that support notifications
+        if !notedeck::platform::supports_notifications() {
+            return None;
+        }
+
+        let mut action = None;
+
+        let title = tr!(
+            self.note_context.i18n,
+            "Notifications",
+            "Label for notifications settings section"
+        );
+
+        settings_group(ui, title, |ui| {
+            // Get current state
+            let current_mode = notedeck::platform::get_notification_mode();
+            let permission_granted =
+                notedeck::platform::is_notification_permission_granted().unwrap_or(false);
+            let permission_pending = notedeck::platform::is_notification_permission_pending();
+
+            // Permission status badge
+            ui.horizontal(|ui| {
+                ui.label(richtext_small(tr!(
+                    self.note_context.i18n,
+                    "Permission:",
+                    "Label for notification permission status"
+                )));
+
+                let (badge_text, badge_color) = if permission_granted {
+                    ("Granted", Color32::from_rgb(34, 197, 94)) // Green
+                } else if permission_pending {
+                    ("Pending", Color32::from_rgb(234, 179, 8)) // Yellow
+                } else {
+                    ("Required", Color32::from_rgb(239, 68, 68)) // Red
+                };
+
+                notification_badge(ui, badge_text, badge_color);
+            });
+
+            // Permission request button if needed
+            if !permission_granted && !permission_pending {
+                ui.add_space(4.0);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), 36.0],
+                        Button::new(richtext_small(tr!(
+                            self.note_context.i18n,
+                            "Grant Permission",
+                            "Button to request notification permission"
+                        ))),
+                    )
+                    .clicked()
+                {
+                    action = Some(SettingsAction::RequestNotificationPermission);
+                }
+            }
+
+            ui.add_space(8.0);
+
+            // Radio group for notification mode
+            ui.label(richtext_small(tr!(
+                self.note_context.i18n,
+                "Delivery method:",
+                "Label for notification delivery method"
+            )));
+
+            ui.add_space(4.0);
+
+            // Store selected index
+            let mut selected = current_mode.to_index();
+            let enabled = permission_granted && !permission_pending;
+
+            // Radio option 1: FCM (default)
+            if notification_radio_option(
+                ui,
+                &mut selected,
+                0,
+                tr!(
+                    self.note_context.i18n,
+                    "Google Push (Recommended)",
+                    "FCM notification option label"
+                ),
+                tr!(
+                    self.note_context.i18n,
+                    "Battery efficient. Uses Google services.",
+                    "FCM notification option description"
+                ),
+                enabled,
+            ) {
+                action = Some(SettingsAction::SetNotificationMode(NotificationMode::Fcm));
+            }
+
+            ui.add_space(4.0);
+
+            // Radio option 2: Native
+            if notification_radio_option(
+                ui,
+                &mut selected,
+                1,
+                tr!(
+                    self.note_context.i18n,
+                    "Direct Relay Connection",
+                    "Native notification option label"
+                ),
+                tr!(
+                    self.note_context.i18n,
+                    "Maximum privacy. Higher battery usage.",
+                    "Native notification option description"
+                ),
+                enabled,
+            ) {
+                action = Some(SettingsAction::SetNotificationMode(
+                    NotificationMode::Native,
+                ));
+            }
+
+            ui.add_space(4.0);
+
+            // Radio option 3: Disabled
+            if notification_radio_option(
+                ui,
+                &mut selected,
+                2,
+                tr!(
+                    self.note_context.i18n,
+                    "Disabled",
+                    "Disabled notification option label"
+                ),
+                tr!(
+                    self.note_context.i18n,
+                    "No push notifications",
+                    "Disabled notification option description"
+                ),
+                true, // Always enabled - user can always disable
+            ) {
+                action = Some(SettingsAction::SetNotificationMode(
+                    NotificationMode::Disabled,
+                ));
+            }
+
+            // Privacy info collapsible
+            ui.add_space(8.0);
+            ui.collapsing(
+                richtext_small(tr!(
+                    self.note_context.i18n,
+                    "Privacy information",
+                    "Collapsible section for privacy info"
+                )),
+                |ui| {
+                    notification_privacy_info(ui, self.note_context.i18n);
+                },
+            );
         });
 
         action

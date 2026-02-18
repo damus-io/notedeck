@@ -83,6 +83,11 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
+    /// Desktop notification manager (macOS/Linux only).
+    /// Owns the notification service lifecycle.
+    #[cfg(not(target_os = "android"))]
+    notification_manager: Option<crate::notifications::NotificationManager>,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -332,6 +337,8 @@ impl Notedeck {
             media_jobs: media_job_cache,
             nip05_cache: Nip05Cache::new(),
             i18n,
+            #[cfg(not(target_os = "android"))]
+            notification_manager: None,
             #[cfg(target_os = "android")]
             android_app: None,
         }
@@ -399,6 +406,8 @@ impl Notedeck {
             media_jobs: &mut self.media_jobs,
             nip05_cache: &mut self.nip05_cache,
             i18n: &mut self.i18n,
+            #[cfg(not(target_os = "android"))]
+            notification_manager: &mut self.notification_manager,
             #[cfg(target_os = "android")]
             android: self.android_app.as_ref().unwrap().clone(),
         }
@@ -429,14 +438,10 @@ impl Notedeck {
     }
 }
 
-/// Installs the default TLS crypto provider for rustls.
+/// Install the rustls crypto provider for TLS support.
 ///
-/// This function selects the crypto provider based on the target platform:
-/// - **Windows**: Uses `ring` because `aws-lc-rs` requires cmake and NASM,
-///   which adds significant friction for Windows developers.
-/// - **Other platforms**: Uses `aws-lc-rs` for optimal performance.
-///
-/// Must be called once at application startup before any TLS operations.
+/// Uses the ring crypto backend. Logs an error if installation fails,
+/// which can happen if a provider was already installed.
 pub fn install_crypto() {
     // On Windows, use ring (fewer build requirements than aws-lc-rs which needs cmake/NASM)
     #[cfg(windows)]
@@ -487,8 +492,21 @@ pub fn try_process_events_core(
                 tracing::trace!("relay {} sent other event {:?}", ev.relay, &msg)
             }
             RelayEvent::Error(error) => error!("relay {} had error: {error:?}", &ev.relay),
-            RelayEvent::Message(msg) => {
-                process_message_core(app_ctx, &ev.relay, &msg);
+            RelayEvent::Message(ref msg) => {
+                process_message_core(app_ctx, &ev.relay, msg);
+
+                // Forward notification-relevant relay events to the manager
+                #[cfg(not(target_os = "android"))]
+                if let RelayMessage::Event(_subid, relay_msg) = msg {
+                    if let Some(mgr) = app_ctx.notification_manager.as_ref() {
+                        mgr.process_relay_message(
+                            relay_msg,
+                            app_ctx.ndb,
+                            &app_ctx.accounts,
+                            app_ctx.i18n,
+                        );
+                    }
+                }
             }
         }
 
