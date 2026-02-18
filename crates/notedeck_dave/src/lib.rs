@@ -697,6 +697,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                         session.task_handle = None;
                         // Don't restore incoming_tokens - leave it None
+
+                        // If chat ends with a user message, there's an
+                        // unanswered remote message that arrived while we
+                        // were streaming. Queue it for dispatch.
+                        if session.needs_redispatch_after_stream_end() {
+                            needs_send.insert(session_id);
+                        }
                     }
                 }
                 _ => {
@@ -2003,9 +2010,18 @@ impl notedeck::App for Dave {
 
         // Poll for live conversation events on all sessions.
         // Returns user messages from remote clients that need backend dispatch.
+        // Only dispatch if the session isn't already streaming a response —
+        // the message is already in chat, so it will be included when the
+        // current stream finishes and we re-dispatch.
         let remote_user_msgs = self.poll_remote_conversation_events(ctx.ndb);
         for (sid, _msg) in remote_user_msgs {
-            self.send_user_message_for(sid, ctx, ui.ctx());
+            let should_dispatch = self
+                .session_manager
+                .get(sid)
+                .is_some_and(|s| s.should_dispatch_remote_message());
+            if should_dispatch {
+                self.send_user_message_for(sid, ctx, ui.ctx());
+            }
         }
 
         // Process pending archive conversion (JSONL → nostr events)

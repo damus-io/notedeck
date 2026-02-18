@@ -574,3 +574,137 @@ impl SessionManager {
         self.order.clone()
     }
 }
+
+impl ChatSession {
+    /// Whether the session is actively streaming a response from the backend.
+    pub fn is_streaming(&self) -> bool {
+        self.incoming_tokens.is_some()
+    }
+
+    /// Whether the session has an unanswered user message at the end of the
+    /// chat that needs to be dispatched to the backend.
+    pub fn has_pending_user_message(&self) -> bool {
+        matches!(self.chat.last(), Some(Message::User(_)))
+    }
+
+    /// Whether a newly arrived remote user message should be dispatched to
+    /// the backend right now. Returns false if the session is already
+    /// streaming — the message is already in chat and will be picked up
+    /// when the current stream finishes.
+    pub fn should_dispatch_remote_message(&self) -> bool {
+        !self.is_streaming() && self.has_pending_user_message()
+    }
+
+    /// Whether the session needs a re-dispatch after a stream ends.
+    /// This catches user messages that arrived while we were streaming.
+    pub fn needs_redispatch_after_stream_end(&self) -> bool {
+        !self.is_streaming() && self.has_pending_user_message()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AiMode;
+    use crate::messages::AssistantMessage;
+    use std::sync::mpsc;
+
+    fn test_session() -> ChatSession {
+        ChatSession::new(1, PathBuf::from("/tmp"), AiMode::Agentic)
+    }
+
+    #[test]
+    fn dispatch_when_idle_with_user_message() {
+        let mut session = test_session();
+        session.chat.push(Message::User("hello".into()));
+        assert!(session.should_dispatch_remote_message());
+    }
+
+    #[test]
+    fn no_dispatch_while_streaming() {
+        let mut session = test_session();
+        session.chat.push(Message::User("hello".into()));
+
+        // Start streaming
+        let (_tx, rx) = mpsc::channel::<DaveApiResponse>();
+        session.incoming_tokens = Some(rx);
+
+        // New user message arrives while streaming
+        session.chat.push(Message::User("another".into()));
+        assert!(!session.should_dispatch_remote_message());
+    }
+
+    #[test]
+    fn redispatch_after_stream_ends_with_pending_user_message() {
+        let mut session = test_session();
+        session.chat.push(Message::User("msg1".into()));
+
+        // Start streaming
+        let (tx, rx) = mpsc::channel::<DaveApiResponse>();
+        session.incoming_tokens = Some(rx);
+
+        // Assistant responds, then more user messages arrive
+        session
+            .chat
+            .push(Message::Assistant(AssistantMessage::from_text(
+                "response".into(),
+            )));
+        session.chat.push(Message::User("msg2".into()));
+
+        // Stream ends
+        drop(tx);
+        session.incoming_tokens = None;
+
+        assert!(session.needs_redispatch_after_stream_end());
+    }
+
+    #[test]
+    fn no_redispatch_when_assistant_is_last() {
+        let mut session = test_session();
+        session.chat.push(Message::User("hello".into()));
+
+        let (tx, rx) = mpsc::channel::<DaveApiResponse>();
+        session.incoming_tokens = Some(rx);
+
+        session
+            .chat
+            .push(Message::Assistant(AssistantMessage::from_text(
+                "done".into(),
+            )));
+
+        drop(tx);
+        session.incoming_tokens = None;
+
+        assert!(!session.needs_redispatch_after_stream_end());
+    }
+
+    /// The key bug scenario: multiple remote messages arrive across frames
+    /// while streaming. None should trigger dispatch. After stream ends,
+    /// the last pending message should trigger redispatch.
+    #[test]
+    fn multiple_remote_messages_while_streaming() {
+        let mut session = test_session();
+
+        // First message — dispatched normally
+        session.chat.push(Message::User("msg1".into()));
+        assert!(session.should_dispatch_remote_message());
+
+        // Backend starts streaming
+        let (tx, rx) = mpsc::channel::<DaveApiResponse>();
+        session.incoming_tokens = Some(rx);
+
+        // Messages arrive one per frame while streaming
+        session.chat.push(Message::User("msg2".into()));
+        assert!(!session.should_dispatch_remote_message());
+
+        session.chat.push(Message::User("msg3".into()));
+        assert!(!session.should_dispatch_remote_message());
+
+        // Stream ends
+        drop(tx);
+        session.incoming_tokens = None;
+
+        // Should redispatch — there are unanswered user messages
+        assert!(session.needs_redispatch_after_stream_end());
+    }
+}
