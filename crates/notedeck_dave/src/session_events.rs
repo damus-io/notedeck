@@ -258,6 +258,19 @@ pub fn build_events(
                 ContentBlock::ToolResult { tool_use_id, .. } => Some(*tool_use_id),
                 _ => None,
             };
+            let tool_name = match block {
+                ContentBlock::ToolUse { name, .. } => Some(*name),
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    // Look up tool name from a prior ToolUse block with matching id
+                    blocks.iter().find_map(|b| match b {
+                        ContentBlock::ToolUse { id, name, .. } if *id == *tool_use_id => {
+                            Some(*name)
+                        }
+                        _ => None,
+                    })
+                }
+                _ => None,
+            };
 
             let event = build_single_event(
                 Some(line),
@@ -266,6 +279,7 @@ pub fn build_events(
                 "claude-code",
                 Some((i, total)),
                 tool_id,
+                tool_name,
                 session_id.as_deref(),
                 None,
                 timestamp,
@@ -281,19 +295,26 @@ pub fn build_events(
         let content = session_jsonl::extract_display_content(line);
         let role = line.role().unwrap_or("unknown");
 
-        // Extract tool_id from single-block messages
-        let tool_id = msg.as_ref().and_then(|m| {
-            let blocks = m.content_blocks();
-            if blocks.len() == 1 {
-                match &blocks[0] {
-                    ContentBlock::ToolUse { id, .. } => Some(id.to_string()),
-                    ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.to_string()),
-                    _ => None,
+        // Extract tool_id and tool_name from single-block messages
+        let (tool_id, tool_name) = msg
+            .as_ref()
+            .and_then(|m| {
+                let blocks = m.content_blocks();
+                if blocks.len() == 1 {
+                    match &blocks[0] {
+                        ContentBlock::ToolUse { id, name, .. } => {
+                            Some((id.to_string(), Some(name.to_string())))
+                        }
+                        ContentBlock::ToolResult { tool_use_id, .. } => {
+                            Some((tool_use_id.to_string(), None))
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
                 }
-            } else {
-                None
-            }
-        });
+            })
+            .map_or((None, None), |(id, name)| (Some(id), name));
 
         let event = build_single_event(
             Some(line),
@@ -302,6 +323,7 @@ pub fn build_events(
             "claude-code",
             None,
             tool_id.as_deref(),
+            tool_name.as_deref(),
             session_id.as_deref(),
             None,
             timestamp,
@@ -391,6 +413,8 @@ fn build_source_data_event(
 /// assistant message.
 ///
 /// `tool_id`: The tool use/result ID for tool_call and tool_result events.
+///
+/// `tool_name`: The tool name (e.g. "Bash", "Read") for tool_call and tool_result events.
 #[allow(clippy::too_many_arguments)]
 fn build_single_event(
     line: Option<&JsonlLine>,
@@ -399,6 +423,7 @@ fn build_single_event(
     source: &str,
     split_index: Option<(usize, usize)>,
     tool_id: Option<&str>,
+    tool_name: Option<&str>,
     session_id: Option<&str>,
     cwd: Option<&str>,
     timestamp: Option<u64>,
@@ -475,6 +500,11 @@ fn build_single_event(
         builder = builder.start_tag().tag_str("tool-id").tag_str(tid);
     }
 
+    // -- Tool name tag --
+    if let Some(tn) = tool_name {
+        builder = builder.start_tag().tag_str("tool-name").tag_str(tn);
+    }
+
     // -- Discoverability --
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
 
@@ -493,6 +523,7 @@ pub fn build_live_event(
     session_id: &str,
     cwd: Option<&str>,
     tool_id: Option<&str>,
+    tool_name: Option<&str>,
     threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
@@ -503,6 +534,7 @@ pub fn build_live_event(
         "notedeck-dave",
         None,
         tool_id,
+        tool_name,
         Some(session_id),
         cwd,
         Some(now_secs()),

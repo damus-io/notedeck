@@ -197,6 +197,7 @@ fn ingest_live_event(
     content: &str,
     role: &str,
     tool_id: Option<&str>,
+    tool_name: Option<&str>,
 ) -> Option<session_events::BuiltEvent> {
     let agentic = session.agentic.as_mut()?;
     let session_id = agentic.event_session_id().map(|s| s.to_string())?;
@@ -208,6 +209,7 @@ fn ingest_live_event(
         &session_id,
         cwd,
         tool_id,
+        tool_name,
         &mut agentic.live_threading,
         secret_key,
     ) {
@@ -411,7 +413,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::Failed(ref err) => {
                         if let Some(sk) = &secret_key {
                             if let Some(evt) =
-                                ingest_live_event(session, app_ctx.ndb, sk, err, "error", None)
+                                ingest_live_event(session, app_ctx.ndb, sk, err, "error", None, None)
                             {
                                 events_to_publish.push(evt);
                             }
@@ -538,6 +540,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 &content,
                                 "tool_result",
                                 None,
+                                Some(result.tool_name.as_str()),
                             ) {
                                 events_to_publish.push(evt);
                             }
@@ -682,6 +685,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         sk,
                                         &text,
                                         "assistant",
+                                        None,
                                         None,
                                     ) {
                                         events_to_publish.push(evt);
@@ -1599,10 +1603,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         } else {
                             content.to_string()
                         };
+                        let tool_name = session_events::get_tag_value(note, "tool-name")
+                            .unwrap_or("tool")
+                            .to_string();
                         session
                             .chat
                             .push(Message::ToolResult(crate::messages::ToolResult {
-                                tool_name: "tool".to_string(),
+                                tool_name,
                                 summary,
                             }));
                     }
@@ -1827,7 +1834,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Generate live event for user message
             if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
                 if let Some(evt) =
-                    ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None)
+                    ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None, None)
                 {
                     self.pending_relay_events.push(evt);
                 }
