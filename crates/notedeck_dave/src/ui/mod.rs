@@ -432,12 +432,8 @@ pub enum KeyActionResult {
     CloneAgent,
     DeleteSession(SessionId),
     SetAutoSteal(bool),
-    /// Permission response needs relay publishing (remote session).
-    PublishPermissionResponse {
-        perm_id: uuid::Uuid,
-        allowed: bool,
-        message: Option<String>,
-    },
+    /// Permission response needs relay publishing.
+    PublishPermissionResponse(update::PermissionPublish),
 }
 
 /// Handle a keybinding action.
@@ -465,17 +461,8 @@ pub fn handle_key_action(
                 if let Some(session) = session_manager.get_active_mut() {
                     session.focus_requested = true;
                 }
-                if let update::PermissionResponseResult::NeedsRelayPublish {
-                    perm_id,
-                    allowed,
-                    message,
-                } = result
-                {
-                    return KeyActionResult::PublishPermissionResponse {
-                        perm_id,
-                        allowed,
-                        message,
-                    };
+                if let Some(publish) = result {
+                    return KeyActionResult::PublishPermissionResponse(publish);
                 }
             }
             KeyActionResult::None
@@ -492,17 +479,8 @@ pub fn handle_key_action(
                 if let Some(session) = session_manager.get_active_mut() {
                     session.focus_requested = true;
                 }
-                if let update::PermissionResponseResult::NeedsRelayPublish {
-                    perm_id,
-                    allowed,
-                    message,
-                } = result
-                {
-                    return KeyActionResult::PublishPermissionResponse {
-                        perm_id,
-                        allowed,
-                        message,
-                    };
+                if let Some(publish) = result {
+                    return KeyActionResult::PublishPermissionResponse(publish);
                 }
             }
             KeyActionResult::None
@@ -591,12 +569,8 @@ pub enum SendActionResult {
     Handled,
     /// Normal send - caller should send the user message
     SendMessage,
-    /// Permission response needs relay publishing (remote session).
-    NeedsRelayPublish {
-        perm_id: uuid::Uuid,
-        allowed: bool,
-        message: Option<String>,
-    },
+    /// Permission response needs relay publishing.
+    NeedsRelayPublish(update::PermissionPublish),
 }
 
 /// Handle the Send action, including tentative permission states.
@@ -630,17 +604,8 @@ pub fn handle_send_action(
                     request_id,
                     PermissionResponse::Allow { message },
                 );
-                if let update::PermissionResponseResult::NeedsRelayPublish {
-                    perm_id,
-                    allowed,
-                    message,
-                } = result
-                {
-                    return SendActionResult::NeedsRelayPublish {
-                        perm_id,
-                        allowed,
-                        message,
-                    };
+                if let Some(publish) = result {
+                    return SendActionResult::NeedsRelayPublish(publish);
                 }
             }
             SendActionResult::Handled
@@ -660,17 +625,8 @@ pub fn handle_send_action(
                     request_id,
                     PermissionResponse::Deny { reason },
                 );
-                if let update::PermissionResponseResult::NeedsRelayPublish {
-                    perm_id,
-                    allowed,
-                    message,
-                } = result
-                {
-                    return SendActionResult::NeedsRelayPublish {
-                        perm_id,
-                        allowed,
-                        message,
-                    };
+                if let Some(publish) = result {
+                    return SendActionResult::NeedsRelayPublish(publish);
                 }
             }
             SendActionResult::Handled
@@ -687,12 +643,8 @@ pub enum UiActionResult {
     SendAction,
     /// Return an AppAction
     AppAction(notedeck::AppAction),
-    /// Permission response needs relay publishing (remote session).
-    PublishPermissionResponse {
-        perm_id: uuid::Uuid,
-        allowed: bool,
-        message: Option<String>,
-    },
+    /// Permission response needs relay publishing.
+    PublishPermissionResponse(update::PermissionPublish),
 }
 
 /// Handle a UI action from DaveUi.
@@ -725,23 +677,8 @@ pub fn handle_ui_action(
         DaveAction::PermissionResponse {
             request_id,
             response,
-        } => {
-            let result = update::handle_permission_response(session_manager, request_id, response);
-            if let update::PermissionResponseResult::NeedsRelayPublish {
-                perm_id,
-                allowed,
-                message,
-            } = result
-            {
-                UiActionResult::PublishPermissionResponse {
-                    perm_id,
-                    allowed,
-                    message,
-                }
-            } else {
-                UiActionResult::Handled
-            }
-        }
+        } => update::handle_permission_response(session_manager, request_id, response)
+            .map_or(UiActionResult::Handled, UiActionResult::PublishPermissionResponse),
         DaveAction::Interrupt => {
             update::execute_interrupt(session_manager, backend, ctx);
             UiActionResult::Handled
@@ -757,24 +694,8 @@ pub fn handle_ui_action(
         DaveAction::QuestionResponse {
             request_id,
             answers,
-        } => {
-            let result =
-                update::handle_question_response(session_manager, request_id, answers);
-            if let update::PermissionResponseResult::NeedsRelayPublish {
-                perm_id,
-                allowed,
-                message,
-            } = result
-            {
-                UiActionResult::PublishPermissionResponse {
-                    perm_id,
-                    allowed,
-                    message,
-                }
-            } else {
-                UiActionResult::Handled
-            }
-        }
+        } => update::handle_question_response(session_manager, request_id, answers)
+            .map_or(UiActionResult::Handled, UiActionResult::PublishPermissionResponse),
         DaveAction::ExitPlanMode {
             request_id,
             approved,
@@ -795,20 +716,7 @@ pub fn handle_ui_action(
                     },
                 )
             };
-            if let update::PermissionResponseResult::NeedsRelayPublish {
-                perm_id,
-                allowed,
-                message,
-            } = result
-            {
-                UiActionResult::PublishPermissionResponse {
-                    perm_id,
-                    allowed,
-                    message,
-                }
-            } else {
-                UiActionResult::Handled
-            }
+            result.map_or(UiActionResult::Handled, UiActionResult::PublishPermissionResponse)
         }
     }
 }

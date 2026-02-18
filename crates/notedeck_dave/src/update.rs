@@ -185,16 +185,11 @@ pub fn has_pending_exit_plan_mode(session_manager: &SessionManager) -> bool {
     pending_permission_tool_name(session_manager) == Some("ExitPlanMode")
 }
 
-/// Result of handling a permission response.
-pub enum PermissionResponseResult {
-    /// Handled locally (oneshot sent to Claude process).
-    Local,
-    /// Needs relay publishing (remote session, no local process).
-    NeedsRelayPublish {
-        perm_id: uuid::Uuid,
-        allowed: bool,
-        message: Option<String>,
-    },
+/// Data needed to publish a permission response to relays.
+pub struct PermissionPublish {
+    pub perm_id: uuid::Uuid,
+    pub allowed: bool,
+    pub message: Option<String>,
 }
 
 /// Handle a permission response (from UI button or keybinding).
@@ -202,9 +197,9 @@ pub fn handle_permission_response(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
     response: PermissionResponse,
-) -> PermissionResponseResult {
+) -> Option<PermissionPublish> {
     let Some(session) = session_manager.get_active_mut() else {
-        return PermissionResponseResult::Local;
+        return None;
     };
 
     let is_remote = session.is_remote();
@@ -264,11 +259,11 @@ pub fn handle_permission_response(
         }
     }
 
-    PermissionResponseResult::NeedsRelayPublish {
+    Some(PermissionPublish {
         perm_id: request_id,
         allowed,
         message,
-    }
+    })
 }
 
 /// Handle a user's response to an AskUserQuestion tool call.
@@ -276,9 +271,9 @@ pub fn handle_question_response(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
     answers: Vec<QuestionAnswer>,
-) -> PermissionResponseResult {
+) -> Option<PermissionPublish> {
     let Some(session) = session_manager.get_active_mut() else {
-        return PermissionResponseResult::Local;
+        return None;
     };
 
     let is_remote = session.is_remote();
@@ -401,11 +396,11 @@ pub fn handle_question_response(
         }
     }
 
-    PermissionResponseResult::NeedsRelayPublish {
+    Some(PermissionPublish {
         perm_id: request_id,
         allowed: true,
         message: Some(formatted_response),
-    }
+    })
 }
 
 // =============================================================================

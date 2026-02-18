@@ -137,7 +137,7 @@ pub struct Dave {
     session_state_sub: Option<nostrdb::Subscription>,
     /// Permission responses queued for relay publishing (from remote sessions).
     /// Built and published in the update loop where AppContext is available.
-    pending_perm_responses: Vec<PendingPermResponse>,
+    pending_perm_responses: Vec<PermissionPublish>,
     /// Sessions pending deletion state event publication.
     /// Populated in delete_session(), drained in the update loop where AppContext is available.
     pending_deletions: Vec<DeletedSessionInfo>,
@@ -145,12 +145,7 @@ pub struct Dave {
     hostname: String,
 }
 
-/// A permission response queued for relay publishing.
-struct PendingPermResponse {
-    perm_id: uuid::Uuid,
-    allowed: bool,
-    message: Option<String>,
-}
+use update::PermissionPublish;
 
 /// Info captured from a session before deletion, for publishing a "deleted" state event.
 struct DeletedSessionInfo {
@@ -1759,16 +1754,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             KeyActionResult::SetAutoSteal(new_state) => {
                 self.auto_steal_focus = new_state;
             }
-            KeyActionResult::PublishPermissionResponse {
-                perm_id,
-                allowed,
-                message,
-            } => {
-                self.pending_perm_responses.push(PendingPermResponse {
-                    perm_id,
-                    allowed,
-                    message,
-                });
+            KeyActionResult::PublishPermissionResponse(publish) => {
+                self.pending_perm_responses.push(publish);
             }
             KeyActionResult::None => {}
         }
@@ -1780,16 +1767,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             SendActionResult::SendMessage => {
                 self.handle_user_send(ctx, ui);
             }
-            SendActionResult::NeedsRelayPublish {
-                perm_id,
-                allowed,
-                message,
-            } => {
-                self.pending_perm_responses.push(PendingPermResponse {
-                    perm_id,
-                    allowed,
-                    message,
-                });
+            SendActionResult::NeedsRelayPublish(publish) => {
+                self.pending_perm_responses.push(publish);
             }
             SendActionResult::Handled => {}
         }
@@ -1815,16 +1794,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.handle_send_action(ctx, ui);
                 None
             }
-            UiActionResult::PublishPermissionResponse {
-                perm_id,
-                allowed,
-                message,
-            } => {
-                self.pending_perm_responses.push(PendingPermResponse {
-                    perm_id,
-                    allowed,
-                    message,
-                });
+            UiActionResult::PublishPermissionResponse(publish) => {
+                self.pending_perm_responses.push(publish);
                 None
             }
             UiActionResult::Handled => None,
