@@ -7,6 +7,8 @@ pub use cache::{
     AnyZapState, NoteZapTarget, NoteZapTargetOwned, ZapTarget, ZapTargetOwned, ZappingError, Zaps,
 };
 
+pub use zap::parse_bolt11_msats;
+
 pub use default_zap::{
     get_current_default_msats, DefaultZapError, DefaultZapMsats, PendingDefaultZapState,
     UserZapMsats,

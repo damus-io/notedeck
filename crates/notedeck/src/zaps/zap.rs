@@ -4,6 +4,14 @@ use lightning_invoice::Bolt11Invoice;
 use secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
 use sha2::Digest;
 
+/// Parse a BOLT11 invoice string and return the amount in millisatoshis.
+pub fn parse_bolt11_msats(bolt11: &str) -> Option<u64> {
+    bolt11
+        .parse::<Bolt11Invoice>()
+        .ok()?
+        .amount_milli_satoshis()
+}
+
 #[allow(dead_code)]
 #[derive(Debug)]
 pub enum ZapTarget {
