@@ -1321,6 +1321,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status from state event
                     agentic.remote_status = AgentStatus::from_status_str(&state.status);
+                    agentic.remote_status_ts = state.created_at;
 
                     // Set up live conversation subscription for remote sessions
                     if is_remote && agentic.live_conversation_sub.is_none() {
@@ -1395,14 +1396,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             // Skip deleted sessions entirely — don't create or keep them
             if status_str == "deleted" {
-                // If we have this session locally, remove it
+                // If we have this session locally, remove it (only if this
+                // event is newer than the last state we applied).
                 if existing_ids.contains(claude_sid) {
+                    let ts = note.created_at();
                     let to_delete: Vec<SessionId> = self
                         .session_manager
                         .iter()
                         .filter(|s| {
-                            s.agentic.as_ref().and_then(|a| a.event_session_id())
-                                == Some(claude_sid)
+                            s.agentic.as_ref().is_some_and(|a| {
+                                a.event_session_id() == Some(claude_sid)
+                                    && ts > a.remote_status_ts
+                            })
                         })
                         .map(|s| s.id)
                         .collect();
@@ -1419,14 +1424,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             }
 
-            // Update remote_status for existing remote sessions
+            // Update remote_status for existing remote sessions, but only
+            // if this event is newer than the one we already applied.
+            // Multiple revisions of the same replaceable event can arrive
+            // out of order (e.g. after a relay reconnect).
             if existing_ids.contains(claude_sid) {
+                let ts = note.created_at();
                 let new_status = AgentStatus::from_status_str(status_str);
                 for session in self.session_manager.iter_mut() {
                     if session.is_remote() {
                         if let Some(agentic) = &mut session.agentic {
-                            if agentic.event_session_id() == Some(claude_sid) {
+                            if agentic.event_session_id() == Some(claude_sid)
+                                && ts > agentic.remote_status_ts
+                            {
                                 agentic.remote_status = new_status;
+                                agentic.remote_status_ts = ts;
                             }
                         }
                     }
@@ -1488,6 +1500,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status
                     agentic.remote_status = AgentStatus::from_status_str(status_str);
+                    agentic.remote_status_ts = note.created_at();
 
                     // Set up live conversation subscription for remote sessions
                     if is_remote && agentic.live_conversation_sub.is_none() {

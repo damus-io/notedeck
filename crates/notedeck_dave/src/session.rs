@@ -115,6 +115,9 @@ pub struct AgenticSessionData {
     /// Status as reported by the remote desktop's kind-31988 event.
     /// Only meaningful when session source is Remote.
     pub remote_status: Option<AgentStatus>,
+    /// Timestamp of the kind-31988 event that last set `remote_status`.
+    /// Used to ignore older replaceable event revisions that arrive out of order.
+    pub remote_status_ts: u64,
     /// Subscription for live kind-1988 conversation events from relays.
     /// Used by remote sessions to receive new messages in real-time.
     pub live_conversation_sub: Option<nostrdb::Subscription>,
@@ -151,6 +154,7 @@ impl AgenticSessionData {
             live_threading: ThreadingState::new(),
             perm_response_sub: None,
             remote_status: None,
+            remote_status_ts: 0,
             live_conversation_sub: None,
             seen_note_ids: HashSet::new(),
         }
