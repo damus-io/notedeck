@@ -269,40 +269,47 @@ impl<'a> DaveUi<'a> {
                         .show(ui, |ui| self.inputbox(app_ctx.i18n, ui))
                         .inner;
 
-                    if let Some(git_status) = &mut self.git_status {
-                        // Capture badge state before borrowing git_status
+                    {
                         let plan_mode_active = self.plan_mode_active;
                         let auto_steal_focus = self.auto_steal_focus;
                         let is_agentic = self.ai_mode == AiMode::Agentic;
+                        let has_git = self.git_status.is_some();
 
-                        // Explicitly reserve height so bottom_up layout
-                        // keeps the chat ScrollArea from overlapping.
-                        let h = if git_status.expanded { 200.0 } else { 24.0 };
-                        let w = ui.available_width();
-                        let badge_action = ui
-                            .allocate_ui(egui::vec2(w, h), |ui| {
-                                egui::Frame::new()
-                                    .outer_margin(egui::Margin {
-                                        left: margin,
-                                        right: margin,
-                                        top: 4,
-                                        bottom: 0,
-                                    })
-                                    .show(ui, |ui| {
-                                        status_bar_ui(
-                                            git_status,
-                                            is_agentic,
-                                            plan_mode_active,
-                                            auto_steal_focus,
-                                            ui,
-                                        )
-                                    })
-                                    .inner
-                            })
-                            .inner;
+                        // Show status bar when there's git status or badges to display
+                        if has_git || is_agentic {
+                            // Explicitly reserve height so bottom_up layout
+                            // keeps the chat ScrollArea from overlapping.
+                            let h = if self.git_status.as_ref().is_some_and(|gs| gs.expanded) {
+                                200.0
+                            } else {
+                                24.0
+                            };
+                            let w = ui.available_width();
+                            let badge_action = ui
+                                .allocate_ui(egui::vec2(w, h), |ui| {
+                                    egui::Frame::new()
+                                        .outer_margin(egui::Margin {
+                                            left: margin,
+                                            right: margin,
+                                            top: 4,
+                                            bottom: 0,
+                                        })
+                                        .show(ui, |ui| {
+                                            status_bar_ui(
+                                                self.git_status.as_deref_mut(),
+                                                is_agentic,
+                                                plan_mode_active,
+                                                auto_steal_focus,
+                                                ui,
+                                            )
+                                        })
+                                        .inner
+                                })
+                                .inner;
 
-                        if let Some(action) = badge_action {
-                            r = DaveResponse::new(action).or(r);
+                            if let Some(action) = badge_action {
+                                r = DaveResponse::new(action).or(r);
+                            }
                         }
                     }
 
@@ -1141,38 +1148,52 @@ impl<'a> DaveUi<'a> {
 
 /// Renders the status bar containing git status and toggle badges.
 fn status_bar_ui(
-    git_status: &mut GitStatusCache,
+    mut git_status: Option<&mut GitStatusCache>,
     is_agentic: bool,
     plan_mode_active: bool,
     auto_steal_focus: bool,
     ui: &mut egui::Ui,
 ) -> Option<DaveAction> {
-    let snapshot = git_status_ui::StatusSnapshot::from_cache(git_status);
+    let snapshot = git_status
+        .as_deref()
+        .and_then(git_status_ui::StatusSnapshot::from_cache);
 
     ui.vertical(|ui| {
         let action = ui
             .horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
 
-                git_status_ui::git_status_content_ui(git_status, &snapshot, ui);
+                if let Some(git_status) = git_status.as_deref_mut() {
+                    git_status_ui::git_status_content_ui(git_status, &snapshot, ui);
 
-                // Right-aligned section: badges then refresh
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let action = if is_agentic {
+                    // Right-aligned section: badges then refresh
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let action = if is_agentic {
+                            toggle_badges_ui(ui, plan_mode_active, auto_steal_focus)
+                        } else {
+                            None
+                        };
+
+                        git_status_ui::git_refresh_button_ui(git_status, ui);
+
+                        action
+                    })
+                    .inner
+                } else if is_agentic {
+                    // No git status (remote session) - just show badges
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         toggle_badges_ui(ui, plan_mode_active, auto_steal_focus)
-                    } else {
-                        None
-                    };
-
-                    git_status_ui::git_refresh_button_ui(git_status, ui);
-
-                    action
-                })
-                .inner
+                    })
+                    .inner
+                } else {
+                    None
+                }
             })
             .inner;
 
-        git_status_ui::git_expanded_files_ui(git_status, &snapshot, ui);
+        if let Some(git_status) = git_status.as_deref() {
+            git_status_ui::git_expanded_files_ui(git_status, &snapshot, ui);
+        }
 
         action
     })
