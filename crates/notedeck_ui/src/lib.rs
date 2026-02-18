@@ -18,8 +18,8 @@ pub mod widgets;
 
 pub use anim::{rolling_number, AnimationHelper, PulseAlpha};
 pub use contacts_list::{
-    profile_row, profile_row_widget, search_profiles, ContactsListAction, ContactsListView,
-    ProfileRowOptions, ProfileSearchResult,
+    parse_pubkey_query, profile_row, profile_row_widget, search_profiles, ContactsListAction,
+    ContactsListView, ProfileRowOptions, ProfileSearchResult,
 };
 pub use debug::debug_slider;
 pub use icons::{expanding_button, ICON_EXPANSION_MULTIPLE, ICON_WIDTH};

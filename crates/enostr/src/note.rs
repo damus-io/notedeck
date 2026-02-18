@@ -46,6 +46,13 @@ impl NoteId {
 
         Some(NoteId::new(data.try_into().ok()?))
     }
+
+    /// Parse a NIP-19 nevent1 bech32 string and extract the event ID.
+    pub fn from_nevent_bech(bech: &str) -> Option<Self> {
+        use nostr::nips::nip19::{FromBech32, Nip19Event};
+        let nip19_event = Nip19Event::from_bech32(bech).ok()?;
+        Some(NoteId::new(nip19_event.event_id.to_bytes()))
+    }
 }
 
 /// Event is the struct used to represent a Nostr event

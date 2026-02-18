@@ -16,8 +16,8 @@ use notedeck::{
 use notedeck_ui::{
     context_menu::{input_context, PasteBehavior},
     icons::search_icon,
-    padding, profile_row_widget, search_input_frame, search_profiles, NoteOptions,
-    ProfileRowOptions, SEARCH_INPUT_HEIGHT,
+    padding, parse_pubkey_query, profile_row_widget, search_input_frame, search_profiles,
+    NoteOptions, ProfileRowOptions, SEARCH_INPUT_HEIGHT,
 };
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -600,14 +600,16 @@ pub enum SearchType {
 
 impl SearchType {
     fn get_type(query: &str) -> Self {
-        if query.len() == 63 && query.starts_with("note1") {
+        if query.starts_with("nevent1") {
+            if let Some(noteid) = NoteId::from_nevent_bech(query) {
+                return SearchType::NoteId(noteid);
+            }
+        } else if query.len() == 63 && query.starts_with("note1") {
             if let Some(noteid) = NoteId::from_bech(query) {
                 return SearchType::NoteId(noteid);
             }
-        } else if query.len() == 63 && query.starts_with("npub1") {
-            if let Ok(pk) = Pubkey::try_from_bech32_string(query, false) {
-                return SearchType::Profile(pk);
-            }
+        } else if let Some(pk) = parse_pubkey_query(query) {
+            return SearchType::Profile(Pubkey::new(pk));
         } else if query.chars().nth(0).is_some_and(|c| c == '#') {
             if let Some(hashtag) = query.get(1..) {
                 return SearchType::Hashtag(hashtag.to_string());
