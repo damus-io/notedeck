@@ -92,6 +92,8 @@ pub struct WorkerState {
     /// Channel receiver for notification data from main loop
     pub event_receiver: mpsc::Receiver<NotificationData>,
     /// Image cache for profile pictures (macOS notifications require local files)
+    #[cfg(target_os = "macos")]
+    pub image_cache: Option<super::image_cache::NotificationImageCache>,
 }
 
 impl WorkerState {
@@ -112,6 +114,8 @@ impl WorkerState {
             processed_events: HashSet::new(),
             processed_events_order: VecDeque::new(),
             event_receiver,
+            #[cfg(target_os = "macos")]
+            image_cache: super::image_cache::NotificationImageCache::new(),
         }
     }
 

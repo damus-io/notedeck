@@ -38,6 +38,7 @@ mod backend;
 mod bolt11;
 mod desktop;
 mod extraction;
+pub mod image_cache;
 mod profiles;
 mod types;
 mod worker;
