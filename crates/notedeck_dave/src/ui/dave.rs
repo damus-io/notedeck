@@ -644,34 +644,43 @@ impl<'a> DaveUi<'a> {
                 }
             }
 
-            // Show tentative state indicator OR shift hint
+            // Show tentative state indicator (clickable to toggle) or "+ msg" button
             match self.permission_message_state {
                 PermissionMessageState::TentativeAccept => {
-                    ui.label(
-                        egui::RichText::new("✓ Will Allow")
-                            .color(egui::Color32::from_rgb(100, 180, 100))
-                            .strong(),
-                    );
+                    if ui
+                        .link(
+                            egui::RichText::new("✓ Will Allow")
+                                .color(egui::Color32::from_rgb(100, 180, 100))
+                                .strong(),
+                        )
+                        .clicked()
+                    {
+                        *action = Some(DaveAction::TentativeDeny);
+                    }
                 }
                 PermissionMessageState::TentativeDeny => {
-                    ui.label(
-                        egui::RichText::new("✗ Will Deny")
-                            .color(egui::Color32::from_rgb(200, 100, 100))
-                            .strong(),
-                    );
+                    if ui
+                        .link(
+                            egui::RichText::new("✗ Will Deny")
+                                .color(egui::Color32::from_rgb(200, 100, 100))
+                                .strong(),
+                        )
+                        .clicked()
+                    {
+                        *action = Some(DaveAction::TentativeAccept);
+                    }
                 }
                 PermissionMessageState::None => {
-                    // Always show hint for adding message
-                    let hint_color = if shift_held {
-                        ui.visuals().warn_fg_color
-                    } else {
-                        ui.visuals().weak_text_color()
-                    };
-                    ui.label(
-                        egui::RichText::new("(⇧ for message)")
-                            .color(hint_color)
-                            .small(),
-                    );
+                    if ui
+                        .link(
+                            egui::RichText::new("+ msg")
+                                .color(ui.visuals().weak_text_color())
+                                .small(),
+                        )
+                        .clicked()
+                    {
+                        *action = Some(DaveAction::TentativeAccept);
+                    }
                 }
             }
         });
@@ -770,33 +779,43 @@ impl<'a> DaveUi<'a> {
                             }
                         }
 
-                        // Show tentative state indicator OR shift hint
+                        // Show tentative state indicator (clickable to toggle) or "+ msg" button
                         match self.permission_message_state {
                             PermissionMessageState::TentativeAccept => {
-                                ui.label(
-                                    egui::RichText::new("✓ Will Approve")
-                                        .color(egui::Color32::from_rgb(100, 180, 100))
-                                        .strong(),
-                                );
+                                if ui
+                                    .link(
+                                        egui::RichText::new("✓ Will Approve")
+                                            .color(egui::Color32::from_rgb(100, 180, 100))
+                                            .strong(),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(DaveAction::TentativeDeny);
+                                }
                             }
                             PermissionMessageState::TentativeDeny => {
-                                ui.label(
-                                    egui::RichText::new("✗ Will Reject")
-                                        .color(egui::Color32::from_rgb(200, 100, 100))
-                                        .strong(),
-                                );
+                                if ui
+                                    .link(
+                                        egui::RichText::new("✗ Will Reject")
+                                            .color(egui::Color32::from_rgb(200, 100, 100))
+                                            .strong(),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(DaveAction::TentativeAccept);
+                                }
                             }
                             PermissionMessageState::None => {
-                                let hint_color = if shift_held {
-                                    ui.visuals().warn_fg_color
-                                } else {
-                                    ui.visuals().weak_text_color()
-                                };
-                                ui.label(
-                                    egui::RichText::new("(⇧ for message)")
-                                        .color(hint_color)
-                                        .small(),
-                                );
+                                if ui
+                                    .link(
+                                        egui::RichText::new("+ msg")
+                                            .color(ui.visuals().weak_text_color())
+                                            .small(),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(DaveAction::TentativeAccept);
+                                }
                             }
                         }
                     });
