@@ -288,6 +288,11 @@ pub fn get_cached_request_state<'a, V>(
     cache.get(&lookup)
 }
 
+/// Hint-sized content should still persist full-resolution data to disk.
+pub fn should_persist_full_content(img_type: ImageType) -> bool {
+    matches!(img_type, ImageType::Content(Some(_)))
+}
+
 /// Controls type-specific handling
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageType {

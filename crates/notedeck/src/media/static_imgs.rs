@@ -15,7 +15,7 @@ use crate::{
     media::{
         images::{
             buffer_to_color_image, get_cached_request_state, parse_img_response, process_image,
-            TextureRequestKey,
+            should_persist_full_content, TextureRequestKey,
         },
         load_texture_checked,
         network::http_req,
@@ -110,6 +110,35 @@ impl StaticImgTexCache {
     }
 }
 
+/// Builds display output and disk output for a static image request.
+fn parse_display_and_disk_images(
+    content_type: Option<String>,
+    bytes: Vec<u8>,
+    imgtype: ImageType,
+) -> Result<(egui::ColorImage, egui::ColorImage), crate::Error> {
+    let display_img = parse_img_response(
+        crate::media::network::HyperHttpResponse {
+            content_type: content_type.clone(),
+            bytes: bytes.clone(),
+        },
+        imgtype,
+    )?;
+
+    let disk_img = if should_persist_full_content(imgtype) {
+        parse_img_response(
+            crate::media::network::HyperHttpResponse {
+                content_type,
+                bytes,
+            },
+            ImageType::Content(None),
+        )?
+    } else {
+        display_img.clone()
+    };
+
+    Ok((display_img, disk_img))
+}
+
 /// Loads a cached static image, resizing only when the stored image exceeds the requested [`ImageType`].
 pub fn fetch_static_img_from_disk(
     ctx: egui::Context,
@@ -170,19 +199,20 @@ async fn fetch_static_img_from_net(
 
     tracing::trace!("static img from net: parsing http request from {url}");
     JobOutput::Next(JobRun::Sync(Box::new(move || {
-        let display_img = match parse_img_response(res, imgtype) {
-            Ok(i) => i,
-            Err(e) => {
-                return JobOutput::Complete(CompleteResponse::new(MediaJobResult::StaticImg(Err(
-                    e,
-                ))))
-            }
-        };
+        let (display_img, disk_img) =
+            match parse_display_and_disk_images(res.content_type, res.bytes, imgtype) {
+                Ok(imgs) => imgs,
+                Err(e) => {
+                    return JobOutput::Complete(CompleteResponse::new(MediaJobResult::StaticImg(
+                        Err(e),
+                    )))
+                }
+            };
 
         let display_texture_handle = load_texture_checked(
             &ctx,
             request_key.to_job_id(),
-            display_img.clone(),
+            display_img,
             Default::default(),
         );
 
@@ -190,7 +220,7 @@ async fn fetch_static_img_from_net(
             CompleteResponse::new(MediaJobResult::StaticImg(Ok(display_texture_handle)))
                 .run_no_output(NoOutputRun::Sync(Box::new(move || {
                     tracing::trace!("static img from net: Saving output from {url}");
-                    if let Err(e) = MediaCache::write(&path, &url, display_img) {
+                    if let Err(e) = MediaCache::write(&path, &url, disk_img) {
                         tracing::error!("{e}");
                     }
                 }))),

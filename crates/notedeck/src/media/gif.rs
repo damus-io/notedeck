@@ -12,7 +12,9 @@ use crate::{
         MediaJobSender, NoOutputRun, RunType,
     },
     media::{
-        images::{get_cached_request_state, process_image, TextureRequestKey},
+        images::{
+            get_cached_request_state, process_image, should_persist_full_content, TextureRequestKey,
+        },
         load_texture_checked,
     },
     Error, ImageFrame, ImageType, MediaCache, TextureFrame, TextureState,
@@ -234,28 +236,53 @@ async fn from_net_run(
 
     JobOutput::Next(JobRun::Sync(Box::new(move || {
         tracing::trace!("Starting animated img from net job for {url}");
-        let animation = match generate_anim_pkg(ctx, request_key, res.bytes, move |img| {
-            process_image(imgtype, img)
-        }) {
-            Ok(a) => a,
-            Err(e) => {
-                return JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(Err(
-                    e,
-                ))));
-            }
-        };
+        let (display_anim, disk_frames) =
+            match build_display_and_disk_animation(ctx, request_key, res.bytes, imgtype) {
+                Ok(output) => output,
+                Err(e) => {
+                    return JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(
+                        Err(e),
+                    )));
+                }
+            };
 
         JobOutput::Complete(
-            CompleteResponse::new(MediaJobResult::Animation(Ok(animation.anim))).run_no_output(
+            CompleteResponse::new(MediaJobResult::Animation(Ok(display_anim))).run_no_output(
                 NoOutputRun::Sync(Box::new(move || {
                     tracing::trace!("writing animated texture to file for {url}");
-                    if let Err(e) = MediaCache::write_gif(&path, &url, animation.img_frames) {
+                    if let Err(e) = MediaCache::write_gif(&path, &url, disk_frames) {
                         tracing::error!("Could not write gif to disk: {e}");
                     }
                 })),
             ),
         )
     })))
+}
+
+/// Builds the animation returned to UI and the frame set persisted to disk.
+fn build_display_and_disk_animation(
+    ctx: egui::Context,
+    request_key: TextureRequestKey,
+    gif_bytes: Vec<u8>,
+    imgtype: ImageType,
+) -> Result<(Animation, Vec<ImageFrame>), Error> {
+    let display_pkg = generate_anim_pkg(ctx, request_key, gif_bytes.clone(), move |img| {
+        process_image(imgtype, img)
+    })?;
+    let AnimationPackage {
+        anim: display_anim,
+        img_frames: display_frames,
+    } = display_pkg;
+
+    let disk_frames = if should_persist_full_content(imgtype) {
+        generate_disk_frames(gif_bytes, move |img| {
+            process_image(ImageType::Content(None), img)
+        })?
+    } else {
+        display_frames
+    };
+
+    Ok((display_anim, disk_frames))
 }
 
 fn generate_anim_pkg(
@@ -304,6 +331,24 @@ fn generate_anim_pkg(
 struct AnimationPackage {
     anim: Animation,
     img_frames: Vec<ImageFrame>,
+}
+
+/// Decode GIF bytes into processed frames intended for disk persistence only.
+///
+/// This path intentionally avoids creating egui textures, unlike
+/// [`generate_anim_pkg`], because these frames are only written to disk.
+fn generate_disk_frames(
+    gif_bytes: Vec<u8>,
+    process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
+) -> Result<Vec<ImageFrame>, Error> {
+    let processed_frames = collect_processed_gif_frames(gif_bytes, process_to_egui)?;
+    Ok(processed_frames
+        .into_iter()
+        .map(|processed| ImageFrame {
+            delay: processed.delay,
+            image: processed.image,
+        })
+        .collect())
 }
 
 /// Decodes GIF bytes into ordered image frames while preserving timing metadata.
