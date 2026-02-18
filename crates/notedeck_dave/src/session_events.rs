@@ -517,6 +517,7 @@ fn build_single_event(
 /// from role + content strings. No kind-1989 source-data events are created.
 ///
 /// Calls `threading.record()` internally.
+#[allow(clippy::too_many_arguments)]
 pub fn build_live_event(
     content: &str,
     role: &str,

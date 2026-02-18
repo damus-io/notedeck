@@ -198,9 +198,7 @@ pub fn handle_permission_response(
     request_id: uuid::Uuid,
     response: PermissionResponse,
 ) -> Option<PermissionPublish> {
-    let Some(session) = session_manager.get_active_mut() else {
-        return None;
-    };
+    let session = session_manager.get_active_mut()?;
 
     let is_remote = session.is_remote();
 
@@ -253,9 +251,7 @@ pub fn handle_question_response(
     request_id: uuid::Uuid,
     answers: Vec<QuestionAnswer>,
 ) -> Option<PermissionPublish> {
-    let Some(session) = session_manager.get_active_mut() else {
-        return None;
-    };
+    let session = session_manager.get_active_mut()?;
 
     let is_remote = session.is_remote();
 
