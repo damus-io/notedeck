@@ -270,7 +270,7 @@ impl<'a> DaveUi<'a> {
                         .inner_margin(egui::Margin::same(8))
                         .fill(ui.visuals().extreme_bg_color)
                         .corner_radius(12.0)
-                        .show(ui, |ui| self.inputbox(app_ctx.i18n, ui))
+                        .show(ui, |ui| self.inputbox(app_ctx, ui))
                         .inner;
 
                     {
@@ -1016,7 +1016,8 @@ impl<'a> DaveUi<'a> {
         note_action
     }
 
-    fn inputbox(&mut self, i18n: &mut Localization, ui: &mut egui::Ui) -> DaveResponse {
+    fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        let i18n = &mut *app_ctx.i18n;
         //ui.add_space(Self::chat_margin(ui.ctx()) as f32);
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
@@ -1073,7 +1074,13 @@ impl<'a> DaveUi<'a> {
                         )
                         .frame(false),
                 );
-                notedeck_ui::include_input(ui, &r);
+                notedeck_ui::context_menu::input_context(
+                    ui,
+                    &r,
+                    app_ctx.clipboard,
+                    self.input,
+                    notedeck_ui::context_menu::PasteBehavior::Append,
+                );
 
                 // Request focus if flagged (e.g., after spawning a new agent or entering tentative state)
                 if *self.focus_requested {
@@ -1102,7 +1109,7 @@ impl<'a> DaveUi<'a> {
 
     fn user_chat(&self, msg: &str, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            egui::Frame::new()
+            let r = egui::Frame::new()
                 .inner_margin(10.0)
                 .corner_radius(10.0)
                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
@@ -1112,7 +1119,13 @@ impl<'a> DaveUi<'a> {
                             .wrap_mode(egui::TextWrapMode::Wrap)
                             .selectable(true),
                     );
-                })
+                });
+            r.response.context_menu(|ui| {
+                if ui.button("Copy").clicked() {
+                    ui.ctx().copy_text(msg.to_owned());
+                    ui.close_menu();
+                }
+            });
         });
     }
 
@@ -1120,7 +1133,16 @@ impl<'a> DaveUi<'a> {
         let elements = msg.parsed_elements();
         let partial = msg.partial();
         let buffer = msg.buffer();
-        markdown_ui::render_assistant_message(elements, partial, buffer, ui);
+        let text = msg.text().to_owned();
+        let r = ui.scope(|ui| {
+            markdown_ui::render_assistant_message(elements, partial, buffer, ui);
+        });
+        r.response.context_menu(|ui| {
+            if ui.button("Copy").clicked() {
+                ui.ctx().copy_text(text.clone());
+                ui.close_menu();
+            }
+        });
     }
 }
 
