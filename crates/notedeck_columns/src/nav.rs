@@ -599,6 +599,7 @@ fn process_render_nav_action(
             ctx.img_cache,
             ui.ctx(),
             ctx.accounts,
+            ctx.pool,
         ),
         RenderNavAction::RepostAction(action) => {
             action.process(ctx.ndb, &ctx.accounts.get_selected_account().key, ctx.pool)
@@ -714,13 +715,14 @@ fn render_nav_body(
             .ui(ui)
             .map_output(RenderNavAction::RelayAction),
 
-        Route::Settings => SettingsView::new(
-            ctx.settings.get_settings_mut(),
-            &mut note_context,
-            &mut app.note_options,
-        )
-        .ui(ui)
-        .map_output(RenderNavAction::SettingsAction),
+        Route::Settings => {
+            let mut view = SettingsView::new(
+                ctx.settings.get_settings_mut(),
+                &mut note_context,
+                &mut app.note_options,
+            );
+            view.ui(ui).map_output(RenderNavAction::SettingsAction)
+        }
 
         Route::Reply(id) => {
             let txn = if let Ok(txn) = Transaction::new(ctx.ndb) {

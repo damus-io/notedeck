@@ -3,6 +3,9 @@ use crate::{
     nip05::Nip05Cache, wallet::GlobalWallet, zaps::Zaps, Args, DataPath, Images, JobPool,
     MediaJobs, NoteCache, SettingsHandler, UnknownIds,
 };
+
+#[cfg(not(target_os = "android"))]
+use crate::notifications::NotificationManager;
 use egui_winit::clipboard::Clipboard;
 
 use enostr::RelayPool;
@@ -31,6 +34,10 @@ pub struct AppContext<'a> {
     pub media_jobs: &'a mut MediaJobs,
     pub nip05_cache: &'a mut Nip05Cache,
     pub i18n: &'a mut Localization,
+
+    /// Desktop notification manager (macOS/Linux only).
+    #[cfg(not(target_os = "android"))]
+    pub notification_manager: &'a mut Option<NotificationManager>,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

@@ -1,5 +1,7 @@
 plugins {
     id "com.android.application"
+    id "org.jetbrains.kotlin.android"
+    id "com.google.gms.google-services"
 }
 
 def keystorePropertiesFile = rootProject.file("keystore.properties")
@@ -10,10 +12,10 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace "com.damus.notedeck"
-    compileSdk 31
+    compileSdk 34
 
     defaultConfig {
-        minSdk 19
+        minSdk 26  // Raised for foreground service type
         targetSdk 34
         versionCode 1
         versionName "1"
@@ -38,12 +40,37 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildFeatures {
+        buildConfig = true
+    }
+    kotlinOptions {
+        jvmTarget = "17"
     }
 }
 
 dependencies {
-    implementation "com.google.android.material:material:1.5.0"
+    implementation "com.google.android.material:material:1.11.0"
     implementation "androidx.games:games-activity:4.0.0"
+
+    // Firebase
+    implementation platform("com.google.firebase:firebase-bom:32.7.0")
+    implementation "com.google.firebase:firebase-messaging-ktx"
+
+    // Kotlin
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.22"
+
+    // AndroidX Core for notification compat
+    implementation "androidx.core:core-ktx:1.12.0"
+
+    // Lifecycle for service management
+    implementation "androidx.lifecycle:lifecycle-service:2.7.0"
+
+    // Coroutines for async operations
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+
+    // OkHttp for API calls
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
 }

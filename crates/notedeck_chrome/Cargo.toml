@@ -66,6 +66,11 @@ tracing-logcat = "0.1.0"
 #android-activity = { version = "0.6", features = [ "game-activity" ] }
 egui-winit.workspace = true
 android-keyring = { workspace = true }
+jni = "0.21"
+enostr = { workspace = true }
+ewebsock = { workspace = true }
+bech32 = { workspace = true }
+hex = { workspace = true }
 
 # Fix debug mode crash on macOS: objc2-foundation 0.2.2 has incorrect type
 # encoding for NSFastEnumeration. The relax-sign-encoding feature allows
@@ -76,8 +81,13 @@ objc2 = { version = "0.5.2", features = ["relax-sign-encoding"] }
 [package.metadata.bundle]
 name = "Notedeck"
 short_description = "The nostr browser"
+long_description = "A nostr browser and client for the decentralized social network"
 identifier = "com.damus.notedeck"
 icon = ["assets/app_icon.icns"]
+version = "0.7.1"
+copyright = "Copyright © 2025 Damus, Nostr Inc."
+category = "Social Networking"
+osx_minimum_system_version = "10.15"
 
 [package.metadata.android.manifest.queries]
 intent = [

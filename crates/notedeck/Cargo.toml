@@ -61,6 +61,15 @@ http-body-util = { workspace = true }
 # (Windows uses ring, others use aws-lc-rs)
 keyring = { workspace = true }
 
+[target.'cfg(not(target_os = "android"))'.dependencies]
+notify-rust = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-user-notifications = { workspace = true }
+objc2-foundation = { workspace = true }
+objc2 = { workspace = true }
+block2 = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
@@ -69,6 +78,7 @@ tokio = { workspace = true }
 jni = { workspace = true }
 android-activity = { workspace = true }
 ndk-context = "0.1"
+base64 = { workspace = true }
 
 [features]
 puffin = ["puffin_egui", "dep:puffin"]
