@@ -145,13 +145,22 @@ impl<'a> StatusBadge<'a> {
         let desired_size =
             Vec2::new(galley.size().x + keybind_extra, galley.size().y) + padding * 2.0;
 
-        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
 
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
 
             // Full pill rounding (half of height)
             let rounding = rect.height() / 2.0;
+
+            // Adjust background color based on hover/click state
+            let bg_color = if response.is_pointer_button_down_on() {
+                bg_color.gamma_multiply(1.8)
+            } else if response.hovered() {
+                bg_color.gamma_multiply(1.4)
+            } else {
+                bg_color
+            };
 
             // Background
             painter.rect_filled(rect, rounding, bg_color);

@@ -1845,6 +1845,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.pending_perm_responses.push(publish);
                 None
             }
+            UiActionResult::ToggleAutoSteal => {
+                let new_state = crate::update::toggle_auto_steal(
+                    &mut self.session_manager,
+                    &mut self.scene,
+                    self.show_scene,
+                    self.auto_steal_focus,
+                    &mut self.home_session,
+                );
+                self.auto_steal_focus = new_state;
+                None
+            }
             UiActionResult::Handled => None,
         }
     }

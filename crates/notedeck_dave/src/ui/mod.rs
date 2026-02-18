@@ -649,6 +649,8 @@ pub enum UiActionResult {
     AppAction(notedeck::AppAction),
     /// Permission response needs relay publishing.
     PublishPermissionResponse(update::PermissionPublish),
+    /// Toggle auto-steal focus mode (needs state from DaveApp)
+    ToggleAutoSteal,
 }
 
 /// Handle a UI action from DaveUi.
@@ -704,6 +706,14 @@ pub fn handle_ui_action(
             UiActionResult::Handled,
             UiActionResult::PublishPermissionResponse,
         ),
+        DaveAction::TogglePlanMode => {
+            update::toggle_plan_mode(session_manager, backend, ctx);
+            if let Some(session) = session_manager.get_active_mut() {
+                session.focus_requested = true;
+            }
+            UiActionResult::Handled
+        }
+        DaveAction::ToggleAutoSteal => UiActionResult::ToggleAutoSteal,
         DaveAction::ExitPlanMode {
             request_id,
             approved,

@@ -123,6 +123,10 @@ pub enum DaveAction {
         request_id: Uuid,
         approved: bool,
     },
+    /// Toggle plan mode (clicked PLAN badge)
+    TogglePlanMode,
+    /// Toggle auto-steal focus mode (clicked AUTO badge)
+    ToggleAutoSteal,
 }
 
 impl<'a> DaveUi<'a> {
@@ -252,7 +256,7 @@ impl<'a> DaveUi<'a> {
                     let margin = self.chat_margin(ui.ctx());
                     let bottom_margin = 100;
 
-                    let r = egui::Frame::new()
+                    let mut r = egui::Frame::new()
                         .outer_margin(egui::Margin {
                             left: margin,
                             right: margin,
@@ -266,22 +270,40 @@ impl<'a> DaveUi<'a> {
                         .inner;
 
                     if let Some(git_status) = &mut self.git_status {
+                        // Capture badge state before borrowing git_status
+                        let plan_mode_active = self.plan_mode_active;
+                        let auto_steal_focus = self.auto_steal_focus;
+                        let is_agentic = self.ai_mode == AiMode::Agentic;
+
                         // Explicitly reserve height so bottom_up layout
                         // keeps the chat ScrollArea from overlapping.
                         let h = if git_status.expanded { 200.0 } else { 24.0 };
                         let w = ui.available_width();
-                        ui.allocate_ui(egui::vec2(w, h), |ui| {
-                            egui::Frame::new()
-                                .outer_margin(egui::Margin {
-                                    left: margin,
-                                    right: margin,
-                                    top: 4,
-                                    bottom: 0,
-                                })
-                                .show(ui, |ui| {
-                                    git_status_ui::git_status_bar_ui(git_status, ui);
-                                });
-                        });
+                        let badge_action = ui
+                            .allocate_ui(egui::vec2(w, h), |ui| {
+                                egui::Frame::new()
+                                    .outer_margin(egui::Margin {
+                                        left: margin,
+                                        right: margin,
+                                        top: 4,
+                                        bottom: 0,
+                                    })
+                                    .show(ui, |ui| {
+                                        status_bar_ui(
+                                            git_status,
+                                            is_agentic,
+                                            plan_mode_active,
+                                            auto_steal_focus,
+                                            ui,
+                                        )
+                                    })
+                                    .inner
+                            })
+                            .inner;
+
+                        if let Some(action) = badge_action {
+                            r = DaveResponse::new(action).or(r);
+                        }
                     }
 
                     let chat_response = egui::ScrollArea::vertical()
@@ -1046,39 +1068,6 @@ impl<'a> DaveUi<'a> {
                     dave_response = DaveResponse::send();
                 }
 
-                // Show plan mode and auto-steal indicators only in Agentic mode
-                if self.ai_mode == AiMode::Agentic {
-                    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
-
-                    // Plan mode indicator with optional keybind hint when Ctrl is held
-                    let mut plan_badge =
-                        super::badge::StatusBadge::new("PLAN").variant(if self.plan_mode_active {
-                            super::badge::BadgeVariant::Info
-                        } else {
-                            super::badge::BadgeVariant::Default
-                        });
-                    if ctrl_held {
-                        plan_badge = plan_badge.keybind("M");
-                    }
-                    plan_badge
-                        .show(ui)
-                        .on_hover_text("Ctrl+M to toggle plan mode");
-
-                    // Auto-steal focus indicator
-                    let mut auto_badge =
-                        super::badge::StatusBadge::new("AUTO").variant(if self.auto_steal_focus {
-                            super::badge::BadgeVariant::Info
-                        } else {
-                            super::badge::BadgeVariant::Default
-                        });
-                    if ctrl_held {
-                        auto_badge = auto_badge.keybind("\\");
-                    }
-                    auto_badge
-                        .show(ui)
-                        .on_hover_text("Ctrl+\\ to toggle auto-focus mode");
-                }
-
                 let r = ui.add(
                     egui::TextEdit::multiline(self.input)
                         .desired_width(f32::INFINITY)
@@ -1148,4 +1137,90 @@ impl<'a> DaveUi<'a> {
         let buffer = msg.buffer();
         markdown_ui::render_assistant_message(elements, partial, buffer, ui);
     }
+}
+
+/// Renders the status bar containing git status and toggle badges.
+fn status_bar_ui(
+    git_status: &mut GitStatusCache,
+    is_agentic: bool,
+    plan_mode_active: bool,
+    auto_steal_focus: bool,
+    ui: &mut egui::Ui,
+) -> Option<DaveAction> {
+    let snapshot = git_status_ui::StatusSnapshot::from_cache(git_status);
+
+    ui.vertical(|ui| {
+        let action = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+
+                git_status_ui::git_status_content_ui(git_status, &snapshot, ui);
+
+                // Right-aligned section: badges then refresh
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let action = if is_agentic {
+                        toggle_badges_ui(ui, plan_mode_active, auto_steal_focus)
+                    } else {
+                        None
+                    };
+
+                    git_status_ui::git_refresh_button_ui(git_status, ui);
+
+                    action
+                })
+                .inner
+            })
+            .inner;
+
+        git_status_ui::git_expanded_files_ui(git_status, &snapshot, ui);
+
+        action
+    })
+    .inner
+}
+
+/// Render clickable PLAN and AUTO toggle badges. Returns an action if clicked.
+fn toggle_badges_ui(
+    ui: &mut egui::Ui,
+    plan_mode_active: bool,
+    auto_steal_focus: bool,
+) -> Option<DaveAction> {
+    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+    let mut action = None;
+
+    // AUTO badge (rendered first in right-to-left, so it appears rightmost)
+    let mut auto_badge = super::badge::StatusBadge::new("AUTO").variant(if auto_steal_focus {
+        super::badge::BadgeVariant::Info
+    } else {
+        super::badge::BadgeVariant::Default
+    });
+    if ctrl_held {
+        auto_badge = auto_badge.keybind("\\");
+    }
+    if auto_badge
+        .show(ui)
+        .on_hover_text("Click or Ctrl+\\ to toggle auto-focus mode")
+        .clicked()
+    {
+        action = Some(DaveAction::ToggleAutoSteal);
+    }
+
+    // PLAN badge
+    let mut plan_badge = super::badge::StatusBadge::new("PLAN").variant(if plan_mode_active {
+        super::badge::BadgeVariant::Info
+    } else {
+        super::badge::BadgeVariant::Default
+    });
+    if ctrl_held {
+        plan_badge = plan_badge.keybind("M");
+    }
+    if plan_badge
+        .show(ui)
+        .on_hover_text("Click or Ctrl+M to toggle plan mode")
+        .clicked()
+    {
+        action = Some(DaveAction::TogglePlanMode);
+    }
+
+    action
 }
