@@ -600,7 +600,11 @@ pub enum SearchType {
 
 impl SearchType {
     fn get_type(query: &str) -> Self {
-        if query.len() == 63 && query.starts_with("note1") {
+        if query.starts_with("nevent1") {
+            if let Some(noteid) = NoteId::from_nevent_bech(query) {
+                return SearchType::NoteId(noteid);
+            }
+        } else if query.len() == 63 && query.starts_with("note1") {
             if let Some(noteid) = NoteId::from_bech(query) {
                 return SearchType::NoteId(noteid);
             }
