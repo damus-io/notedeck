@@ -75,30 +75,6 @@ pub fn query_replaceable_filtered(
     }
 }
 
-/// Deduplicate a batch of note keys by `d` tag, keeping only the one with
-/// the highest `created_at` for each unique d-tag value. Useful when
-/// `poll_for_notes` returns multiple revisions of the same replaceable event.
-pub fn dedup_by_d_tag(ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) -> Vec<NoteKey> {
-    let mut best: std::collections::HashMap<String, (u64, NoteKey)> =
-        std::collections::HashMap::new();
-    for key in keys {
-        let Ok(note) = ndb.get_note_by_key(txn, *key) else {
-            continue;
-        };
-        let Some(d) = get_tag_value(&note, "d") else {
-            continue;
-        };
-        let ts = note.created_at();
-        if let Some((existing_ts, _)) = best.get(d) {
-            if ts <= *existing_ts {
-                continue;
-            }
-        }
-        best.insert(d.to_string(), (ts, *key));
-    }
-    best.into_values().map(|(_, key)| key).collect()
-}
-
 /// Result of loading session messages, including threading info for live events.
 pub struct LoadedSession {
     pub messages: Vec<Message>,
