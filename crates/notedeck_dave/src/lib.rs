@@ -185,6 +185,30 @@ fn pns_ingest(ndb: &nostrdb::Ndb, event_json: &str, secret_key: &[u8; 32]) {
     }
 }
 
+/// Ingest a freshly-built event: PNS-wrap into local ndb and push to the
+/// relay publish queue. Logs on success with `event_desc` and on failure.
+/// Returns `true` if the event was queued successfully.
+fn queue_built_event(
+    result: Result<session_events::BuiltEvent, session_events::EventBuildError>,
+    event_desc: &str,
+    ndb: &nostrdb::Ndb,
+    sk: &[u8; 32],
+    queue: &mut Vec<session_events::BuiltEvent>,
+) -> bool {
+    match result {
+        Ok(evt) => {
+            tracing::info!("{}", event_desc);
+            pns_ingest(ndb, &evt.note_json, sk);
+            queue.push(evt);
+            true
+        }
+        Err(e) => {
+            tracing::error!("failed to build event ({}): {}", event_desc, e);
+            false
+        }
+    }
+}
+
 /// Build and ingest a live kind-1988 event into ndb (via PNS wrapping).
 ///
 /// Extracts cwd and session ID from the session's agentic data,
@@ -1122,23 +1146,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let cwd = agentic.cwd.to_string_lossy();
             let status = session.status().as_str();
 
-            match session_events::build_session_state_event(
-                &claude_sid,
-                &session.title,
-                &cwd,
-                status,
-                &self.hostname,
+            queue_built_event(
+                session_events::build_session_state_event(
+                    &claude_sid,
+                    &session.title,
+                    &cwd,
+                    status,
+                    &self.hostname,
+                    &sk,
+                ),
+                &format!("publishing session state: {} -> {}", claude_sid, status),
+                ctx.ndb,
                 &sk,
-            ) {
-                Ok(evt) => {
-                    tracing::info!("publishing session state: {} -> {}", claude_sid, status,);
-                    pns_ingest(ctx.ndb, &evt.note_json, &sk);
-                    self.pending_relay_events.push(evt);
-                }
-                Err(e) => {
-                    tracing::error!("failed to build session state event: {}", e);
-                }
-            }
+                &mut self.pending_relay_events,
+            );
 
             session.state_dirty = false;
         }
@@ -1156,26 +1177,23 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         for info in std::mem::take(&mut self.pending_deletions) {
-            match session_events::build_session_state_event(
-                &info.claude_session_id,
-                &info.title,
-                &info.cwd,
-                "deleted",
-                &self.hostname,
+            queue_built_event(
+                session_events::build_session_state_event(
+                    &info.claude_session_id,
+                    &info.title,
+                    &info.cwd,
+                    "deleted",
+                    &self.hostname,
+                    &sk,
+                ),
+                &format!(
+                    "publishing deleted session state: {}",
+                    info.claude_session_id
+                ),
+                ctx.ndb,
                 &sk,
-            ) {
-                Ok(evt) => {
-                    tracing::info!(
-                        "publishing deleted session state: {}",
-                        info.claude_session_id,
-                    );
-                    pns_ingest(ctx.ndb, &evt.note_json, &sk);
-                    self.pending_relay_events.push(evt);
-                }
-                Err(e) => {
-                    tracing::error!("failed to build deleted session state event: {}", e);
-                }
-            }
+                &mut self.pending_relay_events,
+            );
         }
     }
 
@@ -1217,27 +1235,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             };
 
-            match session_events::build_permission_response_event(
-                &resp.perm_id,
-                request_note_id,
-                resp.allowed,
-                resp.message.as_deref(),
-                &session_id,
+            queue_built_event(
+                session_events::build_permission_response_event(
+                    &resp.perm_id,
+                    request_note_id,
+                    resp.allowed,
+                    resp.message.as_deref(),
+                    &session_id,
+                    &sk,
+                ),
+                &format!(
+                    "queued remote permission response for {} ({})",
+                    resp.perm_id,
+                    if resp.allowed { "allow" } else { "deny" }
+                ),
+                ctx.ndb,
                 &sk,
-            ) {
-                Ok(evt) => {
-                    tracing::info!(
-                        "queued remote permission response for {} ({})",
-                        resp.perm_id,
-                        if resp.allowed { "allow" } else { "deny" }
-                    );
-                    pns_ingest(ctx.ndb, &evt.note_json, &sk);
-                    self.pending_relay_events.push(evt);
-                }
-                Err(e) => {
-                    tracing::error!("failed to build permission response event: {}", e);
-                }
-            }
+                &mut self.pending_relay_events,
+            );
         }
     }
 
