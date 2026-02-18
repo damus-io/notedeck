@@ -7,6 +7,7 @@ pub mod latest;
 pub mod network;
 pub mod renderable;
 pub mod static_imgs;
+pub mod webp;
 
 pub use action::{MediaAction, MediaInfo, ViewMediaInfo};
 pub use blur::{

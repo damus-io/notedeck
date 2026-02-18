@@ -57,7 +57,7 @@ pub use fonts::NamedFontFamily;
 pub use i18n::{CacheStats, FluentArgs, FluentValue, LanguageIdentifier, Localization};
 pub use imgcache::{
     Animation, GifState, GifStateMap, ImageFrame, Images, LatestTexture, MediaCache,
-    MediaCacheType, TextureFrame, TextureState, TexturesCache,
+    MediaCacheType, TextureFrame, TextureState, TexturesCache, WebpState, WebpStateMap,
 };
 pub use jobs::{
     deliver_completed_media_job, run_media_job_pre_action, JobCache, JobPool, MediaJobSender,

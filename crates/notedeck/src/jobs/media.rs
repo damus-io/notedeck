@@ -15,6 +15,7 @@ pub enum MediaJobKind {
     Blurhash,
     StaticImg,
     AnimatedImg,
+    WebpImg,
 }
 
 pub enum MediaJobResult {
@@ -42,7 +43,6 @@ pub fn deliver_completed_media_job(
                 Ok(a) => TextureState::Loaded(a),
                 Err(e) => TextureState::Error(e),
             };
-
             tex_cache.animated.cache.insert(id, r);
         }
         MediaJobResult::Blurhash(texture_handle) => {
@@ -73,6 +73,9 @@ pub fn run_media_job_pre_action(job_id: &JobId<MediaJobKind>, tex_cache: &mut Te
         }
         MediaJobKind::AnimatedImg => {
             tex_cache.animated.cache.insert(id, TextureState::Pending);
+        }
+        MediaJobKind::WebpImg => {
+            tex_cache.webp.cache.insert(id, TextureState::Pending);
         }
     }
 }
