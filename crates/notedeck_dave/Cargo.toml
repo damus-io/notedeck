@@ -30,6 +30,7 @@ egui_extras = { workspace = true }
 md-stream = { workspace = true }
 similar = "2"
 dirs = "5"
+gethostname = "1"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 rfd = { workspace = true }
@@ -40,6 +41,7 @@ objc2-app-kit = { version = "0.3.1", features = ["NSApplication", "NSResponder",
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+tempfile = { workspace = true }
 
 [[bin]]
 name = "notedeck-spawn"

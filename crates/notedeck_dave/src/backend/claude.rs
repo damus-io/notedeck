@@ -555,9 +555,9 @@ async fn session_actor(
                                     }
                                 }
                                 Some(Err(err)) => {
-                                    tracing::error!("Claude stream error: {}", err);
-                                    let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
-                                    stream_done = true;
+                                    // Non-fatal: unknown message types (e.g. rate_limit_event)
+                                    // cause deserialization errors but the stream continues.
+                                    tracing::warn!("Claude stream message skipped: {}", err);
                                 }
                                 None => {
                                     stream_done = true;
@@ -620,24 +620,28 @@ impl AiBackend for ClaudeBackend {
     ) {
         let (response_tx, response_rx) = mpsc::channel();
 
-        // Determine if this is the first message in the session
-        let is_first_message = messages
-            .iter()
-            .filter(|m| matches!(m, Message::User(_)))
-            .count()
-            == 1;
-
-        // For first message, send full prompt; for continuation, just the latest message
-        let prompt = if is_first_message {
-            Self::messages_to_prompt(&messages)
-        } else {
+        // For resumed sessions, always send just the latest message since
+        // Claude Code already has the full conversation context via --resume.
+        // For new sessions, send full prompt on the first message.
+        let prompt = if resume_session_id.is_some() {
             Self::get_latest_user_message(&messages)
+        } else {
+            let is_first_message = messages
+                .iter()
+                .filter(|m| matches!(m, Message::User(_)))
+                .count()
+                == 1;
+            if is_first_message {
+                Self::messages_to_prompt(&messages)
+            } else {
+                Self::get_latest_user_message(&messages)
+            }
         };
 
         tracing::debug!(
-            "Sending request to Claude Code: session={}, is_first={}, prompt length: {}, preview: {:?}",
+            "Sending request to Claude Code: session={}, resumed={}, prompt length: {}, preview: {:?}",
             session_id,
-            is_first_message,
+            resume_session_id.is_some(),
             prompt.len(),
             &prompt[..prompt.len().min(100)]
         );

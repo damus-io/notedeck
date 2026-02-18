@@ -21,3 +21,6 @@ mio = { workspace = true }
 tokio = { workspace = true }
 tokenator = { workspace = true }
 hashbrown = { workspace = true }
+hkdf = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }

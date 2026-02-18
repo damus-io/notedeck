@@ -36,4 +36,27 @@ impl AgentStatus {
             AgentStatus::Done => "Done",
         }
     }
+
+    /// Get the status as a lowercase string for serialization (nostr events).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentStatus::Idle => "idle",
+            AgentStatus::Working => "working",
+            AgentStatus::NeedsInput => "needs_input",
+            AgentStatus::Error => "error",
+            AgentStatus::Done => "done",
+        }
+    }
+
+    /// Parse a status string from a nostr event (kind-31988 content).
+    pub fn from_status_str(s: &str) -> Option<Self> {
+        match s {
+            "idle" => Some(AgentStatus::Idle),
+            "working" => Some(AgentStatus::Working),
+            "needs_input" => Some(AgentStatus::NeedsInput),
+            "error" => Some(AgentStatus::Error),
+            "done" => Some(AgentStatus::Done),
+            _ => None,
+        }
+    }
 }

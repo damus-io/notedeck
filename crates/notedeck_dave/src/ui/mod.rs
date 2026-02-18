@@ -34,10 +34,62 @@ use crate::agent_status::AgentStatus;
 use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
-use crate::session::{PermissionMessageState, SessionId, SessionManager};
+use crate::session::{ChatSession, PermissionMessageState, SessionId, SessionManager};
 use crate::session_discovery::discover_sessions;
 use crate::update;
 use crate::DaveOverlay;
+
+/// Build a DaveUi from a session, wiring up all the common builder fields.
+fn build_dave_ui<'a>(
+    session: &'a mut ChatSession,
+    model_config: &ModelConfig,
+    is_interrupt_pending: bool,
+    auto_steal_focus: bool,
+) -> DaveUi<'a> {
+    let is_working = session.status() == AgentStatus::Working;
+    let has_pending_permission = session.has_pending_permissions();
+    let plan_mode_active = session.is_plan_mode();
+    let is_remote = session.is_remote();
+
+    let mut ui_builder = DaveUi::new(
+        model_config.trial,
+        &session.chat,
+        &mut session.input,
+        &mut session.focus_requested,
+        session.ai_mode,
+    )
+    .is_working(is_working)
+    .interrupt_pending(is_interrupt_pending)
+    .has_pending_permission(has_pending_permission)
+    .plan_mode_active(plan_mode_active)
+    .auto_steal_focus(auto_steal_focus)
+    .is_remote(is_remote);
+
+    if let Some(agentic) = &mut session.agentic {
+        ui_builder = ui_builder
+            .permission_message_state(agentic.permission_message_state)
+            .question_answers(&mut agentic.question_answers)
+            .question_index(&mut agentic.question_index)
+            .is_compacting(agentic.is_compacting);
+
+        // Only show git status for local sessions
+        if !is_remote {
+            ui_builder = ui_builder.git_status(&mut agentic.git_status);
+        }
+    }
+
+    ui_builder
+}
+
+/// Set tentative permission state on the active session's agentic data.
+fn set_tentative_state(session_manager: &mut SessionManager, state: PermissionMessageState) {
+    if let Some(session) = session_manager.get_active_mut() {
+        if let Some(agentic) = &mut session.agentic {
+            agentic.permission_message_state = state;
+        }
+        session.focus_requested = true;
+    }
+}
 
 /// UI result from overlay rendering
 pub enum OverlayResult {
@@ -54,6 +106,8 @@ pub enum OverlayResult {
         cwd: std::path::PathBuf,
         session_id: String,
         title: String,
+        /// Path to the JSONL file for archive conversion
+        file_path: std::path::PathBuf,
     },
     /// Create a new session in the given directory
     NewSession { cwd: std::path::PathBuf },
@@ -120,11 +174,13 @@ pub fn session_picker_overlay_ui(
                 cwd,
                 session_id,
                 title,
+                file_path,
             } => {
                 return OverlayResult::ResumeSession {
                     cwd,
                     session_id,
                     title,
+                    file_path,
                 };
             }
             SessionPickerAction::NewSession { cwd } => {
@@ -209,34 +265,14 @@ pub fn scene_ui(
                                 ui.heading(&session.title);
                                 ui.separator();
 
-                                let is_working = session.status() == AgentStatus::Working;
-                                let has_pending_permission = session.has_pending_permissions();
-                                let plan_mode_active = session.is_plan_mode();
-
-                                let mut ui_builder = DaveUi::new(
-                                    model_config.trial,
-                                    &session.chat,
-                                    &mut session.input,
-                                    &mut session.focus_requested,
-                                    session.ai_mode,
+                                let response = build_dave_ui(
+                                    session,
+                                    model_config,
+                                    is_interrupt_pending,
+                                    auto_steal_focus,
                                 )
                                 .compact(true)
-                                .is_working(is_working)
-                                .interrupt_pending(is_interrupt_pending)
-                                .has_pending_permission(has_pending_permission)
-                                .plan_mode_active(plan_mode_active)
-                                .auto_steal_focus(auto_steal_focus);
-
-                                if let Some(agentic) = &mut session.agentic {
-                                    ui_builder = ui_builder
-                                        .permission_message_state(agentic.permission_message_state)
-                                        .question_answers(&mut agentic.question_answers)
-                                        .question_index(&mut agentic.question_index)
-                                        .is_compacting(agentic.is_compacting)
-                                        .git_status(&mut agentic.git_status);
-                                }
-
-                                let response = ui_builder.ui(app_ctx, ui);
+                                .ui(app_ctx, ui);
                                 if response.action.is_some() {
                                     dave_response = response;
                                 }
@@ -287,12 +323,15 @@ pub fn desktop_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
-    ai_mode: AiMode,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> (DaveResponse, Option<SessionListAction>, bool) {
     let available = ui.available_rect_before_wrap();
-    let sidebar_width = 280.0;
+    let sidebar_width = if available.width() < 830.0 {
+        200.0
+    } else {
+        280.0
+    };
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
     let mut toggle_scene = false;
 
@@ -309,7 +348,11 @@ pub fn desktop_ui(
                 .fill(ui.visuals().faint_bg_color)
                 .inner_margin(egui::Margin::symmetric(8, 12))
                 .show(ui, |ui| {
-                    if ai_mode == AiMode::Agentic {
+                    let has_agentic = session_manager
+                        .sessions_ordered()
+                        .iter()
+                        .any(|s| s.ai_mode == AiMode::Agentic);
+                    if has_agentic {
                         ui.horizontal(|ui| {
                             if ui
                                 .button("Scene View")
@@ -324,7 +367,7 @@ pub fn desktop_ui(
                         });
                         ui.separator();
                     }
-                    SessionListUi::new(session_manager, focus_queue, ctrl_held, ai_mode).ui(ui)
+                    SessionListUi::new(session_manager, focus_queue, ctrl_held).ui(ui)
                 })
                 .inner
         })
@@ -333,33 +376,13 @@ pub fn desktop_ui(
     let chat_response = ui
         .allocate_new_ui(egui::UiBuilder::new().max_rect(chat_rect), |ui| {
             if let Some(session) = session_manager.get_active_mut() {
-                let is_working = session.status() == AgentStatus::Working;
-                let has_pending_permission = session.has_pending_permissions();
-                let plan_mode_active = session.is_plan_mode();
-
-                let mut ui_builder = DaveUi::new(
-                    model_config.trial,
-                    &session.chat,
-                    &mut session.input,
-                    &mut session.focus_requested,
-                    session.ai_mode,
+                build_dave_ui(
+                    session,
+                    model_config,
+                    is_interrupt_pending,
+                    auto_steal_focus,
                 )
-                .is_working(is_working)
-                .interrupt_pending(is_interrupt_pending)
-                .has_pending_permission(has_pending_permission)
-                .plan_mode_active(plan_mode_active)
-                .auto_steal_focus(auto_steal_focus);
-
-                if let Some(agentic) = &mut session.agentic {
-                    ui_builder = ui_builder
-                        .permission_message_state(agentic.permission_message_state)
-                        .question_answers(&mut agentic.question_answers)
-                        .question_index(&mut agentic.question_index)
-                        .is_compacting(agentic.is_compacting)
-                        .git_status(&mut agentic.git_status);
-                }
-
-                ui_builder.ui(app_ctx, ui)
+                .ui(app_ctx, ui)
             } else {
                 DaveResponse::default()
             }
@@ -377,7 +400,6 @@ pub fn narrow_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
-    ai_mode: AiMode,
     show_session_list: bool,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
@@ -388,38 +410,19 @@ pub fn narrow_ui(
             .fill(ui.visuals().faint_bg_color)
             .inner_margin(egui::Margin::symmetric(8, 12))
             .show(ui, |ui| {
-                SessionListUi::new(session_manager, focus_queue, ctrl_held, ai_mode).ui(ui)
+                SessionListUi::new(session_manager, focus_queue, ctrl_held).ui(ui)
             })
             .inner;
         (DaveResponse::default(), session_action)
     } else if let Some(session) = session_manager.get_active_mut() {
-        let is_working = session.status() == AgentStatus::Working;
-        let has_pending_permission = session.has_pending_permissions();
-        let plan_mode_active = session.is_plan_mode();
-
-        let mut ui_builder = DaveUi::new(
-            model_config.trial,
-            &session.chat,
-            &mut session.input,
-            &mut session.focus_requested,
-            session.ai_mode,
+        let response = build_dave_ui(
+            session,
+            model_config,
+            is_interrupt_pending,
+            auto_steal_focus,
         )
-        .is_working(is_working)
-        .interrupt_pending(is_interrupt_pending)
-        .has_pending_permission(has_pending_permission)
-        .plan_mode_active(plan_mode_active)
-        .auto_steal_focus(auto_steal_focus);
-
-        if let Some(agentic) = &mut session.agentic {
-            ui_builder = ui_builder
-                .permission_message_state(agentic.permission_message_state)
-                .question_answers(&mut agentic.question_answers)
-                .question_index(&mut agentic.question_index)
-                .is_compacting(agentic.is_compacting)
-                .git_status(&mut agentic.git_status);
-        }
-
-        (ui_builder.ui(app_ctx, ui), None)
+        .ui(app_ctx, ui);
+        (response, None)
     } else {
         (DaveResponse::default(), None)
     }
@@ -433,6 +436,8 @@ pub enum KeyActionResult {
     CloneAgent,
     DeleteSession(SessionId),
     SetAutoSteal(bool),
+    /// Permission response needs relay publishing.
+    PublishPermissionResponse(update::PermissionPublish),
 }
 
 /// Handle a keybinding action.
@@ -452,7 +457,7 @@ pub fn handle_key_action(
     match key_action {
         KeyAction::AcceptPermission => {
             if let Some(request_id) = update::first_pending_permission(session_manager) {
-                update::handle_permission_response(
+                let result = update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Allow { message: None },
@@ -460,12 +465,15 @@ pub fn handle_key_action(
                 if let Some(session) = session_manager.get_active_mut() {
                     session.focus_requested = true;
                 }
+                if let Some(publish) = result {
+                    return KeyActionResult::PublishPermissionResponse(publish);
+                }
             }
             KeyActionResult::None
         }
         KeyAction::DenyPermission => {
             if let Some(request_id) = update::first_pending_permission(session_manager) {
-                update::handle_permission_response(
+                let result = update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Deny {
@@ -475,25 +483,18 @@ pub fn handle_key_action(
                 if let Some(session) = session_manager.get_active_mut() {
                     session.focus_requested = true;
                 }
+                if let Some(publish) = result {
+                    return KeyActionResult::PublishPermissionResponse(publish);
+                }
             }
             KeyActionResult::None
         }
         KeyAction::TentativeAccept => {
-            if let Some(session) = session_manager.get_active_mut() {
-                if let Some(agentic) = &mut session.agentic {
-                    agentic.permission_message_state = PermissionMessageState::TentativeAccept;
-                }
-                session.focus_requested = true;
-            }
+            set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
             KeyActionResult::None
         }
         KeyAction::TentativeDeny => {
-            if let Some(session) = session_manager.get_active_mut() {
-                if let Some(agentic) = &mut session.agentic {
-                    agentic.permission_message_state = PermissionMessageState::TentativeDeny;
-                }
-                session.focus_requested = true;
-            }
+            set_tentative_state(session_manager, PermissionMessageState::TentativeDeny);
             KeyActionResult::None
         }
         KeyAction::CancelTentative => {
@@ -572,6 +573,8 @@ pub enum SendActionResult {
     Handled,
     /// Normal send - caller should send the user message
     SendMessage,
+    /// Permission response needs relay publishing.
+    NeedsRelayPublish(update::PermissionPublish),
 }
 
 /// Handle the Send action, including tentative permission states.
@@ -600,11 +603,14 @@ pub fn handle_send_action(
                 if is_exit_plan_mode {
                     update::exit_plan_mode(session_manager, backend, ctx);
                 }
-                update::handle_permission_response(
+                let result = update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Allow { message },
                 );
+                if let Some(publish) = result {
+                    return SendActionResult::NeedsRelayPublish(publish);
+                }
             }
             SendActionResult::Handled
         }
@@ -618,11 +624,14 @@ pub fn handle_send_action(
                 if let Some(session) = session_manager.get_active_mut() {
                     session.input.clear();
                 }
-                update::handle_permission_response(
+                let result = update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Deny { reason },
                 );
+                if let Some(publish) = result {
+                    return SendActionResult::NeedsRelayPublish(publish);
+                }
             }
             SendActionResult::Handled
         }
@@ -638,6 +647,10 @@ pub enum UiActionResult {
     SendAction,
     /// Return an AppAction
     AppAction(notedeck::AppAction),
+    /// Permission response needs relay publishing.
+    PublishPermissionResponse(update::PermissionPublish),
+    /// Toggle auto-steal focus mode (needs state from DaveApp)
+    ToggleAutoSteal,
 }
 
 /// Handle a UI action from DaveUi.
@@ -670,50 +683,48 @@ pub fn handle_ui_action(
         DaveAction::PermissionResponse {
             request_id,
             response,
-        } => {
-            update::handle_permission_response(session_manager, request_id, response);
-            UiActionResult::Handled
-        }
+        } => update::handle_permission_response(session_manager, request_id, response).map_or(
+            UiActionResult::Handled,
+            UiActionResult::PublishPermissionResponse,
+        ),
         DaveAction::Interrupt => {
             update::execute_interrupt(session_manager, backend, ctx);
             UiActionResult::Handled
         }
         DaveAction::TentativeAccept => {
-            if let Some(session) = session_manager.get_active_mut() {
-                if let Some(agentic) = &mut session.agentic {
-                    agentic.permission_message_state = PermissionMessageState::TentativeAccept;
-                }
-                session.focus_requested = true;
-            }
+            set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
             UiActionResult::Handled
         }
         DaveAction::TentativeDeny => {
-            if let Some(session) = session_manager.get_active_mut() {
-                if let Some(agentic) = &mut session.agentic {
-                    agentic.permission_message_state = PermissionMessageState::TentativeDeny;
-                }
-                session.focus_requested = true;
-            }
+            set_tentative_state(session_manager, PermissionMessageState::TentativeDeny);
             UiActionResult::Handled
         }
         DaveAction::QuestionResponse {
             request_id,
             answers,
-        } => {
-            update::handle_question_response(session_manager, request_id, answers);
+        } => update::handle_question_response(session_manager, request_id, answers).map_or(
+            UiActionResult::Handled,
+            UiActionResult::PublishPermissionResponse,
+        ),
+        DaveAction::TogglePlanMode => {
+            update::toggle_plan_mode(session_manager, backend, ctx);
+            if let Some(session) = session_manager.get_active_mut() {
+                session.focus_requested = true;
+            }
             UiActionResult::Handled
         }
+        DaveAction::ToggleAutoSteal => UiActionResult::ToggleAutoSteal,
         DaveAction::ExitPlanMode {
             request_id,
             approved,
         } => {
-            if approved {
+            let result = if approved {
                 update::exit_plan_mode(session_manager, backend, ctx);
                 update::handle_permission_response(
                     session_manager,
                     request_id,
                     PermissionResponse::Allow { message: None },
-                );
+                )
             } else {
                 update::handle_permission_response(
                     session_manager,
@@ -721,9 +732,12 @@ pub fn handle_ui_action(
                     PermissionResponse::Deny {
                         reason: "User rejected plan".into(),
                     },
-                );
-            }
-            UiActionResult::Handled
+                )
+            };
+            result.map_or(
+                UiActionResult::Handled,
+                UiActionResult::PublishPermissionResponse,
+            )
         }
     }
 }

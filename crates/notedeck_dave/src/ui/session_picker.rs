@@ -17,6 +17,8 @@ pub enum SessionPickerAction {
         cwd: PathBuf,
         session_id: String,
         title: String,
+        /// Path to the JSONL file for archive conversion
+        file_path: PathBuf,
     },
     /// User wants to start a new session (no resume)
     NewSession { cwd: PathBuf },
@@ -102,6 +104,7 @@ impl SessionPicker {
                         cwd,
                         session_id: session.session_id.clone(),
                         title: session.summary.clone(),
+                        file_path: session.file_path.clone(),
                     });
                 }
             }
@@ -283,6 +286,7 @@ impl SessionPicker {
                                                     cwd: cwd.clone(),
                                                     session_id: session.session_id.clone(),
                                                     title: session.summary.clone(),
+                                                    file_path: session.file_path.clone(),
                                                 });
                                             }
                                         });

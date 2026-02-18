@@ -48,6 +48,8 @@ pub struct DaveUi<'a> {
     ai_mode: AiMode,
     /// Git status cache for current session (agentic only)
     git_status: Option<&'a mut GitStatusCache>,
+    /// Whether this is a remote session (no local Claude process)
+    is_remote: bool,
 }
 
 /// The response the app generates. The response contains an optional
@@ -121,6 +123,10 @@ pub enum DaveAction {
         request_id: Uuid,
         approved: bool,
     },
+    /// Toggle plan mode (clicked PLAN badge)
+    TogglePlanMode,
+    /// Toggle auto-steal focus mode (clicked AUTO badge)
+    ToggleAutoSteal,
 }
 
 impl<'a> DaveUi<'a> {
@@ -148,6 +154,7 @@ impl<'a> DaveUi<'a> {
             auto_steal_focus: false,
             ai_mode,
             git_status: None,
+            is_remote: false,
         }
     }
 
@@ -208,11 +215,16 @@ impl<'a> DaveUi<'a> {
         self
     }
 
+    pub fn is_remote(mut self, is_remote: bool) -> Self {
+        self.is_remote = is_remote;
+        self
+    }
+
     fn chat_margin(&self, ctx: &egui::Context) -> i8 {
         if self.compact || notedeck::ui::is_narrow(ctx) {
-            20
+            8
         } else {
-            100
+            20
         }
     }
 
@@ -228,6 +240,9 @@ impl<'a> DaveUi<'a> {
 
     /// The main render function. Call this to render Dave
     pub fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
+        // Override Truncate wrap mode that StripBuilder sets when clip=true
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+
         // Skip top buttons in compact mode (scene panel has its own controls)
         let action = if self.compact {
             None
@@ -241,7 +256,7 @@ impl<'a> DaveUi<'a> {
                     let margin = self.chat_margin(ui.ctx());
                     let bottom_margin = 100;
 
-                    let r = egui::Frame::new()
+                    let mut r = egui::Frame::new()
                         .outer_margin(egui::Margin {
                             left: margin,
                             right: margin,
@@ -254,23 +269,48 @@ impl<'a> DaveUi<'a> {
                         .show(ui, |ui| self.inputbox(app_ctx.i18n, ui))
                         .inner;
 
-                    if let Some(git_status) = &mut self.git_status {
-                        // Explicitly reserve height so bottom_up layout
-                        // keeps the chat ScrollArea from overlapping.
-                        let h = if git_status.expanded { 200.0 } else { 24.0 };
-                        let w = ui.available_width();
-                        ui.allocate_ui(egui::vec2(w, h), |ui| {
-                            egui::Frame::new()
-                                .outer_margin(egui::Margin {
-                                    left: margin,
-                                    right: margin,
-                                    top: 4,
-                                    bottom: 0,
+                    {
+                        let plan_mode_active = self.plan_mode_active;
+                        let auto_steal_focus = self.auto_steal_focus;
+                        let is_agentic = self.ai_mode == AiMode::Agentic;
+                        let has_git = self.git_status.is_some();
+
+                        // Show status bar when there's git status or badges to display
+                        if has_git || is_agentic {
+                            // Explicitly reserve height so bottom_up layout
+                            // keeps the chat ScrollArea from overlapping.
+                            let h = if self.git_status.as_ref().is_some_and(|gs| gs.expanded) {
+                                200.0
+                            } else {
+                                24.0
+                            };
+                            let w = ui.available_width();
+                            let badge_action = ui
+                                .allocate_ui(egui::vec2(w, h), |ui| {
+                                    egui::Frame::new()
+                                        .outer_margin(egui::Margin {
+                                            left: margin,
+                                            right: margin,
+                                            top: 4,
+                                            bottom: 0,
+                                        })
+                                        .show(ui, |ui| {
+                                            status_bar_ui(
+                                                self.git_status.as_deref_mut(),
+                                                is_agentic,
+                                                plan_mode_active,
+                                                auto_steal_focus,
+                                                ui,
+                                            )
+                                        })
+                                        .inner
                                 })
-                                .show(ui, |ui| {
-                                    git_status_ui::git_status_bar_ui(git_status, ui);
-                                });
-                        });
+                                .inner;
+
+                            if let Some(action) = badge_action {
+                                r = DaveResponse::new(action).or(r);
+                            }
+                        }
                     }
 
                     let chat_response = egui::ScrollArea::vertical()
@@ -383,11 +423,14 @@ impl<'a> DaveUi<'a> {
                         .color(ui.visuals().weak_text_color())
                         .italics(),
                 );
-                ui.label(
-                    egui::RichText::new("(press esc to interrupt)")
-                        .color(ui.visuals().weak_text_color())
-                        .small(),
-                );
+                // Don't show interrupt hint for remote sessions
+                if !self.is_remote {
+                    ui.label(
+                        egui::RichText::new("(press esc to interrupt)")
+                            .color(ui.visuals().weak_text_color())
+                            .small(),
+                    );
+                }
             });
         }
 
@@ -501,13 +544,10 @@ impl<'a> DaveUi<'a> {
                             // Diff view
                             diff::file_update_ui(&file_update, ui);
 
-                            // Approve/deny buttons at the bottom right
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    self.permission_buttons(request, ui, &mut action);
-                                },
-                            );
+                            // Approve/deny buttons at the bottom left
+                            ui.horizontal(|ui| {
+                                self.permission_buttons(request, ui, &mut action);
+                            });
                         });
                 } else {
                     // Parse tool input for display (existing logic)
@@ -534,8 +574,6 @@ impl<'a> DaveUi<'a> {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&request.tool_name).strong());
                                     ui.label(desc);
-
-                                    self.permission_buttons(request, ui, &mut action);
                                 });
                                 // Command on next line if present
                                 if let Some(cmd) = command {
@@ -549,16 +587,10 @@ impl<'a> DaveUi<'a> {
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(&request.tool_name).strong());
                                     ui.label(egui::RichText::new(value).monospace());
-
-                                    self.permission_buttons(request, ui, &mut action);
                                 });
                             } else {
                                 // Fallback: show JSON
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(&request.tool_name).strong());
-
-                                    self.permission_buttons(request, ui, &mut action);
-                                });
+                                ui.label(egui::RichText::new(&request.tool_name).strong());
                                 let formatted = serde_json::to_string_pretty(&request.tool_input)
                                     .unwrap_or_else(|_| request.tool_input.to_string());
                                 ui.add(
@@ -568,6 +600,11 @@ impl<'a> DaveUi<'a> {
                                     .wrap_mode(egui::TextWrapMode::Wrap),
                                 );
                             }
+
+                            // Buttons on their own line
+                            ui.horizontal(|ui| {
+                                self.permission_buttons(request, ui, &mut action);
+                            });
                         });
                 }
             }
@@ -584,87 +621,59 @@ impl<'a> DaveUi<'a> {
         action: &mut Option<DaveAction>,
     ) {
         let shift_held = ui.input(|i| i.modifiers.shift);
+        let in_tentative = self.permission_message_state != PermissionMessageState::None;
 
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            if in_tentative {
+                tentative_send_ui(self.permission_message_state, "Allow", "Deny", ui, action);
+            } else {
+                let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
 
-            // Deny button (red) with integrated keybind hint
-            let deny_response = super::badge::ActionButton::new(
-                "Deny",
-                egui::Color32::from_rgb(178, 34, 34),
-                button_text_color,
-            )
-            .keybind("2")
-            .show(ui)
-            .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
+                // Allow button (green) with integrated keybind hint
+                let allow_response = super::badge::ActionButton::new(
+                    "Allow",
+                    egui::Color32::from_rgb(34, 139, 34),
+                    button_text_color,
+                )
+                .keybind("1")
+                .show(ui)
+                .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
 
-            if deny_response.clicked() {
-                if shift_held {
-                    // Shift+click: enter tentative deny mode
-                    *action = Some(DaveAction::TentativeDeny);
-                } else {
-                    // Normal click: immediate deny
-                    *action = Some(DaveAction::PermissionResponse {
-                        request_id: request.id,
-                        response: PermissionResponse::Deny {
-                            reason: "User denied".into(),
-                        },
-                    });
-                }
-            }
+                // Deny button (red) with integrated keybind hint
+                let deny_response = super::badge::ActionButton::new(
+                    "Deny",
+                    egui::Color32::from_rgb(178, 34, 34),
+                    button_text_color,
+                )
+                .keybind("2")
+                .show(ui)
+                .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
 
-            // Allow button (green) with integrated keybind hint
-            let allow_response = super::badge::ActionButton::new(
-                "Allow",
-                egui::Color32::from_rgb(34, 139, 34),
-                button_text_color,
-            )
-            .keybind("1")
-            .show(ui)
-            .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
-
-            if allow_response.clicked() {
-                if shift_held {
-                    // Shift+click: enter tentative accept mode
-                    *action = Some(DaveAction::TentativeAccept);
-                } else {
-                    // Normal click: immediate allow
-                    *action = Some(DaveAction::PermissionResponse {
-                        request_id: request.id,
-                        response: PermissionResponse::Allow { message: None },
-                    });
-                }
-            }
-
-            // Show tentative state indicator OR shift hint
-            match self.permission_message_state {
-                PermissionMessageState::TentativeAccept => {
-                    ui.label(
-                        egui::RichText::new("✓ Will Allow")
-                            .color(egui::Color32::from_rgb(100, 180, 100))
-                            .strong(),
-                    );
-                }
-                PermissionMessageState::TentativeDeny => {
-                    ui.label(
-                        egui::RichText::new("✗ Will Deny")
-                            .color(egui::Color32::from_rgb(200, 100, 100))
-                            .strong(),
-                    );
-                }
-                PermissionMessageState::None => {
-                    // Always show hint for adding message
-                    let hint_color = if shift_held {
-                        ui.visuals().warn_fg_color
+                if deny_response.clicked() {
+                    if shift_held {
+                        *action = Some(DaveAction::TentativeDeny);
                     } else {
-                        ui.visuals().weak_text_color()
-                    };
-                    ui.label(
-                        egui::RichText::new("(⇧ for message)")
-                            .color(hint_color)
-                            .small(),
-                    );
+                        *action = Some(DaveAction::PermissionResponse {
+                            request_id: request.id,
+                            response: PermissionResponse::Deny {
+                                reason: "User denied".into(),
+                            },
+                        });
+                    }
                 }
+
+                if allow_response.clicked() {
+                    if shift_held {
+                        *action = Some(DaveAction::TentativeAccept);
+                    } else {
+                        *action = Some(DaveAction::PermissionResponse {
+                            request_id: request.id,
+                            response: PermissionResponse::Allow { message: None },
+                        });
+                    }
+                }
+
+                add_msg_link(ui, action);
             }
         });
     }
@@ -716,80 +725,64 @@ impl<'a> DaveUi<'a> {
 
                     // Approve/Reject buttons with shift support for adding message
                     let shift_held = ui.input(|i| i.modifiers.shift);
+                    let in_tentative =
+                        self.permission_message_state != PermissionMessageState::None;
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        if in_tentative {
+                            tentative_send_ui(
+                                self.permission_message_state,
+                                "Approve",
+                                "Reject",
+                                ui,
+                                &mut action,
+                            );
+                        } else {
+                            let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
 
-                        // Reject button (red)
-                        let reject_response = super::badge::ActionButton::new(
-                            "Reject",
-                            egui::Color32::from_rgb(178, 34, 34),
-                            button_text_color,
-                        )
-                        .keybind("2")
-                        .show(ui)
-                        .on_hover_text("Press 2 to reject, Shift+2 to reject with message");
+                            // Approve button (green)
+                            let approve_response = super::badge::ActionButton::new(
+                                "Approve",
+                                egui::Color32::from_rgb(34, 139, 34),
+                                button_text_color,
+                            )
+                            .keybind("1")
+                            .show(ui)
+                            .on_hover_text("Press 1 to approve, Shift+1 to approve with message");
 
-                        if reject_response.clicked() {
-                            if shift_held {
-                                action = Some(DaveAction::TentativeDeny);
-                            } else {
-                                action = Some(DaveAction::ExitPlanMode {
-                                    request_id: request.id,
-                                    approved: false,
-                                });
-                            }
-                        }
-
-                        // Approve button (green)
-                        let approve_response = super::badge::ActionButton::new(
-                            "Approve",
-                            egui::Color32::from_rgb(34, 139, 34),
-                            button_text_color,
-                        )
-                        .keybind("1")
-                        .show(ui)
-                        .on_hover_text("Press 1 to approve, Shift+1 to approve with message");
-
-                        if approve_response.clicked() {
-                            if shift_held {
-                                action = Some(DaveAction::TentativeAccept);
-                            } else {
-                                action = Some(DaveAction::ExitPlanMode {
-                                    request_id: request.id,
-                                    approved: true,
-                                });
-                            }
-                        }
-
-                        // Show tentative state indicator OR shift hint
-                        match self.permission_message_state {
-                            PermissionMessageState::TentativeAccept => {
-                                ui.label(
-                                    egui::RichText::new("✓ Will Approve")
-                                        .color(egui::Color32::from_rgb(100, 180, 100))
-                                        .strong(),
-                                );
-                            }
-                            PermissionMessageState::TentativeDeny => {
-                                ui.label(
-                                    egui::RichText::new("✗ Will Reject")
-                                        .color(egui::Color32::from_rgb(200, 100, 100))
-                                        .strong(),
-                                );
-                            }
-                            PermissionMessageState::None => {
-                                let hint_color = if shift_held {
-                                    ui.visuals().warn_fg_color
+                            if approve_response.clicked() {
+                                if shift_held {
+                                    action = Some(DaveAction::TentativeAccept);
                                 } else {
-                                    ui.visuals().weak_text_color()
-                                };
-                                ui.label(
-                                    egui::RichText::new("(⇧ for message)")
-                                        .color(hint_color)
-                                        .small(),
-                                );
+                                    action = Some(DaveAction::ExitPlanMode {
+                                        request_id: request.id,
+                                        approved: true,
+                                    });
+                                }
                             }
+
+                            // Reject button (red)
+                            let reject_response = super::badge::ActionButton::new(
+                                "Reject",
+                                egui::Color32::from_rgb(178, 34, 34),
+                                button_text_color,
+                            )
+                            .keybind("2")
+                            .show(ui)
+                            .on_hover_text("Press 2 to reject, Shift+2 to reject with message");
+
+                            if reject_response.clicked() {
+                                if shift_held {
+                                    action = Some(DaveAction::TentativeDeny);
+                                } else {
+                                    action = Some(DaveAction::ExitPlanMode {
+                                        request_id: request.id,
+                                        approved: false,
+                                    });
+                                }
+                            }
+
+                            add_msg_link(ui, &mut action);
                         }
                     });
                 });
@@ -1019,39 +1012,6 @@ impl<'a> DaveUi<'a> {
                     dave_response = DaveResponse::send();
                 }
 
-                // Show plan mode and auto-steal indicators only in Agentic mode
-                if self.ai_mode == AiMode::Agentic {
-                    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
-
-                    // Plan mode indicator with optional keybind hint when Ctrl is held
-                    let mut plan_badge =
-                        super::badge::StatusBadge::new("PLAN").variant(if self.plan_mode_active {
-                            super::badge::BadgeVariant::Info
-                        } else {
-                            super::badge::BadgeVariant::Default
-                        });
-                    if ctrl_held {
-                        plan_badge = plan_badge.keybind("M");
-                    }
-                    plan_badge
-                        .show(ui)
-                        .on_hover_text("Ctrl+M to toggle plan mode");
-
-                    // Auto-steal focus indicator
-                    let mut auto_badge =
-                        super::badge::StatusBadge::new("AUTO").variant(if self.auto_steal_focus {
-                            super::badge::BadgeVariant::Info
-                        } else {
-                            super::badge::BadgeVariant::Default
-                        });
-                    if ctrl_held {
-                        auto_badge = auto_badge.keybind("\\");
-                    }
-                    auto_badge
-                        .show(ui)
-                        .on_hover_text("Ctrl+\\ to toggle auto-focus mode");
-                }
-
                 let r = ui.add(
                     egui::TextEdit::multiline(self.input)
                         .desired_width(f32::INFINITY)
@@ -1121,4 +1081,162 @@ impl<'a> DaveUi<'a> {
         let buffer = msg.buffer();
         markdown_ui::render_assistant_message(elements, partial, buffer, ui);
     }
+}
+
+/// Send button + clickable accept/deny toggle shown when in tentative state.
+fn tentative_send_ui(
+    state: PermissionMessageState,
+    accept_label: &str,
+    deny_label: &str,
+    ui: &mut egui::Ui,
+    action: &mut Option<DaveAction>,
+) {
+    if ui
+        .add(egui::Button::new(egui::RichText::new("Send").strong()))
+        .clicked()
+    {
+        *action = Some(DaveAction::Send);
+    }
+
+    match state {
+        PermissionMessageState::TentativeAccept => {
+            if ui
+                .link(
+                    egui::RichText::new(format!("✓ Will {accept_label}"))
+                        .color(egui::Color32::from_rgb(100, 180, 100))
+                        .strong(),
+                )
+                .clicked()
+            {
+                *action = Some(DaveAction::TentativeDeny);
+            }
+        }
+        PermissionMessageState::TentativeDeny => {
+            if ui
+                .link(
+                    egui::RichText::new(format!("✗ Will {deny_label}"))
+                        .color(egui::Color32::from_rgb(200, 100, 100))
+                        .strong(),
+                )
+                .clicked()
+            {
+                *action = Some(DaveAction::TentativeAccept);
+            }
+        }
+        PermissionMessageState::None => {}
+    }
+}
+
+/// Clickable "+ msg" link that enters tentative accept mode.
+fn add_msg_link(ui: &mut egui::Ui, action: &mut Option<DaveAction>) {
+    if ui
+        .link(
+            egui::RichText::new("+ msg")
+                .color(ui.visuals().weak_text_color())
+                .small(),
+        )
+        .clicked()
+    {
+        *action = Some(DaveAction::TentativeAccept);
+    }
+}
+
+/// Renders the status bar containing git status and toggle badges.
+fn status_bar_ui(
+    mut git_status: Option<&mut GitStatusCache>,
+    is_agentic: bool,
+    plan_mode_active: bool,
+    auto_steal_focus: bool,
+    ui: &mut egui::Ui,
+) -> Option<DaveAction> {
+    let snapshot = git_status
+        .as_deref()
+        .and_then(git_status_ui::StatusSnapshot::from_cache);
+
+    ui.vertical(|ui| {
+        let action = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+
+                if let Some(git_status) = git_status.as_deref_mut() {
+                    git_status_ui::git_status_content_ui(git_status, &snapshot, ui);
+
+                    // Right-aligned section: badges then refresh
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let action = if is_agentic {
+                            toggle_badges_ui(ui, plan_mode_active, auto_steal_focus)
+                        } else {
+                            None
+                        };
+
+                        git_status_ui::git_refresh_button_ui(git_status, ui);
+
+                        action
+                    })
+                    .inner
+                } else if is_agentic {
+                    // No git status (remote session) - just show badges
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        toggle_badges_ui(ui, plan_mode_active, auto_steal_focus)
+                    })
+                    .inner
+                } else {
+                    None
+                }
+            })
+            .inner;
+
+        if let Some(git_status) = git_status.as_deref() {
+            git_status_ui::git_expanded_files_ui(git_status, &snapshot, ui);
+        }
+
+        action
+    })
+    .inner
+}
+
+/// Render clickable PLAN and AUTO toggle badges. Returns an action if clicked.
+fn toggle_badges_ui(
+    ui: &mut egui::Ui,
+    plan_mode_active: bool,
+    auto_steal_focus: bool,
+) -> Option<DaveAction> {
+    let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+    let mut action = None;
+
+    // AUTO badge (rendered first in right-to-left, so it appears rightmost)
+    let mut auto_badge = super::badge::StatusBadge::new("AUTO").variant(if auto_steal_focus {
+        super::badge::BadgeVariant::Info
+    } else {
+        super::badge::BadgeVariant::Default
+    });
+    if ctrl_held {
+        auto_badge = auto_badge.keybind("\\");
+    }
+    if auto_badge
+        .show(ui)
+        .on_hover_text("Click or Ctrl+\\ to toggle auto-focus mode")
+        .clicked()
+    {
+        action = Some(DaveAction::ToggleAutoSteal);
+    }
+
+    // PLAN badge
+    let mut plan_badge = super::badge::StatusBadge::new("PLAN").variant(if plan_mode_active {
+        super::badge::BadgeVariant::Info
+    } else {
+        super::badge::BadgeVariant::Default
+    });
+    if ctrl_held {
+        plan_badge = plan_badge.keybind("M");
+    }
+    if plan_badge
+        .show(ui)
+        .on_hover_text("Click or Ctrl+M to toggle plan mode")
+        .clicked()
+    {
+        action = Some(DaveAction::TogglePlanMode);
+    }
+
+    action
 }

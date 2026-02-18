@@ -72,7 +72,7 @@ pub fn execute_interrupt(
         backend.interrupt_session(session_id, ctx.clone());
         session.incoming_tokens = None;
         if let Some(agentic) = &mut session.agentic {
-            agentic.pending_permissions.clear();
+            agentic.permissions.pending.clear();
         }
         tracing::debug!("Interrupted session {}", session.id);
     }
@@ -138,21 +138,35 @@ pub fn exit_plan_mode(
 
 /// Get the first pending permission request ID for the active session.
 pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid::Uuid> {
-    session_manager
-        .get_active()
-        .and_then(|session| session.agentic.as_ref())
-        .and_then(|agentic| agentic.pending_permissions.keys().next().copied())
+    let session = session_manager.get_active()?;
+    if session.is_remote() {
+        // Remote: find first unresponded PermissionRequest in chat
+        let responded = session.agentic.as_ref().map(|a| &a.permissions.responded);
+        for msg in &session.chat {
+            if let Message::PermissionRequest(req) = msg {
+                if req.response.is_none() && responded.is_none_or(|ids| !ids.contains(&req.id)) {
+                    return Some(req.id);
+                }
+            }
+        }
+        None
+    } else {
+        // Local: check oneshot senders
+        session
+            .agentic
+            .as_ref()
+            .and_then(|a| a.permissions.pending.keys().next().copied())
+    }
 }
 
 /// Get the tool name of the first pending permission request.
 pub fn pending_permission_tool_name(session_manager: &SessionManager) -> Option<&str> {
+    let request_id = first_pending_permission(session_manager)?;
     let session = session_manager.get_active()?;
-    let agentic = session.agentic.as_ref()?;
-    let request_id = agentic.pending_permissions.keys().next()?;
 
     for msg in &session.chat {
         if let Message::PermissionRequest(req) = msg {
-            if &req.id == request_id {
+            if req.id == request_id {
                 return Some(&req.tool_name);
             }
         }
@@ -171,20 +185,33 @@ pub fn has_pending_exit_plan_mode(session_manager: &SessionManager) -> bool {
     pending_permission_tool_name(session_manager) == Some("ExitPlanMode")
 }
 
+/// Data needed to publish a permission response to relays.
+pub struct PermissionPublish {
+    pub perm_id: uuid::Uuid,
+    pub allowed: bool,
+    pub message: Option<String>,
+}
+
 /// Handle a permission response (from UI button or keybinding).
 pub fn handle_permission_response(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
     response: PermissionResponse,
-) {
-    let Some(session) = session_manager.get_active_mut() else {
-        return;
-    };
+) -> Option<PermissionPublish> {
+    let session = session_manager.get_active_mut()?;
 
-    // Record the response type in the message for UI display
+    let is_remote = session.is_remote();
+
     let response_type = match &response {
         PermissionResponse::Allow { .. } => crate::messages::PermissionResponseType::Allowed,
         PermissionResponse::Deny { .. } => crate::messages::PermissionResponseType::Denied,
+    };
+
+    // Extract relay-publish info before we move `response`.
+    let allowed = matches!(&response, PermissionResponse::Allow { .. });
+    let message = match &response {
+        PermissionResponse::Allow { message } => message.clone(),
+        PermissionResponse::Deny { reason } => Some(reason.clone()),
     };
 
     // If Allow has a message, add it as a User message to the chat
@@ -199,27 +226,23 @@ pub fn handle_permission_response(
         agentic.permission_message_state = PermissionMessageState::None;
     }
 
-    for msg in &mut session.chat {
-        if let Message::PermissionRequest(req) = msg {
-            if req.id == request_id {
-                req.response = Some(response_type);
-                break;
-            }
-        }
+    // Resolve through the single unified path
+    if let Some(agentic) = &mut session.agentic {
+        agentic.permissions.resolve(
+            &mut session.chat,
+            request_id,
+            response_type,
+            None,
+            is_remote,
+            Some(response),
+        );
     }
 
-    if let Some(agentic) = &mut session.agentic {
-        if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
-            if sender.send(response).is_err() {
-                tracing::error!(
-                    "Failed to send permission response for request {}",
-                    request_id
-                );
-            }
-        } else {
-            tracing::warn!("No pending permission found for request {}", request_id);
-        }
-    }
+    Some(PermissionPublish {
+        perm_id: request_id,
+        allowed,
+        message,
+    })
 }
 
 /// Handle a user's response to an AskUserQuestion tool call.
@@ -227,10 +250,10 @@ pub fn handle_question_response(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
     answers: Vec<QuestionAnswer>,
-) {
-    let Some(session) = session_manager.get_active_mut() else {
-        return;
-    };
+) -> Option<PermissionPublish> {
+    let session = session_manager.get_active_mut()?;
+
+    let is_remote = session.is_remote();
 
     // Find the original AskUserQuestion request to get the question labels
     let questions_input = session.chat.iter().find_map(|msg| {
@@ -313,42 +336,61 @@ pub fn handle_question_response(
         )
     };
 
-    // Mark the request as allowed in the UI and store the summary for display
-    for msg in &mut session.chat {
-        if let Message::PermissionRequest(req) = msg {
-            if req.id == request_id {
-                req.response = Some(crate::messages::PermissionResponseType::Allowed);
-                req.answer_summary = answer_summary.clone();
-                break;
-            }
-        }
-    }
-
-    // Clean up transient answer state and send response (agentic only)
+    // Clean up transient answer state
     if let Some(agentic) = &mut session.agentic {
         agentic.question_answers.remove(&request_id);
         agentic.question_index.remove(&request_id);
 
-        // Send the response through the permission channel
-        if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
-            let response = PermissionResponse::Allow {
-                message: Some(formatted_response),
-            };
-            if sender.send(response).is_err() {
-                tracing::error!(
-                    "Failed to send question response for request {}",
-                    request_id
-                );
-            }
-        } else {
-            tracing::warn!("No pending permission found for request {}", request_id);
-        }
+        // Resolve through the single unified path
+        let oneshot_response = PermissionResponse::Allow {
+            message: Some(formatted_response.clone()),
+        };
+        agentic.permissions.resolve(
+            &mut session.chat,
+            request_id,
+            crate::messages::PermissionResponseType::Allowed,
+            answer_summary,
+            is_remote,
+            Some(oneshot_response),
+        );
     }
+
+    Some(PermissionPublish {
+        perm_id: request_id,
+        allowed: true,
+        message: Some(formatted_response),
+    })
 }
 
 // =============================================================================
 // Agent Navigation
 // =============================================================================
+
+/// Switch to a session and optionally focus it in the scene.
+///
+/// Handles the common pattern of: switch_to → scene.select → scene.focus_on → focus_requested.
+/// Used by navigation, focus queue, and auto-steal-focus operations.
+pub fn switch_and_focus_session(
+    session_manager: &mut SessionManager,
+    scene: &mut AgentScene,
+    show_scene: bool,
+    id: SessionId,
+) {
+    session_manager.switch_to(id);
+    if show_scene {
+        scene.select(id);
+        if let Some(session) = session_manager.get(id) {
+            if let Some(agentic) = &session.agentic {
+                scene.focus_on(agentic.scene_position);
+            }
+        }
+    }
+    if let Some(session) = session_manager.get_mut(id) {
+        if !session.has_pending_permissions() {
+            session.focus_requested = true;
+        }
+    }
+}
 
 /// Switch to agent by index in the ordered list (0-indexed).
 pub fn switch_to_agent_by_index(
@@ -359,15 +401,28 @@ pub fn switch_to_agent_by_index(
 ) {
     let ids = session_manager.session_ids();
     if let Some(&id) = ids.get(index) {
-        session_manager.switch_to(id);
-        if show_scene {
-            scene.select(id);
-        }
-        if let Some(session) = session_manager.get_mut(id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
+        switch_and_focus_session(session_manager, scene, show_scene, id);
+    }
+}
+
+/// Cycle agents using a direction function that computes the next index.
+fn cycle_agent(
+    session_manager: &mut SessionManager,
+    scene: &mut AgentScene,
+    show_scene: bool,
+    index_fn: impl FnOnce(usize, usize) -> usize,
+) {
+    let ids = session_manager.session_ids();
+    if ids.is_empty() {
+        return;
+    }
+    let current_idx = session_manager
+        .active_id()
+        .and_then(|active| ids.iter().position(|&id| id == active))
+        .unwrap_or(0);
+    let next_idx = index_fn(current_idx, ids.len());
+    if let Some(&id) = ids.get(next_idx) {
+        switch_and_focus_session(session_manager, scene, show_scene, id);
     }
 }
 
@@ -377,26 +432,9 @@ pub fn cycle_next_agent(
     scene: &mut AgentScene,
     show_scene: bool,
 ) {
-    let ids = session_manager.session_ids();
-    if ids.is_empty() {
-        return;
-    }
-    let current_idx = session_manager
-        .active_id()
-        .and_then(|active| ids.iter().position(|&id| id == active))
-        .unwrap_or(0);
-    let next_idx = (current_idx + 1) % ids.len();
-    if let Some(&id) = ids.get(next_idx) {
-        session_manager.switch_to(id);
-        if show_scene {
-            scene.select(id);
-        }
-        if let Some(session) = session_manager.get_mut(id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
-    }
+    cycle_agent(session_manager, scene, show_scene, |idx, len| {
+        (idx + 1) % len
+    });
 }
 
 /// Cycle to the previous agent.
@@ -405,30 +443,13 @@ pub fn cycle_prev_agent(
     scene: &mut AgentScene,
     show_scene: bool,
 ) {
-    let ids = session_manager.session_ids();
-    if ids.is_empty() {
-        return;
-    }
-    let current_idx = session_manager
-        .active_id()
-        .and_then(|active| ids.iter().position(|&id| id == active))
-        .unwrap_or(0);
-    let prev_idx = if current_idx == 0 {
-        ids.len() - 1
-    } else {
-        current_idx - 1
-    };
-    if let Some(&id) = ids.get(prev_idx) {
-        session_manager.switch_to(id);
-        if show_scene {
-            scene.select(id);
+    cycle_agent(session_manager, scene, show_scene, |idx, len| {
+        if idx == 0 {
+            len - 1
+        } else {
+            idx - 1
         }
-        if let Some(session) = session_manager.get_mut(id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
-    }
+    });
 }
 
 // =============================================================================
@@ -443,20 +464,7 @@ pub fn focus_queue_next(
     show_scene: bool,
 ) {
     if let Some(session_id) = focus_queue.next() {
-        session_manager.switch_to(session_id);
-        if show_scene {
-            scene.select(session_id);
-            if let Some(session) = session_manager.get(session_id) {
-                if let Some(agentic) = &session.agentic {
-                    scene.focus_on(agentic.scene_position);
-                }
-            }
-        }
-        if let Some(session) = session_manager.get_mut(session_id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
+        switch_and_focus_session(session_manager, scene, show_scene, session_id);
     }
 }
 
@@ -468,20 +476,7 @@ pub fn focus_queue_prev(
     show_scene: bool,
 ) {
     if let Some(session_id) = focus_queue.prev() {
-        session_manager.switch_to(session_id);
-        if show_scene {
-            scene.select(session_id);
-            if let Some(session) = session_manager.get(session_id) {
-                if let Some(agentic) = &session.agentic {
-                    scene.focus_on(agentic.scene_position);
-                }
-            }
-        }
-        if let Some(session) = session_manager.get_mut(session_id) {
-            if !session.has_pending_permissions() {
-                session.focus_requested = true;
-            }
-        }
+        switch_and_focus_session(session_manager, scene, show_scene, session_id);
     }
 }
 
@@ -512,15 +507,7 @@ pub fn toggle_auto_steal(
     } else {
         // Disabling: switch back to home session if set
         if let Some(home_id) = home_session.take() {
-            session_manager.switch_to(home_id);
-            if show_scene {
-                scene.select(home_id);
-                if let Some(session) = session_manager.get(home_id) {
-                    if let Some(agentic) = &session.agentic {
-                        scene.focus_on(agentic.scene_position);
-                    }
-                }
-            }
+            switch_and_focus_session(session_manager, scene, show_scene, home_id);
             tracing::debug!("Auto-steal focus disabled, returned to home session");
         }
     }
@@ -534,7 +521,7 @@ pub fn toggle_auto_steal(
 }
 
 /// Process auto-steal focus logic: switch to focus queue items as needed.
-/// Returns true if focus was stolen (switched to a NeedsInput session),
+/// Returns true if focus was stolen (switched to a NeedsInput or Done session),
 /// which can be used to raise the OS window.
 pub fn process_auto_steal_focus(
     session_manager: &mut SessionManager,
@@ -549,6 +536,7 @@ pub fn process_auto_steal_focus(
     }
 
     let has_needs_input = focus_queue.has_needs_input();
+    let has_done = focus_queue.has_done();
 
     if has_needs_input {
         // There are NeedsInput items - check if we need to steal focus
@@ -567,31 +555,41 @@ pub fn process_auto_steal_focus(
             if let Some(idx) = focus_queue.first_needs_input_index() {
                 focus_queue.set_cursor(idx);
                 if let Some(entry) = focus_queue.current() {
-                    session_manager.switch_to(entry.session_id);
-                    if show_scene {
-                        scene.select(entry.session_id);
-                        if let Some(session) = session_manager.get(entry.session_id) {
-                            if let Some(agentic) = &session.agentic {
-                                scene.focus_on(agentic.scene_position);
-                            }
-                        }
-                    }
+                    switch_and_focus_session(session_manager, scene, show_scene, entry.session_id);
                     tracing::debug!("Auto-steal: switched to session {:?}", entry.session_id);
                     return true;
                 }
             }
         }
-    } else if let Some(home_id) = home_session.take() {
-        // No more NeedsInput items - return to saved session
-        session_manager.switch_to(home_id);
-        if show_scene {
-            scene.select(home_id);
-            if let Some(session) = session_manager.get(home_id) {
-                if let Some(agentic) = &session.agentic {
-                    scene.focus_on(agentic.scene_position);
+    } else if has_done {
+        // No NeedsInput but there are Done items - auto-focus those
+        let current_session = session_manager.active_id();
+        let current_priority = current_session.and_then(|id| focus_queue.get_session_priority(id));
+        let already_on_done = current_priority == Some(FocusPriority::Done);
+
+        if !already_on_done {
+            // Save current session before stealing (only if we haven't saved yet)
+            if home_session.is_none() {
+                *home_session = current_session;
+                tracing::debug!("Auto-steal: saved home session {:?}", home_session);
+            }
+
+            // Jump to first Done item
+            if let Some(idx) = focus_queue.first_done_index() {
+                focus_queue.set_cursor(idx);
+                if let Some(entry) = focus_queue.current() {
+                    switch_and_focus_session(session_manager, scene, show_scene, entry.session_id);
+                    tracing::debug!(
+                        "Auto-steal: switched to Done session {:?}",
+                        entry.session_id
+                    );
+                    return true;
                 }
             }
         }
+    } else if let Some(home_id) = home_session.take() {
+        // No more NeedsInput or Done items - return to saved session
+        switch_and_focus_session(session_manager, scene, show_scene, home_id);
         tracing::debug!("Auto-steal: returned to home session {:?}", home_id);
     }
 
@@ -864,11 +862,13 @@ pub fn create_session_with_cwd(
     show_scene: bool,
     ai_mode: AiMode,
     cwd: PathBuf,
+    hostname: &str,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
     let id = session_manager.new_session(cwd, ai_mode);
     if let Some(session) = session_manager.get_mut(id) {
+        session.hostname = hostname.to_string();
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -891,11 +891,13 @@ pub fn create_resumed_session_with_cwd(
     cwd: PathBuf,
     resume_session_id: String,
     title: String,
+    hostname: &str,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
     let id = session_manager.new_resumed_session(cwd, resume_session_id, title, ai_mode);
     if let Some(session) = session_manager.get_mut(id) {
+        session.hostname = hostname.to_string();
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -914,6 +916,7 @@ pub fn clone_active_agent(
     scene: &mut AgentScene,
     show_scene: bool,
     ai_mode: AiMode,
+    hostname: &str,
 ) -> Option<SessionId> {
     let cwd = session_manager
         .get_active()
@@ -925,6 +928,7 @@ pub fn clone_active_agent(
         show_scene,
         ai_mode,
         cwd,
+        hostname,
     ))
 }
 

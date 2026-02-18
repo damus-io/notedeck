@@ -22,7 +22,6 @@ pub struct SessionListUi<'a> {
     session_manager: &'a SessionManager,
     focus_queue: &'a FocusQueue,
     ctrl_held: bool,
-    ai_mode: AiMode,
 }
 
 impl<'a> SessionListUi<'a> {
@@ -30,13 +29,11 @@ impl<'a> SessionListUi<'a> {
         session_manager: &'a SessionManager,
         focus_queue: &'a FocusQueue,
         ctrl_held: bool,
-        ai_mode: AiMode,
     ) -> Self {
         SessionListUi {
             session_manager,
             focus_queue,
             ctrl_held,
-            ai_mode,
         }
     }
 
@@ -66,15 +63,9 @@ impl<'a> SessionListUi<'a> {
     fn header_ui(&self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
 
-        // Header text and tooltip depend on mode
-        let (header_text, new_tooltip) = match self.ai_mode {
-            AiMode::Chat => ("Chats", "New Chat"),
-            AiMode::Agentic => ("Agents", "New Agent"),
-        };
-
         ui.horizontal(|ui| {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(header_text).size(18.0).strong());
+            ui.label(egui::RichText::new("Sessions").size(18.0).strong());
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let icon = app_images::new_message_image()
@@ -84,7 +75,7 @@ impl<'a> SessionListUi<'a> {
                 if ui
                     .add(icon)
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(new_tooltip)
+                    .on_hover_text("New Chat")
                     .clicked()
                 {
                     action = Some(SessionListAction::NewSession);
@@ -98,46 +89,93 @@ impl<'a> SessionListUi<'a> {
     fn sessions_list_ui(&self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
         let active_id = self.session_manager.active_id();
+        let sessions = self.session_manager.sessions_ordered();
 
-        for (index, session) in self.session_manager.sessions_ordered().iter().enumerate() {
-            let is_active = Some(session.id) == active_id;
-            // Show keyboard shortcut hint for first 9 sessions (1-9 keys), only when Ctrl held
-            let shortcut_hint = if self.ctrl_held && index < 9 {
-                Some(index + 1)
-            } else {
-                None
-            };
+        // Split into agents and chats
+        let agents: Vec<_> = sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.ai_mode == AiMode::Agentic)
+            .collect();
+        let chats: Vec<_> = sessions
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.ai_mode == AiMode::Chat)
+            .collect();
 
-            // Check if this session is in the focus queue
-            let queue_priority = self.focus_queue.get_session_priority(session.id);
-
-            // Get cwd from agentic data, fallback to empty path for Chat mode
-            let empty_path = PathBuf::new();
-            let cwd = session.cwd().unwrap_or(&empty_path);
-
-            let response = self.session_item_ui(
-                ui,
-                &session.title,
-                cwd,
-                is_active,
-                shortcut_hint,
-                session.status(),
-                queue_priority,
+        // Agents section
+        if !agents.is_empty() {
+            ui.label(
+                egui::RichText::new("Agents")
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
             );
-
-            if response.clicked() {
-                action = Some(SessionListAction::SwitchTo(session.id));
-            }
-
-            // Right-click context menu for delete
-            response.context_menu(|ui| {
-                if ui.button("Delete").clicked() {
-                    action = Some(SessionListAction::Delete(session.id));
-                    ui.close_menu();
+            ui.add_space(4.0);
+            for (index, session) in &agents {
+                if let Some(a) = self.render_session_item(ui, session, *index, active_id) {
+                    action = Some(a);
                 }
-            });
+            }
+            ui.add_space(8.0);
         }
 
+        // Chats section
+        if !chats.is_empty() {
+            ui.label(
+                egui::RichText::new("Chats")
+                    .size(12.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
+            ui.add_space(4.0);
+            for (index, session) in &chats {
+                if let Some(a) = self.render_session_item(ui, session, *index, active_id) {
+                    action = Some(a);
+                }
+            }
+        }
+
+        action
+    }
+
+    fn render_session_item(
+        &self,
+        ui: &mut egui::Ui,
+        session: &crate::session::ChatSession,
+        index: usize,
+        active_id: Option<SessionId>,
+    ) -> Option<SessionListAction> {
+        let is_active = Some(session.id) == active_id;
+        let shortcut_hint = if self.ctrl_held && index < 9 {
+            Some(index + 1)
+        } else {
+            None
+        };
+        let queue_priority = self.focus_queue.get_session_priority(session.id);
+        let empty_path = PathBuf::new();
+        let cwd = session.cwd().unwrap_or(&empty_path);
+
+        let response = self.session_item_ui(
+            ui,
+            &session.title,
+            cwd,
+            &session.hostname,
+            is_active,
+            shortcut_hint,
+            session.status(),
+            queue_priority,
+            session.ai_mode,
+        );
+
+        let mut action = None;
+        if response.clicked() {
+            action = Some(SessionListAction::SwitchTo(session.id));
+        }
+        response.context_menu(|ui| {
+            if ui.button("Delete").clicked() {
+                action = Some(SessionListAction::Delete(session.id));
+                ui.close_menu();
+            }
+        });
         action
     }
 
@@ -147,15 +185,17 @@ impl<'a> SessionListUi<'a> {
         ui: &mut egui::Ui,
         title: &str,
         cwd: &Path,
+        hostname: &str,
         is_active: bool,
         shortcut_hint: Option<usize>,
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
+        session_ai_mode: AiMode,
     ) -> egui::Response {
-        // In Chat mode: shorter height (no CWD), no status bar
-        // In Agentic mode: taller height with CWD and status bar
-        let show_cwd = self.ai_mode == AiMode::Agentic;
-        let show_status_bar = self.ai_mode == AiMode::Agentic;
+        // Per-session: Chat sessions get shorter height (no CWD), no status bar
+        // Agentic sessions get taller height with CWD and status bar
+        let show_cwd = session_ai_mode == AiMode::Agentic;
+        let show_status_bar = session_ai_mode == AiMode::Agentic;
 
         let item_height = if show_cwd { 48.0 } else { 32.0 };
         let desired_size = egui::vec2(ui.available_width(), item_height);
@@ -248,22 +288,28 @@ impl<'a> SessionListUi<'a> {
         // Draw cwd below title - only in Agentic mode
         if show_cwd {
             let cwd_pos = rect.left_center() + egui::vec2(text_start_x, 7.0);
-            cwd_ui(ui, cwd, cwd_pos, max_text_width);
+            cwd_ui(ui, cwd, hostname, cwd_pos, max_text_width);
         }
 
         response
     }
 }
 
-/// Draw cwd text (monospace, weak+small) with clipping
-fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, pos: egui::Pos2, max_width: f32) {
-    let cwd_text = cwd_path.to_string_lossy();
+/// Draw cwd text (monospace, weak+small) with clipping.
+/// Shows "hostname:cwd" when hostname is non-empty.
+fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, hostname: &str, pos: egui::Pos2, max_width: f32) {
+    let cwd_str = cwd_path.to_string_lossy();
+    let display_text = if hostname.is_empty() {
+        cwd_str.to_string()
+    } else {
+        format!("{}:{}", hostname, cwd_str)
+    };
     let cwd_font = egui::FontId::monospace(10.0);
     let cwd_color = ui.visuals().weak_text_color();
 
     let cwd_galley = ui
         .painter()
-        .layout_no_wrap(cwd_text.to_string(), cwd_font.clone(), cwd_color);
+        .layout_no_wrap(display_text.clone(), cwd_font.clone(), cwd_color);
 
     if cwd_galley.size().x > max_width {
         let clip_rect = egui::Rect::from_min_size(
@@ -279,7 +325,7 @@ fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, pos: egui::Pos2, max_width: f32) {
         ui.painter().text(
             pos,
             egui::Align2::LEFT_CENTER,
-            &cwd_text,
+            &display_text,
             cwd_font,
             cwd_color,
         );
