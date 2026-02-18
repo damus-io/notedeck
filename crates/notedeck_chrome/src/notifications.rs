@@ -222,28 +222,10 @@ fn notification_worker(
     // Set up initial subscriptions
     setup_subscriptions(&mut state.pool, &pubkey, state.last_seen_timestamp);
 
-    let mut loop_count: u64 = 0;
-
     // Main event loop
     while shared.running.load(Ordering::SeqCst)
         && shared.generation.load(Ordering::SeqCst) == my_generation
     {
-        loop_count += 1;
-
-        // Log heartbeat every 30 iterations (~30 seconds)
-        if loop_count % 30 == 0 {
-            let connected = state
-                .pool
-                .relays
-                .iter()
-                .filter(|r| matches!(r.status(), RelayStatus::Connected))
-                .count();
-            info!(
-                "Worker heartbeat: loop={}, connected={} relays",
-                loop_count, connected
-            );
-        }
-
         // Send keepalive pings
         state.pool.keepalive_ping(|| {});
 

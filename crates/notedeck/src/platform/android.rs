@@ -10,25 +10,52 @@ use std::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 // =============================================================================
-// Static Globals for JNI Callbacks
+// JNI Bridge State
 // =============================================================================
 //
 // JNI callbacks have fixed signatures `(JNIEnv, JClass, ...)` determined by the
 // Java Native Interface specification. They cannot receive custom Rust state as
-// parameters. These statics are the minimal set required:
+// parameters. All notification JNI state is consolidated into a single struct
+// to minimize global surface area.
+//
+// See also: `SELECTED_MEDIA_CHANNEL` in `platform/file.rs` for the same
+// constrained-by-JNI pattern used for file picker callbacks.
 
-/// Stores the current FCM token for access from Rust code.
-static FCM_TOKEN: RwLock<Option<String>> = RwLock::new(None);
+/// Consolidated JNI bridge state for notification-related callbacks.
+///
+/// JNI `extern "C"` functions cannot receive Rust state as parameters —
+/// their signatures are fixed by the Java Native Interface specification.
+/// This struct groups all notification state into one access point rather
+/// than scattering separate global statics.
+pub(crate) struct NotificationJniBridge {
+    /// Current FCM token, updated by Java when Firebase generates/refreshes it.
+    fcm_token: RwLock<Option<String>>,
+    /// Active account keypair for NIP-98 HTTP authentication signing.
+    signing_keypair: RwLock<Option<FullKeypair>>,
+    /// Whether a notification permission request is in flight.
+    permission_pending: AtomicBool,
+    /// Result of the last permission request.
+    permission_granted: AtomicBool,
+    /// Pending deep link from notification tap (consumed on read).
+    deep_link: RwLock<Option<DeepLinkInfo>>,
+}
 
-/// Stores the active account's keypair for NIP-98 HTTP authentication signing.
-static SIGNING_KEYPAIR: RwLock<Option<FullKeypair>> = RwLock::new(None);
+impl NotificationJniBridge {
+    const fn new() -> Self {
+        Self {
+            fcm_token: RwLock::new(None),
+            signing_keypair: RwLock::new(None),
+            permission_pending: AtomicBool::new(false),
+            permission_granted: AtomicBool::new(false),
+            deep_link: RwLock::new(None),
+        }
+    }
+}
 
-/// Whether a permission request is currently pending (UI state tracking).
-static NOTIFICATION_PERMISSION_PENDING: AtomicBool = AtomicBool::new(false);
+/// Single access point for all notification JNI state.
+static NOTIFICATION_BRIDGE: NotificationJniBridge = NotificationJniBridge::new();
 
-/// Stores the result of the last notification permission request.
-static NOTIFICATION_PERMISSION_GRANTED: AtomicBool = AtomicBool::new(false);
-
+/// Get the Android JVM from the NDK context.
 pub fn get_jvm() -> jni::JavaVM {
     unsafe { jni::JavaVM::from_raw(ndk_context::android_context().vm().cast()) }.unwrap()
 }
@@ -140,7 +167,7 @@ pub fn open_file_picker() -> std::result::Result<(), Box<dyn std::error::Error>>
 
 /// Returns the current FCM token, if available
 pub fn get_fcm_token() -> Option<String> {
-    match FCM_TOKEN.read() {
+    match NOTIFICATION_BRIDGE.fcm_token.read() {
         Ok(guard) => guard.clone(),
         Err(e) => {
             error!("Failed to read FCM token: lock poisoned: {}", e);
@@ -152,7 +179,7 @@ pub fn get_fcm_token() -> Option<String> {
 /// Sets the active account's keypair for NIP-98 signing.
 /// Call this when the active account changes.
 pub fn set_signing_keypair(keypair: Option<FullKeypair>) {
-    match SIGNING_KEYPAIR.write() {
+    match NOTIFICATION_BRIDGE.signing_keypair.write() {
         Ok(mut guard) => {
             *guard = keypair;
             info!("Signing keypair updated for FCM registration");
@@ -165,7 +192,7 @@ pub fn set_signing_keypair(keypair: Option<FullKeypair>) {
 
 /// Gets the current signing keypair, if available
 pub fn get_signing_keypair() -> Option<FullKeypair> {
-    match SIGNING_KEYPAIR.read() {
+    match NOTIFICATION_BRIDGE.signing_keypair.read() {
         Ok(guard) => guard.clone(),
         Err(e) => {
             error!("Failed to read signing keypair: lock poisoned: {}", e);
@@ -192,7 +219,7 @@ pub extern "C" fn Java_com_damus_notedeck_service_NotedeckFirebaseMessagingServi
     info!("FCM token refreshed: {}", truncate_content(&token, 20));
 
     // Store token for later use
-    match FCM_TOKEN.write() {
+    match NOTIFICATION_BRIDGE.fcm_token.write() {
         Ok(mut guard) => {
             *guard = Some(token);
         }
@@ -201,7 +228,7 @@ pub extern "C" fn Java_com_damus_notedeck_service_NotedeckFirebaseMessagingServi
         }
     }
 
-    // TODO: Trigger re-registration with notepush server if user has notifications enabled
+    // Re-registration with notepush is handled on the Kotlin side in onNewToken
 }
 
 /// Called by NotedeckFirebaseMessagingService to process incoming Nostr events
@@ -225,9 +252,7 @@ pub extern "C" fn Java_com_damus_notedeck_service_NotedeckFirebaseMessagingServi
         truncate_content(&event_json, 100)
     );
 
-    // Parse the Nostr event and extract notification details
-    // For now, return a simple notification - full implementation needs nostr crate integration
-    let (title, body, event_id) = match parse_nostr_event_for_notification(&event_json) {
+    let data = match parse_nostr_event_for_notification(&event_json) {
         Some(result) => result,
         None => {
             warn!("Failed to parse Nostr event for notification");
@@ -235,8 +260,7 @@ pub extern "C" fn Java_com_damus_notedeck_service_NotedeckFirebaseMessagingServi
         }
     };
 
-    // Create NotificationResult object to return to Kotlin
-    match create_notification_result(&mut env, &title, &body, event_id.as_deref()) {
+    match create_notification_result(&mut env, &data) {
         Ok(obj) => obj,
         Err(e) => {
             error!("Failed to create NotificationResult: {}", e);
@@ -255,15 +279,25 @@ pub extern "C" fn Java_com_damus_notedeck_service_NotedeckFirebaseMessagingServi
 /// - Kind 9735: Zap receipt
 ///
 /// Returns `None` if the JSON is malformed or missing required fields.
-fn parse_nostr_event_for_notification(
-    event_json: &str,
-) -> Option<(String, String, Option<String>)> {
-    // Parse JSON to extract kind, content, and id
+/// Parsed notification data from a Nostr event.
+struct FcmNotificationData {
+    title: String,
+    body: String,
+    event_id: Option<String>,
+    event_kind: i32,
+    author_pubkey: Option<String>,
+}
+
+fn parse_nostr_event_for_notification(event_json: &str) -> Option<FcmNotificationData> {
     let value: serde_json::Value = serde_json::from_str(event_json).ok()?;
 
     let kind = value.get("kind")?.as_u64()?;
     let content = value.get("content")?.as_str().unwrap_or("");
     let event_id = value.get("id")?.as_str().map(|s| s.to_string());
+    let author_pubkey = value
+        .get("pubkey")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let (title, body) = match kind {
         1 => ("New mention".to_string(), truncate_content(content, 100)),
@@ -287,7 +321,13 @@ fn parse_nostr_event_for_notification(
         _ => ("New activity".to_string(), truncate_content(content, 100)),
     };
 
-    Some((title, body, event_id))
+    Some(FcmNotificationData {
+        title,
+        body,
+        event_id,
+        event_kind: kind as i32,
+        author_pubkey,
+    })
 }
 
 /// Truncates a string to a maximum number of characters (not bytes).
@@ -302,31 +342,35 @@ fn truncate_content(content: &str, max_chars: usize) -> String {
     }
 }
 
-/// Create a Kotlin NotificationResult object
+/// Create a Kotlin NotificationResult object with full deep-link metadata.
 fn create_notification_result(
     env: &mut JNIEnv,
-    title: &str,
-    body: &str,
-    event_id: Option<&str>,
+    data: &FcmNotificationData,
 ) -> Result<jobject, jni::errors::Error> {
     let class = env.find_class(
         "com/damus/notedeck/service/NotedeckFirebaseMessagingService$NotificationResult",
     )?;
 
-    let jtitle = env.new_string(title)?;
-    let jbody = env.new_string(body)?;
-    let jevent_id = match event_id {
+    let jtitle = env.new_string(&data.title)?;
+    let jbody = env.new_string(&data.body)?;
+    let jevent_id = match &data.event_id {
         Some(id) => JObject::from(env.new_string(id)?),
+        None => JObject::null(),
+    };
+    let jauthor_pubkey = match &data.author_pubkey {
+        Some(pk) => JObject::from(env.new_string(pk)?),
         None => JObject::null(),
     };
 
     let obj = env.new_object(
         class,
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/String;)V",
         &[
             JValue::Object(&jtitle.into()),
             JValue::Object(&jbody.into()),
             JValue::Object(&jevent_id),
+            JValue::Int(data.event_kind),
+            JValue::Object(&jauthor_pubkey),
         ],
     )?;
 
@@ -489,6 +533,18 @@ pub fn set_notification_mode(
     let current = get_notification_mode();
 
     if current == mode {
+        // Mode already persisted, but the service may not be running after
+        // process death.  Re-trigger enable so services are (re)started and
+        // the registration pubkey stays in sync with the selected account.
+        match mode {
+            NotificationMode::Native => {
+                enable_native_notifications(pubkey_hex, relay_urls)?;
+            }
+            NotificationMode::Fcm => {
+                enable_fcm_notifications(pubkey_hex)?;
+            }
+            NotificationMode::Disabled => {}
+        }
         return Ok(());
     }
 
@@ -561,12 +617,16 @@ fn enable_fcm_notifications(pubkey_hex: &str) -> Result<(), Box<dyn std::error::
 
     let jpubkey = env.new_string(pubkey_hex)?;
 
-    env.call_method(
+    let result = env.call_method(
         context,
         "enableFcmNotifications",
-        "(Ljava/lang/String;)V",
+        "(Ljava/lang/String;)Z",
         &[jni::objects::JValue::Object(&jpubkey.into())],
     )?;
+
+    if !result.z()? {
+        return Err("Failed to enable FCM notifications: missing FCM token".into());
+    }
 
     info!(
         "FCM notifications enabled for {}",
@@ -647,7 +707,9 @@ pub fn is_notification_permission_granted() -> Result<bool, Box<dyn std::error::
 
 /// Request notification permission from the user
 pub fn request_notification_permission() -> Result<(), Box<dyn std::error::Error>> {
-    NOTIFICATION_PERMISSION_PENDING.store(true, Ordering::SeqCst);
+    NOTIFICATION_BRIDGE
+        .permission_pending
+        .store(true, Ordering::SeqCst);
 
     let vm = get_jvm();
     let mut env = vm.attach_current_thread()?;
@@ -661,7 +723,9 @@ pub fn request_notification_permission() -> Result<(), Box<dyn std::error::Error
 
 /// Check if a notification permission request is pending
 pub fn is_notification_permission_pending() -> bool {
-    NOTIFICATION_PERMISSION_PENDING.load(Ordering::SeqCst)
+    NOTIFICATION_BRIDGE
+        .permission_pending
+        .load(Ordering::SeqCst)
 }
 
 /// Called from Java when notification permission request completes
@@ -673,13 +737,19 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnNotificationPermi
 ) {
     let granted = granted != 0;
     debug!("Notification permission result: {}", granted);
-    NOTIFICATION_PERMISSION_GRANTED.store(granted, Ordering::SeqCst);
-    NOTIFICATION_PERMISSION_PENDING.store(false, Ordering::SeqCst);
+    NOTIFICATION_BRIDGE
+        .permission_granted
+        .store(granted, Ordering::SeqCst);
+    NOTIFICATION_BRIDGE
+        .permission_pending
+        .store(false, Ordering::SeqCst);
 }
 
 /// Get the result of the last notification permission request.
 pub fn get_notification_permission_result() -> bool {
-    NOTIFICATION_PERMISSION_GRANTED.load(Ordering::SeqCst)
+    NOTIFICATION_BRIDGE
+        .permission_granted
+        .load(Ordering::SeqCst)
 }
 
 /// Check if notifications are currently enabled in preferences.
@@ -713,10 +783,6 @@ pub struct DeepLinkInfo {
     pub event_kind: i32,
     pub author_pubkey: Option<String>,
 }
-
-/// Thread-safe storage for pending deep link.
-static PENDING_DEEP_LINK: std::sync::RwLock<Option<DeepLinkInfo>> =
-    std::sync::RwLock::new(None);
 
 /// Called from Java when user taps a notification.
 #[no_mangle]
@@ -763,7 +829,7 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnDeepLink(
         author_pubkey,
     };
 
-    if let Ok(mut pending) = PENDING_DEEP_LINK.write() {
+    if let Ok(mut pending) = NOTIFICATION_BRIDGE.deep_link.write() {
         *pending = Some(deep_link);
     } else {
         error!("Failed to acquire deep link write lock");
@@ -772,7 +838,8 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnDeepLink(
 
 /// Check if there's a pending deep link and consume it.
 pub fn take_pending_deep_link() -> Option<DeepLinkInfo> {
-    PENDING_DEEP_LINK
+    NOTIFICATION_BRIDGE
+        .deep_link
         .try_write()
         .ok()
         .and_then(|mut pending| pending.take())
@@ -780,7 +847,8 @@ pub fn take_pending_deep_link() -> Option<DeepLinkInfo> {
 
 /// Check if there's a pending deep link without consuming it.
 pub fn has_pending_deep_link() -> bool {
-    PENDING_DEEP_LINK
+    NOTIFICATION_BRIDGE
+        .deep_link
         .try_read()
         .ok()
         .map(|pending| pending.is_some())
