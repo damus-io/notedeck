@@ -24,7 +24,7 @@ pub mod nip05;
 mod nip51_set;
 pub mod note;
 mod notecache;
-mod oneshot_api;
+pub mod notifications;
 mod options;
 mod persist;
 pub mod platform;
