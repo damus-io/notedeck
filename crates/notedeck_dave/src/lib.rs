@@ -1372,6 +1372,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             Err(_) => return,
         };
 
+        // Deduplicate: when multiple revisions of the same session arrive
+        // in one batch (e.g. after relay reconnect), only process the latest.
+        let deduped = session_loader::dedup_by_d_tag(ctx.ndb, &txn, &note_keys);
+
         // Collect existing claude session IDs to avoid duplicates
         let mut existing_ids: std::collections::HashSet<String> = self
             .session_manager
@@ -1383,7 +1387,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             })
             .collect();
 
-        for key in note_keys {
+        for key in deduped {
             let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
                 continue;
             };
