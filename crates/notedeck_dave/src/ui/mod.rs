@@ -327,7 +327,11 @@ pub fn desktop_ui(
     ui: &mut egui::Ui,
 ) -> (DaveResponse, Option<SessionListAction>, bool) {
     let available = ui.available_rect_before_wrap();
-    let sidebar_width = if available.width() < 830.0 { 200.0 } else { 280.0 };
+    let sidebar_width = if available.width() < 830.0 {
+        200.0
+    } else {
+        280.0
+    };
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
     let mut toggle_scene = false;
 
@@ -677,8 +681,10 @@ pub fn handle_ui_action(
         DaveAction::PermissionResponse {
             request_id,
             response,
-        } => update::handle_permission_response(session_manager, request_id, response)
-            .map_or(UiActionResult::Handled, UiActionResult::PublishPermissionResponse),
+        } => update::handle_permission_response(session_manager, request_id, response).map_or(
+            UiActionResult::Handled,
+            UiActionResult::PublishPermissionResponse,
+        ),
         DaveAction::Interrupt => {
             update::execute_interrupt(session_manager, backend, ctx);
             UiActionResult::Handled
@@ -694,8 +700,10 @@ pub fn handle_ui_action(
         DaveAction::QuestionResponse {
             request_id,
             answers,
-        } => update::handle_question_response(session_manager, request_id, answers)
-            .map_or(UiActionResult::Handled, UiActionResult::PublishPermissionResponse),
+        } => update::handle_question_response(session_manager, request_id, answers).map_or(
+            UiActionResult::Handled,
+            UiActionResult::PublishPermissionResponse,
+        ),
         DaveAction::ExitPlanMode {
             request_id,
             approved,
@@ -716,7 +724,10 @@ pub fn handle_ui_action(
                     },
                 )
             };
-            result.map_or(UiActionResult::Handled, UiActionResult::PublishPermissionResponse)
+            result.map_or(
+                UiActionResult::Handled,
+                UiActionResult::PublishPermissionResponse,
+            )
         }
     }
 }

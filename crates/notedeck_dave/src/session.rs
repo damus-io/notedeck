@@ -109,7 +109,11 @@ impl PermissionTracker {
     }
 
     /// Merge loaded permission state from restored events.
-    pub fn merge_loaded(&mut self, responded: HashSet<Uuid>, request_note_ids: HashMap<Uuid, [u8; 32]>) {
+    pub fn merge_loaded(
+        &mut self,
+        responded: HashSet<Uuid>,
+        request_note_ids: HashMap<Uuid, [u8; 32]>,
+    ) {
         self.responded = responded;
         self.request_note_ids.extend(request_note_ids);
     }

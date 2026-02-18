@@ -329,9 +329,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Create IPC listener for external spawn-agent commands
         let ipc_listener = ipc::create_listener(ctx);
 
-        let hostname = gethostname::gethostname()
-            .to_string_lossy()
-            .into_owned();
+        let hostname = gethostname::gethostname().to_string_lossy().into_owned();
 
         // In Chat mode, create a default session immediately and skip directory picker
         // In Agentic mode, show directory picker on startup
@@ -436,9 +434,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 match res {
                     DaveApiResponse::Failed(ref err) => {
                         if let Some(sk) = &secret_key {
-                            if let Some(evt) =
-                                ingest_live_event(session, app_ctx.ndb, sk, err, "error", None, None)
-                            {
+                            if let Some(evt) = ingest_live_event(
+                                session,
+                                app_ctx.ndb,
+                                sk,
+                                err,
+                                "error",
+                                None,
+                                None,
+                            ) {
                                 events_to_publish.push(evt);
                             }
                         }
@@ -1317,14 +1321,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
                     // Load permission state and dedup set from events
-                    agentic.permissions.merge_loaded(loaded.permissions.responded, loaded.permissions.request_note_ids);
+                    agentic.permissions.merge_loaded(
+                        loaded.permissions.responded,
+                        loaded.permissions.request_note_ids,
+                    );
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status from state event
                     agentic.remote_status = AgentStatus::from_status_str(&state.status);
                     agentic.remote_status_ts = state.created_at;
 
-                    // Set up live conversation subscription for remote sessions
-                    if is_remote && agentic.live_conversation_sub.is_none() {
+                    // Set up live conversation subscription so we can
+                    // receive messages from remote clients (e.g. phone)
+                    // even before the local backend is started.
+                    if agentic.live_conversation_sub.is_none() {
                         let conv_filter = nostrdb::Filter::new()
                             .kinds([session_events::AI_CONVERSATION_KIND as u64])
                             .tags([state.claude_session_id.as_str()], 'd')
@@ -1333,7 +1342,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             Ok(sub) => {
                                 agentic.live_conversation_sub = Some(sub);
                                 tracing::info!(
-                                    "subscribed for live conversation events for remote session '{}'",
+                                    "subscribed for live conversation events for session '{}'",
                                     state.title,
                                 );
                             }
@@ -1405,8 +1414,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .iter()
                         .filter(|s| {
                             s.agentic.as_ref().is_some_and(|a| {
-                                a.event_session_id() == Some(claude_sid)
-                                    && ts > a.remote_status_ts
+                                a.event_session_id() == Some(claude_sid) && ts > a.remote_status_ts
                             })
                         })
                         .map(|s| s.id)
@@ -1489,21 +1497,25 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if !cwd_path.exists() {
                     session.source = session::SessionSource::Remote;
                 }
-                let is_remote = session.is_remote();
 
                 if let Some(agentic) = &mut session.agentic {
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
                     // Load permission state and dedup set
-                    agentic.permissions.merge_loaded(loaded.permissions.responded, loaded.permissions.request_note_ids);
+                    agentic.permissions.merge_loaded(
+                        loaded.permissions.responded,
+                        loaded.permissions.request_note_ids,
+                    );
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status
                     agentic.remote_status = AgentStatus::from_status_str(status_str);
                     agentic.remote_status_ts = note.created_at();
 
-                    // Set up live conversation subscription for remote sessions
-                    if is_remote && agentic.live_conversation_sub.is_none() {
+                    // Set up live conversation subscription so we can
+                    // receive messages from remote clients (e.g. phone)
+                    // even before the local backend is started.
+                    if agentic.live_conversation_sub.is_none() {
                         let conv_filter = nostrdb::Filter::new()
                             .kinds([session_events::AI_CONVERSATION_KIND as u64])
                             .tags([claude_sid], 'd')
@@ -1512,7 +1524,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             Ok(sub) => {
                                 agentic.live_conversation_sub = Some(sub);
                                 tracing::info!(
-                                    "subscribed for live conversation events for remote session '{}'",
+                                    "subscribed for live conversation events for session '{}'",
                                     &title,
                                 );
                             }
@@ -1541,10 +1553,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///
     /// For local sessions: only process `role=user` messages arriving from
     /// remote clients (phone), collecting them for backend dispatch.
-    fn poll_remote_conversation_events(
-        &mut self,
-        ndb: &nostrdb::Ndb,
-    ) -> Vec<(SessionId, String)> {
+    fn poll_remote_conversation_events(&mut self, ndb: &nostrdb::Ndb) -> Vec<(SessionId, String)> {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let session_ids = self.session_manager.session_ids();
         for session_id in session_ids {
@@ -1554,7 +1563,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let is_remote = session.is_remote();
 
             // Get sub without holding agentic borrow
-            let sub = match session.agentic.as_ref().and_then(|a| a.live_conversation_sub) {
+            let sub = match session
+                .agentic
+                .as_ref()
+                .and_then(|a| a.live_conversation_sub)
+            {
                 Some(s) => s,
                 None => continue,
             };
@@ -1660,7 +1673,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             };
 
                             // Store the note ID for linking responses
-                            agentic.permissions.request_note_ids.insert(perm_id, *note.id());
+                            agentic
+                                .permissions
+                                .request_note_ids
+                                .insert(perm_id, *note.id());
 
                             session.chat.push(Message::PermissionRequest(
                                 crate::messages::PermissionRequest {
@@ -1927,7 +1943,9 @@ impl notedeck::App for Dave {
             if let enostr::RelayEvent::Opened = (&ev.event).into() {
                 if ev.relay == PNS_RELAY_URL {
                     if let Some(sub_id) = &pns_sub_id {
-                        if let Some(sk) = app_ctx.accounts.get_selected_account().keypair().secret_key {
+                        if let Some(sk) =
+                            app_ctx.accounts.get_selected_account().keypair().secret_key
+                        {
                             let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
                             let pns_filter = nostrdb::Filter::new()
                                 .kinds([enostr::pns::PNS_KIND as u64])

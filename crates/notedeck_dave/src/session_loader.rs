@@ -67,10 +67,7 @@ pub fn query_replaceable_filtered(
     );
 
     match best {
-        Ok(map) => map
-            .into_values()
-            .filter_map(|(_, key)| key)
-            .collect(),
+        Ok(map) => map.into_values().filter_map(|(_, key)| key).collect(),
         Err(_) => vec![],
     }
 }

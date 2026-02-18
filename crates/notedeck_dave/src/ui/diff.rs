@@ -13,10 +13,9 @@ pub fn file_update_ui(update: &FileUpdate, ui: &mut Ui) {
         .inner_margin(8.0)
         .corner_radius(4.0)
         .show(ui, |ui| {
-            egui::ScrollArea::horizontal()
-                .show(ui, |ui| {
-                    render_diff_lines(update.diff_lines(), &update.update_type, ui);
-                });
+            egui::ScrollArea::horizontal().show(ui, |ui| {
+                render_diff_lines(update.diff_lines(), &update.update_type, ui);
+            });
         });
 }
 
