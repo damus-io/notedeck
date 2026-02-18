@@ -300,6 +300,9 @@ fn handle_pending_deep_link(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     app_ctx.img_cache.urls.cache.handle_io();
 
+    // Check for pending deep links from notification taps
+    handle_pending_deep_link(damus, app_ctx);
+
     if damus.columns(app_ctx.accounts).columns().is_empty() {
         damus
             .columns_mut(app_ctx.i18n, app_ctx.accounts)
