@@ -248,8 +248,25 @@ pub struct ProfileSearchResult {
     pub is_contact: bool,
 }
 
+/// Try to parse the query as a pubkey identifier (npub, nprofile, or hex).
+/// Returns the pubkey bytes if successful.
+pub fn parse_pubkey_query(query: &str) -> Option<[u8; 32]> {
+    if query.starts_with("npub1") {
+        Pubkey::try_from_bech32_string(query, false)
+            .ok()
+            .map(|pk| *pk.bytes())
+    } else if query.starts_with("nprofile1") {
+        Pubkey::from_nprofile_bech(query).map(|pk| *pk.bytes())
+    } else if query.len() == 64 && query.chars().all(|c| c.is_ascii_hexdigit()) {
+        Pubkey::from_hex(query).ok().map(|pk| *pk.bytes())
+    } else {
+        None
+    }
+}
+
 /// Searches for profiles matching `query`, prioritizing contacts first and deduplicating.
 /// Contacts that match appear first, followed by non-contact results.
+/// Also handles npub and nprofile bech32 strings as direct pubkey lookups.
 /// Returns up to `max_results` matches.
 pub fn search_profiles(
     ndb: &Ndb,
@@ -262,6 +279,12 @@ pub fn search_profiles(
         ContactState::Received { contacts, .. } => Some(contacts),
         _ => None,
     };
+
+    // Check if the query is an npub or nprofile
+    if let Some(pk) = parse_pubkey_query(query) {
+        let is_contact = contacts_set.is_some_and(|c| c.contains(&pk));
+        return vec![ProfileSearchResult { pk, is_contact }];
+    }
 
     // Get ndb search results and partition into contacts and non-contacts
     let mut contact_results: Vec<ProfileSearchResult> = Vec::new();

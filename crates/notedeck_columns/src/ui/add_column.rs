@@ -18,13 +18,17 @@ use crate::{
 };
 
 use notedeck::{
-    tr, AppContext, Images, Localization, MediaJobSender, NotedeckTextStyle, UserAccount,
+    tr, AppContext, ContactState, Images, Localization, MediaJobSender, NotedeckTextStyle,
+    UserAccount,
 };
 use notedeck_ui::{anim::ICON_EXPANSION_MULTIPLE, app_images};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 use crate::ui::widgets::styled_button;
-use notedeck_ui::{anim::AnimationHelper, padding, ProfilePreview};
+use notedeck_ui::{
+    anim::AnimationHelper, contacts_list::ContactsCollection, padding, profile_row,
+    search_input_box, search_profiles, ContactsListView, ProfilePreview,
+};
 
 pub enum AddColumnResponse {
     Timeline(TimelineKind),
@@ -166,27 +170,34 @@ impl AddColumnOption {
 
 pub struct AddColumnView<'a> {
     key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
+    id_string_map: &'a mut HashMap<Id, String>,
     ndb: &'a Ndb,
     img_cache: &'a mut Images,
     cur_account: &'a UserAccount,
+    contacts: &'a ContactState,
     i18n: &'a mut Localization,
     jobs: &'a MediaJobSender,
 }
 
 impl<'a> AddColumnView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         key_state_map: &'a mut HashMap<Id, AcquireKeyState>,
+        id_string_map: &'a mut HashMap<Id, String>,
         ndb: &'a Ndb,
         img_cache: &'a mut Images,
         cur_account: &'a UserAccount,
+        contacts: &'a ContactState,
         i18n: &'a mut Localization,
         jobs: &'a MediaJobSender,
     ) -> Self {
         Self {
             key_state_map,
+            id_string_map,
             ndb,
             img_cache,
             cur_account,
+            contacts,
             i18n,
             jobs,
         }
@@ -299,9 +310,58 @@ impl<'a> AddColumnView<'a> {
     fn external_individual_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
         let id = ui.id().with("external_individual");
 
-        self.external_ui(ui, id, |pubkey| {
-            AddColumnOption::Individual(PubkeySource::Explicit(pubkey))
-        })
+        ui.add_space(8.0);
+        let hint = tr!(
+            self.i18n,
+            "Search profiles or enter nip05 address...",
+            "Placeholder for profile search input"
+        );
+        let query_buf = self.id_string_map.entry(id).or_default();
+        ui.add(search_input_box(query_buf, &hint));
+        ui.add_space(12.0);
+
+        let query = self
+            .id_string_map
+            .get(&id)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+
+        if query.contains('@') {
+            nip05_profile_ui(
+                ui,
+                id,
+                &query,
+                self.key_state_map,
+                self.ndb,
+                self.img_cache,
+                self.jobs,
+                self.i18n,
+                self.cur_account,
+            )
+        } else if query.is_empty() {
+            self.key_state_map.remove(&id);
+            contacts_list_column_ui(
+                ui,
+                self.contacts,
+                self.jobs,
+                self.ndb,
+                self.img_cache,
+                self.i18n,
+                self.cur_account,
+            )
+        } else {
+            self.key_state_map.remove(&id);
+            profile_search_column_ui(
+                ui,
+                &query,
+                self.ndb,
+                self.contacts,
+                self.img_cache,
+                self.jobs,
+                self.i18n,
+                self.cur_account,
+            )
+        }
     }
 
     fn external_ui(
@@ -637,6 +697,135 @@ fn add_column_button(i18n: &mut Localization) -> impl Widget {
     move |ui: &mut egui::Ui| styled_button(label.as_str(), color).ui(ui)
 }
 
+fn individual_column_response(pubkey: Pubkey, cur_account: &UserAccount) -> AddColumnResponse {
+    AddColumnOption::Individual(PubkeySource::Explicit(pubkey)).take_as_response(cur_account)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn nip05_profile_ui(
+    ui: &mut Ui,
+    id: egui::Id,
+    query: &str,
+    key_state_map: &mut HashMap<Id, AcquireKeyState>,
+    ndb: &Ndb,
+    img_cache: &mut Images,
+    jobs: &MediaJobSender,
+    i18n: &mut Localization,
+    cur_account: &UserAccount,
+) -> Option<AddColumnResponse> {
+    let key_state = key_state_map.entry(id).or_default();
+
+    // Sync the search input into AcquireKeyState's buffer
+    let buf = key_state.input_buffer();
+    if *buf != query {
+        buf.clear();
+        buf.push_str(query);
+        key_state.apply_acquire();
+    }
+
+    key_state.loading_and_error_ui(ui, i18n);
+
+    let resp = if let Some(keypair) = key_state.get_login_keypair() {
+        let txn = Transaction::new(ndb).expect("txn");
+        let profile = ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes()).ok();
+
+        profile_row(ui, profile.as_ref(), false, img_cache, jobs, i18n)
+            .then(|| individual_column_response(keypair.pubkey, cur_account))
+    } else {
+        None
+    };
+
+    if resp.is_some() {
+        key_state_map.remove(&id);
+    }
+
+    resp
+}
+
+fn contacts_list_column_ui(
+    ui: &mut Ui,
+    contacts: &ContactState,
+    jobs: &MediaJobSender,
+    ndb: &Ndb,
+    img_cache: &mut Images,
+    i18n: &mut Localization,
+    cur_account: &UserAccount,
+) -> Option<AddColumnResponse> {
+    let ContactState::Received {
+        contacts: contact_set,
+        ..
+    } = contacts
+    else {
+        return None;
+    };
+
+    let txn = Transaction::new(ndb).expect("txn");
+    let resp = ContactsListView::new(
+        ContactsCollection::Set(contact_set),
+        jobs,
+        ndb,
+        img_cache,
+        &txn,
+        i18n,
+    )
+    .ui(ui);
+
+    resp.output.map(|a| match a {
+        notedeck_ui::ContactsListAction::Select(pubkey) => {
+            individual_column_response(pubkey, cur_account)
+        }
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn profile_search_column_ui(
+    ui: &mut Ui,
+    query: &str,
+    ndb: &Ndb,
+    contacts: &ContactState,
+    img_cache: &mut Images,
+    jobs: &MediaJobSender,
+    i18n: &mut Localization,
+    cur_account: &UserAccount,
+) -> Option<AddColumnResponse> {
+    let txn = Transaction::new(ndb).expect("txn");
+    let results = search_profiles(ndb, &txn, query, contacts, 128);
+
+    if results.is_empty() {
+        ui.add_space(20.0);
+        ui.label(
+            RichText::new(tr!(
+                i18n,
+                "No profiles found",
+                "Shown when profile search returns no results"
+            ))
+            .weak(),
+        );
+        return None;
+    }
+
+    let mut action = None;
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for result in &results {
+            let profile = ndb.get_profile_by_pubkey(&txn, &result.pk).ok();
+            if profile_row(
+                ui,
+                profile.as_ref(),
+                result.is_contact,
+                img_cache,
+                jobs,
+                i18n,
+            ) {
+                action = Some(individual_column_response(
+                    Pubkey::new(result.pk),
+                    cur_account,
+                ));
+            }
+        }
+    });
+    action
+}
+
 /*
 pub(crate) fn sized_button(text: &str) -> impl Widget + '_ {
     move |ui: &mut egui::Ui| -> egui::Response {
@@ -672,26 +861,36 @@ pub fn render_add_column_routes(
     col: usize,
     route: &AddColumnRoute,
 ) {
-    let mut add_column_view = AddColumnView::new(
-        &mut app.view_state.id_state_map,
-        ctx.ndb,
-        ctx.img_cache,
-        ctx.accounts.get_selected_account(),
-        ctx.i18n,
-        ctx.media_jobs.sender(),
-    );
-    let resp = match route {
-        AddColumnRoute::Base => add_column_view.ui(ui),
-        AddColumnRoute::Algo(r) => match r {
-            AddAlgoRoute::Base => add_column_view.algo_ui(ui),
-            AddAlgoRoute::LastPerPubkey => add_column_view
-                .algo_last_per_pk_ui(ui, ctx.accounts.get_selected_account().key.pubkey),
-        },
-        AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
-        AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
-        AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.i18n, &mut app.view_state.id_string_map),
-        AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
-        AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
+    // Handle hashtag separately since it borrows id_string_map directly
+    let resp = if matches!(route, AddColumnRoute::Hashtag) {
+        hashtag_ui(ui, ctx.i18n, &mut app.view_state.id_string_map)
+    } else {
+        let account = ctx.accounts.get_selected_account();
+        let contacts = account.data.contacts.get_state();
+        let mut add_column_view = AddColumnView::new(
+            &mut app.view_state.id_state_map,
+            &mut app.view_state.id_string_map,
+            ctx.ndb,
+            ctx.img_cache,
+            account,
+            contacts,
+            ctx.i18n,
+            ctx.media_jobs.sender(),
+        );
+        match route {
+            AddColumnRoute::Base => add_column_view.ui(ui),
+            AddColumnRoute::Algo(r) => match r {
+                AddAlgoRoute::Base => add_column_view.algo_ui(ui),
+                AddAlgoRoute::LastPerPubkey => {
+                    add_column_view.algo_last_per_pk_ui(ui, account.key.pubkey)
+                }
+            },
+            AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
+            AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
+            AddColumnRoute::Hashtag => unreachable!(),
+            AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
+            AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
+        }
     };
 
     if let Some(resp) = resp {

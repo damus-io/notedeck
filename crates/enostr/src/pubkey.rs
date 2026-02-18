@@ -118,6 +118,13 @@ impl Pubkey {
     pub fn npub(&self) -> Option<String> {
         bech32::encode::<bech32::Bech32>(HRP_NPUB, &self.0).ok()
     }
+
+    /// Parse a NIP-19 nprofile1 bech32 string and extract the public key.
+    pub fn from_nprofile_bech(bech: &str) -> Option<Self> {
+        use nostr::nips::nip19::{FromBech32, Nip19Profile};
+        let nip19_profile = Nip19Profile::from_bech32(bech).ok()?;
+        Some(Pubkey::new(nip19_profile.public_key.to_bytes()))
+    }
 }
 
 impl fmt::Display for Pubkey {
