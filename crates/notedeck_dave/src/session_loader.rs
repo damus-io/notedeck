@@ -5,6 +5,7 @@
 //! for populating the chat UI.
 
 use crate::messages::{AssistantMessage, PermissionRequest, PermissionResponseType, ToolResult};
+use crate::session::PermissionTracker;
 use crate::session_events::{get_tag_value, is_conversation_role, AI_CONVERSATION_KIND};
 use crate::Message;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
@@ -77,12 +78,8 @@ pub struct LoadedSession {
     pub root_note_id: Option<[u8; 32]>,
     pub last_note_id: Option<[u8; 32]>,
     pub event_count: u32,
-    /// Set of perm-id UUIDs that have already been responded to.
-    /// Used by remote sessions to know which permission requests are already handled.
-    pub responded_perm_ids: HashSet<uuid::Uuid>,
-    /// Map of perm_id -> note_id for permission request events.
-    /// Used by remote sessions to link responses back to requests.
-    pub perm_request_note_ids: std::collections::HashMap<uuid::Uuid, [u8; 32]>,
+    /// Permission state loaded from events (responded set + request note IDs).
+    pub permissions: PermissionTracker,
     /// All note IDs found, for seeding dedup in live polling.
     pub note_ids: HashSet<[u8; 32]>,
 }
@@ -105,8 +102,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                 root_note_id: None,
                 last_note_id: None,
                 event_count: 0,
-                responded_perm_ids: HashSet::new(),
-                perm_request_note_ids: std::collections::HashMap::new(),
+                permissions: PermissionTracker::new(),
                 note_ids: HashSet::new(),
             }
         }
@@ -137,20 +133,19 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
     let last_note_id = notes.last().map(|n| *n.id());
 
     // First pass: collect responded permission IDs and perm request note IDs
-    let mut responded_perm_ids = HashSet::new();
-    let mut perm_request_note_ids = std::collections::HashMap::new();
+    let mut permissions = PermissionTracker::new();
     for note in &notes {
         let role = get_tag_value(note, "role");
         if role == Some("permission_response") {
             if let Some(perm_id_str) = get_tag_value(note, "perm-id") {
                 if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                    responded_perm_ids.insert(perm_id);
+                    permissions.responded.insert(perm_id);
                 }
             }
         } else if role == Some("permission_request") {
             if let Some(perm_id_str) = get_tag_value(note, "perm-id") {
                 if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                    perm_request_note_ids.insert(perm_id, *note.id());
+                    permissions.request_note_ids.insert(perm_id, *note.id());
                 }
             }
         }
@@ -190,7 +185,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                         .and_then(|s| uuid::Uuid::parse_str(s).ok())
                         .unwrap_or_else(uuid::Uuid::new_v4);
 
-                    let response = if responded_perm_ids.contains(&perm_id) {
+                    let response = if permissions.responded.contains(&perm_id) {
                         Some(PermissionResponseType::Allowed)
                     } else {
                         None
@@ -222,8 +217,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         root_note_id,
         last_note_id,
         event_count,
-        responded_perm_ids,
-        perm_request_note_ids,
+        permissions,
         note_ids,
     }
 }

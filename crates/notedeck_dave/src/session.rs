@@ -37,10 +37,51 @@ pub enum PermissionMessageState {
     TentativeDeny,
 }
 
+/// Consolidated permission tracking for a session.
+///
+/// Bundles the local oneshot channels (for local sessions), the note-ID
+/// mapping (for linking relay responses), and the already-responded set
+/// (for remote sessions) into a single struct.
+pub struct PermissionTracker {
+    /// Local oneshot senders waiting for the user to allow/deny.
+    pub pending: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
+    /// Maps permission-request UUID → nostr note ID of the published request.
+    pub request_note_ids: HashMap<Uuid, [u8; 32]>,
+    /// Permission UUIDs that have already been responded to.
+    pub responded: HashSet<Uuid>,
+}
+
+impl PermissionTracker {
+    pub fn new() -> Self {
+        Self {
+            pending: HashMap::new(),
+            request_note_ids: HashMap::new(),
+            responded: HashSet::new(),
+        }
+    }
+
+    /// Whether there are unresolved local permission requests.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// Merge loaded permission state from restored events.
+    pub fn merge_loaded(&mut self, responded: HashSet<Uuid>, request_note_ids: HashMap<Uuid, [u8; 32]>) {
+        self.responded = responded;
+        self.request_note_ids.extend(request_note_ids);
+    }
+}
+
+impl Default for PermissionTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Agentic-mode specific session data (Claude backend only)
 pub struct AgenticSessionData {
-    /// Pending permission requests waiting for user response
-    pub pending_permissions: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
+    /// Permission state (pending channels, note IDs, responded set)
+    pub permissions: PermissionTracker,
     /// Position in the RTS scene (in scene coordinates)
     pub scene_position: egui::Vec2,
     /// Permission mode for Claude (Default or Plan)
@@ -68,9 +109,6 @@ pub struct AgenticSessionData {
     pub git_status: GitStatusCache,
     /// Threading state for live kind-1988 event generation.
     pub live_threading: ThreadingState,
-    /// Maps permission request UUID → note ID of the published request event.
-    /// Used to link permission response events back to their requests.
-    pub perm_request_note_ids: HashMap<Uuid, [u8; 32]>,
     /// Subscription for remote permission response events (kind-1988, t=ai-permission).
     /// Set up once when the session's claude_session_id becomes known.
     pub perm_response_sub: Option<nostrdb::Subscription>,
@@ -80,8 +118,6 @@ pub struct AgenticSessionData {
     /// Subscription for live kind-1988 conversation events from relays.
     /// Used by remote sessions to receive new messages in real-time.
     pub live_conversation_sub: Option<nostrdb::Subscription>,
-    /// Set of perm-id UUIDs that we (the remote/phone) have already responded to.
-    pub responded_perm_ids: HashSet<Uuid>,
     /// Note IDs we've already processed from live conversation polling.
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
@@ -99,7 +135,7 @@ impl AgenticSessionData {
         let git_status = GitStatusCache::new(cwd.clone());
 
         AgenticSessionData {
-            pending_permissions: HashMap::new(),
+            permissions: PermissionTracker::new(),
             scene_position: egui::Vec2::new(x, y),
             permission_mode: PermissionMode::Default,
             permission_message_state: PermissionMessageState::None,
@@ -113,11 +149,9 @@ impl AgenticSessionData {
             resume_session_id: None,
             git_status,
             live_threading: ThreadingState::new(),
-            perm_request_note_ids: HashMap::new(),
             perm_response_sub: None,
             remote_status: None,
             live_conversation_sub: None,
-            responded_perm_ids: HashSet::new(),
             seen_note_ids: HashSet::new(),
         }
     }
@@ -266,7 +300,7 @@ impl ChatSession {
     pub fn has_pending_permissions(&self) -> bool {
         if self.is_remote() {
             // Remote: check for unresponded PermissionRequest messages in chat
-            let responded = self.agentic.as_ref().map(|a| &a.responded_perm_ids);
+            let responded = self.agentic.as_ref().map(|a| &a.permissions.responded);
             return self.chat.iter().any(|msg| {
                 if let Message::PermissionRequest(req) = msg {
                     req.response.is_none() && responded.is_none_or(|ids| !ids.contains(&req.id))
@@ -278,7 +312,7 @@ impl ChatSession {
         // Local: check oneshot senders
         self.agentic
             .as_ref()
-            .is_some_and(|a| !a.pending_permissions.is_empty())
+            .is_some_and(|a| a.permissions.has_pending())
     }
 
     /// Check if session is in plan mode

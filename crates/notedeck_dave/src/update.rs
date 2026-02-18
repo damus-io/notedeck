@@ -72,7 +72,7 @@ pub fn execute_interrupt(
         backend.interrupt_session(session_id, ctx.clone());
         session.incoming_tokens = None;
         if let Some(agentic) = &mut session.agentic {
-            agentic.pending_permissions.clear();
+            agentic.permissions.pending.clear();
         }
         tracing::debug!("Interrupted session {}", session.id);
     }
@@ -141,7 +141,7 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
     let session = session_manager.get_active()?;
     if session.is_remote() {
         // Remote: find first unresponded PermissionRequest in chat
-        let responded = session.agentic.as_ref().map(|a| &a.responded_perm_ids);
+        let responded = session.agentic.as_ref().map(|a| &a.permissions.responded);
         for msg in &session.chat {
             if let Message::PermissionRequest(req) = msg {
                 if req.response.is_none() && responded.is_none_or(|ids| !ids.contains(&req.id)) {
@@ -155,7 +155,7 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
         session
             .agentic
             .as_ref()
-            .and_then(|a| a.pending_permissions.keys().next().copied())
+            .and_then(|a| a.permissions.pending.keys().next().copied())
     }
 }
 
@@ -243,10 +243,10 @@ pub fn handle_permission_response(
     if let Some(agentic) = &mut session.agentic {
         if is_remote {
             // Remote: mark as responded, signal relay publish needed
-            agentic.responded_perm_ids.insert(request_id);
+            agentic.permissions.responded.insert(request_id);
         } else {
             // Local: send through oneshot channel to Claude process
-            if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
+            if let Some(sender) = agentic.permissions.pending.remove(&request_id) {
                 if sender.send(response).is_err() {
                     tracing::error!(
                         "Failed to send permission response for request {}",
@@ -377,10 +377,10 @@ pub fn handle_question_response(
 
         if is_remote {
             // Remote: mark as responded, signal relay publish needed
-            agentic.responded_perm_ids.insert(request_id);
+            agentic.permissions.responded.insert(request_id);
         } else {
             // Local: send through oneshot channel to Claude process
-            if let Some(sender) = agentic.pending_permissions.remove(&request_id) {
+            if let Some(sender) = agentic.permissions.pending.remove(&request_id) {
                 let response = PermissionResponse::Allow {
                     message: Some(formatted_response.clone()),
                 };

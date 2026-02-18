@@ -523,7 +523,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                         // Store note_id for linking responses
                                         if let Some(agentic) = &mut session.agentic {
                                             agentic
-                                                .perm_request_note_ids
+                                                .permissions
+                                                .request_note_ids
                                                 .insert(pending.request.id, evt.note_id);
                                         }
                                         events_to_publish.push(evt);
@@ -541,7 +542,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         // Store the response sender for later (agentic only)
                         if let Some(agentic) = &mut session.agentic {
                             agentic
-                                .pending_permissions
+                                .permissions
+                                .pending
                                 .insert(pending.request.id, pending.response_tx);
                         }
 
@@ -1083,7 +1085,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 };
 
                 // Route through the existing oneshot channel (first-response-wins)
-                if let Some(sender) = agentic.pending_permissions.remove(&perm_id) {
+                if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
                     let response = if allowed {
                         PermissionResponse::Allow { message }
                     } else {
@@ -1227,7 +1229,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         for resp in pending {
-            let request_note_id = match agentic.perm_request_note_ids.get(&resp.perm_id) {
+            let request_note_id = match agentic.permissions.request_note_ids.get(&resp.perm_id) {
                 Some(id) => id,
                 None => {
                     tracing::warn!("no request note_id for perm_id {}", resp.perm_id);
@@ -1315,10 +1317,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
                     // Load permission state and dedup set from events
-                    agentic.responded_perm_ids = loaded.responded_perm_ids;
-                    agentic
-                        .perm_request_note_ids
-                        .extend(loaded.perm_request_note_ids);
+                    agentic.permissions.merge_loaded(loaded.permissions.responded, loaded.permissions.request_note_ids);
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status from state event
                     agentic.remote_status = AgentStatus::from_status_str(&state.status);
@@ -1485,10 +1484,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
                     // Load permission state and dedup set
-                    agentic.responded_perm_ids = loaded.responded_perm_ids;
-                    agentic
-                        .perm_request_note_ids
-                        .extend(loaded.perm_request_note_ids);
+                    agentic.permissions.merge_loaded(loaded.permissions.responded, loaded.permissions.request_note_ids);
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status
                     agentic.remote_status = AgentStatus::from_status_str(status_str);
@@ -1644,14 +1640,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 .unwrap_or_else(uuid::Uuid::new_v4);
 
                             // Check if we already responded
-                            let response = if agentic.responded_perm_ids.contains(&perm_id) {
+                            let response = if agentic.permissions.responded.contains(&perm_id) {
                                 Some(crate::messages::PermissionResponseType::Allowed)
                             } else {
                                 None
                             };
 
                             // Store the note ID for linking responses
-                            agentic.perm_request_note_ids.insert(perm_id, *note.id());
+                            agentic.permissions.request_note_ids.insert(perm_id, *note.id());
 
                             session.chat.push(Message::PermissionRequest(
                                 crate::messages::PermissionRequest {
@@ -1669,7 +1665,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         // Track that this permission was responded to
                         if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
                             if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                                agentic.responded_perm_ids.insert(perm_id);
+                                agentic.permissions.responded.insert(perm_id);
                                 // Update the matching PermissionRequest in chat
                                 for msg in session.chat.iter_mut() {
                                     if let Message::PermissionRequest(req) = msg {
@@ -2053,8 +2049,9 @@ impl notedeck::App for Dave {
                             agentic.live_threading.seed(root, last, loaded.event_count);
                         }
                         agentic
-                            .perm_request_note_ids
-                            .extend(loaded.perm_request_note_ids);
+                            .permissions
+                            .request_note_ids
+                            .extend(loaded.permissions.request_note_ids);
                     }
                 }
             } else if let Some(secret_bytes) =
@@ -2121,8 +2118,9 @@ impl notedeck::App for Dave {
                             agentic.live_threading.seed(root, last, loaded.event_count);
                         }
                         agentic
-                            .perm_request_note_ids
-                            .extend(loaded.perm_request_note_ids);
+                            .permissions
+                            .request_note_ids
+                            .extend(loaded.permissions.request_note_ids);
                     }
                 }
                 self.pending_message_load = None;
