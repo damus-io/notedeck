@@ -89,7 +89,14 @@ impl NewPostAction {
             }
         };
 
-        pool.send(&enostr::ClientMessage::event(&note)?);
+        let event = enostr::ClientMessage::event(&note)?;
+
+        // Ingest locally so the note appears immediately, even when offline
+        if let Ok(json) = event.to_json() {
+            let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
+        }
+
+        pool.send(&event);
         drafts.get_from_post_type(&self.post_type).clear();
 
         Ok(())
