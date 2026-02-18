@@ -621,96 +621,59 @@ impl<'a> DaveUi<'a> {
         action: &mut Option<DaveAction>,
     ) {
         let shift_held = ui.input(|i| i.modifiers.shift);
+        let in_tentative = self.permission_message_state != PermissionMessageState::None;
 
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
+            if in_tentative {
+                tentative_send_ui(self.permission_message_state, "Allow", "Deny", ui, action);
+            } else {
+                let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
 
-            // Allow button (green) with integrated keybind hint
-            let allow_response = super::badge::ActionButton::new(
-                "Allow",
-                egui::Color32::from_rgb(34, 139, 34),
-                button_text_color,
-            )
-            .keybind("1")
-            .show(ui)
-            .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
+                // Allow button (green) with integrated keybind hint
+                let allow_response = super::badge::ActionButton::new(
+                    "Allow",
+                    egui::Color32::from_rgb(34, 139, 34),
+                    button_text_color,
+                )
+                .keybind("1")
+                .show(ui)
+                .on_hover_text("Press 1 to allow, Shift+1 to allow with message");
 
-            // Deny button (red) with integrated keybind hint
-            let deny_response = super::badge::ActionButton::new(
-                "Deny",
-                egui::Color32::from_rgb(178, 34, 34),
-                button_text_color,
-            )
-            .keybind("2")
-            .show(ui)
-            .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
+                // Deny button (red) with integrated keybind hint
+                let deny_response = super::badge::ActionButton::new(
+                    "Deny",
+                    egui::Color32::from_rgb(178, 34, 34),
+                    button_text_color,
+                )
+                .keybind("2")
+                .show(ui)
+                .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
 
-            if deny_response.clicked() {
-                if shift_held {
-                    // Shift+click: enter tentative deny mode
-                    *action = Some(DaveAction::TentativeDeny);
-                } else {
-                    // Normal click: immediate deny
-                    *action = Some(DaveAction::PermissionResponse {
-                        request_id: request.id,
-                        response: PermissionResponse::Deny {
-                            reason: "User denied".into(),
-                        },
-                    });
-                }
-            }
-
-            if allow_response.clicked() {
-                if shift_held {
-                    // Shift+click: enter tentative accept mode
-                    *action = Some(DaveAction::TentativeAccept);
-                } else {
-                    // Normal click: immediate allow
-                    *action = Some(DaveAction::PermissionResponse {
-                        request_id: request.id,
-                        response: PermissionResponse::Allow { message: None },
-                    });
-                }
-            }
-
-            // Show tentative state indicator (clickable to toggle) or "+ msg" button
-            match self.permission_message_state {
-                PermissionMessageState::TentativeAccept => {
-                    if ui
-                        .link(
-                            egui::RichText::new("✓ Will Allow")
-                                .color(egui::Color32::from_rgb(100, 180, 100))
-                                .strong(),
-                        )
-                        .clicked()
-                    {
+                if deny_response.clicked() {
+                    if shift_held {
                         *action = Some(DaveAction::TentativeDeny);
+                    } else {
+                        *action = Some(DaveAction::PermissionResponse {
+                            request_id: request.id,
+                            response: PermissionResponse::Deny {
+                                reason: "User denied".into(),
+                            },
+                        });
                     }
                 }
-                PermissionMessageState::TentativeDeny => {
-                    if ui
-                        .link(
-                            egui::RichText::new("✗ Will Deny")
-                                .color(egui::Color32::from_rgb(200, 100, 100))
-                                .strong(),
-                        )
-                        .clicked()
-                    {
+
+                if allow_response.clicked() {
+                    if shift_held {
                         *action = Some(DaveAction::TentativeAccept);
+                    } else {
+                        *action = Some(DaveAction::PermissionResponse {
+                            request_id: request.id,
+                            response: PermissionResponse::Allow { message: None },
+                        });
                     }
                 }
-                PermissionMessageState::None => {
-                    if ui
-                        .link(
-                            egui::RichText::new("+ msg")
-                                .color(ui.visuals().weak_text_color())
-                                .small(),
-                        )
-                        .clicked()
-                    {
-                        *action = Some(DaveAction::TentativeAccept);
-                    }
-                }
+
+                add_msg_link(ui, action);
             }
         });
     }
@@ -762,90 +725,64 @@ impl<'a> DaveUi<'a> {
 
                     // Approve/Reject buttons with shift support for adding message
                     let shift_held = ui.input(|i| i.modifiers.shift);
+                    let in_tentative =
+                        self.permission_message_state != PermissionMessageState::None;
 
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
+                        if in_tentative {
+                            tentative_send_ui(
+                                self.permission_message_state,
+                                "Approve",
+                                "Reject",
+                                ui,
+                                &mut action,
+                            );
+                        } else {
+                            let button_text_color = ui.visuals().widgets.active.fg_stroke.color;
 
-                        // Approve button (green)
-                        let approve_response = super::badge::ActionButton::new(
-                            "Approve",
-                            egui::Color32::from_rgb(34, 139, 34),
-                            button_text_color,
-                        )
-                        .keybind("1")
-                        .show(ui)
-                        .on_hover_text("Press 1 to approve, Shift+1 to approve with message");
+                            // Approve button (green)
+                            let approve_response = super::badge::ActionButton::new(
+                                "Approve",
+                                egui::Color32::from_rgb(34, 139, 34),
+                                button_text_color,
+                            )
+                            .keybind("1")
+                            .show(ui)
+                            .on_hover_text("Press 1 to approve, Shift+1 to approve with message");
 
-                        if approve_response.clicked() {
-                            if shift_held {
-                                action = Some(DaveAction::TentativeAccept);
-                            } else {
-                                action = Some(DaveAction::ExitPlanMode {
-                                    request_id: request.id,
-                                    approved: true,
-                                });
+                            if approve_response.clicked() {
+                                if shift_held {
+                                    action = Some(DaveAction::TentativeAccept);
+                                } else {
+                                    action = Some(DaveAction::ExitPlanMode {
+                                        request_id: request.id,
+                                        approved: true,
+                                    });
+                                }
                             }
-                        }
 
-                        // Reject button (red)
-                        let reject_response = super::badge::ActionButton::new(
-                            "Reject",
-                            egui::Color32::from_rgb(178, 34, 34),
-                            button_text_color,
-                        )
-                        .keybind("2")
-                        .show(ui)
-                        .on_hover_text("Press 2 to reject, Shift+2 to reject with message");
+                            // Reject button (red)
+                            let reject_response = super::badge::ActionButton::new(
+                                "Reject",
+                                egui::Color32::from_rgb(178, 34, 34),
+                                button_text_color,
+                            )
+                            .keybind("2")
+                            .show(ui)
+                            .on_hover_text("Press 2 to reject, Shift+2 to reject with message");
 
-                        if reject_response.clicked() {
-                            if shift_held {
-                                action = Some(DaveAction::TentativeDeny);
-                            } else {
-                                action = Some(DaveAction::ExitPlanMode {
-                                    request_id: request.id,
-                                    approved: false,
-                                });
-                            }
-                        }
-
-                        // Show tentative state indicator (clickable to toggle) or "+ msg" button
-                        match self.permission_message_state {
-                            PermissionMessageState::TentativeAccept => {
-                                if ui
-                                    .link(
-                                        egui::RichText::new("✓ Will Approve")
-                                            .color(egui::Color32::from_rgb(100, 180, 100))
-                                            .strong(),
-                                    )
-                                    .clicked()
-                                {
+                            if reject_response.clicked() {
+                                if shift_held {
                                     action = Some(DaveAction::TentativeDeny);
+                                } else {
+                                    action = Some(DaveAction::ExitPlanMode {
+                                        request_id: request.id,
+                                        approved: false,
+                                    });
                                 }
                             }
-                            PermissionMessageState::TentativeDeny => {
-                                if ui
-                                    .link(
-                                        egui::RichText::new("✗ Will Reject")
-                                            .color(egui::Color32::from_rgb(200, 100, 100))
-                                            .strong(),
-                                    )
-                                    .clicked()
-                                {
-                                    action = Some(DaveAction::TentativeAccept);
-                                }
-                            }
-                            PermissionMessageState::None => {
-                                if ui
-                                    .link(
-                                        egui::RichText::new("+ msg")
-                                            .color(ui.visuals().weak_text_color())
-                                            .small(),
-                                    )
-                                    .clicked()
-                                {
-                                    action = Some(DaveAction::TentativeAccept);
-                                }
-                            }
+
+                            add_msg_link(ui, &mut action);
                         }
                     });
                 });
@@ -1143,6 +1080,64 @@ impl<'a> DaveUi<'a> {
         let partial = msg.partial();
         let buffer = msg.buffer();
         markdown_ui::render_assistant_message(elements, partial, buffer, ui);
+    }
+}
+
+/// Send button + clickable accept/deny toggle shown when in tentative state.
+fn tentative_send_ui(
+    state: PermissionMessageState,
+    accept_label: &str,
+    deny_label: &str,
+    ui: &mut egui::Ui,
+    action: &mut Option<DaveAction>,
+) {
+    if ui
+        .add(egui::Button::new(egui::RichText::new("Send").strong()))
+        .clicked()
+    {
+        *action = Some(DaveAction::Send);
+    }
+
+    match state {
+        PermissionMessageState::TentativeAccept => {
+            if ui
+                .link(
+                    egui::RichText::new(format!("✓ Will {accept_label}"))
+                        .color(egui::Color32::from_rgb(100, 180, 100))
+                        .strong(),
+                )
+                .clicked()
+            {
+                *action = Some(DaveAction::TentativeDeny);
+            }
+        }
+        PermissionMessageState::TentativeDeny => {
+            if ui
+                .link(
+                    egui::RichText::new(format!("✗ Will {deny_label}"))
+                        .color(egui::Color32::from_rgb(200, 100, 100))
+                        .strong(),
+                )
+                .clicked()
+            {
+                *action = Some(DaveAction::TentativeAccept);
+            }
+        }
+        PermissionMessageState::None => {}
+    }
+}
+
+/// Clickable "+ msg" link that enters tentative accept mode.
+fn add_msg_link(ui: &mut egui::Ui, action: &mut Option<DaveAction>) {
+    if ui
+        .link(
+            egui::RichText::new("+ msg")
+                .color(ui.visuals().weak_text_color())
+                .small(),
+        )
+        .clicked()
+    {
+        *action = Some(DaveAction::TentativeAccept);
     }
 }
 
