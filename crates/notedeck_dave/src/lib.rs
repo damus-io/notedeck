@@ -58,9 +58,8 @@ pub use ui::{
 };
 pub use vec3::Vec3;
 
-/// Relay URL used for PNS event publishing and subscription.
-/// TODO: make this configurable in the UI
-const PNS_RELAY_URL: &str = "ws://relay.jb55.com/";
+/// Default relay URL used for PNS event publishing and subscription.
+const DEFAULT_PNS_RELAY: &str = "ws://relay.jb55.com/";
 
 /// Extract a 32-byte secret key from a keypair.
 fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
@@ -143,6 +142,8 @@ pub struct Dave {
     pending_deletions: Vec<DeletedSessionInfo>,
     /// Local machine hostname, included in session state events.
     hostname: String,
+    /// PNS relay URL (configurable via DAVE_RELAY env or settings UI).
+    pns_relay_url: String,
 }
 
 use update::PermissionPublish;
@@ -323,6 +324,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         let settings = DaveSettings::from_model_config(&model_config);
+        let pns_relay_url = model_config
+            .pns_relay
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string());
 
         let directory_picker = DirectoryPicker::new();
 
@@ -375,6 +380,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_perm_responses: Vec::new(),
             pending_deletions: Vec::new(),
             hostname,
+            pns_relay_url,
         }
     }
 
@@ -386,6 +392,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Apply new settings. Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
         self.model_config = ModelConfig::from_settings(&settings);
+        self.pns_relay_url = settings
+            .pns_relay
+            .clone()
+            .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string());
         self.settings = settings;
     }
 
@@ -1950,9 +1960,10 @@ impl notedeck::App for Dave {
         // Process relay events into ndb (needed when dave is the active app).
         // Re-send PNS subscription when the relay (re)connects.
         let pns_sub_id = self.pns_relay_sub.clone();
+        let pns_relay = self.pns_relay_url.clone();
         try_process_events_core(ctx, ui.ctx(), |app_ctx, ev| {
             if let enostr::RelayEvent::Opened = (&ev.event).into() {
-                if ev.relay == PNS_RELAY_URL {
+                if ev.relay == pns_relay {
                     if let Some(sub_id) = &pns_sub_id {
                         if let Some(sk) =
                             app_ctx.accounts.get_selected_account().keypair().secret_key
@@ -1963,7 +1974,7 @@ impl notedeck::App for Dave {
                                 .authors([pns_keys.keypair.pubkey.bytes()])
                                 .build();
                             let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
-                            app_ctx.pool.send_to(&req, PNS_RELAY_URL);
+                            app_ctx.pool.send_to(&req, &pns_relay);
                             tracing::info!("re-subscribed for PNS events after relay reconnect");
                         }
                     }
@@ -2001,8 +2012,8 @@ impl notedeck::App for Dave {
                 // Ensure the PNS relay is in the pool
                 let egui_ctx = ui.ctx().clone();
                 let wakeup = move || egui_ctx.request_repaint();
-                if let Err(e) = ctx.pool.add_url(PNS_RELAY_URL.to_string(), wakeup) {
-                    tracing::warn!("failed to add PNS relay {}: {:?}", PNS_RELAY_URL, e);
+                if let Err(e) = ctx.pool.add_url(self.pns_relay_url.clone(), wakeup) {
+                    tracing::warn!("failed to add PNS relay {}: {:?}", self.pns_relay_url, e);
                 }
 
                 // Remote: subscribe on PNS relay for kind-1080 authored by our PNS pubkey
@@ -2012,9 +2023,9 @@ impl notedeck::App for Dave {
                     .build();
                 let sub_id = uuid::Uuid::new_v4().to_string();
                 let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
-                ctx.pool.send_to(&req, PNS_RELAY_URL);
+                ctx.pool.send_to(&req, &self.pns_relay_url);
                 self.pns_relay_sub = Some(sub_id);
-                tracing::info!("subscribed for PNS events on {}", PNS_RELAY_URL);
+                tracing::info!("subscribed for PNS events on {}", self.pns_relay_url);
 
                 // Local: subscribe in ndb for kind-31988 session state events
                 let state_filter = nostrdb::Filter::new()
@@ -2210,7 +2221,7 @@ impl notedeck::App for Dave {
             for event in all_events {
                 match session_events::wrap_pns(&event.note_json, &pns_keys) {
                     Ok(pns_json) => match enostr::ClientMessage::event_json(pns_json) {
-                        Ok(msg) => ctx.pool.send_to(&msg, PNS_RELAY_URL),
+                        Ok(msg) => ctx.pool.send_to(&msg, &self.pns_relay_url),
                         Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
                     },
                     Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
