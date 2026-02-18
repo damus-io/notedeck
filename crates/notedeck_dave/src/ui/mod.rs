@@ -327,7 +327,7 @@ pub fn desktop_ui(
     ui: &mut egui::Ui,
 ) -> (DaveResponse, Option<SessionListAction>, bool) {
     let available = ui.available_rect_before_wrap();
-    let sidebar_width = 280.0;
+    let sidebar_width = if available.width() < 830.0 { 200.0 } else { 280.0 };
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
     let mut toggle_scene = false;
 
