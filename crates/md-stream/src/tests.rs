@@ -67,9 +67,11 @@ fn test_code_block_streaming() {
     let mut parser = StreamParser::new();
 
     parser.push("```py");
-    assert!(parser.in_code_block() || parser.partial().is_some());
+    // No partial yet — language tag may be incomplete without newline
+    assert!(parser.partial().is_none());
 
     parser.push("thon\n");
+    // Now the full opening fence line is available
     assert!(parser.in_code_block());
 
     parser.push("print('hello')\n");
@@ -937,4 +939,104 @@ fn test_table_partial_shows_during_streaming() {
         "Expected table partial with seen_separator=true, got: {:?}",
         partial.kind
     );
+}
+
+#[test]
+fn test_code_fence_partial_has_language() {
+    // While streaming a code block, the partial should expose the language
+    let mut parser = StreamParser::new();
+    parser.push("```rust\nfn main() {\n");
+
+    let partial = parser
+        .partial()
+        .expect("Should have partial while code block is open");
+    match &partial.kind {
+        PartialKind::CodeFence { language, .. } => {
+            let lang = language.expect("Language should be set during partial");
+            assert_eq!(lang.resolve(parser.buffer()), "rust");
+        }
+        other => panic!("Expected CodeFence partial, got: {:?}", other),
+    }
+    // Content should be available too
+    assert_eq!(partial.content(parser.buffer()), "fn main() {\n");
+}
+
+#[test]
+fn test_code_fence_partial_language_streamed_char_by_char() {
+    // Simulate LLM token-by-token streaming
+    let mut parser = StreamParser::new();
+    let input = "```python\ndef hello():\n    print(\"hi\")\n";
+
+    for ch in input.chars() {
+        parser.push(&ch.to_string());
+    }
+
+    // Should still be partial (no closing fence)
+    assert_eq!(
+        parser.parsed().len(),
+        0,
+        "Should not have finalized any elements"
+    );
+    let partial = parser.partial().expect("Should have partial");
+    match &partial.kind {
+        PartialKind::CodeFence { language, .. } => {
+            let lang = language.expect("Language should be set");
+            assert_eq!(lang.resolve(parser.buffer()), "python");
+        }
+        other => panic!("Expected CodeFence partial, got: {:?}", other),
+    }
+    assert_eq!(
+        partial.content(parser.buffer()),
+        "def hello():\n    print(\"hi\")\n"
+    );
+}
+
+#[test]
+fn test_consecutive_code_blocks_preserve_language() {
+    // Multiple code blocks back-to-back, as an LLM would produce
+    let mut parser = StreamParser::new();
+    let input = "```rust\nlet x = 1;\n```\n\n```python\nx = 1\n```\n\n```c\nint x = 1;\n```\n";
+
+    // Stream in small chunks to simulate LLM output
+    let chunks: Vec<&str> = input
+        .as_bytes()
+        .chunks(5)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
+    for chunk in &chunks {
+        parser.push(chunk);
+    }
+
+    let code_blocks: Vec<_> = parser
+        .parsed()
+        .iter()
+        .filter_map(|e| match e {
+            MdElement::CodeBlock(cb) => Some(cb),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        code_blocks.len() >= 3,
+        "Expected 3 code blocks, got {} (parsed: {:?})",
+        code_blocks.len(),
+        parser.parsed()
+    );
+
+    assert_eq!(
+        code_blocks[0].language.map(|s| r(&s, parser.buffer())),
+        Some("rust")
+    );
+    assert_eq!(
+        code_blocks[1].language.map(|s| r(&s, parser.buffer())),
+        Some("python")
+    );
+    assert_eq!(
+        code_blocks[2].language.map(|s| r(&s, parser.buffer())),
+        Some("c")
+    );
+
+    assert_eq!(r(&code_blocks[0].content, parser.buffer()), "let x = 1;\n");
+    assert_eq!(r(&code_blocks[1].content, parser.buffer()), "x = 1\n");
+    assert_eq!(r(&code_blocks[2].content, parser.buffer()), "int x = 1;\n");
 }

@@ -234,11 +234,17 @@ impl StreamParser {
         }
 
         // Could be a code fence: need at least 3 backticks or tildes
-        if trimmed.len() < 3 {
-            let first = trimmed.as_bytes()[0];
-            if first == b'`' || first == b'~' {
+        let first = trimmed.as_bytes()[0];
+        if first == b'`' || first == b'~' {
+            if trimmed.len() < 3 {
                 // All chars so far are the same fence char
                 return trimmed.bytes().all(|b| b == first);
+            }
+            // Have 3+ fence chars — still need the newline to finalize
+            // the opening line (language tag may be incomplete)
+            let fence_len = trimmed.bytes().take_while(|&b| b == first).count();
+            if fence_len >= 3 && !trimmed[fence_len..].contains('\n') {
+                return true;
             }
         }
 
@@ -294,7 +300,7 @@ impl StreamParser {
 
             if fence_len >= 3 {
                 let after_fence = &trimmed[fence_len..];
-                let (language, consumed_lang) = if let Some(nl_pos) = after_fence.find('\n') {
+                if let Some(nl_pos) = after_fence.find('\n') {
                     let lang = after_fence[..nl_pos].trim();
                     let lang_span = if lang.is_empty() {
                         None
@@ -308,37 +314,28 @@ impl StreamParser {
                             self.process_pos + leading_space + fence_len + lang_start_in_after;
                         Some(Span::new(abs_start, abs_start + lang.len()))
                     };
-                    (lang_span, nl_pos + 1)
-                } else {
-                    // No newline yet - language might be incomplete
-                    let lang = after_fence.trim();
-                    let lang_span = if lang.is_empty() {
-                        None
-                    } else {
-                        let lang_start_in_after =
-                            after_fence.len() - after_fence.trim_start().len();
-                        let abs_start =
-                            self.process_pos + leading_space + fence_len + lang_start_in_after;
-                        Some(Span::new(abs_start, abs_start + lang.len()))
-                    };
-                    (lang_span, after_fence.len())
-                };
+                    let consumed_lang = nl_pos + 1;
 
-                let consumed = leading_space + fence_len + consumed_lang;
-                let content_start = self.process_pos + consumed;
-                let mut partial = Partial::new(
-                    PartialKind::CodeFence {
-                        fence_char,
-                        fence_len,
-                        language,
-                    },
-                    self.process_pos,
-                );
-                partial.content_start = content_start;
-                partial.content_end = content_start;
-                self.partial = Some(partial);
-                self.at_line_start = false;
-                return Some(consumed);
+                    let consumed = leading_space + fence_len + consumed_lang;
+                    let content_start = self.process_pos + consumed;
+                    let mut partial = Partial::new(
+                        PartialKind::CodeFence {
+                            fence_char,
+                            fence_len,
+                            language: lang_span,
+                        },
+                        self.process_pos,
+                    );
+                    partial.content_start = content_start;
+                    partial.content_end = content_start;
+                    self.partial = Some(partial);
+                    self.at_line_start = false;
+                    return Some(consumed);
+                } else {
+                    // No newline yet — the language tag may be incomplete.
+                    // Wait for more input so we don't commit a truncated span.
+                    return None;
+                }
             }
         }
 
@@ -449,7 +446,10 @@ impl StreamParser {
                     && trimmed.bytes().all(|b| b == fence_char as u8)
                     && !line.contains('\n')
                 {
-                    // Don't advance — wait for more chars
+                    // Advance past content lines we already processed,
+                    // but stop before the partial fence so we re-check it
+                    // when more data arrives.
+                    self.advance(pos - text_start);
                     return false;
                 }
             }
