@@ -98,9 +98,11 @@ fn process_notification<B: NotificationBackend>(
         data.event.kind, event_id_preview, pubkey_preview, target_preview
     );
 
-    // On macOS, download and cache the profile picture locally
-    // (UNNotificationAttachment only accepts local file URLs)
-    #[cfg(target_os = "macos")]
+    // Download and cache the profile picture locally for notification display.
+    // Both macOS (UNNotificationAttachment) and Linux (notify-rust image_path)
+    // require local file paths. On Android, notifications are handled by the
+    // Android framework so we just pass the URL through.
+    #[cfg(not(target_os = "android"))]
     let picture_path: Option<String> = {
         if let Some(ref url) = data.author_picture_url {
             if let Some(ref cache) = state.image_cache {
@@ -115,7 +117,7 @@ fn process_notification<B: NotificationBackend>(
         }
     };
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "android")]
     let picture_path: Option<String> = data.author_picture_url.clone();
 
     // Display the notification with pre-formatted title/body

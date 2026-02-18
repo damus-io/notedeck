@@ -91,7 +91,9 @@ pub struct WorkerState {
     pub processed_events_order: VecDeque<String>,
     /// Channel receiver for notification data from main loop
     pub event_receiver: mpsc::Receiver<NotificationData>,
-    /// Image cache for profile pictures (macOS notifications require local files)
+    /// Image cache for profile pictures (desktop notifications require local files)
+    #[cfg(not(target_os = "android"))]
+    pub image_cache: Option<super::image_cache::NotificationImageCache>,
 }
 
 impl WorkerState {
@@ -112,6 +114,8 @@ impl WorkerState {
             processed_events: HashSet::new(),
             processed_events_order: VecDeque::new(),
             event_receiver,
+            #[cfg(not(target_os = "android"))]
+            image_cache: super::image_cache::NotificationImageCache::new(),
         }
     }
 

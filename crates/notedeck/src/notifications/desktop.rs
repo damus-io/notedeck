@@ -51,7 +51,7 @@ impl NotificationBackend for DesktopBackend {
         #[cfg_attr(not(target_os = "linux"), allow(unused))] body: &str,
         event: &ExtractedEvent,
         target_account: &str,
-        _picture_url: Option<&str>,
+        #[cfg_attr(not(target_os = "linux"), allow(unused))] picture_path: Option<&str>,
     ) {
         info!(
             "Sending desktop notification: kind={} id={} target={}",
@@ -69,13 +69,18 @@ impl NotificationBackend for DesktopBackend {
                 _ => Urgency::Normal,
             };
 
-            match Notification::new()
+            let mut notification = Notification::new();
+            notification
                 .appname(&self.app_name)
                 .summary(title)
                 .body(body)
-                .urgency(urgency)
-                .show()
-            {
+                .urgency(urgency);
+
+            if let Some(path) = picture_path {
+                notification.image_path(path);
+            }
+
+            match notification.show() {
                 Ok(_) => debug!("Desktop notification displayed"),
                 Err(e) => error!("Failed to show desktop notification: {}", e),
             }
