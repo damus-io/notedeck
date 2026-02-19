@@ -416,12 +416,14 @@ pub fn narrow_ui(
             .inner;
         (DaveResponse::default(), session_action)
     } else if let Some(session) = session_manager.get_active_mut() {
+        let dot_color = focus_queue.current().map(|e| e.priority.color());
         let response = build_dave_ui(
             session,
             model_config,
             is_interrupt_pending,
             auto_steal_focus,
         )
+        .status_dot_color(dot_color)
         .ui(app_ctx, ui);
         (response, None)
     } else {

@@ -16,11 +16,14 @@ pub struct TopButtonsResult {
     pub y: f32,
 }
 
-/// Render the top buttons UI (profile pic, settings, session list toggle)
+/// Render the top buttons UI (profile pic, settings, session list toggle).
+/// `status_dot` optionally paints a colored dot on the hamburger icon to
+/// indicate what kind of attention the session needs (blue = working,
+/// yellow = needs input, red = error).
 pub fn top_buttons_ui(
     app_ctx: &mut AppContext,
     ui: &mut egui::Ui,
-    has_pending: bool,
+    status_dot: Option<egui::Color32>,
 ) -> TopButtonsResult {
     let mut action: Option<DaveAction> = None;
     let mut rect = ui.available_rect_before_wrap();
@@ -36,10 +39,9 @@ pub fn top_buttons_ui(
             .on_hover_cursor(egui::CursorIcon::PointingHand);
 
         // Draw notification dot when something needs attention
-        if has_pending {
+        if let Some(color) = status_dot {
             let dot_center = rect.right_top() + egui::vec2(-2.0, 6.0);
-            ui.painter()
-                .circle_filled(dot_center, 4.0, ui.visuals().selection.stroke.color);
+            ui.painter().circle_filled(dot_center, 4.0, color);
         }
 
         if r.clicked() {

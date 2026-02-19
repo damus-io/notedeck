@@ -19,7 +19,7 @@ pub enum BadgeVariant {
 
 impl BadgeVariant {
     /// Get background and text colors for this variant
-    fn colors(&self, ui: &Ui) -> (Color32, Color32) {
+    pub fn colors(&self, ui: &Ui) -> (Color32, Color32) {
         let is_dark = ui.visuals().dark_mode;
 
         match self {

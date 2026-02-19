@@ -60,6 +60,9 @@ pub struct DaveUi<'a> {
     git_status: Option<&'a mut GitStatusCache>,
     /// Session details for header display
     details: Option<&'a SessionDetails>,
+    /// Color for the notification dot on the mobile hamburger icon,
+    /// derived from FocusPriority of the next focus queue entry.
+    status_dot_color: Option<egui::Color32>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -165,6 +168,7 @@ impl<'a> DaveUi<'a> {
             ai_mode,
             git_status: None,
             details: None,
+            status_dot_color: None,
         }
     }
 
@@ -235,6 +239,11 @@ impl<'a> DaveUi<'a> {
         self
     }
 
+    pub fn status_dot_color(mut self, color: Option<egui::Color32>) -> Self {
+        self.status_dot_color = color;
+        self
+    }
+
     fn chat_margin(&self, ctx: &egui::Context) -> i8 {
         if self.flags.contains(DaveUiFlags::Compact) || notedeck::ui::is_narrow(ctx) {
             8
@@ -264,8 +273,7 @@ impl<'a> DaveUi<'a> {
         let action = if is_compact {
             None
         } else {
-            let has_pending = self.flags.contains(DaveUiFlags::HasPendingPerm);
-            let result = top_buttons_ui(app_ctx, ui, has_pending);
+            let result = top_buttons_ui(app_ctx, ui, self.status_dot_color);
 
             // Render session details inline, to the right of the buttons
             if let Some(details) = self.details {
