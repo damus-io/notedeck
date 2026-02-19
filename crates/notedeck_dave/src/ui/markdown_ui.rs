@@ -500,12 +500,12 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
 
     // Use first header's byte offset as id_salt so multiple tables don't clash
     let salt = headers.first().map_or(0, |h| h.start);
-    let available_width = ui.available_width();
-    let min_col_width = (available_width / num_cols as f32).max(40.0);
-
-    let mut builder = TableBuilder::new(ui).id_salt(salt).vscroll(false);
+    let mut builder = TableBuilder::new(ui)
+        .id_salt(salt)
+        .vscroll(false)
+        .auto_shrink([false, false]);
     for _ in 0..num_cols {
-        builder = builder.column(Column::auto().at_least(min_col_width).resizable(true));
+        builder = builder.column(Column::auto().resizable(true));
     }
 
     let header_bg = theme.code_bg;
