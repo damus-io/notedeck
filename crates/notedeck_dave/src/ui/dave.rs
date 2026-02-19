@@ -243,12 +243,12 @@ impl<'a> DaveUi<'a> {
         }
     }
 
-    fn chat_frame(&self, ctx: &egui::Context) -> egui::Frame {
+    fn chat_frame(&self, ctx: &egui::Context, has_header: bool) -> egui::Frame {
         let margin = self.chat_margin(ctx);
         egui::Frame::new().inner_margin(egui::Margin {
             left: margin,
             right: margin,
-            top: 50,
+            top: if has_header { 4 } else { 50 },
             bottom: 0,
         })
     }
@@ -258,12 +258,33 @@ impl<'a> DaveUi<'a> {
         // Override Truncate wrap mode that StripBuilder sets when clip=true
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
 
+        let is_compact = self.flags.contains(DaveUiFlags::Compact);
+
         // Skip top buttons in compact mode (scene panel has its own controls)
-        let action = if self.flags.contains(DaveUiFlags::Compact) {
+        let action = if is_compact {
             None
         } else {
             top_buttons_ui(app_ctx, ui)
         };
+
+        // Fixed session header below top buttons (non-compact only)
+        let has_header = !is_compact && self.details.is_some();
+        if let Some(details) = self.details {
+            if !is_compact {
+                let margin = self.chat_margin(ui.ctx());
+                ui.add_space(52.0); // clear floating top buttons area
+                egui::Frame::new()
+                    .inner_margin(egui::Margin {
+                        left: margin,
+                        right: margin,
+                        top: 0,
+                        bottom: 0,
+                    })
+                    .show(ui, |ui| {
+                        session_header_ui(ui, details);
+                    });
+            }
+        }
 
         egui::Frame::NONE
             .show(ui, |ui| {
@@ -333,15 +354,9 @@ impl<'a> DaveUi<'a> {
                         .stick_to_bottom(true)
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
-                            self.chat_frame(ui.ctx())
+                            self.chat_frame(ui.ctx(), has_header)
                                 .show(ui, |ui| {
-                                    ui.vertical(|ui| {
-                                        if let Some(details) = self.details {
-                                            session_header_ui(ui, details);
-                                        }
-                                        self.render_chat(app_ctx, ui)
-                                    })
-                                    .inner
+                                    ui.vertical(|ui| self.render_chat(app_ctx, ui)).inner
                                 })
                                 .inner
                         })
