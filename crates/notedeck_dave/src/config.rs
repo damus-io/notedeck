@@ -187,13 +187,13 @@ impl Default for ModelConfig {
                 }
             }
         } else {
-            // Auto-detect: prefer Claude if key is available, then OpenAI, then Remote
+            // Auto-detect: prefer Claude if key is available, otherwise OpenAI
+            // (with trial key fallback). Remote is only for controlling
+            // agentic sessions discovered from relays, not the default mode.
             if anthropic_api_key.is_some() {
                 BackendType::Claude
-            } else if api_key.is_some() {
-                BackendType::OpenAI
             } else {
-                BackendType::Remote
+                BackendType::OpenAI
             }
         };
 
