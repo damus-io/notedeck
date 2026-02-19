@@ -25,11 +25,13 @@ fn setup_logging(path: &DataPath) -> Option<WorkerGuard> {
             rolling::{RollingFileAppender, Rotation},
         };
 
-        let file_appender = RollingFileAppender::new(
-            Rotation::DAILY,
-            log_path,
-            format!("notedeck-{}.log", env!("CARGO_PKG_VERSION")),
-        );
+        let file_appender = RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix(format!("notedeck-{}", env!("CARGO_PKG_VERSION")))
+            .filename_suffix("log")
+            .max_log_files(3)
+            .build(log_path)
+            .expect("failed to initialize rolling file appender");
 
         let (non_blocking, _guard) = non_blocking(file_appender);
 

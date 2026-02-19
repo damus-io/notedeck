@@ -850,6 +850,7 @@ fn render_nav_body(
             DragResponse::none()
         }
         Route::Support => {
+            app.support.refresh();
             SupportView::new(&mut app.support, ctx.i18n).show(ui);
             DragResponse::none()
         }
