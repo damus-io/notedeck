@@ -32,6 +32,7 @@ pub mod relay_debug;
 pub mod relayspec;
 mod result;
 mod route;
+mod scoped_subs;
 mod setup;
 pub mod storage;
 mod style;
@@ -90,6 +91,11 @@ pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
 pub use route::{DrawerRouter, ReplacementType, Router};
+pub use scoped_subs::{
+    ClearSubResult, DropSlotResult, EnsureSubResult, RelaySelection, ScopedSubEoseStatus,
+    ScopedSubIdentity, ScopedSubLiveEoseStatus, SetSubResult, SubConfig, SubKey, SubKeyBuilder,
+    SubOwnerKey, SubScope,
+};
 pub use storage::{AccountStorage, DataPath, DataPathType, Directory};
 pub use style::NotedeckTextStyle;
 pub use theme::ColorTheme;
