@@ -1060,11 +1060,14 @@ impl<'a> DaveUi<'a> {
                 // Show Stop button when working, Ask button otherwise
                 if self.flags.contains(DaveUiFlags::IsWorking) {
                     if ui
-                        .add(egui::Button::new(tr!(
-                            i18n,
-                            "Stop",
-                            "Button to interrupt/stop the AI operation"
-                        )))
+                        .add(
+                            egui::Button::new(tr!(
+                                i18n,
+                                "Stop",
+                                "Button to interrupt/stop the AI operation"
+                            ))
+                            .min_size(egui::vec2(60.0, 44.0)),
+                        )
                         .clicked()
                     {
                         dave_response = DaveResponse::new(DaveAction::Interrupt);
@@ -1078,11 +1081,14 @@ impl<'a> DaveUi<'a> {
                         );
                     }
                 } else if ui
-                    .add(egui::Button::new(tr!(
-                        i18n,
-                        "Ask",
-                        "Button to send message to Dave AI assistant"
-                    )))
+                    .add(
+                        egui::Button::new(tr!(
+                            i18n,
+                            "Ask",
+                            "Button to send message to Dave AI assistant"
+                        ))
+                        .min_size(egui::vec2(60.0, 44.0)),
+                    )
                     .clicked()
                 {
                     dave_response = DaveResponse::send();
