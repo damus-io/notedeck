@@ -574,14 +574,16 @@ pub fn process_auto_steal_focus(
                 tracing::debug!("Auto-steal: saved home session {:?}", home_session);
             }
 
-            // Jump to first Done item
+            // Jump to first Done item and clear it from the queue
             if let Some(idx) = focus_queue.first_done_index() {
                 focus_queue.set_cursor(idx);
                 if let Some(entry) = focus_queue.current() {
-                    switch_and_focus_session(session_manager, scene, show_scene, entry.session_id);
+                    let sid = entry.session_id;
+                    switch_and_focus_session(session_manager, scene, show_scene, sid);
+                    focus_queue.dequeue(sid);
                     tracing::debug!(
-                        "Auto-steal: switched to Done session {:?}",
-                        entry.session_id
+                        "Auto-steal: switched to Done session {:?} and cleared indicator",
+                        sid
                     );
                     return true;
                 }
@@ -868,7 +870,7 @@ pub fn create_session_with_cwd(
 
     let id = session_manager.new_session(cwd, ai_mode);
     if let Some(session) = session_manager.get_mut(id) {
-        session.hostname = hostname.to_string();
+        session.details.hostname = hostname.to_string();
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -897,7 +899,7 @@ pub fn create_resumed_session_with_cwd(
 
     let id = session_manager.new_resumed_session(cwd, resume_session_id, title, ai_mode);
     if let Some(session) = session_manager.get_mut(id) {
-        session.hostname = hostname.to_string();
+        session.details.hostname = hostname.to_string();
         session.focus_requested = true;
         if show_scene {
             scene.select(id);

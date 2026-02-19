@@ -42,6 +42,8 @@ pub struct Settings {
     pub animate_nav_transitions: bool,
     pub max_hashtags_per_note: usize,
     #[serde(default)]
+    pub welcome_completed: bool,
+    #[serde(default)]
     pub tos_accepted: bool,
     #[serde(default)]
     pub tos_accepted_at: Option<u64>,
@@ -70,6 +72,7 @@ impl Default for Settings {
             note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
             animate_nav_transitions: default_animate_nav_transitions(),
             max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
+            welcome_completed: false,
             tos_accepted: false,
             tos_accepted_at: None,
             tos_version: default_tos_version(),
@@ -293,6 +296,18 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.max_hashtags_per_note)
             .unwrap_or(DEFAULT_MAX_HASHTAGS_PER_NOTE)
+    }
+
+    pub fn welcome_completed(&self) -> bool {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.welcome_completed)
+            .unwrap_or(false)
+    }
+
+    pub fn complete_welcome(&mut self) {
+        self.get_settings_mut().welcome_completed = true;
+        self.try_save_settings();
     }
 
     pub fn tos_accepted(&self) -> bool {

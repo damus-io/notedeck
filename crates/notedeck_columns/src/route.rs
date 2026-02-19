@@ -39,6 +39,7 @@ pub enum Route {
     Following(Pubkey),
     FollowedBy(Pubkey),
     TosAcceptance,
+    Welcome,
     Report(ReportTarget),
 }
 
@@ -157,6 +158,9 @@ impl Route {
             }
             Route::TosAcceptance => {
                 writer.write_token("tos");
+            }
+            Route::Welcome => {
+                writer.write_token("welcome");
             }
             Route::Report(target) => {
                 writer.write_token("report");
@@ -310,6 +314,12 @@ impl Route {
                 },
                 |p| {
                     p.parse_all(|p| {
+                        p.parse_token("welcome")?;
+                        Ok(Route::Welcome)
+                    })
+                },
+                |p| {
+                    p.parse_all(|p| {
                         p.parse_token("report")?;
                         let pubkey = Pubkey::from_hex(p.pull_token()?)
                             .map_err(|_| ParseError::HexDecodeFailed)?;
@@ -448,6 +458,9 @@ impl Route {
                 "Terms of Service",
                 "Column title for TOS acceptance screen"
             )),
+            Route::Welcome => {
+                ColumnTitle::formatted(tr!(i18n, "Welcome", "Column title for welcome screen"))
+            }
             Route::Report(_) => {
                 ColumnTitle::formatted(tr!(i18n, "Report", "Column title for report screen"))
             }

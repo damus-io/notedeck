@@ -1,5 +1,5 @@
 use crate::{
-    accounts::{render_accounts_route, AccountsAction, AccountsResponse},
+    accounts::{render_accounts_route, AccountsAction, AccountsResponse, AccountsRoute},
     app::{get_active_columns_mut, get_decks_mut},
     column::ColumnsAction,
     deck_state::DeckState,
@@ -1049,6 +1049,31 @@ fn render_nav_body(
                 ctx.settings.accept_tos();
                 app.view_state.tos_age_confirmed = false;
                 app.view_state.tos_confirmed = false;
+                return DragResponse::output(Some(RenderNavAction::Back));
+            }
+
+            DragResponse::none()
+        }
+        Route::Welcome => {
+            let resp = ui::welcome::WelcomeView::new(ctx.i18n).show(ui);
+
+            if let Some(welcome_resp) = resp {
+                ctx.settings.complete_welcome();
+                match welcome_resp {
+                    ui::welcome::WelcomeResponse::CreateAccount => {
+                        app.columns_mut(ctx.i18n, ctx.accounts)
+                            .column_mut(col)
+                            .router_mut()
+                            .route_to(Route::Accounts(AccountsRoute::Onboarding));
+                    }
+                    ui::welcome::WelcomeResponse::Login => {
+                        app.columns_mut(ctx.i18n, ctx.accounts)
+                            .column_mut(col)
+                            .router_mut()
+                            .route_to(Route::Accounts(AccountsRoute::AddAccount));
+                    }
+                    ui::welcome::WelcomeResponse::Browse => {}
+                }
                 return DragResponse::output(Some(RenderNavAction::Back));
             }
 

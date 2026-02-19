@@ -165,7 +165,7 @@ impl AgentScene {
                         let keybind_number = keybind_idx + 1; // 1-indexed for display
                         let position = agentic.scene_position;
                         let status = session.status();
-                        let title = &session.title;
+                        let title = &session.details.title;
                         let is_selected = selected_ids.contains(&id);
                         let queue_priority = focus_queue.get_session_priority(id);
 
@@ -411,7 +411,7 @@ impl AgentScene {
         );
 
         // Cwd label (monospace, weak+small)
-        let cwd_text = cwd.to_string_lossy();
+        let cwd_text = super::path_utils::abbreviate_path(cwd);
         let cwd_pos = center + Vec2::new(0.0, agent_radius + 38.0);
         painter.text(
             cwd_pos,

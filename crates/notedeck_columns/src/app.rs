@@ -256,7 +256,16 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
                 warn!("update_damus init: {err}");
             }
 
-            if is_compiled_as_mobile() && !app_ctx.settings.tos_accepted() {
+            if !app_ctx.settings.welcome_completed() {
+                let split =
+                    egui_nav::Split::PercentFromTop(egui_nav::Percent::new(40).expect("40 <= 100"));
+                if let Some(col) = damus
+                    .decks_cache
+                    .selected_column_mut(app_ctx.i18n, app_ctx.accounts)
+                {
+                    col.sheet_router.route_to(Route::Welcome, split);
+                }
+            } else if is_compiled_as_mobile() && !app_ctx.settings.tos_accepted() {
                 damus
                     .columns_mut(app_ctx.i18n, app_ctx.accounts)
                     .get_selected_router()
@@ -844,6 +853,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::Following(_) => false,
         Route::FollowedBy(_) => false,
         Route::TosAcceptance => false,
+        Route::Welcome => false,
         Route::Report(_) => false,
     }
 }

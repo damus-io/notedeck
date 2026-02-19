@@ -347,7 +347,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 // Create a default session with current directory
                 let sid = manager.new_session(std::env::current_dir().unwrap_or_default(), ai_mode);
                 if let Some(session) = manager.get_mut(sid) {
-                    session.hostname = hostname.clone();
+                    session.details.hostname = hostname.clone();
                 }
                 (manager, DaveOverlay::None)
             }
@@ -1094,7 +1094,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             // Focus on new session
             if let Some(session) = self.session_manager.get_mut(id) {
-                session.hostname = self.hostname.clone();
+                session.details.hostname = self.hostname.clone();
                 session.focus_requested = true;
                 if self.show_scene {
                     self.scene.select(id);
@@ -1257,7 +1257,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             queue_built_event(
                 session_events::build_session_state_event(
                     &claude_sid,
-                    &session.title,
+                    &session.details.title,
                     &cwd,
                     status,
                     &self.hostname,
@@ -1412,7 +1412,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 // Local sessions use the current machine's hostname;
                 // remote sessions use what was stored in the event.
-                session.hostname = if is_remote {
+                session.details.hostname = if is_remote {
                     state.hostname.clone()
                 } else {
                     self.hostname.clone()
@@ -1585,7 +1585,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let loaded = session_loader::load_session_messages(ctx.ndb, &txn, claude_sid);
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
-                session.hostname = hostname;
+                session.details.hostname = hostname;
                 if !loaded.messages.is_empty() {
                     tracing::info!(
                         "loaded {} messages for discovered session",
@@ -1828,7 +1828,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if let Some(claude_sid) = agentic.event_session_id() {
                     self.pending_deletions.push(DeletedSessionInfo {
                         claude_session_id: claude_sid.to_string(),
-                        title: session.title.clone(),
+                        title: session.details.title.clone(),
                         cwd: agentic.cwd.to_string_lossy().to_string(),
                     });
                 }

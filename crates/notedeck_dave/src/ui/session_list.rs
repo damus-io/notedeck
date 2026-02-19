@@ -156,9 +156,9 @@ impl<'a> SessionListUi<'a> {
 
         let response = self.session_item_ui(
             ui,
-            &session.title,
+            &session.details.title,
             cwd,
-            &session.hostname,
+            &session.details.hostname,
             is_active,
             shortcut_hint,
             session.status(),
@@ -298,9 +298,9 @@ impl<'a> SessionListUi<'a> {
 /// Draw cwd text (monospace, weak+small) with clipping.
 /// Shows "hostname:cwd" when hostname is non-empty.
 fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, hostname: &str, pos: egui::Pos2, max_width: f32) {
-    let cwd_str = cwd_path.to_string_lossy();
+    let cwd_str = super::path_utils::abbreviate_path(cwd_path);
     let display_text = if hostname.is_empty() {
-        cwd_str.to_string()
+        cwd_str
     } else {
         format!("{}:{}", hostname, cwd_str)
     };
