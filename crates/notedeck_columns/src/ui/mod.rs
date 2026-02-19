@@ -23,6 +23,7 @@ pub mod timeline;
 pub mod toolbar;
 pub mod tos;
 pub mod wallet;
+pub mod welcome;
 pub mod widgets;
 
 pub use accounts::AccountsView;

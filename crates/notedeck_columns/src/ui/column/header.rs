@@ -549,6 +549,7 @@ impl<'a> NavTitle<'a> {
             Route::Following(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
             Route::FollowedBy(pubkey) => Some(self.show_profile(ui, pubkey, pfp_size)),
             Route::TosAcceptance => None,
+            Route::Welcome => None,
             Route::Report(_) => None,
         }
     }
