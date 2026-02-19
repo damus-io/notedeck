@@ -32,6 +32,9 @@ pub mod relay_debug;
 pub mod relayspec;
 mod result;
 mod route;
+mod scoped_sub_api;
+mod scoped_sub_owners;
+mod scoped_sub_state;
 mod scoped_subs;
 mod setup;
 pub mod storage;
@@ -91,6 +94,9 @@ pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
 pub use route::{DrawerRouter, ReplacementType, Router};
+pub use scoped_sub_api::ScopedSubApi;
+pub use scoped_sub_owners::SubOwnerKeyBuilder;
+pub use scoped_sub_state::ScopedSubsState;
 pub use scoped_subs::{
     ClearSubResult, DropSlotResult, EnsureSubResult, RelaySelection, ScopedSubEoseStatus,
     ScopedSubIdentity, ScopedSubLiveEoseStatus, SetSubResult, SubConfig, SubKey, SubKeyBuilder,
