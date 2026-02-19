@@ -868,7 +868,7 @@ pub fn create_session_with_cwd(
 
     let id = session_manager.new_session(cwd, ai_mode);
     if let Some(session) = session_manager.get_mut(id) {
-        session.hostname = hostname.to_string();
+        session.details.hostname = hostname.to_string();
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -897,7 +897,7 @@ pub fn create_resumed_session_with_cwd(
 
     let id = session_manager.new_resumed_session(cwd, resume_session_id, title, ai_mode);
     if let Some(session) = session_manager.get_mut(id) {
-        session.hostname = hostname.to_string();
+        session.details.hostname = hostname.to_string();
         session.focus_requested = true;
         if show_scene {
             scene.select(id);

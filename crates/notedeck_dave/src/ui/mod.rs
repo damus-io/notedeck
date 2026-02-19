@@ -64,7 +64,8 @@ fn build_dave_ui<'a>(
     .has_pending_permission(has_pending_permission)
     .plan_mode_active(plan_mode_active)
     .auto_steal_focus(auto_steal_focus)
-    .is_remote(is_remote);
+    .is_remote(is_remote)
+    .details(&session.details);
 
     if let Some(agentic) = &mut session.agentic {
         ui_builder = ui_builder
@@ -263,7 +264,7 @@ pub fn scene_ui(
                     .show(ui, |ui| {
                         if let Some(selected_id) = scene.primary_selection() {
                             if let Some(session) = session_manager.get_mut(selected_id) {
-                                ui.heading(&session.title);
+                                ui.heading(&session.details.title);
                                 ui.separator();
 
                                 let response = build_dave_ui(

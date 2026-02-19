@@ -27,6 +27,13 @@ pub enum SessionSource {
     Remote,
 }
 
+/// Session metadata for display in chat headers
+pub struct SessionDetails {
+    pub title: String,
+    pub hostname: String,
+    pub cwd: Option<PathBuf>,
+}
+
 /// State for permission response with message
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum PermissionMessageState {
@@ -263,7 +270,6 @@ impl AgenticSessionData {
 /// A single chat session with Dave
 pub struct ChatSession {
     pub id: SessionId,
-    pub title: String,
     pub chat: Vec<Message>,
     pub input: String,
     pub incoming_tokens: Option<Receiver<DaveApiResponse>>,
@@ -282,8 +288,8 @@ pub struct ChatSession {
     pub agentic: Option<AgenticSessionData>,
     /// Whether this session is local (has a Claude process) or remote (relay-only).
     pub source: SessionSource,
-    /// Hostname of the machine where this session originated.
-    pub hostname: String,
+    /// Session metadata for display (title, hostname, cwd)
+    pub details: SessionDetails,
 }
 
 impl Drop for ChatSession {
@@ -296,6 +302,11 @@ impl Drop for ChatSession {
 
 impl ChatSession {
     pub fn new(id: SessionId, cwd: PathBuf, ai_mode: AiMode) -> Self {
+        let details_cwd = if ai_mode == AiMode::Agentic {
+            Some(cwd.clone())
+        } else {
+            None
+        };
         let agentic = match ai_mode {
             AiMode::Agentic => Some(AgenticSessionData::new(id, cwd)),
             AiMode::Chat => None,
@@ -303,7 +314,6 @@ impl ChatSession {
 
         ChatSession {
             id,
-            title: "New Chat".to_string(),
             chat: vec![],
             input: String::new(),
             incoming_tokens: None,
@@ -314,7 +324,11 @@ impl ChatSession {
             ai_mode,
             agentic,
             source: SessionSource::Local,
-            hostname: String::new(),
+            details: SessionDetails {
+                title: "New Chat".to_string(),
+                hostname: String::new(),
+                cwd: details_cwd,
+            },
         }
     }
 
@@ -330,7 +344,7 @@ impl ChatSession {
         if let Some(ref mut agentic) = session.agentic {
             agentic.resume_session_id = Some(resume_session_id);
         }
-        session.title = title;
+        session.details.title = title;
         session
     }
 
@@ -430,8 +444,8 @@ impl ChatSession {
             } else {
                 title
             };
-            if new_title != self.title {
-                self.title = new_title;
+            if new_title != self.details.title {
+                self.details.title = new_title;
                 self.state_dirty = true;
             }
             break;

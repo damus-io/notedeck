@@ -13,7 +13,7 @@ use crate::{
         PermissionResponse, PermissionResponseType, QuestionAnswer, SubagentInfo, SubagentStatus,
         ToolResult,
     },
-    session::{PermissionMessageState, SessionId},
+    session::{PermissionMessageState, SessionDetails, SessionId},
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse},
 };
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
@@ -52,6 +52,8 @@ pub struct DaveUi<'a> {
     git_status: Option<&'a mut GitStatusCache>,
     /// Whether this is a remote session (no local Claude process)
     is_remote: bool,
+    /// Session details for header display
+    details: Option<&'a SessionDetails>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -159,7 +161,13 @@ impl<'a> DaveUi<'a> {
             ai_mode,
             git_status: None,
             is_remote: false,
+            details: None,
         }
+    }
+
+    pub fn details(mut self, details: &'a SessionDetails) -> Self {
+        self.details = Some(details);
+        self
     }
 
     pub fn permission_message_state(mut self, state: PermissionMessageState) -> Self {
@@ -324,7 +332,13 @@ impl<'a> DaveUi<'a> {
                         .show(ui, |ui| {
                             self.chat_frame(ui.ctx())
                                 .show(ui, |ui| {
-                                    ui.vertical(|ui| self.render_chat(app_ctx, ui)).inner
+                                    ui.vertical(|ui| {
+                                        if let Some(details) = self.details {
+                                            session_header_ui(ui, details);
+                                        }
+                                        self.render_chat(app_ctx, ui)
+                                    })
+                                    .inner
                                 })
                                 .inner
                         })
@@ -1302,4 +1316,30 @@ fn toggle_badges_ui(
     }
 
     action
+}
+
+fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails) {
+    ui.horizontal(|ui| {
+        ui.heading(&details.title);
+    });
+
+    if let Some(cwd) = &details.cwd {
+        let cwd_display = super::path_utils::abbreviate_path(cwd);
+        let display_text = if details.hostname.is_empty() {
+            cwd_display
+        } else {
+            format!("{}:{}", details.hostname, cwd_display)
+        };
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(display_text)
+                    .monospace()
+                    .size(11.0)
+                    .weak(),
+            )
+            .wrap_mode(egui::TextWrapMode::Truncate),
+        );
+    }
+
+    ui.separator();
 }
