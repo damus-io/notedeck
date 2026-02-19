@@ -236,7 +236,9 @@ mod tests {
 
     #[test]
     fn test_extract_first_user_message_truncation() {
-        let long_content = serde_json::json!("Human: This is a very long message that should be truncated because it exceeds sixty characters in length");
+        let long_content = serde_json::json!(
+            "Human: This is a very long message that should be truncated because it exceeds sixty characters in length"
+        );
         let result = extract_first_user_message(&long_content);
         assert!(result.unwrap().ends_with("..."));
     }

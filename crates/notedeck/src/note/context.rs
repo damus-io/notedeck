@@ -23,6 +23,7 @@ pub enum NoteContextSelection {
     CopyNeventLink,
     MuteUser,
     ReportUser,
+    SummarizeThread(NoteId),
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -111,6 +112,9 @@ impl NoteContextSelection {
                 }
             }
             NoteContextSelection::ReportUser => {}
+            NoteContextSelection::SummarizeThread(_) => {
+                // Handled at Chrome level — routed to Dave
+            }
         }
     }
 }

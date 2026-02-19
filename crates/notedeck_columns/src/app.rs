@@ -711,7 +711,7 @@ fn render_damus_mobile(
                     can_take_drag_from.extend(resp.can_take_drag_from());
 
                     let r = resp.process_render_nav_response(app, app_ctx, ui);
-                    if let Some(r) = &r {
+                    if let Some(r) = r {
                         match r {
                             ProcessNavResult::SwitchOccurred => {
                                 if !app.options.contains(AppOptions::TmpColumns) {
@@ -725,17 +725,21 @@ fn render_damus_mobile(
 
                             ProcessNavResult::SwitchAccount(pubkey) => {
                                 // Add as pubkey-only account if not already present
-                                let kp = enostr::Keypair::only_pubkey(*pubkey);
+                                let kp = enostr::Keypair::only_pubkey(pubkey);
                                 let _ = app_ctx.accounts.add_account(kp);
 
                                 let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
                                 app_ctx.accounts.select_account(
-                                    pubkey,
+                                    &pubkey,
                                     app_ctx.ndb,
                                     &txn,
                                     app_ctx.pool,
                                     ui.ctx(),
                                 );
+                            }
+
+                            ProcessNavResult::ExternalNoteAction(note_action) => {
+                                app_action = Some(AppAction::Note(note_action));
                             }
                         }
                     }
@@ -993,7 +997,7 @@ fn timelines_view(
     for response in responses {
         let nav_result = response.process_render_nav_response(app, ctx, ui);
 
-        if let Some(nr) = &nav_result {
+        if let Some(nr) = nav_result {
             match nr {
                 ProcessNavResult::SwitchOccurred => save_cols = true,
 
@@ -1003,12 +1007,16 @@ fn timelines_view(
 
                 ProcessNavResult::SwitchAccount(pubkey) => {
                     // Add as pubkey-only account if not already present
-                    let kp = enostr::Keypair::only_pubkey(*pubkey);
+                    let kp = enostr::Keypair::only_pubkey(pubkey);
                     let _ = ctx.accounts.add_account(kp);
 
                     let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
                     ctx.accounts
-                        .select_account(pubkey, ctx.ndb, &txn, ctx.pool, ui.ctx());
+                        .select_account(&pubkey, ctx.ndb, &txn, ctx.pool, ui.ctx());
+                }
+
+                ProcessNavResult::ExternalNoteAction(note_action) => {
+                    app_action = Some(AppAction::Note(note_action));
                 }
             }
         }

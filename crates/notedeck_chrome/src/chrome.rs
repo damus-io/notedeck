@@ -217,6 +217,23 @@ impl Chrome {
         }
     }
 
+    fn get_dave_app(&mut self) -> Option<&mut Dave> {
+        for app in &mut self.apps {
+            if let NotedeckApp::Dave(dave) = app {
+                return Some(dave);
+            }
+        }
+        None
+    }
+
+    fn switch_to_dave(&mut self) {
+        for (i, app) in self.apps.iter().enumerate() {
+            if let NotedeckApp::Dave(_) = app {
+                self.active = i as i32;
+            }
+        }
+    }
+
     pub fn set_active(&mut self, app: i32) {
         self.active = app;
     }
@@ -479,6 +496,17 @@ fn chrome_handle_app_action(
         }
 
         AppAction::Note(note_action) => {
+            // Intercept SummarizeThread — route to Dave instead of Columns
+            if let notedeck::NoteAction::Context(ref context) = note_action {
+                if let notedeck::NoteContextSelection::SummarizeThread(note_id) = context.action {
+                    chrome.switch_to_dave();
+                    if let Some(dave) = chrome.get_dave_app() {
+                        dave.summarize_thread(note_id);
+                    }
+                    return;
+                }
+            }
+
             chrome.switch_to_columns();
             let Some(columns) = chrome.get_columns_app() else {
                 return;

@@ -104,7 +104,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                 event_count: 0,
                 permissions: PermissionTracker::new(),
                 note_ids: HashSet::new(),
-            }
+            };
         }
     };
 

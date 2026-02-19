@@ -489,7 +489,7 @@ impl ChatSession {
             for msg in self.chat.iter().rev() {
                 match msg {
                     Message::Assistant(_) | Message::CompactionComplete(_) => {
-                        return AgentStatus::Done
+                        return AgentStatus::Done;
                     }
                     Message::User(_) => return AgentStatus::Idle, // Waiting for response
                     Message::Error(_) => return AgentStatus::Error,

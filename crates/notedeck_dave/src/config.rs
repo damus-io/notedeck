@@ -36,7 +36,7 @@ impl AiProvider {
 
     pub fn default_model(&self) -> &'static str {
         match self {
-            AiProvider::OpenAI => "gpt-4o",
+            AiProvider::OpenAI => "gpt-4.1-mini",
             AiProvider::Anthropic => "claude-sonnet-4-20250514",
             AiProvider::Ollama => "hhao/qwen2.5-coder-tools:latest",
         }
@@ -59,7 +59,7 @@ impl AiProvider {
 
     pub fn available_models(&self) -> &'static [&'static str] {
         match self {
-            AiProvider::OpenAI => &["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+            AiProvider::OpenAI => &["gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano", "gpt-4o"],
             AiProvider::Anthropic => &[
                 "claude-sonnet-4-20250514",
                 "claude-opus-4-20250514",
@@ -208,7 +208,7 @@ impl Default for ModelConfig {
         let model = std::env::var("DAVE_MODEL")
             .ok()
             .unwrap_or_else(|| match backend {
-                BackendType::OpenAI => "gpt-4o".to_string(),
+                BackendType::OpenAI => "gpt-4.1-mini".to_string(),
                 BackendType::Claude => "claude-sonnet-4.5".to_string(),
                 BackendType::Remote => String::new(),
             });

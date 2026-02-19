@@ -140,6 +140,9 @@ pub struct Dave {
     /// Sessions pending deletion state event publication.
     /// Populated in delete_session(), drained in the update loop where AppContext is available.
     pending_deletions: Vec<DeletedSessionInfo>,
+    /// Thread summaries pending processing. Queued by summarize_thread(),
+    /// resolved in update() where AppContext (ndb) is available.
+    pending_summaries: Vec<enostr::NoteId>,
     /// Local machine hostname, included in session state events.
     hostname: String,
     /// PNS relay URL (configurable via DAVE_RELAY env or settings UI).
@@ -379,6 +382,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_state_sub: None,
             pending_perm_responses: Vec::new(),
             pending_deletions: Vec::new(),
+            pending_summaries: Vec::new(),
             hostname,
             pns_relay_url,
         }
@@ -397,6 +401,83 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .clone()
             .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string());
         self.settings = settings;
+    }
+
+    /// Queue a thread summary request. The thread is fetched and formatted
+    /// in update() where AppContext (ndb) is available.
+    pub fn summarize_thread(&mut self, note_id: enostr::NoteId) {
+        self.pending_summaries.push(note_id);
+    }
+
+    /// Fetch the thread from ndb, format it, and create a session with the prompt.
+    fn build_summary_session(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        note_id: &enostr::NoteId,
+    ) -> Option<SessionId> {
+        let txn = Transaction::new(ndb).ok()?;
+
+        // Resolve to the root note of the thread
+        let clicked_note = ndb.get_note_by_id(&txn, note_id.bytes()).ok()?;
+        let root_id = nostrdb::NoteReply::new(clicked_note.tags())
+            .root()
+            .map(|r| *r.id)
+            .unwrap_or(*note_id.bytes());
+
+        let root_note = ndb.get_note_by_id(&txn, &root_id).ok()?;
+        let root_simple = tools::note_to_simple(&txn, ndb, &root_note);
+
+        // Fetch all replies referencing the root note
+        let filter = nostrdb::Filter::new().kinds([1]).event(&root_id).build();
+
+        let replies = ndb.query(&txn, &[filter], 500).ok().unwrap_or_default();
+
+        let mut simple_notes = vec![root_simple];
+        for result in &replies {
+            if let Ok(note) = ndb.get_note_by_key(&txn, result.note_key) {
+                simple_notes.push(tools::note_to_simple(&txn, ndb, &note));
+            }
+        }
+
+        let thread_json = tools::format_simple_notes_json(&simple_notes);
+        let system = format!(
+            "You are summarizing a nostr thread. \
+             Here is the thread data:\n\n{}\n\n\
+             When referencing specific notes in your summary, call the \
+             present_notes tool with their note_ids so the UI can display them inline.",
+            thread_json
+        );
+
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let id = update::create_session_with_cwd(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            AiMode::Chat,
+            cwd,
+            &self.hostname,
+        );
+
+        if let Some(session) = self.session_manager.get_mut(id) {
+            session.chat.push(Message::System(system));
+
+            // Show the root note inline so the user can see what's being summarized
+            let present = tools::ToolCall::new(
+                "summarize-thread".to_string(),
+                tools::ToolCalls::PresentNotes(tools::PresentNotesCall {
+                    note_ids: vec![enostr::NoteId::new(root_id)],
+                }),
+            );
+            session.chat.push(Message::ToolCalls(vec![present]));
+
+            session.chat.push(Message::User(
+                "Summarize this thread concisely.".to_string(),
+            ));
+            session.update_title_from_last_message();
+        }
+
+        Some(id)
     }
 
     /// Process incoming tokens from the ai backend for ALL sessions.
@@ -1987,6 +2068,14 @@ impl notedeck::App for Dave {
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
+
+        // Process pending thread summary requests
+        let pending = std::mem::take(&mut self.pending_summaries);
+        for note_id in pending {
+            if let Some(sid) = self.build_summary_session(ctx.ndb, &note_id) {
+                self.send_user_message_for(sid, ctx, ui.ctx());
+            }
+        }
 
         // One-time initialization on first update
         if !self.sessions_restored {

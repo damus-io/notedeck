@@ -49,6 +49,8 @@ pub enum ProcessNavResult {
     SwitchOccurred,
     PfpClicked,
     SwitchAccount(enostr::Pubkey),
+    /// A note action that should be forwarded to Chrome as an AppAction
+    ExternalNoteAction(notedeck::NoteAction),
 }
 
 impl ProcessNavResult {
@@ -540,6 +542,16 @@ fn process_render_nav_action(
             Some(RouterAction::GoBack)
         }
         RenderNavAction::NoteAction(note_action) => {
+            // SummarizeThread is handled by Chrome/Dave, not Columns
+            if let notedeck::NoteAction::Context(ref ctx_sel) = note_action {
+                if matches!(
+                    ctx_sel.action,
+                    notedeck::NoteContextSelection::SummarizeThread(_)
+                ) {
+                    return Some(ProcessNavResult::ExternalNoteAction(note_action));
+                }
+            }
+
             let txn = Transaction::new(ctx.ndb).expect("txn");
 
             crate::actionbar::execute_and_process_note_action(

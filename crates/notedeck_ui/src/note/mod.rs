@@ -653,10 +653,12 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 .accounts
                 .mute()
                 .is_pk_muted(self.note.pubkey());
+            let note_id = NoteId::new(*self.note.id());
             if let Some(action) = NoteContextButton::menu(
                 ui,
                 self.note_context.i18n,
                 resp.clone(),
+                note_id,
                 can_sign,
                 is_muted,
             ) {
