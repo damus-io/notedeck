@@ -260,8 +260,12 @@ impl AgenticSessionData {
         chat: &mut [Message],
         result: ExecutedTool,
     ) -> Option<ExecutedTool> {
-        let parent_id = result.parent_task_id.as_ref()?;
-        let &idx = self.subagent_indices.get(parent_id)?;
+        let Some(parent_id) = result.parent_task_id.as_ref() else {
+            return Some(result);
+        };
+        let Some(&idx) = self.subagent_indices.get(parent_id) else {
+            return Some(result);
+        };
         if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
             subagent.tool_results.push(result);
             None
