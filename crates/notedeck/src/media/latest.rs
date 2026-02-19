@@ -2,14 +2,16 @@ use std::time::SystemTime;
 
 use egui::TextureHandle;
 
+use crate::imgcache::{GifStateMap, WebpStateMap};
 use crate::jobs::MediaJobSender;
 use crate::{
     media::{
         gif::{process_gif_frame, AnimatedImgTexCache},
         static_imgs::StaticImgTexCache,
+        webp::{process_webp_frame, WebpCacheEntry, WebpTexCache},
         AnimationMode, BlurCache,
     },
-    Error, GifStateMap, ImageType, MediaCacheType, ObfuscationType, TextureState,
+    Error, ImageType, MediaCacheType, ObfuscationType, TextureState,
 };
 
 pub enum MediaRenderState<'a> {
@@ -31,19 +33,25 @@ pub enum ObfuscatedTexture<'a> {
 pub struct NoLoadingLatestTex<'a> {
     static_cache: &'a StaticImgTexCache,
     animated_cache: &'a AnimatedImgTexCache,
+    webp_cache: &'a WebpTexCache,
     gif_state: &'a mut GifStateMap,
+    webp_state: &'a mut WebpStateMap,
 }
 
 impl<'a> NoLoadingLatestTex<'a> {
     pub fn new(
         static_cache: &'a StaticImgTexCache,
         animated_cache: &'a AnimatedImgTexCache,
+        webp_cache: &'a WebpTexCache,
         gif_state: &'a mut GifStateMap,
+        webp_state: &'a mut WebpStateMap,
     ) -> Self {
         Self {
             static_cache,
             animated_cache,
+            webp_cache,
             gif_state,
+            webp_state,
         }
     }
 
@@ -105,6 +113,30 @@ impl<'a> NoLoadingLatestTex<'a> {
                     }
                 }
             }
+            MediaCacheType::Webp => match self.webp_cache.get_or_request(jobs, ctx, url, imgtype) {
+                TextureState::Pending => LatestImageTex::Pending,
+                TextureState::Error(error) => LatestImageTex::Error(error),
+                TextureState::Loaded(webp_image) => match webp_image {
+                    WebpCacheEntry::Animated(animation) => {
+                        let next_state =
+                            process_webp_frame(animation, self.webp_state.get(url), animation_mode);
+
+                        if let Some(new_state) = next_state.maybe_new_state {
+                            self.webp_state.insert(url.to_owned(), new_state);
+                        }
+
+                        if let Some(repaint) = next_state.repaint_at {
+                            tracing::trace!("requesting repaint for {url} after {repaint:?}");
+                            if let Ok(dur) = repaint.duration_since(SystemTime::now()) {
+                                ctx.request_repaint_after(dur);
+                            }
+                        }
+
+                        LatestImageTex::Loaded(next_state.texture)
+                    }
+                    WebpCacheEntry::Static(image) => LatestImageTex::Loaded(image),
+                },
+            },
         }
     }
 }
