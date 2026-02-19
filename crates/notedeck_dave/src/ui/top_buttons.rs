@@ -7,8 +7,17 @@ use nostrdb::{Ndb, Transaction};
 use notedeck::{Accounts, AppContext, Images, MediaJobSender};
 use notedeck_ui::{app_images, ProfilePic};
 
+/// Result from rendering top buttons, includes action and layout info
+pub struct TopButtonsResult {
+    pub action: Option<DaveAction>,
+    /// X position after the last button (for placing inline content)
+    pub right_edge_x: f32,
+    /// Y position of the button row
+    pub y: f32,
+}
+
 /// Render the top buttons UI (profile pic, settings, session list toggle)
-pub fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<DaveAction> {
+pub fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> TopButtonsResult {
     let mut action: Option<DaveAction> = None;
     let mut rect = ui.available_rect_before_wrap();
     rect = rect.translate(egui::vec2(20.0, 20.0));
@@ -58,7 +67,11 @@ pub fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> Option<Dav
         action = Some(DaveAction::OpenSettings);
     }
 
-    action
+    TopButtonsResult {
+        action,
+        right_edge_x: rect.right() + 8.0,
+        y: rect.min.y,
+    }
 }
 
 fn settings_button(dark_mode: bool) -> impl egui::Widget {

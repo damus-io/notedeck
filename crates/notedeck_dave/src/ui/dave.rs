@@ -243,12 +243,12 @@ impl<'a> DaveUi<'a> {
         }
     }
 
-    fn chat_frame(&self, ctx: &egui::Context, has_header: bool) -> egui::Frame {
+    fn chat_frame(&self, ctx: &egui::Context) -> egui::Frame {
         let margin = self.chat_margin(ctx);
         egui::Frame::new().inner_margin(egui::Margin {
             left: margin,
             right: margin,
-            top: if has_header { 4 } else { 50 },
+            top: 50,
             bottom: 0,
         })
     }
@@ -264,27 +264,26 @@ impl<'a> DaveUi<'a> {
         let action = if is_compact {
             None
         } else {
-            top_buttons_ui(app_ctx, ui)
-        };
+            let result = top_buttons_ui(app_ctx, ui);
 
-        // Fixed session header below top buttons (non-compact only)
-        let has_header = !is_compact && self.details.is_some();
-        if let Some(details) = self.details {
-            if !is_compact {
-                let margin = self.chat_margin(ui.ctx());
-                ui.add_space(52.0); // clear floating top buttons area
-                egui::Frame::new()
-                    .inner_margin(egui::Margin {
-                        left: margin,
-                        right: margin,
-                        top: 0,
-                        bottom: 0,
-                    })
-                    .show(ui, |ui| {
+            // Render session details inline, to the right of the buttons
+            if let Some(details) = self.details {
+                let available_width = ui.available_width();
+                let max_width = available_width - result.right_edge_x;
+                if max_width > 50.0 {
+                    let details_rect = egui::Rect::from_min_size(
+                        egui::pos2(result.right_edge_x, result.y),
+                        egui::vec2(max_width, 32.0),
+                    );
+                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(details_rect), |ui| {
+                        ui.set_clip_rect(details_rect);
                         session_header_ui(ui, details);
                     });
+                }
             }
-        }
+
+            result.action
+        };
 
         egui::Frame::NONE
             .show(ui, |ui| {
@@ -354,7 +353,7 @@ impl<'a> DaveUi<'a> {
                         .stick_to_bottom(true)
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
-                            self.chat_frame(ui.ctx(), has_header)
+                            self.chat_frame(ui.ctx())
                                 .show(ui, |ui| {
                                     ui.vertical(|ui| self.render_chat(app_ctx, ui)).inner
                                 })
@@ -1335,27 +1334,28 @@ fn toggle_badges_ui(
 }
 
 fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails) {
-    ui.horizontal(|ui| {
-        ui.heading(&details.title);
-    });
-
-    if let Some(cwd) = &details.cwd {
-        let cwd_display = super::path_utils::abbreviate_path(cwd);
-        let display_text = if details.hostname.is_empty() {
-            cwd_display
-        } else {
-            format!("{}:{}", details.hostname, cwd_display)
-        };
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
         ui.add(
-            egui::Label::new(
-                egui::RichText::new(display_text)
-                    .monospace()
-                    .size(11.0)
-                    .weak(),
-            )
-            .wrap_mode(egui::TextWrapMode::Truncate),
+            egui::Label::new(egui::RichText::new(&details.title).size(13.0))
+                .wrap_mode(egui::TextWrapMode::Truncate),
         );
-    }
-
-    ui.separator();
+        if let Some(cwd) = &details.cwd {
+            let cwd_display = super::path_utils::abbreviate_path(cwd);
+            let display_text = if details.hostname.is_empty() {
+                cwd_display
+            } else {
+                format!("{}:{}", details.hostname, cwd_display)
+            };
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(display_text)
+                        .monospace()
+                        .size(10.0)
+                        .weak(),
+                )
+                .wrap_mode(egui::TextWrapMode::Truncate),
+            );
+        }
+    });
 }
