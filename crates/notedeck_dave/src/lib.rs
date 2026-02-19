@@ -2,7 +2,7 @@ mod agent_status;
 mod auto_accept;
 mod avatar;
 mod backend;
-mod config;
+pub mod config;
 pub mod file_update;
 mod focus_queue;
 pub(crate) mod git_status;

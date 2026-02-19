@@ -36,7 +36,7 @@ impl AiProvider {
 
     pub fn default_model(&self) -> &'static str {
         match self {
-            AiProvider::OpenAI => "gpt-4.1-mini",
+            AiProvider::OpenAI => "gpt-5.2",
             AiProvider::Anthropic => "claude-sonnet-4-20250514",
             AiProvider::Ollama => "hhao/qwen2.5-coder-tools:latest",
         }
@@ -59,7 +59,7 @@ impl AiProvider {
 
     pub fn available_models(&self) -> &'static [&'static str] {
         match self {
-            AiProvider::OpenAI => &["gpt-4.1-mini", "gpt-4.1", "gpt-4.1-nano", "gpt-4o"],
+            AiProvider::OpenAI => &["gpt-5.2"],
             AiProvider::Anthropic => &[
                 "claude-sonnet-4-20250514",
                 "claude-opus-4-20250514",
@@ -288,6 +288,19 @@ impl ModelConfig {
             api_key,
             anthropic_api_key,
             pns_relay: settings.pns_relay.clone(),
+        }
+    }
+
+    /// Create a trial-mode config (uses embedded trial key with gpt-4.1-mini)
+    pub fn trial() -> Self {
+        ModelConfig {
+            trial: true,
+            backend: BackendType::OpenAI,
+            endpoint: None,
+            model: "gpt-4.1-mini".to_string(),
+            api_key: Some(DAVE_TRIAL.to_string()),
+            anthropic_api_key: None,
+            pns_relay: None,
         }
     }
 
