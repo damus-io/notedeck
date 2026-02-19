@@ -264,7 +264,8 @@ impl<'a> DaveUi<'a> {
         let action = if is_compact {
             None
         } else {
-            let result = top_buttons_ui(app_ctx, ui);
+            let has_pending = self.flags.contains(DaveUiFlags::HasPendingPerm);
+            let result = top_buttons_ui(app_ctx, ui, has_pending);
 
             // Render session details inline, to the right of the buttons
             if let Some(details) = self.details {

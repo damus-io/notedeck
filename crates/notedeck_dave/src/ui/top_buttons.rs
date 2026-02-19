@@ -17,7 +17,11 @@ pub struct TopButtonsResult {
 }
 
 /// Render the top buttons UI (profile pic, settings, session list toggle)
-pub fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> TopButtonsResult {
+pub fn top_buttons_ui(
+    app_ctx: &mut AppContext,
+    ui: &mut egui::Ui,
+    has_pending: bool,
+) -> TopButtonsResult {
     let mut action: Option<DaveAction> = None;
     let mut rect = ui.available_rect_before_wrap();
     rect = rect.translate(egui::vec2(20.0, 20.0));
@@ -30,6 +34,13 @@ pub fn top_buttons_ui(app_ctx: &mut AppContext, ui: &mut egui::Ui) -> TopButtons
             .put(rect, egui::Button::new("\u{2630}").frame(false))
             .on_hover_text("Show chats")
             .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+        // Draw notification dot when something needs attention
+        if has_pending {
+            let dot_center = rect.right_top() + egui::vec2(-2.0, 6.0);
+            ui.painter()
+                .circle_filled(dot_center, 4.0, ui.visuals().selection.stroke.color);
+        }
 
         if r.clicked() {
             action = Some(DaveAction::ShowSessionList);
