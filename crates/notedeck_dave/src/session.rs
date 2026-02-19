@@ -32,6 +32,9 @@ pub struct SessionDetails {
     pub title: String,
     pub hostname: String,
     pub cwd: Option<PathBuf>,
+    /// Home directory of the machine where this session originated.
+    /// Used to abbreviate cwd paths for remote sessions.
+    pub home_dir: String,
 }
 
 /// State for permission response with message
@@ -328,6 +331,9 @@ impl ChatSession {
                 title: "New Chat".to_string(),
                 hostname: String::new(),
                 cwd: details_cwd,
+                home_dir: dirs::home_dir()
+                    .map(|h| h.to_string_lossy().to_string())
+                    .unwrap_or_default(),
             },
         }
     }

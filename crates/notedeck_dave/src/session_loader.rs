@@ -230,6 +230,7 @@ pub struct SessionState {
     pub cwd: String,
     pub status: String,
     pub hostname: String,
+    pub home_dir: String,
     pub created_at: u64,
 }
 
@@ -277,6 +278,7 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
             cwd: get_tag_value(&note, "cwd").unwrap_or("").to_string(),
             status: get_tag_value(&note, "status").unwrap_or("idle").to_string(),
             hostname: get_tag_value(&note, "hostname").unwrap_or("").to_string(),
+            home_dir: get_tag_value(&note, "home_dir").unwrap_or("").to_string(),
             created_at: note.created_at(),
         });
     }

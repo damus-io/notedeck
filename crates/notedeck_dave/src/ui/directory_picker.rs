@@ -1,5 +1,5 @@
+use crate::path_utils::abbreviate_path;
 use crate::ui::keybind_hint::paint_keybind_hint;
-use crate::ui::path_utils::abbreviate_path;
 use egui::{RichText, Vec2};
 use std::path::PathBuf;
 

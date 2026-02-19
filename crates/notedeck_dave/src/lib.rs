@@ -10,6 +10,7 @@ pub mod ipc;
 pub(crate) mod mesh;
 mod messages;
 mod path_normalize;
+pub(crate) mod path_utils;
 mod quaternion;
 pub mod session;
 pub mod session_converter;
@@ -156,6 +157,7 @@ struct DeletedSessionInfo {
     claude_session_id: String,
     title: String,
     cwd: String,
+    home_dir: String,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -1261,6 +1263,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &cwd,
                     status,
                     &self.hostname,
+                    &session.details.home_dir,
                     &sk,
                 ),
                 &format!("publishing session state: {} -> {}", claude_sid, status),
@@ -1292,6 +1295,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &info.cwd,
                     "deleted",
                     &self.hostname,
+                    &info.home_dir,
                     &sk,
                 ),
                 &format!(
@@ -1417,6 +1421,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 } else {
                     self.hostname.clone()
                 };
+
+                // Use home_dir from the event for remote abbreviation
+                if !state.home_dir.is_empty() {
+                    session.details.home_dir = state.home_dir.clone();
+                }
 
                 if let Some(agentic) = &mut session.agentic {
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
@@ -1564,6 +1573,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let hostname = session_events::get_tag_value(&note, "hostname")
                 .unwrap_or("")
                 .to_string();
+            let home_dir = session_events::get_tag_value(&note, "home_dir")
+                .unwrap_or("")
+                .to_string();
 
             tracing::info!(
                 "discovered new session from relay: '{}' ({}) on {}",
@@ -1586,6 +1598,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 session.details.hostname = hostname;
+                if !home_dir.is_empty() {
+                    session.details.home_dir = home_dir;
+                }
                 if !loaded.messages.is_empty() {
                     tracing::info!(
                         "loaded {} messages for discovered session",
@@ -1830,6 +1845,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         claude_session_id: claude_sid.to_string(),
                         title: session.details.title.clone(),
                         cwd: agentic.cwd.to_string_lossy().to_string(),
+                        home_dir: session.details.home_dir.clone(),
                     });
                 }
             }

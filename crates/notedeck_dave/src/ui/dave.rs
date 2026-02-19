@@ -1341,7 +1341,11 @@ fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails) {
                 .wrap_mode(egui::TextWrapMode::Truncate),
         );
         if let Some(cwd) = &details.cwd {
-            let cwd_display = super::path_utils::abbreviate_path(cwd);
+            let cwd_display = if details.home_dir.is_empty() {
+                crate::path_utils::abbreviate_path(cwd)
+            } else {
+                crate::path_utils::abbreviate_with_home(cwd, &details.home_dir)
+            };
             let display_text = if details.hostname.is_empty() {
                 cwd_display
             } else {
