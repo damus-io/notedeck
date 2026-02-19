@@ -24,10 +24,12 @@ pub mod nip05;
 mod nip51_set;
 pub mod note;
 mod notecache;
+mod oneshot_api;
 mod options;
 mod persist;
 pub mod platform;
 pub mod profile;
+mod publish;
 pub mod relay_debug;
 pub mod relayspec;
 mod result;
@@ -87,9 +89,11 @@ pub use note::{
     RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};
+pub use oneshot_api::OneshotApi;
 pub use options::NotedeckOptions;
 pub use persist::*;
 pub use profile::*;
+pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi, RelayType};
 pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use result::Result;
