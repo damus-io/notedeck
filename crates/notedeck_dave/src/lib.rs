@@ -1020,8 +1020,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn handle_new_chat(&mut self) {
-        // Show the directory picker overlay
-        self.active_overlay = DaveOverlay::DirectoryPicker;
+        match self.ai_mode {
+            AiMode::Chat => {
+                // In chat mode, create a session directly without the directory picker
+                let cwd = std::env::current_dir().unwrap_or_default();
+                self.create_session_with_cwd(cwd);
+            }
+            AiMode::Agentic => {
+                // In agentic mode, show the directory picker to select a working directory
+                self.active_overlay = DaveOverlay::DirectoryPicker;
+            }
+        }
     }
 
     /// Create a new session with the given cwd (called after directory picker selection)
@@ -1922,6 +1931,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ctx: &AppContext,
         ui: &egui::Ui,
     ) -> Option<AppAction> {
+        // Intercept NewChat to handle chat vs agentic mode
+        if matches!(action, DaveAction::NewChat) {
+            self.handle_new_chat();
+            return None;
+        }
+
         match ui::handle_ui_action(
             action,
             &mut self.session_manager,
