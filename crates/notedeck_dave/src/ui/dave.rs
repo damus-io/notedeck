@@ -870,6 +870,8 @@ impl<'a> DaveUi<'a> {
     fn subagent_ui(info: &SubagentInfo, ui: &mut egui::Ui) {
         let tool_count = info.tool_results.len();
         let has_tools = tool_count > 0;
+        // Compute expand ID from outer ui, before horizontal changes the id scope
+        let expand_id = ui.id().with("subagent_expand").with(&info.task_id);
 
         ui.horizontal(|ui| {
             // Status badge with color based on status
@@ -896,8 +898,7 @@ impl<'a> DaveUi<'a> {
 
             // Tool count indicator (clickable to expand)
             if has_tools {
-                let id = ui.id().with(&info.task_id);
-                let expanded = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+                let expanded = ui.data(|d| d.get_temp::<bool>(expand_id).unwrap_or(false));
                 let arrow = if expanded { "▾" } else { "▸" };
                 let label = format!("{} ({} tools)", arrow, tool_count);
                 if ui
@@ -911,15 +912,14 @@ impl<'a> DaveUi<'a> {
                     )
                     .clicked()
                 {
-                    ui.data_mut(|d| d.insert_temp(id, !expanded));
+                    ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
                 }
             }
         });
 
         // Expanded tool results
         if has_tools {
-            let id = ui.id().with(&info.task_id);
-            let expanded = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+            let expanded = ui.data(|d| d.get_temp::<bool>(expand_id).unwrap_or(false));
             if expanded {
                 ui.indent(("subagent_tools", &info.task_id), |ui| {
                     for result in &info.tool_results {
