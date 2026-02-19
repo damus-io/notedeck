@@ -132,3 +132,59 @@ impl ScopedSubOwners {
         self.slots_by_owner.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::EguiWakeup;
+    use enostr::OutboxPool;
+
+    /// Verifies the same owner key always resolves to the same runtime slot.
+    #[test]
+    fn ensure_slot_is_stable_for_owner() {
+        let mut owners = ScopedSubOwners::default();
+        let mut runtime = ScopedSubRuntime::default();
+
+        let owner = SubOwnerKey::builder("threads").with(42u64).finish();
+        let a = owners.ensure_slot(&mut runtime, owner);
+        let b = owners.ensure_slot(&mut runtime, owner);
+
+        assert_eq!(a, b);
+        assert_eq!(owners.len(), 1);
+    }
+
+    /// Ensures different owner keys allocate distinct runtime slots.
+    #[test]
+    fn ensure_slot_distinguishes_different_owners() {
+        let mut owners = ScopedSubOwners::default();
+        let mut runtime = ScopedSubRuntime::default();
+
+        let owner_a = SubOwnerKey::builder("threads").with(1u64).finish();
+        let owner_b = SubOwnerKey::builder("threads").with(2u64).finish();
+
+        let slot_a = owners.ensure_slot(&mut runtime, owner_a);
+        let slot_b = owners.ensure_slot(&mut runtime, owner_b);
+
+        assert_ne!(slot_a, slot_b);
+        assert_eq!(owners.len(), 2);
+    }
+
+    /// Verifies dropping an owner removes its slot mapping and is idempotent.
+    #[test]
+    fn drop_owner_removes_mapping_and_runtime_slot() {
+        let mut owners = ScopedSubOwners::default();
+        let mut runtime = ScopedSubRuntime::default();
+        let mut pool = OutboxPool::default();
+        let mut outbox =
+            enostr::OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
+
+        let owner = SubOwnerKey::builder("onboarding").finish();
+        let _slot = owners.ensure_slot(&mut runtime, owner);
+
+        assert!(owners.drop_owner(&mut runtime, &mut outbox, owner));
+        assert!(!owners.slots_by_owner.contains_key(&owner));
+        assert!(owners.is_empty());
+
+        assert!(!owners.drop_owner(&mut runtime, &mut outbox, owner));
+    }
+}
