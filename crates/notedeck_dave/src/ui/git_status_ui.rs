@@ -112,20 +112,6 @@ pub fn git_status_content_ui(
     }
 }
 
-/// Render the git refresh button.
-pub fn git_refresh_button_ui(cache: &mut GitStatusCache, ui: &mut Ui) {
-    if ui
-        .add(
-            egui::Label::new(RichText::new("\u{21BB}").weak().size(12.0))
-                .sense(egui::Sense::click()),
-        )
-        .on_hover_text("Refresh git status")
-        .clicked()
-    {
-        cache.request_refresh();
-    }
-}
-
 /// Render the expanded file list portion of git status.
 pub fn git_expanded_files_ui(
     cache: &GitStatusCache,

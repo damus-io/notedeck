@@ -1232,8 +1232,6 @@ fn status_bar_ui(
                             None
                         };
 
-                        git_status_ui::git_refresh_button_ui(git_status, ui);
-
                         action
                     })
                     .inner
