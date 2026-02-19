@@ -4162,6 +4162,7 @@ name = "notedeck_dave"
 version = "0.7.1"
 dependencies = [
  "async-openai",
+ "bitflags 2.9.1",
  "bytemuck",
  "chrono",
  "claude-agent-sdk-rs",

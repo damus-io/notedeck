@@ -16,6 +16,7 @@ use crate::{
     session::{PermissionMessageState, SessionDetails, SessionId},
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse},
 };
+use bitflags::bitflags;
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::Transaction;
 use notedeck::{tr, AppContext, Localization, NoteAction, NoteContext};
@@ -23,17 +24,28 @@ use notedeck_ui::{icons::search_icon, NoteOptions};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct DaveUiFlags: u16 {
+        const Trial            = 1 << 0;
+        const Compact          = 1 << 1;
+        const IsWorking        = 1 << 2;
+        const InterruptPending = 1 << 3;
+        const HasPendingPerm   = 1 << 4;
+        const PlanModeActive   = 1 << 5;
+        const IsCompacting     = 1 << 6;
+        const AutoStealFocus   = 1 << 7;
+        const IsRemote         = 1 << 8;
+    }
+}
+
 /// DaveUi holds all of the data it needs to render itself
 pub struct DaveUi<'a> {
     chat: &'a [Message],
-    trial: bool,
+    flags: DaveUiFlags,
     input: &'a mut String,
-    compact: bool,
-    is_working: bool,
-    interrupt_pending: bool,
-    has_pending_permission: bool,
     focus_requested: &'a mut bool,
-    plan_mode_active: bool,
     /// Session ID for per-session scroll state
     session_id: SessionId,
     /// State for tentative permission response (waiting for message)
@@ -42,16 +54,10 @@ pub struct DaveUi<'a> {
     question_answers: Option<&'a mut HashMap<Uuid, Vec<QuestionAnswer>>>,
     /// Current question index for multi-question AskUserQuestion
     question_index: Option<&'a mut HashMap<Uuid, usize>>,
-    /// Whether conversation compaction is in progress
-    is_compacting: bool,
-    /// Whether auto-steal focus mode is active
-    auto_steal_focus: bool,
     /// AI interaction mode (Chat vs Agentic)
     ai_mode: AiMode,
     /// Git status cache for current session (agentic only)
     git_status: Option<&'a mut GitStatusCache>,
-    /// Whether this is a remote session (no local Claude process)
-    is_remote: bool,
     /// Session details for header display
     details: Option<&'a SessionDetails>,
 }
@@ -142,25 +148,22 @@ impl<'a> DaveUi<'a> {
         focus_requested: &'a mut bool,
         ai_mode: AiMode,
     ) -> Self {
+        let flags = if trial {
+            DaveUiFlags::Trial
+        } else {
+            DaveUiFlags::empty()
+        };
         DaveUi {
-            trial,
+            flags,
             session_id,
             chat,
             input,
-            compact: false,
-            is_working: false,
-            interrupt_pending: false,
-            has_pending_permission: false,
             focus_requested,
-            plan_mode_active: false,
             permission_message_state: PermissionMessageState::None,
             question_answers: None,
             question_index: None,
-            is_compacting: false,
-            auto_steal_focus: false,
             ai_mode,
             git_status: None,
-            is_remote: false,
             details: None,
         }
     }
@@ -185,33 +188,33 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn compact(mut self, compact: bool) -> Self {
-        self.compact = compact;
+    pub fn compact(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::Compact, val);
         self
     }
 
-    pub fn is_working(mut self, is_working: bool) -> Self {
-        self.is_working = is_working;
+    pub fn is_working(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::IsWorking, val);
         self
     }
 
-    pub fn interrupt_pending(mut self, interrupt_pending: bool) -> Self {
-        self.interrupt_pending = interrupt_pending;
+    pub fn interrupt_pending(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::InterruptPending, val);
         self
     }
 
-    pub fn has_pending_permission(mut self, has_pending_permission: bool) -> Self {
-        self.has_pending_permission = has_pending_permission;
+    pub fn has_pending_permission(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::HasPendingPerm, val);
         self
     }
 
-    pub fn plan_mode_active(mut self, plan_mode_active: bool) -> Self {
-        self.plan_mode_active = plan_mode_active;
+    pub fn plan_mode_active(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::PlanModeActive, val);
         self
     }
 
-    pub fn is_compacting(mut self, is_compacting: bool) -> Self {
-        self.is_compacting = is_compacting;
+    pub fn is_compacting(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::IsCompacting, val);
         self
     }
 
@@ -222,18 +225,18 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn auto_steal_focus(mut self, auto_steal_focus: bool) -> Self {
-        self.auto_steal_focus = auto_steal_focus;
+    pub fn auto_steal_focus(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::AutoStealFocus, val);
         self
     }
 
-    pub fn is_remote(mut self, is_remote: bool) -> Self {
-        self.is_remote = is_remote;
+    pub fn is_remote(mut self, val: bool) -> Self {
+        self.flags.set(DaveUiFlags::IsRemote, val);
         self
     }
 
     fn chat_margin(&self, ctx: &egui::Context) -> i8 {
-        if self.compact || notedeck::ui::is_narrow(ctx) {
+        if self.flags.contains(DaveUiFlags::Compact) || notedeck::ui::is_narrow(ctx) {
             8
         } else {
             20
@@ -256,7 +259,7 @@ impl<'a> DaveUi<'a> {
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
 
         // Skip top buttons in compact mode (scene panel has its own controls)
-        let action = if self.compact {
+        let action = if self.flags.contains(DaveUiFlags::Compact) {
             None
         } else {
             top_buttons_ui(app_ctx, ui)
@@ -282,8 +285,8 @@ impl<'a> DaveUi<'a> {
                         .inner;
 
                     {
-                        let plan_mode_active = self.plan_mode_active;
-                        let auto_steal_focus = self.auto_steal_focus;
+                        let plan_mode_active = self.flags.contains(DaveUiFlags::PlanModeActive);
+                        let auto_steal_focus = self.flags.contains(DaveUiFlags::AutoStealFocus);
                         let is_agentic = self.ai_mode == AiMode::Agentic;
                         let has_git = self.git_status.is_some();
 
@@ -353,7 +356,7 @@ impl<'a> DaveUi<'a> {
     }
 
     fn error_chat(&self, i18n: &mut Localization, err: &str, ui: &mut egui::Ui) {
-        if self.trial {
+        if self.flags.contains(DaveUiFlags::Trial) {
             ui.add(egui::Label::new(
                 egui::RichText::new(
                     tr!(i18n, "The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!", "Message shown when Dave trial period has ended"),
@@ -425,9 +428,9 @@ impl<'a> DaveUi<'a> {
         }
 
         // Show status line at the bottom of chat when working or compacting
-        let status_text = if is_agentic && self.is_compacting {
+        let status_text = if is_agentic && self.flags.contains(DaveUiFlags::IsCompacting) {
             Some("compacting...")
-        } else if self.is_working {
+        } else if self.flags.contains(DaveUiFlags::IsWorking) {
             Some("computing...")
         } else {
             None
@@ -442,7 +445,7 @@ impl<'a> DaveUi<'a> {
                         .italics(),
                 );
                 // Don't show interrupt hint for remote sessions
-                if !self.is_remote {
+                if !self.flags.contains(DaveUiFlags::IsRemote) {
                     ui.label(
                         egui::RichText::new("(press esc to interrupt)")
                             .color(ui.visuals().weak_text_color())
@@ -1038,7 +1041,7 @@ impl<'a> DaveUi<'a> {
                 let mut dave_response = DaveResponse::none();
 
                 // Show Stop button when working, Ask button otherwise
-                if self.is_working {
+                if self.flags.contains(DaveUiFlags::IsWorking) {
                     if ui
                         .add(egui::Button::new(tr!(
                             i18n,
@@ -1051,7 +1054,7 @@ impl<'a> DaveUi<'a> {
                     }
 
                     // Show "Press Esc again" indicator when interrupt is pending
-                    if self.interrupt_pending {
+                    if self.flags.contains(DaveUiFlags::InterruptPending) {
                         ui.label(
                             egui::RichText::new("Press Esc again to stop")
                                 .color(ui.visuals().warn_fg_color),
@@ -1106,7 +1109,7 @@ impl<'a> DaveUi<'a> {
                 // UNLESS we're in tentative state (user needs to type message)
                 let in_tentative_state =
                     self.permission_message_state != PermissionMessageState::None;
-                if self.has_pending_permission && !in_tentative_state {
+                if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
                     r.surrender_focus();
                 }
 

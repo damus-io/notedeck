@@ -72,7 +72,7 @@ This document captures the current architecture, coding conventions, and design 
 
 ## Coding Conventions & Practices
 
-- Run `cargo lint` when you're done your work, ensure that all lints are fixed before committing.
+- Run `cargo fmt --all && cargo clippy` when you're done your work, ensure that all lints are fixed before committing.
 - Rust 2021, edition-lints are strict; clippy `disallowed_methods` is denied at crate root to enforce API hygiene (`crates/notedeck/src/lib.rs`).
 - Prefer module-level organization over monolithic files; each feature (accounts, decks, timelines, media) lives in its own module tree.
 - Use `tracing` macros for structured logging and `profiling` scopes where hot paths exist (Columns' relay/event loop).
