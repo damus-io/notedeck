@@ -40,8 +40,9 @@ use std::time::Instant;
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig};
 pub use messages::{
-    AskUserQuestionInput, AssistantMessage, DaveApiResponse, Message, PermissionResponse,
-    PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo, SubagentStatus, ToolResult,
+    AskUserQuestionInput, AssistantMessage, DaveApiResponse, ExecutedTool, Message,
+    PermissionResponse, PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo,
+    SubagentStatus,
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -675,7 +676,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             }
                         }
                         if let Some(result) = session.fold_tool_result(result) {
-                            session.chat.push(Message::ToolResult(result));
+                            session
+                                .chat
+                                .push(Message::ToolResponse(ToolResponse::executed_tool(result)));
                         }
                     }
 
@@ -1747,11 +1750,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             .to_string();
                         session
                             .chat
-                            .push(Message::ToolResult(crate::messages::ToolResult {
-                                tool_name,
-                                summary,
-                                parent_task_id: None,
-                            }));
+                            .push(Message::ToolResponse(ToolResponse::executed_tool(
+                                crate::messages::ExecutedTool {
+                                    tool_name,
+                                    summary,
+                                    parent_task_id: None,
+                                },
+                            )));
                     }
                     Some("permission_request") => {
                         if let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content)
