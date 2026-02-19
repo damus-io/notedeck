@@ -691,7 +691,7 @@ impl<'a> DaveUi<'a> {
                     }
                 }
 
-                add_msg_link(ui, action);
+                add_msg_link(ui, shift_held, action);
             }
         });
     }
@@ -800,7 +800,7 @@ impl<'a> DaveUi<'a> {
                                 }
                             }
 
-                            add_msg_link(ui, &mut action);
+                            add_msg_link(ui, shift_held, &mut action);
                         }
                     });
                 });
@@ -1204,14 +1204,16 @@ fn tentative_send_ui(
     }
 }
 
-/// Clickable "+ msg" link that enters tentative accept mode.
-fn add_msg_link(ui: &mut egui::Ui, action: &mut Option<DaveAction>) {
+/// Clickable "+ msg [⇧]" link that enters tentative accept mode.
+/// Highlights in warn color when Shift is held on desktop.
+fn add_msg_link(ui: &mut egui::Ui, shift_held: bool, action: &mut Option<DaveAction>) {
+    let color = if shift_held {
+        ui.visuals().warn_fg_color
+    } else {
+        ui.visuals().weak_text_color()
+    };
     if ui
-        .link(
-            egui::RichText::new("+ msg")
-                .color(ui.visuals().weak_text_color())
-                .small(),
-        )
+        .link(egui::RichText::new("+ msg [⇧]").color(color).small())
         .clicked()
     {
         *action = Some(DaveAction::TentativeAccept);
