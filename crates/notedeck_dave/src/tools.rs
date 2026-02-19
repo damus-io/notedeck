@@ -1,3 +1,4 @@
+use crate::messages::ExecutedTool;
 use async_openai::types::*;
 use chrono::DateTime;
 use enostr::{NoteId, Pubkey};
@@ -98,6 +99,7 @@ pub enum ToolResponses {
     Error(String),
     Query(QueryResponse),
     PresentNotes(i32),
+    ExecutedTool(ExecutedTool),
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +346,13 @@ impl ToolResponse {
         }
     }
 
+    pub fn executed_tool(result: ExecutedTool) -> Self {
+        Self {
+            id: String::new(),
+            typ: ToolResponses::ExecutedTool(result),
+        }
+    }
+
     pub fn responses(&self) -> &ToolResponses {
         &self.typ
     }
@@ -565,6 +574,8 @@ fn format_tool_response_for_ai(txn: &Transaction, ndb: &Ndb, resp: &ToolResponse
 
             serde_json::to_string(&json!({"search_results": simple_notes})).unwrap()
         }
+
+        ToolResponses::ExecutedTool(r) => format!("{}: {}", r.tool_name, r.summary),
     }
 }
 

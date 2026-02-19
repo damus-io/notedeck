@@ -177,6 +177,7 @@ impl AgentScene {
                             status,
                             title,
                             &agentic.cwd,
+                            &session.details.home_dir,
                             is_selected,
                             ctrl_held,
                             queue_priority,
@@ -330,6 +331,7 @@ impl AgentScene {
         status: AgentStatus,
         title: &str,
         cwd: &Path,
+        home_dir: &str,
         is_selected: bool,
         show_keybinding: bool,
         queue_priority: Option<FocusPriority>,
@@ -411,7 +413,11 @@ impl AgentScene {
         );
 
         // Cwd label (monospace, weak+small)
-        let cwd_text = super::path_utils::abbreviate_path(cwd);
+        let cwd_text = if home_dir.is_empty() {
+            crate::path_utils::abbreviate_path(cwd)
+        } else {
+            crate::path_utils::abbreviate_with_home(cwd, home_dir)
+        };
         let cwd_pos = center + Vec2::new(0.0, agent_radius + 38.0);
         painter.text(
             cwd_pos,

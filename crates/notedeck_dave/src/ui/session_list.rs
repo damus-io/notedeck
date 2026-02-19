@@ -159,6 +159,7 @@ impl<'a> SessionListUi<'a> {
             &session.details.title,
             cwd,
             &session.details.hostname,
+            &session.details.home_dir,
             is_active,
             shortcut_hint,
             session.status(),
@@ -186,6 +187,7 @@ impl<'a> SessionListUi<'a> {
         title: &str,
         cwd: &Path,
         hostname: &str,
+        home_dir: &str,
         is_active: bool,
         shortcut_hint: Option<usize>,
         status: AgentStatus,
@@ -288,7 +290,7 @@ impl<'a> SessionListUi<'a> {
         // Draw cwd below title - only in Agentic mode
         if show_cwd {
             let cwd_pos = rect.left_center() + egui::vec2(text_start_x, 7.0);
-            cwd_ui(ui, cwd, hostname, cwd_pos, max_text_width);
+            cwd_ui(ui, cwd, hostname, home_dir, cwd_pos, max_text_width);
         }
 
         response
@@ -297,8 +299,19 @@ impl<'a> SessionListUi<'a> {
 
 /// Draw cwd text (monospace, weak+small) with clipping.
 /// Shows "hostname:cwd" when hostname is non-empty.
-fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, hostname: &str, pos: egui::Pos2, max_width: f32) {
-    let cwd_str = super::path_utils::abbreviate_path(cwd_path);
+fn cwd_ui(
+    ui: &mut egui::Ui,
+    cwd_path: &Path,
+    hostname: &str,
+    home_dir: &str,
+    pos: egui::Pos2,
+    max_width: f32,
+) {
+    let cwd_str = if home_dir.is_empty() {
+        crate::path_utils::abbreviate_path(cwd_path)
+    } else {
+        crate::path_utils::abbreviate_with_home(cwd_path, home_dir)
+    };
     let display_text = if hostname.is_empty() {
         cwd_str
     } else {

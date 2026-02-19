@@ -9,12 +9,12 @@ use crate::{
     file_update::FileUpdate,
     git_status::GitStatusCache,
     messages::{
-        AskUserQuestionInput, AssistantMessage, CompactionInfo, Message, PermissionRequest,
-        PermissionResponse, PermissionResponseType, QuestionAnswer, SubagentInfo, SubagentStatus,
-        ToolResult,
+        AskUserQuestionInput, AssistantMessage, CompactionInfo, ExecutedTool, Message,
+        PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
+        SubagentInfo, SubagentStatus,
     },
     session::{PermissionMessageState, SessionDetails, SessionId},
-    tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse},
+    tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse, ToolResponses},
 };
 use bitflags::bitflags;
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
@@ -401,7 +401,7 @@ impl<'a> DaveUi<'a> {
                     self.assistant_chat(msg, ui);
                 }
                 Message::ToolResponse(msg) => {
-                    Self::tool_response_ui(msg, ui);
+                    Self::tool_response_ui(msg, is_agentic, ui);
                 }
                 Message::System(_msg) => {
                     // system prompt is not rendered. Maybe we could
@@ -418,12 +418,6 @@ impl<'a> DaveUi<'a> {
                         if let Some(action) = self.permission_request_ui(request, ui) {
                             response = DaveResponse::new(action);
                         }
-                    }
-                }
-                Message::ToolResult(result) => {
-                    // Tool results only in Agentic mode
-                    if is_agentic {
-                        Self::tool_result_ui(result, ui);
                     }
                 }
                 Message::CompactionComplete(info) => {
@@ -472,8 +466,17 @@ impl<'a> DaveUi<'a> {
         response
     }
 
-    fn tool_response_ui(_tool_response: &ToolResponse, _ui: &mut egui::Ui) {
-        //ui.label(format!("tool_response: {:?}", tool_response));
+    fn tool_response_ui(tool_response: &ToolResponse, is_agentic: bool, ui: &mut egui::Ui) {
+        match tool_response.responses() {
+            ToolResponses::ExecutedTool(result) => {
+                if is_agentic {
+                    Self::executed_tool_ui(result, ui);
+                }
+            }
+            _ => {
+                //ui.label(format!("tool_response: {:?}", tool_response));
+            }
+        }
     }
 
     /// Render a permission request with Allow/Deny buttons or response state
@@ -827,7 +830,7 @@ impl<'a> DaveUi<'a> {
     }
 
     /// Render tool result metadata as a compact line
-    fn tool_result_ui(result: &ToolResult, ui: &mut egui::Ui) {
+    fn executed_tool_ui(result: &ExecutedTool, ui: &mut egui::Ui) {
         // Compact single-line display with subdued styling
         ui.horizontal(|ui| {
             // Tool name in slightly brighter text
@@ -923,7 +926,7 @@ impl<'a> DaveUi<'a> {
             if expanded {
                 ui.indent(("subagent_tools", &info.task_id), |ui| {
                     for result in &info.tool_results {
-                        Self::tool_result_ui(result, ui);
+                        Self::executed_tool_ui(result, ui);
                     }
                 });
             }
@@ -1341,7 +1344,11 @@ fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails) {
                 .wrap_mode(egui::TextWrapMode::Truncate),
         );
         if let Some(cwd) = &details.cwd {
-            let cwd_display = super::path_utils::abbreviate_path(cwd);
+            let cwd_display = if details.home_dir.is_empty() {
+                crate::path_utils::abbreviate_path(cwd)
+            } else {
+                crate::path_utils::abbreviate_with_home(cwd, &details.home_dir)
+            };
             let display_text = if details.hostname.is_empty() {
                 cwd_display
             } else {

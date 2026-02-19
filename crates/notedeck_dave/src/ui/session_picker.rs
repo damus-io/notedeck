@@ -1,8 +1,8 @@
 //! UI component for selecting resumable Claude sessions.
 
+use crate::path_utils::abbreviate_path;
 use crate::session_discovery::{discover_sessions, format_relative_time, ResumableSession};
 use crate::ui::keybind_hint::paint_keybind_hint;
-use crate::ui::path_utils::abbreviate_path;
 use egui::{RichText, Vec2};
 use std::path::{Path, PathBuf};
 

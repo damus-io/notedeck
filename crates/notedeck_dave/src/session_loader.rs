@@ -4,9 +4,10 @@
 //! orders them by created_at, and converts them into `Message` variants
 //! for populating the chat UI.
 
-use crate::messages::{AssistantMessage, PermissionRequest, PermissionResponseType, ToolResult};
+use crate::messages::{AssistantMessage, ExecutedTool, PermissionRequest, PermissionResponseType};
 use crate::session::PermissionTracker;
 use crate::session_events::{get_tag_value, is_conversation_role, AI_CONVERSATION_KIND};
+use crate::tools::ToolResponse;
 use crate::Message;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use std::collections::HashSet;
@@ -164,13 +165,15 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
             )),
             Some("tool_result") => {
                 let summary = truncate(content, 200);
-                Some(Message::ToolResult(ToolResult {
-                    tool_name: get_tag_value(note, "tool-name")
-                        .unwrap_or("tool")
-                        .to_string(),
-                    summary,
-                    parent_task_id: None,
-                }))
+                Some(Message::ToolResponse(ToolResponse::executed_tool(
+                    ExecutedTool {
+                        tool_name: get_tag_value(note, "tool-name")
+                            .unwrap_or("tool")
+                            .to_string(),
+                        summary,
+                        parent_task_id: None,
+                    },
+                )))
             }
             Some("permission_request") => {
                 if let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) {
@@ -230,6 +233,7 @@ pub struct SessionState {
     pub cwd: String,
     pub status: String,
     pub hostname: String,
+    pub home_dir: String,
     pub created_at: u64,
 }
 
@@ -277,6 +281,7 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
             cwd: get_tag_value(&note, "cwd").unwrap_or("").to_string(),
             status: get_tag_value(&note, "status").unwrap_or("idle").to_string(),
             hostname: get_tag_value(&note, "hostname").unwrap_or("").to_string(),
+            home_dir: get_tag_value(&note, "home_dir").unwrap_or("").to_string(),
             created_at: note.created_at(),
         });
     }

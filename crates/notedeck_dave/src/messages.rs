@@ -1,4 +1,4 @@
-use crate::tools::{ToolCall, ToolResponse};
+use crate::tools::{ToolCall, ToolResponse, ToolResponses};
 use async_openai::types::*;
 use md_stream::{MdElement, Partial, StreamParser};
 
@@ -102,9 +102,10 @@ pub enum PermissionResponseType {
     Denied,
 }
 
-/// Metadata about a completed tool execution
-#[derive(Debug, Clone)]
-pub struct ToolResult {
+/// Metadata about a completed tool execution from an agentic backend.
+/// Used as a variant in `ToolResponses` to unify with other tool responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutedTool {
     pub tool_name: String,
     pub summary: String, // e.g., "154 lines", "exit 0", "3 matches"
     /// Which subagent (Task tool_use_id) produced this result, if any
@@ -159,7 +160,7 @@ pub struct SubagentInfo {
     /// Maximum output size to keep (for size-restricted window)
     pub max_output_size: usize,
     /// Tool results produced by this subagent
-    pub tool_results: Vec<ToolResult>,
+    pub tool_results: Vec<ExecutedTool>,
 }
 
 /// An assistant message with incremental markdown parsing support.
@@ -303,8 +304,6 @@ pub enum Message {
     ToolResponse(ToolResponse),
     /// A permission request from the AI that needs user response
     PermissionRequest(PermissionRequest),
-    /// Result metadata from a completed tool execution
-    ToolResult(ToolResult),
     /// Conversation was compacted
     CompactionComplete(CompactionInfo),
     /// A subagent spawned by Task tool
@@ -327,7 +326,7 @@ pub enum DaveApiResponse {
     /// A permission request that needs to be displayed to the user
     PermissionRequest(PendingPermission),
     /// Metadata from a completed tool execution
-    ToolResult(ToolResult),
+    ToolResult(ExecutedTool),
     /// Session initialization info from Claude Code CLI
     SessionInfo(SessionInfo),
     /// Subagent spawned by Task tool
@@ -388,6 +387,11 @@ impl Message {
             )),
 
             Message::ToolResponse(resp) => {
+                // ExecutedTool results are UI-only, not sent to the API
+                if matches!(resp.responses(), ToolResponses::ExecutedTool(_)) {
+                    return None;
+                }
+
                 let tool_response = resp.responses().format_for_dave(txn, ndb);
 
                 Some(ChatCompletionRequestMessage::Tool(
@@ -400,9 +404,6 @@ impl Message {
 
             // Permission requests are UI-only, not sent to the API
             Message::PermissionRequest(_) => None,
-
-            // Tool results are UI-only, not sent to the API
-            Message::ToolResult(_) => None,
 
             // Compaction complete is UI-only, not sent to the API
             Message::CompactionComplete(_) => None,

@@ -6,8 +6,8 @@ use crate::agent_status::AgentStatus;
 use crate::config::AiMode;
 use crate::git_status::GitStatusCache;
 use crate::messages::{
-    AnswerSummary, CompactionInfo, PermissionResponse, PermissionResponseType, QuestionAnswer,
-    SessionInfo, SubagentStatus, ToolResult,
+    AnswerSummary, CompactionInfo, ExecutedTool, PermissionResponse, PermissionResponseType,
+    QuestionAnswer, SessionInfo, SubagentStatus,
 };
 use crate::session_events::ThreadingState;
 use crate::{DaveApiResponse, Message};
@@ -32,6 +32,9 @@ pub struct SessionDetails {
     pub title: String,
     pub hostname: String,
     pub cwd: Option<PathBuf>,
+    /// Home directory of the machine where this session originated.
+    /// Used to abbreviate cwd paths for remote sessions.
+    pub home_dir: String,
 }
 
 /// State for permission response with message
@@ -255,9 +258,17 @@ impl AgenticSessionData {
 
     /// Try to fold a tool result into its parent subagent.
     /// Returns None if folded, Some(result) if it couldn't be folded.
-    pub fn fold_tool_result(&self, chat: &mut [Message], result: ToolResult) -> Option<ToolResult> {
-        let parent_id = result.parent_task_id.as_ref()?;
-        let &idx = self.subagent_indices.get(parent_id)?;
+    pub fn fold_tool_result(
+        &self,
+        chat: &mut [Message],
+        result: ExecutedTool,
+    ) -> Option<ExecutedTool> {
+        let Some(parent_id) = result.parent_task_id.as_ref() else {
+            return Some(result);
+        };
+        let Some(&idx) = self.subagent_indices.get(parent_id) else {
+            return Some(result);
+        };
         if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
             subagent.tool_results.push(result);
             None
@@ -328,6 +339,9 @@ impl ChatSession {
                 title: "New Chat".to_string(),
                 hostname: String::new(),
                 cwd: details_cwd,
+                home_dir: dirs::home_dir()
+                    .map(|h| h.to_string_lossy().to_string())
+                    .unwrap_or_default(),
             },
         }
     }
@@ -421,7 +435,7 @@ impl ChatSession {
 
     /// Try to fold a tool result into its parent subagent.
     /// Returns None if folded, Some(result) if it couldn't be folded.
-    pub fn fold_tool_result(&mut self, result: ToolResult) -> Option<ToolResult> {
+    pub fn fold_tool_result(&mut self, result: ExecutedTool) -> Option<ExecutedTool> {
         if let Some(ref agentic) = self.agentic {
             agentic.fold_tool_result(&mut self.chat, result)
         } else {

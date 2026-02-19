@@ -7,7 +7,6 @@ mod git_status_ui;
 pub mod keybind_hint;
 pub mod keybindings;
 pub mod markdown_ui;
-pub mod path_utils;
 mod pill;
 mod query_ui;
 pub mod scene;

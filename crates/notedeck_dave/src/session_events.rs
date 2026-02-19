@@ -655,6 +655,7 @@ pub fn build_session_state_event(
     cwd: &str,
     status: &str,
     hostname: &str,
+    home_dir: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     let mut builder = init_note_builder(AI_SESSION_STATE_KIND, "", Some(now_secs()));
@@ -667,6 +668,7 @@ pub fn build_session_state_event(
     builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
     builder = builder.start_tag().tag_str("status").tag_str(status);
     builder = builder.start_tag().tag_str("hostname").tag_str(hostname);
+    builder = builder.start_tag().tag_str("home_dir").tag_str(home_dir);
 
     // Discoverability
     builder = builder.start_tag().tag_str("t").tag_str("ai-session-state");

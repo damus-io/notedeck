@@ -5,8 +5,8 @@ use crate::backend::tool_summary::{
 };
 use crate::backend::traits::AiBackend;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, ParsedMarkdown, PendingPermission, PermissionRequest,
-    PermissionResponse, SubagentInfo, SubagentStatus, ToolResult,
+    CompactionInfo, DaveApiResponse, ExecutedTool, ParsedMarkdown, PendingPermission,
+    PermissionRequest, PermissionResponse, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -105,10 +105,9 @@ impl ClaudeBackend {
                 | Message::ToolResponse(_)
                 | Message::Error(_)
                 | Message::PermissionRequest(_)
-                | Message::ToolResult(_)
                 | Message::CompactionComplete(_)
                 | Message::Subagent(_) => {
-                    // Skip tool-related, error, permission, tool result, compaction, and subagent messages
+                    // Skip tool-related, error, permission, compaction, and subagent messages
                 }
             }
         }
@@ -523,7 +522,7 @@ async fn session_actor(
                                                         // Attach parent subagent context (top of stack)
                                                         let parent_task_id = subagent_stack.last().cloned();
                                                         let summary = format_tool_summary(&tool_name, &tool_input, &result_value);
-                                                        let tool_result = ToolResult { tool_name, summary, parent_task_id };
+                                                        let tool_result = ExecutedTool { tool_name, summary, parent_task_id };
                                                         let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
                                                         ctx.request_repaint();
                                                     }
