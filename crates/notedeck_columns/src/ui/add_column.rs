@@ -27,7 +27,7 @@ use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 use crate::ui::widgets::styled_button;
 use notedeck_ui::{
     anim::AnimationHelper, padding, profile_row, search_input_box, search_profiles,
-    ContactsListView, ProfilePreview,
+    ContactsListView,
 };
 
 pub enum AddColumnResponse {
@@ -241,10 +241,7 @@ impl<'a> AddColumnView<'a> {
     }
 
     fn external_notification_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
-        let id = ui.id().with("external_notif");
-        self.external_ui(ui, id, |pubkey| {
-            AddColumnOption::Notification(PubkeySource::Explicit(pubkey))
-        })
+        self.external_search_ui(ui, "external_notif", notification_column_response)
     }
 
     fn algo_last_per_pk_ui(
@@ -308,7 +305,16 @@ impl<'a> AddColumnView<'a> {
     }
 
     fn external_individual_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
-        let id = ui.id().with("external_individual");
+        self.external_search_ui(ui, "external_individual", individual_column_response)
+    }
+
+    fn external_search_ui(
+        &mut self,
+        ui: &mut Ui,
+        id_salt: &str,
+        to_response: fn(Pubkey, &UserAccount) -> AddColumnResponse,
+    ) -> Option<AddColumnResponse> {
+        let id = ui.id().with(id_salt);
 
         ui.add_space(8.0);
         let hint = tr!(
@@ -337,6 +343,7 @@ impl<'a> AddColumnView<'a> {
                 self.jobs,
                 self.i18n,
                 self.cur_account,
+                to_response,
             )
         } else if query.is_empty() {
             self.key_state_map.remove(&id);
@@ -348,6 +355,7 @@ impl<'a> AddColumnView<'a> {
                 self.img_cache,
                 self.i18n,
                 self.cur_account,
+                to_response,
             )
         } else {
             self.key_state_map.remove(&id);
@@ -360,77 +368,9 @@ impl<'a> AddColumnView<'a> {
                 self.jobs,
                 self.i18n,
                 self.cur_account,
+                to_response,
             )
         }
-    }
-
-    fn external_ui(
-        &mut self,
-        ui: &mut Ui,
-        id: egui::Id,
-        to_option: fn(Pubkey) -> AddColumnOption,
-    ) -> Option<AddColumnResponse> {
-        padding(16.0, ui, |ui| {
-            let key_state = self.key_state_map.entry(id).or_default();
-
-            let text_edit = key_state.get_acquire_textedit(|text| {
-                egui::TextEdit::singleline(text)
-                    .hint_text(
-                        RichText::new(tr!(
-                            self.i18n,
-                            "Enter the user's key (npub, hex, nip05) here...",
-                            "Hint text to prompt entering the user's public key."
-                        ))
-                        .text_style(NotedeckTextStyle::Body.text_style()),
-                    )
-                    .vertical_align(Align::Center)
-                    .desired_width(f32::INFINITY)
-                    .min_size(Vec2::new(0.0, 40.0))
-                    .margin(Margin::same(12))
-            });
-
-            ui.add(text_edit);
-
-            key_state.handle_input_change_after_acquire();
-            key_state.loading_and_error_ui(ui, self.i18n);
-
-            if key_state.get_login_keypair().is_none()
-                && ui.add(find_user_button(self.i18n)).clicked()
-            {
-                key_state.apply_acquire();
-            }
-
-            let resp = if let Some(keypair) = key_state.get_login_keypair() {
-                {
-                    let txn = Transaction::new(self.ndb).expect("txn");
-                    if let Ok(profile) =
-                        self.ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes())
-                    {
-                        egui::Frame::window(ui.style())
-                            .outer_margin(Margin {
-                                left: 4,
-                                right: 4,
-                                top: 12,
-                                bottom: 32,
-                            })
-                            .show(ui, |ui| {
-                                ProfilePreview::new(&profile, self.img_cache, self.jobs).ui(ui);
-                            });
-                    }
-                }
-
-                ui.add(add_column_button(self.i18n))
-                    .clicked()
-                    .then(|| to_option(keypair.pubkey).take_as_response(self.cur_account))
-            } else {
-                None
-            };
-            if resp.is_some() {
-                self.key_state_map.remove(&id);
-            };
-            resp
-        })
-        .inner
     }
 
     fn column_option_ui(&mut self, ui: &mut Ui, data: ColumnOptionData) -> egui::Response {
@@ -685,12 +625,6 @@ impl<'a> AddColumnView<'a> {
     }
 }
 
-fn find_user_button(i18n: &mut Localization) -> impl Widget {
-    let label = tr!(i18n, "Find User", "Label for find user button");
-    let color = notedeck_ui::colors::PINK;
-    move |ui: &mut egui::Ui| styled_button(label.as_str(), color).ui(ui)
-}
-
 fn add_column_button(i18n: &mut Localization) -> impl Widget {
     let label = tr!(i18n, "Add", "Label for add column button");
     let color = notedeck_ui::colors::PINK;
@@ -699,6 +633,10 @@ fn add_column_button(i18n: &mut Localization) -> impl Widget {
 
 fn individual_column_response(pubkey: Pubkey, cur_account: &UserAccount) -> AddColumnResponse {
     AddColumnOption::Individual(PubkeySource::Explicit(pubkey)).take_as_response(cur_account)
+}
+
+fn notification_column_response(pubkey: Pubkey, cur_account: &UserAccount) -> AddColumnResponse {
+    AddColumnOption::Notification(PubkeySource::Explicit(pubkey)).take_as_response(cur_account)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -712,6 +650,7 @@ fn nip05_profile_ui(
     jobs: &MediaJobSender,
     i18n: &mut Localization,
     cur_account: &UserAccount,
+    to_response: fn(Pubkey, &UserAccount) -> AddColumnResponse,
 ) -> Option<AddColumnResponse> {
     let key_state = key_state_map.entry(id).or_default();
 
@@ -730,7 +669,7 @@ fn nip05_profile_ui(
         let profile = ndb.get_profile_by_pubkey(&txn, keypair.pubkey.bytes()).ok();
 
         profile_row(ui, profile.as_ref(), false, img_cache, jobs, i18n)
-            .then(|| individual_column_response(keypair.pubkey, cur_account))
+            .then(|| to_response(keypair.pubkey, cur_account))
     } else {
         None
     };
@@ -750,6 +689,7 @@ fn contacts_list_column_ui(
     img_cache: &mut Images,
     i18n: &mut Localization,
     cur_account: &UserAccount,
+    to_response: fn(Pubkey, &UserAccount) -> AddColumnResponse,
 ) -> Option<AddColumnResponse> {
     let ContactState::Received {
         contacts: contact_set,
@@ -763,9 +703,7 @@ fn contacts_list_column_ui(
     let resp = ContactsListView::new(contact_set, jobs, ndb, img_cache, &txn, i18n).ui(ui);
 
     resp.output.map(|a| match a {
-        notedeck_ui::ContactsListAction::Select(pubkey) => {
-            individual_column_response(pubkey, cur_account)
-        }
+        notedeck_ui::ContactsListAction::Select(pubkey) => to_response(pubkey, cur_account),
     })
 }
 
@@ -779,6 +717,7 @@ fn profile_search_column_ui(
     jobs: &MediaJobSender,
     i18n: &mut Localization,
     cur_account: &UserAccount,
+    to_response: fn(Pubkey, &UserAccount) -> AddColumnResponse,
 ) -> Option<AddColumnResponse> {
     let txn = Transaction::new(ndb).expect("txn");
     let results = search_profiles(ndb, &txn, query, contacts, 128);
@@ -808,10 +747,7 @@ fn profile_search_column_ui(
                 jobs,
                 i18n,
             ) {
-                action = Some(individual_column_response(
-                    Pubkey::new(result.pk),
-                    cur_account,
-                ));
+                action = Some(to_response(Pubkey::new(result.pk), cur_account));
             }
         }
     });
