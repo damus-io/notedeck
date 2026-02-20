@@ -1,5 +1,6 @@
 use crate::backend::BackendType;
 use async_openai::config::OpenAIConfig;
+use serde::{Deserialize, Serialize};
 
 /// AI interaction mode - determines UI complexity and feature set
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,7 +12,7 @@ pub enum AiMode {
 }
 
 /// Available AI providers for Dave
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum AiProvider {
     #[default]
     OpenAI,
@@ -77,7 +78,7 @@ impl AiProvider {
 }
 
 /// User-configurable settings for Dave AI
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DaveSettings {
     pub provider: AiProvider,
     pub model: String,

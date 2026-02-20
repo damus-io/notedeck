@@ -36,7 +36,7 @@ mod style;
 pub mod theme;
 mod time;
 mod timecache;
-mod timed_serializer;
+pub mod timed_serializer;
 pub mod ui;
 mod unknowns;
 mod urls;
