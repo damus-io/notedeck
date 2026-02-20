@@ -908,6 +908,7 @@ pub fn create_session_with_cwd(
             }
         }
     }
+    session_manager.rebuild_host_groups();
     id
 }
 
@@ -937,6 +938,7 @@ pub fn create_resumed_session_with_cwd(
             }
         }
     }
+    session_manager.rebuild_host_groups();
     id
 }
 

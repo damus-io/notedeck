@@ -372,6 +372,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if let Some(session) = manager.get_mut(sid) {
                     session.details.hostname = hostname.clone();
                 }
+                manager.rebuild_host_groups();
                 (manager, DaveOverlay::None)
             }
             AiMode::Agentic => (SessionManager::new(), DaveOverlay::DirectoryPicker),
@@ -1133,6 +1134,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
             }
+            self.session_manager.rebuild_host_groups();
 
             // Close directory picker if open
             if self.active_overlay == DaveOverlay::DirectoryPicker {
@@ -1497,6 +1499,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
+        self.session_manager.rebuild_host_groups();
+
         // Skip the directory picker since we restored sessions
         self.active_overlay = DaveOverlay::None;
     }
@@ -1683,6 +1687,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
             }
+
+            self.session_manager.rebuild_host_groups();
 
             // If we were showing the directory picker, switch to showing sessions
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {

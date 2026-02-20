@@ -89,47 +89,46 @@ impl<'a> SessionListUi<'a> {
     fn sessions_list_ui(&self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
         let active_id = self.session_manager.active_id();
-        let sessions = self.session_manager.sessions_ordered();
 
-        // Split into agents and chats
-        let agents: Vec<_> = sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.ai_mode == AiMode::Agentic)
-            .collect();
-        let chats: Vec<_> = sessions
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.ai_mode == AiMode::Chat)
-            .collect();
-
-        // Agents section
-        if !agents.is_empty() {
+        // Agents grouped by hostname (pre-computed, no per-frame allocation)
+        for (hostname, ids) in self.session_manager.host_groups() {
+            let label = if hostname.is_empty() {
+                "Local"
+            } else {
+                hostname
+            };
             ui.label(
-                egui::RichText::new("Agents")
+                egui::RichText::new(label)
                     .size(12.0)
                     .color(ui.visuals().weak_text_color()),
             );
             ui.add_space(4.0);
-            for (index, session) in &agents {
-                if let Some(a) = self.render_session_item(ui, session, *index, active_id) {
-                    action = Some(a);
+            for &id in ids {
+                if let Some(session) = self.session_manager.get(id) {
+                    let index = self.session_manager.session_index(id).unwrap_or(0);
+                    if let Some(a) = self.render_session_item(ui, session, index, active_id) {
+                        action = Some(a);
+                    }
                 }
             }
             ui.add_space(8.0);
         }
 
-        // Chats section
-        if !chats.is_empty() {
+        // Chats section (pre-computed IDs)
+        let chat_ids = self.session_manager.chat_ids();
+        if !chat_ids.is_empty() {
             ui.label(
                 egui::RichText::new("Chats")
                     .size(12.0)
                     .color(ui.visuals().weak_text_color()),
             );
             ui.add_space(4.0);
-            for (index, session) in &chats {
-                if let Some(a) = self.render_session_item(ui, session, *index, active_id) {
-                    action = Some(a);
+            for &id in chat_ids {
+                if let Some(session) = self.session_manager.get(id) {
+                    let index = self.session_manager.session_index(id).unwrap_or(0);
+                    if let Some(a) = self.render_session_item(ui, session, index, active_id) {
+                        action = Some(a);
+                    }
                 }
             }
         }
@@ -158,7 +157,6 @@ impl<'a> SessionListUi<'a> {
             ui,
             &session.details.title,
             cwd,
-            &session.details.hostname,
             &session.details.home_dir,
             is_active,
             shortcut_hint,
@@ -186,7 +184,6 @@ impl<'a> SessionListUi<'a> {
         ui: &mut egui::Ui,
         title: &str,
         cwd: &Path,
-        hostname: &str,
         home_dir: &str,
         is_active: bool,
         shortcut_hint: Option<usize>,
@@ -290,7 +287,7 @@ impl<'a> SessionListUi<'a> {
         // Draw cwd below title - only in Agentic mode
         if show_cwd {
             let cwd_pos = rect.left_center() + egui::vec2(text_start_x, 7.0);
-            cwd_ui(ui, cwd, hostname, home_dir, cwd_pos, max_text_width);
+            cwd_ui(ui, cwd, home_dir, cwd_pos, max_text_width);
         }
 
         response
@@ -298,24 +295,11 @@ impl<'a> SessionListUi<'a> {
 }
 
 /// Draw cwd text (monospace, weak+small) with clipping.
-/// Shows "hostname:cwd" when hostname is non-empty.
-fn cwd_ui(
-    ui: &mut egui::Ui,
-    cwd_path: &Path,
-    hostname: &str,
-    home_dir: &str,
-    pos: egui::Pos2,
-    max_width: f32,
-) {
-    let cwd_str = if home_dir.is_empty() {
+fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, home_dir: &str, pos: egui::Pos2, max_width: f32) {
+    let display_text = if home_dir.is_empty() {
         crate::path_utils::abbreviate_path(cwd_path)
     } else {
         crate::path_utils::abbreviate_with_home(cwd_path, home_dir)
-    };
-    let display_text = if hostname.is_empty() {
-        cwd_str
-    } else {
-        format!("{}:{}", hostname, cwd_str)
     };
     let cwd_font = egui::FontId::monospace(10.0);
     let cwd_color = ui.visuals().weak_text_color();

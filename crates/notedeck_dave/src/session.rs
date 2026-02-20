@@ -548,6 +548,12 @@ pub struct SessionManager {
     next_id: SessionId,
     /// Pending external editor job (only one at a time)
     pub pending_editor: Option<EditorJob>,
+    /// Cached agent grouping by hostname. Each entry is (hostname, session IDs
+    /// in recency order). Rebuilt via `rebuild_host_groups()` when sessions or
+    /// hostnames change.
+    host_groups: Vec<(String, Vec<SessionId>)>,
+    /// Cached chat session IDs in recency order. Rebuilt alongside host_groups.
+    chat_ids: Vec<SessionId>,
 }
 
 impl Default for SessionManager {
@@ -564,6 +570,8 @@ impl SessionManager {
             active: None,
             next_id: 1,
             pending_editor: None,
+            host_groups: Vec::new(),
+            chat_ids: Vec::new(),
         }
     }
 
@@ -576,6 +584,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
+        self.rebuild_host_groups();
 
         id
     }
@@ -595,6 +604,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
+        self.rebuild_host_groups();
 
         id
     }
@@ -636,6 +646,7 @@ impl SessionManager {
             if self.active == Some(id) {
                 self.active = self.order.first().copied();
             }
+            self.rebuild_host_groups();
             true
         } else {
             false
@@ -708,6 +719,49 @@ impl SessionManager {
     /// Get all session IDs
     pub fn session_ids(&self) -> Vec<SessionId> {
         self.order.clone()
+    }
+
+    /// Get cached agent session groups by hostname.
+    /// Each entry is (hostname, session IDs in recency order).
+    pub fn host_groups(&self) -> &[(String, Vec<SessionId>)] {
+        &self.host_groups
+    }
+
+    /// Get cached chat session IDs in recency order.
+    pub fn chat_ids(&self) -> &[SessionId] {
+        &self.chat_ids
+    }
+
+    /// Get a session's index in the recency-ordered list (for keyboard shortcuts).
+    pub fn session_index(&self, id: SessionId) -> Option<usize> {
+        self.order.iter().position(|&oid| oid == id)
+    }
+
+    /// Rebuild the cached hostname groups from current sessions and order.
+    /// Call after adding/removing sessions or changing a session's hostname.
+    pub fn rebuild_host_groups(&mut self) {
+        self.host_groups.clear();
+        self.chat_ids.clear();
+
+        for &id in &self.order {
+            if let Some(session) = self.sessions.get(&id) {
+                if session.ai_mode != AiMode::Agentic {
+                    if session.ai_mode == AiMode::Chat {
+                        self.chat_ids.push(id);
+                    }
+                    continue;
+                }
+                let hostname = &session.details.hostname;
+                if let Some(group) = self.host_groups.iter_mut().find(|(h, _)| h == hostname) {
+                    group.1.push(id);
+                } else {
+                    self.host_groups.push((hostname.clone(), vec![id]));
+                }
+            }
+        }
+
+        // Sort groups by hostname for stable ordering
+        self.host_groups.sort_by(|a, b| a.0.cmp(&b.0));
     }
 }
 
