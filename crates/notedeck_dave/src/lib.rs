@@ -549,21 +549,45 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     break;
                 };
 
+                // Determine the live event to publish for this response.
+                // Centralised here so every response type that needs relay
+                // propagation is handled in one place.
+                let live_event: Option<(String, &str, Option<&str>)> = match &res {
+                    DaveApiResponse::Failed(err) => Some((err.clone(), "error", None)),
+                    DaveApiResponse::ToolResult(result) => Some((
+                        format!("{}: {}", result.tool_name, result.summary),
+                        "tool_result",
+                        Some(result.tool_name.as_str()),
+                    )),
+                    DaveApiResponse::CompactionStarted => {
+                        Some((String::new(), "compaction_started", None))
+                    }
+                    DaveApiResponse::CompactionComplete(info) => {
+                        Some((info.pre_tokens.to_string(), "compaction_complete", None))
+                    }
+                    // PermissionRequest has custom event building (below).
+                    // Token, ToolCalls, SessionInfo, Subagent* don't publish.
+                    _ => None,
+                };
+
+                if let Some((content, role, tool_name)) = live_event {
+                    if let Some(sk) = &secret_key {
+                        if let Some(evt) = ingest_live_event(
+                            session,
+                            app_ctx.ndb,
+                            sk,
+                            &content,
+                            role,
+                            None,
+                            tool_name,
+                        ) {
+                            events_to_publish.push(evt);
+                        }
+                    }
+                }
+
                 match res {
                     DaveApiResponse::Failed(ref err) => {
-                        if let Some(sk) = &secret_key {
-                            if let Some(evt) = ingest_live_event(
-                                session,
-                                app_ctx.ndb,
-                                sk,
-                                err,
-                                "error",
-                                None,
-                                None,
-                            ) {
-                                events_to_publish.push(evt);
-                            }
-                        }
                         session.chat.push(Message::Error(err.to_string()));
                     }
 
@@ -677,22 +701,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                     DaveApiResponse::ToolResult(result) => {
                         tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
-
-                        // Generate live event for tool result
-                        if let Some(sk) = &secret_key {
-                            let content = format!("{}: {}", result.tool_name, result.summary);
-                            if let Some(evt) = ingest_live_event(
-                                session,
-                                app_ctx.ndb,
-                                sk,
-                                &content,
-                                "tool_result",
-                                None,
-                                Some(result.tool_name.as_str()),
-                            ) {
-                                events_to_publish.push(evt);
-                            }
-                        }
 
                         // Invalidate git status after file-modifying tools.
                         // tool_name is a String from the Claude SDK, no enum available.
@@ -1861,6 +1869,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 }
                             }
                         }
+                    }
+                    Some("compaction_started") => {
+                        agentic.is_compacting = true;
+                    }
+                    Some("compaction_complete") => {
+                        agentic.is_compacting = false;
+                        let pre_tokens = content.parse::<u64>().unwrap_or(0);
+                        let info = crate::messages::CompactionInfo { pre_tokens };
+                        agentic.last_compaction = Some(info.clone());
+                        session.chat.push(Message::CompactionComplete(info));
                     }
                     _ => {
                         // Skip progress, queue-operation, etc.
