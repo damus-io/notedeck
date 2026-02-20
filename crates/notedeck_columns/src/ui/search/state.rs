@@ -1,5 +1,6 @@
 use crate::timeline::TimelineTab;
 use enostr::Pubkey;
+use notedeck_ui::ProfileSearchResult;
 
 use super::SearchType;
 
@@ -60,6 +61,12 @@ pub struct SearchQueryState {
 
     /// Recent search history (most recent first, max 10)
     pub recent_searches: Vec<RecentSearchItem>,
+
+    /// Cached @mention search results
+    pub mention_results: Vec<ProfileSearchResult>,
+
+    /// The query string that produced `mention_results`
+    pub last_mention_query: String,
 }
 
 impl Default for SearchQueryState {
@@ -78,6 +85,8 @@ impl SearchQueryState {
             selected_index: -1,
             user_results: Vec::new(),
             recent_searches: Vec::new(),
+            mention_results: Vec::new(),
+            last_mention_query: String::new(),
         }
     }
 
