@@ -129,6 +129,16 @@ impl FocusQueue {
         }
     }
 
+    /// Remove a session from the queue only if its priority is Done.
+    pub fn dequeue_done(&mut self, session_id: SessionId) {
+        if let Some(i) = self.find(session_id) {
+            if self.entries[i].priority == FocusPriority::Done {
+                self.entries.remove(i);
+                self.normalize_cursor_after_remove(i);
+            }
+        }
+    }
+
     pub fn next(&mut self) -> Option<SessionId> {
         if self.entries.is_empty() {
             self.cursor = None;
