@@ -19,23 +19,55 @@ pub fn show_room_view(
     let available_size = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(available_size, Sense::click_and_drag());
 
-    // Update renderer target size
+    // Update renderer target size and handle input
     {
         let mut r = renderer.renderer.lock().unwrap();
         r.set_target_size((rect.width() as u32, rect.height() as u32));
 
-        // Handle mouse drag for camera orbit
+        // Handle mouse drag for camera look
         if response.dragged() {
             let delta = response.drag_delta();
             r.on_mouse_drag(delta.x, delta.y);
         }
 
-        // Handle scroll for zoom
+        // Handle scroll for speed adjustment
         if response.hover_pos().is_some() {
             let scroll = ui.input(|i| i.raw_scroll_delta.y);
             if scroll.abs() > 0.0 {
                 r.on_scroll(scroll * 0.01);
             }
+        }
+
+        // WASD + QE movement
+        let dt = ui.input(|i| i.stable_dt);
+        let mut forward = 0.0_f32;
+        let mut right = 0.0_f32;
+        let mut up = 0.0_f32;
+
+        ui.input(|i| {
+            if i.key_down(egui::Key::W) {
+                forward += 1.0;
+            }
+            if i.key_down(egui::Key::S) {
+                forward -= 1.0;
+            }
+            if i.key_down(egui::Key::D) {
+                right += 1.0;
+            }
+            if i.key_down(egui::Key::A) {
+                right -= 1.0;
+            }
+            if i.key_down(egui::Key::E) || i.key_down(egui::Key::Space) {
+                up += 1.0;
+            }
+            if i.key_down(egui::Key::Q) {
+                up -= 1.0;
+            }
+        });
+
+        if forward != 0.0 || right != 0.0 || up != 0.0 {
+            r.process_movement(forward, right, up, dt);
+            ui.ctx().request_repaint();
         }
     }
 
