@@ -6,6 +6,9 @@ version.workspace = true
 [dependencies]
 notedeck = { workspace = true }
 egui = { workspace = true }
+egui-wgpu = { workspace = true }
 enostr = { workspace = true }
+glam = { workspace = true }
 nostrdb = { workspace = true }
+renderbud = { workspace = true }
 tracing = { workspace = true }

@@ -1,13 +1,14 @@
 //! Room state management for nostrverse views
 
-use egui::Vec2;
 use enostr::Pubkey;
+use glam::{Quat, Vec3};
+use renderbud::{Model, ObjectId};
 
 /// Actions that can be triggered from the nostrverse view
 #[derive(Clone, Debug)]
 pub enum NostrverseAction {
     /// Object was moved to a new position (id, new_pos)
-    MoveObject { id: String, position: Vec2 },
+    MoveObject { id: String, position: Vec3 },
     /// Object was selected
     SelectObject(Option<String>),
     /// Request to open add object UI
@@ -41,6 +42,7 @@ pub struct Room {
     pub shape: RoomShape,
     pub width: f32,
     pub height: f32,
+    pub depth: f32,
 }
 
 impl Default for Room {
@@ -50,6 +52,7 @@ impl Default for Room {
             shape: RoomShape::Rectangle,
             width: 20.0,
             height: 15.0,
+            depth: 10.0,
         }
     }
 }
@@ -63,31 +66,55 @@ pub enum RoomShape {
     Custom,
 }
 
-/// Object in a room
+/// Object in a room - references a 3D model
 #[derive(Clone, Debug)]
 pub struct RoomObject {
     pub id: String,
     pub name: String,
-    pub shape: ObjectShape,
-    pub position: Vec2,
-    pub size: Vec2,
+    /// URL to a glTF model (None = use placeholder geometry)
+    pub model_url: Option<String>,
+    /// 3D position in world space
+    pub position: Vec3,
+    /// 3D rotation
+    pub rotation: Quat,
+    /// 3D scale
+    pub scale: Vec3,
+    /// Runtime: renderbud scene object handle
+    pub scene_object_id: Option<ObjectId>,
+    /// Runtime: loaded model handle
+    pub model_handle: Option<Model>,
 }
 
-/// Object shape types
-#[derive(Clone, Debug, Default)]
-pub enum ObjectShape {
-    #[default]
-    Rectangle,
-    Circle,
-    Triangle,
-    Icon(String),
+impl RoomObject {
+    pub fn new(id: String, name: String, position: Vec3) -> Self {
+        Self {
+            id,
+            name,
+            model_url: None,
+            position,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            scene_object_id: None,
+            model_handle: None,
+        }
+    }
+
+    pub fn with_model_url(mut self, url: String) -> Self {
+        self.model_url = Some(url);
+        self
+    }
+
+    pub fn with_scale(mut self, scale: Vec3) -> Self {
+        self.scale = scale;
+        self
+    }
 }
 
 /// User presence in a room (legacy, use RoomUser for rendering)
 #[derive(Clone, Debug)]
 pub struct Presence {
     pub pubkey: Pubkey,
-    pub position: Vec2,
+    pub position: Vec3,
     pub status: Option<String>,
 }
 
@@ -96,7 +123,7 @@ pub struct Presence {
 pub struct RoomUser {
     pub pubkey: Pubkey,
     pub display_name: String,
-    pub position: Vec2,
+    pub position: Vec3,
     /// Whether this is the current user
     pub is_self: bool,
     /// Whether this user is an AI agent
@@ -104,7 +131,7 @@ pub struct RoomUser {
 }
 
 impl RoomUser {
-    pub fn new(pubkey: Pubkey, display_name: String, position: Vec2) -> Self {
+    pub fn new(pubkey: Pubkey, display_name: String, position: Vec3) -> Self {
         Self {
             pubkey,
             display_name,
@@ -123,31 +150,9 @@ impl RoomUser {
         self.is_agent = is_agent;
         self
     }
-
-    /// Derive a color from the pubkey for consistent user coloring
-    pub fn derive_color(&self) -> egui::Color32 {
-        let hex = self.pubkey.hex();
-        // Use first 6 chars of hex as RGB
-        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(128);
-        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(128);
-        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(128);
-        // Brighten colors to ensure visibility
-        let brighten = |c: u8| ((c as u16 + 128) / 2) as u8 + 64;
-        egui::Color32::from_rgb(brighten(r), brighten(g), brighten(b))
-    }
-
-    /// Get first character for avatar initial
-    pub fn initial(&self) -> char {
-        self.display_name
-            .chars()
-            .next()
-            .unwrap_or('?')
-            .to_ascii_uppercase()
-    }
 }
 
 /// State for a nostrverse view
-#[derive(Clone, Debug)]
 pub struct NostrverseState {
     /// Reference to the room being viewed
     pub room_ref: RoomRef,
@@ -155,20 +160,10 @@ pub struct NostrverseState {
     pub room: Option<Room>,
     /// Objects in the room
     pub objects: Vec<RoomObject>,
-    /// User presences (legacy)
-    pub presences: Vec<Presence>,
     /// Users currently in the room
     pub users: Vec<RoomUser>,
-
-    // View state
-    /// Camera offset (pan)
-    pub camera_offset: Vec2,
-    /// Zoom level (1.0 = 100%)
-    pub zoom: f32,
     /// Currently selected object ID
     pub selected_object: Option<String>,
-    /// Object currently being dragged (ID and original position)
-    pub dragging_object: Option<(String, Vec2)>,
     /// Whether we're in edit mode
     pub edit_mode: bool,
 }
@@ -179,12 +174,8 @@ impl NostrverseState {
             room_ref,
             room: None,
             objects: Vec::new(),
-            presences: Vec::new(),
             users: Vec::new(),
-            camera_offset: Vec2::ZERO,
-            zoom: 1.0,
             selected_object: None,
-            dragging_object: None,
             edit_mode: false,
         }
     }
@@ -203,28 +194,8 @@ impl NostrverseState {
         self.users.retain(|u| &u.pubkey != pubkey);
     }
 
-    /// Get a user by pubkey
-    pub fn get_user(&self, pubkey: &Pubkey) -> Option<&RoomUser> {
-        self.users.iter().find(|u| &u.pubkey == pubkey)
-    }
-
     /// Get a mutable reference to an object by ID
     pub fn get_object_mut(&mut self, id: &str) -> Option<&mut RoomObject> {
         self.objects.iter_mut().find(|o| o.id == id)
-    }
-
-    /// World coordinates to screen coordinates
-    pub fn world_to_screen(&self, world_pos: Vec2, canvas_center: Vec2) -> Vec2 {
-        (world_pos - self.camera_offset) * self.zoom * 20.0 + canvas_center
-    }
-
-    /// Screen coordinates to world coordinates
-    pub fn screen_to_world(&self, screen_pos: Vec2, canvas_center: Vec2) -> Vec2 {
-        (screen_pos - canvas_center) / (self.zoom * 20.0) + self.camera_offset
-    }
-
-    /// Handle zoom (clamp to reasonable range)
-    pub fn zoom_by(&mut self, delta: f32) {
-        self.zoom = (self.zoom * (1.0 + delta * 0.1)).clamp(0.1, 5.0);
     }
 }

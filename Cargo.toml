@@ -56,6 +56,7 @@ ewebsock = { version = "0.2.0", features = ["tls"] }
 fluent = "0.17.0"
 fluent-resmgr = "0.0.8"
 fluent-langneg = "0.13"
+glam = { version = "0.30", features = ["bytemuck"] }
 hex = { version = "0.4.3", features = ["serde"] }
 image = { version = "0.25", features = ["jpeg", "png", "webp"] }
 indexmap = "2.6.0"
@@ -75,6 +76,7 @@ notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
+renderbud = { path = "../github/jb55/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }
 tokenator = { path = "crates/tokenator" }
 md-stream = { path = "crates/md-stream" }

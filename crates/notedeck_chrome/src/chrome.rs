@@ -184,7 +184,7 @@ impl Chrome {
 
         #[cfg(feature = "nostrverse")]
         chrome.add_app(NotedeckApp::Nostrverse(Box::new(
-            notedeck_nostrverse::NostrverseApp::demo(),
+            notedeck_nostrverse::NostrverseApp::demo(cc.wgpu_render_state.as_ref()),
         )));
 
         chrome.set_active(0);
