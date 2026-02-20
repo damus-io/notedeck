@@ -236,6 +236,14 @@ pub fn handle_permission_response(
             is_remote,
             Some(response),
         );
+
+        // Optimistically set remote status to Working so the phone doesn't
+        // have to wait for the full round-trip (phone→relay→desktop→relay→phone)
+        // before auto-steal can move on. The desktop will publish the real
+        // status once it processes the permission response.
+        if is_remote {
+            agentic.remote_status = Some(crate::agent_status::AgentStatus::Working);
+        }
     }
 
     Some(PermissionPublish {
@@ -353,6 +361,11 @@ pub fn handle_question_response(
             is_remote,
             Some(oneshot_response),
         );
+
+        // Optimistically set remote status to Working (same as permission response)
+        if is_remote {
+            agentic.remote_status = Some(crate::agent_status::AgentStatus::Working);
+        }
     }
 
     Some(PermissionPublish {
