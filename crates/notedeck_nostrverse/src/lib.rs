@@ -193,16 +193,37 @@ impl NostrverseApp {
             .with_agent(true),
         ];
 
+        // Assign the bottle model as avatar placeholder for all users
+        if let Some(model) = bottle {
+            for user in &mut self.state.users {
+                user.model_handle = Some(model);
+            }
+        }
+
+        // Switch to third-person camera mode centered on the self-user
+        if let Some(renderer) = &self.renderer {
+            let self_pos = self
+                .state
+                .users
+                .iter()
+                .find(|u| u.is_self)
+                .map(|u| u.position)
+                .unwrap_or(Vec3::ZERO);
+            let mut r = renderer.renderer.lock().unwrap();
+            r.set_third_person_mode(self_pos);
+        }
+
         self.initialized = true;
     }
 
-    /// Sync room objects to the renderbud scene
+    /// Sync room objects and user avatars to the renderbud scene
     fn sync_scene(&mut self) {
         let Some(renderer) = &self.renderer else {
             return;
         };
         let mut r = renderer.renderer.lock().unwrap();
 
+        // Sync room objects
         for obj in &mut self.state.objects {
             let transform = Transform {
                 translation: obj.position,
@@ -211,14 +232,45 @@ impl NostrverseApp {
             };
 
             if let Some(scene_id) = obj.scene_object_id {
-                // Update existing object's transform
                 r.update_object_transform(scene_id, transform);
             } else if let Some(model) = obj.model_handle {
-                // Place new object in scene
                 let scene_id = r.place_object(model, transform);
                 obj.scene_object_id = Some(scene_id);
             }
-            // If model_handle is None, model hasn't loaded yet (Phase 3)
+        }
+
+        // Read avatar position/yaw from the third-person controller
+        let avatar_pos = r.avatar_position();
+        let avatar_yaw = r.avatar_yaw();
+
+        // Update self-user's position from the controller
+        if let Some(pos) = avatar_pos {
+            if let Some(self_user) = self.state.users.iter_mut().find(|u| u.is_self) {
+                self_user.position = pos;
+            }
+        }
+
+        // Sync all user avatars to the scene
+        let bottle_scale = 5.0_f32;
+        for user in &mut self.state.users {
+            let yaw = if user.is_self {
+                avatar_yaw.unwrap_or(0.0)
+            } else {
+                0.0
+            };
+
+            let transform = Transform {
+                translation: user.position,
+                rotation: glam::Quat::from_rotation_y(yaw),
+                scale: Vec3::splat(bottle_scale),
+            };
+
+            if let Some(scene_id) = user.scene_object_id {
+                r.update_object_transform(scene_id, transform);
+            } else if let Some(model) = user.model_handle {
+                let scene_id = r.place_object(model, transform);
+                user.scene_object_id = Some(scene_id);
+            }
         }
     }
 

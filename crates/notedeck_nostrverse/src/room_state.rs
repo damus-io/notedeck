@@ -128,6 +128,10 @@ pub struct RoomUser {
     pub is_self: bool,
     /// Whether this user is an AI agent
     pub is_agent: bool,
+    /// Runtime: renderbud scene object handle for avatar
+    pub scene_object_id: Option<ObjectId>,
+    /// Runtime: loaded model handle for avatar
+    pub model_handle: Option<Model>,
 }
 
 impl RoomUser {
@@ -138,6 +142,8 @@ impl RoomUser {
             position,
             is_self: false,
             is_agent: false,
+            scene_object_id: None,
+            model_handle: None,
         }
     }
 
