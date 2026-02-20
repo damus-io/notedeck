@@ -63,7 +63,7 @@ md5 = "0.7.0"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip44", "nip49"] }
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
-nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "9aeecd3c4576be0b34df87c26e334e87a39d57e5" }
+nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "8c1af378d1c296abfccb9a11ce5a3ae48f857be6" }
 #nostrdb = "0.6.1"
 notedeck = { path = "crates/notedeck" }
 notedeck_chrome = { path = "crates/notedeck_chrome" }
