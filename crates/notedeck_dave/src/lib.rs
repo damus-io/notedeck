@@ -927,7 +927,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let (dave_response, view_action) = ui::scene_ui(
             &mut self.session_manager,
             &mut self.scene,
-            &self.focus_queue,
+            &mut self.focus_queue,
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal_focus,
@@ -981,6 +981,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::NewSession => return DaveResponse::new(DaveAction::NewChat),
                 SessionListAction::SwitchTo(id) => {
                     self.session_manager.switch_to(id);
+                    self.focus_queue.dequeue(id);
                 }
                 SessionListAction::Delete(id) => {
                     self.delete_session(id);
@@ -1013,6 +1014,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::SwitchTo(id) => {
                     self.session_manager.switch_to(id);
+                    self.focus_queue.dequeue(id);
                     self.show_session_list = false;
                 }
                 SessionListAction::Delete(id) => {
