@@ -23,6 +23,7 @@ mod post;
 mod profile;
 mod repost;
 mod route;
+mod scoped_sub_owner_keys;
 mod search;
 mod subscriptions;
 mod support;
