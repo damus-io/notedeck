@@ -428,7 +428,7 @@ fn self_chat_bubble(
     timestamp: u64,
 ) -> egui::Response {
     let bubble_fill = ui.visuals().selection.bg_fill;
-    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+    let r = ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
         chat_bubble(ui, msg_type, true, bubble_fill, |ui| {
             ui.with_layout(Layout::top_down(Align::Max), |ui| {
                 ui.add(
@@ -448,8 +448,14 @@ fn self_chat_bubble(
             })
         })
         .inner
-    })
-    .response
+    });
+    r.response.context_menu(|ui| {
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(message.to_owned());
+            ui.close_menu();
+        }
+    });
+    r.response
 }
 
 fn other_chat_bubble(
@@ -459,46 +465,59 @@ fn other_chat_bubble(
     msg_type: MessageType,
 ) -> egui::Response {
     let message = chat_msg.message;
+    let message_owned = message.to_owned();
     let bubble_fill = ui.visuals().extreme_bg_color;
     let text_color = ui.visuals().text_color();
     let secondary_color = ui.visuals().weak_text_color();
 
-    chat_bubble(ui, msg_type, false, bubble_fill, |ui| {
-        ui.vertical(|ui| {
-            if msg_type == MessageType::FirstInSeries || msg_type == MessageType::Standalone {
-                ui.label(
-                    RichText::new(sender_name.name())
-                        .strong()
-                        .color(secondary_color),
-                );
-                ui.add_space(2.0);
-            }
-
-            ui.with_layout(
-                Layout::left_to_right(Align::Max).with_main_wrap(true),
-                |ui| {
-                    ui.add(
-                        egui::Label::new(RichText::new(message).color(text_color)).selectable(true),
+    let r = ui.scope(|ui| {
+        chat_bubble(ui, msg_type, false, bubble_fill, |ui| {
+            ui.vertical(|ui| {
+                if msg_type == MessageType::FirstInSeries || msg_type == MessageType::Standalone {
+                    ui.label(
+                        RichText::new(sender_name.name())
+                            .strong()
+                            .color(secondary_color),
                     );
-                    if msg_type == MessageType::Standalone || msg_type == MessageType::LastInSeries
-                    {
-                        ui.add_space(6.0);
-                        let timestamp_label =
-                            format_timestamp_label(&local_datetime_from_nostr(chat_msg.created_at));
+                    ui.add_space(2.0);
+                }
+
+                ui.with_layout(
+                    Layout::left_to_right(Align::Max).with_main_wrap(true),
+                    |ui| {
                         ui.add(
-                            egui::Label::new(
-                                RichText::new(timestamp_label)
-                                    .small()
-                                    .color(secondary_color),
-                            )
-                            .wrap_mode(egui::TextWrapMode::Extend),
+                            egui::Label::new(RichText::new(message).color(text_color))
+                                .selectable(true),
                         );
-                    }
-                },
-            );
+                        if msg_type == MessageType::Standalone
+                            || msg_type == MessageType::LastInSeries
+                        {
+                            ui.add_space(6.0);
+                            let timestamp_label = format_timestamp_label(
+                                &local_datetime_from_nostr(chat_msg.created_at),
+                            );
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(timestamp_label)
+                                        .small()
+                                        .color(secondary_color),
+                                )
+                                .wrap_mode(egui::TextWrapMode::Extend),
+                            );
+                        }
+                    },
+                );
+            })
+            .response
         })
-        .response
-    })
+    });
+    r.response.context_menu(|ui| {
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(message_owned.clone());
+            ui.close_menu();
+        }
+    });
+    r.response
 }
 
 /// An unfortunate hack to change the corner radius of a TextEdit...
