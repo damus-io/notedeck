@@ -1,0 +1,11 @@
+[package]
+name = "notedeck_nostrverse"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+notedeck = { workspace = true }
+egui = { workspace = true }
+enostr = { workspace = true }
+nostrdb = { workspace = true }
+tracing = { workspace = true }

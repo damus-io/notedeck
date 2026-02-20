@@ -4048,6 +4048,7 @@ dependencies = [
  "notedeck_dashboard",
  "notedeck_dave",
  "notedeck_messages",
+ "notedeck_nostrverse",
  "notedeck_notebook",
  "notedeck_ui",
  "objc2 0.5.2",
@@ -4213,6 +4214,17 @@ dependencies = [
  "tempfile",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "notedeck_nostrverse"
+version = "0.7.1"
+dependencies = [
+ "egui",
+ "enostr",
+ "nostrdb",
+ "notedeck",
+ "tracing",
 ]
 
 [[package]]

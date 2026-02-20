@@ -8,6 +8,7 @@ members = [
     "crates/notedeck_dave",
     "crates/notedeck_messages",
     "crates/notedeck_notebook",
+    "crates/notedeck_nostrverse",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
     "crates/notedeck_dashboard",
@@ -73,6 +74,7 @@ notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
+notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 notedeck_ui = { path = "crates/notedeck_ui" }
 tokenator = { path = "crates/tokenator" }
 md-stream = { path = "crates/md-stream" }
