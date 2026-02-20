@@ -7,6 +7,7 @@ use crate::{
     ui::{note::PostType, search::FocusState},
     Error,
 };
+use notedeck_ui::ProfileSearchResult;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -24,6 +25,7 @@ pub struct MentionHint {
     pub index: usize,
     pub pos: egui::Pos2,
     pub text: String,
+    pub results: Vec<ProfileSearchResult>,
 }
 
 #[derive(Default)]

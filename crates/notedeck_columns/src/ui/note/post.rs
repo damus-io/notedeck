@@ -25,7 +25,7 @@ use notedeck_ui::{
     app_images,
     context_menu::{input_context, PasteBehavior},
     note::render_note_preview,
-    NoteOptions, ProfilePic,
+    search_profiles, NoteOptions, ProfilePic,
 };
 use tracing::error;
 #[cfg(not(target_os = "android"))]
@@ -278,19 +278,38 @@ impl<'a, 'd> PostView<'a, 'd> {
         let mention_str = self.draft.buffer.get_mention_string(&mention);
 
         if !mention_str.is_empty() {
-            if let Some(mention_hint) = &mut self.draft.cur_mention_hint {
-                if mention_hint.index != mention.index {
-                    mention_hint.index = mention.index;
-                    mention_hint.pos =
+            let text_changed;
+            if let Some(hint) = &mut self.draft.cur_mention_hint {
+                text_changed = hint.text != mention_str;
+                if hint.index != mention.index {
+                    hint.index = mention.index;
+                    hint.pos =
                         calculate_mention_hints_pos(textedit_output, mention.info.start_index);
                 }
-                mention_hint.text = mention_str.to_owned();
+                if text_changed {
+                    hint.text = mention_str.to_owned();
+                }
             } else {
+                text_changed = true;
                 self.draft.cur_mention_hint = Some(MentionHint {
                     index: mention.index,
                     text: mention_str.to_owned(),
                     pos: calculate_mention_hints_pos(textedit_output, mention.info.start_index),
+                    results: Vec::new(),
                 });
+            }
+
+            if text_changed {
+                let contacts = self
+                    .note_context
+                    .accounts
+                    .get_selected_account()
+                    .data
+                    .contacts
+                    .get_state();
+                let hint = self.draft.cur_mention_hint.as_mut().unwrap();
+                hint.results =
+                    search_profiles(self.note_context.ndb, txn, &hint.text, contacts, 128);
             }
         }
 
@@ -304,18 +323,15 @@ impl<'a, 'd> PostView<'a, 'd> {
             hint_rect
         };
 
-        let res = self
-            .note_context
-            .ndb
-            .search_profile(txn, mention_str, 10)
-            .ok()?;
+        let hint = self.draft.cur_mention_hint.as_ref().unwrap();
 
         let resp = MentionPickerView::new(
             self.note_context.img_cache,
             self.note_context.ndb,
             txn,
-            &res,
+            &hint.results,
             self.note_context.jobs,
+            self.note_context.i18n,
         )
         .show_in_rect(hint_rect, ui);
 
@@ -328,14 +344,15 @@ impl<'a, 'd> PostView<'a, 'd> {
         match out {
             ui::mentions_picker::MentionPickerResponse::SelectResult(selection) => {
                 if let Some(hint_index) = selection {
-                    if let Some(pk) = res.get(hint_index) {
-                        let record = self.note_context.ndb.get_profile_by_pubkey(txn, pk);
+                    let hint = self.draft.cur_mention_hint.as_ref().unwrap();
+                    if let Some(result) = hint.results.get(hint_index) {
+                        let record = self.note_context.ndb.get_profile_by_pubkey(txn, &result.pk);
 
                         if let Some(made_selection) =
                             self.draft.buffer.select_mention_and_replace_name(
                                 mention.index,
                                 get_display_name(record.ok().as_ref()).name(),
-                                Pubkey::new(**pk),
+                                Pubkey::new(result.pk),
                             )
                         {
                             selection_made = Some(made_selection);

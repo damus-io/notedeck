@@ -214,6 +214,7 @@ where
 }
 
 /// A profile search result.
+#[derive(Debug)]
 pub struct ProfileSearchResult {
     /// The public key bytes of the matched profile.
     pub pk: [u8; 32],

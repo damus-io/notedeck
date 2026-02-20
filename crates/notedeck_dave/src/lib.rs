@@ -31,7 +31,10 @@ use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
-use notedeck::{try_process_events_core, ui::is_narrow, AppAction, AppContext, AppResponse};
+use notedeck::{
+    timed_serializer::TimedSerializer, try_process_events_core, ui::is_narrow, AppAction,
+    AppContext, AppResponse, DataPath, DataPathType,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::string::ToString;
@@ -149,6 +152,8 @@ pub struct Dave {
     hostname: String,
     /// PNS relay URL (configurable via DAVE_RELAY env or settings UI).
     pns_relay_url: String,
+    /// Persists DaveSettings to dave_settings.json
+    settings_serializer: TimedSerializer<DaveSettings>,
 }
 
 use update::PermissionPublish;
@@ -299,9 +304,25 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ))
     }
 
-    pub fn new(render_state: Option<&RenderState>, ndb: nostrdb::Ndb, ctx: egui::Context) -> Self {
-        let model_config = ModelConfig::default();
-        //let model_config = ModelConfig::ollama();
+    pub fn new(
+        render_state: Option<&RenderState>,
+        ndb: nostrdb::Ndb,
+        ctx: egui::Context,
+        path: &DataPath,
+    ) -> Self {
+        let settings_serializer =
+            TimedSerializer::new(path, DataPathType::Setting, "dave_settings.json".to_owned());
+
+        // Load saved settings, falling back to env-var-based defaults
+        let (model_config, settings) = if let Some(saved_settings) = settings_serializer.get_item()
+        {
+            let config = ModelConfig::from_settings(&saved_settings);
+            (config, saved_settings)
+        } else {
+            let config = ModelConfig::default();
+            let settings = DaveSettings::from_model_config(&config);
+            (config, settings)
+        };
 
         // Determine AI mode from backend type
         let ai_mode = model_config.ai_mode();
@@ -329,7 +350,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools.insert(tool.name().to_string(), tool);
         }
 
-        let settings = DaveSettings::from_model_config(&model_config);
         let pns_relay_url = model_config
             .pns_relay
             .clone()
@@ -388,6 +408,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_summaries: Vec::new(),
             hostname,
             pns_relay_url,
+            settings_serializer,
         }
     }
 
@@ -396,13 +417,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         &self.settings
     }
 
-    /// Apply new settings. Note: Provider changes require app restart to take effect.
+    /// Apply new settings and persist to disk.
+    /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
         self.model_config = ModelConfig::from_settings(&settings);
         self.pns_relay_url = settings
             .pns_relay
             .clone()
             .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string());
+        self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
 
@@ -927,7 +950,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let (dave_response, view_action) = ui::scene_ui(
             &mut self.session_manager,
             &mut self.scene,
-            &self.focus_queue,
+            &mut self.focus_queue,
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal_focus,
@@ -981,6 +1004,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::NewSession => return DaveResponse::new(DaveAction::NewChat),
                 SessionListAction::SwitchTo(id) => {
                     self.session_manager.switch_to(id);
+                    self.focus_queue.dequeue(id);
                 }
                 SessionListAction::Delete(id) => {
                     self.delete_session(id);
@@ -1013,6 +1037,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::SwitchTo(id) => {
                     self.session_manager.switch_to(id);
+                    self.focus_queue.dequeue(id);
                     self.show_session_list = false;
                 }
                 SessionListAction::Delete(id) => {

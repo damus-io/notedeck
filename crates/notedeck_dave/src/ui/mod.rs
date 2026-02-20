@@ -208,7 +208,7 @@ pub enum SceneViewAction {
 pub fn scene_ui(
     session_manager: &mut SessionManager,
     scene: &mut AgentScene,
-    focus_queue: &FocusQueue,
+    focus_queue: &mut FocusQueue,
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
@@ -294,6 +294,7 @@ pub fn scene_ui(
                 SceneAction::SelectionChanged(ids) => {
                     if let Some(id) = ids.first() {
                         session_manager.switch_to(*id);
+                        focus_queue.dequeue(*id);
                     }
                 }
                 SceneAction::SpawnAgent => {

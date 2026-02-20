@@ -159,6 +159,7 @@ impl Chrome {
             cc.wgpu_render_state.as_ref(),
             context.ndb.clone(),
             cc.egui_ctx.clone(),
+            context.path,
         );
         let mut chrome = Chrome::default();
 

@@ -574,17 +574,14 @@ pub fn process_auto_steal_focus(
                 tracing::debug!("Auto-steal: saved home session {:?}", home_session);
             }
 
-            // Jump to first Done item and clear it from the queue
+            // Jump to first Done item (keep in queue so blue dot renders;
+            // cleared when user manually focuses the session)
             if let Some(idx) = focus_queue.first_done_index() {
                 focus_queue.set_cursor(idx);
                 if let Some(entry) = focus_queue.current() {
                     let sid = entry.session_id;
                     switch_and_focus_session(session_manager, scene, show_scene, sid);
-                    focus_queue.dequeue(sid);
-                    tracing::debug!(
-                        "Auto-steal: switched to Done session {:?} and cleared indicator",
-                        sid
-                    );
+                    tracing::debug!("Auto-steal: switched to Done session {:?}", sid);
                     return true;
                 }
             }

@@ -1,14 +1,7 @@
-use egui::{vec2, FontId, Layout, Pos2, Rect, ScrollArea, UiBuilder, Vec2b};
-use nostrdb::{Ndb, ProfileRecord, Transaction};
-use notedeck::{
-    fonts::get_font_size, name::get_display_name, profile::get_profile_url, DragResponse, Images,
-    MediaJobSender, NotedeckTextStyle,
-};
-use notedeck_ui::{
-    anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
-    widgets::x_button,
-    ProfilePic,
-};
+use egui::{vec2, Layout, ScrollArea, UiBuilder, Vec2b};
+use nostrdb::{Ndb, Transaction};
+use notedeck::{DragResponse, Images, Localization, MediaJobSender};
+use notedeck_ui::{profile_row, widgets::x_button, ProfileSearchResult};
 use tracing::error;
 
 /// Displays user profiles for the user to pick from.
@@ -17,8 +10,9 @@ pub struct MentionPickerView<'a> {
     ndb: &'a Ndb,
     txn: &'a Transaction,
     img_cache: &'a mut Images,
-    results: &'a Vec<&'a [u8; 32]>,
+    results: &'a [ProfileSearchResult],
     jobs: &'a MediaJobSender,
+    i18n: &'a mut Localization,
 }
 
 pub enum MentionPickerResponse {
@@ -31,8 +25,9 @@ impl<'a> MentionPickerView<'a> {
         img_cache: &'a mut Images,
         ndb: &'a Ndb,
         txn: &'a Transaction,
-        results: &'a Vec<&'a [u8; 32]>,
+        results: &'a [ProfileSearchResult],
         jobs: &'a MediaJobSender,
+        i18n: &'a mut Localization,
     ) -> Self {
         Self {
             ndb,
@@ -40,25 +35,30 @@ impl<'a> MentionPickerView<'a> {
             img_cache,
             results,
             jobs,
+            i18n,
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, width: f32) -> MentionPickerResponse {
+    fn show(&mut self, ui: &mut egui::Ui) -> MentionPickerResponse {
         let mut selection = None;
         ui.vertical(|ui| {
             for (i, res) in self.results.iter().enumerate() {
-                let profile = match self.ndb.get_profile_by_pubkey(self.txn, res) {
+                let profile = match self.ndb.get_profile_by_pubkey(self.txn, &res.pk) {
                     Ok(rec) => rec,
                     Err(e) => {
-                        error!("Error fetching profile for pubkey {:?}: {e}", res);
+                        error!("Error fetching profile for pubkey {:?}: {e}", res.pk);
                         return;
                     }
                 };
 
-                if ui
-                    .add(user_result(&profile, self.img_cache, self.jobs, i, width))
-                    .clicked()
-                {
+                if profile_row(
+                    ui,
+                    Some(&profile),
+                    res.is_contact,
+                    self.img_cache,
+                    self.jobs,
+                    self.i18n,
+                ) {
                     selection = Some(i)
                 }
             }
@@ -82,11 +82,10 @@ impl<'a> MentionPickerView<'a> {
                 egui::Frame::NONE
                     .fill(ui.visuals().panel_fill)
                     .show(ui, |ui| {
-                        let width = rect.width() - (2.0 * inner_margin_size);
-
                         ui.allocate_space(vec2(ui.available_width(), inner_margin_size));
                         let close_button_resp = {
                             let close_button_size = 16.0;
+                            let width = rect.width() - (2.0 * inner_margin_size);
                             let (close_section_rect, _) = ui.allocate_exact_size(
                                 vec2(width, close_button_size),
                                 egui::Sense::hover(),
@@ -109,7 +108,7 @@ impl<'a> MentionPickerView<'a> {
                         let scroll_resp = ScrollArea::vertical()
                             .max_width(rect.width())
                             .auto_shrink(Vec2b::FALSE)
-                            .show(ui, |ui| Some(self.show(ui, width)));
+                            .show(ui, |ui| Some(self.show(ui)));
                         ui.advance_cursor_after_rect(rect);
 
                         DragResponse::scroll(scroll_resp).map_output(|o| {
@@ -124,70 +123,5 @@ impl<'a> MentionPickerView<'a> {
             });
 
         area_resp.inner
-    }
-}
-
-fn user_result<'a>(
-    profile: &'a ProfileRecord<'_>,
-    cache: &'a mut Images,
-    jobs: &'a MediaJobSender,
-    index: usize,
-    width: f32,
-) -> impl egui::Widget + 'a {
-    move |ui: &mut egui::Ui| -> egui::Response {
-        let min_img_size = 48.0;
-        let max_image = min_img_size * ICON_EXPANSION_MULTIPLE;
-        let spacing = 8.0;
-        let body_font_size = get_font_size(ui.ctx(), &NotedeckTextStyle::Body);
-
-        let animation_rect = {
-            let max_width = ui.available_width();
-            let extra_width = (max_width - width) / 2.0;
-            let left = ui.cursor().left();
-            let (rect, _) =
-                ui.allocate_exact_size(vec2(width + extra_width, max_image), egui::Sense::click());
-
-            let (_, right) = rect.split_left_right_at_x(left + extra_width);
-            right
-        };
-
-        let helper = AnimationHelper::new_from_rect(ui, ("user_result", index), animation_rect);
-
-        let icon_rect = {
-            let r = helper.get_animation_rect();
-            let mut center = r.center();
-            center.x = r.left() + (max_image / 2.0);
-            let size = helper.scale_1d_pos(min_img_size);
-            Rect::from_center_size(center, vec2(size, size))
-        };
-
-        let pfp_resp = ui.put(
-            icon_rect,
-            &mut ProfilePic::new(cache, jobs, get_profile_url(Some(profile)))
-                .size(helper.scale_1d_pos(min_img_size)),
-        );
-
-        let name_font = FontId::new(
-            helper.scale_1d_pos(body_font_size),
-            NotedeckTextStyle::Body.font_family(),
-        );
-        let painter = ui.painter_at(helper.get_animation_rect());
-        let name_galley = painter.layout(
-            get_display_name(Some(profile)).name().to_owned(),
-            name_font,
-            ui.visuals().text_color(),
-            width,
-        );
-
-        let galley_pos = {
-            let right_top = pfp_resp.rect.right_top();
-            let galley_pos_y = pfp_resp.rect.center().y - (name_galley.rect.height() / 2.0);
-            Pos2::new(right_top.x + spacing, galley_pos_y)
-        };
-
-        painter.galley(galley_pos, name_galley, ui.visuals().text_color());
-        ui.advance_cursor_after_rect(helper.get_animation_rect());
-
-        pfp_resp.union(helper.take_animation_response())
     }
 }
