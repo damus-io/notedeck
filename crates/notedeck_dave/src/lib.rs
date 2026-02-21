@@ -66,6 +66,15 @@ pub use vec3::Vec3;
 /// Default relay URL used for PNS event publishing and subscription.
 const DEFAULT_PNS_RELAY: &str = "ws://relay.jb55.com/";
 
+/// Normalize a relay URL to always have a trailing slash.
+fn normalize_relay_url(url: String) -> String {
+    if url.ends_with('/') {
+        url
+    } else {
+        url + "/"
+    }
+}
+
 /// Extract a 32-byte secret key from a keypair.
 fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
     keypair.secret_key.map(|sk| {
@@ -350,10 +359,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools.insert(tool.name().to_string(), tool);
         }
 
-        let pns_relay_url = model_config
-            .pns_relay
-            .clone()
-            .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string());
+        let pns_relay_url = normalize_relay_url(
+            model_config
+                .pns_relay
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string()),
+        );
 
         let directory_picker = DirectoryPicker::new();
 
@@ -422,10 +433,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
         self.model_config = ModelConfig::from_settings(&settings);
-        self.pns_relay_url = settings
-            .pns_relay
-            .clone()
-            .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string());
+        self.pns_relay_url = normalize_relay_url(
+            settings
+                .pns_relay
+                .clone()
+                .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string()),
+        );
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
