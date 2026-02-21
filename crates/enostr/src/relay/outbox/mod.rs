@@ -664,6 +664,43 @@ mod tests {
         assert!(matches!(new_task, CoordinationTask::CompactionSub));
     }
 
+    /// Base delay doubles on each attempt until it reaches the configured cap.
+    #[test]
+    fn reconnect_base_delay_doubles_with_cap() {
+        assert_eq!(base_reconnect_delay(0), Duration::from_secs(5));
+        assert_eq!(base_reconnect_delay(1), Duration::from_secs(10));
+        assert_eq!(base_reconnect_delay(2), Duration::from_secs(20));
+        assert_eq!(base_reconnect_delay(3), Duration::from_secs(40));
+        assert_eq!(base_reconnect_delay(4), Duration::from_secs(80));
+        assert_eq!(base_reconnect_delay(5), Duration::from_secs(160));
+        assert_eq!(base_reconnect_delay(6), Duration::from_secs(320));
+        assert_eq!(base_reconnect_delay(7), Duration::from_secs(640));
+        assert_eq!(base_reconnect_delay(8), Duration::from_secs(1280));
+        assert_eq!(base_reconnect_delay(9), MAX_RECONNECT_DELAY);
+        // Saturates at cap for any large attempt count.
+        assert_eq!(base_reconnect_delay(100), MAX_RECONNECT_DELAY);
+    }
+
+    /// Jittered delay is always >= the base and never exceeds base * 1.25 or the cap.
+    #[test]
+    fn reconnect_jitter_within_bounds() {
+        for attempt in [0u32, 1, 3, 8, 9, 50, 100] {
+            let base = base_reconnect_delay(attempt);
+            let max_with_jitter = (base + (base / 4)).min(MAX_RECONNECT_DELAY);
+            for sample in 0u64..20 {
+                let jittered = next_reconnect_duration(attempt, 0xBAD5EED ^ sample);
+                assert!(
+                    jittered >= base,
+                    "jittered {jittered:?} < base {base:?} at attempt {attempt}"
+                );
+                assert!(
+                    jittered <= max_with_jitter,
+                    "jittered {jittered:?} exceeds max-with-jitter {max_with_jitter:?} at attempt {attempt}"
+                );
+            }
+        }
+    }
+
     /// Oneshot requests route to compaction mode by default.
     #[test]
     fn oneshot_routes_to_compaction() {
