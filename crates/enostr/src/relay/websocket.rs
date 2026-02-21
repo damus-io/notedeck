@@ -120,6 +120,8 @@ pub struct WebsocketRelay {
     pub last_ping: Instant,
     pub last_connect_attempt: Instant,
     pub retry_connect_after: Duration,
+    /// Number of consecutive failed reconnect attempts. Reset to 0 on successful connection.
+    pub reconnect_attempt: u32,
 }
 
 impl WebsocketRelay {
@@ -129,6 +131,7 @@ impl WebsocketRelay {
             last_ping: Instant::now(),
             last_connect_attempt: Instant::now(),
             retry_connect_after: Self::initial_reconnect_duration(),
+            reconnect_attempt: 0,
         }
     }
 

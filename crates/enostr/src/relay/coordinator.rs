@@ -265,6 +265,8 @@ impl CoordinationData {
         let msg = match &event {
             WsEvent::Opened => {
                 websocket.conn.set_status(RelayStatus::Connected);
+                websocket.reconnect_attempt = 0;
+                websocket.retry_connect_after = WebsocketRelay::initial_reconnect_duration();
                 handle_relay_open(
                     websocket,
                     &mut self.broadcast_cache,

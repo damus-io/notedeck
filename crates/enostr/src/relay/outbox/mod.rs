@@ -1,7 +1,8 @@
 use hashbrown::{hash_map::RawEntryMut, HashMap, HashSet};
 use nostrdb::{Filter, Note};
 use std::{
-    collections::BTreeMap,
+    collections::{hash_map::DefaultHasher, BTreeMap},
+    hash::{Hash, Hasher},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,6 +24,43 @@ pub use handler::OutboxSessionHandler;
 pub use session::OutboxSession;
 
 const KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
+const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30 * 60); // 30 minutes
+
+/// Computes the deterministic base delay for a given attempt number.
+/// Formula: `5s * 2^attempt`, capped at [`MAX_RECONNECT_DELAY`].
+fn base_reconnect_delay(attempt: u32) -> Duration {
+    let secs = 5u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    Duration::from_secs(secs).min(MAX_RECONNECT_DELAY)
+}
+
+fn reconnect_jitter_seed(relay_url: &nostr::RelayUrl, attempt: u32) -> u64 {
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let mut hasher = DefaultHasher::new();
+    relay_url.hash(&mut hasher);
+    attempt.hash(&mut hasher);
+    now_nanos.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Returns the reconnect delay for the given attempt count.
+///
+/// Uses the exponential base delay as the primary component and adds up to 25%
+/// additive jitter (via relay/time mixed seed) to spread out simultaneous
+/// reconnects without undermining the exponential delay itself.
+fn next_reconnect_duration(attempt: u32, jitter_seed: u64) -> Duration {
+    let base = base_reconnect_delay(attempt);
+    let jitter_ceiling = base / 4;
+    let jitter = if jitter_ceiling.is_zero() {
+        Duration::ZERO
+    } else {
+        let jitter_ceiling_nanos = jitter_ceiling.as_nanos() as u64;
+        Duration::from_nanos(jitter_seed % jitter_ceiling_nanos)
+    };
+    (base + jitter).min(MAX_RECONNECT_DELAY)
+}
 
 /// OutboxPool owns the active relay coordinators and applies staged subscription
 /// mutations to them each frame.
@@ -270,11 +308,15 @@ impl OutboxPool {
                         websocket.last_connect_attempt + websocket.retry_connect_after;
                     if now > reconnect_at {
                         websocket.last_connect_attempt = now;
-                        let next_duration = Duration::from_millis(3000);
+                        websocket.reconnect_attempt = websocket.reconnect_attempt.saturating_add(1);
+                        let jitter_seed =
+                            reconnect_jitter_seed(&websocket.conn.url, websocket.reconnect_attempt);
+                        let next_duration =
+                            next_reconnect_duration(websocket.reconnect_attempt, jitter_seed);
                         tracing::debug!(
-                            "bumping reconnect duration from {:?} to {:?} and retrying connect",
-                            websocket.retry_connect_after,
-                            next_duration
+                            "reconnect attempt {}, backing off for {:?}",
+                            websocket.reconnect_attempt,
+                            next_duration,
                         );
                         websocket.retry_connect_after = next_duration;
                         if let Err(err) = websocket.conn.connect(wakeup.clone()) {
@@ -283,6 +325,7 @@ impl OutboxPool {
                     }
                 }
                 RelayStatus::Connected => {
+                    websocket.reconnect_attempt = 0;
                     websocket.retry_connect_after = WebsocketRelay::initial_reconnect_duration();
 
                     let should_ping = now - websocket.last_ping > KEEPALIVE_PING_RATE;
