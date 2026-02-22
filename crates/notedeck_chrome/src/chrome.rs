@@ -183,6 +183,11 @@ impl Chrome {
         #[cfg(feature = "clndash")]
         chrome.add_app(NotedeckApp::ClnDash(Box::default()));
 
+        #[cfg(feature = "nostrverse")]
+        chrome.add_app(NotedeckApp::Nostrverse(Box::new(
+            notedeck_nostrverse::NostrverseApp::demo(cc.wgpu_render_state.as_ref()),
+        )));
+
         chrome.set_active(0);
 
         Ok(chrome)
@@ -840,6 +845,12 @@ fn topdown_sidebar(
 
             #[cfg(feature = "clndash")]
             NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(_) => {
+                tr!(loc, "Nostrverse", "Button to go to the Nostrverse app")
+            }
+
             NotedeckApp::Other(_) => tr!(loc, "Other", "Button to go to the Other app"),
         };
 
@@ -885,6 +896,11 @@ fn topdown_sidebar(
                                 #[cfg(feature = "notebook")]
                                 NotedeckApp::Notebook(_notebook) => {
                                     notebook_button(ui);
+                                }
+
+                                #[cfg(feature = "nostrverse")]
+                                NotedeckApp::Nostrverse(_nostrverse) => {
+                                    ui.add(app_images::universe_image());
                                 }
 
                                 NotedeckApp::Other(_other) => {

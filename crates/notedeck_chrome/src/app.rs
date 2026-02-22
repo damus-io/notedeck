@@ -15,6 +15,9 @@ use notedeck_dashboard::Dashboard;
 #[cfg(feature = "notebook")]
 use notedeck_notebook::Notebook;
 
+#[cfg(feature = "nostrverse")]
+use notedeck_nostrverse::NostrverseApp;
+
 #[allow(clippy::large_enum_variant)]
 pub enum NotedeckApp {
     Dave(Box<Dave>),
@@ -32,6 +35,8 @@ pub enum NotedeckApp {
     #[cfg(feature = "dashboard")]
     Dashboard(Box<Dashboard>),
 
+    #[cfg(feature = "nostrverse")]
+    Nostrverse(Box<NostrverseApp>),
     Other(Box<dyn notedeck::App>),
 }
 
@@ -53,6 +58,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "dashboard")]
             NotedeckApp::Dashboard(db) => db.update(ctx, ui),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.update(ctx, ui),
 
             NotedeckApp::Other(other) => other.update(ctx, ui),
         }
