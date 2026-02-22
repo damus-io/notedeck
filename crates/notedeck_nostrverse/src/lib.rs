@@ -13,9 +13,10 @@ mod room_view;
 mod subscriptions;
 
 pub use room_state::{
-    NostrverseAction, NostrverseState, Room, RoomObject, RoomRef, RoomShape, RoomUser,
+    NostrverseAction, NostrverseState, Room, RoomObject, RoomObjectType, RoomRef, RoomShape,
+    RoomUser,
 };
-pub use room_view::{NostrverseResponse, render_inspection_panel, show_room_view};
+pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
 use enostr::Pubkey;
 use glam::Vec3;
@@ -186,12 +187,20 @@ impl NostrverseApp {
         self.initialized = true;
     }
 
+    /// Apply a parsed Space to the room state: convert, load models, update state.
+    fn apply_space(&mut self, space: &protoverse::Space) {
+        let (room, mut objects) = convert::convert_space(space);
+        self.state.room = Some(room);
+        self.load_object_models(&mut objects);
+        self.state.objects = objects;
+        self.state.dirty = false;
+    }
+
     /// Load room state from a nostrdb query result.
     fn load_room_from_ndb(&mut self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) {
         let notes = subscriptions::RoomSubscription::query_existing(ndb, txn);
 
         for note in &notes {
-            // Find the room matching our room_ref
             let Some(room_id) = nostr_events::get_room_id(note) else {
                 continue;
             };
@@ -204,16 +213,27 @@ impl NostrverseApp {
                 continue;
             };
 
-            let (room, mut objects) = convert::convert_space(&space);
-            self.state.room = Some(room);
-
-            // Load models and compute placement
-            self.load_object_models(&mut objects);
-            self.state.objects = objects;
-
+            self.apply_space(&space);
             tracing::info!("Loaded room '{}' from nostrdb", room_id);
             return;
         }
+    }
+
+    /// Save current room state: build Space, serialize, ingest as new nostr event.
+    fn save_room(&self, ctx: &mut AppContext<'_>) {
+        let Some(room) = &self.state.room else {
+            tracing::warn!("save_room: no room to save");
+            return;
+        };
+        let Some(kp) = ctx.accounts.selected_filled() else {
+            tracing::warn!("save_room: no keypair available");
+            return;
+        };
+
+        let space = convert::build_space(room, &self.state.objects);
+        let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
+        nostr_events::ingest_room_event(builder, ctx.ndb, kp);
+        tracing::info!("Saved room '{}'", self.state.room_ref.id);
     }
 
     /// Load 3D models for objects and handle AABB-based placement.
@@ -256,7 +276,11 @@ impl NostrverseApp {
     }
 
     /// Poll the room subscription for updates.
+    /// Skips applying updates while the room has unsaved local edits.
     fn poll_room_updates(&mut self, ndb: &nostrdb::Ndb) {
+        if self.state.dirty {
+            return;
+        }
         let Some(sub) = &self.room_sub else {
             return;
         };
@@ -275,10 +299,7 @@ impl NostrverseApp {
                 continue;
             };
 
-            let (room, mut objects) = convert::convert_space(&space);
-            self.state.room = Some(room);
-            self.load_object_models(&mut objects);
-            self.state.objects = objects;
+            self.apply_space(&space);
             tracing::info!("Room '{}' updated from nostrdb", room_id);
         }
     }
@@ -381,13 +402,13 @@ impl notedeck::App for NostrverseApp {
 
         // Get available size before layout
         let available = ui.available_size();
+        let panel_width = 240.0;
 
-        // Main layout with room view and optional inspection panel
+        // Main layout: 3D view + editing panel
         ui.allocate_ui(available, |ui| {
             ui.horizontal(|ui| {
-                // Reserve space for panel if needed
-                let room_width = if self.state.selected_object.is_some() {
-                    available.x - 200.0
+                let room_width = if self.state.edit_mode {
+                    available.x - panel_width
                 } else {
                     available.x
                 };
@@ -396,16 +417,8 @@ impl notedeck::App for NostrverseApp {
                     if let Some(renderer) = &self.renderer {
                         let response = show_room_view(ui, &mut self.state, renderer);
 
-                        // Handle actions from room view
                         if let Some(action) = response.action {
-                            match action {
-                                NostrverseAction::MoveObject { id, position } => {
-                                    tracing::info!("Object {} moved to {:?}", id, position);
-                                }
-                                NostrverseAction::SelectObject(selected) => {
-                                    self.state.selected_object = selected;
-                                }
-                            }
+                            self.handle_action(action, ctx);
                         }
                     } else {
                         ui.centered_and_justified(|ui| {
@@ -414,13 +427,11 @@ impl notedeck::App for NostrverseApp {
                     }
                 });
 
-                // Inspection panel when object selected
-                if self.state.selected_object.is_some() {
-                    ui.allocate_ui(egui::vec2(200.0, available.y), |ui| {
-                        if let Some(action) = render_inspection_panel(ui, &mut self.state)
-                            && let NostrverseAction::SelectObject(None) = action
-                        {
-                            self.state.selected_object = None;
+                // Editing panel (always visible in edit mode)
+                if self.state.edit_mode {
+                    ui.allocate_ui(egui::vec2(panel_width, available.y), |ui| {
+                        if let Some(action) = render_editing_panel(ui, &mut self.state) {
+                            self.handle_action(action, ctx);
                         }
                     });
                 }
@@ -428,5 +439,36 @@ impl notedeck::App for NostrverseApp {
         });
 
         AppResponse::none()
+    }
+}
+
+impl NostrverseApp {
+    fn handle_action(&mut self, action: NostrverseAction, ctx: &mut AppContext<'_>) {
+        match action {
+            NostrverseAction::MoveObject { id, position } => {
+                if let Some(obj) = self.state.get_object_mut(&id) {
+                    obj.position = position;
+                    self.state.dirty = true;
+                }
+            }
+            NostrverseAction::SelectObject(selected) => {
+                self.state.selected_object = selected;
+            }
+            NostrverseAction::SaveRoom => {
+                self.save_room(ctx);
+                self.state.dirty = false;
+            }
+            NostrverseAction::AddObject(obj) => {
+                self.state.objects.push(obj);
+                self.state.dirty = true;
+            }
+            NostrverseAction::RemoveObject(id) => {
+                self.state.objects.retain(|o| o.id != id);
+                if self.state.selected_object.as_ref() == Some(&id) {
+                    self.state.selected_object = None;
+                }
+                self.state.dirty = true;
+            }
+        }
     }
 }

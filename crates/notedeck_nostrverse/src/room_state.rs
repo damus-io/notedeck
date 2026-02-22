@@ -11,6 +11,12 @@ pub enum NostrverseAction {
     MoveObject { id: String, position: Vec3 },
     /// Object was selected
     SelectObject(Option<String>),
+    /// Room or object was edited, needs re-ingest
+    SaveRoom,
+    /// A new object was added
+    AddObject(RoomObject),
+    /// An object was removed
+    RemoveObject(String),
 }
 
 /// Reference to a nostrverse room
@@ -64,11 +70,25 @@ pub enum RoomShape {
     Custom,
 }
 
+/// Protoverse object type, preserved for round-trip serialization
+#[derive(Clone, Debug, Default)]
+pub enum RoomObjectType {
+    Table,
+    Chair,
+    Door,
+    Light,
+    #[default]
+    Prop,
+    Custom(String),
+}
+
 /// Object in a room - references a 3D model
 #[derive(Clone, Debug)]
 pub struct RoomObject {
     pub id: String,
     pub name: String,
+    /// Protoverse cell type (table, chair, prop, etc.)
+    pub object_type: RoomObjectType,
     /// URL to a glTF model (None = use placeholder geometry)
     pub model_url: Option<String>,
     /// 3D position in world space
@@ -88,6 +108,7 @@ impl RoomObject {
         Self {
             id,
             name,
+            object_type: RoomObjectType::Prop,
             model_url: None,
             position,
             rotation: Quat::IDENTITY,
@@ -95,6 +116,11 @@ impl RoomObject {
             scene_object_id: None,
             model_handle: None,
         }
+    }
+
+    pub fn with_object_type(mut self, object_type: RoomObjectType) -> Self {
+        self.object_type = object_type;
+        self
     }
 
     pub fn with_model_url(mut self, url: String) -> Self {
@@ -156,6 +182,8 @@ pub struct NostrverseState {
     pub edit_mode: bool,
     /// Smoothed avatar yaw for lerped rotation
     pub smooth_avatar_yaw: f32,
+    /// Room has unsaved edits
+    pub dirty: bool,
 }
 
 impl NostrverseState {
@@ -166,8 +194,9 @@ impl NostrverseState {
             objects: Vec::new(),
             users: Vec::new(),
             selected_object: None,
-            edit_mode: false,
+            edit_mode: true,
             smooth_avatar_yaw: 0.0,
+            dirty: false,
         }
     }
 
