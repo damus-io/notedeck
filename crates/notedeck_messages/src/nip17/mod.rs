@@ -313,3 +313,73 @@ pub fn parse_chat_message<'a>(note: &Note<'a>) -> Option<Nip17ChatMessage<'a>> {
         created_at: note.created_at(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nostrdb::NoteBuilder;
+
+    fn relay_note(relays: &[&str]) -> Note<'static> {
+        let signer = FullKeypair::generate();
+        let mut builder = NoteBuilder::new().kind(10050).content("");
+        for relay in relays {
+            builder = builder.start_tag().tag_str("relay").tag_str(relay);
+        }
+
+        builder
+            .sign(&signer.secret_key.secret_bytes())
+            .build()
+            .expect("relay note")
+    }
+
+    /// Verifies the relay-list filter targets kind `10050`, the participant author, and limit `1`.
+    #[test]
+    fn participant_dm_relay_list_filter_is_stable() {
+        let participant = Pubkey::new([0x22; 32]);
+        let actual = participant_dm_relay_list_filter(&participant);
+        let expected = FilterBuilder::new()
+            .kinds([10050])
+            .authors([participant.bytes()])
+            .limit(1)
+            .build();
+
+        assert_eq!(
+            actual.json().expect("actual filter json"),
+            expected.json().expect("expected filter json")
+        );
+    }
+
+    /// Verifies relay parsing ignores invalid URLs and deduplicates repeated relay tags.
+    #[test]
+    fn parse_dm_relay_list_relays_dedupes_and_skips_invalid_urls() {
+        let note = relay_note(&[
+            "wss://relay-a.example.com",
+            "notaurl",
+            "wss://relay-a.example.com",
+            "wss://relay-b.example.com",
+        ]);
+
+        let parsed = parse_dm_relay_list_relays(&note);
+        assert_eq!(parsed.len(), 2);
+
+        let actual: HashSet<NormRelayUrl> = HashSet::from_iter(parsed);
+        let expected = HashSet::from_iter(
+            ["wss://relay-a.example.com", "wss://relay-b.example.com"]
+                .into_iter()
+                .map(|relay| NormRelayUrl::new(relay).expect("norm relay")),
+        );
+
+        assert_eq!(actual, expected);
+    }
+
+    /// Verifies default DM relay-list note construction emits kind `10050` and relay tags.
+    #[test]
+    fn build_default_dm_relay_list_note_contains_default_relays() {
+        let signer = FullKeypair::generate();
+        let note = build_default_dm_relay_list_note(&signer.secret_key).expect("relay list note");
+
+        assert_eq!(note.kind(), 10050);
+        let urls = parse_dm_relay_list_relays(&note);
+        assert!(!urls.is_empty());
+    }
+}
