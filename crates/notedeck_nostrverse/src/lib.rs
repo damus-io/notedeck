@@ -243,10 +243,10 @@ impl NostrverseApp {
         let avatar_yaw = r.avatar_yaw();
 
         // Update self-user's position from the controller
-        if let Some(pos) = avatar_pos {
-            if let Some(self_user) = self.state.users.iter_mut().find(|u| u.is_self) {
-                self_user.position = pos;
-            }
+        if let Some(pos) = avatar_pos
+            && let Some(self_user) = self.state.users.iter_mut().find(|u| u.is_self)
+        {
+            self_user.position = pos;
         }
 
         // Sync all user avatars to the scene

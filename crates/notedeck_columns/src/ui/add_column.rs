@@ -40,6 +40,17 @@ pub enum AddColumnResponse {
     ExternalIndividual,
 }
 
+struct SelectionHandler<'a> {
+    cur_account: &'a UserAccount,
+    to_response: fn(Pubkey, &UserAccount) -> AddColumnResponse,
+}
+
+impl<'a> SelectionHandler<'a> {
+    fn response(&self, pubkey: Pubkey) -> AddColumnResponse {
+        (self.to_response)(pubkey, self.cur_account)
+    }
+}
+
 pub enum NotificationColumnType {
     Contacts,
     External,
@@ -354,8 +365,10 @@ impl<'a> AddColumnView<'a> {
                 self.ndb,
                 self.img_cache,
                 self.i18n,
-                self.cur_account,
-                to_response,
+                &SelectionHandler {
+                    cur_account: self.cur_account,
+                    to_response,
+                },
             )
         } else {
             self.key_state_map.remove(&id);
@@ -688,8 +701,7 @@ fn contacts_list_column_ui(
     ndb: &Ndb,
     img_cache: &mut Images,
     i18n: &mut Localization,
-    cur_account: &UserAccount,
-    to_response: fn(Pubkey, &UserAccount) -> AddColumnResponse,
+    handler: &SelectionHandler<'_>,
 ) -> Option<AddColumnResponse> {
     let ContactState::Received {
         contacts: contact_set,
@@ -703,7 +715,7 @@ fn contacts_list_column_ui(
     let resp = ContactsListView::new(contact_set, jobs, ndb, img_cache, &txn, i18n).ui(ui);
 
     resp.output.map(|a| match a {
-        notedeck_ui::ContactsListAction::Select(pubkey) => to_response(pubkey, cur_account),
+        notedeck_ui::ContactsListAction::Select(pubkey) => handler.response(pubkey),
     })
 }
 
