@@ -10,7 +10,7 @@ mod room_state;
 mod room_view;
 
 pub use room_state::{
-    NostrverseAction, NostrverseState, Presence, Room, RoomObject, RoomRef, RoomShape, RoomUser,
+    NostrverseAction, NostrverseState, Room, RoomObject, RoomRef, RoomShape, RoomUser,
 };
 pub use room_view::{NostrverseResponse, render_inspection_panel, show_room_view};
 
@@ -20,6 +20,21 @@ use notedeck::{AppContext, AppResponse};
 use renderbud::Transform;
 
 use egui_wgpu::wgpu;
+
+/// Demo pubkey (jb55) used for testing
+const DEMO_PUBKEY_HEX: &str = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245";
+const FALLBACK_PUBKEY_HEX: &str =
+    "0000000000000000000000000000000000000000000000000000000000000001";
+
+fn demo_pubkey() -> Pubkey {
+    Pubkey::from_hex(DEMO_PUBKEY_HEX)
+        .unwrap_or_else(|_| Pubkey::from_hex(FALLBACK_PUBKEY_HEX).unwrap())
+}
+
+/// Avatar scale: water bottle model is ~0.26m, scaled to human height (~1.8m)
+const AVATAR_SCALE: f32 = 7.0;
+/// How fast the avatar yaw lerps toward the target (higher = faster)
+const AVATAR_YAW_LERP_SPEED: f32 = 10.0;
 
 /// Event kinds for nostrverse
 pub mod kinds {
@@ -43,6 +58,8 @@ pub struct NostrverseApp {
     queue: Option<wgpu::Queue>,
     /// Whether the app has been initialized with demo data
     initialized: bool,
+    /// Cached avatar model AABB for ground placement
+    avatar_bounds: Option<renderbud::Aabb>,
 }
 
 impl NostrverseApp {
@@ -59,21 +76,13 @@ impl NostrverseApp {
             device,
             queue,
             initialized: false,
+            avatar_bounds: None,
         }
     }
 
     /// Create with a demo room
     pub fn demo(render_state: Option<&egui_wgpu::RenderState>) -> Self {
-        let demo_pubkey =
-            Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
-                .unwrap_or_else(|_| {
-                    Pubkey::from_hex(
-                        "0000000000000000000000000000000000000000000000000000000000000001",
-                    )
-                    .unwrap()
-                });
-
-        let room_ref = RoomRef::new("demo-room".to_string(), demo_pubkey);
+        let room_ref = RoomRef::new("demo-room".to_string(), demo_pubkey());
         Self::new(room_ref, render_state)
     }
 
@@ -149,18 +158,13 @@ impl NostrverseApp {
         self.state.objects = vec![obj1, obj2];
 
         // Add self user
-        let self_pubkey =
-            Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
-                .unwrap_or_else(|_| {
-                    Pubkey::from_hex(
-                        "0000000000000000000000000000000000000000000000000000000000000001",
-                    )
-                    .unwrap()
-                });
-
         self.state.users = vec![
-            RoomUser::new(self_pubkey, "jb55".to_string(), Vec3::new(-2.0, 0.0, -2.0))
-                .with_self(true),
+            RoomUser::new(
+                demo_pubkey(),
+                "jb55".to_string(),
+                Vec3::new(-2.0, 0.0, -2.0),
+            )
+            .with_self(true),
         ];
 
         // Assign the bottle model as avatar placeholder for all users
@@ -169,6 +173,7 @@ impl NostrverseApp {
                 user.model_handle = Some(model);
             }
         }
+        self.avatar_bounds = bottle_bounds;
 
         // Switch to third-person camera mode centered on the self-user
         if let Some(renderer) = &self.renderer {
@@ -221,22 +226,20 @@ impl NostrverseApp {
         }
 
         // Sync all user avatars to the scene
-        // Water bottle is ~0.26m; scale to human height (~1.8m)
-        let avatar_scale = 7.0_f32;
-        // Raise avatar by half its scaled height so it sits on the ground
-        let avatar_y_offset = 0.13 * avatar_scale;
+        let avatar_half_h = self
+            .avatar_bounds
+            .map(|b| (b.max.y - b.min.y) * 0.5)
+            .unwrap_or(0.0);
+        let avatar_y_offset = avatar_half_h * AVATAR_SCALE;
 
-        // Smoothly lerp avatar yaw toward target (avoids snapping)
+        // Smoothly lerp avatar yaw toward target
         if let Some(target_yaw) = avatar_yaw {
             let current = self.state.smooth_avatar_yaw;
-            // Compute shortest angular difference
             let mut diff = target_yaw - current;
-            // Wrap to [-PI, PI]
             diff = (diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
                 - std::f32::consts::PI;
-            let lerp_speed = 10.0_f32; // higher = faster rotation
-            let dt = 1.0 / 60.0; // approximate frame dt
-            let t = (lerp_speed * dt).min(1.0);
+            let dt = 1.0 / 60.0;
+            let t = (AVATAR_YAW_LERP_SPEED * dt).min(1.0);
             self.state.smooth_avatar_yaw = current + diff * t;
         }
 
@@ -250,7 +253,7 @@ impl NostrverseApp {
             let transform = Transform {
                 translation: user.position + Vec3::new(0.0, avatar_y_offset, 0.0),
                 rotation: glam::Quat::from_rotation_y(yaw),
-                scale: Vec3::splat(avatar_scale),
+                scale: Vec3::splat(AVATAR_SCALE),
             };
 
             if let Some(scene_id) = user.scene_object_id {
@@ -306,9 +309,6 @@ impl notedeck::App for NostrverseApp {
                                 }
                                 NostrverseAction::SelectObject(selected) => {
                                     self.state.selected_object = selected;
-                                }
-                                NostrverseAction::OpenAddObject => {
-                                    // TODO: Open add object dialog
                                 }
                             }
                         }

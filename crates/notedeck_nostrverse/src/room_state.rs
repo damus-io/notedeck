@@ -11,8 +11,6 @@ pub enum NostrverseAction {
     MoveObject { id: String, position: Vec3 },
     /// Object was selected
     SelectObject(Option<String>),
-    /// Request to open add object UI
-    OpenAddObject,
 }
 
 /// Reference to a nostrverse room
@@ -110,14 +108,6 @@ impl RoomObject {
     }
 }
 
-/// User presence in a room (legacy, use RoomUser for rendering)
-#[derive(Clone, Debug)]
-pub struct Presence {
-    pub pubkey: Pubkey,
-    pub position: Vec3,
-    pub status: Option<String>,
-}
-
 /// A user present in a room (for rendering)
 #[derive(Clone, Debug)]
 pub struct RoomUser {
@@ -126,8 +116,6 @@ pub struct RoomUser {
     pub position: Vec3,
     /// Whether this is the current user
     pub is_self: bool,
-    /// Whether this user is an AI agent
-    pub is_agent: bool,
     /// Runtime: renderbud scene object handle for avatar
     pub scene_object_id: Option<ObjectId>,
     /// Runtime: loaded model handle for avatar
@@ -141,7 +129,6 @@ impl RoomUser {
             display_name,
             position,
             is_self: false,
-            is_agent: false,
             scene_object_id: None,
             model_handle: None,
         }
@@ -149,11 +136,6 @@ impl RoomUser {
 
     pub fn with_self(mut self, is_self: bool) -> Self {
         self.is_self = is_self;
-        self
-    }
-
-    pub fn with_agent(mut self, is_agent: bool) -> Self {
-        self.is_agent = is_agent;
         self
     }
 }
