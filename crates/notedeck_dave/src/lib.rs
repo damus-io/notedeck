@@ -1853,6 +1853,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 .request_note_ids
                                 .insert(perm_id, *note.id());
 
+                            // Parse plan markdown for ExitPlanMode requests
+                            let cached_plan = if tool_name == "ExitPlanMode" {
+                                tool_input
+                                    .get("plan")
+                                    .and_then(|v| v.as_str())
+                                    .map(crate::messages::ParsedMarkdown::parse)
+                            } else {
+                                None
+                            };
+
                             session.chat.push(Message::PermissionRequest(
                                 crate::messages::PermissionRequest {
                                     id: perm_id,
@@ -1860,7 +1870,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     tool_input,
                                     response,
                                     answer_summary: None,
-                                    cached_plan: None,
+                                    cached_plan,
                                 },
                             ));
                         }

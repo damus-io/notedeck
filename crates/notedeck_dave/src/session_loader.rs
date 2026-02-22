@@ -195,13 +195,23 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                         None
                     };
 
+                    // Parse plan markdown for ExitPlanMode requests
+                    let cached_plan = if tool_name == "ExitPlanMode" {
+                        tool_input
+                            .get("plan")
+                            .and_then(|v| v.as_str())
+                            .map(crate::messages::ParsedMarkdown::parse)
+                    } else {
+                        None
+                    };
+
                     Some(Message::PermissionRequest(PermissionRequest {
                         id: perm_id,
                         tool_name,
                         tool_input,
                         response,
                         answer_summary: None,
-                        cached_plan: None,
+                        cached_plan,
                     }))
                 } else {
                     None
