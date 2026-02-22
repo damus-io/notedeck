@@ -743,5 +743,25 @@ pub fn handle_ui_action(
                 UiActionResult::PublishPermissionResponse,
             )
         }
+        DaveAction::CompactAndApprove { request_id } => {
+            update::exit_plan_mode(session_manager, backend, ctx);
+            let result = update::handle_permission_response(
+                session_manager,
+                request_id,
+                PermissionResponse::Allow {
+                    message: Some("/compact".into()),
+                },
+            );
+            if let Some(session) = session_manager.get_active_mut() {
+                if let Some(agentic) = &mut session.agentic {
+                    agentic.compact_and_proceed =
+                        crate::session::CompactAndProceedState::WaitingForCompaction;
+                }
+            }
+            result.map_or(
+                UiActionResult::Handled,
+                UiActionResult::PublishPermissionResponse,
+            )
+        }
     }
 }

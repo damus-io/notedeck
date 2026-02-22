@@ -37,6 +37,23 @@ pub struct SessionDetails {
     pub home_dir: String,
 }
 
+/// Tracks the "Compact & Approve" lifecycle.
+///
+/// Button click → `WaitingForCompaction` (intent recorded).
+/// CompactionComplete → `ReadyToProceed` (compaction finished, safe to send).
+/// Stream-end (local) or compaction_complete event (remote) → consume and fire.
+#[derive(Default, Clone, Copy, PartialEq)]
+pub enum CompactAndProceedState {
+    /// No compact-and-proceed in progress.
+    #[default]
+    Idle,
+    /// User clicked "Compact & Approve"; waiting for compaction to finish.
+    WaitingForCompaction,
+    /// Compaction finished; send "Proceed" on the next safe opportunity
+    /// (stream-end for local, immediately for remote).
+    ReadyToProceed,
+}
+
 /// State for permission response with message
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum PermissionMessageState {
@@ -182,6 +199,8 @@ pub struct AgenticSessionData {
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
     pub seen_note_ids: HashSet<[u8; 32]>,
+    /// Tracks the "Compact & Approve" lifecycle.
+    pub compact_and_proceed: CompactAndProceedState,
 }
 
 impl AgenticSessionData {
@@ -214,6 +233,7 @@ impl AgenticSessionData {
             remote_status_ts: 0,
             live_conversation_sub: None,
             seen_note_ids: HashSet::new(),
+            compact_and_proceed: CompactAndProceedState::Idle,
         }
     }
 
@@ -789,6 +809,28 @@ impl ChatSession {
     /// This catches user messages that arrived while we were streaming.
     pub fn needs_redispatch_after_stream_end(&self) -> bool {
         !self.is_streaming() && self.has_pending_user_message()
+    }
+
+    /// If "Compact & Approve" has reached ReadyToProceed, consume the state,
+    /// push a "Proceed" user message, and return true.
+    ///
+    /// Called from:
+    /// - Local sessions: at stream-end in process_events()
+    /// - Remote sessions: on compaction_complete in poll_remote_conversation_events()
+    pub fn take_compact_and_proceed(&mut self) -> bool {
+        let dominated = self
+            .agentic
+            .as_ref()
+            .is_none_or(|a| a.compact_and_proceed != CompactAndProceedState::ReadyToProceed);
+
+        if dominated {
+            return false;
+        }
+
+        self.agentic.as_mut().unwrap().compact_and_proceed = CompactAndProceedState::Idle;
+        self.chat
+            .push(Message::User("Proceed with implementing the plan.".into()));
+        true
     }
 }
 
