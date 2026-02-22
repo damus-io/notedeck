@@ -172,6 +172,8 @@ pub struct NostrverseState {
     pub selected_object: Option<String>,
     /// Whether we're in edit mode
     pub edit_mode: bool,
+    /// Smoothed avatar yaw for lerped rotation
+    pub smooth_avatar_yaw: f32,
 }
 
 impl NostrverseState {
@@ -183,6 +185,7 @@ impl NostrverseState {
             users: Vec::new(),
             selected_object: None,
             edit_mode: false,
+            smooth_avatar_yaw: 0.0,
         }
     }
 

@@ -148,8 +148,8 @@ impl NostrverseApp {
 
         self.state.objects = vec![obj1, obj2];
 
-        // Add demo users
-        let user1_pubkey =
+        // Add self user
+        let self_pubkey =
             Pubkey::from_hex("32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245")
                 .unwrap_or_else(|_| {
                     Pubkey::from_hex(
@@ -158,38 +158,9 @@ impl NostrverseApp {
                     .unwrap()
                 });
 
-        let user2_pubkey =
-            Pubkey::from_hex("fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52")
-                .unwrap_or_else(|_| {
-                    Pubkey::from_hex(
-                        "0000000000000000000000000000000000000000000000000000000000000002",
-                    )
-                    .unwrap()
-                });
-
-        let agent_pubkey =
-            Pubkey::from_hex("ee11a5dff40c19a555f41fe42b48f00e618c91225622ae37b6c2bb67b76c4e49")
-                .unwrap_or_else(|_| {
-                    Pubkey::from_hex(
-                        "0000000000000000000000000000000000000000000000000000000000000003",
-                    )
-                    .unwrap()
-                });
-
         self.state.users = vec![
-            RoomUser::new(user1_pubkey, "jb55".to_string(), Vec3::new(-2.0, 0.0, -2.0))
+            RoomUser::new(self_pubkey, "jb55".to_string(), Vec3::new(-2.0, 0.0, -2.0))
                 .with_self(true),
-            RoomUser::new(
-                user2_pubkey,
-                "fiatjaf".to_string(),
-                Vec3::new(3.0, 0.0, 1.0),
-            ),
-            RoomUser::new(
-                agent_pubkey,
-                "Claude".to_string(),
-                Vec3::new(-5.0, 0.0, 4.0),
-            )
-            .with_agent(true),
         ];
 
         // Assign the bottle model as avatar placeholder for all users
@@ -252,15 +223,32 @@ impl NostrverseApp {
         // Sync all user avatars to the scene
         // Water bottle is ~0.26m; scale to human height (~1.8m)
         let avatar_scale = 7.0_f32;
+        // Raise avatar by half its scaled height so it sits on the ground
+        let avatar_y_offset = 0.13 * avatar_scale;
+
+        // Smoothly lerp avatar yaw toward target (avoids snapping)
+        if let Some(target_yaw) = avatar_yaw {
+            let current = self.state.smooth_avatar_yaw;
+            // Compute shortest angular difference
+            let mut diff = target_yaw - current;
+            // Wrap to [-PI, PI]
+            diff = (diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+                - std::f32::consts::PI;
+            let lerp_speed = 10.0_f32; // higher = faster rotation
+            let dt = 1.0 / 60.0; // approximate frame dt
+            let t = (lerp_speed * dt).min(1.0);
+            self.state.smooth_avatar_yaw = current + diff * t;
+        }
+
         for user in &mut self.state.users {
             let yaw = if user.is_self {
-                avatar_yaw.unwrap_or(0.0)
+                self.state.smooth_avatar_yaw
             } else {
                 0.0
             };
 
             let transform = Transform {
-                translation: user.position,
+                translation: user.position + Vec3::new(0.0, avatar_y_offset, 0.0),
                 rotation: glam::Quat::from_rotation_y(yaw),
                 scale: Vec3::splat(avatar_scale),
             };
