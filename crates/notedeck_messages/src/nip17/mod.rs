@@ -1,6 +1,7 @@
 pub mod message;
 
-use enostr::{FullKeypair, Pubkey, SecretKey};
+use enostr::{FullKeypair, NormRelayUrl, Pubkey, SecretKey};
+use hashbrown::HashSet;
 pub use message::send_conversation_message;
 pub use nostr::secp256k1::rand::rngs::OsRng;
 use nostr::secp256k1::rand::Rng;
@@ -10,7 +11,7 @@ use nostr::{
     nips::nip44,
     util::JsonUtil,
 };
-use nostrdb::{Filter, FilterBuilder, Note, NoteBuilder};
+use nostrdb::{Filter, FilterBuilder, Ndb, Note, NoteBuilder, Transaction};
 use notedeck::get_p_tags;
 
 fn build_rumor_json(
@@ -167,6 +168,102 @@ pub fn chatroom_filter(participants: Vec<&[u8; 32]>, me: &[u8; 32]) -> Vec<Filte
         .authors(participants.clone())
         .pubkey([me])
         .build()]
+}
+
+/// Builds a filter for one participant's kind `10050` DM relay list.
+pub fn participant_dm_relay_list_filter(participant: &Pubkey) -> Filter {
+    FilterBuilder::new()
+        .kinds([10050])
+        .authors([participant.bytes()])
+        .limit(1)
+        .build()
+}
+
+/// Returns `true` when `note` is a kind `10050` DM relay-list authored by `participant`.
+pub fn is_participant_dm_relay_list(note: &Note<'_>, participant: &Pubkey) -> bool {
+    note.kind() == 10050 && note.pubkey() == participant.bytes()
+}
+
+/// Queries NDB for presence of one participant's kind `10050` DM relay list.
+pub fn has_participant_dm_relay_list(ndb: &Ndb, txn: &Transaction, participant: &Pubkey) -> bool {
+    let filter = participant_dm_relay_list_filter(participant);
+    let Ok(results) = ndb.query(txn, std::slice::from_ref(&filter), 1) else {
+        return false;
+    };
+
+    !results.is_empty()
+}
+
+/// Default relay URLs used when creating a new kind `10050` DM relay-list note.
+pub fn default_dm_relay_urls() -> &'static [&'static str] {
+    &["wss://relay.damus.io", "wss://nos.lol"]
+}
+
+/// Builds a signed kind `10050` DM relay-list note using default relay URLs.
+pub fn build_default_dm_relay_list_note(sender_secret: &SecretKey) -> Option<Note<'static>> {
+    let mut builder = NoteBuilder::new().kind(10050).content("");
+
+    for relay in default_dm_relay_urls() {
+        builder = builder.start_tag().tag_str("relay").tag_str(relay);
+    }
+
+    builder.sign(&sender_secret.secret_bytes()).build()
+}
+
+/// Parses a kind `10050` note into unique websocket relay URLs.
+pub fn parse_dm_relay_list_relays(note: &Note<'_>) -> Vec<NormRelayUrl> {
+    if note.kind() != 10050 {
+        return Vec::new();
+    }
+
+    let mut seen = HashSet::new();
+    let mut relays = Vec::new();
+
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        let Some("relay") = tag.get_str(0) else {
+            continue;
+        };
+
+        let Some(url) = tag.get_str(1) else {
+            continue;
+        };
+
+        let Ok(norm_url) = NormRelayUrl::new(url) else {
+            continue;
+        };
+
+        if !seen.insert(norm_url.clone()) {
+            continue;
+        }
+
+        relays.push(norm_url);
+    }
+
+    relays
+}
+
+/// Queries NDB for one participant's latest kind `10050` relay list.
+///
+/// Returns explicit websocket relay URLs when available, else an empty vec.
+pub fn query_participant_dm_relays(
+    ndb: &Ndb,
+    txn: &Transaction,
+    participant: &Pubkey,
+) -> Vec<NormRelayUrl> {
+    let filter = participant_dm_relay_list_filter(participant);
+    let Ok(results) = ndb.query(txn, std::slice::from_ref(&filter), 1) else {
+        return Vec::new();
+    };
+
+    let Some(result) = results.first() else {
+        return Vec::new();
+    };
+
+    parse_dm_relay_list_relays(&result.note)
 }
 
 // easily retrievable from Note<'a>
