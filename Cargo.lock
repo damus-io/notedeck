@@ -1133,7 +1133,7 @@ dependencies = [
 [[package]]
 name = "claude-agent-sdk-rs"
 version = "0.6.3"
-source = "git+https://github.com/jb55/claude-agent-sdk-rs?rev=246ddc912e61b0e6892532e74673b1e86db5e7b0#246ddc912e61b0e6892532e74673b1e86db5e7b0"
+source = "git+https://github.com/jb55/claude-agent-sdk-rs?rev=84afa5f#84afa5f3e1c3574f653971e3e6d020956eef20f1"
 dependencies = [
  "anyhow",
  "async-stream",

@@ -184,9 +184,18 @@ fn parse_git_status(output: &str) -> GitStatusData {
 }
 
 fn run_git_status(cwd: &Path) -> GitStatusResult {
-    let output = std::process::Command::new("git")
-        .args(["status", "--short", "--branch"])
-        .current_dir(cwd)
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["status", "--short", "--branch"])
+        .current_dir(cwd);
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let output = cmd
         .output()
         .map_err(|e| GitStatusError::CommandFailed(e.to_string()))?;
 

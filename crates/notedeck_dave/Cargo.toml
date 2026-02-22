@@ -5,7 +5,7 @@ version.workspace = true
 
 [dependencies]
 async-openai = { version = "0.28.0", features = ["rustls-webpki-roots"] }
-claude-agent-sdk-rs = { git = "https://github.com/jb55/claude-agent-sdk-rs", rev = "246ddc912e61b0e6892532e74673b1e86db5e7b0"}
+claude-agent-sdk-rs = { git = "https://github.com/jb55/claude-agent-sdk-rs", rev = "84afa5f" }
 bitflags = { workspace = true }
 egui = { workspace = true }
 sha2 = { workspace = true }
