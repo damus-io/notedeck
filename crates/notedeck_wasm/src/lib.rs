@@ -74,16 +74,15 @@ fn read_app_name(
     String::from_utf8(buf).ok()
 }
 
-impl notedeck::App for WasmApp {
-    fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        // 1. Clear commands and reset occurrence counter
-        {
-            let data = self.env.as_mut(&mut self.store);
-            data.commands.clear();
-            data.button_occ.clear();
-        }
+impl WasmApp {
+    /// Run one WASM frame: clear state, call nd_update, return collected commands.
+    fn run_wasm_frame(&mut self, available: egui::Vec2) -> Vec<commands::UiCommand> {
+        let data = self.env.as_mut(&mut self.store);
+        data.commands.clear();
+        data.button_occ.clear();
+        data.available_width = available.x;
+        data.available_height = available.y;
 
-        // 2. Run WASM — host functions push commands
         let nd_update = self
             .instance
             .exports
@@ -93,16 +92,16 @@ impl notedeck::App for WasmApp {
             tracing::error!("WASM nd_update error: {e}");
         }
 
-        // 3. Take commands and render with real UI
-        let cmds = {
-            let data = self.env.as_mut(&mut self.store);
-            std::mem::take(&mut data.commands)
-        };
+        let data = self.env.as_mut(&mut self.store);
+        std::mem::take(&mut data.commands)
+    }
+}
+
+impl notedeck::App for WasmApp {
+    fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        let cmds = self.run_wasm_frame(ui.available_size());
         let new_events = commands::render_commands(&cmds, ui);
-
-        // 4. Store events for next frame
         self.env.as_mut(&mut self.store).button_events = new_events;
-
         AppResponse::none()
     }
 }
@@ -125,37 +124,8 @@ mod tests {
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                // Clear + reset
-                {
-                    let data = app.env.as_mut(&mut app.store);
-                    data.commands.clear();
-                    data.button_occ.clear();
-                }
-
-                // Run WASM
-                let nd_update = app
-                    .instance
-                    .exports
-                    .get_function("nd_update")
-                    .expect("nd_update");
-                nd_update.call(&mut app.store, &[]).expect("nd_update ok");
-
-                // Grab commands before rendering
-                let cmds = {
-                    let data = app.env.as_mut(&mut app.store);
-                    std::mem::take(&mut data.commands)
-                };
-                result_cmds = cmds
-                    .iter()
-                    .map(|c| match c {
-                        UiCommand::Label(t) => UiCommand::Label(t.clone()),
-                        UiCommand::Heading(t) => UiCommand::Heading(t.clone()),
-                        UiCommand::Button(t) => UiCommand::Button(t.clone()),
-                        UiCommand::AddSpace(px) => UiCommand::AddSpace(*px),
-                    })
-                    .collect();
-
-                // Render and collect events
+                let cmds = app.run_wasm_frame(ui.available_size());
+                result_cmds = cmds.clone();
                 let new_events = commands::render_commands(&cmds, ui);
                 app.env.as_mut(&mut app.store).button_events = new_events;
             });
@@ -355,6 +325,136 @@ mod tests {
             )"#,
         );
         assert_eq!(app.name(), "WASM App");
+    }
+
+    #[test]
+    fn available_width_returns_value() {
+        // Module that reads nd_available_width and stores it in a global.
+        let mut app = app_from_wat(
+            r#"(module
+                (import "env" "nd_available_width" (func $nd_available_width (result f32)))
+                (memory (export "memory") 1)
+                (global (export "width_result") (mut f32) (f32.const 0.0))
+                (func (export "nd_update")
+                    (global.set 0 (call $nd_available_width))
+                )
+            )"#,
+        );
+
+        run_update(&mut app);
+        let val = app
+            .instance
+            .exports
+            .get_global("width_result")
+            .unwrap()
+            .get(&mut app.store);
+        let result = match val {
+            wasmer::Value::F32(f) => f,
+            wasmer::Value::F64(f) => f as f32,
+            other => panic!("unexpected value type: {:?}", other),
+        };
+        // In headless egui, available width is positive
+        assert!(result > 0.0, "available_width should be positive");
+    }
+
+    #[test]
+    fn draw_rect_produces_command() {
+        let mut app = app_from_wat(
+            r#"(module
+                (import "env" "nd_draw_rect" (func $nd_draw_rect (param f32 f32 f32 f32 i32)))
+                (memory (export "memory") 1)
+                (func (export "nd_update")
+                    (call $nd_draw_rect
+                        (f32.const 10.0) (f32.const 20.0)
+                        (f32.const 100.0) (f32.const 50.0)
+                        (i32.const 0xFF0000FF))
+                )
+            )"#,
+        );
+        let cmds = run_update(&mut app);
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            UiCommand::DrawRect { x, y, w, h, color }
+            if (*x - 10.0).abs() < f32::EPSILON
+                && (*y - 20.0).abs() < f32::EPSILON
+                && (*w - 100.0).abs() < f32::EPSILON
+                && (*h - 50.0).abs() < f32::EPSILON
+                && *color == 0xFF0000FF
+        ));
+    }
+
+    #[test]
+    fn draw_circle_produces_command() {
+        let mut app = app_from_wat(
+            r#"(module
+                (import "env" "nd_draw_circle" (func $nd_draw_circle (param f32 f32 f32 i32)))
+                (memory (export "memory") 1)
+                (func (export "nd_update")
+                    (call $nd_draw_circle
+                        (f32.const 50.0) (f32.const 50.0)
+                        (f32.const 25.0)
+                        (i32.const 0x00FF00FF))
+                )
+            )"#,
+        );
+        let cmds = run_update(&mut app);
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            UiCommand::DrawCircle { cx, cy, r, color }
+            if (*cx - 50.0).abs() < f32::EPSILON
+                && (*cy - 50.0).abs() < f32::EPSILON
+                && (*r - 25.0).abs() < f32::EPSILON
+                && *color == 0x00FF00FF
+        ));
+    }
+
+    #[test]
+    fn draw_line_produces_command() {
+        let mut app = app_from_wat(
+            r#"(module
+                (import "env" "nd_draw_line" (func $nd_draw_line (param f32 f32 f32 f32 f32 i32)))
+                (memory (export "memory") 1)
+                (func (export "nd_update")
+                    (call $nd_draw_line
+                        (f32.const 0.0) (f32.const 0.0)
+                        (f32.const 100.0) (f32.const 100.0)
+                        (f32.const 2.0)
+                        (i32.const 0xFFFFFFFF))
+                )
+            )"#,
+        );
+        let cmds = run_update(&mut app);
+        assert_eq!(cmds.len(), 1);
+        assert!(
+            matches!(&cmds[0], UiCommand::DrawLine { width, .. } if (*width - 2.0).abs() < f32::EPSILON)
+        );
+    }
+
+    #[test]
+    fn draw_text_produces_command() {
+        let mut app = app_from_wat(
+            r#"(module
+                (import "env" "nd_draw_text" (func $nd_draw_text (param f32 f32 i32 i32 f32 i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "hello")
+                (func (export "nd_update")
+                    (call $nd_draw_text
+                        (f32.const 10.0) (f32.const 20.0)
+                        (i32.const 0) (i32.const 5)
+                        (f32.const 16.0)
+                        (i32.const 0xFFFFFFFF))
+                )
+            )"#,
+        );
+        let cmds = run_update(&mut app);
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(
+            &cmds[0],
+            UiCommand::DrawText { text, size, .. }
+            if text == "hello" && (*size - 16.0).abs() < f32::EPSILON
+        ));
     }
 
     #[test]
