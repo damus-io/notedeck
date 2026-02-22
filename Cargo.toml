@@ -15,6 +15,7 @@ members = [
     "crates/md-stream",
     "crates/tokenator",
     "crates/enostr",
+    "crates/protoverse",
 ]
 
 [workspace.dependencies]

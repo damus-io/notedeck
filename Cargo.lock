@@ -5251,6 +5251,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "protoverse"
+version = "0.1.0"
+
+[[package]]
 name = "puffin"
 version = "0.19.1"
 source = "git+https://github.com/jb55/puffin?rev=c6a6242adaf90b6292c0f462d2acd34d96d224d2#c6a6242adaf90b6292c0f462d2acd34d96d224d2"

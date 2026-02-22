@@ -1,0 +1,5 @@
+[package]
+name = "protoverse"
+version = "0.1.0"
+edition = "2021"
+description = "S-expression parser for protoverse spatial descriptions"
