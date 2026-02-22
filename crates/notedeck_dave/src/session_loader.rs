@@ -254,10 +254,7 @@ pub struct SessionState {
 pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
     use crate::session_events::AI_SESSION_STATE_KIND;
 
-    let filter = Filter::new()
-        .kinds([AI_SESSION_STATE_KIND as u64])
-        .tags(["ai-session-state"], 't')
-        .build();
+    let filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]).build();
 
     let is_valid = |note: &nostrdb::Note| {
         // Skip deleted sessions

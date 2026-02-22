@@ -2278,7 +2278,6 @@ impl notedeck::App for Dave {
                 // Local: subscribe in ndb for kind-31988 session state events
                 let state_filter = nostrdb::Filter::new()
                     .kinds([session_events::AI_SESSION_STATE_KIND as u64])
-                    .tags(["ai-session-state"], 't')
                     .build();
                 match ctx.ndb.subscribe(&[state_filter]) {
                     Ok(sub) => {
