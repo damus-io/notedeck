@@ -6,8 +6,11 @@
 //! Rooms are rendered as 3D scenes using renderbud's PBR pipeline,
 //! embedded in egui via wgpu paint callbacks.
 
+mod convert;
+mod nostr_events;
 mod room_state;
 mod room_view;
+mod subscriptions;
 
 pub use room_state::{
     NostrverseAction, NostrverseState, Room, RoomObject, RoomRef, RoomShape, RoomUser,
@@ -36,6 +39,15 @@ const AVATAR_SCALE: f32 = 7.0;
 /// How fast the avatar yaw lerps toward the target (higher = faster)
 const AVATAR_YAW_LERP_SPEED: f32 = 10.0;
 
+/// Demo room in protoverse .space format
+const DEMO_SPACE: &str = r#"(room (name "Demo Room") (shape rectangle) (width 20) (height 15) (depth 10)
+  (group
+    (table (id obj1) (name "Ironwood Table")
+           (model-url "/home/jb55/var/models/ironwood/ironwood.glb")
+           (position 0 0 0))
+    (prop (id obj2) (name "Water Bottle")
+          (model-url "/home/jb55/var/models/WaterBottle.glb"))))"#;
+
 /// Event kinds for nostrverse
 pub mod kinds {
     /// Room event kind (addressable)
@@ -56,10 +68,12 @@ pub struct NostrverseApp {
     device: Option<wgpu::Device>,
     /// GPU queue for model loading (Arc-wrapped internally by wgpu)
     queue: Option<wgpu::Queue>,
-    /// Whether the app has been initialized with demo data
+    /// Whether the app has been initialized
     initialized: bool,
     /// Cached avatar model AABB for ground placement
     avatar_bounds: Option<renderbud::Aabb>,
+    /// Local nostrdb subscription for room events
+    room_sub: Option<subscriptions::RoomSubscription>,
 }
 
 impl NostrverseApp {
@@ -77,6 +91,7 @@ impl NostrverseApp {
             queue,
             initialized: false,
             avatar_bounds: None,
+            room_sub: None,
         }
     }
 
@@ -101,81 +116,61 @@ impl NostrverseApp {
         }
     }
 
-    /// Initialize with demo data (for testing)
-    fn init_demo_data(&mut self) {
+    /// Initialize: ingest demo room into local nostrdb and subscribe.
+    fn initialize(&mut self, ctx: &mut AppContext<'_>) {
         if self.initialized {
             return;
         }
 
-        // Set up demo room
-        self.state.room = Some(Room {
-            name: "Demo Room".to_string(),
-            shape: RoomShape::Rectangle,
-            width: 20.0,
-            height: 15.0,
-            depth: 10.0,
-        });
-
-        // Load test models from disk
-        let bottle = self.load_model("/home/jb55/var/models/WaterBottle.glb");
-        let ironwood = self.load_model("/home/jb55/var/models/ironwood/ironwood.glb");
-
-        // Query AABBs for placement
-        let renderer = self.renderer.as_ref();
-        let model_bounds = |m: Option<renderbud::Model>| -> Option<renderbud::Aabb> {
-            let r = renderer?.renderer.lock().unwrap();
-            r.model_bounds(m?)
+        // Parse the demo room and ingest it as a local nostr event
+        let space = match protoverse::parse(DEMO_SPACE) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to parse demo space: {}", e);
+                return;
+            }
         };
 
-        let table_bounds = model_bounds(ironwood);
-        let bottle_bounds = model_bounds(bottle);
+        // Ingest as a local-only room event if we have a keypair
+        if let Some(kp) = ctx.accounts.selected_filled() {
+            let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
+            nostr_events::ingest_room_event(builder, ctx.ndb, kp);
+        }
 
-        // Table top Y (in model space, 1 unit = 1 meter)
-        let table_top_y = table_bounds.map(|b| b.max.y).unwrap_or(0.86);
-        // Bottle half-height (real-world scale, ~0.26m tall)
-        let bottle_half_h = bottle_bounds
-            .map(|b| (b.max.y - b.min.y) * 0.5)
-            .unwrap_or(0.0);
+        // Subscribe to room events in local nostrdb
+        self.room_sub = Some(subscriptions::RoomSubscription::new(ctx.ndb));
 
-        // Ironwood (table) at origin
-        let mut obj1 = RoomObject::new(
-            "obj1".to_string(),
-            "Ironwood Table".to_string(),
-            Vec3::new(0.0, 0.0, 0.0),
-        )
-        .with_scale(Vec3::splat(1.0));
-        obj1.model_handle = ironwood;
-
-        // Water bottle on top of the table: table_top + half bottle height
-        let mut obj2 = RoomObject::new(
-            "obj2".to_string(),
-            "Water Bottle".to_string(),
-            Vec3::new(0.0, table_top_y + bottle_half_h, 0.0),
-        )
-        .with_scale(Vec3::splat(1.0));
-        obj2.model_handle = bottle;
-
-        self.state.objects = vec![obj1, obj2];
+        // Query for any existing room events (including the one we just ingested)
+        let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+        self.load_room_from_ndb(ctx.ndb, &txn);
 
         // Add self user
+        let self_pubkey = *ctx.accounts.selected_account_pubkey();
         self.state.users = vec![
-            RoomUser::new(
-                demo_pubkey(),
-                "jb55".to_string(),
-                Vec3::new(-2.0, 0.0, -2.0),
-            )
-            .with_self(true),
+            RoomUser::new(self_pubkey, "jb55".to_string(), Vec3::new(-2.0, 0.0, -2.0))
+                .with_self(true),
         ];
 
-        // Assign the bottle model as avatar placeholder for all users
-        if let Some(model) = bottle {
+        // Assign avatar model (use first model with id "obj2" as placeholder)
+        let avatar_model = self
+            .state
+            .objects
+            .iter()
+            .find(|o| o.id == "obj2")
+            .and_then(|o| o.model_handle);
+        let avatar_bounds = avatar_model.and_then(|m| {
+            let renderer = self.renderer.as_ref()?;
+            let r = renderer.renderer.lock().unwrap();
+            r.model_bounds(m)
+        });
+        if let Some(model) = avatar_model {
             for user in &mut self.state.users {
                 user.model_handle = Some(model);
             }
         }
-        self.avatar_bounds = bottle_bounds;
+        self.avatar_bounds = avatar_bounds;
 
-        // Switch to third-person camera mode centered on the self-user
+        // Switch to third-person camera mode
         if let Some(renderer) = &self.renderer {
             let self_pos = self
                 .state
@@ -189,6 +184,103 @@ impl NostrverseApp {
         }
 
         self.initialized = true;
+    }
+
+    /// Load room state from a nostrdb query result.
+    fn load_room_from_ndb(&mut self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) {
+        let notes = subscriptions::RoomSubscription::query_existing(ndb, txn);
+
+        for note in &notes {
+            // Find the room matching our room_ref
+            let Some(room_id) = nostr_events::get_room_id(note) else {
+                continue;
+            };
+            if room_id != self.state.room_ref.id {
+                continue;
+            }
+
+            let Some(space) = nostr_events::parse_room_event(note) else {
+                tracing::warn!("Failed to parse room event content");
+                continue;
+            };
+
+            let (room, mut objects) = convert::convert_space(&space);
+            self.state.room = Some(room);
+
+            // Load models and compute placement
+            self.load_object_models(&mut objects);
+            self.state.objects = objects;
+
+            tracing::info!("Loaded room '{}' from nostrdb", room_id);
+            return;
+        }
+    }
+
+    /// Load 3D models for objects and handle AABB-based placement.
+    fn load_object_models(&self, objects: &mut Vec<RoomObject>) {
+        let renderer = self.renderer.as_ref();
+        let model_bounds_fn = |m: Option<renderbud::Model>| -> Option<renderbud::Aabb> {
+            let r = renderer?.renderer.lock().unwrap();
+            r.model_bounds(m?)
+        };
+
+        let mut table_top_y: f32 = 0.86;
+        let mut bottle_bounds = None;
+
+        for obj in objects.iter_mut() {
+            if let Some(url) = &obj.model_url {
+                let model = self.load_model(url);
+                let bounds = model_bounds_fn(model);
+
+                if obj.id == "obj1" {
+                    if let Some(b) = bounds {
+                        table_top_y = b.max.y;
+                    }
+                }
+
+                if obj.id == "obj2" {
+                    bottle_bounds = bounds;
+                }
+
+                obj.model_handle = model;
+            }
+        }
+
+        // Position the bottle on top of the table (runtime AABB placement)
+        if let Some(obj2) = objects.iter_mut().find(|o| o.id == "obj2") {
+            let bottle_half_h = bottle_bounds
+                .map(|b| (b.max.y - b.min.y) * 0.5)
+                .unwrap_or(0.0);
+            obj2.position = Vec3::new(0.0, table_top_y + bottle_half_h, 0.0);
+        }
+    }
+
+    /// Poll the room subscription for updates.
+    fn poll_room_updates(&mut self, ndb: &nostrdb::Ndb) {
+        let Some(sub) = &self.room_sub else {
+            return;
+        };
+        let txn = nostrdb::Transaction::new(ndb).expect("txn");
+        let notes = sub.poll(ndb, &txn);
+
+        for note in &notes {
+            let Some(room_id) = nostr_events::get_room_id(note) else {
+                continue;
+            };
+            if room_id != self.state.room_ref.id {
+                continue;
+            }
+
+            let Some(space) = nostr_events::parse_room_event(note) else {
+                continue;
+            };
+
+            let (room, mut objects) = convert::convert_space(&space);
+            self.state.room = Some(room);
+            self.load_object_models(&mut objects);
+            self.state.objects = objects;
+            tracing::info!("Room '{}' updated from nostrdb", room_id);
+        }
     }
 
     /// Sync room objects and user avatars to the renderbud scene
@@ -277,9 +369,12 @@ impl NostrverseApp {
 }
 
 impl notedeck::App for NostrverseApp {
-    fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        // Initialize demo data on first frame
-        self.init_demo_data();
+    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        // Initialize on first frame
+        self.initialize(ctx);
+
+        // Poll for room event updates
+        self.poll_room_updates(ctx.ndb);
 
         // Sync state to 3D scene
         self.sync_scene();

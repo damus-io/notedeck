@@ -48,6 +48,7 @@ pub enum ObjectType {
     Chair,
     Door,
     Light,
+    Custom(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +64,8 @@ pub enum Attribute {
     Height(f64),
     Location(String),
     State(CellState),
+    Position(f64, f64, f64),
+    ModelUrl(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -88,6 +91,7 @@ impl fmt::Display for ObjectType {
             ObjectType::Chair => write!(f, "chair"),
             ObjectType::Door => write!(f, "door"),
             ObjectType::Light => write!(f, "light"),
+            ObjectType::Custom(s) => write!(f, "{}", s),
         }
     }
 }
@@ -156,5 +160,54 @@ impl Space {
         F: Fn(&Attribute) -> bool,
     {
         self.attrs(id).iter().find(|a| pred(a))
+    }
+
+    pub fn id_str(&self, id: CellId) -> Option<&str> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Id(s) => Some(s.as_str()),
+            _ => None,
+        })
+    }
+
+    pub fn position(&self, id: CellId) -> Option<(f64, f64, f64)> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Position(x, y, z) => Some((*x, *y, *z)),
+            _ => None,
+        })
+    }
+
+    pub fn model_url(&self, id: CellId) -> Option<&str> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::ModelUrl(s) => Some(s.as_str()),
+            _ => None,
+        })
+    }
+
+    pub fn width(&self, id: CellId) -> Option<f64> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Width(n) => Some(*n),
+            _ => None,
+        })
+    }
+
+    pub fn height(&self, id: CellId) -> Option<f64> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Height(n) => Some(*n),
+            _ => None,
+        })
+    }
+
+    pub fn depth(&self, id: CellId) -> Option<f64> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Depth(n) => Some(*n),
+            _ => None,
+        })
+    }
+
+    pub fn shape(&self, id: CellId) -> Option<&Shape> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Shape(s) => Some(s),
+            _ => None,
+        })
     }
 }

@@ -193,6 +193,18 @@ impl<'a> Parser<'a> {
             "width" => self.eat_number().map(Attribute::Width),
             "height" => self.eat_number().map(Attribute::Height),
             "depth" => self.eat_number().map(Attribute::Depth),
+            "position" => {
+                let x = self.eat_number();
+                let y = self.eat_number();
+                let z = self.eat_number();
+                match (x, y, z) {
+                    (Some(x), Some(y), Some(z)) => Some(Attribute::Position(x, y, z)),
+                    _ => None,
+                }
+            }
+            "model-url" => self
+                .eat_string()
+                .map(|s| Attribute::ModelUrl(s.to_string())),
             _ => None,
         };
 
@@ -339,10 +351,7 @@ impl<'a> Parser<'a> {
             "chair" => ObjectType::Chair,
             "door" => ObjectType::Door,
             "light" => ObjectType::Light,
-            _ => {
-                self.restore(cp);
-                return None;
-            }
+            _ => ObjectType::Custom(sym.to_string()),
         };
 
         match self.parse_cell_attrs(CellType::Object(obj_type)) {

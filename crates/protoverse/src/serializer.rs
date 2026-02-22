@@ -89,6 +89,18 @@ fn write_attr(attr: &Attribute, out: &mut String) {
         Attribute::Depth(n) => {
             let _ = write!(out, "(depth {})", format_number(*n));
         }
+        Attribute::Position(x, y, z) => {
+            let _ = write!(
+                out,
+                "(position {} {} {})",
+                format_number(*x),
+                format_number(*y),
+                format_number(*z)
+            );
+        }
+        Attribute::ModelUrl(s) => {
+            let _ = write!(out, "(model-url \"{}\")", s);
+        }
     }
 }
 
