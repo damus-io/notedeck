@@ -200,10 +200,7 @@ impl Notedeck {
             .clone()
             .unwrap_or(data_path.as_ref().to_str().expect("db path ok").to_string());
         let path = DataPath::new(&data_path);
-        let dbpath_str = parsed_args
-            .dbpath
-            .clone()
-            .unwrap_or_else(|| path.path(DataPathType::Db).to_str().unwrap().to_string());
+        let dbpath_str = parsed_args.db_path(&path).to_str().unwrap().to_string();
 
         let _ = std::fs::create_dir_all(&dbpath_str);
 
@@ -249,6 +246,7 @@ impl Notedeck {
         }
 
         let mut unknown_ids = UnknownIds::default();
+        try_swap_compacted_db(&dbpath_str);
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
 
@@ -549,4 +547,52 @@ fn process_message_core(ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessag
             tracing::trace!("Relay {} received eose: {id}", relay)
         }
     }
+}
+
+/// If a compacted database exists at `{dbpath}/compact/`, swap it into place
+/// before opening ndb. This replaces the main data.mdb with the compacted one.
+fn try_swap_compacted_db(dbpath: &str) {
+    let dbpath = Path::new(dbpath);
+    let compact_path = dbpath.join("compact");
+    let compact_data = compact_path.join("data.mdb");
+
+    info!(
+        "compact swap: checking for compacted db at '{}'",
+        compact_data.display()
+    );
+
+    if !compact_data.exists() {
+        info!("compact swap: no compacted db found, skipping");
+        return;
+    }
+
+    let compact_size = std::fs::metadata(&compact_data)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    info!("compact swap: found compacted db ({compact_size} bytes)");
+
+    let db_data = dbpath.join("data.mdb");
+    let db_old = dbpath.join("data.mdb.old");
+
+    let old_size = std::fs::metadata(&db_data).map(|m| m.len()).unwrap_or(0);
+    info!(
+        "compact swap: current db at '{}' ({old_size} bytes)",
+        db_data.display()
+    );
+
+    if let Err(e) = std::fs::rename(&db_data, &db_old) {
+        error!("compact swap: failed to rename old db: {e}");
+        return;
+    }
+
+    if let Err(e) = std::fs::rename(&compact_data, &db_data) {
+        error!("compact swap: failed to move compacted db: {e}");
+        // Try to restore the original
+        let _ = std::fs::rename(&db_old, &db_data);
+        return;
+    }
+
+    let _ = std::fs::remove_file(&db_old);
+    let _ = std::fs::remove_dir_all(&compact_path);
+    info!("compact swap: success! {old_size} -> {compact_size} bytes");
 }
