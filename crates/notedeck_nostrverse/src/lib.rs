@@ -121,12 +121,11 @@ impl NostrverseApp {
         let table_bounds = model_bounds(ironwood);
         let bottle_bounds = model_bounds(bottle);
 
-        // Table top Y (in model space, scaled by table scale=1.0)
-        let table_top_y = table_bounds.map(|b| b.max.y).unwrap_or(1.0);
-        // Bottle half-height (in model space, will be scaled by bottle scale)
-        let bottle_scale = 5.0_f32;
+        // Table top Y (in model space, 1 unit = 1 meter)
+        let table_top_y = table_bounds.map(|b| b.max.y).unwrap_or(0.86);
+        // Bottle half-height (real-world scale, ~0.26m tall)
         let bottle_half_h = bottle_bounds
-            .map(|b| (b.max.y - b.min.y) * 0.5 * bottle_scale)
+            .map(|b| (b.max.y - b.min.y) * 0.5)
             .unwrap_or(0.0);
 
         // Ironwood (table) at origin
@@ -144,7 +143,7 @@ impl NostrverseApp {
             "Water Bottle".to_string(),
             Vec3::new(0.0, table_top_y + bottle_half_h, 0.0),
         )
-        .with_scale(Vec3::splat(bottle_scale));
+        .with_scale(Vec3::splat(1.0));
         obj2.model_handle = bottle;
 
         self.state.objects = vec![obj1, obj2];
@@ -251,7 +250,8 @@ impl NostrverseApp {
         }
 
         // Sync all user avatars to the scene
-        let bottle_scale = 5.0_f32;
+        // Water bottle is ~0.26m; scale to human height (~1.8m)
+        let avatar_scale = 7.0_f32;
         for user in &mut self.state.users {
             let yaw = if user.is_self {
                 avatar_yaw.unwrap_or(0.0)
@@ -262,7 +262,7 @@ impl NostrverseApp {
             let transform = Transform {
                 translation: user.position,
                 rotation: glam::Quat::from_rotation_y(yaw),
-                scale: Vec3::splat(bottle_scale),
+                scale: Vec3::splat(avatar_scale),
             };
 
             if let Some(scene_id) = user.scene_object_id {
