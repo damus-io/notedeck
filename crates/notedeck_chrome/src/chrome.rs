@@ -161,6 +161,11 @@ impl Chrome {
             cc.egui_ctx.clone(),
             context.path,
         );
+        #[cfg(feature = "wasm_apps")]
+        let wasm_dir = context
+            .path
+            .path(notedeck::DataPathType::Cache)
+            .join("wasm_apps");
         let mut chrome = Chrome::default();
 
         if !app_args.iter().any(|arg| arg == "--no-columns-app") {
@@ -187,6 +192,39 @@ impl Chrome {
         chrome.add_app(NotedeckApp::Nostrverse(Box::new(
             notedeck_nostrverse::NostrverseApp::demo(cc.wgpu_render_state.as_ref()),
         )));
+
+        #[cfg(feature = "wasm_apps")]
+        {
+            tracing::info!("looking for WASM apps in: {}", wasm_dir.display());
+            if wasm_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&wasm_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().is_some_and(|e| e == "wasm") {
+                            match notedeck_wasm::WasmApp::from_file(&path) {
+                                Ok(app) => {
+                                    let name = app.name().to_string();
+                                    tracing::info!(
+                                        "loaded WASM app '{}': {}",
+                                        name,
+                                        path.display()
+                                    );
+                                    chrome.add_app(NotedeckApp::Other(name, Box::new(app)));
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "failed to load WASM app {}: {e}",
+                                        path.display()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                tracing::info!("WASM apps directory not found: {}", wasm_dir.display());
+            }
+        }
 
         chrome.set_active(0);
 
@@ -851,7 +889,9 @@ fn topdown_sidebar(
                 tr!(loc, "Nostrverse", "Button to go to the Nostrverse app")
             }
 
-            NotedeckApp::Other(_) => tr!(loc, "Other", "Button to go to the Other app"),
+            NotedeckApp::Other(name, _) => {
+                tr!(loc, name.as_str(), "Button to go to a WASM app")
+            }
         };
 
         StripBuilder::new(ui)
@@ -861,52 +901,49 @@ fn topdown_sidebar(
                 strip.strip(|b| {
                     let resp = drawer_item(
                         b,
-                        |ui| {
-                            match app {
-                                NotedeckApp::Columns(_columns_app) => {
-                                    ui.add(app_images::columns_image());
-                                }
+                        |ui| match app {
+                            NotedeckApp::Columns(_columns_app) => {
+                                ui.add(app_images::columns_image());
+                            }
 
-                                NotedeckApp::Dave(dave) => {
-                                    dave_button(
-                                        dave.avatar_mut(),
-                                        ui,
-                                        Rect::from_center_size(
-                                            ui.available_rect_before_wrap().center(),
-                                            vec2(30.0, 30.0),
-                                        ),
-                                    );
-                                }
+                            NotedeckApp::Dave(dave) => {
+                                dave_button(
+                                    dave.avatar_mut(),
+                                    ui,
+                                    Rect::from_center_size(
+                                        ui.available_rect_before_wrap().center(),
+                                        vec2(30.0, 30.0),
+                                    ),
+                                );
+                            }
 
-                                #[cfg(feature = "dashboard")]
-                                NotedeckApp::Dashboard(_columns_app) => {
-                                    ui.add(app_images::algo_image());
-                                }
+                            #[cfg(feature = "dashboard")]
+                            NotedeckApp::Dashboard(_columns_app) => {
+                                ui.add(app_images::algo_image());
+                            }
 
-                                #[cfg(feature = "messages")]
-                                NotedeckApp::Messages(_dms) => {
-                                    ui.add(app_images::new_message_image());
-                                }
+                            #[cfg(feature = "messages")]
+                            NotedeckApp::Messages(_dms) => {
+                                ui.add(app_images::new_message_image());
+                            }
 
-                                #[cfg(feature = "clndash")]
-                                NotedeckApp::ClnDash(_clndash) => {
-                                    clndash_button(ui);
-                                }
+                            #[cfg(feature = "clndash")]
+                            NotedeckApp::ClnDash(_clndash) => {
+                                clndash_button(ui);
+                            }
 
-                                #[cfg(feature = "notebook")]
-                                NotedeckApp::Notebook(_notebook) => {
-                                    notebook_button(ui);
-                                }
+                            #[cfg(feature = "notebook")]
+                            NotedeckApp::Notebook(_notebook) => {
+                                notebook_button(ui);
+                            }
 
-                                #[cfg(feature = "nostrverse")]
-                                NotedeckApp::Nostrverse(_nostrverse) => {
-                                    ui.add(app_images::universe_image());
-                                }
+                            #[cfg(feature = "nostrverse")]
+                            NotedeckApp::Nostrverse(_nostrverse) => {
+                                ui.add(app_images::universe_image());
+                            }
 
-                                NotedeckApp::Other(_other) => {
-                                    // app provides its own button rendering ui?
-                                    panic!("TODO: implement other apps")
-                                }
+                            NotedeckApp::Other(_name, _other) => {
+                                ui.label("W");
                             }
                         },
                         text,

@@ -16,6 +16,7 @@ members = [
     "crates/tokenator",
     "crates/enostr",
     "crates/protoverse",
+    "crates/notedeck_wasm",
 ]
 
 [workspace.dependencies]
@@ -79,6 +80,7 @@ notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 renderbud = { path = "../github/jb55/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }
+notedeck_wasm = { path = "crates/notedeck_wasm" }
 tokenator = { path = "crates/tokenator" }
 md-stream = { path = "crates/md-stream" }
 once_cell = "1.19.0"

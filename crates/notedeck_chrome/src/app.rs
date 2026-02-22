@@ -37,7 +37,7 @@ pub enum NotedeckApp {
 
     #[cfg(feature = "nostrverse")]
     Nostrverse(Box<NostrverseApp>),
-    Other(Box<dyn notedeck::App>),
+    Other(String, Box<dyn notedeck::App>),
 }
 
 impl notedeck::App for NotedeckApp {
@@ -62,7 +62,7 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.update(ctx, ui),
 
-            NotedeckApp::Other(other) => other.update(ctx, ui),
+            NotedeckApp::Other(_name, other) => other.update(ctx, ui),
         }
     }
 }
