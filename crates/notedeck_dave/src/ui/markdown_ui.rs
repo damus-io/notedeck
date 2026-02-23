@@ -226,7 +226,7 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: 
 }
 
 /// Sand-themed syntax highlighting colors (warm, Claude-Code-esque palette)
-struct SandCodeTheme {
+pub(crate) struct SandCodeTheme {
     comment: Color32,
     keyword: Color32,
     literal: Color32,
@@ -236,7 +236,7 @@ struct SandCodeTheme {
 }
 
 impl SandCodeTheme {
-    fn from_visuals(visuals: &egui::Visuals) -> Self {
+    pub(crate) fn from_visuals(visuals: &egui::Visuals) -> Self {
         if visuals.dark_mode {
             Self {
                 comment: Color32::from_rgb(0x8A, 0x80, 0x72), // Warm gray-brown
@@ -258,7 +258,7 @@ impl SandCodeTheme {
         }
     }
 
-    fn format(&self, token: SandToken, font_id: &FontId) -> TextFormat {
+    pub(crate) fn format(&self, token: SandToken, font_id: &FontId) -> TextFormat {
         let color = match token {
             SandToken::Comment => self.comment,
             SandToken::Keyword => self.keyword,
@@ -273,7 +273,7 @@ impl SandCodeTheme {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SandToken {
+pub(crate) enum SandToken {
     Comment,
     Keyword,
     Literal,
@@ -384,7 +384,7 @@ impl<'a> LangConfig<'a> {
 
 /// Tokenize source code into (token_type, text_slice) pairs.
 /// Separated from rendering so it can be unit tested.
-fn tokenize_code<'a>(code: &'a str, language: &str) -> Vec<(SandToken, &'a str)> {
+pub(crate) fn tokenize_code<'a>(code: &'a str, language: &str) -> Vec<(SandToken, &'a str)> {
     let Some(lang) = LangConfig::from_language(language) else {
         return vec![(SandToken::Plain, code)];
     };
