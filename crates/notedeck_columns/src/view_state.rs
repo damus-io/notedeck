@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use enostr::Pubkey;
+use notedeck::compact::CompactState;
 use notedeck::ReportType;
 use notedeck_ui::nip51_set::Nip51SetUiCache;
 
@@ -37,6 +38,9 @@ pub struct ViewState {
 
     /// Report screen selected report type
     pub selected_report_type: Option<ReportType>,
+
+    /// Database compaction state
+    pub compact: CompactState,
 }
 
 impl ViewState {

@@ -344,15 +344,11 @@ async fn session_actor(
                             let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
 
                             let cached_plan = if perm_req.tool_name == "ExitPlanMode" {
-                                perm_req.tool_input.get("plan")
+                                perm_req
+                                    .tool_input
+                                    .get("plan")
                                     .and_then(|v| v.as_str())
-                                    .map(|plan| {
-                                        let mut parser = md_stream::StreamParser::new();
-                                        parser.push(plan);
-                                        parser.finalize();
-                                        let (elements, source) = parser.into_parts();
-                                        ParsedMarkdown { source, elements }
-                                    })
+                                    .map(ParsedMarkdown::parse)
                             } else {
                                 None
                             };

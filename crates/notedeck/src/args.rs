@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
-use crate::NotedeckOptions;
+use crate::{DataPath, DataPathType, NotedeckOptions};
 use enostr::{Keypair, Pubkey, SecretKey};
 use tracing::error;
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
@@ -15,6 +16,19 @@ pub struct Args {
 }
 
 impl Args {
+    /// Resolve the effective database path, respecting --dbpath override.
+    pub fn db_path(&self, data_path: &DataPath) -> PathBuf {
+        self.dbpath
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| data_path.path(DataPathType::Db))
+    }
+
+    /// Resolve the compact output path inside the db folder.
+    pub fn db_compact_path(&self, data_path: &DataPath) -> PathBuf {
+        self.db_path(data_path).join("compact")
+    }
+
     // parse arguments, return set of unrecognized args
     pub fn parse(args: &[String]) -> (Self, BTreeSet<String>) {
         let mut unrecognized_args = BTreeSet::new();

@@ -195,13 +195,23 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                         None
                     };
 
+                    // Parse plan markdown for ExitPlanMode requests
+                    let cached_plan = if tool_name == "ExitPlanMode" {
+                        tool_input
+                            .get("plan")
+                            .and_then(|v| v.as_str())
+                            .map(crate::messages::ParsedMarkdown::parse)
+                    } else {
+                        None
+                    };
+
                     Some(Message::PermissionRequest(PermissionRequest {
                         id: perm_id,
                         tool_name,
                         tool_input,
                         response,
                         answer_summary: None,
-                        cached_plan: None,
+                        cached_plan,
                     }))
                 } else {
                     None
@@ -244,10 +254,7 @@ pub struct SessionState {
 pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
     use crate::session_events::AI_SESSION_STATE_KIND;
 
-    let filter = Filter::new()
-        .kinds([AI_SESSION_STATE_KIND as u64])
-        .tags(["ai-session-state"], 't')
-        .build();
+    let filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]).build();
 
     let is_valid = |note: &nostrdb::Note| {
         // Skip deleted sessions

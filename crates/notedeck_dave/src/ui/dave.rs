@@ -136,6 +136,10 @@ pub enum DaveAction {
         request_id: Uuid,
         approved: bool,
     },
+    /// User approved plan and wants to compact first
+    CompactAndApprove {
+        request_id: Uuid,
+    },
     /// Toggle plan mode (clicked PLAN badge)
     TogglePlanMode,
     /// Toggle auto-steal focus mode (clicked AUTO badge)
@@ -806,6 +810,21 @@ impl<'a> DaveUi<'a> {
                                         approved: true,
                                     });
                                 }
+                            }
+
+                            // Compact & Approve button (blue, no keybind)
+                            let compact_response = super::badge::ActionButton::new(
+                                "Compact & Approve",
+                                egui::Color32::from_rgb(59, 130, 246),
+                                button_text_color,
+                            )
+                            .show(ui)
+                            .on_hover_text("Compact context then start implementing");
+
+                            if compact_response.clicked() {
+                                action = Some(DaveAction::CompactAndApprove {
+                                    request_id: request.id,
+                                });
                             }
 
                             // Reject button (red)

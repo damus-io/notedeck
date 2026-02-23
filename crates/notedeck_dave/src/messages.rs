@@ -8,6 +8,17 @@ pub struct ParsedMarkdown {
     pub source: String,
     pub elements: Vec<MdElement>,
 }
+
+impl ParsedMarkdown {
+    /// Parse a markdown string into elements.
+    pub fn parse(text: &str) -> Self {
+        let mut parser = StreamParser::new();
+        parser.push(text);
+        parser.finalize();
+        let (elements, source) = parser.into_parts();
+        Self { source, elements }
+    }
+}
 use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;

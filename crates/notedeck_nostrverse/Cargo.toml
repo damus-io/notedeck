@@ -10,5 +10,6 @@ egui-wgpu = { workspace = true }
 enostr = { workspace = true }
 glam = { workspace = true }
 nostrdb = { workspace = true }
+protoverse = { path = "../protoverse" }
 renderbud = { workspace = true }
 tracing = { workspace = true }

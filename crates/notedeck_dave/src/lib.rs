@@ -831,6 +831,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         if let Some(agentic) = &mut session.agentic {
                             agentic.is_compacting = false;
                             agentic.last_compaction = Some(info.clone());
+
+                            // Advance compact-and-proceed: compaction done,
+                            // proceed message will fire at stream-end.
+                            if agentic.compact_and_proceed
+                                == crate::session::CompactAndProceedState::WaitingForCompaction
+                            {
+                                agentic.compact_and_proceed =
+                                    crate::session::CompactAndProceedState::ReadyToProceed;
+                            }
                         }
                         session.chat.push(Message::CompactionComplete(info));
                     }
@@ -874,6 +883,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         // unanswered remote message that arrived while we
                         // were streaming. Queue it for dispatch.
                         if session.needs_redispatch_after_stream_end() {
+                            needs_send.insert(session_id);
+                        }
+
+                        // After compact & approve: compaction must have
+                        // completed (ReadyToProceed) before we send "Proceed".
+                        if session.take_compact_and_proceed() {
                             needs_send.insert(session_id);
                         }
                     }
@@ -1725,8 +1740,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///
     /// For local sessions: only process `role=user` messages arriving from
     /// remote clients (phone), collecting them for backend dispatch.
-    fn poll_remote_conversation_events(&mut self, ndb: &nostrdb::Ndb) -> Vec<(SessionId, String)> {
+    fn poll_remote_conversation_events(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+        secret_key: Option<&[u8; 32]>,
+    ) -> (Vec<(SessionId, String)>, Vec<session_events::BuiltEvent>) {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
+        let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
         let session_ids = self.session_manager.session_ids();
         for session_id in session_ids {
             let Some(session) = self.session_manager.get_mut(session_id) else {
@@ -1853,6 +1873,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 .request_note_ids
                                 .insert(perm_id, *note.id());
 
+                            // Parse plan markdown for ExitPlanMode requests
+                            let cached_plan = if tool_name == "ExitPlanMode" {
+                                tool_input
+                                    .get("plan")
+                                    .and_then(|v| v.as_str())
+                                    .map(crate::messages::ParsedMarkdown::parse)
+                            } else {
+                                None
+                            };
+
                             session.chat.push(Message::PermissionRequest(
                                 crate::messages::PermissionRequest {
                                     id: perm_id,
@@ -1860,7 +1890,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     tool_input,
                                     response,
                                     answer_summary: None,
-                                    cached_plan: None,
+                                    cached_plan,
                                 },
                             ));
                         }
@@ -1892,14 +1922,42 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         let info = crate::messages::CompactionInfo { pre_tokens };
                         agentic.last_compaction = Some(info.clone());
                         session.chat.push(Message::CompactionComplete(info));
+
+                        // Advance compact-and-proceed: for remote sessions,
+                        // there's no stream-end to wait for, so go straight
+                        // to ReadyToProceed and consume immediately.
+                        if agentic.compact_and_proceed
+                            == crate::session::CompactAndProceedState::WaitingForCompaction
+                        {
+                            agentic.compact_and_proceed =
+                                crate::session::CompactAndProceedState::ReadyToProceed;
+                        }
                     }
                     _ => {
                         // Skip progress, queue-operation, etc.
                     }
                 }
+
+                // Handle proceed after compaction for remote sessions.
+                // Published as a relay event so the desktop backend picks it up.
+                if session.take_compact_and_proceed() {
+                    if let Some(sk) = secret_key {
+                        if let Some(evt) = ingest_live_event(
+                            session,
+                            ndb,
+                            sk,
+                            "Proceed with implementing the plan.",
+                            "user",
+                            None,
+                            None,
+                        ) {
+                            events_to_publish.push(evt);
+                        }
+                    }
+                }
             }
         }
-        remote_user_messages
+        (remote_user_messages, events_to_publish)
     }
 
     /// Delete a session and clean up backend resources
@@ -2220,7 +2278,6 @@ impl notedeck::App for Dave {
                 // Local: subscribe in ndb for kind-31988 session state events
                 let state_filter = nostrdb::Filter::new()
                     .kinds([session_events::AI_SESSION_STATE_KIND as u64])
-                    .tags(["ai-session-state"], 't')
                     .build();
                 match ctx.ndb.subscribe(&[state_filter]) {
                     Ok(sub) => {
@@ -2245,7 +2302,10 @@ impl notedeck::App for Dave {
         // Only dispatch if the session isn't already streaming a response —
         // the message is already in chat, so it will be included when the
         // current stream finishes and we re-dispatch.
-        let remote_user_msgs = self.poll_remote_conversation_events(ctx.ndb);
+        let sk_bytes = secret_key_bytes(ctx.accounts.get_selected_account().keypair());
+        let (remote_user_msgs, conv_events) =
+            self.poll_remote_conversation_events(ctx.ndb, sk_bytes.as_ref());
+        self.pending_relay_events.extend(conv_events);
         for (sid, _msg) in remote_user_msgs {
             let should_dispatch = self
                 .session_manager

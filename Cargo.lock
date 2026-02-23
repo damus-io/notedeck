@@ -4024,7 +4024,7 @@ dependencies = [
 [[package]]
 name = "nostrdb"
 version = "0.10.0"
-source = "git+https://github.com/damus-io/nostrdb-rs?rev=8c1af378d1c296abfccb9a11ce5a3ae48f857be6#8c1af378d1c296abfccb9a11ce5a3ae48f857be6"
+source = "git+https://github.com/damus-io/nostrdb-rs?rev=59a1900#59a19008973a6f5eb0dd2089964f60e095e25477"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -4299,6 +4299,7 @@ dependencies = [
  "glam",
  "nostrdb",
  "notedeck",
+ "protoverse",
  "renderbud",
  "tracing",
 ]
@@ -5249,6 +5250,10 @@ dependencies = [
  "quote",
  "syn 2.0.104",
 ]
+
+[[package]]
+name = "protoverse"
+version = "0.1.0"
 
 [[package]]
 name = "puffin"

@@ -11,8 +11,12 @@ pub enum NostrverseAction {
     MoveObject { id: String, position: Vec3 },
     /// Object was selected
     SelectObject(Option<String>),
-    /// Request to open add object UI
-    OpenAddObject,
+    /// Room or object was edited, needs re-ingest
+    SaveRoom,
+    /// A new object was added
+    AddObject(RoomObject),
+    /// An object was removed
+    RemoveObject(String),
 }
 
 /// Reference to a nostrverse room
@@ -66,13 +70,43 @@ pub enum RoomShape {
     Custom,
 }
 
+/// Spatial location relative to the room or another object.
+/// Mirrors protoverse::Location for decoupling.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectLocation {
+    Center,
+    Floor,
+    Ceiling,
+    /// On top of another object (by id)
+    TopOf(String),
+    /// Near another object (by id)
+    Near(String),
+    Custom(String),
+}
+
+/// Protoverse object type, preserved for round-trip serialization
+#[derive(Clone, Debug, Default)]
+pub enum RoomObjectType {
+    Table,
+    Chair,
+    Door,
+    Light,
+    #[default]
+    Prop,
+    Custom(String),
+}
+
 /// Object in a room - references a 3D model
 #[derive(Clone, Debug)]
 pub struct RoomObject {
     pub id: String,
     pub name: String,
+    /// Protoverse cell type (table, chair, prop, etc.)
+    pub object_type: RoomObjectType,
     /// URL to a glTF model (None = use placeholder geometry)
     pub model_url: Option<String>,
+    /// Semantic location (e.g. "top-of obj1"), resolved to position at load time
+    pub location: Option<ObjectLocation>,
     /// 3D position in world space
     pub position: Vec3,
     /// 3D rotation
@@ -90,7 +124,9 @@ impl RoomObject {
         Self {
             id,
             name,
+            object_type: RoomObjectType::Prop,
             model_url: None,
+            location: None,
             position,
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
@@ -99,8 +135,18 @@ impl RoomObject {
         }
     }
 
+    pub fn with_object_type(mut self, object_type: RoomObjectType) -> Self {
+        self.object_type = object_type;
+        self
+    }
+
     pub fn with_model_url(mut self, url: String) -> Self {
         self.model_url = Some(url);
+        self
+    }
+
+    pub fn with_location(mut self, loc: ObjectLocation) -> Self {
+        self.location = Some(loc);
         self
     }
 
@@ -108,14 +154,6 @@ impl RoomObject {
         self.scale = scale;
         self
     }
-}
-
-/// User presence in a room (legacy, use RoomUser for rendering)
-#[derive(Clone, Debug)]
-pub struct Presence {
-    pub pubkey: Pubkey,
-    pub position: Vec3,
-    pub status: Option<String>,
 }
 
 /// A user present in a room (for rendering)
@@ -126,8 +164,8 @@ pub struct RoomUser {
     pub position: Vec3,
     /// Whether this is the current user
     pub is_self: bool,
-    /// Whether this user is an AI agent
-    pub is_agent: bool,
+    /// Monotonic timestamp (seconds) of last presence update
+    pub last_seen: f64,
     /// Runtime: renderbud scene object handle for avatar
     pub scene_object_id: Option<ObjectId>,
     /// Runtime: loaded model handle for avatar
@@ -141,7 +179,7 @@ impl RoomUser {
             display_name,
             position,
             is_self: false,
-            is_agent: false,
+            last_seen: 0.0,
             scene_object_id: None,
             model_handle: None,
         }
@@ -149,11 +187,6 @@ impl RoomUser {
 
     pub fn with_self(mut self, is_self: bool) -> Self {
         self.is_self = is_self;
-        self
-    }
-
-    pub fn with_agent(mut self, is_agent: bool) -> Self {
-        self.is_agent = is_agent;
         self
     }
 }
@@ -172,6 +205,10 @@ pub struct NostrverseState {
     pub selected_object: Option<String>,
     /// Whether we're in edit mode
     pub edit_mode: bool,
+    /// Smoothed avatar yaw for lerped rotation
+    pub smooth_avatar_yaw: f32,
+    /// Room has unsaved edits
+    pub dirty: bool,
 }
 
 impl NostrverseState {
@@ -182,7 +219,9 @@ impl NostrverseState {
             objects: Vec::new(),
             users: Vec::new(),
             selected_object: None,
-            edit_mode: false,
+            edit_mode: true,
+            smooth_avatar_yaw: 0.0,
+            dirty: false,
         }
     }
 

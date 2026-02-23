@@ -1119,6 +1119,7 @@ mod tests {
             "/tmp/project",
             "working",
             "my-laptop",
+            "/home/testuser",
             &sk,
         )
         .unwrap();
