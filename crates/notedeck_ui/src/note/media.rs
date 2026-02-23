@@ -131,9 +131,10 @@ pub fn render_media(
     } = media;
 
     let animation_mode = animation_mode.unwrap_or_else(|| {
-        // if animations aren't disabled, we cap it at 24fps for gifs in carousels
+        // if animations aren't disabled, we cap it at 24fps for gifs/webps in carousels
         let fps = match media_type {
             MediaCacheType::Gif => Some(24.0),
+            MediaCacheType::Webp => Some(24.0),
             MediaCacheType::Image => None,
         };
         AnimationMode::Continuous { fps }
