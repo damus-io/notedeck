@@ -79,12 +79,13 @@ notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
-renderbud = { path = "../github/jb55/renderbud", features = ["egui"] }
+renderbud = { path = "crates/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }
 notedeck_wasm = { path = "crates/notedeck_wasm" }
 tokenator = { path = "crates/tokenator" }
 md-stream = { path = "crates/md-stream" }
 once_cell = "1.19.0"
+bytemuck = "1.22.0"
 robius-open = "0.1"
 poll-promise = { version = "0.3.0", features = ["tokio"] }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }

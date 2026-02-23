@@ -1,0 +1,25 @@
+[package]
+name = "renderbud"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+image = { workspace = true }
+bytemuck = { workspace = true }
+egui-wgpu = { workspace = true, optional = true }
+egui = { workspace = true, optional = true }
+
+glam = { version = "0.30.10", features = ["bytemuck"] }
+gltf = "1.4"
+wgpu = "24"
+half = "2.7.1"
+rayon = "1.10"
+
+[features]
+egui = ["egui-wgpu", "dep:egui"]
+
+[dev-dependencies]
+winit = "0.30"
+wgpu = "24"
+gltf = "1.4"
+pollster = "0.4.0"

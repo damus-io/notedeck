@@ -6232,6 +6232,7 @@ dependencies = [
  "gltf",
  "half",
  "image",
+ "pollster",
  "rayon",
  "wgpu",
  "winit 0.30.11",
