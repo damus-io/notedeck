@@ -579,11 +579,15 @@ impl notedeck::App for NostrverseApp {
 
                 // Editing panel (always visible in edit mode)
                 if self.state.edit_mode {
-                    ui.allocate_ui(egui::vec2(panel_width, available.y), |ui| {
-                        if let Some(action) = render_editing_panel(ui, &mut self.state) {
-                            self.handle_action(action, ctx);
-                        }
-                    });
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(panel_width, available.y),
+                        egui::Layout::top_down(egui::Align::LEFT),
+                        |ui| {
+                            if let Some(action) = render_editing_panel(ui, &mut self.state) {
+                                self.handle_action(action, ctx);
+                            }
+                        },
+                    );
                 }
             });
         });
