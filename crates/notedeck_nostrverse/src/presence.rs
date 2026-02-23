@@ -25,15 +25,28 @@ const STALE_TIMEOUT: f64 = 90.0;
 /// How often to check for stale users (seconds).
 const EXPIRY_CHECK_INTERVAL: f64 = 10.0;
 
+/// Minimum speed to consider "moving" (units/s). Below this, velocity is zeroed.
+const MIN_SPEED: f32 = 0.1;
+
+/// Direction change threshold (dot product). cos(30°) ≈ 0.866.
+/// If the normalized velocity direction changes by more than ~30°, publish.
+const DIRECTION_CHANGE_THRESHOLD: f32 = 0.866;
+
 /// Publishes local user presence as kind 10555 events.
 ///
-/// Only publishes when position changes meaningfully, plus periodic
-/// keep-alive to maintain room presence. Does not spam on idle.
+/// Only publishes when position or velocity changes meaningfully, plus periodic
+/// keep-alive to maintain room presence. Includes velocity for dead reckoning.
 pub struct PresencePublisher {
     /// Last position we published
     last_position: Vec3,
+    /// Last velocity we published
+    last_velocity: Vec3,
     /// Monotonic time of last publish
     last_publish_time: f64,
+    /// Previous position sample (for computing velocity)
+    prev_position: Vec3,
+    /// Time of previous position sample
+    prev_position_time: f64,
     /// Whether we've published at least once
     published_once: bool,
 }
@@ -42,14 +55,30 @@ impl PresencePublisher {
     pub fn new() -> Self {
         Self {
             last_position: Vec3::ZERO,
+            last_velocity: Vec3::ZERO,
             last_publish_time: 0.0,
+            prev_position: Vec3::ZERO,
+            prev_position_time: 0.0,
             published_once: false,
         }
     }
 
+    /// Compute instantaneous velocity from position samples.
+    fn compute_velocity(&self, position: Vec3, now: f64) -> Vec3 {
+        let dt = now - self.prev_position_time;
+        if dt < 0.01 {
+            return self.last_velocity;
+        }
+        let vel = (position - self.prev_position) / dt as f32;
+        if vel.length() < MIN_SPEED {
+            Vec3::ZERO
+        } else {
+            vel
+        }
+    }
+
     /// Check whether a publish should happen (without side effects).
-    /// Used for both the real publish path and tests.
-    fn should_publish(&self, position: Vec3, now: f64) -> bool {
+    fn should_publish(&self, position: Vec3, velocity: Vec3, now: f64) -> bool {
         // Always publish the first time
         if !self.published_once {
             return true;
@@ -63,9 +92,24 @@ impl PresencePublisher {
         }
 
         // Publish if position changed meaningfully
-        let moved = self.last_position.distance(position) > POSITION_THRESHOLD;
-        if moved {
+        if self.last_position.distance(position) > POSITION_THRESHOLD {
             return true;
+        }
+
+        // Publish on start/stop transitions
+        let was_moving = self.last_velocity.length() > MIN_SPEED;
+        let is_moving = velocity.length() > MIN_SPEED;
+        if was_moving != is_moving {
+            return true;
+        }
+
+        // Publish on significant direction change while moving
+        if was_moving && is_moving {
+            let old_dir = self.last_velocity.normalize();
+            let new_dir = velocity.normalize();
+            if old_dir.dot(new_dir) < DIRECTION_CHANGE_THRESHOLD {
+                return true;
+            }
         }
 
         // Keep-alive: publish periodically even when idle
@@ -73,8 +117,9 @@ impl PresencePublisher {
     }
 
     /// Record that a publish happened (update internal state).
-    fn record_publish(&mut self, position: Vec3, now: f64) {
+    fn record_publish(&mut self, position: Vec3, velocity: Vec3, now: f64) {
         self.last_position = position;
+        self.last_velocity = velocity;
         self.last_publish_time = now;
         self.published_once = true;
     }
@@ -88,14 +133,20 @@ impl PresencePublisher {
         position: Vec3,
         now: f64,
     ) -> bool {
-        if !self.should_publish(position, now) {
+        let velocity = self.compute_velocity(position, now);
+
+        // Always update position sample for velocity computation
+        self.prev_position = position;
+        self.prev_position_time = now;
+
+        if !self.should_publish(position, velocity, now) {
             return false;
         }
 
-        let builder = nostr_events::build_presence_event(room_naddr, position);
+        let builder = nostr_events::build_presence_event(room_naddr, position, velocity);
         nostr_events::ingest_event(builder, ndb, kp);
 
-        self.record_publish(position, now);
+        self.record_publish(position, velocity, now);
         true
     }
 }
@@ -135,12 +186,20 @@ pub fn poll_presence(
             continue;
         }
 
+        let velocity = nostr_events::parse_presence_velocity(note);
+
         // Update or insert user
         if let Some(user) = users.iter_mut().find(|u| u.pubkey == pubkey) {
+            // Update authoritative state; preserve display_position for smooth lerp
             user.position = position;
+            user.velocity = velocity;
+            user.update_time = now;
             user.last_seen = now;
         } else {
             let mut user = RoomUser::new(pubkey, "anon".to_string(), position);
+            user.velocity = velocity;
+            user.display_position = position; // snap on first appearance
+            user.update_time = now;
             user.last_seen = now;
             users.push(user);
         }
@@ -223,40 +282,88 @@ mod tests {
     fn test_publisher_first_publish() {
         let pub_ = PresencePublisher::new();
         // First publish should always happen
-        assert!(pub_.should_publish(Vec3::ZERO, 0.0));
+        assert!(pub_.should_publish(Vec3::ZERO, Vec3::ZERO, 0.0));
     }
 
     #[test]
     fn test_publisher_no_spam_when_idle() {
         let mut pub_ = PresencePublisher::new();
-        pub_.record_publish(Vec3::ZERO, 0.0);
+        pub_.record_publish(Vec3::ZERO, Vec3::ZERO, 0.0);
 
         // Idle at same position — should NOT publish at 1s, 5s, 10s, 30s
-        assert!(!pub_.should_publish(Vec3::ZERO, 1.0));
-        assert!(!pub_.should_publish(Vec3::ZERO, 5.0));
-        assert!(!pub_.should_publish(Vec3::ZERO, 10.0));
-        assert!(!pub_.should_publish(Vec3::ZERO, 30.0));
+        assert!(!pub_.should_publish(Vec3::ZERO, Vec3::ZERO, 1.0));
+        assert!(!pub_.should_publish(Vec3::ZERO, Vec3::ZERO, 5.0));
+        assert!(!pub_.should_publish(Vec3::ZERO, Vec3::ZERO, 10.0));
+        assert!(!pub_.should_publish(Vec3::ZERO, Vec3::ZERO, 30.0));
 
         // Keep-alive triggers at 60s
-        assert!(pub_.should_publish(Vec3::ZERO, 60.1));
+        assert!(pub_.should_publish(Vec3::ZERO, Vec3::ZERO, 60.1));
     }
 
     #[test]
     fn test_publisher_on_movement() {
         let mut pub_ = PresencePublisher::new();
-        pub_.record_publish(Vec3::ZERO, 0.0);
+        pub_.record_publish(Vec3::ZERO, Vec3::ZERO, 0.0);
 
         // Small movement below threshold — no publish
-        assert!(!pub_.should_publish(Vec3::new(0.1, 0.0, 0.0), 2.0));
+        assert!(!pub_.should_publish(Vec3::new(0.1, 0.0, 0.0), Vec3::ZERO, 2.0));
 
         // Significant movement — publish
-        assert!(pub_.should_publish(Vec3::new(5.0, 0.0, 0.0), 2.0));
+        assert!(pub_.should_publish(Vec3::new(5.0, 0.0, 0.0), Vec3::ZERO, 2.0));
 
         // But rate limited: can't publish again within 1s
-        pub_.record_publish(Vec3::new(5.0, 0.0, 0.0), 2.0);
-        assert!(!pub_.should_publish(Vec3::new(10.0, 0.0, 0.0), 2.5));
+        pub_.record_publish(Vec3::new(5.0, 0.0, 0.0), Vec3::ZERO, 2.0);
+        assert!(!pub_.should_publish(Vec3::new(10.0, 0.0, 0.0), Vec3::ZERO, 2.5));
 
         // After 1s gap, can publish again
-        assert!(pub_.should_publish(Vec3::new(10.0, 0.0, 0.0), 3.1));
+        assert!(pub_.should_publish(Vec3::new(10.0, 0.0, 0.0), Vec3::ZERO, 3.1));
+    }
+
+    #[test]
+    fn test_publisher_velocity_start_stop() {
+        let mut pub_ = PresencePublisher::new();
+        let pos = Vec3::new(1.0, 0.0, 0.0);
+        pub_.record_publish(pos, Vec3::ZERO, 0.0);
+
+        // Start moving — should trigger (velocity went from zero to non-zero)
+        let vel = Vec3::new(3.0, 0.0, 0.0);
+        assert!(pub_.should_publish(pos, vel, 2.0));
+        pub_.record_publish(pos, vel, 2.0);
+
+        // Stop moving — should trigger (velocity went from non-zero to zero)
+        assert!(pub_.should_publish(pos, Vec3::ZERO, 3.5));
+    }
+
+    #[test]
+    fn test_publisher_velocity_direction_change() {
+        let mut pub_ = PresencePublisher::new();
+        let pos = Vec3::new(1.0, 0.0, 0.0);
+        let vel_east = Vec3::new(3.0, 0.0, 0.0);
+        pub_.record_publish(pos, vel_east, 0.0);
+
+        // Small direction change (still mostly east) — no publish
+        let vel_slight = Vec3::new(3.0, 0.0, 0.5);
+        assert!(!pub_.should_publish(pos, vel_slight, 2.0));
+
+        // Large direction change (east → north, 90 degrees) — should publish
+        let vel_north = Vec3::new(0.0, 0.0, 3.0);
+        assert!(pub_.should_publish(pos, vel_north, 2.0));
+    }
+
+    #[test]
+    fn test_compute_velocity() {
+        let mut pub_ = PresencePublisher::new();
+        pub_.prev_position = Vec3::ZERO;
+        pub_.prev_position_time = 0.0;
+
+        // 5 units in 1 second = 5 units/s
+        let vel = pub_.compute_velocity(Vec3::new(5.0, 0.0, 0.0), 1.0);
+        assert!((vel.x - 5.0).abs() < 0.01);
+
+        // Very small movement → zeroed (below MIN_SPEED)
+        pub_.prev_position = Vec3::ZERO;
+        pub_.prev_position_time = 0.0;
+        let vel = pub_.compute_velocity(Vec3::new(0.01, 0.0, 0.0), 1.0);
+        assert_eq!(vel, Vec3::ZERO);
     }
 }

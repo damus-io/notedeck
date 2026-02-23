@@ -71,8 +71,13 @@ fn get_tag_value<'a>(note: &'a Note<'a>, tag_name: &str) -> Option<&'a str> {
 ///
 /// The expiration tag (NIP-40) tells relays/nostrdb to discard the event
 /// after 90 seconds, matching the client-side stale timeout.
-pub fn build_presence_event<'a>(room_naddr: &str, position: glam::Vec3) -> NoteBuilder<'a> {
+pub fn build_presence_event<'a>(
+    room_naddr: &str,
+    position: glam::Vec3,
+    velocity: glam::Vec3,
+) -> NoteBuilder<'a> {
     let pos_str = format!("{} {} {}", position.x, position.y, position.z);
+    let vel_str = format!("{} {} {}", velocity.x, velocity.y, velocity.z);
 
     let expiration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -91,6 +96,9 @@ pub fn build_presence_event<'a>(room_naddr: &str, position: glam::Vec3) -> NoteB
         .tag_str("position")
         .tag_str(&pos_str)
         .start_tag()
+        .tag_str("velocity")
+        .tag_str(&vel_str)
+        .start_tag()
         .tag_str("expiration")
         .tag_str(&exp_str)
 }
@@ -103,6 +111,19 @@ pub fn parse_presence_position(note: &Note<'_>) -> Option<glam::Vec3> {
     let y: f32 = parts.next()?.parse().ok()?;
     let z: f32 = parts.next()?.parse().ok()?;
     Some(glam::Vec3::new(x, y, z))
+}
+
+/// Parse a presence event's velocity tag into a Vec3.
+/// Returns Vec3::ZERO if no velocity tag (backward compatible with old events).
+pub fn parse_presence_velocity(note: &Note<'_>) -> glam::Vec3 {
+    let Some(vel_str) = get_tag_value(note, "velocity") else {
+        return glam::Vec3::ZERO;
+    };
+    let mut parts = vel_str.split_whitespace();
+    let x: f32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let y: f32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let z: f32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    glam::Vec3::new(x, y, z)
 }
 
 /// Extract the "a" tag (room naddr) from a presence note.
@@ -209,7 +230,8 @@ mod tests {
     #[test]
     fn test_build_presence_event() {
         let pos = glam::Vec3::new(1.5, 0.0, -3.2);
-        let mut builder = build_presence_event("37555:abc123:my-room", pos);
+        let vel = glam::Vec3::new(2.0, 0.0, -1.0);
+        let mut builder = build_presence_event("37555:abc123:my-room", pos, vel);
         let note = builder.build().expect("build note");
 
         assert_eq!(note.content(), "");
@@ -219,6 +241,11 @@ mod tests {
         assert!((parsed_pos.x - 1.5).abs() < 0.01);
         assert!((parsed_pos.y - 0.0).abs() < 0.01);
         assert!((parsed_pos.z - (-3.2)).abs() < 0.01);
+
+        let parsed_vel = parse_presence_velocity(&note);
+        assert!((parsed_vel.x - 2.0).abs() < 0.01);
+        assert!((parsed_vel.y - 0.0).abs() < 0.01);
+        assert!((parsed_vel.z - (-1.0)).abs() < 0.01);
 
         // Should have an expiration tag (NIP-40)
         let exp = get_tag_value(&note, "expiration").expect("missing expiration tag");

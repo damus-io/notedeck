@@ -40,6 +40,12 @@ fn demo_pubkey() -> Pubkey {
 const AVATAR_SCALE: f32 = 7.0;
 /// How fast the avatar yaw lerps toward the target (higher = faster)
 const AVATAR_YAW_LERP_SPEED: f32 = 10.0;
+/// How fast remote avatar position lerps toward extrapolated target
+const AVATAR_POS_LERP_SPEED: f32 = 8.0;
+/// Maximum extrapolation time (seconds) before clamping dead reckoning
+const MAX_EXTRAPOLATION_TIME: f64 = 3.0;
+/// Maximum extrapolation distance from last known position
+const MAX_EXTRAPOLATION_DISTANCE: f32 = 10.0;
 
 /// Demo room in protoverse .space format
 const DEMO_SPACE: &str = r#"(room (name "Demo Room") (shape rectangle) (width 20) (height 15) (depth 10)
@@ -456,6 +462,7 @@ impl NostrverseApp {
             && let Some(self_user) = self.state.users.iter_mut().find(|u| u.is_self)
         {
             self_user.position = pos;
+            self_user.display_position = pos;
         }
 
         // Sync all user avatars to the scene
@@ -464,6 +471,8 @@ impl NostrverseApp {
             .map(|b| (b.max.y - b.min.y) * 0.5)
             .unwrap_or(0.0);
         let avatar_y_offset = avatar_half_h * AVATAR_SCALE;
+        let now = self.start_time.elapsed().as_secs_f64();
+        let dt = 1.0 / 60.0_f32;
 
         // Smoothly lerp avatar yaw toward target
         if let Some(target_yaw) = avatar_yaw {
@@ -471,12 +480,30 @@ impl NostrverseApp {
             let mut diff = target_yaw - current;
             diff = (diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
                 - std::f32::consts::PI;
-            let dt = 1.0 / 60.0;
             let t = (AVATAR_YAW_LERP_SPEED * dt).min(1.0);
             self.state.smooth_avatar_yaw = current + diff * t;
         }
 
         for user in &mut self.state.users {
+            // Dead reckoning for remote users
+            if !user.is_self {
+                let time_since_update = (now - user.update_time).min(MAX_EXTRAPOLATION_TIME) as f32;
+                let extrapolated = user.position + user.velocity * time_since_update;
+
+                // Clamp extrapolation distance to prevent runaway drift
+                let offset = extrapolated - user.position;
+                let target = if offset.length() > MAX_EXTRAPOLATION_DISTANCE {
+                    user.position + offset.normalize() * MAX_EXTRAPOLATION_DISTANCE
+                } else {
+                    extrapolated
+                };
+
+                // Smooth lerp display_position toward the extrapolated target
+                let t = (AVATAR_POS_LERP_SPEED * dt).min(1.0);
+                user.display_position = user.display_position.lerp(target, t);
+            }
+
+            let render_pos = user.display_position;
             let yaw = if user.is_self {
                 self.state.smooth_avatar_yaw
             } else {
@@ -484,7 +511,7 @@ impl NostrverseApp {
             };
 
             let transform = Transform {
-                translation: user.position + Vec3::new(0.0, avatar_y_offset, 0.0),
+                translation: render_pos + Vec3::new(0.0, avatar_y_offset, 0.0),
                 rotation: glam::Quat::from_rotation_y(yaw),
                 scale: Vec3::splat(AVATAR_SCALE),
             };
