@@ -1059,6 +1059,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::Delete(id) => {
                     self.delete_session(id);
                 }
+                SessionListAction::Rename(id, new_title) => {
+                    self.rename_session(id, new_title);
+                }
             }
         }
 
@@ -1092,6 +1095,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::Delete(id) => {
                     self.delete_session(id);
+                }
+                SessionListAction::Rename(id, new_title) => {
+                    self.rename_session(id, new_title);
                 }
             }
         }
@@ -1319,7 +1325,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         };
 
         for session in self.session_manager.iter_mut() {
-            if !session.state_dirty || session.is_remote() {
+            if !session.state_dirty {
                 continue;
             }
 
@@ -1339,6 +1345,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 session_events::build_session_state_event(
                     &claude_sid,
                     &session.details.title,
+                    session.details.custom_title.as_deref(),
                     &cwd,
                     status,
                     &self.hostname,
@@ -1371,6 +1378,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 session_events::build_session_state_event(
                     &info.claude_session_id,
                     &info.title,
+                    None,
                     &info.cwd,
                     "deleted",
                     &self.hostname,
@@ -1500,6 +1508,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 } else {
                     self.hostname.clone()
                 };
+
+                session.details.custom_title = state.custom_title.clone();
 
                 // Use home_dir from the event for remote abbreviation
                 if !state.home_dir.is_empty() {
@@ -1631,14 +1641,23 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if existing_ids.contains(claude_sid) {
                 let ts = note.created_at();
                 let new_status = AgentStatus::from_status_str(status_str);
+                let new_custom_title =
+                    session_events::get_tag_value(&note, "custom_title").map(|s| s.to_string());
                 for session in self.session_manager.iter_mut() {
-                    if session.is_remote() {
-                        if let Some(agentic) = &mut session.agentic {
-                            if agentic.event_session_id() == Some(claude_sid)
-                                && ts > agentic.remote_status_ts
-                            {
+                    let is_remote = session.is_remote();
+                    if let Some(agentic) = &mut session.agentic {
+                        if agentic.event_session_id() == Some(claude_sid)
+                            && ts > agentic.remote_status_ts
+                        {
+                            agentic.remote_status_ts = ts;
+                            // custom_title syncs for both local and remote
+                            if new_custom_title.is_some() {
+                                session.details.custom_title = new_custom_title.clone();
+                            }
+                            // Status only updates for remote sessions (local
+                            // sessions derive status from the actual process)
+                            if is_remote {
                                 agentic.remote_status = new_status;
-                                agentic.remote_status_ts = ts;
                             }
                         }
                     }
@@ -1676,6 +1695,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 session.details.hostname = state.hostname.clone();
+                session.details.custom_title = state.custom_title.clone();
                 if !state.home_dir.is_empty() {
                     session.details.home_dir = state.home_dir.clone();
                 }
@@ -1970,7 +1990,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         (remote_user_messages, events_to_publish)
     }
 
-    /// Delete a session and clean up backend resources
+    fn rename_session(&mut self, id: SessionId, new_title: String) {
+        let Some(session) = self.session_manager.get_mut(id) else {
+            return;
+        };
+        session.details.custom_title = Some(new_title);
+        session.state_dirty = true;
+    }
+
     fn delete_session(&mut self, id: SessionId) {
         // Capture session info before deletion so we can publish a "deleted" state event
         if let Some(session) = self.session_manager.get(id) {

@@ -1374,7 +1374,7 @@ fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
         ui.add(
-            egui::Label::new(egui::RichText::new(&details.title).size(13.0))
+            egui::Label::new(egui::RichText::new(details.display_title()).size(13.0))
                 .wrap_mode(egui::TextWrapMode::Truncate),
         );
         if let Some(cwd) = &details.cwd {

@@ -649,9 +649,11 @@ pub fn build_permission_response_event(
 /// Published on every status change so remote clients and startup restore
 /// can discover active sessions. nostrdb auto-replaces older versions
 /// with same (kind, pubkey, d-tag).
+#[allow(clippy::too_many_arguments)]
 pub fn build_session_state_event(
     claude_session_id: &str,
     title: &str,
+    custom_title: Option<&str>,
     cwd: &str,
     status: &str,
     hostname: &str,
@@ -665,6 +667,9 @@ pub fn build_session_state_event(
 
     // Session metadata as tags
     builder = builder.start_tag().tag_str("title").tag_str(title);
+    if let Some(ct) = custom_title {
+        builder = builder.start_tag().tag_str("custom_title").tag_str(ct);
+    }
     builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
     builder = builder.start_tag().tag_str("status").tag_str(status);
     builder = builder.start_tag().tag_str("hostname").tag_str(hostname);
@@ -1116,6 +1121,7 @@ mod tests {
         let event = build_session_state_event(
             "sess-state-test",
             "Fix the login bug",
+            Some("My Custom Title"),
             "/tmp/project",
             "working",
             "my-laptop",

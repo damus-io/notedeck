@@ -263,7 +263,7 @@ pub fn scene_ui(
                     .show(ui, |ui| {
                         if let Some(selected_id) = scene.primary_selection() {
                             if let Some(session) = session_manager.get_mut(selected_id) {
-                                ui.heading(&session.details.title);
+                                ui.heading(session.details.display_title());
                                 ui.separator();
 
                                 let response = build_dave_ui(

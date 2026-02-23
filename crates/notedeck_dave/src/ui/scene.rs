@@ -165,7 +165,7 @@ impl AgentScene {
                         let keybind_number = keybind_idx + 1; // 1-indexed for display
                         let position = agentic.scene_position;
                         let status = session.status();
-                        let title = &session.details.title;
+                        let title = session.details.display_title();
                         let is_selected = selected_ids.contains(&id);
                         let queue_priority = focus_queue.get_session_priority(id);
 
