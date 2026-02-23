@@ -3,6 +3,7 @@
 use egui::{Color32, Pos2, Rect, Response, Sense, Ui};
 use glam::Vec3;
 
+use super::convert;
 use super::room_state::{NostrverseAction, NostrverseState, RoomObject, RoomShape};
 
 /// Response from rendering the nostrverse view
@@ -335,5 +336,181 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
         action = Some(NostrverseAction::SaveRoom);
     }
 
+    // --- Scene body (syntax-highlighted, read-only) ---
+    ui.add_space(12.0);
+    ui.strong("Scene");
+    ui.separator();
+    if let Some(room) = &state.room {
+        let space = convert::build_space(room, &state.objects);
+        let text = protoverse::serialize(&space);
+        let layout_job = highlight_sexp(&text, ui);
+        let code_bg = if ui.visuals().dark_mode {
+            Color32::from_rgb(0x1E, 0x1C, 0x19)
+        } else {
+            Color32::from_rgb(0xF5, 0xF0, 0xEB)
+        };
+        egui::Frame::default()
+            .fill(code_bg)
+            .inner_margin(6.0)
+            .corner_radius(4.0)
+            .show(ui, |ui| {
+                ui.add(egui::Label::new(layout_job).wrap());
+            });
+    }
+
     action
+}
+
+// --- S-expression syntax highlighting ---
+
+#[derive(Clone, Copy)]
+enum SexpToken {
+    Paren,
+    Keyword,
+    Symbol,
+    String,
+    Number,
+    Whitespace,
+}
+
+/// Tokenize S-expression text for highlighting, preserving all characters.
+fn tokenize_sexp(input: &str) -> Vec<(SexpToken, &str)> {
+    let bytes = input.as_bytes();
+    let mut tokens = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let start = i;
+        match bytes[i] {
+            b'(' | b')' => {
+                tokens.push((SexpToken::Paren, &input[i..i + 1]));
+                i += 1;
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                if i < bytes.len() {
+                    i += 1; // closing quote
+                }
+                tokens.push((SexpToken::String, &input[start..i]));
+            }
+            c if c.is_ascii_whitespace() => {
+                while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                    i += 1;
+                }
+                tokens.push((SexpToken::Whitespace, &input[start..i]));
+            }
+            c if c.is_ascii_digit()
+                || (c == b'-' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit()) =>
+            {
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_digit() || bytes[i] == b'.' || bytes[i] == b'-')
+                {
+                    i += 1;
+                }
+                tokens.push((SexpToken::Number, &input[start..i]));
+            }
+            c if c.is_ascii_alphabetic() || c == b'-' || c == b'_' => {
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'-' || bytes[i] == b'_')
+                {
+                    i += 1;
+                }
+                let word = &input[start..i];
+                let kind = if is_sexp_keyword(word) {
+                    SexpToken::Keyword
+                } else {
+                    SexpToken::Symbol
+                };
+                tokens.push((kind, word));
+            }
+            _ => {
+                tokens.push((SexpToken::Symbol, &input[i..i + 1]));
+                i += 1;
+            }
+        }
+    }
+    tokens
+}
+
+fn is_sexp_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "room"
+            | "group"
+            | "table"
+            | "chair"
+            | "door"
+            | "light"
+            | "prop"
+            | "name"
+            | "id"
+            | "shape"
+            | "width"
+            | "height"
+            | "depth"
+            | "position"
+            | "location"
+            | "model-url"
+            | "material"
+            | "condition"
+            | "state"
+            | "type"
+    )
+}
+
+/// Build a syntax-highlighted LayoutJob from S-expression text.
+fn highlight_sexp(code: &str, ui: &Ui) -> egui::text::LayoutJob {
+    let font_id = ui
+        .style()
+        .override_font_id
+        .clone()
+        .unwrap_or_else(|| egui::TextStyle::Monospace.resolve(ui.style()));
+
+    let dark = ui.visuals().dark_mode;
+
+    let paren_color = if dark {
+        Color32::from_rgb(0xA0, 0x96, 0x88)
+    } else {
+        Color32::from_rgb(0x6E, 0x64, 0x56)
+    };
+    let keyword_color = if dark {
+        Color32::from_rgb(0xD4, 0xA5, 0x74)
+    } else {
+        Color32::from_rgb(0x9A, 0x60, 0x2A)
+    };
+    let symbol_color = if dark {
+        Color32::from_rgb(0xD5, 0xCE, 0xC4)
+    } else {
+        Color32::from_rgb(0x3A, 0x35, 0x2E)
+    };
+    let string_color = if dark {
+        Color32::from_rgb(0xC6, 0xB4, 0x6A)
+    } else {
+        Color32::from_rgb(0x6B, 0x5C, 0x1A)
+    };
+    let number_color = if dark {
+        Color32::from_rgb(0xC4, 0x8A, 0x6A)
+    } else {
+        Color32::from_rgb(0x8B, 0x4C, 0x30)
+    };
+
+    let mut job = egui::text::LayoutJob::default();
+    for (token, text) in tokenize_sexp(code) {
+        let color = match token {
+            SexpToken::Paren => paren_color,
+            SexpToken::Keyword => keyword_color,
+            SexpToken::Symbol => symbol_color,
+            SexpToken::String => string_color,
+            SexpToken::Number => number_color,
+            SexpToken::Whitespace => Color32::TRANSPARENT,
+        };
+        job.append(text, 0.0, egui::TextFormat::simple(font_id.clone(), color));
+    }
+    job
 }
