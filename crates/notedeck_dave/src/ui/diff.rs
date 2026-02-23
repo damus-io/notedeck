@@ -37,15 +37,13 @@ pub fn file_update_ui(update: &FileUpdate, is_local: bool, ui: &mut Ui) {
             egui::ScrollArea::horizontal().show(ui, |ui| {
                 if let Some(ctx) = &expanded {
                     // "Expand above" button
-                    if ctx.has_more_above {
-                        if expand_button(ui, true) {
-                            ui.data_mut(|d| {
-                                d.insert_temp(
-                                    expand_id,
-                                    (extra_above + EXPAND_LINES_PER_CLICK, extra_below),
-                                );
-                            });
-                        }
+                    if ctx.has_more_above && expand_button(ui, true) {
+                        ui.data_mut(|d| {
+                            d.insert_temp(
+                                expand_id,
+                                (extra_above + EXPAND_LINES_PER_CLICK, extra_below),
+                            );
+                        });
                     }
 
                     // Build combined lines: above + core diff + below
@@ -59,15 +57,13 @@ pub fn file_update_ui(update: &FileUpdate, is_local: bool, ui: &mut Ui) {
                     render_diff_lines(&combined, &update.update_type, ctx.start_line, ui);
 
                     // "Expand below" button
-                    if ctx.has_more_below {
-                        if expand_button(ui, false) {
-                            ui.data_mut(|d| {
-                                d.insert_temp(
-                                    expand_id,
-                                    (extra_above, extra_below + EXPAND_LINES_PER_CLICK),
-                                );
-                            });
-                        }
+                    if ctx.has_more_below && expand_button(ui, false) {
+                        ui.data_mut(|d| {
+                            d.insert_temp(
+                                expand_id,
+                                (extra_above, extra_below + EXPAND_LINES_PER_CLICK),
+                            );
+                        });
                     }
                 } else {
                     // No expansion available: render as before (line numbers from 1)
