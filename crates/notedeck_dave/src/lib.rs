@@ -66,6 +66,11 @@ pub use vec3::Vec3;
 /// Default relay URL used for PNS event publishing and subscription.
 const DEFAULT_PNS_RELAY: &str = "ws://relay.jb55.com/";
 
+/// Maximum consecutive negentropy sync rounds before stopping.
+/// Each round pulls up to the relay's limit (typically 500 events),
+/// so 5 rounds fetches up to ~2500 recent events.
+const MAX_NEG_SYNC_ROUNDS: u8 = 5;
+
 /// Normalize a relay URL to always have a trailing slash.
 fn normalize_relay_url(url: String) -> String {
     if url.ends_with('/') {
@@ -161,6 +166,12 @@ pub struct Dave {
     hostname: String,
     /// PNS relay URL (configurable via DAVE_RELAY env or settings UI).
     pns_relay_url: String,
+    /// Negentropy sync state for PNS event reconciliation.
+    neg_sync: enostr::negentropy::NegentropySync,
+    /// How many consecutive negentropy sync rounds have completed.
+    /// Reset on startup/reconnect, incremented each time events are found.
+    /// Caps at [`MAX_NEG_SYNC_ROUNDS`] to avoid pulling the entire history.
+    neg_sync_round: u8,
     /// Persists DaveSettings to dave_settings.json
     settings_serializer: TimedSerializer<DaveSettings>,
 }
@@ -420,6 +431,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_summaries: Vec::new(),
             hostname,
             pns_relay_url,
+            neg_sync: enostr::negentropy::NegentropySync::new(),
+            neg_sync_round: 0,
             settings_serializer,
         }
     }
@@ -1633,31 +1646,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             }
 
-            let title = session_events::get_tag_value(&note, "title")
-                .unwrap_or("Untitled")
-                .to_string();
-            let cwd_str = session_events::get_tag_value(&note, "cwd").unwrap_or("");
-            let cwd = std::path::PathBuf::from(cwd_str);
-            let hostname = session_events::get_tag_value(&note, "hostname")
-                .unwrap_or("")
-                .to_string();
-            let home_dir = session_events::get_tag_value(&note, "home_dir")
-                .unwrap_or("")
-                .to_string();
+            // Look up the latest revision of this session. PNS wrapping
+            // causes old revisions (including pre-deletion) to arrive from
+            // the relay. Only create a session if the latest revision is valid.
+            let Some(state) = session_loader::latest_valid_session(ctx.ndb, &txn, claude_sid)
+            else {
+                continue;
+            };
 
             tracing::info!(
                 "discovered new session from relay: '{}' ({}) on {}",
-                title,
+                state.title,
                 claude_sid,
-                hostname,
+                state.hostname,
             );
 
             existing_ids.insert(claude_sid.to_string());
 
+            let cwd = std::path::PathBuf::from(&state.cwd);
             let dave_sid = self.session_manager.new_resumed_session(
                 cwd,
                 claude_sid.to_string(),
-                title.clone(),
+                state.title.clone(),
                 AiMode::Agentic,
             );
 
@@ -1665,9 +1675,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let loaded = session_loader::load_session_messages(ctx.ndb, &txn, claude_sid);
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
-                session.details.hostname = hostname;
-                if !home_dir.is_empty() {
-                    session.details.home_dir = home_dir;
+                session.details.hostname = state.hostname.clone();
+                if !state.home_dir.is_empty() {
+                    session.details.home_dir = state.home_dir.clone();
                 }
                 if !loaded.messages.is_empty() {
                     tracing::info!(
@@ -1678,7 +1688,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
 
                 // Determine if this is a remote session
-                let cwd_path = std::path::PathBuf::from(cwd_str);
+                let cwd_path = std::path::PathBuf::from(&state.cwd);
                 if !cwd_path.exists() {
                     session.source = session::SessionSource::Remote;
                 }
@@ -1694,8 +1704,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     );
                     agentic.seen_note_ids = loaded.note_ids;
                     // Set remote status
-                    agentic.remote_status = AgentStatus::from_status_str(status_str);
-                    agentic.remote_status_ts = note.created_at();
+                    agentic.remote_status = AgentStatus::from_status_str(&state.status);
+                    agentic.remote_status_ts = state.created_at;
 
                     // Set up live conversation subscription so we can
                     // receive messages from remote clients (e.g. phone)
@@ -1710,7 +1720,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 agentic.live_conversation_sub = Some(sub);
                                 tracing::info!(
                                     "subscribed for live conversation events for session '{}'",
-                                    &title,
+                                    &state.title,
                                 );
                             }
                             Err(e) => {
@@ -2201,9 +2211,11 @@ impl notedeck::App for Dave {
         // Re-send PNS subscription when the relay (re)connects.
         let pns_sub_id = self.pns_relay_sub.clone();
         let pns_relay = self.pns_relay_url.clone();
+        let mut neg_events: Vec<enostr::negentropy::NegEvent> = Vec::new();
         try_process_events_core(ctx, ui.ctx(), |app_ctx, ev| {
-            if let enostr::RelayEvent::Opened = (&ev.event).into() {
-                if ev.relay == pns_relay {
+            if ev.relay == pns_relay {
+                if let enostr::RelayEvent::Opened = (&ev.event).into() {
+                    neg_events.push(enostr::negentropy::NegEvent::RelayOpened);
                     if let Some(sub_id) = &pns_sub_id {
                         if let Some(sk) =
                             app_ctx.accounts.get_selected_account().keypair().secret_key
@@ -2212,6 +2224,7 @@ impl notedeck::App for Dave {
                             let pns_filter = nostrdb::Filter::new()
                                 .kinds([enostr::pns::PNS_KIND as u64])
                                 .authors([pns_keys.keypair.pubkey.bytes()])
+                                .limit(500)
                                 .build();
                             let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
                             app_ctx.pool.send_to(&req, &pns_relay);
@@ -2219,8 +2232,52 @@ impl notedeck::App for Dave {
                         }
                     }
                 }
+
+                neg_events.extend(enostr::negentropy::NegEvent::from_relay(&ev.event));
             }
         });
+
+        // Reset round counter on relay reconnect so we do a fresh burst
+        if neg_events
+            .iter()
+            .any(|e| matches!(e, enostr::negentropy::NegEvent::RelayOpened))
+        {
+            self.neg_sync_round = 0;
+        }
+
+        // Negentropy sync: reconcile local events against PNS relay,
+        // fetch any missing kind-1080 events via standard REQ.
+        if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
+            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
+            let filter = nostrdb::Filter::new()
+                .kinds([enostr::pns::PNS_KIND as u64])
+                .authors([pns_keys.keypair.pubkey.bytes()])
+                .limit(500)
+                .build();
+            let fetched =
+                self.neg_sync
+                    .process(neg_events, ctx.ndb, ctx.pool, &filter, &self.pns_relay_url);
+
+            // If events were found and we haven't hit the round limit,
+            // trigger another sync to pull more recent data.
+            if fetched > 0 {
+                self.neg_sync_round += 1;
+                if self.neg_sync_round < MAX_NEG_SYNC_ROUNDS {
+                    tracing::info!(
+                        "negentropy: scheduling round {}/{} (got {} events)",
+                        self.neg_sync_round + 1,
+                        MAX_NEG_SYNC_ROUNDS,
+                        fetched
+                    );
+                    self.neg_sync.trigger_now();
+                } else {
+                    tracing::info!(
+                        "negentropy: reached max rounds ({}), stopping",
+                        MAX_NEG_SYNC_ROUNDS
+                    );
+                }
+            }
+        }
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
@@ -2251,6 +2308,10 @@ impl notedeck::App for Dave {
 
             self.restore_sessions_from_ndb(ctx);
 
+            // Trigger initial negentropy sync after startup
+            self.neg_sync.trigger_now();
+            self.neg_sync_round = 0;
+
             // Subscribe to PNS events on relays for session discovery from other devices.
             // Also subscribe locally in ndb for kind-31988 session state events
             // so we detect new sessions appearing after PNS unwrapping.
@@ -2268,6 +2329,7 @@ impl notedeck::App for Dave {
                 let pns_filter = nostrdb::Filter::new()
                     .kinds([enostr::pns::PNS_KIND as u64])
                     .authors([pns_keys.keypair.pubkey.bytes()])
+                    .limit(500)
                     .build();
                 let sub_id = uuid::Uuid::new_v4().to_string();
                 let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);

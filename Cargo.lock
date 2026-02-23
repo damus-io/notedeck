@@ -2118,6 +2118,7 @@ dependencies = [
  "hex",
  "hkdf",
  "mio",
+ "negentropy 0.5.0",
  "nostr 0.37.0",
  "nostrdb",
  "serde",
@@ -2129,6 +2130,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

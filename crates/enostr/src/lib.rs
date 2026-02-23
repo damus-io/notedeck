@@ -2,6 +2,7 @@ mod client;
 mod error;
 mod filter;
 mod keypair;
+pub mod negentropy;
 mod note;
 pub mod pns;
 mod profile;

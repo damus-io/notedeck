@@ -24,3 +24,5 @@ hashbrown = { workspace = true }
 hkdf = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+negentropy = { workspace = true }
+uuid = { workspace = true }

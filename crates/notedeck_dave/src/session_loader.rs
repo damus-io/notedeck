@@ -296,6 +296,47 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
     states
 }
 
+/// Look up the latest valid revision of a single session by d-tag.
+///
+/// PNS wrapping causes relays to store all revisions of replaceable
+/// events. This queries for the latest revision and returns it only
+/// if it's non-deleted and in the current format.
+pub fn latest_valid_session(
+    ndb: &Ndb,
+    txn: &Transaction,
+    session_id: &str,
+) -> Option<SessionState> {
+    use crate::session_events::AI_SESSION_STATE_KIND;
+
+    let filter = Filter::new()
+        .kinds([AI_SESSION_STATE_KIND as u64])
+        .tags([session_id], 'd')
+        .limit(1)
+        .build();
+
+    let results = ndb.query(txn, &[filter], 1).ok()?;
+    let note = &results.first()?.note;
+
+    if get_tag_value(note, "status") == Some("deleted") {
+        return None;
+    }
+    if note.content().starts_with('{') {
+        return None;
+    }
+
+    Some(SessionState {
+        claude_session_id: session_id.to_string(),
+        title: get_tag_value(note, "title")
+            .unwrap_or("Untitled")
+            .to_string(),
+        cwd: get_tag_value(note, "cwd").unwrap_or("").to_string(),
+        status: get_tag_value(note, "status").unwrap_or("idle").to_string(),
+        hostname: get_tag_value(note, "hostname").unwrap_or("").to_string(),
+        home_dir: get_tag_value(note, "home_dir").unwrap_or("").to_string(),
+        created_at: note.created_at(),
+    })
+}
+
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()

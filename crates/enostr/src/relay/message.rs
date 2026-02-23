@@ -43,10 +43,16 @@ impl<'a> From<&'a WsEvent> for RelayEvent<'a> {
 impl<'a> From<&'a WsMessage> for RelayEvent<'a> {
     fn from(wsmsg: &'a WsMessage) -> RelayEvent<'a> {
         match wsmsg {
-            WsMessage::Text(s) => match RelayMessage::from_json(s).map(RelayEvent::Message) {
-                Ok(msg) => msg,
-                Err(err) => RelayEvent::Error(err),
-            },
+            WsMessage::Text(s) => {
+                // NIP-77 negentropy messages are handled separately via NegEvent
+                if s.starts_with("[\"NEG-") {
+                    return RelayEvent::Other(wsmsg);
+                }
+                match RelayMessage::from_json(s).map(RelayEvent::Message) {
+                    Ok(msg) => msg,
+                    Err(err) => RelayEvent::Error(err),
+                }
+            }
             wsmsg => RelayEvent::Other(wsmsg),
         }
     }
