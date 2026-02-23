@@ -109,6 +109,8 @@ pub struct RoomObject {
     pub location: Option<ObjectLocation>,
     /// 3D position in world space
     pub position: Vec3,
+    /// Base position from resolved location (used to compute offset for saving)
+    pub location_base: Option<Vec3>,
     /// 3D rotation
     pub rotation: Quat,
     /// 3D scale
@@ -128,6 +130,7 @@ impl RoomObject {
             model_url: None,
             location: None,
             position,
+            location_base: None,
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
             scene_object_id: None,

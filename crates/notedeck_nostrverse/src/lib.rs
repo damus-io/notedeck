@@ -91,6 +91,8 @@ pub struct NostrverseApp {
     presence_sub: Option<subscriptions::PresenceSubscription>,
     /// Cached room naddr string (avoids format! per frame)
     room_naddr: String,
+    /// Event ID of the last save we made (to skip our own echo in polls)
+    last_save_id: Option<[u8; 32]>,
     /// Monotonic time tracker (seconds since app start)
     start_time: std::time::Instant,
 }
@@ -116,6 +118,7 @@ impl NostrverseApp {
             presence_expiry: presence::PresenceExpiry::new(),
             presence_sub: None,
             room_naddr,
+            last_save_id: None,
             start_time: std::time::Instant::now(),
         }
     }
@@ -147,28 +150,33 @@ impl NostrverseApp {
             return;
         }
 
-        // Parse the demo room and ingest it as a local nostr event
-        let space = match protoverse::parse(DEMO_SPACE) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("Failed to parse demo space: {}", e);
-                return;
-            }
-        };
-
-        // Ingest as a local-only room event if we have a keypair
-        if let Some(kp) = ctx.accounts.selected_filled() {
-            let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
-            nostr_events::ingest_event(builder, ctx.ndb, kp);
-        }
-
         // Subscribe to room and presence events in local nostrdb
         self.room_sub = Some(subscriptions::RoomSubscription::new(ctx.ndb));
         self.presence_sub = Some(subscriptions::PresenceSubscription::new(ctx.ndb));
 
-        // Query for any existing room events (including the one we just ingested)
+        // Try to load an existing room from nostrdb first
         let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
         self.load_room_from_ndb(ctx.ndb, &txn);
+
+        // Only ingest the demo room if no saved room was found
+        if self.state.room.is_none() {
+            let space = match protoverse::parse(DEMO_SPACE) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Failed to parse demo space: {}", e);
+                    return;
+                }
+            };
+
+            if let Some(kp) = ctx.accounts.selected_filled() {
+                let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
+                nostr_events::ingest_event(builder, ctx.ndb, kp);
+            }
+
+            // Re-load now that we've ingested the demo
+            let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+            self.load_room_from_ndb(ctx.ndb, &txn);
+        }
 
         // Add self user
         let self_pubkey = *ctx.accounts.selected_account_pubkey();
@@ -213,9 +221,32 @@ impl NostrverseApp {
     }
 
     /// Apply a parsed Space to the room state: convert, load models, update state.
+    /// Preserves renderer scene handles for objects that still exist by ID,
+    /// and removes orphaned scene objects from the renderer.
     fn apply_space(&mut self, space: &protoverse::Space) {
         let (room, mut objects) = convert::convert_space(space);
         self.state.room = Some(room);
+
+        // Transfer scene/model handles from existing objects with matching IDs
+        for new_obj in &mut objects {
+            if let Some(old_obj) = self.state.objects.iter().find(|o| o.id == new_obj.id) {
+                new_obj.scene_object_id = old_obj.scene_object_id;
+                new_obj.model_handle = old_obj.model_handle;
+            }
+        }
+
+        // Remove orphaned scene objects (old objects not in the new set)
+        if let Some(renderer) = &self.renderer {
+            let mut r = renderer.renderer.lock().unwrap();
+            for old_obj in &self.state.objects {
+                if let Some(scene_id) = old_obj.scene_object_id
+                    && !objects.iter().any(|o| o.id == old_obj.id)
+                {
+                    r.remove_object(scene_id);
+                }
+            }
+        }
+
         self.load_object_models(&mut objects);
         self.state.objects = objects;
         self.state.dirty = false;
@@ -245,7 +276,7 @@ impl NostrverseApp {
     }
 
     /// Save current room state: build Space, serialize, ingest as new nostr event.
-    fn save_room(&self, ctx: &mut AppContext<'_>) {
+    fn save_room(&mut self, ctx: &mut AppContext<'_>) {
         let Some(room) = &self.state.room else {
             tracing::warn!("save_room: no room to save");
             return;
@@ -257,7 +288,7 @@ impl NostrverseApp {
 
         let space = convert::build_space(room, &self.state.objects);
         let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
-        nostr_events::ingest_event(builder, ctx.ndb, kp);
+        self.last_save_id = nostr_events::ingest_event(builder, ctx.ndb, kp);
         tracing::info!("Saved room '{}'", self.state.room_ref.id);
     }
 
@@ -284,62 +315,49 @@ impl NostrverseApp {
             }
         }
 
-        // Phase 2: Resolve semantic locations to positions
-        // Collect resolved positions first to avoid borrow issues
-        let mut resolved: Vec<(usize, Vec3)> = Vec::new();
+        // Phase 2: Resolve semantic locations to local offsets from parent.
+        // For parented objects (TopOf, Near), the position becomes local to the parent node.
+        // The location_base stores the bounds-derived offset so the editor can show user offset.
+        let mut resolved: Vec<(usize, Vec3, Vec3)> = Vec::new();
 
         for (i, obj) in objects.iter().enumerate() {
             let Some(loc) = &obj.location else {
                 continue;
             };
 
-            match loc {
+            let local_base = match loc {
                 room_state::ObjectLocation::TopOf(target_id) => {
-                    // Find the target object's position and top-of-AABB
-                    let target = objects.iter().find(|o| o.id == *target_id);
-                    if let Some(target) = target {
-                        let target_top =
-                            bounds_by_id.get(target_id).map(|b| b.max.y).unwrap_or(0.0);
-                        let self_half_h = bounds_by_id
-                            .get(&obj.id)
-                            .map(|b| (b.max.y - b.min.y) * 0.5)
-                            .unwrap_or(0.0);
-                        let pos = Vec3::new(
-                            target.position.x,
-                            target_top + self_half_h,
-                            target.position.z,
-                        );
-                        resolved.push((i, pos));
-                    }
+                    let target_top = bounds_by_id.get(target_id).map(|b| b.max.y).unwrap_or(0.0);
+                    let self_half_h = bounds_by_id
+                        .get(&obj.id)
+                        .map(|b| (b.max.y - b.min.y) * 0.5)
+                        .unwrap_or(0.0);
+                    Some(Vec3::new(0.0, target_top + self_half_h, 0.0))
                 }
                 room_state::ObjectLocation::Near(target_id) => {
-                    // Place nearby: offset by target's width + margin
-                    let target = objects.iter().find(|o| o.id == *target_id);
-                    if let Some(target) = target {
-                        let offset = bounds_by_id
-                            .get(target_id)
-                            .map(|b| b.max.x - b.min.x)
-                            .unwrap_or(1.0);
-                        let pos = Vec3::new(
-                            target.position.x + offset,
-                            target.position.y,
-                            target.position.z,
-                        );
-                        resolved.push((i, pos));
-                    }
+                    let offset = bounds_by_id
+                        .get(target_id)
+                        .map(|b| b.max.x - b.min.x)
+                        .unwrap_or(1.0);
+                    Some(Vec3::new(offset, 0.0, 0.0))
                 }
                 room_state::ObjectLocation::Floor => {
                     let self_half_h = bounds_by_id
                         .get(&obj.id)
                         .map(|b| (b.max.y - b.min.y) * 0.5)
                         .unwrap_or(0.0);
-                    resolved.push((i, Vec3::new(obj.position.x, self_half_h, obj.position.z)));
+                    Some(Vec3::new(0.0, self_half_h, 0.0))
                 }
-                _ => {}
+                _ => None,
+            };
+
+            if let Some(base) = local_base {
+                resolved.push((i, base, base + obj.position));
             }
         }
 
-        for (i, pos) in resolved {
+        for (i, base, pos) in resolved {
+            objects[i].location_base = Some(base);
             objects[i].position = pos;
         }
     }
@@ -357,6 +375,14 @@ impl NostrverseApp {
         let notes = sub.poll(ndb, &txn);
 
         for note in &notes {
+            // Skip our own save — the in-memory state is already correct
+            if let Some(last_id) = &self.last_save_id
+                && note.id() == last_id
+            {
+                self.last_save_id = None;
+                continue;
+            }
+
             let Some(room_id) = nostr_events::get_room_id(note) else {
                 continue;
             };
@@ -437,7 +463,15 @@ impl NostrverseApp {
         };
         let mut r = renderer.renderer.lock().unwrap();
 
-        // Sync room objects
+        // Build map of object string ID -> scene ObjectId for parenting lookups
+        let mut id_to_scene: std::collections::HashMap<String, renderbud::ObjectId> = self
+            .state
+            .objects
+            .iter()
+            .filter_map(|obj| Some((obj.id.clone(), obj.scene_object_id?)))
+            .collect();
+
+        // Sync room objects to the scene graph
         for obj in &mut self.state.objects {
             let transform = Transform {
                 translation: obj.position,
@@ -448,8 +482,23 @@ impl NostrverseApp {
             if let Some(scene_id) = obj.scene_object_id {
                 r.update_object_transform(scene_id, transform);
             } else if let Some(model) = obj.model_handle {
-                let scene_id = r.place_object(model, transform);
+                // Find parent scene node for objects with location references
+                let parent_scene_id = obj.location.as_ref().and_then(|loc| match loc {
+                    room_state::ObjectLocation::TopOf(target_id)
+                    | room_state::ObjectLocation::Near(target_id) => {
+                        id_to_scene.get(target_id).copied()
+                    }
+                    _ => None,
+                });
+
+                let scene_id = if let Some(parent_id) = parent_scene_id {
+                    r.place_object_with_parent(model, transform, parent_id)
+                } else {
+                    r.place_object(model, transform)
+                };
+
                 obj.scene_object_id = Some(scene_id);
+                id_to_scene.insert(obj.id.clone(), scene_id);
             }
         }
 

@@ -247,26 +247,30 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
             })
             .inner;
 
-        // Editable position
-        let mut px = obj.position.x;
-        let mut py = obj.position.y;
-        let mut pz = obj.position.z;
+        // Edit offset (relative to location base) or absolute position
+        let base = obj.location_base.unwrap_or(Vec3::ZERO);
+        let offset = obj.position - base;
+        let mut ox = offset.x;
+        let mut oy = offset.y;
+        let mut oz = offset.z;
+        let has_location = obj.location.is_some();
+        let pos_label = if has_location { "Offset:" } else { "Pos:" };
         let pos_changed = ui
             .horizontal(|ui| {
-                ui.label("Pos:");
+                ui.label(pos_label);
                 let x = ui
-                    .add(egui::DragValue::new(&mut px).speed(0.1).prefix("x:"))
+                    .add(egui::DragValue::new(&mut ox).speed(0.1).prefix("x:"))
                     .changed();
                 let y = ui
-                    .add(egui::DragValue::new(&mut py).speed(0.1).prefix("y:"))
+                    .add(egui::DragValue::new(&mut oy).speed(0.1).prefix("y:"))
                     .changed();
                 let z = ui
-                    .add(egui::DragValue::new(&mut pz).speed(0.1).prefix("z:"))
+                    .add(egui::DragValue::new(&mut oz).speed(0.1).prefix("z:"))
                     .changed();
                 x || y || z
             })
             .inner;
-        obj.position = Vec3::new(px, py, pz);
+        obj.position = base + Vec3::new(ox, oy, oz);
 
         // Editable scale (uniform)
         let mut sx = obj.scale.x;
