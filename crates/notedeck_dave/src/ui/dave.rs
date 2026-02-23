@@ -592,8 +592,9 @@ impl<'a> DaveUi<'a> {
                             // Header with file path
                             diff::file_path_header(&file_update, ui);
 
-                            // Diff view
-                            diff::file_update_ui(&file_update, ui);
+                            // Diff view (expand context only for local sessions)
+                            let is_local = !self.flags.contains(DaveUiFlags::IsRemote);
+                            diff::file_update_ui(&file_update, is_local, ui);
 
                             // Approve/deny buttons at the bottom left
                             ui.horizontal(|ui| {
