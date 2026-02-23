@@ -169,7 +169,12 @@ pub fn build_space(room: &Room, objects: &[RoomObject]) -> Space {
         if let Some(loc) = &obj.location {
             attributes.push(Attribute::Location(location_to_protoverse(loc)));
         }
-        let pos = obj.position;
+        // When the object has a resolved location base, save the offset
+        // from the base so that position remains relative to the location.
+        let pos = match obj.location_base {
+            Some(base) => obj.position - base,
+            None => obj.position,
+        };
         attributes.push(Attribute::Position(
             pos.x as f64,
             pos.y as f64,

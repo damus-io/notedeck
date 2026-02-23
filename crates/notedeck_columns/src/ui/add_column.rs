@@ -694,6 +694,7 @@ fn nip05_profile_ui(
     resp
 }
 
+#[allow(clippy::too_many_arguments)]
 fn contacts_list_column_ui(
     ui: &mut Ui,
     contacts: &ContactState,

@@ -30,11 +30,20 @@ pub enum SessionSource {
 /// Session metadata for display in chat headers
 pub struct SessionDetails {
     pub title: String,
+    /// User-set title that takes precedence over the auto-generated one.
+    pub custom_title: Option<String>,
     pub hostname: String,
     pub cwd: Option<PathBuf>,
     /// Home directory of the machine where this session originated.
     /// Used to abbreviate cwd paths for remote sessions.
     pub home_dir: String,
+}
+
+impl SessionDetails {
+    /// Returns custom_title if set, otherwise the auto-generated title.
+    pub fn display_title(&self) -> &str {
+        self.custom_title.as_deref().unwrap_or(&self.title)
+    }
 }
 
 /// Tracks the "Compact & Approve" lifecycle.
@@ -357,6 +366,7 @@ impl ChatSession {
             source: SessionSource::Local,
             details: SessionDetails {
                 title: "New Chat".to_string(),
+                custom_title: None,
                 hostname: String::new(),
                 cwd: details_cwd,
                 home_dir: dirs::home_dir()

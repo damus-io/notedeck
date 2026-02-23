@@ -15,6 +15,7 @@ pub enum SessionListAction {
     NewSession,
     SwitchTo(SessionId),
     Delete(SessionId),
+    Rename(SessionId, String),
 }
 
 /// UI component for displaying the session list sidebar
@@ -153,9 +154,22 @@ impl<'a> SessionListUi<'a> {
         let empty_path = PathBuf::new();
         let cwd = session.cwd().unwrap_or(&empty_path);
 
+        let rename_id = egui::Id::new("session_rename_state");
+        let mut renaming: Option<(SessionId, String)> =
+            ui.data(|d| d.get_temp::<(SessionId, String)>(rename_id));
+        let is_renaming = renaming
+            .as_ref()
+            .map(|(id, _)| *id == session.id)
+            .unwrap_or(false);
+
+        let display_title = if is_renaming {
+            ""
+        } else {
+            session.details.display_title()
+        };
         let response = self.session_item_ui(
             ui,
-            &session.details.title,
+            display_title,
             cwd,
             &session.details.home_dir,
             is_active,
@@ -166,10 +180,57 @@ impl<'a> SessionListUi<'a> {
         );
 
         let mut action = None;
-        if response.clicked() {
+
+        if is_renaming {
+            let outcome = renaming
+                .as_mut()
+                .and_then(|(_, buf)| inline_rename_ui(ui, &response, buf));
+            match outcome {
+                Some(RenameOutcome::Confirmed(title)) => {
+                    action = Some(SessionListAction::Rename(session.id, title));
+                    ui.data_mut(|d| d.remove_by_type::<(SessionId, String)>());
+                }
+                Some(RenameOutcome::Cancelled) => {
+                    ui.data_mut(|d| d.remove_by_type::<(SessionId, String)>());
+                }
+                None => {
+                    if let Some(r) = renaming {
+                        ui.data_mut(|d| d.insert_temp(rename_id, r));
+                    }
+                }
+            }
+        } else if response.clicked() {
             action = Some(SessionListAction::SwitchTo(session.id));
         }
+
+        // Long-press to rename (mobile)
+        if !is_renaming {
+            let press_id = egui::Id::new("session_long_press");
+            if response.is_pointer_button_down_on() {
+                let now = ui.input(|i| i.time);
+                let start: Option<PressStart> = ui.data(|d| d.get_temp(press_id));
+                if start.is_none() {
+                    ui.data_mut(|d| d.insert_temp(press_id, PressStart(now)));
+                } else if let Some(s) = start {
+                    if now - s.0 > 0.5 {
+                        let rename_state =
+                            (session.id, session.details.display_title().to_string());
+                        ui.data_mut(|d| d.insert_temp(rename_id, rename_state));
+                        ui.data_mut(|d| d.remove_by_type::<PressStart>());
+                    }
+                }
+            } else {
+                ui.data_mut(|d| d.remove_by_type::<PressStart>());
+            }
+        }
+
         response.context_menu(|ui| {
+            if ui.button("Rename").clicked() {
+                let rename_state = (session.id, session.details.display_title().to_string());
+                ui.ctx()
+                    .data_mut(|d| d.insert_temp(rename_id, rename_state));
+                ui.close_menu();
+            }
             if ui.button("Delete").clicked() {
                 action = Some(SessionListAction::Delete(session.id));
                 ui.close_menu();
@@ -291,6 +352,50 @@ impl<'a> SessionListUi<'a> {
         }
 
         response
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PressStart(f64);
+
+enum RenameOutcome {
+    Confirmed(String),
+    Cancelled,
+}
+
+fn inline_rename_ui(
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    buf: &mut String,
+) -> Option<RenameOutcome> {
+    let edit_rect = response.rect.shrink2(egui::vec2(8.0, 4.0));
+    let edit = egui::Area::new(egui::Id::new("rename_textedit"))
+        .fixed_pos(edit_rect.min)
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            ui.set_width(edit_rect.width());
+            ui.add(
+                egui::TextEdit::singleline(buf)
+                    .font(egui::FontId::proportional(14.0))
+                    .frame(false),
+            )
+        })
+        .inner;
+
+    if !edit.has_focus() && !edit.lost_focus() {
+        edit.request_focus();
+    }
+
+    if edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        Some(RenameOutcome::Confirmed(buf.clone()))
+    } else if edit.lost_focus() {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            Some(RenameOutcome::Cancelled)
+        } else {
+            Some(RenameOutcome::Confirmed(buf.clone()))
+        }
+    } else {
+        None
     }
 }
 

@@ -637,6 +637,23 @@ impl Renderer {
         self.world.add_object(model, transform)
     }
 
+    /// Place a loaded model as a child of an existing scene node.
+    /// The transform is local (relative to the parent).
+    pub fn place_object_with_parent(
+        &mut self,
+        model: Model,
+        transform: Transform,
+        parent: ObjectId,
+    ) -> ObjectId {
+        self.world.create_renderable(model, transform, Some(parent))
+    }
+
+    /// Set or clear the parent of a scene object.
+    /// When parented, the object's transform becomes local to the parent.
+    pub fn set_parent(&mut self, id: ObjectId, parent: Option<ObjectId>) -> bool {
+        self.world.set_parent(id, parent)
+    }
+
     /// Remove an object from the scene.
     pub fn remove_object(&mut self, id: ObjectId) -> bool {
         self.world.remove_object(id)

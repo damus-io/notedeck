@@ -109,6 +109,8 @@ pub struct RoomObject {
     pub location: Option<ObjectLocation>,
     /// 3D position in world space
     pub position: Vec3,
+    /// Base position from resolved location (used to compute offset for saving)
+    pub location_base: Option<Vec3>,
     /// 3D rotation
     pub rotation: Quat,
     /// 3D scale
@@ -128,6 +130,7 @@ impl RoomObject {
             model_url: None,
             location: None,
             position,
+            location_base: None,
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
             scene_object_id: None,
@@ -161,7 +164,14 @@ impl RoomObject {
 pub struct RoomUser {
     pub pubkey: Pubkey,
     pub display_name: String,
+    /// Authoritative position from last presence event
     pub position: Vec3,
+    /// Velocity from last presence event (units/second)
+    pub velocity: Vec3,
+    /// Smoothed display position (interpolated for remote users, direct for self)
+    pub display_position: Vec3,
+    /// Monotonic time when last presence update was received (extrapolation base)
+    pub update_time: f64,
     /// Whether this is the current user
     pub is_self: bool,
     /// Monotonic timestamp (seconds) of last presence update
@@ -178,6 +188,9 @@ impl RoomUser {
             pubkey,
             display_name,
             position,
+            velocity: Vec3::ZERO,
+            display_position: position,
+            update_time: 0.0,
             is_self: false,
             last_seen: 0.0,
             scene_object_id: None,

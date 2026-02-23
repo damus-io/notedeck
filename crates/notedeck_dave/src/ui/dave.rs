@@ -592,8 +592,9 @@ impl<'a> DaveUi<'a> {
                             // Header with file path
                             diff::file_path_header(&file_update, ui);
 
-                            // Diff view
-                            diff::file_update_ui(&file_update, ui);
+                            // Diff view (expand context only for local sessions)
+                            let is_local = !self.flags.contains(DaveUiFlags::IsRemote);
+                            diff::file_update_ui(&file_update, is_local, ui);
 
                             // Approve/deny buttons at the bottom left
                             ui.horizontal(|ui| {
@@ -1374,7 +1375,7 @@ fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
         ui.add(
-            egui::Label::new(egui::RichText::new(&details.title).size(13.0))
+            egui::Label::new(egui::RichText::new(details.display_title()).size(13.0))
                 .wrap_mode(egui::TextWrapMode::Truncate),
         );
         if let Some(cwd) = &details.cwd {

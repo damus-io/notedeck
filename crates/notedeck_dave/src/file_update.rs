@@ -1,5 +1,6 @@
 use serde_json::Value;
 use similar::{ChangeTag, TextDiff};
+use std::path::Path;
 
 /// Represents a proposed file modification from an AI tool call
 #[derive(Debug, Clone)]
@@ -43,6 +44,20 @@ impl From<ChangeTag> for DiffTag {
             ChangeTag::Insert => DiffTag::Insert,
         }
     }
+}
+
+/// Result of expanding diff context by reading the actual file from disk.
+pub struct ExpandedDiffContext {
+    /// Extra Equal lines loaded above the diff
+    pub above: Vec<DiffLine>,
+    /// Extra Equal lines loaded below the diff
+    pub below: Vec<DiffLine>,
+    /// 1-based line number in the file where the first displayed line starts
+    pub start_line: usize,
+    /// Whether there are more lines above that could be loaded
+    pub has_more_above: bool,
+    /// Whether there are more lines below that could be loaded
+    pub has_more_below: bool,
 }
 
 impl FileUpdate {
@@ -119,6 +134,65 @@ impl FileUpdate {
             }
             FileUpdateType::Write { .. } => false,
         }
+    }
+
+    /// Read the file from disk and expand context around the edit.
+    ///
+    /// Returns `None` if this is not an Edit, the file can't be read,
+    /// or `old_string` can't be found in the file.
+    pub fn expanded_context(
+        &self,
+        extra_above: usize,
+        extra_below: usize,
+    ) -> Option<ExpandedDiffContext> {
+        let FileUpdateType::Edit { old_string, .. } = &self.update_type else {
+            return None;
+        };
+
+        let file_content = std::fs::read_to_string(Path::new(&self.file_path)).ok()?;
+
+        // Find where old_string appears in the file
+        let byte_offset = file_content.find(old_string.as_str())?;
+
+        // Count newlines before the match to get 0-based start line index
+        let start_idx = file_content[..byte_offset]
+            .chars()
+            .filter(|&c| c == '\n')
+            .count();
+
+        let file_lines: Vec<&str> = file_content.lines().collect();
+        let total_lines = file_lines.len();
+
+        let old_line_count = old_string.lines().count();
+        let end_idx = start_idx + old_line_count; // exclusive, 0-based
+
+        // Extra lines above
+        let above_start = start_idx.saturating_sub(extra_above);
+        let above: Vec<DiffLine> = file_lines[above_start..start_idx]
+            .iter()
+            .map(|line| DiffLine {
+                tag: DiffTag::Equal,
+                content: format!("{}\n", line),
+            })
+            .collect();
+
+        // Extra lines below
+        let below_end = (end_idx + extra_below).min(total_lines);
+        let below: Vec<DiffLine> = file_lines[end_idx..below_end]
+            .iter()
+            .map(|line| DiffLine {
+                tag: DiffTag::Equal,
+                content: format!("{}\n", line),
+            })
+            .collect();
+
+        Some(ExpandedDiffContext {
+            start_line: above_start + 1, // 1-based
+            has_more_above: above_start > 0,
+            has_more_below: below_end < total_lines,
+            above,
+            below,
+        })
     }
 
     /// Compute the diff lines for an update type (internal helper)
