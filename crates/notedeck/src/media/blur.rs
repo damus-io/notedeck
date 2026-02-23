@@ -18,7 +18,7 @@ pub struct ImageMetadata {
     pub dimensions: Option<PixelDimensions>, // width and height in pixels
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
 pub struct PixelDimensions {
     pub x: u32,
     pub y: u32,
