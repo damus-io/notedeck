@@ -257,7 +257,7 @@ impl NostrverseApp {
 
     /// Load 3D models for objects, then resolve any semantic locations
     /// (e.g. "top-of obj1") to concrete positions using AABB bounds.
-    fn load_object_models(&self, objects: &mut Vec<RoomObject>) {
+    fn load_object_models(&self, objects: &mut [RoomObject]) {
         let renderer = self.renderer.as_ref();
         let model_bounds_fn = |m: Option<renderbud::Model>| -> Option<renderbud::Aabb> {
             let r = renderer?.renderer.lock().unwrap();

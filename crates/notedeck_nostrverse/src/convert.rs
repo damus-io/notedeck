@@ -71,7 +71,7 @@ fn collect_objects(space: &Space, id: CellId, objects: &mut Vec<RoomObject>) {
     let cell = space.cell(id);
 
     if let CellType::Object(ref obj_type) = cell.cell_type {
-        let obj_id = space.id_str(id).unwrap_or_else(|| "").to_string();
+        let obj_id = space.id_str(id).unwrap_or("").to_string();
 
         // Generate a fallback id if none specified
         let obj_id = if obj_id.is_empty() {

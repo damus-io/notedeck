@@ -245,93 +245,93 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
             ui.add_space(12.0);
 
             // --- Object Inspector ---
-            if let Some(selected_id) = state.selected_object.clone() {
-                if let Some(obj) = state.objects.iter_mut().find(|o| o.id == selected_id) {
-                    ui.strong("Inspector");
-                    ui.separator();
+            if let Some(selected_id) = state.selected_object.clone()
+                && let Some(obj) = state.objects.iter_mut().find(|o| o.id == selected_id)
+            {
+                ui.strong("Inspector");
+                ui.separator();
 
-                    ui.small(format!("ID: {}", obj.id));
+                ui.small(format!("ID: {}", obj.id));
+                ui.add_space(4.0);
+
+                // Editable name
+                let name_changed = ui
+                    .horizontal(|ui| {
+                        ui.label("Name:");
+                        ui.text_edit_singleline(&mut obj.name).changed()
+                    })
+                    .inner;
+
+                // Editable position
+                let mut px = obj.position.x;
+                let mut py = obj.position.y;
+                let mut pz = obj.position.z;
+                let pos_changed = ui
+                    .horizontal(|ui| {
+                        ui.label("Pos:");
+                        let x = ui
+                            .add(egui::DragValue::new(&mut px).speed(0.1).prefix("x:"))
+                            .changed();
+                        let y = ui
+                            .add(egui::DragValue::new(&mut py).speed(0.1).prefix("y:"))
+                            .changed();
+                        let z = ui
+                            .add(egui::DragValue::new(&mut pz).speed(0.1).prefix("z:"))
+                            .changed();
+                        x || y || z
+                    })
+                    .inner;
+                obj.position = Vec3::new(px, py, pz);
+
+                // Editable scale (uniform)
+                let mut sx = obj.scale.x;
+                let mut sy = obj.scale.y;
+                let mut sz = obj.scale.z;
+                let scale_changed = ui
+                    .horizontal(|ui| {
+                        ui.label("Scale:");
+                        let x = ui
+                            .add(
+                                egui::DragValue::new(&mut sx)
+                                    .speed(0.05)
+                                    .prefix("x:")
+                                    .range(0.01..=100.0),
+                            )
+                            .changed();
+                        let y = ui
+                            .add(
+                                egui::DragValue::new(&mut sy)
+                                    .speed(0.05)
+                                    .prefix("y:")
+                                    .range(0.01..=100.0),
+                            )
+                            .changed();
+                        let z = ui
+                            .add(
+                                egui::DragValue::new(&mut sz)
+                                    .speed(0.05)
+                                    .prefix("z:")
+                                    .range(0.01..=100.0),
+                            )
+                            .changed();
+                        x || y || z
+                    })
+                    .inner;
+                obj.scale = Vec3::new(sx, sy, sz);
+
+                // Model URL (read-only for now)
+                if let Some(url) = &obj.model_url {
                     ui.add_space(4.0);
+                    ui.small(format!("Model: {}", url));
+                }
 
-                    // Editable name
-                    let name_changed = ui
-                        .horizontal(|ui| {
-                            ui.label("Name:");
-                            ui.text_edit_singleline(&mut obj.name).changed()
-                        })
-                        .inner;
+                if name_changed || pos_changed || scale_changed {
+                    state.dirty = true;
+                }
 
-                    // Editable position
-                    let mut px = obj.position.x;
-                    let mut py = obj.position.y;
-                    let mut pz = obj.position.z;
-                    let pos_changed = ui
-                        .horizontal(|ui| {
-                            ui.label("Pos:");
-                            let x = ui
-                                .add(egui::DragValue::new(&mut px).speed(0.1).prefix("x:"))
-                                .changed();
-                            let y = ui
-                                .add(egui::DragValue::new(&mut py).speed(0.1).prefix("y:"))
-                                .changed();
-                            let z = ui
-                                .add(egui::DragValue::new(&mut pz).speed(0.1).prefix("z:"))
-                                .changed();
-                            x || y || z
-                        })
-                        .inner;
-                    obj.position = Vec3::new(px, py, pz);
-
-                    // Editable scale (uniform)
-                    let mut sx = obj.scale.x;
-                    let mut sy = obj.scale.y;
-                    let mut sz = obj.scale.z;
-                    let scale_changed = ui
-                        .horizontal(|ui| {
-                            ui.label("Scale:");
-                            let x = ui
-                                .add(
-                                    egui::DragValue::new(&mut sx)
-                                        .speed(0.05)
-                                        .prefix("x:")
-                                        .range(0.01..=100.0),
-                                )
-                                .changed();
-                            let y = ui
-                                .add(
-                                    egui::DragValue::new(&mut sy)
-                                        .speed(0.05)
-                                        .prefix("y:")
-                                        .range(0.01..=100.0),
-                                )
-                                .changed();
-                            let z = ui
-                                .add(
-                                    egui::DragValue::new(&mut sz)
-                                        .speed(0.05)
-                                        .prefix("z:")
-                                        .range(0.01..=100.0),
-                                )
-                                .changed();
-                            x || y || z
-                        })
-                        .inner;
-                    obj.scale = Vec3::new(sx, sy, sz);
-
-                    // Model URL (read-only for now)
-                    if let Some(url) = &obj.model_url {
-                        ui.add_space(4.0);
-                        ui.small(format!("Model: {}", url));
-                    }
-
-                    if name_changed || pos_changed || scale_changed {
-                        state.dirty = true;
-                    }
-
-                    ui.add_space(8.0);
-                    if ui.button("Delete Object").clicked() {
-                        action = Some(NostrverseAction::RemoveObject(selected_id));
-                    }
+                ui.add_space(8.0);
+                if ui.button("Delete Object").clicked() {
+                    action = Some(NostrverseAction::RemoveObject(selected_id));
                 }
             }
 

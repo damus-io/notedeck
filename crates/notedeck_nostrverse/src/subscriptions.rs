@@ -23,6 +23,7 @@ impl RoomSubscription {
     }
 
     /// Subscribe to room events from a specific author.
+    #[allow(dead_code)]
     pub fn for_author(ndb: &Ndb, author: &[u8; 32]) -> Self {
         let filter = Filter::new()
             .kinds([kinds::ROOM as u64])
