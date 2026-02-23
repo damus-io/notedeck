@@ -632,9 +632,11 @@ impl notedeck::App for NostrverseApp {
                         egui::vec2(panel_width, available.y),
                         egui::Layout::top_down(egui::Align::LEFT),
                         |ui| {
-                            if let Some(action) = render_editing_panel(ui, &mut self.state) {
-                                self.handle_action(action, ctx);
-                            }
+                            egui::Frame::default().inner_margin(8.0).show(ui, |ui| {
+                                if let Some(action) = render_editing_panel(ui, &mut self.state) {
+                                    self.handle_action(action, ctx);
+                                }
+                            });
                         },
                     );
                 }
