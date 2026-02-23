@@ -120,16 +120,13 @@ pub struct Renderer {
     grid_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
 
-    shadow_tex: wgpu::Texture,
     shadow_view: wgpu::TextureView,
-    shadow_sampler: wgpu::Sampler,
     shadow_globals_bg: wgpu::BindGroup,
 
     world: World,
     camera_mode: CameraMode,
 
     globals: GpuData<Globals>,
-    globals_bgl: wgpu::BindGroupLayout,
     object_buf: DynamicObjectBuffer,
     material: GpuData<MaterialUniform>,
 
@@ -264,7 +261,7 @@ fn make_dynamic_object_buffer(
     // Alignment for dynamic uniform buffer offsets (typically 256)
     let align = device.limits().min_uniform_buffer_offset_alignment as u64;
     let obj_size = std::mem::size_of::<ObjectUniform>() as u64;
-    let stride = ((obj_size + align - 1) / align) * align;
+    let stride = obj_size.div_ceil(align) * align;
     let total_size = stride * MAX_SCENE_OBJECTS as u64;
 
     let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -329,7 +326,7 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let (shadow_tex, shadow_view, shadow_sampler) = create_shadow_map(device);
+        let (_shadow_tex, shadow_view, shadow_sampler) = create_shadow_map(device);
         let globals_bgl = make_globals_bgl(device);
         let globals = make_global_gpudata(
             device,
@@ -595,12 +592,9 @@ impl Renderer {
             skybox_pipeline,
             grid_pipeline,
             shadow_pipeline,
-            shadow_tex,
             shadow_view,
-            shadow_sampler,
             shadow_globals_bg,
             globals,
-            globals_bgl,
             object_buf,
             material,
             material_bgl,

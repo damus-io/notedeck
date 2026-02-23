@@ -365,7 +365,7 @@ pub fn load_gltf_model(
                 bounds.include_point(Vec3::new(pos[0], pos[1], pos[2]));
 
                 verts.push(Vertex {
-                    pos: pos,
+                    pos,
                     normal: normals[i],
                     uv: uvs[i],
                     tangent: [0.0, 0.0, 0.0, 0.0],
@@ -512,8 +512,8 @@ fn make_material_gpu(
     });
 
     MaterialGpu {
-        uniform,
-        buffer,
+        _uniform: uniform,
+        _buffer: buffer,
         bindgroup,
     }
 }

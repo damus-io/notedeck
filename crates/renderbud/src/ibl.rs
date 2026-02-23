@@ -1,11 +1,5 @@
 use rayon::prelude::*;
-use std::path::Path;
-
 pub struct IblData {
-    pub irradiance_view: wgpu::TextureView,
-    pub prefiltered_view: wgpu::TextureView,
-    pub brdf_lut_view: wgpu::TextureView,
-    pub sampler: wgpu::Sampler,
     pub bindgroup: wgpu::BindGroup,
 }
 
@@ -108,13 +102,7 @@ pub fn create_test_ibl(
         ],
     });
 
-    IblData {
-        irradiance_view,
-        prefiltered_view,
-        brdf_lut_view,
-        sampler,
-        bindgroup,
-    }
+    IblData { bindgroup }
 }
 
 /// Creates a simple gradient cubemap for testing IBL pipeline.
@@ -300,17 +288,6 @@ fn create_test_prefiltered_cubemap(
     })
 }
 
-/// Load an HDR environment map from an equirectangular panorama file.
-pub fn load_hdr_ibl(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    layout: &wgpu::BindGroupLayout,
-    path: impl AsRef<Path>,
-) -> Result<IblData, image::ImageError> {
-    let img = image::open(path)?.into_rgb32f();
-    load_hdr_ibl_from_image(device, queue, layout, img)
-}
-
 /// Load an HDR environment map from raw bytes (e.g. from `include_bytes!`).
 pub fn load_hdr_ibl_from_bytes(
     device: &wgpu::Device,
@@ -376,13 +353,7 @@ fn load_hdr_ibl_from_image(
         ],
     });
 
-    Ok(IblData {
-        irradiance_view,
-        prefiltered_view,
-        brdf_lut_view,
-        sampler,
-        bindgroup,
-    })
+    Ok(IblData { bindgroup })
 }
 
 /// Convert equirectangular panorama to irradiance cubemap (with hemisphere convolution).
@@ -736,12 +707,12 @@ fn hammersley(i: u32, n: u32) -> (f32, f32) {
 
 /// Van der Corput radical inverse
 fn radical_inverse_vdc(mut bits: u32) -> f32 {
-    bits = (bits << 16) | (bits >> 16);
+    bits = bits.rotate_right(16);
     bits = ((bits & 0x55555555) << 1) | ((bits & 0xAAAAAAAA) >> 1);
     bits = ((bits & 0x33333333) << 2) | ((bits & 0xCCCCCCCC) >> 2);
     bits = ((bits & 0x0F0F0F0F) << 4) | ((bits & 0xF0F0F0F0) >> 4);
     bits = ((bits & 0x00FF00FF) << 8) | ((bits & 0xFF00FF00) >> 8);
-    bits as f32 * 2.3283064365386963e-10 // 0x100000000
+    bits as f32 * 2.328_306_4e-10 // 0x100000000
 }
 
 /// Importance sample the GGX NDF to get a half-vector in tangent space

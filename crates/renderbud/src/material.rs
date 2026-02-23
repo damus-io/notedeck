@@ -13,8 +13,8 @@ pub struct MaterialUniform {
 }
 
 pub struct MaterialGpu {
-    pub uniform: MaterialUniform,
-    pub buffer: wgpu::Buffer,
+    pub _uniform: MaterialUniform,
+    pub _buffer: wgpu::Buffer,
     pub bindgroup: wgpu::BindGroup,
 }
 

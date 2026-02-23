@@ -215,11 +215,11 @@ impl World {
 
         let id = NodeId { index, generation };
 
-        if let Some(p) = parent {
-            if self.is_valid(p) {
-                self.nodes[index as usize].parent = Some(p);
-                self.attach_child(p, id);
-            }
+        if let Some(p) = parent
+            && self.is_valid(p)
+        {
+            self.nodes[index as usize].parent = Some(p);
+            self.attach_child(p, id);
         }
 
         id
