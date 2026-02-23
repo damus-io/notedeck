@@ -71,8 +71,8 @@ fn write_attr(attr: &Attribute, out: &mut String) {
         Attribute::Condition(s) => {
             let _ = write!(out, "(condition \"{}\")", s);
         }
-        Attribute::Location(s) => {
-            let _ = write!(out, "(location {})", s);
+        Attribute::Location(loc) => {
+            let _ = write!(out, "(location {})", loc);
         }
         Attribute::State(s) => {
             let _ = write!(out, "(state {})", s);

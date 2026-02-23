@@ -177,9 +177,23 @@ impl<'a> Parser<'a> {
             "condition" => self
                 .eat_string()
                 .map(|s| Attribute::Condition(s.to_string())),
-            "location" => self
-                .eat_symbol()
-                .map(|s| Attribute::Location(s.to_string())),
+            "location" => self.eat_symbol().and_then(|s| {
+                let loc = match s {
+                    "center" => Location::Center,
+                    "floor" => Location::Floor,
+                    "ceiling" => Location::Ceiling,
+                    "top-of" => {
+                        let id = self.eat_symbol()?;
+                        Location::TopOf(id.to_string())
+                    }
+                    "near" => {
+                        let id = self.eat_symbol()?;
+                        Location::Near(id.to_string())
+                    }
+                    other => Location::Custom(other.to_string()),
+                };
+                Some(Attribute::Location(loc))
+            }),
             "state" => self.eat_symbol().and_then(|s| {
                 let state = match s {
                     "on" => CellState::On,
@@ -449,6 +463,64 @@ mod tests {
         assert_eq!(
             space.cell(group_children[1]).cell_type,
             CellType::Object(ObjectType::Chair)
+        );
+    }
+
+    #[test]
+    fn test_parse_location_variants() {
+        // Simple locations
+        let space = parse("(table (location center))").unwrap();
+        assert_eq!(space.location(space.root), Some(&Location::Center));
+
+        let space = parse("(table (location floor))").unwrap();
+        assert_eq!(space.location(space.root), Some(&Location::Floor));
+
+        let space = parse("(table (location ceiling))").unwrap();
+        assert_eq!(space.location(space.root), Some(&Location::Ceiling));
+
+        // Relational locations
+        let space = parse("(prop (location top-of obj1))").unwrap();
+        assert_eq!(
+            space.location(space.root),
+            Some(&Location::TopOf("obj1".to_string()))
+        );
+
+        let space = parse("(chair (location near desk))").unwrap();
+        assert_eq!(
+            space.location(space.root),
+            Some(&Location::Near("desk".to_string()))
+        );
+
+        // Custom/unknown location
+        let space = parse("(light (location somewhere))").unwrap();
+        assert_eq!(
+            space.location(space.root),
+            Some(&Location::Custom("somewhere".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_location_roundtrip() {
+        use crate::serializer::serialize;
+
+        let input = r#"(room (group (table (id obj1) (position 0 0 0)) (prop (id obj2) (location top-of obj1))))"#;
+        let space1 = parse(input).unwrap();
+        let serialized = serialize(&space1);
+        let space2 = parse(&serialized).unwrap();
+
+        // Find obj2 in both
+        let group1 = space1.children(space1.root)[0];
+        let obj2_1 = space1.children(group1)[1];
+        assert_eq!(
+            space1.location(obj2_1),
+            Some(&Location::TopOf("obj1".to_string()))
+        );
+
+        let group2 = space2.children(space2.root)[0];
+        let obj2_2 = space2.children(group2)[1];
+        assert_eq!(
+            space2.location(obj2_2),
+            Some(&Location::TopOf("obj1".to_string()))
         );
     }
 }

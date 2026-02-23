@@ -47,10 +47,10 @@ pub fn show_room_view(
 
         ui.input(|i| {
             if i.key_down(egui::Key::W) {
-                forward += 1.0;
+                forward -= 1.0;
             }
             if i.key_down(egui::Key::S) {
-                forward -= 1.0;
+                forward += 1.0;
             }
             if i.key_down(egui::Key::D) {
                 right += 1.0;

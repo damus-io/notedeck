@@ -70,6 +70,20 @@ pub enum RoomShape {
     Custom,
 }
 
+/// Spatial location relative to the room or another object.
+/// Mirrors protoverse::Location for decoupling.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ObjectLocation {
+    Center,
+    Floor,
+    Ceiling,
+    /// On top of another object (by id)
+    TopOf(String),
+    /// Near another object (by id)
+    Near(String),
+    Custom(String),
+}
+
 /// Protoverse object type, preserved for round-trip serialization
 #[derive(Clone, Debug, Default)]
 pub enum RoomObjectType {
@@ -91,6 +105,8 @@ pub struct RoomObject {
     pub object_type: RoomObjectType,
     /// URL to a glTF model (None = use placeholder geometry)
     pub model_url: Option<String>,
+    /// Semantic location (e.g. "top-of obj1"), resolved to position at load time
+    pub location: Option<ObjectLocation>,
     /// 3D position in world space
     pub position: Vec3,
     /// 3D rotation
@@ -110,6 +126,7 @@ impl RoomObject {
             name,
             object_type: RoomObjectType::Prop,
             model_url: None,
+            location: None,
             position,
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
@@ -128,6 +145,11 @@ impl RoomObject {
         self
     }
 
+    pub fn with_location(mut self, loc: ObjectLocation) -> Self {
+        self.location = Some(loc);
+        self
+    }
+
     pub fn with_scale(mut self, scale: Vec3) -> Self {
         self.scale = scale;
         self
@@ -142,6 +164,8 @@ pub struct RoomUser {
     pub position: Vec3,
     /// Whether this is the current user
     pub is_self: bool,
+    /// Monotonic timestamp (seconds) of last presence update
+    pub last_seen: f64,
     /// Runtime: renderbud scene object handle for avatar
     pub scene_object_id: Option<ObjectId>,
     /// Runtime: loaded model handle for avatar
@@ -155,6 +179,7 @@ impl RoomUser {
             display_name,
             position,
             is_self: false,
+            last_seen: 0.0,
             scene_object_id: None,
             model_handle: None,
         }

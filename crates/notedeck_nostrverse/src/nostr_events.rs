@@ -63,25 +63,71 @@ fn get_tag_value<'a>(note: &'a Note<'a>, tag_name: &str) -> Option<&'a str> {
     None
 }
 
-/// Sign and ingest a room event into the local nostrdb only (no relay publishing).
-pub fn ingest_room_event(builder: NoteBuilder<'_>, ndb: &Ndb, kp: FilledKeypair) {
+/// Build a coarse presence heartbeat event (kind 10555).
+///
+/// Published on meaningful position change, plus periodic keep-alive.
+/// Tags: ["a", room_naddr], ["position", "x y z"], ["expiration", unix_ts]
+/// Content: empty
+///
+/// The expiration tag (NIP-40) tells relays/nostrdb to discard the event
+/// after 90 seconds, matching the client-side stale timeout.
+pub fn build_presence_event<'a>(room_naddr: &str, position: glam::Vec3) -> NoteBuilder<'a> {
+    let pos_str = format!("{} {} {}", position.x, position.y, position.z);
+
+    let expiration = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + 90;
+    let exp_str = expiration.to_string();
+
+    NoteBuilder::new()
+        .kind(kinds::PRESENCE as u32)
+        .content("")
+        .start_tag()
+        .tag_str("a")
+        .tag_str(room_naddr)
+        .start_tag()
+        .tag_str("position")
+        .tag_str(&pos_str)
+        .start_tag()
+        .tag_str("expiration")
+        .tag_str(&exp_str)
+}
+
+/// Parse a presence event's position tag into a Vec3.
+pub fn parse_presence_position(note: &Note<'_>) -> Option<glam::Vec3> {
+    let pos_str = get_tag_value(note, "position")?;
+    let mut parts = pos_str.split_whitespace();
+    let x: f32 = parts.next()?.parse().ok()?;
+    let y: f32 = parts.next()?.parse().ok()?;
+    let z: f32 = parts.next()?.parse().ok()?;
+    Some(glam::Vec3::new(x, y, z))
+}
+
+/// Extract the "a" tag (room naddr) from a presence note.
+pub fn get_presence_room<'a>(note: &'a Note<'a>) -> Option<&'a str> {
+    get_tag_value(note, "a")
+}
+
+/// Sign and ingest a nostr event into the local nostrdb only (no relay publishing).
+pub fn ingest_event(builder: NoteBuilder<'_>, ndb: &Ndb, kp: FilledKeypair) {
     let note = builder
         .sign(&kp.secret_key.secret_bytes())
         .build()
         .expect("build note");
 
     let Ok(event) = &enostr::ClientMessage::event(&note) else {
-        tracing::error!("ingest_room_event: failed to build client message");
+        tracing::error!("ingest_event: failed to build client message");
         return;
     };
 
     let Ok(json) = event.to_json() else {
-        tracing::error!("ingest_room_event: failed to serialize json");
+        tracing::error!("ingest_event: failed to serialize json");
         return;
     };
 
     let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
-    tracing::info!("ingested room event locally");
 }
 
 #[cfg(test)]
@@ -158,5 +204,30 @@ mod tests {
         let note = builder.build().expect("build note");
 
         assert_eq!(get_room_id(&note), Some("my-id"));
+    }
+
+    #[test]
+    fn test_build_presence_event() {
+        let pos = glam::Vec3::new(1.5, 0.0, -3.2);
+        let mut builder = build_presence_event("37555:abc123:my-room", pos);
+        let note = builder.build().expect("build note");
+
+        assert_eq!(note.content(), "");
+        assert_eq!(get_presence_room(&note), Some("37555:abc123:my-room"));
+
+        let parsed_pos = parse_presence_position(&note).expect("parse position");
+        assert!((parsed_pos.x - 1.5).abs() < 0.01);
+        assert!((parsed_pos.y - 0.0).abs() < 0.01);
+        assert!((parsed_pos.z - (-3.2)).abs() < 0.01);
+
+        // Should have an expiration tag (NIP-40)
+        let exp = get_tag_value(&note, "expiration").expect("missing expiration tag");
+        let exp_ts: u64 = exp.parse().expect("expiration should be a number");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(exp_ts > now, "expiration should be in the future");
+        assert!(exp_ts <= now + 91, "expiration should be ~90s from now");
     }
 }

@@ -8,6 +8,7 @@
 
 mod convert;
 mod nostr_events;
+mod presence;
 mod room_state;
 mod room_view;
 mod subscriptions;
@@ -47,7 +48,8 @@ const DEMO_SPACE: &str = r#"(room (name "Demo Room") (shape rectangle) (width 20
            (model-url "/home/jb55/var/models/ironwood/ironwood.glb")
            (position 0 0 0))
     (prop (id obj2) (name "Water Bottle")
-          (model-url "/home/jb55/var/models/WaterBottle.glb"))))"#;
+          (model-url "/home/jb55/var/models/WaterBottle.glb")
+          (location top-of obj1))))"#;
 
 /// Event kinds for nostrverse
 pub mod kinds {
@@ -75,6 +77,16 @@ pub struct NostrverseApp {
     avatar_bounds: Option<renderbud::Aabb>,
     /// Local nostrdb subscription for room events
     room_sub: Option<subscriptions::RoomSubscription>,
+    /// Presence publisher (throttled heartbeats)
+    presence_pub: presence::PresencePublisher,
+    /// Presence expiry (throttled stale-user cleanup)
+    presence_expiry: presence::PresenceExpiry,
+    /// Local nostrdb subscription for presence events
+    presence_sub: Option<subscriptions::PresenceSubscription>,
+    /// Cached room naddr string (avoids format! per frame)
+    room_naddr: String,
+    /// Monotonic time tracker (seconds since app start)
+    start_time: std::time::Instant,
 }
 
 impl NostrverseApp {
@@ -85,6 +97,7 @@ impl NostrverseApp {
         let device = render_state.map(|rs| rs.device.clone());
         let queue = render_state.map(|rs| rs.queue.clone());
 
+        let room_naddr = room_ref.to_naddr();
         Self {
             state: NostrverseState::new(room_ref),
             renderer,
@@ -93,6 +106,11 @@ impl NostrverseApp {
             initialized: false,
             avatar_bounds: None,
             room_sub: None,
+            presence_pub: presence::PresencePublisher::new(),
+            presence_expiry: presence::PresenceExpiry::new(),
+            presence_sub: None,
+            room_naddr,
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -135,11 +153,12 @@ impl NostrverseApp {
         // Ingest as a local-only room event if we have a keypair
         if let Some(kp) = ctx.accounts.selected_filled() {
             let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
-            nostr_events::ingest_room_event(builder, ctx.ndb, kp);
+            nostr_events::ingest_event(builder, ctx.ndb, kp);
         }
 
-        // Subscribe to room events in local nostrdb
+        // Subscribe to room and presence events in local nostrdb
         self.room_sub = Some(subscriptions::RoomSubscription::new(ctx.ndb));
+        self.presence_sub = Some(subscriptions::PresenceSubscription::new(ctx.ndb));
 
         // Query for any existing room events (including the one we just ingested)
         let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
@@ -232,11 +251,12 @@ impl NostrverseApp {
 
         let space = convert::build_space(room, &self.state.objects);
         let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
-        nostr_events::ingest_room_event(builder, ctx.ndb, kp);
+        nostr_events::ingest_event(builder, ctx.ndb, kp);
         tracing::info!("Saved room '{}'", self.state.room_ref.id);
     }
 
-    /// Load 3D models for objects and handle AABB-based placement.
+    /// Load 3D models for objects, then resolve any semantic locations
+    /// (e.g. "top-of obj1") to concrete positions using AABB bounds.
     fn load_object_models(&self, objects: &mut Vec<RoomObject>) {
         let renderer = self.renderer.as_ref();
         let model_bounds_fn = |m: Option<renderbud::Model>| -> Option<renderbud::Aabb> {
@@ -244,34 +264,77 @@ impl NostrverseApp {
             r.model_bounds(m?)
         };
 
-        let mut table_top_y: f32 = 0.86;
-        let mut bottle_bounds = None;
+        // Phase 1: Load all models and cache their AABB bounds
+        let mut bounds_by_id: std::collections::HashMap<String, renderbud::Aabb> =
+            std::collections::HashMap::new();
 
         for obj in objects.iter_mut() {
             if let Some(url) = &obj.model_url {
                 let model = self.load_model(url);
-                let bounds = model_bounds_fn(model);
-
-                if obj.id == "obj1" {
-                    if let Some(b) = bounds {
-                        table_top_y = b.max.y;
-                    }
+                if let Some(bounds) = model_bounds_fn(model) {
+                    bounds_by_id.insert(obj.id.clone(), bounds);
                 }
-
-                if obj.id == "obj2" {
-                    bottle_bounds = bounds;
-                }
-
                 obj.model_handle = model;
             }
         }
 
-        // Position the bottle on top of the table (runtime AABB placement)
-        if let Some(obj2) = objects.iter_mut().find(|o| o.id == "obj2") {
-            let bottle_half_h = bottle_bounds
-                .map(|b| (b.max.y - b.min.y) * 0.5)
-                .unwrap_or(0.0);
-            obj2.position = Vec3::new(0.0, table_top_y + bottle_half_h, 0.0);
+        // Phase 2: Resolve semantic locations to positions
+        // Collect resolved positions first to avoid borrow issues
+        let mut resolved: Vec<(usize, Vec3)> = Vec::new();
+
+        for (i, obj) in objects.iter().enumerate() {
+            let Some(loc) = &obj.location else {
+                continue;
+            };
+
+            match loc {
+                room_state::ObjectLocation::TopOf(target_id) => {
+                    // Find the target object's position and top-of-AABB
+                    let target = objects.iter().find(|o| o.id == *target_id);
+                    if let Some(target) = target {
+                        let target_top =
+                            bounds_by_id.get(target_id).map(|b| b.max.y).unwrap_or(0.0);
+                        let self_half_h = bounds_by_id
+                            .get(&obj.id)
+                            .map(|b| (b.max.y - b.min.y) * 0.5)
+                            .unwrap_or(0.0);
+                        let pos = Vec3::new(
+                            target.position.x,
+                            target_top + self_half_h,
+                            target.position.z,
+                        );
+                        resolved.push((i, pos));
+                    }
+                }
+                room_state::ObjectLocation::Near(target_id) => {
+                    // Place nearby: offset by target's width + margin
+                    let target = objects.iter().find(|o| o.id == *target_id);
+                    if let Some(target) = target {
+                        let offset = bounds_by_id
+                            .get(target_id)
+                            .map(|b| b.max.x - b.min.x)
+                            .unwrap_or(1.0);
+                        let pos = Vec3::new(
+                            target.position.x + offset,
+                            target.position.y,
+                            target.position.z,
+                        );
+                        resolved.push((i, pos));
+                    }
+                }
+                room_state::ObjectLocation::Floor => {
+                    let self_half_h = bounds_by_id
+                        .get(&obj.id)
+                        .map(|b| (b.max.y - b.min.y) * 0.5)
+                        .unwrap_or(0.0);
+                    resolved.push((i, Vec3::new(obj.position.x, self_half_h, obj.position.z)));
+                }
+                _ => {}
+            }
+        }
+
+        for (i, pos) in resolved {
+            objects[i].position = pos;
         }
     }
 
@@ -301,6 +364,63 @@ impl NostrverseApp {
 
             self.apply_space(&space);
             tracing::info!("Room '{}' updated from nostrdb", room_id);
+        }
+    }
+
+    /// Run one tick of presence: publish local position, poll remote, expire stale.
+    fn tick_presence(&mut self, ctx: &mut AppContext<'_>) {
+        let now = self.start_time.elapsed().as_secs_f64();
+
+        // Publish our position (throttled — only on change or keep-alive)
+        if let Some(kp) = ctx.accounts.selected_filled() {
+            let self_pos = self
+                .state
+                .users
+                .iter()
+                .find(|u| u.is_self)
+                .map(|u| u.position)
+                .unwrap_or(Vec3::ZERO);
+
+            self.presence_pub
+                .maybe_publish(ctx.ndb, kp, &self.room_naddr, self_pos, now);
+        }
+
+        // Poll for remote presence events
+        let self_pubkey = *ctx.accounts.selected_account_pubkey();
+        if let Some(sub) = &self.presence_sub {
+            let changed = presence::poll_presence(
+                sub,
+                ctx.ndb,
+                &self.room_naddr,
+                &self_pubkey,
+                &mut self.state.users,
+                now,
+            );
+
+            // Assign avatar model to new users
+            if changed {
+                let avatar_model = self
+                    .state
+                    .users
+                    .iter()
+                    .find(|u| u.is_self)
+                    .and_then(|u| u.model_handle);
+                if let Some(model) = avatar_model {
+                    for user in &mut self.state.users {
+                        if user.model_handle.is_none() {
+                            user.model_handle = Some(model);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Expire stale remote users (throttled to every ~10s)
+        let removed = self
+            .presence_expiry
+            .maybe_expire(&mut self.state.users, now);
+        if removed > 0 {
+            tracing::info!("Expired {} stale users", removed);
         }
     }
 
@@ -396,6 +516,9 @@ impl notedeck::App for NostrverseApp {
 
         // Poll for room event updates
         self.poll_room_updates(ctx.ndb);
+
+        // Presence: publish, poll, expire
+        self.tick_presence(ctx);
 
         // Sync state to 3D scene
         self.sync_scene();

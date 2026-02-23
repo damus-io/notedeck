@@ -51,3 +51,26 @@ impl RoomSubscription {
             .collect()
     }
 }
+
+/// Manages a local nostrdb subscription for presence events (kind 10555).
+pub struct PresenceSubscription {
+    sub: Subscription,
+}
+
+impl PresenceSubscription {
+    /// Subscribe to presence events in the local nostrdb.
+    pub fn new(ndb: &Ndb) -> Self {
+        let filter = Filter::new().kinds([kinds::PRESENCE as u64]).build();
+        let sub = ndb.subscribe(&[filter]).expect("presence subscription");
+        Self { sub }
+    }
+
+    /// Poll for new presence events.
+    pub fn poll<'a>(&self, ndb: &'a Ndb, txn: &'a Transaction) -> Vec<Note<'a>> {
+        let note_keys = ndb.poll_for_notes(self.sub, 50);
+        note_keys
+            .into_iter()
+            .filter_map(|nk| ndb.get_note_by_key(txn, nk).ok())
+            .collect()
+    }
+}

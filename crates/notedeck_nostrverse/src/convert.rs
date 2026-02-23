@@ -1,8 +1,8 @@
 //! Convert protoverse Space AST to renderer room state.
 
-use crate::room_state::{Room, RoomObject, RoomObjectType, RoomShape};
+use crate::room_state::{ObjectLocation, Room, RoomObject, RoomObjectType, RoomShape};
 use glam::Vec3;
-use protoverse::{Attribute, Cell, CellId, CellType, ObjectType, Shape, Space};
+use protoverse::{Attribute, Cell, CellId, CellType, Location, ObjectType, Shape, Space};
 
 /// Convert a parsed protoverse Space into a Room and its objects.
 pub fn convert_space(space: &Space) -> (Room, Vec<RoomObject>) {
@@ -31,6 +31,28 @@ fn extract_room(space: &Space, id: CellId) -> Room {
         width,
         height,
         depth,
+    }
+}
+
+fn location_from_protoverse(loc: &Location) -> ObjectLocation {
+    match loc {
+        Location::Center => ObjectLocation::Center,
+        Location::Floor => ObjectLocation::Floor,
+        Location::Ceiling => ObjectLocation::Ceiling,
+        Location::TopOf(id) => ObjectLocation::TopOf(id.clone()),
+        Location::Near(id) => ObjectLocation::Near(id.clone()),
+        Location::Custom(s) => ObjectLocation::Custom(s.clone()),
+    }
+}
+
+fn location_to_protoverse(loc: &ObjectLocation) -> Location {
+    match loc {
+        ObjectLocation::Center => Location::Center,
+        ObjectLocation::Floor => Location::Floor,
+        ObjectLocation::Ceiling => Location::Ceiling,
+        ObjectLocation::TopOf(id) => Location::TopOf(id.clone()),
+        ObjectLocation::Near(id) => Location::Near(id.clone()),
+        ObjectLocation::Custom(s) => Location::Custom(s.clone()),
     }
 }
 
@@ -69,11 +91,15 @@ fn collect_objects(space: &Space, id: CellId, objects: &mut Vec<RoomObject>) {
             .unwrap_or(Vec3::ZERO);
 
         let model_url = space.model_url(id).map(|s| s.to_string());
+        let location = space.location(id).map(location_from_protoverse);
 
         let mut obj = RoomObject::new(obj_id, name, position)
             .with_object_type(object_type_from_cell(obj_type));
         if let Some(url) = model_url {
             obj = obj.with_model_url(url);
+        }
+        if let Some(loc) = location {
+            obj = obj.with_location(loc);
         }
         objects.push(obj);
     }
@@ -140,14 +166,15 @@ pub fn build_space(room: &Room, objects: &[RoomObject]) -> Space {
         if let Some(url) = &obj.model_url {
             attributes.push(Attribute::ModelUrl(url.clone()));
         }
-        let pos = obj.position;
-        if pos != Vec3::ZERO {
-            attributes.push(Attribute::Position(
-                pos.x as f64,
-                pos.y as f64,
-                pos.z as f64,
-            ));
+        if let Some(loc) = &obj.location {
+            attributes.push(Attribute::Location(location_to_protoverse(loc)));
         }
+        let pos = obj.position;
+        attributes.push(Attribute::Position(
+            pos.x as f64,
+            pos.y as f64,
+            pos.z as f64,
+        ));
         let obj_attr_count = (attributes.len() as u32 - obj_attr_start) as u16;
 
         let obj_type = CellType::Object(match &obj.object_type {
@@ -301,5 +328,77 @@ mod tests {
         assert_eq!(room.height, 15.0);
         assert_eq!(room.depth, 10.0);
         assert!(objects.is_empty());
+    }
+
+    #[test]
+    fn test_convert_location_top_of() {
+        let space = parse(
+            r#"(room (group
+                (table (id obj1) (name "Table") (position 0 0 0))
+                (prop (id obj2) (name "Bottle") (location top-of obj1))))"#,
+        )
+        .unwrap();
+
+        let (_, objects) = convert_space(&space);
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0].location, None);
+        assert_eq!(
+            objects[1].location,
+            Some(ObjectLocation::TopOf("obj1".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_build_space_always_emits_position() {
+        let room = Room {
+            name: "Test".to_string(),
+            shape: RoomShape::Rectangle,
+            width: 10.0,
+            height: 10.0,
+            depth: 10.0,
+        };
+        let objects = vec![RoomObject::new(
+            "a".to_string(),
+            "Thing".to_string(),
+            Vec3::ZERO,
+        )];
+
+        let space = build_space(&room, &objects);
+        let serialized = protoverse::serialize(&space);
+
+        // Position should appear even for Vec3::ZERO
+        assert!(serialized.contains("(position 0 0 0)"));
+    }
+
+    #[test]
+    fn test_build_space_location_roundtrip() {
+        let room = Room {
+            name: "Test".to_string(),
+            shape: RoomShape::Rectangle,
+            width: 10.0,
+            height: 10.0,
+            depth: 10.0,
+        };
+        let objects = vec![
+            RoomObject::new("obj1".to_string(), "Table".to_string(), Vec3::ZERO)
+                .with_object_type(RoomObjectType::Table),
+            RoomObject::new(
+                "obj2".to_string(),
+                "Bottle".to_string(),
+                Vec3::new(0.0, 1.5, 0.0),
+            )
+            .with_location(ObjectLocation::TopOf("obj1".to_string())),
+        ];
+
+        let space = build_space(&room, &objects);
+        let serialized = protoverse::serialize(&space);
+        let reparsed = parse(&serialized).unwrap();
+        let (_, objects2) = convert_space(&reparsed);
+
+        assert_eq!(
+            objects2[1].location,
+            Some(ObjectLocation::TopOf("obj1".to_string()))
+        );
+        assert_eq!(objects2[1].position, Vec3::new(0.0, 1.5, 0.0));
     }
 }

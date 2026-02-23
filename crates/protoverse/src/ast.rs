@@ -62,10 +62,27 @@ pub enum Attribute {
     Width(f64),
     Depth(f64),
     Height(f64),
-    Location(String),
+    Location(Location),
     State(CellState),
     Position(f64, f64, f64),
     ModelUrl(String),
+}
+
+/// Spatial location relative to the room or another object.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Location {
+    /// Center of parent container
+    Center,
+    /// On the floor
+    Floor,
+    /// On the ceiling
+    Ceiling,
+    /// On top of another object (by id)
+    TopOf(String),
+    /// Near another object (by id)
+    Near(String),
+    /// Freeform / unrecognized location value
+    Custom(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -127,6 +144,19 @@ impl fmt::Display for CellState {
     }
 }
 
+impl fmt::Display for Location {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Location::Center => write!(f, "center"),
+            Location::Floor => write!(f, "floor"),
+            Location::Ceiling => write!(f, "ceiling"),
+            Location::TopOf(id) => write!(f, "top-of {}", id),
+            Location::Near(id) => write!(f, "near {}", id),
+            Location::Custom(s) => write!(f, "{}", s),
+        }
+    }
+}
+
 // --- Space accessor methods ---
 
 impl Space {
@@ -179,6 +209,13 @@ impl Space {
     pub fn model_url(&self, id: CellId) -> Option<&str> {
         self.attrs(id).iter().find_map(|a| match a {
             Attribute::ModelUrl(s) => Some(s.as_str()),
+            _ => None,
+        })
+    }
+
+    pub fn location(&self, id: CellId) -> Option<&Location> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Location(loc) => Some(loc),
             _ => None,
         })
     }
