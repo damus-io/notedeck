@@ -161,7 +161,7 @@ impl Chrome {
             cc.egui_ctx.clone(),
             context.path,
         );
-        #[cfg(feature = "wasm_apps")]
+        #[cfg(feature = "wasm")]
         let wasm_dir = context
             .path
             .path(notedeck::DataPathType::Cache)
@@ -193,7 +193,7 @@ impl Chrome {
             notedeck_nostrverse::NostrverseApp::demo(cc.wgpu_render_state.as_ref()),
         )));
 
-        #[cfg(feature = "wasm_apps")]
+        #[cfg(feature = "wasm")]
         {
             tracing::info!("looking for WASM apps in: {}", wasm_dir.display());
             if wasm_dir.is_dir() {

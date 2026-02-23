@@ -62,7 +62,7 @@ notebook = ["notedeck_notebook"]
 nostrverse = ["notedeck_nostrverse"]
 clndash = ["notedeck_clndash"]
 dashboard = ["notedeck_dashboard"]
-wasm_apps = ["notedeck_wasm"]
+wasm = ["notedeck_wasm"]
 
 [target.'cfg(target_os = "android")'.dependencies]
 tracing-logcat = "0.1.0"
