@@ -5,17 +5,17 @@ use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::unknowns::unknown_id_send;
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
-use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
     DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
 };
 use crate::{Error, JobCache};
 use crate::{JobPool, MediaJobs};
+use crate::{NotedeckOptions, ScopedSubsState};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
-use enostr::{PoolEventBuf, PoolRelay, RelayEvent, RelayMessage, RelayPool};
+use enostr::{OutboxPool, PoolEventBuf, PoolRelay, RelayEvent, RelayMessage, RelayPool};
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -66,6 +66,8 @@ pub struct Notedeck {
     img_cache: Images,
     unknown_ids: UnknownIds,
     legacy_pool: RelayPool,
+    pool: OutboxPool,
+    scoped_sub_state: ScopedSubsState,
     note_cache: NoteCache,
     accounts: Accounts,
     global_wallet: GlobalWallet,
@@ -254,6 +256,8 @@ impl Notedeck {
         try_swap_compacted_db(&dbpath_str);
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
+        let scoped_sub_state = ScopedSubsState::default();
+        let pool = OutboxPool::default();
 
         let mut accounts = Accounts::new(
             keystore,
@@ -325,6 +329,8 @@ impl Notedeck {
             img_cache,
             unknown_ids,
             legacy_pool,
+            pool,
+            scoped_sub_state,
             note_cache,
             accounts,
             global_wallet,
