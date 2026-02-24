@@ -1086,8 +1086,25 @@ impl<'a> DaveUi<'a> {
             ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
                 let mut dave_response = DaveResponse::none();
 
-                // Show Stop button when working, Ask button otherwise
-                if self.flags.contains(DaveUiFlags::IsWorking) {
+                // Always show Ask button (messages queue while working)
+                if ui
+                    .add(
+                        egui::Button::new(tr!(
+                            i18n,
+                            "Ask",
+                            "Button to send message to Dave AI assistant"
+                        ))
+                        .min_size(egui::vec2(60.0, 44.0)),
+                    )
+                    .clicked()
+                {
+                    dave_response = DaveResponse::send();
+                }
+
+                // Show Stop button alongside Ask for local working sessions
+                if self.flags.contains(DaveUiFlags::IsWorking)
+                    && !self.flags.contains(DaveUiFlags::IsRemote)
+                {
                     if ui
                         .add(
                             egui::Button::new(tr!(
@@ -1109,18 +1126,6 @@ impl<'a> DaveUi<'a> {
                                 .color(ui.visuals().warn_fg_color),
                         );
                     }
-                } else if ui
-                    .add(
-                        egui::Button::new(tr!(
-                            i18n,
-                            "Ask",
-                            "Button to send message to Dave AI assistant"
-                        ))
-                        .min_size(egui::vec2(60.0, 44.0)),
-                    )
-                    .clicked()
-                {
-                    dave_response = DaveResponse::send();
                 }
 
                 let r = ui.add(

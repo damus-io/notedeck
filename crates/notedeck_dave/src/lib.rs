@@ -2185,6 +2185,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if session.is_remote() {
                 return;
             }
+
+            // If already streaming, queue the message in chat without dispatching.
+            // needs_redispatch_after_stream_end() will dispatch it when the
+            // current turn finishes.
+            if session.is_streaming() {
+                return;
+            }
         }
         self.send_user_message(app_ctx, ui.ctx());
     }
