@@ -309,7 +309,7 @@ mod preview {
         fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             self.pool.try_recv();
             let mut id_string_map = HashMap::new();
-            RelayView::new(app.pool, &mut id_string_map, app.i18n).ui(ui);
+            RelayView::new(app.legacy_pool, &mut id_string_map, app.i18n).ui(ui);
             AppResponse::none()
         }
     }

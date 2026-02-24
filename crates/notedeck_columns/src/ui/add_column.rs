@@ -910,7 +910,7 @@ pub fn render_add_column_routes(
                 contacts,
                 ctx.i18n,
                 ctx.media_jobs.sender(),
-                ctx.pool,
+                ctx.legacy_pool,
                 ctx.unknown_ids,
                 &mut app.view_state.people_lists,
             );
@@ -951,7 +951,7 @@ pub fn render_add_column_routes(
                     ctx.ndb,
                     &txn,
                     &mut app.subscriptions,
-                    ctx.pool,
+                    ctx.legacy_pool,
                     ctx.note_cache,
                     app.options.contains(AppOptions::SinceOptimize),
                     ctx.accounts,
@@ -992,7 +992,7 @@ pub fn render_add_column_routes(
                             ctx.ndb,
                             &txn,
                             &mut app.subscriptions,
-                            ctx.pool,
+                            ctx.legacy_pool,
                             ctx.note_cache,
                             app.options.contains(AppOptions::SinceOptimize),
                             ctx.accounts,
@@ -1103,7 +1103,7 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         return;
     };
 
-    notedeck::send_people_list_event(ctx.ndb, ctx.pool, kp, &name, &members);
+    notedeck::send_people_list_event(ctx.ndb, ctx.legacy_pool, kp, &name, &members);
 
     // Reset the people_lists cache so it picks up the new list
     app.view_state.people_lists = None;
@@ -1128,7 +1128,7 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         ctx.ndb,
         &txn,
         &mut app.subscriptions,
-        ctx.pool,
+        ctx.legacy_pool,
         ctx.note_cache,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,

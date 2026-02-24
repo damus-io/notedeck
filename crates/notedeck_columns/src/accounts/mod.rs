@@ -169,13 +169,13 @@ pub fn process_login_view_response(
         AccountLoginResponse::CreatingNew => {
             cur_router.route_to(Route::Accounts(AccountsRoute::Onboarding));
 
-            onboarding.process(app_ctx.pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
+            onboarding.process(app_ctx.legacy_pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
 
             None
         }
         AccountLoginResponse::Onboarding(onboarding_response) => match onboarding_response {
             FollowPacksResponse::NoFollowPacks => {
-                onboarding.process(app_ctx.pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
+                onboarding.process(app_ctx.legacy_pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
                 None
             }
             FollowPacksResponse::UserSelectedPacks(nip51_sets_ui_state) => {
@@ -183,10 +183,15 @@ pub fn process_login_view_response(
 
                 let kp = FullKeypair::generate();
 
-                send_new_contact_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool, pks_to_follow);
-                send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool);
+                send_new_contact_list(
+                    kp.to_filled(),
+                    app_ctx.ndb,
+                    app_ctx.legacy_pool,
+                    pks_to_follow,
+                );
+                send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, app_ctx.legacy_pool);
                 cur_router.go_back();
-                onboarding.end_onboarding(app_ctx.pool, app_ctx.ndb);
+                onboarding.end_onboarding(app_ctx.legacy_pool, app_ctx.ndb);
 
                 app_ctx.accounts.add_account(kp.to_keypair())
             }

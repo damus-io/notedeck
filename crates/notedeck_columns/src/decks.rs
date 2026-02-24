@@ -461,7 +461,7 @@ pub fn add_demo_columns(
             &txn,
             ctx.ndb,
             ctx.note_cache,
-            ctx.pool,
+            ctx.legacy_pool,
             kind,
         ) {
             results.process(

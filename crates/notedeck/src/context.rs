@@ -17,7 +17,7 @@ pub struct AppContext<'a> {
     pub ndb: &'a mut Ndb,
     pub img_cache: &'a mut Images,
     pub unknown_ids: &'a mut UnknownIds,
-    pub pool: &'a mut RelayPool,
+    pub legacy_pool: &'a mut RelayPool,
     pub note_cache: &'a mut NoteCache,
     pub accounts: &'a mut Accounts,
     pub global_wallet: &'a mut GlobalWallet,

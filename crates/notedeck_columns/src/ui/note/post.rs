@@ -899,7 +899,7 @@ mod preview {
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
                 zaps: app.zaps,
-                pool: app.pool,
+                pool: app.legacy_pool,
                 jobs: app.media_jobs.sender(),
                 unknown_ids: app.unknown_ids,
                 nip05_cache: app.nip05_cache,

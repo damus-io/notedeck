@@ -65,7 +65,7 @@ pub struct Notedeck {
     ndb: Ndb,
     img_cache: Images,
     unknown_ids: UnknownIds,
-    pool: RelayPool,
+    legacy_pool: RelayPool,
     note_cache: NoteCache,
     accounts: Accounts,
     global_wallet: GlobalWallet,
@@ -140,7 +140,8 @@ impl eframe::App for Notedeck {
         self.nip05_cache.poll();
 
         // handle account updates
-        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        self.accounts
+            .update(&mut self.ndb, &mut self.legacy_pool, ctx);
 
         self.zaps
             .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
@@ -159,11 +160,11 @@ impl eframe::App for Notedeck {
         self.app_size.try_save_app_size(ctx);
 
         if self.args.options.contains(NotedeckOptions::RelayDebug) {
-            if self.pool.debug.is_none() {
-                self.pool.use_debug();
+            if self.legacy_pool.debug.is_none() {
+                self.legacy_pool.use_debug();
             }
 
-            if let Some(debug) = &mut self.pool.debug {
+            if let Some(debug) = &mut self.legacy_pool.debug {
                 RelayDebugView::window(ctx, debug);
             }
         }
@@ -241,10 +242,10 @@ impl Notedeck {
         };
 
         // AccountManager will setup the pool on first update
-        let mut pool = RelayPool::new();
+        let mut legacy_pool = RelayPool::new();
         {
             let ctx = ctx.clone();
-            if let Err(err) = pool.add_multicast_relay(move || ctx.request_repaint()) {
+            if let Err(err) = legacy_pool.add_multicast_relay(move || ctx.request_repaint()) {
                 error!("error setting up multicast relay: {err}");
             }
         }
@@ -260,7 +261,7 @@ impl Notedeck {
             FALLBACK_PUBKEY(),
             &mut ndb,
             &txn,
-            &mut pool,
+            &mut legacy_pool,
             ctx,
             &mut unknown_ids,
         );
@@ -281,7 +282,7 @@ impl Notedeck {
         }
 
         if let Some(first) = parsed_args.keys.first() {
-            accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut pool, ctx);
+            accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut legacy_pool, ctx);
         }
 
         let img_cache = Images::new(img_cache_dir);
@@ -323,7 +324,7 @@ impl Notedeck {
             ndb,
             img_cache,
             unknown_ids,
-            pool,
+            legacy_pool,
             note_cache,
             accounts,
             global_wallet,
@@ -382,7 +383,7 @@ impl Notedeck {
                 ndb: &mut self.ndb,
                 img_cache: &mut self.img_cache,
                 unknown_ids: &mut self.unknown_ids,
-                pool: &mut self.pool,
+                legacy_pool: &mut self.legacy_pool,
                 note_cache: &mut self.note_cache,
                 accounts: &mut self.accounts,
                 global_wallet: &mut self.global_wallet,
@@ -492,12 +493,12 @@ pub fn try_process_events_core(
         ctx2.request_repaint();
     };
 
-    app_ctx.pool.keepalive_ping(wakeup);
+    app_ctx.legacy_pool.keepalive_ping(wakeup);
 
     // NOTE: we don't use the while let loop due to borrow issues
     #[allow(clippy::while_let_loop)]
     loop {
-        let ev = if let Some(ev) = app_ctx.pool.try_recv() {
+        let ev = if let Some(ev) = app_ctx.legacy_pool.try_recv() {
             ev.into_owned()
         } else {
             break;
@@ -508,7 +509,7 @@ pub fn try_process_events_core(
                 tracing::trace!("Opened relay {}", ev.relay);
                 app_ctx
                     .accounts
-                    .send_initial_filters(app_ctx.pool, &ev.relay);
+                    .send_initial_filters(app_ctx.legacy_pool, &ev.relay);
             }
             RelayEvent::Closed => tracing::warn!("{} connection closed", &ev.relay),
             RelayEvent::Other(msg) => {
@@ -524,7 +525,7 @@ pub fn try_process_events_core(
     }
 
     if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(app_ctx.unknown_ids, app_ctx.pool);
+        unknown_id_send(app_ctx.unknown_ids, app_ctx.legacy_pool);
     }
 }
 
@@ -532,12 +533,13 @@ pub fn try_process_events_core(
 fn process_message_core(ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
     match msg {
         RelayMessage::Event(_subid, ev) => {
-            let relay = if let Some(relay) = ctx.pool.relays.iter().find(|r| r.url() == relay) {
-                relay
-            } else {
-                error!("couldn't find relay {} for note processing!?", relay);
-                return;
-            };
+            let relay =
+                if let Some(relay) = ctx.legacy_pool.relays.iter().find(|r| r.url() == relay) {
+                    relay
+                } else {
+                    error!("couldn't find relay {} for note processing!?", relay);
+                    return;
+                };
 
             match relay {
                 PoolRelay::Websocket(_) => {

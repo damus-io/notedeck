@@ -53,7 +53,7 @@ pub fn send_conversation_message(
             }
         }
         match ClientMessage::event_json(giftwrap_json.clone()) {
-            Ok(msg) => ctx.pool.send(&msg),
+            Ok(msg) => ctx.legacy_pool.send(&msg),
             Err(err) => tracing::error!("failed to build client message: {err}"),
         };
     }

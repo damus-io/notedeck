@@ -191,7 +191,7 @@ fn try_process_event(
                 damus.options.contains(AppOptions::SinceOptimize),
                 &mut damus.timeline_cache,
                 &mut damus.subscriptions,
-                app_ctx.pool,
+                app_ctx.legacy_pool,
                 &ev.relay,
                 app_ctx.accounts,
             );
@@ -203,8 +203,12 @@ fn try_process_event(
     });
 
     for (kind, timeline) in &mut damus.timeline_cache {
-        let is_ready =
-            timeline::is_timeline_ready(app_ctx.ndb, app_ctx.pool, timeline, app_ctx.accounts);
+        let is_ready = timeline::is_timeline_ready(
+            app_ctx.ndb,
+            app_ctx.legacy_pool,
+            timeline,
+            app_ctx.accounts,
+        );
 
         if is_ready {
             schedule_timeline_load(
@@ -246,7 +250,7 @@ fn try_process_event(
                     ListKind::PeopleList(plr),
                 )) => {
                     let plr = plr.clone();
-                    for relay in &mut app_ctx.pool.relays {
+                    for relay in &mut app_ctx.legacy_pool.relays {
                         timeline::fetch_people_list(
                             &mut damus.subscriptions,
                             relay,
@@ -416,7 +420,7 @@ fn handle_eose(
         // oneshot subs just close when they're done
         SubKind::OneShot => {
             let msg = ClientMessage::close(subid.to_string());
-            ctx.pool.send_to(&msg, relay_url);
+            ctx.legacy_pool.send_to(&msg, relay_url);
         }
 
         SubKind::FetchingContactList(timeline_uid) => {
@@ -592,7 +596,7 @@ impl Damus {
                     &txn,
                     app_context.ndb,
                     app_context.note_cache,
-                    app_context.pool,
+                    app_context.legacy_pool,
                     &timeline_kind,
                 ) {
                     add_result.process(
@@ -846,7 +850,7 @@ fn render_damus_mobile(
                                     &pubkey,
                                     app_ctx.ndb,
                                     &txn,
-                                    app_ctx.pool,
+                                    app_ctx.legacy_pool,
                                     ui.ctx(),
                                 );
                             }
@@ -1023,7 +1027,7 @@ fn timelines_view(
                     ctx.img_cache,
                     ctx.media_jobs.sender(),
                     current_route.as_ref(),
-                    ctx.pool,
+                    ctx.legacy_pool,
                 )
                 .show(ui);
 
@@ -1127,7 +1131,7 @@ fn timelines_view(
 
                     let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
                     ctx.accounts
-                        .select_account(&pubkey, ctx.ndb, &txn, ctx.pool, ui.ctx());
+                        .select_account(&pubkey, ctx.ndb, &txn, ctx.legacy_pool, ui.ctx());
                 }
 
                 ProcessNavResult::ExternalNoteAction(note_action) => {

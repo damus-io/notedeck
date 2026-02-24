@@ -215,7 +215,7 @@ impl NostrverseApp {
         if let Some(relay_url) = &self.relay_url {
             let egui_ctx = egui_ctx.clone();
             if let Err(e) = ctx
-                .pool
+                .legacy_pool
                 .add_url(relay_url.clone(), move || egui_ctx.request_repaint())
             {
                 tracing::error!("Failed to add nostrverse relay {}: {}", relay_url, e);
@@ -242,7 +242,7 @@ impl NostrverseApp {
             if let Some(kp) = ctx.accounts.selected_filled() {
                 let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
                 if let Some((msg, _id)) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
-                    self.send_to_relay(ctx.pool, &msg);
+                    self.send_to_relay(ctx.legacy_pool, &msg);
                 }
             }
             // room_sub (set up above) will pick up the ingested event
@@ -375,7 +375,7 @@ impl NostrverseApp {
         let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
         if let Some((msg, id)) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
             self.last_save_id = Some(id);
-            self.send_to_relay(ctx.pool, &msg);
+            self.send_to_relay(ctx.legacy_pool, &msg);
         }
         tracing::info!("Saved space '{}'", self.state.space_ref.id);
     }
@@ -524,7 +524,7 @@ impl NostrverseApp {
                 self.presence_pub
                     .maybe_publish(ctx.ndb, kp, &self.space_naddr, self_pos, now)
             {
-                self.send_to_relay(ctx.pool, &msg);
+                self.send_to_relay(ctx.legacy_pool, &msg);
             }
         }
 
@@ -642,7 +642,7 @@ impl notedeck::App for NostrverseApp {
         self.initialize(ctx, &egui_ctx);
 
         // Send relay subscription once connected
-        self.maybe_send_relay_sub(ctx.pool);
+        self.maybe_send_relay_sub(ctx.legacy_pool);
 
         // Poll for space event updates
         self.poll_space_updates(ctx.ndb);

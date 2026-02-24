@@ -102,7 +102,7 @@ fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
                 &mut app.threads,
                 &mut app.view_state,
                 ctx.ndb,
-                ctx.pool,
+                ctx.legacy_pool,
                 ReturnType::Click,
                 col_index,
             );
