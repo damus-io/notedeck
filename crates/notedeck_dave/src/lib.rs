@@ -856,6 +856,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                         session.chat.push(Message::CompactionComplete(info));
                     }
+
+                    DaveApiResponse::QueryComplete(info) => {
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.usage.input_tokens = info.input_tokens;
+                            agentic.usage.output_tokens = info.output_tokens;
+                            agentic.usage.num_turns = info.num_turns;
+                            if let Some(cost) = info.cost_usd {
+                                agentic.usage.cost_usd = Some(cost);
+                            }
+                        }
+                    }
                 }
             }
 

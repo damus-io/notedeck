@@ -63,6 +63,10 @@ pub struct DaveUi<'a> {
     /// Color for the notification dot on the mobile hamburger icon,
     /// derived from FocusPriority of the next focus queue entry.
     status_dot_color: Option<egui::Color32>,
+    /// Usage metrics for the current session (tokens, cost)
+    usage: Option<&'a crate::messages::UsageInfo>,
+    /// Context window size for the current model
+    context_window: u64,
 }
 
 /// The response the app generates. The response contains an optional
@@ -173,6 +177,8 @@ impl<'a> DaveUi<'a> {
             git_status: None,
             details: None,
             status_dot_color: None,
+            usage: None,
+            context_window: crate::messages::context_window_for_model(None),
         }
     }
 
@@ -245,6 +251,12 @@ impl<'a> DaveUi<'a> {
 
     pub fn status_dot_color(mut self, color: Option<egui::Color32>) -> Self {
         self.status_dot_color = color;
+        self
+    }
+
+    pub fn usage(mut self, usage: &'a crate::messages::UsageInfo, model: Option<&str>) -> Self {
+        self.usage = Some(usage);
+        self.context_window = crate::messages::context_window_for_model(model);
         self
     }
 
@@ -348,6 +360,8 @@ impl<'a> DaveUi<'a> {
                                                 is_agentic,
                                                 plan_mode_active,
                                                 auto_steal_focus,
+                                                self.usage,
+                                                self.context_window,
                                                 ui,
                                             )
                                         })
@@ -1281,6 +1295,8 @@ fn status_bar_ui(
     is_agentic: bool,
     plan_mode_active: bool,
     auto_steal_focus: bool,
+    usage: Option<&crate::messages::UsageInfo>,
+    context_window: u64,
     ui: &mut egui::Ui,
 ) -> Option<DaveAction> {
     let snapshot = git_status
@@ -1295,19 +1311,25 @@ fn status_bar_ui(
                 if let Some(git_status) = git_status.as_deref_mut() {
                     git_status_ui::git_status_content_ui(git_status, &snapshot, ui);
 
-                    // Right-aligned section: badges then refresh
+                    // Right-aligned section: usage bar, badges, then refresh
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if is_agentic {
+                        let badge_action = if is_agentic {
                             toggle_badges_ui(ui, plan_mode_active, auto_steal_focus)
                         } else {
                             None
+                        };
+                        if is_agentic {
+                            usage_bar_ui(usage, context_window, ui);
                         }
+                        badge_action
                     })
                     .inner
                 } else if is_agentic {
-                    // No git status (remote session) - just show badges
+                    // No git status (remote session) - just show badges and usage
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        toggle_badges_ui(ui, plan_mode_active, auto_steal_focus)
+                        let badge_action = toggle_badges_ui(ui, plan_mode_active, auto_steal_focus);
+                        usage_bar_ui(usage, context_window, ui);
+                        badge_action
                     })
                     .inner
                 } else {
@@ -1323,6 +1345,78 @@ fn status_bar_ui(
         action
     })
     .inner
+}
+
+/// Format a token count in a compact human-readable form (e.g. "45K", "1.2M")
+fn format_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{}K", tokens / 1_000)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// Renders the usage fill bar showing context window consumption.
+fn usage_bar_ui(
+    usage: Option<&crate::messages::UsageInfo>,
+    context_window: u64,
+    ui: &mut egui::Ui,
+) {
+    let total = usage.map(|u| u.total_tokens()).unwrap_or(0);
+    if total == 0 {
+        return;
+    }
+    let usage = usage.unwrap();
+    let fraction = (total as f64 / context_window as f64).min(1.0) as f32;
+
+    // Color based on fill level: green → yellow → red
+    let bar_color = if fraction < 0.5 {
+        egui::Color32::from_rgb(100, 180, 100)
+    } else if fraction < 0.8 {
+        egui::Color32::from_rgb(200, 180, 60)
+    } else {
+        egui::Color32::from_rgb(200, 80, 80)
+    };
+
+    let weak = ui.visuals().weak_text_color();
+
+    // Cost label
+    if let Some(cost) = usage.cost_usd {
+        if cost > 0.0 {
+            ui.add(egui::Label::new(
+                egui::RichText::new(format!("${:.2}", cost))
+                    .size(10.0)
+                    .color(weak),
+            ));
+        }
+    }
+
+    // Token count label
+    ui.add(egui::Label::new(
+        egui::RichText::new(format!(
+            "{} / {}",
+            format_tokens(total),
+            format_tokens(context_window)
+        ))
+        .size(10.0)
+        .color(weak),
+    ));
+
+    // Fill bar
+    let bar_width = 60.0;
+    let bar_height = 8.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(bar_width, bar_height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    // Background
+    painter.rect_filled(rect, 3.0, ui.visuals().faint_bg_color);
+
+    // Fill
+    let fill_rect =
+        egui::Rect::from_min_size(rect.min, egui::vec2(bar_width * fraction, bar_height));
+    painter.rect_filled(fill_rect, 3.0, bar_color);
 }
 
 /// Render clickable PLAN and AUTO toggle badges. Returns an action if clicked.
