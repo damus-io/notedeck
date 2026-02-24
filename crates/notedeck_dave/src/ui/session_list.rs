@@ -4,6 +4,7 @@ use egui::{Align, Color32, Layout, Sense};
 use notedeck_ui::app_images;
 
 use crate::agent_status::AgentStatus;
+use crate::backend::BackendType;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{SessionId, SessionManager};
@@ -177,6 +178,7 @@ impl<'a> SessionListUi<'a> {
             session.status(),
             queue_priority,
             session.ai_mode,
+            session.backend_type,
         );
 
         let mut action = None;
@@ -251,6 +253,7 @@ impl<'a> SessionListUi<'a> {
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
         session_ai_mode: AiMode,
+        backend_type: BackendType,
     ) -> egui::Response {
         // Per-session: Chat sessions get shorter height (no CWD), no status bar
         // Agentic sessions get taller height with CWD and status bar
@@ -278,7 +281,7 @@ impl<'a> SessionListUi<'a> {
         ui.painter().rect_filled(rect, corner_radius, fill);
 
         // Status color indicator (left edge vertical bar) - only in Agentic mode
-        let text_start_x = if show_status_bar {
+        let mut text_start_x = if show_status_bar {
             let status_color = status.color();
             let status_bar_rect = egui::Rect::from_min_size(
                 rect.left_top() + egui::vec2(2.0, 4.0),
@@ -289,6 +292,18 @@ impl<'a> SessionListUi<'a> {
         } else {
             8.0 // Smaller padding in Chat mode (no status bar)
         };
+
+        // Backend icon (only for agentic backends)
+        if backend_type.is_agentic() {
+            let icon_size = 14.0;
+            let icon_rect = egui::Rect::from_center_size(
+                rect.left_center() + egui::vec2(text_start_x + icon_size / 2.0, 0.0),
+                egui::vec2(icon_size, icon_size),
+            );
+            let icon = crate::ui::backend_icon(backend_type);
+            icon.paint_at(ui, icon_rect);
+            text_start_x += icon_size + 4.0;
+        }
 
         // Draw shortcut hint at the far right
         let mut right_offset = 8.0; // Start with normal right padding

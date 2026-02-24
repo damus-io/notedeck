@@ -899,6 +899,7 @@ pub fn poll_editor_job(session_manager: &mut SessionManager) {
 // =============================================================================
 
 /// Create a new session with the given cwd.
+#[allow(clippy::too_many_arguments)]
 pub fn create_session_with_cwd(
     session_manager: &mut SessionManager,
     directory_picker: &mut DirectoryPicker,

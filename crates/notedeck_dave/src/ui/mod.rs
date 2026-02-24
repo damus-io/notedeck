@@ -38,6 +38,7 @@ use crate::session::{ChatSession, PermissionMessageState, SessionId, SessionMana
 use crate::session_discovery::discover_sessions;
 use crate::update;
 use crate::DaveOverlay;
+use egui::include_image;
 
 /// Build a DaveUi from a session, wiring up all the common builder fields.
 fn build_dave_ui<'a>(
@@ -66,7 +67,8 @@ fn build_dave_ui<'a>(
     .auto_steal_focus(auto_steal_focus)
     .is_remote(is_remote)
     .dispatched_user_count(session.dispatched_user_count)
-    .details(&session.details);
+    .details(&session.details)
+    .backend_type(session.backend_type);
 
     if let Some(agentic) = &mut session.agentic {
         let model = agentic
@@ -202,6 +204,29 @@ pub fn session_picker_overlay_ui(
     OverlayResult::None
 }
 
+/// Brand color for a backend type.
+pub fn backend_color(bt: BackendType) -> egui::Color32 {
+    match bt {
+        BackendType::Claude => egui::Color32::from_rgb(0xD9, 0x77, 0x57), // Anthropic terracotta
+        BackendType::Codex => egui::Color32::from_rgb(0x10, 0xA3, 0x7F),  // OpenAI green
+        _ => egui::Color32::WHITE,
+    }
+}
+
+/// Get an icon image for a backend type, tinted with its brand color.
+pub fn backend_icon(bt: BackendType) -> egui::Image<'static> {
+    let img = match bt {
+        BackendType::Claude => {
+            egui::Image::new(include_image!("../../../../assets/icons/claude-code.svg"))
+        }
+        BackendType::Codex => {
+            egui::Image::new(include_image!("../../../../assets/icons/codex.svg"))
+        }
+        _ => egui::Image::new(include_image!("../../../../assets/icons/sparkle.svg")),
+    };
+    img.tint(backend_color(bt))
+}
+
 /// Render the backend picker overlay UI.
 /// Returns Some(BackendType) when the user has selected a backend.
 pub fn backend_picker_overlay_ui(
@@ -247,11 +272,40 @@ pub fn backend_picker_overlay_ui(
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
                     for (idx, &bt) in available_backends.iter().enumerate() {
-                        let label = format!("[{}] {}", idx + 1, bt.display_name());
-                        let button = egui::Button::new(egui::RichText::new(&label).size(16.0))
-                            .min_size(egui::vec2(max_width, 40.0));
+                        let desired = egui::vec2(max_width, 44.0);
+                        let (rect, response) =
+                            ui.allocate_exact_size(desired, egui::Sense::click());
+                        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-                        if ui.add(button).clicked() {
+                        // Background
+                        let fill = if response.hovered() {
+                            ui.visuals().widgets.hovered.weak_bg_fill
+                        } else {
+                            ui.visuals().widgets.inactive.weak_bg_fill
+                        };
+                        ui.painter().rect_filled(rect, 8.0, fill);
+
+                        // Icon
+                        let icon_size = 20.0;
+                        let icon_x = rect.left() + 12.0;
+                        let icon_rect = egui::Rect::from_center_size(
+                            egui::pos2(icon_x + icon_size / 2.0, rect.center().y),
+                            egui::vec2(icon_size, icon_size),
+                        );
+                        backend_icon(bt).paint_at(ui, icon_rect);
+
+                        // Label
+                        let label = format!("[{}] {}", idx + 1, bt.display_name());
+                        let text_pos = egui::pos2(icon_x + icon_size + 10.0, rect.center().y);
+                        ui.painter().text(
+                            text_pos,
+                            egui::Align2::LEFT_CENTER,
+                            &label,
+                            egui::FontId::proportional(16.0),
+                            ui.visuals().text_color(),
+                        );
+
+                        if response.clicked() {
                             selected = Some(bt);
                         }
                         ui.add_space(4.0);

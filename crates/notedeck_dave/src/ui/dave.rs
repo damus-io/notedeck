@@ -5,6 +5,7 @@ use super::markdown_ui;
 use super::query_ui::query_call_ui;
 use super::top_buttons::top_buttons_ui;
 use crate::{
+    backend::BackendType,
     config::{AiMode, DaveSettings},
     file_update::FileUpdate,
     git_status::GitStatusCache,
@@ -70,6 +71,8 @@ pub struct DaveUi<'a> {
     /// Number of trailing user messages dispatched in the current stream.
     /// Used by the queued indicator to skip dispatched messages.
     dispatched_user_count: usize,
+    /// Which backend this session uses
+    backend_type: BackendType,
 }
 
 /// The response the app generates. The response contains an optional
@@ -183,7 +186,13 @@ impl<'a> DaveUi<'a> {
             usage: None,
             context_window: crate::messages::context_window_for_model(None),
             dispatched_user_count: 0,
+            backend_type: BackendType::Remote,
         }
+    }
+
+    pub fn backend_type(mut self, bt: BackendType) -> Self {
+        self.backend_type = bt;
+        self
     }
 
     pub fn details(mut self, details: &'a SessionDetails) -> Self {
@@ -311,7 +320,7 @@ impl<'a> DaveUi<'a> {
                     );
                     ui.allocate_new_ui(egui::UiBuilder::new().max_rect(details_rect), |ui| {
                         ui.set_clip_rect(details_rect);
-                        session_header_ui(ui, details);
+                        session_header_ui(ui, details, self.backend_type);
                     });
                 }
             }
@@ -1526,33 +1535,41 @@ fn toggle_badges_ui(
     action
 }
 
-fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails) {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 1.0;
-        ui.add(
-            egui::Label::new(egui::RichText::new(details.display_title()).size(13.0))
-                .wrap_mode(egui::TextWrapMode::Truncate),
-        );
-        if let Some(cwd) = &details.cwd {
-            let cwd_display = if details.home_dir.is_empty() {
-                crate::path_utils::abbreviate_path(cwd)
-            } else {
-                crate::path_utils::abbreviate_with_home(cwd, &details.home_dir)
-            };
-            let display_text = if details.hostname.is_empty() {
-                cwd_display
-            } else {
-                format!("{}:{}", details.hostname, cwd_display)
-            };
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(display_text)
-                        .monospace()
-                        .size(10.0)
-                        .weak(),
-                )
-                .wrap_mode(egui::TextWrapMode::Truncate),
-            );
+fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails, backend_type: BackendType) {
+    ui.horizontal(|ui| {
+        // Backend icon
+        if backend_type.is_agentic() {
+            let icon = crate::ui::backend_icon(backend_type).max_height(16.0);
+            ui.add(icon);
         }
+
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.add(
+                egui::Label::new(egui::RichText::new(details.display_title()).size(13.0))
+                    .wrap_mode(egui::TextWrapMode::Truncate),
+            );
+            if let Some(cwd) = &details.cwd {
+                let cwd_display = if details.home_dir.is_empty() {
+                    crate::path_utils::abbreviate_path(cwd)
+                } else {
+                    crate::path_utils::abbreviate_with_home(cwd, &details.home_dir)
+                };
+                let display_text = if details.hostname.is_empty() {
+                    cwd_display
+                } else {
+                    format!("{}:{}", details.hostname, cwd_display)
+                };
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(display_text)
+                            .monospace()
+                            .size(10.0)
+                            .weak(),
+                    )
+                    .wrap_mode(egui::TextWrapMode::Truncate),
+                );
+            }
+        });
     });
 }
