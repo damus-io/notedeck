@@ -172,10 +172,8 @@ impl NostrverseApp {
                 let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
                 nostr_events::ingest_event(builder, ctx.ndb, kp);
             }
-
-            // Re-load now that we've ingested the demo
-            let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-            self.load_room_from_ndb(ctx.ndb, &txn);
+            // room_sub (set up above) will pick up the ingested event
+            // on the next poll_room_updates() frame.
         }
 
         // Add self user
