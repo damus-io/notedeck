@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub enum BackendType {
     OpenAI,
     Claude,
+    Codex,
     /// No local AI — only view/control remote agentic sessions from ndb
     Remote,
 }

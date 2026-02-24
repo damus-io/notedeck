@@ -67,11 +67,16 @@ fn build_dave_ui<'a>(
     .details(&session.details);
 
     if let Some(agentic) = &mut session.agentic {
+        let model = agentic
+            .session_info
+            .as_ref()
+            .and_then(|si| si.model.as_deref());
         ui_builder = ui_builder
             .permission_message_state(agentic.permission_message_state)
             .question_answers(&mut agentic.question_answers)
             .question_index(&mut agentic.question_index)
-            .is_compacting(agentic.is_compacting);
+            .is_compacting(agentic.is_compacting)
+            .usage(&agentic.usage, model);
 
         // Only show git status for local sessions
         if !is_remote {

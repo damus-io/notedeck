@@ -479,6 +479,30 @@ async fn session_actor(
                                                     .unwrap_or_else(|| "Unknown error".to_string());
                                                 let _ = response_tx.send(DaveApiResponse::Failed(error_text));
                                             }
+
+                                            // Extract usage metrics
+                                            let (input_tokens, output_tokens) = result_msg
+                                                .usage
+                                                .as_ref()
+                                                .map(|u| {
+                                                    let inp = u.get("input_tokens")
+                                                        .and_then(|v| v.as_u64())
+                                                        .unwrap_or(0);
+                                                    let out = u.get("output_tokens")
+                                                        .and_then(|v| v.as_u64())
+                                                        .unwrap_or(0);
+                                                    (inp, out)
+                                                })
+                                                .unwrap_or((0, 0));
+
+                                            let usage_info = crate::messages::UsageInfo {
+                                                input_tokens,
+                                                output_tokens,
+                                                cost_usd: result_msg.total_cost_usd,
+                                                num_turns: result_msg.num_turns,
+                                            };
+                                            let _ = response_tx.send(DaveApiResponse::QueryComplete(usage_info));
+
                                             stream_done = true;
                                         }
                                         ClaudeMessage::User(user_msg) => {

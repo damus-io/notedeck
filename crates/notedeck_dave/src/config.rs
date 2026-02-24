@@ -1,6 +1,14 @@
 use crate::backend::BackendType;
 use async_openai::config::OpenAIConfig;
 use serde::{Deserialize, Serialize};
+use std::env;
+
+/// Check if a binary exists on the system PATH.
+fn has_binary_on_path(binary: &str) -> bool {
+    env::var_os("PATH")
+        .map(|paths| env::split_paths(&paths).any(|dir| dir.join(binary).is_file()))
+        .unwrap_or(false)
+}
 
 /// AI interaction mode - determines UI complexity and feature set
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,13 +26,15 @@ pub enum AiProvider {
     OpenAI,
     Anthropic,
     Ollama,
+    Codex,
 }
 
 impl AiProvider {
-    pub const ALL: [AiProvider; 3] = [
+    pub const ALL: [AiProvider; 4] = [
         AiProvider::OpenAI,
         AiProvider::Anthropic,
         AiProvider::Ollama,
+        AiProvider::Codex,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -32,6 +42,7 @@ impl AiProvider {
             AiProvider::OpenAI => "OpenAI",
             AiProvider::Anthropic => "Anthropic",
             AiProvider::Ollama => "Ollama",
+            AiProvider::Codex => "Codex",
         }
     }
 
@@ -40,12 +51,13 @@ impl AiProvider {
             AiProvider::OpenAI => "gpt-5.2",
             AiProvider::Anthropic => "claude-sonnet-4-20250514",
             AiProvider::Ollama => "hhao/qwen2.5-coder-tools:latest",
+            AiProvider::Codex => "gpt-5.2-codex",
         }
     }
 
     pub fn default_endpoint(&self) -> Option<&'static str> {
         match self {
-            AiProvider::OpenAI => None,
+            AiProvider::OpenAI | AiProvider::Codex => None,
             AiProvider::Anthropic => Some("https://api.anthropic.com/v1"),
             AiProvider::Ollama => Some("http://localhost:11434/v1"),
         }
@@ -54,7 +66,7 @@ impl AiProvider {
     pub fn requires_api_key(&self) -> bool {
         match self {
             AiProvider::OpenAI | AiProvider::Anthropic => true,
-            AiProvider::Ollama => false,
+            AiProvider::Ollama | AiProvider::Codex => false,
         }
     }
 
@@ -72,6 +84,13 @@ impl AiProvider {
                 "llama3.2:latest",
                 "mistral:latest",
                 "codellama:latest",
+            ],
+            AiProvider::Codex => &[
+                "gpt-5.3-codex",
+                "gpt-5.2-codex",
+                "gpt-5-codex",
+                "gpt-5-codex-mini",
+                "codex-mini-latest",
             ],
         }
     }
@@ -116,6 +135,7 @@ impl DaveSettings {
         let provider = match config.backend {
             BackendType::OpenAI | BackendType::Remote => AiProvider::OpenAI,
             BackendType::Claude => AiProvider::Anthropic,
+            BackendType::Codex => AiProvider::Codex,
         };
 
         let api_key = match provider {
@@ -179,6 +199,7 @@ impl Default for ModelConfig {
             match backend_str.to_lowercase().as_str() {
                 "claude" | "anthropic" => BackendType::Claude,
                 "openai" => BackendType::OpenAI,
+                "codex" => BackendType::Codex,
                 _ => {
                     tracing::warn!(
                         "Unknown DAVE_BACKEND value: {}, defaulting to OpenAI",
@@ -188,10 +209,13 @@ impl Default for ModelConfig {
                 }
             }
         } else {
-            // Auto-detect: prefer Claude if key is available, otherwise OpenAI
-            // (with trial key fallback). Remote is only for controlling
-            // agentic sessions discovered from relays, not the default mode.
-            if anthropic_api_key.is_some() {
+            // Auto-detect: prefer agentic backends if their CLI binary is on PATH,
+            // then fall back to API-key detection, then OpenAI (with trial key).
+            if has_binary_on_path("claude") {
+                BackendType::Claude
+            } else if has_binary_on_path("codex") {
+                BackendType::Codex
+            } else if anthropic_api_key.is_some() {
                 BackendType::Claude
             } else {
                 BackendType::OpenAI
@@ -211,6 +235,7 @@ impl Default for ModelConfig {
             .unwrap_or_else(|| match backend {
                 BackendType::OpenAI => "gpt-4.1-mini".to_string(),
                 BackendType::Claude => "claude-sonnet-4.5".to_string(),
+                BackendType::Codex => "gpt-5.2-codex".to_string(),
                 BackendType::Remote => String::new(),
             });
 
@@ -229,7 +254,7 @@ impl Default for ModelConfig {
 impl ModelConfig {
     pub fn ai_mode(&self) -> AiMode {
         match self.backend {
-            BackendType::Claude => AiMode::Agentic,
+            BackendType::Claude | BackendType::Codex => AiMode::Agentic,
             BackendType::OpenAI | BackendType::Remote => AiMode::Chat,
         }
     }
@@ -267,6 +292,7 @@ impl ModelConfig {
         let backend = match settings.provider {
             AiProvider::OpenAI | AiProvider::Ollama => BackendType::OpenAI,
             AiProvider::Anthropic => BackendType::Claude,
+            AiProvider::Codex => BackendType::Codex,
         };
 
         let anthropic_api_key = if settings.provider == AiProvider::Anthropic {

@@ -2,7 +2,7 @@
 
 use enostr::Pubkey;
 use glam::{Quat, Vec3};
-use renderbud::{Model, ObjectId};
+use renderbud::{Aabb, Model, ObjectId};
 
 /// Actions that can be triggered from the nostrverse view
 #[derive(Clone, Debug)]
@@ -17,6 +17,10 @@ pub enum NostrverseAction {
     AddObject(RoomObject),
     /// An object was removed
     RemoveObject(String),
+    /// Duplicate the selected object
+    DuplicateObject(String),
+    /// Object was rotated (id, new rotation)
+    RotateObject { id: String, rotation: Quat },
 }
 
 /// Reference to a nostrverse room
@@ -204,6 +208,33 @@ impl RoomUser {
     }
 }
 
+/// How a drag interaction is constrained
+#[derive(Clone, Debug)]
+pub enum DragMode {
+    /// Free object: drag on world-space Y plane
+    Free,
+    /// Parented object: slide on parent surface, may break away
+    Parented {
+        parent_id: String,
+        parent_scene_id: ObjectId,
+        parent_aabb: Aabb,
+        /// Local Y where child sits (e.g. parent top + child half height)
+        local_y: f32,
+    },
+}
+
+/// State for an active object drag in the 3D viewport
+pub struct DragState {
+    /// ID of the object being dragged
+    pub object_id: String,
+    /// Offset from object position to the initial grab point
+    pub grab_offset: Vec3,
+    /// Y height of the drag constraint plane
+    pub plane_y: f32,
+    /// Drag constraint mode
+    pub mode: DragMode,
+}
+
 /// State for a nostrverse view
 pub struct NostrverseState {
     /// Reference to the room being viewed
@@ -222,6 +253,20 @@ pub struct NostrverseState {
     pub smooth_avatar_yaw: f32,
     /// Room has unsaved edits
     pub dirty: bool,
+    /// Active drag state for viewport object manipulation
+    pub drag_state: Option<DragState>,
+    /// Grid snap size in meters
+    pub grid_snap: f32,
+    /// Whether grid snapping is enabled
+    pub grid_snap_enabled: bool,
+    /// Whether rotate mode is active (R key toggle)
+    pub rotate_mode: bool,
+    /// Whether the current drag is a rotation drag (started on an object in rotate mode)
+    pub rotate_drag: bool,
+    /// Rotation snap increment in degrees (used when grid snap is enabled)
+    pub rotation_snap: f32,
+    /// Cached serialized scene text (avoids re-serializing every frame)
+    pub cached_scene_text: String,
 }
 
 impl NostrverseState {
@@ -235,6 +280,13 @@ impl NostrverseState {
             edit_mode: true,
             smooth_avatar_yaw: 0.0,
             dirty: false,
+            drag_state: None,
+            grid_snap: 0.5,
+            grid_snap_enabled: false,
+            rotate_mode: false,
+            rotate_drag: false,
+            rotation_snap: 15.0,
+            cached_scene_text: String::new(),
         }
     }
 

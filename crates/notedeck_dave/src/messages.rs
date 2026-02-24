@@ -328,6 +328,27 @@ pub struct CompactionInfo {
     pub pre_tokens: u64,
 }
 
+/// Usage metrics from a completed query's Result message
+#[derive(Debug, Clone, Default)]
+pub struct UsageInfo {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: Option<f64>,
+    pub num_turns: u32,
+}
+
+impl UsageInfo {
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens + self.output_tokens
+    }
+}
+
+/// Get context window size for a model name.
+/// All current Claude models have 200K context.
+pub fn context_window_for_model(_model: Option<&str>) -> u64 {
+    200_000
+}
+
 /// The ai backends response. Since we are using streaming APIs these are
 /// represented as individual tokens or tool calls
 pub enum DaveApiResponse {
@@ -356,6 +377,8 @@ pub enum DaveApiResponse {
     CompactionStarted,
     /// Conversation compaction completed with token info
     CompactionComplete(CompactionInfo),
+    /// Query completed with usage metrics
+    QueryComplete(UsageInfo),
 }
 
 impl Message {

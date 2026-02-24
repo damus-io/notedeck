@@ -25,7 +25,9 @@ mod update;
 mod vec3;
 
 use agent_status::AgentStatus;
-use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend, RemoteOnlyBackend};
+use backend::{
+    AiBackend, BackendType, ClaudeBackend, CodexBackend, OpenAiBackend, RemoteOnlyBackend,
+};
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
@@ -361,6 +363,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .expect("Claude backend requires ANTHROPIC_API_KEY or CLAUDE_API_KEY");
                 Box::new(ClaudeBackend::new(api_key.clone()))
             }
+            BackendType::Codex => Box::new(CodexBackend::new(
+                std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string()),
+            )),
             BackendType::Remote => Box::new(RemoteOnlyBackend),
         };
 
@@ -855,6 +860,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             }
                         }
                         session.chat.push(Message::CompactionComplete(info));
+                    }
+
+                    DaveApiResponse::QueryComplete(info) => {
+                        if let Some(agentic) = &mut session.agentic {
+                            agentic.usage.input_tokens = info.input_tokens;
+                            agentic.usage.output_tokens = info.output_tokens;
+                            agentic.usage.num_turns = info.num_turns;
+                            if let Some(cost) = info.cost_usd {
+                                agentic.usage.cost_usd = Some(cost);
+                            }
+                        }
                     }
                 }
             }
@@ -1494,16 +1510,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 );
                 session.chat = loaded.messages;
 
-                // Determine if this is a remote session (cwd doesn't exist locally)
-                let cwd = std::path::PathBuf::from(&state.cwd);
-                if !cwd.exists() {
+                // Determine if this is a remote session: hostname mismatch
+                // is the primary signal, with cwd non-existence as fallback
+                // for old events that may lack a hostname.
+                if (!state.hostname.is_empty() && state.hostname != self.hostname)
+                    || (state.hostname.is_empty() && !std::path::PathBuf::from(&state.cwd).exists())
+                {
                     session.source = session::SessionSource::Remote;
                 }
-                let is_remote = session.is_remote();
 
                 // Local sessions use the current machine's hostname;
                 // remote sessions use what was stored in the event.
-                session.details.hostname = if is_remote {
+                session.details.hostname = if session.is_remote() {
                     state.hostname.clone()
                 } else {
                     self.hostname.clone()
@@ -1707,9 +1725,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.chat = loaded.messages;
                 }
 
-                // Determine if this is a remote session
-                let cwd_path = std::path::PathBuf::from(&state.cwd);
-                if !cwd_path.exists() {
+                // Determine if this is a remote session: hostname mismatch
+                // is the primary signal, with cwd non-existence as fallback
+                // for old events that may lack a hostname.
+                if (!state.hostname.is_empty() && state.hostname != self.hostname)
+                    || (state.hostname.is_empty() && !std::path::PathBuf::from(&state.cwd).exists())
+                {
                     session.source = session::SessionSource::Remote;
                 }
 

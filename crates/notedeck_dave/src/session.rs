@@ -210,6 +210,8 @@ pub struct AgenticSessionData {
     pub seen_note_ids: HashSet<[u8; 32]>,
     /// Tracks the "Compact & Approve" lifecycle.
     pub compact_and_proceed: CompactAndProceedState,
+    /// Accumulated usage metrics across queries in this session.
+    pub usage: crate::messages::UsageInfo,
 }
 
 impl AgenticSessionData {
@@ -243,6 +245,7 @@ impl AgenticSessionData {
             live_conversation_sub: None,
             seen_note_ids: HashSet::new(),
             compact_and_proceed: CompactAndProceedState::Idle,
+            usage: Default::default(),
         }
     }
 

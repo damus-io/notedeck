@@ -115,8 +115,14 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
         .collect();
 
-    // Sort by created_at (chronological order)
-    notes.sort_by_key(|note| note.created_at());
+    // Sort by created_at first, then by seq tag as tiebreaker for events
+    // within the same second (seq is per-session, not globally ordered)
+    notes.sort_by_key(|note| {
+        let seq = get_tag_value(note, "seq")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        (note.created_at(), seq)
+    });
 
     let event_count = notes.len() as u32;
     let note_ids: HashSet<[u8; 32]> = notes.iter().map(|n| *n.id()).collect();

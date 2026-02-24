@@ -218,6 +218,7 @@ pub fn file_path_header(update: &FileUpdate, ui: &mut Ui) {
     let type_label = match &update.update_type {
         FileUpdateType::Edit { .. } => "Edit",
         FileUpdateType::Write { .. } => "Write",
+        FileUpdateType::UnifiedDiff { .. } => "Diff",
     };
 
     ui.label(RichText::new(type_label).strong());

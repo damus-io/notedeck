@@ -1,4 +1,4 @@
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use crate::material::{MaterialUniform, make_material_gpudata};
 use crate::model::ModelData;
@@ -119,6 +119,7 @@ pub struct Renderer {
     skybox_pipeline: wgpu::RenderPipeline,
     grid_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
+    outline_pipeline: wgpu::RenderPipeline,
 
     shadow_view: wgpu::TextureView,
     shadow_globals_bg: wgpu::BindGroup,
@@ -306,6 +307,26 @@ fn make_dynamic_object_buffer(
         },
         object_bgl,
     )
+}
+
+/// Ray-AABB intersection using the slab method.
+/// Transforms the ray into the object's local space via the inverse world matrix.
+/// Returns the distance along the ray if there's a hit.
+fn ray_aabb(origin: Vec3, dir: Vec3, aabb: &Aabb, world: &Mat4) -> Option<f32> {
+    let inv = world.inverse();
+    let lo = (inv * origin.extend(1.0)).truncate();
+    let ld = (inv * dir.extend(0.0)).truncate();
+    let t1 = (aabb.min - lo) / ld;
+    let t2 = (aabb.max - lo) / ld;
+    let tmin = t1.min(t2);
+    let tmax = t1.max(t2);
+    let enter = tmin.x.max(tmin.y).max(tmin.z);
+    let exit = tmax.x.min(tmax.y).min(tmax.z);
+    if exit >= enter.max(0.0) {
+        Some(enter.max(0.0))
+    } else {
+        None
+    }
 }
 
 impl Renderer {
@@ -564,6 +585,55 @@ impl Renderer {
             multiview: None,
         });
 
+        // Outline pipeline (inverted hull, front-face culling)
+        let outline_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("outline_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("outline.wgsl").into()),
+        });
+
+        let outline_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("outline_pipeline_layout"),
+                bind_group_layouts: &[&shadow_globals_bgl, &object_bgl],
+                push_constant_ranges: &[],
+            });
+
+        let outline_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("outline_pipeline"),
+            cache: None,
+            layout: Some(&outline_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &outline_shader,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &outline_shader,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: Some(wgpu::Face::Front),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         let (depth_tex, depth_view) = create_depth(device, width, height);
 
         /* TODO: move to example
@@ -592,6 +662,7 @@ impl Renderer {
             skybox_pipeline,
             grid_pipeline,
             shadow_pipeline,
+            outline_pipeline,
             shadow_view,
             shadow_globals_bg,
             globals,
@@ -713,9 +784,80 @@ impl Renderer {
         self.globals.data.set_camera(w, h, &self.world.camera);
     }
 
+    /// Set or clear which object shows a selection outline.
+    pub fn set_selected(&mut self, id: Option<ObjectId>) {
+        self.world.selected_object = id;
+    }
+
     /// Get the axis-aligned bounding box for a loaded model.
     pub fn model_bounds(&self, model: Model) -> Option<Aabb> {
         self.models.get(&model).map(|md| md.bounds)
+    }
+
+    /// Get the cached world matrix for a scene object.
+    pub fn world_matrix(&self, id: ObjectId) -> Option<glam::Mat4> {
+        self.world.world_matrix(id)
+    }
+
+    /// Get the parent of a scene object, if it has one.
+    pub fn node_parent(&self, id: ObjectId) -> Option<ObjectId> {
+        self.world.node_parent(id)
+    }
+
+    /// Convert screen coordinates (relative to viewport) to a world-space ray.
+    /// Returns (origin, direction).
+    fn screen_to_ray(&self, screen_x: f32, screen_y: f32) -> (Vec3, Vec3) {
+        let (w, h) = self.target_size;
+        let ndc_x = (screen_x / w as f32) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (screen_y / h as f32) * 2.0;
+        let vp = self.world.camera.view_proj(w as f32, h as f32);
+        let inv_vp = vp.inverse();
+        let near4 = inv_vp * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far4 = inv_vp * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let near = near4.truncate() / near4.w;
+        let far = far4.truncate() / far4.w;
+        (near, (far - near).normalize())
+    }
+
+    /// Pick the closest scene object at the given screen coordinates.
+    /// Coordinates are relative to the viewport (0,0 = top-left).
+    pub fn pick(&self, screen_x: f32, screen_y: f32) -> Option<ObjectId> {
+        let (origin, dir) = self.screen_to_ray(screen_x, screen_y);
+        let mut closest: Option<(ObjectId, f32)> = None;
+        for &id in self.world.renderables() {
+            let model = match self.world.node_model(id) {
+                Some(m) => m,
+                None => continue,
+            };
+            let aabb = match self.model_bounds(model) {
+                Some(a) => a,
+                None => continue,
+            };
+            let world = match self.world.world_matrix(id) {
+                Some(w) => w,
+                None => continue,
+            };
+            if let Some(t) = ray_aabb(origin, dir, &aabb, &world)
+                && closest.is_none_or(|(_, d)| t < d)
+            {
+                closest = Some((id, t));
+            }
+        }
+        closest.map(|(id, _)| id)
+    }
+
+    /// Unproject screen coordinates to a point on a horizontal plane at the given Y height.
+    /// Useful for constraining object drag to the ground plane.
+    pub fn unproject_to_plane(&self, screen_x: f32, screen_y: f32, plane_y: f32) -> Option<Vec3> {
+        let (origin, dir) = self.screen_to_ray(screen_x, screen_y);
+        if dir.y.abs() < 1e-6 {
+            return None;
+        }
+        let t = (plane_y - origin.y) / dir.y;
+        if t < 0.0 {
+            return None;
+        }
+        Some(origin + dir * t)
     }
 
     /// Handle mouse drag for camera look/orbit.
@@ -923,6 +1065,30 @@ impl Renderer {
                 rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
                 rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
                 rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+            }
+        }
+
+        // 4. Draw selection outline for selected object
+        if let Some(selected_id) = self.world.selected_object
+            && let Some(sel_idx) = self
+                .world
+                .renderables()
+                .iter()
+                .position(|&id| id == selected_id)
+        {
+            let node = self.world.get_node(selected_id).unwrap();
+            let model_handle = node.model.unwrap();
+            if let Some(model_data) = self.models.get(&model_handle) {
+                rpass.set_pipeline(&self.outline_pipeline);
+                rpass.set_bind_group(0, &self.shadow_globals_bg, &[]);
+                let dynamic_offset = (sel_idx as u64 * self.object_buf.stride) as u32;
+                rpass.set_bind_group(1, &self.object_buf.bindgroup, &[dynamic_offset]);
+
+                for d in &model_data.draws {
+                    rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
+                    rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                    rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+                }
             }
         }
     }

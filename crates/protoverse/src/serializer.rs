@@ -17,7 +17,13 @@ fn format_number(n: f64) -> String {
     if n == n.floor() && n.abs() < i64::MAX as f64 {
         format!("{}", n as i64)
     } else {
-        format!("{}", n)
+        // Round to 4 decimal places to avoid f32→f64 noise
+        // (e.g. -0.20000000298023224 → -0.2)
+        let rounded = (n * 10000.0).round() / 10000.0;
+        let s = format!("{:.4}", rounded);
+        let s = s.trim_end_matches('0');
+        let s = s.trim_end_matches('.');
+        s.to_string()
     }
 }
 
@@ -98,6 +104,15 @@ fn write_attr(attr: &Attribute, out: &mut String) {
                 format_number(*z)
             );
         }
+        Attribute::Rotation(x, y, z) => {
+            let _ = write!(
+                out,
+                "(rotation {} {} {})",
+                format_number(*x),
+                format_number(*y),
+                format_number(*z)
+            );
+        }
         Attribute::ModelUrl(s) => {
             let _ = write!(out, "(model-url \"{}\")", s);
         }
@@ -116,5 +131,22 @@ mod tests {
         assert!(output.contains("(room"));
         assert!(output.contains("(name \"Test\")"));
         assert!(output.contains("(width 10)"));
+    }
+
+    #[test]
+    fn test_format_number_strips_float_noise() {
+        // Integers
+        assert_eq!(format_number(10.0), "10");
+        assert_eq!(format_number(-3.0), "-3");
+        assert_eq!(format_number(0.0), "0");
+
+        // Clean decimals
+        assert_eq!(format_number(1.5), "1.5");
+        assert_eq!(format_number(-0.2), "-0.2");
+
+        // f32→f64 noise: -0.2f32 as f64 == -0.20000000298023224
+        assert_eq!(format_number(-0.2_f32 as f64), "-0.2");
+        assert_eq!(format_number(0.5_f32 as f64), "0.5");
+        assert_eq!(format_number(1.125_f32 as f64), "1.125");
     }
 }

@@ -172,10 +172,8 @@ impl NostrverseApp {
                 let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
                 nostr_events::ingest_event(builder, ctx.ndb, kp);
             }
-
-            // Re-load now that we've ingested the demo
-            let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-            self.load_room_from_ndb(ctx.ndb, &txn);
+            // room_sub (set up above) will pick up the ingested event
+            // on the next poll_room_updates() frame.
         }
 
         // Add self user
@@ -657,6 +655,17 @@ impl NostrverseApp {
                 }
             }
             NostrverseAction::SelectObject(selected) => {
+                // Update renderer outline highlight
+                if let Some(renderer) = &self.renderer {
+                    let scene_id = selected.as_ref().and_then(|sel_id| {
+                        self.state
+                            .objects
+                            .iter()
+                            .find(|o| &o.id == sel_id)
+                            .and_then(|o| o.scene_object_id)
+                    });
+                    renderer.renderer.lock().unwrap().set_selected(scene_id);
+                }
                 self.state.selected_object = selected;
             }
             NostrverseAction::SaveRoom => {
@@ -671,8 +680,33 @@ impl NostrverseApp {
                 self.state.objects.retain(|o| o.id != id);
                 if self.state.selected_object.as_ref() == Some(&id) {
                     self.state.selected_object = None;
+                    if let Some(renderer) = &self.renderer {
+                        renderer.renderer.lock().unwrap().set_selected(None);
+                    }
                 }
                 self.state.dirty = true;
+            }
+            NostrverseAction::RotateObject { id, rotation } => {
+                if let Some(obj) = self.state.get_object_mut(&id) {
+                    obj.rotation = rotation;
+                    self.state.dirty = true;
+                }
+            }
+            NostrverseAction::DuplicateObject(id) => {
+                let Some(src) = self.state.objects.iter().find(|o| o.id == id).cloned() else {
+                    return;
+                };
+                let new_id = format!("{}-copy-{}", src.id, self.state.objects.len());
+                let mut dup = src;
+                dup.id = new_id.clone();
+                dup.name = format!("{} (copy)", dup.name);
+                dup.position.x += 0.5;
+                // Clear scene node — sync_scene will create a new one.
+                // Keep model_handle: it's a shared ref to loaded GPU data.
+                dup.scene_object_id = None;
+                self.state.objects.push(dup);
+                self.state.dirty = true;
+                self.state.selected_object = Some(new_id);
             }
         }
     }
