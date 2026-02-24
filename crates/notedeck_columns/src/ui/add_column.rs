@@ -886,6 +886,60 @@ struct ColumnOptionData {
     option: AddColumnOption,
 }
 
+/// Attach a new timeline column by building and initializing its timeline state.
+fn attach_timeline_column(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    col: usize,
+    timeline_kind: TimelineKind,
+) -> bool {
+    let already_open_for_account = app
+        .timeline_cache
+        .get(&timeline_kind)
+        .is_some_and(|timeline| timeline.subscription.dependers() > 0);
+
+    if already_open_for_account {
+        if let Some(timeline) = app.timeline_cache.get_mut(&timeline_kind) {
+            timeline.subscription.increment();
+        }
+
+        app.columns_mut(ctx.i18n, ctx.accounts)
+            .column_mut(col)
+            .router_mut()
+            .route_to_replaced(Route::timeline(timeline_kind));
+        return true;
+    }
+
+    let txn = Transaction::new(ctx.ndb).expect("txn");
+    let mut timeline = if let Some(timeline) = timeline_kind.clone().into_timeline(&txn, ctx.ndb) {
+        timeline
+    } else {
+        error!("Could not convert column response to timeline");
+        return false;
+    };
+
+    crate::timeline::setup_new_timeline(
+        &mut timeline,
+        ctx.ndb,
+        &txn,
+        &mut app.subscriptions,
+        ctx.legacy_pool,
+        ctx.note_cache,
+        app.options.contains(AppOptions::SinceOptimize),
+        ctx.accounts,
+        ctx.unknown_ids,
+    );
+
+    let route_kind = timeline.kind.clone();
+    app.columns_mut(ctx.i18n, ctx.accounts)
+        .column_mut(col)
+        .router_mut()
+        .route_to_replaced(Route::timeline(route_kind.clone()));
+    app.timeline_cache.insert(route_kind, timeline);
+
+    true
+}
+
 pub fn render_add_column_routes(
     ui: &mut egui::Ui,
     app: &mut Damus,
@@ -936,34 +990,8 @@ pub fn render_add_column_routes(
 
     if let Some(resp) = resp {
         match resp {
-            AddColumnResponse::Timeline(timeline_kind) => 'leave: {
-                let txn = Transaction::new(ctx.ndb).unwrap();
-                let mut timeline =
-                    if let Some(timeline) = timeline_kind.into_timeline(&txn, ctx.ndb) {
-                        timeline
-                    } else {
-                        error!("Could not convert column response to timeline");
-                        break 'leave;
-                    };
-
-                crate::timeline::setup_new_timeline(
-                    &mut timeline,
-                    ctx.ndb,
-                    &txn,
-                    &mut app.subscriptions,
-                    ctx.legacy_pool,
-                    ctx.note_cache,
-                    app.options.contains(AppOptions::SinceOptimize),
-                    ctx.accounts,
-                    ctx.unknown_ids,
-                );
-
-                app.columns_mut(ctx.i18n, ctx.accounts)
-                    .column_mut(col)
-                    .router_mut()
-                    .route_to_replaced(Route::timeline(timeline.kind.clone()));
-
-                app.timeline_cache.insert(timeline.kind.clone(), timeline);
+            AddColumnResponse::Timeline(timeline_kind) => {
+                let _ = attach_timeline_column(app, ctx, col, timeline_kind);
             }
 
             AddColumnResponse::Algo(algo_option) => match algo_option {
@@ -982,30 +1010,12 @@ pub fn render_add_column_routes(
                 // source to be, so let's create a timeline from that and
                 // add it to our list of timelines
                 AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
-                    let txn = Transaction::new(ctx.ndb).unwrap();
-                    let maybe_timeline = TimelineKind::last_per_pubkey(list_kind.clone())
-                        .into_timeline(&txn, ctx.ndb);
-
-                    if let Some(mut timeline) = maybe_timeline {
-                        crate::timeline::setup_new_timeline(
-                            &mut timeline,
-                            ctx.ndb,
-                            &txn,
-                            &mut app.subscriptions,
-                            ctx.legacy_pool,
-                            ctx.note_cache,
-                            app.options.contains(AppOptions::SinceOptimize),
-                            ctx.accounts,
-                            ctx.unknown_ids,
-                        );
-
-                        app.columns_mut(ctx.i18n, ctx.accounts)
-                            .column_mut(col)
-                            .router_mut()
-                            .route_to_replaced(Route::timeline(timeline.kind.clone()));
-
-                        app.timeline_cache.insert(timeline.kind.clone(), timeline);
-                    } else {
+                    if !attach_timeline_column(
+                        app,
+                        ctx,
+                        col,
+                        TimelineKind::last_per_pubkey(list_kind.clone()),
+                    ) {
                         // we couldn't fetch the timeline yet... let's let
                         // the user know ?
 
