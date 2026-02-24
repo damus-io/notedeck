@@ -662,15 +662,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         session.chat.push(Message::Error(err.to_string()));
                     }
 
-                    DaveApiResponse::Token(token) => match session.chat.last_mut() {
-                        Some(Message::Assistant(msg)) => msg.push_token(&token),
-                        Some(_) => {
-                            let mut msg = messages::AssistantMessage::new();
-                            msg.push_token(&token);
-                            session.chat.push(Message::Assistant(msg));
-                        }
-                        None => {}
-                    },
+                    DaveApiResponse::Token(token) => {
+                        session.append_token(&token);
+                    }
 
                     DaveApiResponse::ToolCalls(toolcalls) => {
                         tracing::info!("got tool calls: {:?}", toolcalls);
@@ -920,27 +914,24 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     // Stream ended, clear task state
                     if let Some(session) = self.session_manager.get_mut(session_id) {
-                        // Finalize any active assistant message to cache parsed elements
-                        if let Some(Message::Assistant(msg)) = session.chat.last_mut() {
-                            msg.finalize();
-                        }
+                        // Finalize the last assistant message to cache parsed
+                        // elements. It may not be chat.last() if user messages
+                        // were queued after it.
+                        session.finalize_last_assistant();
 
                         // Generate live event for the finalized assistant message
                         if let Some(sk) = &secret_key {
-                            if let Some(Message::Assistant(msg)) = session.chat.last() {
-                                let text = msg.text().to_string();
-                                if !text.is_empty() {
-                                    if let Some(evt) = ingest_live_event(
-                                        session,
-                                        app_ctx.ndb,
-                                        sk,
-                                        &text,
-                                        "assistant",
-                                        None,
-                                        None,
-                                    ) {
-                                        events_to_publish.push(evt);
-                                    }
+                            if let Some(text) = session.last_assistant_text() {
+                                if let Some(evt) = ingest_live_event(
+                                    session,
+                                    app_ctx.ndb,
+                                    sk,
+                                    &text,
+                                    "assistant",
+                                    None,
+                                    None,
+                                ) {
+                                    events_to_publish.push(evt);
                                 }
                             }
                         }
@@ -952,6 +943,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         // unanswered remote message that arrived while we
                         // were streaming. Queue it for dispatch.
                         if session.needs_redispatch_after_stream_end() {
+                            tracing::info!(
+                                "Session {}: redispatching queued user message after stream end",
+                                session_id
+                            );
                             needs_send.insert(session_id);
                         }
 
@@ -2351,6 +2346,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         };
 
+        // Count trailing user messages being dispatched so append_token
+        // knows how many to skip when inserting the assistant response.
+        let trailing_user_count = session
+            .chat
+            .iter()
+            .rev()
+            .take_while(|m| matches!(m, Message::User(_)))
+            .count();
+        session.dispatched_user_count = trailing_user_count;
+
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
         let session_id = format!("dave-session-{}", session.id);
         let messages = session.chat.clone();
@@ -2783,8 +2788,12 @@ impl notedeck::App for Dave {
             }
         }
 
-        // Send continuation messages for all sessions that have tool responses
+        // Send continuation messages for all sessions that have queued messages
         for session_id in sessions_needing_send {
+            tracing::info!(
+                "Session {}: dispatching queued message via send_user_message_for",
+                session_id
+            );
             self.send_user_message_for(session_id, ctx, ui.ctx());
         }
 

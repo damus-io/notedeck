@@ -965,15 +965,19 @@ impl CodexBackend {
         prompt
     }
 
-    fn get_latest_user_message(messages: &[Message]) -> String {
-        messages
+    /// Collect all trailing user messages and join them.
+    fn get_pending_user_messages(messages: &[Message]) -> String {
+        let mut trailing: Vec<&str> = messages
             .iter()
             .rev()
-            .find_map(|m| match m {
-                Message::User(content) => Some(content.clone()),
+            .take_while(|m| matches!(m, Message::User(_)))
+            .filter_map(|m| match m {
+                Message::User(content) => Some(content.as_str()),
                 _ => None,
             })
-            .unwrap_or_default()
+            .collect();
+        trailing.reverse();
+        trailing.join("\n")
     }
 }
 
@@ -995,7 +999,7 @@ impl AiBackend for CodexBackend {
         let (response_tx, response_rx) = mpsc::channel();
 
         let prompt = if resume_session_id.is_some() {
-            Self::get_latest_user_message(&messages)
+            Self::get_pending_user_messages(&messages)
         } else {
             let is_first_message = messages
                 .iter()
@@ -1005,7 +1009,7 @@ impl AiBackend for CodexBackend {
             if is_first_message {
                 Self::messages_to_prompt(&messages)
             } else {
-                Self::get_latest_user_message(&messages)
+                Self::get_pending_user_messages(&messages)
             }
         };
 
@@ -1099,7 +1103,7 @@ impl AiBackend for CodexBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::messages::DaveApiResponse;
+    use crate::messages::{AssistantMessage, DaveApiResponse};
     use serde_json::json;
     use std::time::Duration;
 
@@ -1630,6 +1634,97 @@ mod tests {
                 std::mem::discriminant(&other)
             ),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // get_pending_user_messages tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pending_messages_single_user() {
+        let messages = vec![Message::User("hello".into())];
+        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "hello");
+    }
+
+    #[test]
+    fn pending_messages_multiple_trailing_users() {
+        let messages = vec![
+            Message::User("first".into()),
+            Message::Assistant(AssistantMessage::from_text("reply".into())),
+            Message::User("second".into()),
+            Message::User("third".into()),
+            Message::User("fourth".into()),
+        ];
+        assert_eq!(
+            CodexBackend::get_pending_user_messages(&messages),
+            "second\nthird\nfourth"
+        );
+    }
+
+    #[test]
+    fn pending_messages_stops_at_non_user() {
+        let messages = vec![
+            Message::User("old".into()),
+            Message::User("also old".into()),
+            Message::Assistant(AssistantMessage::from_text("reply".into())),
+            Message::User("pending".into()),
+        ];
+        assert_eq!(
+            CodexBackend::get_pending_user_messages(&messages),
+            "pending"
+        );
+    }
+
+    #[test]
+    fn pending_messages_empty_when_last_is_assistant() {
+        let messages = vec![
+            Message::User("hello".into()),
+            Message::Assistant(AssistantMessage::from_text("reply".into())),
+        ];
+        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "");
+    }
+
+    #[test]
+    fn pending_messages_empty_chat() {
+        let messages: Vec<Message> = vec![];
+        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "");
+    }
+
+    #[test]
+    fn pending_messages_stops_at_tool_response() {
+        let messages = vec![
+            Message::User("do something".into()),
+            Message::Assistant(AssistantMessage::from_text("ok".into())),
+            Message::ToolCalls(vec![crate::tools::ToolCall::invalid(
+                "c1".into(),
+                Some("Read".into()),
+                None,
+                "test".into(),
+            )]),
+            Message::ToolResponse(crate::tools::ToolResponse::error(
+                "c1".into(),
+                "result".into(),
+            )),
+            Message::User("queued 1".into()),
+            Message::User("queued 2".into()),
+        ];
+        assert_eq!(
+            CodexBackend::get_pending_user_messages(&messages),
+            "queued 1\nqueued 2"
+        );
+    }
+
+    #[test]
+    fn pending_messages_preserves_order() {
+        let messages = vec![
+            Message::User("a".into()),
+            Message::User("b".into()),
+            Message::User("c".into()),
+        ];
+        assert_eq!(
+            CodexBackend::get_pending_user_messages(&messages),
+            "a\nb\nc"
+        );
     }
 
     // -----------------------------------------------------------------------

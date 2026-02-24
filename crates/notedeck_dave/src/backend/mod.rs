@@ -1,4 +1,4 @@
-mod claude;
+pub mod claude;
 mod codex;
 mod codex_protocol;
 mod openai;

@@ -67,6 +67,9 @@ pub struct DaveUi<'a> {
     usage: Option<&'a crate::messages::UsageInfo>,
     /// Context window size for the current model
     context_window: u64,
+    /// Number of trailing user messages dispatched in the current stream.
+    /// Used by the queued indicator to skip dispatched messages.
+    dispatched_user_count: usize,
 }
 
 /// The response the app generates. The response contains an optional
@@ -179,6 +182,7 @@ impl<'a> DaveUi<'a> {
             status_dot_color: None,
             usage: None,
             context_window: crate::messages::context_window_for_model(None),
+            dispatched_user_count: 0,
         }
     }
 
@@ -209,6 +213,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn is_working(mut self, val: bool) -> Self {
         self.flags.set(DaveUiFlags::IsWorking, val);
+        self
+    }
+
+    pub fn dispatched_user_count(mut self, count: usize) -> Self {
+        self.dispatched_user_count = count;
         self
     }
 
@@ -416,13 +425,41 @@ impl<'a> DaveUi<'a> {
         let mut response = DaveResponse::default();
         let is_agentic = self.ai_mode == AiMode::Agentic;
 
-        // Find where queued (not-yet-dispatched) user messages start:
-        // trailing User messages while the session is working.
+        // Find where queued (not-yet-dispatched) user messages start.
+        // When streaming, append_token inserts an Assistant between the
+        // dispatched User and any queued Users, so all trailing Users
+        // after that Assistant are queued. Before the first token arrives
+        // there's no Assistant yet, so we skip `dispatched_user_count`
+        // trailing Users (they were all sent in the prompt).
         let queued_from = if self.flags.contains(DaveUiFlags::IsWorking) {
-            self.chat
+            let last_non_user = self
+                .chat
                 .iter()
-                .rposition(|m| !matches!(m, Message::User(_)))
-                .map(|i| i + 1)
+                .rposition(|m| !matches!(m, Message::User(_)));
+            match last_non_user {
+                Some(i) if matches!(self.chat[i], Message::Assistant(ref m) if m.is_streaming()) => {
+                    // Streaming assistant separates dispatched from queued
+                    let first_trailing = i + 1;
+                    if first_trailing < self.chat.len() {
+                        Some(first_trailing)
+                    } else {
+                        None
+                    }
+                }
+                Some(i) => {
+                    // No streaming assistant yet — skip past the dispatched
+                    // user messages (1 for single dispatch, N for batch)
+                    let first_trailing = i + 1;
+                    let skip = self.dispatched_user_count.max(1);
+                    let queued_start = first_trailing + skip;
+                    if queued_start < self.chat.len() {
+                        Some(queued_start)
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
         } else {
             None
         };
