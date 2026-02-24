@@ -340,17 +340,27 @@ impl<'a> DaveUi<'a> {
 
             // Render session details inline, to the right of the buttons
             if let Some(details) = self.details {
-                let available_width = ui.available_width();
-                let max_width = available_width - result.right_edge_x;
+                let max_width = ui.max_rect().right() - result.right_edge_x;
                 if max_width > 50.0 {
                     let details_rect = egui::Rect::from_min_size(
                         egui::pos2(result.right_edge_x, result.y),
                         egui::vec2(max_width, 32.0),
                     );
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(details_rect), |ui| {
-                        ui.set_clip_rect(details_rect);
-                        session_header_ui(ui, details, self.backend_type);
-                    });
+                    let truncation = ui
+                        .allocate_new_ui(egui::UiBuilder::new().max_rect(details_rect), |ui| {
+                            ui.set_clip_rect(details_rect);
+                            session_header_ui(ui, details, self.backend_type)
+                        })
+                        .inner;
+
+                    if let Some(cwd) = &truncation.full {
+                        let hover_resp = ui.interact(
+                            details_rect,
+                            egui::Id::new("session_header_hover"),
+                            egui::Sense::hover(),
+                        );
+                        hover_resp.on_hover_text_at_pointer(cwd);
+                    }
                 }
             }
 
@@ -1729,7 +1739,18 @@ fn toggle_badges_ui(
     action
 }
 
-fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails, backend_type: BackendType) {
+/// Full CWD string from the session header, for tooltip display on hover.
+struct HeaderCwd {
+    full: Option<String>,
+}
+
+fn session_header_ui(
+    ui: &mut egui::Ui,
+    details: &SessionDetails,
+    backend_type: BackendType,
+) -> HeaderCwd {
+    let mut header_cwd = HeaderCwd { full: None };
+
     ui.horizontal(|ui| {
         // Backend icon
         if backend_type.is_agentic() {
@@ -1739,31 +1760,47 @@ fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails, backend_type: 
 
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
+
+            let max_width = ui.available_width();
+
+            // Title — normal end-truncation
             ui.add(
                 egui::Label::new(egui::RichText::new(details.display_title()).size(13.0))
                     .wrap_mode(egui::TextWrapMode::Truncate),
             );
+
+            // CWD — truncate hostname and/or path to fit
             if let Some(cwd) = &details.cwd {
                 let cwd_display = if details.home_dir.is_empty() {
                     crate::path_utils::abbreviate_path(cwd)
                 } else {
                     crate::path_utils::abbreviate_with_home(cwd, &details.home_dir)
                 };
-                let display_text = if details.hostname.is_empty() {
-                    cwd_display
+
+                let prefix = if details.hostname.is_empty() {
+                    String::new()
                 } else {
-                    format!("{}:{}", details.hostname, cwd_display)
+                    format!("{}:", details.hostname)
                 };
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(display_text)
-                            .monospace()
-                            .size(10.0)
-                            .weak(),
-                    )
-                    .wrap_mode(egui::TextWrapMode::Truncate),
+
+                let (display_text, _) = crate::ui::session_list::truncate_host_and_path(
+                    ui,
+                    &prefix,
+                    &cwd_display,
+                    max_width,
                 );
+
+                ui.label(
+                    egui::RichText::new(display_text)
+                        .monospace()
+                        .size(10.0)
+                        .weak(),
+                );
+
+                header_cwd.full = Some(format!("{}{}", prefix, cwd_display));
             }
         });
     });
+
+    header_cwd
 }

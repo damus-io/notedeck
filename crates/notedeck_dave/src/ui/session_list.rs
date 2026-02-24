@@ -418,33 +418,36 @@ impl<'a> SessionListUi<'a> {
             right_offset
         };
 
-        // Calculate text position - offset title upward only if showing CWD
-        let title_y_offset = if show_cwd { -7.0 } else { 0.0 };
-        let text_pos = rect.left_center() + egui::vec2(text_start_x, title_y_offset);
         let max_text_width = rect.width() - text_start_x - text_end_x;
 
-        // Draw title text (with clipping to avoid overlapping the dot)
+        // Draw title text
         let font_id = egui::FontId::proportional(14.0);
         let text_color = ui.visuals().text_color();
         let galley = ui
             .painter()
             .layout_no_wrap(title.to_string(), font_id.clone(), text_color);
+        let title_height = galley.size().y;
+
+        // Position title: vertically centered if no cwd, otherwise top-aligned with padding
+        let title_top = if show_cwd {
+            // Split the rect vertically: title in top half, cwd in bottom half
+            rect.top() + 6.0
+        } else {
+            rect.center().y - title_height / 2.0
+        };
+        let title_pos = egui::pos2(rect.left() + text_start_x, title_top);
 
         if galley.size().x > max_text_width {
-            // Text is too long, use ellipsis
-            let clip_rect = egui::Rect::from_min_size(
-                text_pos - egui::vec2(0.0, galley.size().y / 2.0),
-                egui::vec2(max_text_width, galley.size().y),
-            );
-            ui.painter().with_clip_rect(clip_rect).galley(
-                text_pos - egui::vec2(0.0, galley.size().y / 2.0),
-                galley,
-                text_color,
-            );
+            // Text is too long — clip from the end
+            let clip_rect =
+                egui::Rect::from_min_size(title_pos, egui::vec2(max_text_width, title_height));
+            ui.painter()
+                .with_clip_rect(clip_rect)
+                .galley(title_pos, galley, text_color);
         } else {
             ui.painter().text(
-                text_pos,
-                egui::Align2::LEFT_CENTER,
+                title_pos,
+                egui::Align2::LEFT_TOP,
                 title,
                 font_id,
                 text_color,
@@ -453,7 +456,7 @@ impl<'a> SessionListUi<'a> {
 
         // Draw cwd below title - only in Agentic mode
         if show_cwd {
-            let cwd_pos = rect.left_center() + egui::vec2(text_start_x, 7.0);
+            let cwd_pos = egui::pos2(rect.left() + text_start_x, title_top + title_height + 1.0);
             cwd_ui(ui, cwd, home_dir, cwd_pos, max_text_width);
         }
 
@@ -505,6 +508,93 @@ fn inline_rename_ui(
     }
 }
 
+/// Truncate text from the start, showing "…" + the longest suffix that fits.
+/// Uses binary search over character offsets for O(log n) performance.
+pub(crate) fn truncate_start(
+    ui: &egui::Ui,
+    text: &str,
+    font: &egui::FontId,
+    max_width: f32,
+) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let measure = |s: String| -> f32 {
+        ui.painter()
+            .layout_no_wrap(s, font.clone(), Color32::WHITE)
+            .size()
+            .x
+    };
+    if measure(text.to_string()) <= max_width {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 1usize;
+    let mut hi = chars.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        let candidate: String = std::iter::once('…')
+            .chain(chars[mid..].iter().copied())
+            .collect();
+        if measure(candidate) <= max_width {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    if lo >= chars.len() {
+        "…".to_string()
+    } else {
+        std::iter::once('…')
+            .chain(chars[lo..].iter().copied())
+            .collect()
+    }
+}
+
+/// Truncate a `prefix + path` string to fit within `max_width`.
+///
+/// Three tiers:
+/// 1. Everything fits — return as-is.
+/// 2. Path fits alone — truncate prefix from start to fill remaining space.
+/// 3. Path overflows — drop prefix, truncate path from start.
+///
+/// Returns `(display_text, was_truncated)`.
+pub(crate) fn truncate_host_and_path(
+    ui: &egui::Ui,
+    prefix: &str,
+    path: &str,
+    max_width: f32,
+) -> (String, bool) {
+    let font = egui::FontId::monospace(10.0);
+    let weak_color = ui.visuals().weak_text_color();
+
+    let prefix_width = if prefix.is_empty() {
+        0.0
+    } else {
+        ui.painter()
+            .layout_no_wrap(prefix.to_string(), font.clone(), weak_color)
+            .size()
+            .x
+    };
+
+    let path_width = ui
+        .painter()
+        .layout_no_wrap(path.to_string(), font.clone(), weak_color)
+        .size()
+        .x;
+
+    if path_width <= max_width - prefix_width {
+        (format!("{}{}", prefix, path), false)
+    } else if path_width <= max_width {
+        let host_budget = max_width - path_width;
+        let truncated_prefix = truncate_start(ui, prefix, &font, host_budget);
+        (format!("{}{}", truncated_prefix, path), true)
+    } else {
+        let path_text = truncate_start(ui, path, &font, max_width);
+        (path_text, true)
+    }
+}
+
 /// Draw cwd text (monospace, weak+small) with clipping.
 fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, home_dir: &str, pos: egui::Pos2, max_width: f32) {
     let display_text = if home_dir.is_empty() {
@@ -512,30 +602,11 @@ fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, home_dir: &str, pos: egui::Pos2, m
     } else {
         crate::path_utils::abbreviate_with_home(cwd_path, home_dir)
     };
+
+    let (text, _) = truncate_host_and_path(ui, "", &display_text, max_width);
+
     let cwd_font = egui::FontId::monospace(10.0);
     let cwd_color = ui.visuals().weak_text_color();
-
-    let cwd_galley = ui
-        .painter()
-        .layout_no_wrap(display_text.clone(), cwd_font.clone(), cwd_color);
-
-    if cwd_galley.size().x > max_width {
-        let clip_rect = egui::Rect::from_min_size(
-            pos - egui::vec2(0.0, cwd_galley.size().y / 2.0),
-            egui::vec2(max_width, cwd_galley.size().y),
-        );
-        ui.painter().with_clip_rect(clip_rect).galley(
-            pos - egui::vec2(0.0, cwd_galley.size().y / 2.0),
-            cwd_galley,
-            cwd_color,
-        );
-    } else {
-        ui.painter().text(
-            pos,
-            egui::Align2::LEFT_CENTER,
-            &display_text,
-            cwd_font,
-            cwd_color,
-        );
-    }
+    ui.painter()
+        .text(pos, egui::Align2::LEFT_TOP, &text, cwd_font, cwd_color);
 }
