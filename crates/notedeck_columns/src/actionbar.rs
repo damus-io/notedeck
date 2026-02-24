@@ -18,7 +18,7 @@ use notedeck::{
     get_wallet_for, is_future_timestamp,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
     unix_time_secs, Accounts, GlobalWallet, Images, MediaJobSender, NoteAction, NoteCache,
-    NoteZapTargetOwned, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    NoteZapTargetOwned, RemoteApi, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
@@ -52,6 +52,7 @@ fn execute_note_action(
     threads: &mut Threads,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
+    remote: &mut RemoteApi<'_>,
     txn: &Transaction,
     accounts: &mut Accounts,
     global_wallet: &mut GlobalWallet,
@@ -221,7 +222,7 @@ fn execute_note_action(
                 } else {
                     context
                         .action
-                        .process_selection(ui, &note, ndb, pool, txn, accounts);
+                        .process_selection(ui, &note, ndb, pool, remote, txn, accounts);
                 }
             }
         },
@@ -256,6 +257,7 @@ pub fn execute_and_process_note_action(
     threads: &mut Threads,
     note_cache: &mut NoteCache,
     pool: &mut RelayPool,
+    remote: &mut RemoteApi<'_>,
     txn: &Transaction,
     unknown_ids: &mut UnknownIds,
     accounts: &mut Accounts,
@@ -283,6 +285,7 @@ pub fn execute_and_process_note_action(
         threads,
         note_cache,
         pool,
+        remote,
         txn,
         accounts,
         global_wallet,

@@ -572,6 +572,7 @@ fn process_render_nav_action(
                 &mut app.threads,
                 ctx.note_cache,
                 ctx.legacy_pool,
+                &mut ctx.remote,
                 &txn,
                 ctx.unknown_ids,
                 ctx.accounts,

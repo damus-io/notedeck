@@ -1,8 +1,8 @@
-use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
+use enostr::{NoteId, Pubkey, RelayId, RelayPool};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use tracing::error;
 
-use crate::Accounts;
+use crate::{Accounts, RelayType, RemoteApi};
 
 /// When broadcasting notes, this determines whether to broadcast
 /// over the local network via multicast, or globally
@@ -48,27 +48,25 @@ fn note_nip19_event_bech(note: &Note<'_>, txn: &Transaction) -> Option<String> {
 }
 
 impl NoteContextSelection {
+    #[allow(clippy::too_many_arguments)]
     pub fn process_selection(
         &self,
         ui: &mut egui::Ui,
         note: &Note<'_>,
         ndb: &Ndb,
         pool: &mut RelayPool,
+        remote: &mut RemoteApi,
         txn: &Transaction,
         accounts: &Accounts,
     ) {
         match self {
             NoteContextSelection::Broadcast(context) => {
                 tracing::info!("Broadcasting note {}", hex::encode(note.id()));
-                match context {
-                    BroadcastContext::LocalNetwork => {
-                        pool.send_to(&ClientMessage::event(note).unwrap(), "multicast");
-                    }
-
-                    BroadcastContext::Everywhere => {
-                        pool.send(&ClientMessage::event(note).unwrap());
-                    }
-                }
+                let relays = match context {
+                    BroadcastContext::LocalNetwork => RelayType::Explicit(vec![RelayId::Multicast]),
+                    BroadcastContext::Everywhere => RelayType::AccountsWrite,
+                };
+                remote.publisher(accounts).publish_note(note, relays);
             }
             NoteContextSelection::CopyText => {
                 ui.ctx().copy_text(note.content().to_string());
