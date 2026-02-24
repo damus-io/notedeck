@@ -515,6 +515,22 @@ fn handle_codex_message(
             return HandleResult::TurnDone;
         }
 
+        "codex/event/error" | "error" => {
+            let err_msg = msg
+                .params
+                .as_ref()
+                .and_then(|p| p.get("message").and_then(|m| m.as_str()))
+                .or_else(|| {
+                    msg.params
+                        .as_ref()
+                        .and_then(|p| p.get("error").and_then(|e| e.as_str()))
+                })
+                .unwrap_or("Codex error");
+            tracing::warn!("Codex error: {}", err_msg);
+            let _ = response_tx.send(DaveApiResponse::Failed(err_msg.to_string()));
+            ctx.request_repaint();
+        }
+
         other => {
             tracing::debug!("Unhandled codex notification: {}", other);
         }
@@ -1295,6 +1311,60 @@ mod tests {
         let result = handle_codex_message(msg, &tx, &ctx, &mut subagents);
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_handle_codex_event_error_sends_failed() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = notification(
+            "codex/event/error",
+            json!({ "message": "context window exceeded" }),
+        );
+        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents);
+        assert!(matches!(result, HandleResult::Continue));
+
+        let response = rx.try_recv().unwrap();
+        match response {
+            DaveApiResponse::Failed(err) => assert_eq!(err, "context window exceeded"),
+            other => panic!("Expected Failed, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_handle_error_notification_sends_failed() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = notification("error", json!({ "message": "something broke" }));
+        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents);
+        assert!(matches!(result, HandleResult::Continue));
+
+        let response = rx.try_recv().unwrap();
+        match response {
+            DaveApiResponse::Failed(err) => assert_eq!(err, "something broke"),
+            other => panic!("Expected Failed, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_handle_error_without_message_uses_default() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = notification("codex/event/error", json!({}));
+        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents);
+        assert!(matches!(result, HandleResult::Continue));
+
+        let response = rx.try_recv().unwrap();
+        match response {
+            DaveApiResponse::Failed(err) => assert_eq!(err, "Codex error"),
+            other => panic!("Expected Failed, got {:?}", std::mem::discriminant(&other)),
+        }
     }
 
     #[test]

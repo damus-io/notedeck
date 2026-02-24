@@ -1480,6 +1480,31 @@ mod tests {
         );
     }
 
+    /// When a stream ends with an error (no tokens produced), the
+    /// Error message should prevent infinite redispatch.
+    #[test]
+    fn error_prevents_redispatch_loop() {
+        let mut session = test_session();
+
+        session.chat.push(Message::User("hello".into()));
+        session.dispatched_user_count = 1;
+        let tx = make_streaming(&mut session);
+
+        // Error arrives (no tokens were sent)
+        session
+            .chat
+            .push(Message::Error("context window exceeded".into()));
+
+        // Stream ends
+        drop(tx);
+        session.incoming_tokens = None;
+
+        assert!(
+            !session.needs_redispatch_after_stream_end(),
+            "error should prevent redispatch"
+        );
+    }
+
     /// Verify chat ordering when queued messages arrive before any
     /// tokens, and after tokens, across a full batch lifecycle.
     #[test]
