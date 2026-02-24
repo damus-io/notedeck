@@ -304,4 +304,22 @@ impl TimelineSub {
     pub fn no_sub(&self) -> bool {
         matches!(self.state, SubState::NoSub { dependers: _ })
     }
+
+    pub fn dependers(&self) -> usize {
+        match &self.state {
+            SubState::NoSub { dependers } => *dependers,
+            SubState::LocalOnly {
+                local: _,
+                dependers,
+            } => *dependers,
+            SubState::RemoteOnly {
+                remote: _,
+                dependers,
+            } => *dependers,
+            SubState::Unified {
+                unified: _,
+                dependers,
+            } => *dependers,
+        }
+    }
 }
