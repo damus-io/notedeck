@@ -2409,7 +2409,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .and_then(|a| a.resume_session_id.clone());
         let backend_type = session.backend_type;
         let tools = self.tools.clone();
-        let model_name = self.model_config.model().to_owned();
+        let model_name = if backend_type == self.model_config.backend {
+            self.model_config.model().to_owned()
+        } else {
+            backend_type.default_model().to_owned()
+        };
         let ctx = ctx.clone();
 
         // Use backend to stream request

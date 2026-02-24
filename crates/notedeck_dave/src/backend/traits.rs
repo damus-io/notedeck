@@ -29,6 +29,15 @@ impl BackendType {
     pub fn is_agentic(&self) -> bool {
         matches!(self, BackendType::Claude | BackendType::Codex)
     }
+
+    pub fn default_model(&self) -> &'static str {
+        match self {
+            BackendType::OpenAI => "gpt-4.1-mini",
+            BackendType::Claude => "claude-sonnet-4.5",
+            BackendType::Codex => "gpt-5.2-codex",
+            BackendType::Remote => "",
+        }
+    }
 }
 
 /// Trait for AI backend implementations

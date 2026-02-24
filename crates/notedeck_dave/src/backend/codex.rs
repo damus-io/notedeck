@@ -7,7 +7,7 @@ use crate::auto_accept::AutoAcceptRules;
 use crate::backend::traits::AiBackend;
 use crate::messages::{
     CompactionInfo, DaveApiResponse, ExecutedTool, PendingPermission, PermissionRequest,
-    PermissionResponse, SubagentInfo, SubagentStatus,
+    PermissionResponse, SessionInfo, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -178,6 +178,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
     // ---- main command loop ----
     let mut request_counter: u64 = 10; // start after init IDs
     let mut current_turn_id: Option<String> = None;
+    let mut sent_session_info = false;
 
     while let Some(cmd) = command_rx.recv().await {
         match cmd {
@@ -186,6 +187,18 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 response_tx,
                 ctx,
             } => {
+                // Emit session info on the first query so Nostr replication can start
+                if !sent_session_info {
+                    sent_session_info = true;
+                    let info = SessionInfo {
+                        model: model.map(|s| s.to_string()),
+                        claude_session_id: Some(thread_id.clone()),
+                        ..Default::default()
+                    };
+                    let _ = response_tx.send(DaveApiResponse::SessionInfo(info));
+                    ctx.request_repaint();
+                }
+
                 // Send turn/start
                 request_counter += 1;
                 let turn_req_id = request_counter;
@@ -392,6 +405,62 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
 // Codex message handling (synchronous — no writer needed)
 // ---------------------------------------------------------------------------
 
+/// Extract a human-readable error message from a Codex error notification.
+///
+/// Codex sends errors in several different shapes:
+///   - `params.message` (string)
+///   - `params.msg.message` (nested JSON string containing `{"detail":"..."}`)
+///   - `params.error.message` (object with a `message` field)
+///   - top-level `msg.error.message` (RPC error envelope)
+fn extract_codex_error(msg: &RpcMessage) -> String {
+    if let Some(params) = &msg.params {
+        // params.message (string)
+        if let Some(s) = params.get("message").and_then(|m| m.as_str()) {
+            return s.to_string();
+        }
+        // params.msg.message (nested — may itself be JSON like {"detail":"..."})
+        if let Some(inner) = params
+            .get("msg")
+            .and_then(|m| m.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            // Try to unwrap a JSON {"detail":"..."} wrapper
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(inner) {
+                if let Some(detail) = v.get("detail").and_then(|d| d.as_str()) {
+                    return detail.to_string();
+                }
+            }
+            return inner.to_string();
+        }
+        // params.error.message (error is an object, not a string)
+        if let Some(inner) = params
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(inner) {
+                if let Some(detail) = v.get("detail").and_then(|d| d.as_str()) {
+                    return detail.to_string();
+                }
+            }
+            return inner.to_string();
+        }
+        // params.error (plain string)
+        if let Some(s) = params.get("error").and_then(|e| e.as_str()) {
+            return s.to_string();
+        }
+    }
+    // Top-level RPC error envelope
+    if let Some(rpc_err) = &msg.error {
+        return rpc_err.message.clone();
+    }
+    // Last resort — dump raw params
+    if let Some(p) = &msg.params {
+        tracing::debug!("Codex error unknown shape: {}", p);
+    }
+    "Codex error (no details)".to_string()
+}
+
 /// Process a single incoming Codex JSON-RPC message. Returns a `HandleResult`
 /// indicating what the caller should do next (continue, finish turn, or handle
 /// an approval).
@@ -516,18 +585,9 @@ fn handle_codex_message(
         }
 
         "codex/event/error" | "error" => {
-            let err_msg = msg
-                .params
-                .as_ref()
-                .and_then(|p| p.get("message").and_then(|m| m.as_str()))
-                .or_else(|| {
-                    msg.params
-                        .as_ref()
-                        .and_then(|p| p.get("error").and_then(|e| e.as_str()))
-                })
-                .unwrap_or("Codex error");
+            let err_msg: String = extract_codex_error(&msg);
             tracing::warn!("Codex error: {}", err_msg);
-            let _ = response_tx.send(DaveApiResponse::Failed(err_msg.to_string()));
+            let _ = response_tx.send(DaveApiResponse::Failed(err_msg));
             ctx.request_repaint();
         }
 
@@ -1362,7 +1422,66 @@ mod tests {
 
         let response = rx.try_recv().unwrap();
         match response {
-            DaveApiResponse::Failed(err) => assert_eq!(err, "Codex error"),
+            DaveApiResponse::Failed(err) => assert_eq!(err, "Codex error (no details)"),
+            other => panic!("Expected Failed, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_handle_error_nested_msg_message() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        // Codex shape: params.msg.message is JSON with a "detail" field
+        let msg = notification(
+            "codex/event/error",
+            json!({
+                "id": "1",
+                "msg": {
+                    "type": "error",
+                    "message": "{\"detail\":\"The model is not supported.\"}",
+                    "codex_error_info": "other"
+                },
+                "conversationId": "thread-1"
+            }),
+        );
+        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents);
+        assert!(matches!(result, HandleResult::Continue));
+
+        let response = rx.try_recv().unwrap();
+        match response {
+            DaveApiResponse::Failed(err) => assert_eq!(err, "The model is not supported."),
+            other => panic!("Expected Failed, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_handle_error_nested_error_object() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        // Codex shape: params.error is an object with a "message" field
+        let msg = notification(
+            "error",
+            json!({
+                "error": {
+                    "message": "{\"detail\":\"Rate limit exceeded.\"}",
+                    "codexErrorInfo": "other",
+                    "additionalDetails": null
+                },
+                "willRetry": false,
+                "threadId": "thread-1",
+                "turnId": "1"
+            }),
+        );
+        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents);
+        assert!(matches!(result, HandleResult::Continue));
+
+        let response = rx.try_recv().unwrap();
+        match response {
+            DaveApiResponse::Failed(err) => assert_eq!(err, "Rate limit exceeded."),
             other => panic!("Expected Failed, got {:?}", std::mem::discriminant(&other)),
         }
     }
@@ -1973,6 +2092,18 @@ mod tests {
         rx.try_iter().collect()
     }
 
+    /// Drain and discard the initial SessionInfo that the first query emits.
+    fn drain_session_info(rx: &mpsc::Receiver<DaveApiResponse>) {
+        let resp = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("timed out waiting for SessionInfo");
+        assert!(
+            matches!(resp, DaveApiResponse::SessionInfo(_)),
+            "Expected SessionInfo as first response, got {:?}",
+            std::mem::discriminant(&resp)
+        );
+    }
+
     // -- Integration tests --
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2080,6 +2211,7 @@ mod tests {
 
         let response_rx = send_query(&command_tx, "delete stuff").await;
         mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
 
         // Send a command that won't be auto-accepted
         mock.send_approval_request(
@@ -2128,6 +2260,7 @@ mod tests {
 
         let response_rx = send_query(&command_tx, "dangerous").await;
         mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
 
         mock.send_approval_request(
             99,
@@ -2214,6 +2347,7 @@ mod tests {
         // First turn
         let rx1 = send_query(&command_tx, "first").await;
         mock.handle_turn_start().await;
+        drain_session_info(&rx1);
         mock.send_delta("reply 1").await;
         mock.send_turn_completed("completed").await;
 
@@ -2320,6 +2454,7 @@ mod tests {
 
         let response_rx = send_query(&command_tx, "long task").await;
         mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
 
         mock.send_delta("partial").await;
 
@@ -2346,6 +2481,7 @@ mod tests {
 
         let response_rx = send_query(&command_tx, "hello").await;
         mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
 
         mock.send_delta("partial").await;
 
@@ -2511,6 +2647,7 @@ mod tests {
 
         let response_rx = send_query(&command_tx, "create file").await;
         mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
 
         // File change approval request (create)
         mock.send_approval_request(
@@ -2599,6 +2736,7 @@ mod tests {
 
         let response_rx = send_query(&command_tx, "count to 100").await;
         mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
 
         // Send a few tokens
         mock.send_delta("one ").await;
@@ -2653,6 +2791,7 @@ mod tests {
 
         let response_rx = send_query(&command_tx, "run something").await;
         mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
 
         // Send an approval request
         mock.send_approval_request(
