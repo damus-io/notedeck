@@ -13,6 +13,7 @@ use egui_extras::{Size, StripBuilder};
 use egui_nav::RouteResponse;
 use egui_nav::{NavAction, NavDrawer};
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck::enostr::OutboxSession;
 use notedeck::fonts::get_font_size;
 use notedeck::name::get_display_name;
 use notedeck::ui::is_compiled_as_mobile;
@@ -151,10 +152,11 @@ impl Chrome {
         cc: &CreationContext,
         app_args: &[String],
         notedeck: &mut Notedeck,
+        outbox_session: OutboxSession,
     ) -> Result<Self, Error> {
         stop_debug_mode(notedeck.options());
 
-        let notedeck_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx, None);
+        let notedeck_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx, Some(outbox_session));
         let dave = Dave::new(
             cc.wgpu_render_state.as_ref(),
             notedeck_ref.app_ctx.ndb.clone(),

@@ -207,7 +207,7 @@ impl Notedeck {
         self.android_app = Some(context);
     }
 
-    pub fn new<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
+    pub fn init<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> NotedeckCtx {
         #[cfg(feature = "puffin")]
         setup_puffin();
 
@@ -270,8 +270,9 @@ impl Notedeck {
         try_swap_compacted_db(&dbpath_str);
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
-        let scoped_sub_state = ScopedSubsState::default();
-        let pool = OutboxPool::default();
+        let mut scoped_sub_state = ScopedSubsState::default();
+        let mut pool = OutboxPool::default();
+        let outbox_session = OutboxSessionHandler::new(&mut pool, EguiWakeup::new(ctx.clone()));
 
         let mut accounts = Accounts::new(
             keystore,
@@ -302,6 +303,12 @@ impl Notedeck {
         if let Some(first) = parsed_args.keys.first() {
             accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut legacy_pool, ctx);
         }
+        let outbox_session = if let Some(first) = parsed_args.keys.first() {
+            let remote = RemoteApi::new(outbox_session, &mut scoped_sub_state);
+            remote.export_session()
+        } else {
+            outbox_session.export()
+        };
 
         let img_cache = Images::new(img_cache_dir);
         let note_cache = NoteCache::default();
@@ -338,7 +345,7 @@ impl Notedeck {
         let (send_new_jobs, receive_new_jobs) = std::sync::mpsc::channel();
         let media_job_cache = JobCache::new(receive_new_jobs, send_new_jobs);
 
-        Self {
+        let notedeck = Self {
             ndb,
             img_cache,
             unknown_ids,
@@ -363,6 +370,11 @@ impl Notedeck {
             i18n,
             #[cfg(target_os = "android")]
             android_app: None,
+        };
+
+        NotedeckCtx {
+            notedeck,
+            outbox_session,
         }
     }
 
@@ -658,4 +670,9 @@ fn try_swap_compacted_db(dbpath: &str) {
     let _ = std::fs::remove_file(&db_old);
     let _ = std::fs::remove_dir_all(&compact_path);
     info!("compact swap: success! {old_size} -> {compact_size} bytes");
+}
+
+pub struct NotedeckCtx {
+    pub notedeck: Notedeck,
+    pub outbox_session: OutboxSession,
 }
