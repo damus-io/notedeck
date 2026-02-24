@@ -99,6 +99,7 @@ pub enum DaveOverlay {
     Settings,
     DirectoryPicker,
     SessionPicker,
+    BackendPicker,
 }
 
 pub struct Dave {
@@ -110,8 +111,10 @@ pub struct Dave {
     avatar: Option<DaveAvatar>,
     /// Shared tools available to all sessions
     tools: Arc<HashMap<String, Tool>>,
-    /// AI backend (OpenAI, Claude, etc.)
-    backend: Box<dyn AiBackend>,
+    /// AI backends keyed by type — multiple may be available simultaneously
+    backends: HashMap<BackendType, Box<dyn AiBackend>>,
+    /// Which agentic backends are available (detected from PATH at startup)
+    available_backends: Vec<BackendType>,
     /// Model configuration
     model_config: ModelConfig,
     /// Whether to show session list on mobile
@@ -140,6 +143,8 @@ pub struct Dave {
     active_overlay: DaveOverlay,
     /// IPC listener for external spawn-agent commands
     ipc_listener: Option<ipc::IpcListener>,
+    /// CWD waiting for backend selection (set when backend picker is shown)
+    pending_backend_cwd: Option<PathBuf>,
     /// Pending archive conversion: (jsonl_path, dave_session_id, claude_session_id).
     /// Set when resuming a session; processed in update() where AppContext is available.
     pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
@@ -285,6 +290,18 @@ fn ingest_live_event(
 }
 
 /// Calculate an anonymous user_id from a keypair
+/// Look up a backend by type from the map, falling back to Remote.
+fn get_backend(
+    backends: &HashMap<BackendType, Box<dyn AiBackend>>,
+    bt: BackendType,
+) -> &dyn AiBackend {
+    backends
+        .get(&bt)
+        .or_else(|| backends.get(&BackendType::Remote))
+        .unwrap()
+        .as_ref()
+}
+
 fn calculate_user_id(keypair: KeypairUnowned) -> String {
     use sha2::{Digest, Sha256};
     // pubkeys have degraded privacy, don't do that
@@ -349,25 +366,41 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Determine AI mode from backend type
         let ai_mode = model_config.ai_mode();
 
-        // Create backend based on configuration
-        let backend: Box<dyn AiBackend> = match model_config.backend {
-            BackendType::OpenAI => {
-                use async_openai::Client;
-                let client = Client::with_config(model_config.to_api());
-                Box::new(OpenAiBackend::new(client, ndb.clone()))
+        // Detect available agentic backends from PATH
+        let available_backends = config::available_agentic_backends();
+
+        // Create backends for all available agentic CLIs + the configured primary
+        let mut backends: HashMap<BackendType, Box<dyn AiBackend>> = HashMap::new();
+
+        for &bt in &available_backends {
+            match bt {
+                BackendType::Claude => {
+                    backends.insert(BackendType::Claude, Box::new(ClaudeBackend::new()));
+                }
+                BackendType::Codex => {
+                    backends.insert(
+                        BackendType::Codex,
+                        Box::new(CodexBackend::new(
+                            std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string()),
+                        )),
+                    );
+                }
+                _ => {}
             }
-            BackendType::Claude => {
-                let api_key = model_config
-                    .anthropic_api_key
-                    .as_ref()
-                    .expect("Claude backend requires ANTHROPIC_API_KEY or CLAUDE_API_KEY");
-                Box::new(ClaudeBackend::new(api_key.clone()))
-            }
-            BackendType::Codex => Box::new(CodexBackend::new(
-                std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string()),
-            )),
-            BackendType::Remote => Box::new(RemoteOnlyBackend),
-        };
+        }
+
+        // If the configured backend is OpenAI and not yet created, add it
+        if model_config.backend == BackendType::OpenAI {
+            use async_openai::Client;
+            let client = Client::with_config(model_config.to_api());
+            backends.insert(
+                BackendType::OpenAI,
+                Box::new(OpenAiBackend::new(client, ndb.clone())),
+            );
+        }
+
+        // Remote backend is always available for discovered sessions
+        backends.insert(BackendType::Remote, Box::new(RemoteOnlyBackend));
 
         let avatar = render_state.map(DaveAvatar::new);
         let mut tools: HashMap<String, Tool> = HashMap::new();
@@ -395,7 +428,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             AiMode::Chat => {
                 let mut manager = SessionManager::new();
                 // Create a default session with current directory
-                let sid = manager.new_session(std::env::current_dir().unwrap_or_default(), ai_mode);
+                let sid = manager.new_session(
+                    std::env::current_dir().unwrap_or_default(),
+                    ai_mode,
+                    model_config.backend,
+                );
                 if let Some(session) = manager.get_mut(sid) {
                     session.details.hostname = hostname.clone();
                 }
@@ -407,7 +444,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         Dave {
             ai_mode,
-            backend,
+            backends,
+            available_backends,
             avatar,
             session_manager,
             tools: Arc::new(tools),
@@ -425,6 +463,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_picker: SessionPicker::new(),
             active_overlay,
             ipc_listener,
+            pending_backend_cwd: None,
             pending_archive_convert: None,
             pending_message_load: None,
             pending_relay_events: Vec::new(),
@@ -515,6 +554,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             AiMode::Chat,
             cwd,
             &self.hostname,
+            self.model_config.backend,
         );
 
         if let Some(session) = self.session_manager.get_mut(id) {
@@ -956,8 +996,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 match ui::directory_picker_overlay_ui(&mut self.directory_picker, has_sessions, ui)
                 {
                     OverlayResult::DirectorySelected(path) => {
-                        self.create_session_with_cwd(path);
-                        self.active_overlay = DaveOverlay::None;
+                        self.create_or_pick_backend(path);
                     }
                     OverlayResult::ShowSessionPicker(path) => {
                         self.session_picker.open(path);
@@ -978,22 +1017,36 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         title,
                         file_path,
                     } => {
+                        // Resumed sessions are always Claude (discovered from JSONL)
                         let claude_session_id = session_id.clone();
-                        let sid = self.create_resumed_session_with_cwd(cwd, session_id, title);
+                        let sid = self.create_resumed_session_with_cwd(
+                            cwd,
+                            session_id,
+                            title,
+                            BackendType::Claude,
+                        );
                         self.pending_archive_convert = Some((file_path, sid, claude_session_id));
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::None;
                     }
                     OverlayResult::NewSession { cwd } => {
-                        self.create_session_with_cwd(cwd);
                         self.session_picker.close();
-                        self.active_overlay = DaveOverlay::None;
+                        self.create_or_pick_backend(cwd);
                     }
                     OverlayResult::BackToDirectoryPicker => {
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::DirectoryPicker;
                     }
                     _ => {}
+                }
+                return DaveResponse::default();
+            }
+            DaveOverlay::BackendPicker => {
+                if let Some(bt) = ui::backend_picker_overlay_ui(&self.available_backends, ui) {
+                    if let Some(cwd) = self.pending_backend_cwd.take() {
+                        self.create_session_with_cwd(cwd, bt);
+                    }
+                    self.active_overlay = DaveOverlay::None;
                 }
                 return DaveResponse::default();
             }
@@ -1126,7 +1179,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             AiMode::Chat => {
                 // In chat mode, create a session directly without the directory picker
                 let cwd = std::env::current_dir().unwrap_or_default();
-                self.create_session_with_cwd(cwd);
+                self.create_session_with_cwd(cwd, self.model_config.backend);
             }
             AiMode::Agentic => {
                 // In agentic mode, show the directory picker to select a working directory
@@ -1136,7 +1189,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Create a new session with the given cwd (called after directory picker selection)
-    fn create_session_with_cwd(&mut self, cwd: PathBuf) {
+    fn create_session_with_cwd(&mut self, cwd: PathBuf, backend_type: BackendType) {
         update::create_session_with_cwd(
             &mut self.session_manager,
             &mut self.directory_picker,
@@ -1145,6 +1198,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.ai_mode,
             cwd,
             &self.hostname,
+            backend_type,
         );
     }
 
@@ -1154,6 +1208,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         cwd: PathBuf,
         resume_session_id: String,
         title: String,
+        backend_type: BackendType,
     ) -> SessionId {
         update::create_resumed_session_with_cwd(
             &mut self.session_manager,
@@ -1165,6 +1220,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             resume_session_id,
             title,
             &self.hostname,
+            backend_type,
         )
     }
 
@@ -1189,9 +1245,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Drain all pending connections (non-blocking)
         while let Some(mut pending) = listener.try_recv() {
             // Create the session and get its ID
-            let id = self
-                .session_manager
-                .new_session(pending.cwd.clone(), self.ai_mode);
+            let id = self.session_manager.new_session(
+                pending.cwd.clone(),
+                self.ai_mode,
+                self.model_config.backend,
+            );
             self.directory_picker.add_recent(pending.cwd);
 
             // Focus on new session
@@ -1496,6 +1554,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 state.claude_session_id.clone(),
                 state.title.clone(),
                 AiMode::Agentic,
+                BackendType::Claude,
             );
 
             // Load conversation history from kind-1988 events
@@ -1640,10 +1699,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .map(|s| s.id)
                         .collect();
                     for id in to_delete {
+                        let bt = self
+                            .session_manager
+                            .get(id)
+                            .map(|s| s.backend_type)
+                            .unwrap_or(BackendType::Remote);
                         update::delete_session(
                             &mut self.session_manager,
                             &mut self.focus_queue,
-                            self.backend.as_ref(),
+                            get_backend(&self.backends, bt),
                             &mut self.directory_picker,
                             id,
                         );
@@ -1706,6 +1770,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 claude_sid.to_string(),
                 state.title.clone(),
                 AiMode::Agentic,
+                BackendType::Remote,
             );
 
             // Load any conversation history that arrived with it
@@ -2034,10 +2099,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
+        let bt = self
+            .session_manager
+            .get(id)
+            .map(|s| s.backend_type)
+            .unwrap_or(BackendType::Remote);
         update::delete_session(
             &mut self.session_manager,
             &mut self.focus_queue,
-            self.backend.as_ref(),
+            get_backend(&self.backends, bt),
             &mut self.directory_picker,
             id,
         );
@@ -2045,9 +2115,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Handle an interrupt request - requires double-Escape to confirm
     fn handle_interrupt_request(&mut self, ctx: &egui::Context) {
+        let bt = self
+            .session_manager
+            .get_active()
+            .map(|s| s.backend_type)
+            .unwrap_or(BackendType::Remote);
         self.interrupt_pending_since = update::handle_interrupt_request(
             &self.session_manager,
-            self.backend.as_ref(),
+            get_backend(&self.backends, bt),
             self.interrupt_pending_since,
             ctx,
         );
@@ -2064,6 +2139,32 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.interrupt_pending_since.is_some()
     }
 
+    /// If only one agentic backend is available, return it. Otherwise None
+    /// (meaning we need to show the backend picker).
+    fn single_agentic_backend(&self) -> Option<BackendType> {
+        if self.available_backends.len() == 1 {
+            Some(self.available_backends[0])
+        } else {
+            None
+        }
+    }
+
+    /// Create a session with the given cwd, or show the backend picker if
+    /// multiple agentic backends are available.
+    fn create_or_pick_backend(&mut self, cwd: PathBuf) {
+        if let Some(bt) = self.single_agentic_backend() {
+            self.create_session_with_cwd(cwd, bt);
+            self.active_overlay = DaveOverlay::None;
+        } else if self.available_backends.is_empty() {
+            // No agentic backends — fall back to configured backend
+            self.create_session_with_cwd(cwd, self.model_config.backend);
+            self.active_overlay = DaveOverlay::None;
+        } else {
+            self.pending_backend_cwd = Some(cwd);
+            self.active_overlay = DaveOverlay::BackendPicker;
+        }
+    }
+
     /// Get the first pending permission request ID for the active session
     fn first_pending_permission(&self) -> Option<uuid::Uuid> {
         update::first_pending_permission(&self.session_manager)
@@ -2076,12 +2177,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Handle a keybinding action
     fn handle_key_action(&mut self, key_action: KeyAction, ui: &egui::Ui) {
+        let bt = self
+            .session_manager
+            .get_active()
+            .map(|s| s.backend_type)
+            .unwrap_or(BackendType::Remote);
         match ui::handle_key_action(
             key_action,
             &mut self.session_manager,
             &mut self.scene,
             &mut self.focus_queue,
-            self.backend.as_ref(),
+            get_backend(&self.backends, bt),
             self.show_scene,
             self.auto_steal_focus,
             &mut self.home_session,
@@ -2112,7 +2218,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Handle the Send action, including tentative permission states
     fn handle_send_action(&mut self, ctx: &AppContext, ui: &egui::Ui) {
-        match ui::handle_send_action(&mut self.session_manager, self.backend.as_ref(), ui.ctx()) {
+        let bt = self
+            .session_manager
+            .get_active()
+            .map(|s| s.backend_type)
+            .unwrap_or(BackendType::Remote);
+        match ui::handle_send_action(
+            &mut self.session_manager,
+            get_backend(&self.backends, bt),
+            ui.ctx(),
+        ) {
             SendActionResult::SendMessage => {
                 self.handle_user_send(ctx, ui);
             }
@@ -2136,10 +2251,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return None;
         }
 
+        let bt = self
+            .session_manager
+            .get_active()
+            .map(|s| s.backend_type)
+            .unwrap_or(BackendType::Remote);
         match ui::handle_ui_action(
             action,
             &mut self.session_manager,
-            self.backend.as_ref(),
+            get_backend(&self.backends, bt),
             &mut self.active_overlay,
             &mut self.show_session_list,
             ui.ctx(),
@@ -2239,12 +2359,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .agentic
             .as_ref()
             .and_then(|a| a.resume_session_id.clone());
+        let backend_type = session.backend_type;
         let tools = self.tools.clone();
         let model_name = self.model_config.model().to_owned();
         let ctx = ctx.clone();
 
         // Use backend to stream request
-        let (rx, task_handle) = self.backend.stream_request(
+        let (rx, task_handle) = get_backend(&self.backends, backend_type).stream_request(
             messages,
             tools,
             model_name,

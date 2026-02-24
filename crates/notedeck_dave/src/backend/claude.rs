@@ -60,16 +60,13 @@ struct SessionHandle {
 }
 
 pub struct ClaudeBackend {
-    #[allow(dead_code)] // May be used in the future for API key validation
-    api_key: String,
     /// Registry of active sessions (using dashmap for lock-free access)
     sessions: DashMap<String, SessionHandle>,
 }
 
 impl ClaudeBackend {
-    pub fn new(api_key: String) -> Self {
+    pub fn new() -> Self {
         Self {
-            api_key,
             sessions: DashMap::new(),
         }
     }

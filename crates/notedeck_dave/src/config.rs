@@ -4,10 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::env;
 
 /// Check if a binary exists on the system PATH.
-fn has_binary_on_path(binary: &str) -> bool {
+pub fn has_binary_on_path(binary: &str) -> bool {
     env::var_os("PATH")
         .map(|paths| env::split_paths(&paths).any(|dir| dir.join(binary).is_file()))
         .unwrap_or(false)
+}
+
+/// Detect which agentic backends are available based on binaries in PATH.
+pub fn available_agentic_backends() -> Vec<BackendType> {
+    let mut backends = Vec::new();
+    if has_binary_on_path("claude") {
+        backends.push(BackendType::Claude);
+    }
+    if has_binary_on_path("codex") {
+        backends.push(BackendType::Codex);
+    }
+    backends
 }
 
 /// AI interaction mode - determines UI complexity and feature set

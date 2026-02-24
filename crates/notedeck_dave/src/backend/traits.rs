@@ -7,13 +7,28 @@ use std::sync::mpsc;
 use std::sync::Arc;
 
 /// Backend type selection
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendType {
     OpenAI,
     Claude,
     Codex,
     /// No local AI — only view/control remote agentic sessions from ndb
     Remote,
+}
+
+impl BackendType {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            BackendType::OpenAI => "OpenAI",
+            BackendType::Claude => "Claude Code",
+            BackendType::Codex => "Codex",
+            BackendType::Remote => "Remote",
+        }
+    }
+
+    pub fn is_agentic(&self) -> bool {
+        matches!(self, BackendType::Claude | BackendType::Codex)
+    }
 }
 
 /// Trait for AI backend implementations

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use crate::agent_status::AgentStatus;
+use crate::backend::BackendType;
 use crate::config::AiMode;
 use crate::git_status::GitStatusCache;
 use crate::messages::{
@@ -333,6 +334,8 @@ pub struct ChatSession {
     pub source: SessionSource,
     /// Session metadata for display (title, hostname, cwd)
     pub details: SessionDetails,
+    /// Which backend this session uses (Claude, Codex, etc.)
+    pub backend_type: BackendType,
 }
 
 impl Drop for ChatSession {
@@ -344,7 +347,7 @@ impl Drop for ChatSession {
 }
 
 impl ChatSession {
-    pub fn new(id: SessionId, cwd: PathBuf, ai_mode: AiMode) -> Self {
+    pub fn new(id: SessionId, cwd: PathBuf, ai_mode: AiMode, backend_type: BackendType) -> Self {
         let details_cwd = if ai_mode == AiMode::Agentic {
             Some(cwd.clone())
         } else {
@@ -376,6 +379,7 @@ impl ChatSession {
                     .map(|h| h.to_string_lossy().to_string())
                     .unwrap_or_default(),
             },
+            backend_type,
         }
     }
 
@@ -386,8 +390,9 @@ impl ChatSession {
         resume_session_id: String,
         title: String,
         ai_mode: AiMode,
+        backend_type: BackendType,
     ) -> Self {
-        let mut session = Self::new(id, cwd, ai_mode);
+        let mut session = Self::new(id, cwd, ai_mode, backend_type);
         if let Some(ref mut agentic) = session.agentic {
             agentic.resume_session_id = Some(resume_session_id);
         }
@@ -609,11 +614,16 @@ impl SessionManager {
     }
 
     /// Create a new session with the given cwd and make it active
-    pub fn new_session(&mut self, cwd: PathBuf, ai_mode: AiMode) -> SessionId {
+    pub fn new_session(
+        &mut self,
+        cwd: PathBuf,
+        ai_mode: AiMode,
+        backend_type: BackendType,
+    ) -> SessionId {
         let id = self.next_id;
         self.next_id += 1;
 
-        let session = ChatSession::new(id, cwd, ai_mode);
+        let session = ChatSession::new(id, cwd, ai_mode, backend_type);
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
@@ -629,11 +639,13 @@ impl SessionManager {
         resume_session_id: String,
         title: String,
         ai_mode: AiMode,
+        backend_type: BackendType,
     ) -> SessionId {
         let id = self.next_id;
         self.next_id += 1;
 
-        let session = ChatSession::new_resumed(id, cwd, resume_session_id, title, ai_mode);
+        let session =
+            ChatSession::new_resumed(id, cwd, resume_session_id, title, ai_mode, backend_type);
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
@@ -855,7 +867,12 @@ mod tests {
     use std::sync::mpsc;
 
     fn test_session() -> ChatSession {
-        ChatSession::new(1, PathBuf::from("/tmp"), AiMode::Agentic)
+        ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        )
     }
 
     #[test]

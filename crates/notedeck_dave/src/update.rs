@@ -3,7 +3,7 @@
 //! These are standalone functions with explicit inputs to reduce the complexity
 //! of the main Dave struct and make the code more testable and reusable.
 
-use crate::backend::AiBackend;
+use crate::backend::{AiBackend, BackendType};
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::messages::{
@@ -907,10 +907,11 @@ pub fn create_session_with_cwd(
     ai_mode: AiMode,
     cwd: PathBuf,
     hostname: &str,
+    backend_type: BackendType,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
-    let id = session_manager.new_session(cwd, ai_mode);
+    let id = session_manager.new_session(cwd, ai_mode, backend_type);
     if let Some(session) = session_manager.get_mut(id) {
         session.details.hostname = hostname.to_string();
         session.focus_requested = true;
@@ -937,10 +938,12 @@ pub fn create_resumed_session_with_cwd(
     resume_session_id: String,
     title: String,
     hostname: &str,
+    backend_type: BackendType,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
-    let id = session_manager.new_resumed_session(cwd, resume_session_id, title, ai_mode);
+    let id =
+        session_manager.new_resumed_session(cwd, resume_session_id, title, ai_mode, backend_type);
     if let Some(session) = session_manager.get_mut(id) {
         session.details.hostname = hostname.to_string();
         session.focus_requested = true;
@@ -964,9 +967,9 @@ pub fn clone_active_agent(
     ai_mode: AiMode,
     hostname: &str,
 ) -> Option<SessionId> {
-    let cwd = session_manager
-        .get_active()
-        .and_then(|s| s.cwd().cloned())?;
+    let active = session_manager.get_active()?;
+    let cwd = active.cwd().cloned()?;
+    let backend_type = active.backend_type;
     Some(create_session_with_cwd(
         session_manager,
         directory_picker,
@@ -975,6 +978,7 @@ pub fn clone_active_agent(
         ai_mode,
         cwd,
         hostname,
+        backend_type,
     ))
 }
 

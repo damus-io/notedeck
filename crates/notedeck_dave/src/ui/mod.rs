@@ -30,6 +30,7 @@ pub use settings::{DaveSettingsPanel, SettingsPanelAction};
 // =============================================================================
 
 use crate::agent_status::AgentStatus;
+use crate::backend::BackendType;
 use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
@@ -198,6 +199,67 @@ pub fn session_picker_overlay_ui(
         }
     }
     OverlayResult::None
+}
+
+/// Render the backend picker overlay UI.
+/// Returns Some(BackendType) when the user has selected a backend.
+pub fn backend_picker_overlay_ui(
+    available_backends: &[BackendType],
+    ui: &mut egui::Ui,
+) -> Option<BackendType> {
+    let mut selected = None;
+
+    // Handle keyboard shortcuts: 1-9 for quick selection
+    for (idx, &bt) in available_backends.iter().enumerate().take(9) {
+        let key = match idx {
+            0 => egui::Key::Num1,
+            1 => egui::Key::Num2,
+            2 => egui::Key::Num3,
+            3 => egui::Key::Num4,
+            4 => egui::Key::Num5,
+            _ => continue,
+        };
+        if ui.input(|i| i.key_pressed(key)) {
+            return Some(bt);
+        }
+    }
+
+    let is_narrow = notedeck::ui::is_narrow(ui.ctx());
+
+    egui::Frame::new()
+        .fill(ui.visuals().panel_fill)
+        .inner_margin(egui::Margin::symmetric(if is_narrow { 16 } else { 40 }, 20))
+        .show(ui, |ui| {
+            ui.heading("Select Backend");
+            ui.add_space(8.0);
+            ui.label("Choose which AI backend to use for this session:");
+            ui.add_space(16.0);
+
+            let max_width = if is_narrow {
+                ui.available_width()
+            } else {
+                400.0
+            };
+
+            ui.allocate_ui_with_layout(
+                egui::vec2(max_width, ui.available_height()),
+                egui::Layout::top_down(egui::Align::LEFT),
+                |ui| {
+                    for (idx, &bt) in available_backends.iter().enumerate() {
+                        let label = format!("[{}] {}", idx + 1, bt.display_name());
+                        let button = egui::Button::new(egui::RichText::new(&label).size(16.0))
+                            .min_size(egui::vec2(max_width, 40.0));
+
+                        if ui.add(button).clicked() {
+                            selected = Some(bt);
+                        }
+                        ui.add_space(4.0);
+                    }
+                },
+            );
+        });
+
+    selected
 }
 
 /// Scene view action returned after rendering
