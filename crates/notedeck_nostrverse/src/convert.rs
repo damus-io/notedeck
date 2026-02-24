@@ -1,7 +1,7 @@
 //! Convert protoverse Space AST to renderer room state.
 
 use crate::room_state::{ObjectLocation, Room, RoomObject, RoomObjectType, RoomShape};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use protoverse::{Attribute, Cell, CellId, CellType, Location, ObjectType, Shape, Space};
 
 /// Convert a parsed protoverse Space into a Room and its objects.
@@ -92,6 +92,17 @@ fn collect_objects(space: &Space, id: CellId, objects: &mut Vec<RoomObject>) {
 
         let model_url = space.model_url(id).map(|s| s.to_string());
         let location = space.location(id).map(location_from_protoverse);
+        let rotation = space
+            .rotation(id)
+            .map(|(x, y, z)| {
+                Quat::from_euler(
+                    glam::EulerRot::YXZ,
+                    (y as f32).to_radians(),
+                    (x as f32).to_radians(),
+                    (z as f32).to_radians(),
+                )
+            })
+            .unwrap_or(Quat::IDENTITY);
 
         let mut obj = RoomObject::new(obj_id, name, position)
             .with_object_type(object_type_from_cell(obj_type));
@@ -101,6 +112,7 @@ fn collect_objects(space: &Space, id: CellId, objects: &mut Vec<RoomObject>) {
         if let Some(loc) = location {
             obj = obj.with_location(loc);
         }
+        obj.rotation = rotation;
         objects.push(obj);
     }
 
@@ -180,6 +192,15 @@ pub fn build_space(room: &Room, objects: &[RoomObject]) -> Space {
             pos.y as f64,
             pos.z as f64,
         ));
+        // Only emit rotation when non-identity to keep output clean
+        if obj.rotation.angle_between(Quat::IDENTITY) > 1e-4 {
+            let (y, x, z) = obj.rotation.to_euler(glam::EulerRot::YXZ);
+            attributes.push(Attribute::Rotation(
+                x.to_degrees() as f64,
+                y.to_degrees() as f64,
+                z.to_degrees() as f64,
+            ));
+        }
         let obj_attr_count = (attributes.len() as u32 - obj_attr_start) as u16;
 
         let obj_type = CellType::Object(match &obj.object_type {

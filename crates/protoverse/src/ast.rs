@@ -65,6 +65,8 @@ pub enum Attribute {
     Location(Location),
     State(CellState),
     Position(f64, f64, f64),
+    /// Euler rotation in degrees (X, Y, Z), applied in YXZ order.
+    Rotation(f64, f64, f64),
     ModelUrl(String),
 }
 
@@ -202,6 +204,14 @@ impl Space {
     pub fn position(&self, id: CellId) -> Option<(f64, f64, f64)> {
         self.attrs(id).iter().find_map(|a| match a {
             Attribute::Position(x, y, z) => Some((*x, *y, *z)),
+            _ => None,
+        })
+    }
+
+    /// Euler rotation in degrees (X, Y, Z).
+    pub fn rotation(&self, id: CellId) -> Option<(f64, f64, f64)> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Rotation(x, y, z) => Some((*x, *y, *z)),
             _ => None,
         })
     }

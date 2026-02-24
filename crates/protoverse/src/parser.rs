@@ -216,6 +216,15 @@ impl<'a> Parser<'a> {
                     _ => None,
                 }
             }
+            "rotation" => {
+                let x = self.eat_number();
+                let y = self.eat_number();
+                let z = self.eat_number();
+                match (x, y, z) {
+                    (Some(x), Some(y), Some(z)) => Some(Attribute::Rotation(x, y, z)),
+                    _ => None,
+                }
+            }
             "model-url" => self
                 .eat_string()
                 .map(|s| Attribute::ModelUrl(s.to_string())),

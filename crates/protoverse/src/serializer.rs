@@ -104,6 +104,15 @@ fn write_attr(attr: &Attribute, out: &mut String) {
                 format_number(*z)
             );
         }
+        Attribute::Rotation(x, y, z) => {
+            let _ = write!(
+                out,
+                "(rotation {} {} {})",
+                format_number(*x),
+                format_number(*y),
+                format_number(*z)
+            );
+        }
         Attribute::ModelUrl(s) => {
             let _ = write!(out, "(model-url \"{}\")", s);
         }

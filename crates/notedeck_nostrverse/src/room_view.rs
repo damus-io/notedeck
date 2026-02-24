@@ -914,6 +914,7 @@ fn is_sexp_keyword(word: &str) -> bool {
             | "height"
             | "depth"
             | "position"
+            | "rotation"
             | "location"
             | "model-url"
             | "material"
