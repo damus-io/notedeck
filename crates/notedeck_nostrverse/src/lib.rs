@@ -688,6 +688,12 @@ impl NostrverseApp {
                 }
                 self.state.dirty = true;
             }
+            NostrverseAction::RotateObject { id, rotation } => {
+                if let Some(obj) = self.state.get_object_mut(&id) {
+                    obj.rotation = rotation;
+                    self.state.dirty = true;
+                }
+            }
             NostrverseAction::DuplicateObject(id) => {
                 let Some(src) = self.state.objects.iter().find(|o| o.id == id).cloned() else {
                     return;

@@ -1,12 +1,15 @@
 //! Room 3D rendering and editing UI for nostrverse via renderbud
 
 use egui::{Color32, Pos2, Rect, Response, Sense, Ui};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 
 use super::convert;
 use super::room_state::{
     DragMode, DragState, NostrverseAction, NostrverseState, ObjectLocation, RoomObject, RoomShape,
 };
+
+/// Radians of Y rotation per pixel of horizontal drag
+const ROTATE_SENSITIVITY: f32 = 0.01;
 
 /// Response from rendering the nostrverse view
 pub struct NostrverseResponse {
@@ -196,57 +199,70 @@ pub fn show_room_view(
                         .iter()
                         .find(|o| o.scene_object_id == Some(scene_id))
                 {
-                    let drag_info = match &obj.location {
-                        Some(ObjectLocation::TopOf(parent_id))
-                        | Some(ObjectLocation::Near(parent_id)) => {
-                            let parent_obj = state.objects.iter().find(|o| o.id == *parent_id);
-                            if let Some(parent) = parent_obj
-                                && let Some(parent_scene_id) = parent.scene_object_id
-                                && let Some(parent_model) = parent.model_handle
-                                && let Some(parent_aabb) = r.model_bounds(parent_model)
-                                && let Some(parent_world) = r.world_matrix(parent_scene_id)
-                            {
-                                let child_half_h = obj
-                                    .model_handle
-                                    .and_then(|m| r.model_bounds(m))
-                                    .map(|b| (b.max.y - b.min.y) * 0.5)
-                                    .unwrap_or(0.0);
-                                let local_y =
-                                    if matches!(&obj.location, Some(ObjectLocation::TopOf(_))) {
+                    // Always select on drag start
+                    r.set_selected(Some(scene_id));
+                    state.selected_object = Some(obj.id.clone());
+
+                    // In rotate mode, mark this as a rotation drag
+                    // (don't start a position drag)
+                    let drag_info = if state.rotate_mode {
+                        state.rotate_drag = true;
+                        None
+                    } else {
+                        match &obj.location {
+                            Some(ObjectLocation::TopOf(parent_id))
+                            | Some(ObjectLocation::Near(parent_id)) => {
+                                let parent_obj = state.objects.iter().find(|o| o.id == *parent_id);
+                                if let Some(parent) = parent_obj
+                                    && let Some(parent_scene_id) = parent.scene_object_id
+                                    && let Some(parent_model) = parent.model_handle
+                                    && let Some(parent_aabb) = r.model_bounds(parent_model)
+                                    && let Some(parent_world) = r.world_matrix(parent_scene_id)
+                                {
+                                    let child_half_h = obj
+                                        .model_handle
+                                        .and_then(|m| r.model_bounds(m))
+                                        .map(|b| (b.max.y - b.min.y) * 0.5)
+                                        .unwrap_or(0.0);
+                                    let local_y = if matches!(
+                                        &obj.location,
+                                        Some(ObjectLocation::TopOf(_))
+                                    ) {
                                         parent_aabb.max.y + child_half_h
                                     } else {
                                         0.0
                                     };
-                                let obj_world = parent_world.transform_point3(obj.position);
-                                let plane_y = obj_world.y;
+                                    let obj_world = parent_world.transform_point3(obj.position);
+                                    let plane_y = obj_world.y;
+                                    let hit = r
+                                        .unproject_to_plane(vp.x, vp.y, plane_y)
+                                        .unwrap_or(obj_world);
+                                    let local_hit = parent_world.inverse().transform_point3(hit);
+                                    let grab_offset = obj.position - local_hit;
+                                    Some((
+                                        DragMode::Parented {
+                                            parent_id: parent_id.clone(),
+                                            parent_scene_id,
+                                            parent_aabb,
+                                            local_y,
+                                        },
+                                        grab_offset,
+                                        plane_y,
+                                    ))
+                                } else {
+                                    None
+                                }
+                            }
+                            None | Some(ObjectLocation::Floor) => {
+                                let plane_y = obj.position.y;
                                 let hit = r
                                     .unproject_to_plane(vp.x, vp.y, plane_y)
-                                    .unwrap_or(obj_world);
-                                let local_hit = parent_world.inverse().transform_point3(hit);
-                                let grab_offset = obj.position - local_hit;
-                                Some((
-                                    DragMode::Parented {
-                                        parent_id: parent_id.clone(),
-                                        parent_scene_id,
-                                        parent_aabb,
-                                        local_y,
-                                    },
-                                    grab_offset,
-                                    plane_y,
-                                ))
-                            } else {
-                                None
+                                    .unwrap_or(obj.position);
+                                let grab_offset = obj.position - hit;
+                                Some((DragMode::Free, grab_offset, plane_y))
                             }
+                            _ => None, // Center/Ceiling/Custom: not draggable
                         }
-                        None | Some(ObjectLocation::Floor) => {
-                            let plane_y = obj.position.y;
-                            let hit = r
-                                .unproject_to_plane(vp.x, vp.y, plane_y)
-                                .unwrap_or(obj.position);
-                            let grab_offset = obj.position - hit;
-                            Some((DragMode::Free, grab_offset, plane_y))
-                        }
-                        _ => None, // Center/Ceiling/Custom: not draggable
                     };
 
                     if let Some((mode, grab_offset, plane_y)) = drag_info {
@@ -256,30 +272,31 @@ pub fn show_room_view(
                             plane_y,
                             mode,
                         });
-                        // Set selection directly — can't use the action
-                        // system because dragged() fires on the same frame
-                        // and would overwrite with MoveObject.
-                        r.set_selected(Some(scene_id));
-                        state.selected_object = Some(obj.id.clone());
                     }
                 }
             }
 
-            // Dragging: move object or control camera
+            // Dragging: rotate or move object, or control camera
             if response.dragged() {
-                let has_drag = state.drag_state.is_some();
-                if has_drag {
+                // Rotation drag: only when drag started on an object in rotate mode
+                if state.rotate_drag
+                    && let Some(sel_id) = state.selected_object.clone()
+                    && let Some(obj) = state.objects.iter().find(|o| o.id == sel_id)
+                {
+                    let delta_x = response.drag_delta().x;
+                    let angle = delta_x * ROTATE_SENSITIVITY;
+                    let new_rotation = Quat::from_rotation_y(angle) * obj.rotation;
+                    action = Some(NostrverseAction::RotateObject {
+                        id: sel_id,
+                        rotation: new_rotation,
+                    });
+                    ui.ctx().request_repaint();
+                } else if let Some(drag) = state.drag_state.as_ref() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let vp = pos - rect.min.to_vec2();
                         let grid = state.grid_snap_enabled.then_some(state.grid_snap);
                         // Borrow of state.drag_state is scoped to this call
-                        let update = compute_drag_update(
-                            state.drag_state.as_ref().unwrap(),
-                            vp.x,
-                            vp.y,
-                            grid,
-                            &r,
-                        );
+                        let update = compute_drag_update(drag, vp.x, vp.y, grid, &r);
                         // Borrow released — free to mutate state
                         // For free drags, check if we should snap to a parent
                         let update = if let Some(DragUpdate::Move {
@@ -386,6 +403,7 @@ pub fn show_room_view(
             // Drag end: clear state
             if response.drag_stopped() {
                 state.drag_state = None;
+                state.rotate_drag = false;
             }
 
             // Click (no drag): select/deselect
@@ -424,6 +442,11 @@ pub fn show_room_view(
         // G key: toggle grid snap
         if ui.input(|i| i.key_pressed(egui::Key::G)) {
             state.grid_snap_enabled = !state.grid_snap_enabled;
+        }
+
+        // R key: toggle rotate mode
+        if ui.input(|i| i.key_pressed(egui::Key::R)) {
+            state.rotate_mode = !state.rotate_mode;
         }
 
         // Ctrl+D: duplicate selected object
@@ -486,26 +509,29 @@ fn draw_info_overlay(painter: &egui::Painter, state: &NostrverseState, rect: Rec
         .map(|r| r.name.as_str())
         .unwrap_or("Loading...");
 
-    let info_text = format!("{} | Objects: {}", room_name, state.objects.len());
+    let mut info_text = format!("{} | Objects: {}", room_name, state.objects.len());
+    if state.rotate_mode {
+        info_text.push_str(" | Rotate (R)");
+    }
 
-    // Background for readability
+    // Measure text to size the background
+    let font_id = egui::FontId::proportional(14.0);
     let text_pos = Pos2::new(rect.left() + 10.0, rect.top() + 10.0);
+    let galley = painter.layout_no_wrap(
+        info_text,
+        font_id,
+        Color32::from_rgba_unmultiplied(200, 200, 210, 220),
+    );
+    let padding = egui::vec2(12.0, 6.0);
     painter.rect_filled(
         Rect::from_min_size(
             Pos2::new(rect.left() + 4.0, rect.top() + 4.0),
-            egui::vec2(200.0, 24.0),
+            galley.size() + padding,
         ),
         4.0,
         Color32::from_rgba_unmultiplied(0, 0, 0, 160),
     );
-
-    painter.text(
-        text_pos,
-        egui::Align2::LEFT_TOP,
-        info_text,
-        egui::FontId::proportional(14.0),
-        Color32::from_rgba_unmultiplied(200, 200, 210, 220),
-    );
+    painter.galley(text_pos, galley, Color32::PLACEHOLDER);
 }
 
 /// Render the side panel with room editing, object list, and object inspector.
@@ -703,13 +729,27 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
             .inner;
         obj.scale = Vec3::new(sx, sy, sz);
 
+        // Editable Y rotation (degrees)
+        let (_, angle_y, _) = obj.rotation.to_euler(glam::EulerRot::YXZ);
+        let mut deg = angle_y.to_degrees();
+        let rot_changed = ui
+            .horizontal(|ui| {
+                ui.label("Rot Y:");
+                ui.add(egui::DragValue::new(&mut deg).speed(1.0).suffix("°"))
+                    .changed()
+            })
+            .inner;
+        if rot_changed {
+            obj.rotation = Quat::from_rotation_y(deg.to_radians());
+        }
+
         // Model URL (read-only for now)
         if let Some(url) = &obj.model_url {
             ui.add_space(4.0);
             ui.small(format!("Model: {}", url));
         }
 
-        if name_changed || pos_changed || scale_changed {
+        if name_changed || pos_changed || scale_changed || rot_changed {
             state.dirty = true;
         }
 

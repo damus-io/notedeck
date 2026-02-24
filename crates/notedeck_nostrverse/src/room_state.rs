@@ -19,6 +19,8 @@ pub enum NostrverseAction {
     RemoveObject(String),
     /// Duplicate the selected object
     DuplicateObject(String),
+    /// Object was rotated (id, new rotation)
+    RotateObject { id: String, rotation: Quat },
 }
 
 /// Reference to a nostrverse room
@@ -257,6 +259,10 @@ pub struct NostrverseState {
     pub grid_snap: f32,
     /// Whether grid snapping is enabled
     pub grid_snap_enabled: bool,
+    /// Whether rotate mode is active (R key toggle)
+    pub rotate_mode: bool,
+    /// Whether the current drag is a rotation drag (started on an object in rotate mode)
+    pub rotate_drag: bool,
     /// Cached serialized scene text (avoids re-serializing every frame)
     pub cached_scene_text: String,
 }
@@ -275,6 +281,8 @@ impl NostrverseState {
             drag_state: None,
             grid_snap: 0.5,
             grid_snap_enabled: false,
+            rotate_mode: false,
+            rotate_drag: false,
             cached_scene_text: String::new(),
         }
     }
