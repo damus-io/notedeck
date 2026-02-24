@@ -4,7 +4,9 @@ use egui::{Color32, Pos2, Rect, Response, Sense, Ui};
 use glam::Vec3;
 
 use super::convert;
-use super::room_state::{NostrverseAction, NostrverseState, RoomObject, RoomShape};
+use super::room_state::{
+    DragState, NostrverseAction, NostrverseState, ObjectLocation, RoomObject, RoomShape,
+};
 
 /// Response from rendering the nostrverse view
 pub struct NostrverseResponse {
@@ -21,18 +23,95 @@ pub fn show_room_view(
     let available_size = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(available_size, Sense::click_and_drag());
 
+    let mut action: Option<NostrverseAction> = None;
+
     // Update renderer target size and handle input
     {
         let mut r = renderer.renderer.lock().unwrap();
         r.set_target_size((rect.width() as u32, rect.height() as u32));
 
-        // Handle mouse drag for camera look
-        if response.dragged() {
-            let delta = response.drag_delta();
-            r.on_mouse_drag(delta.x, delta.y);
+        if state.edit_mode {
+            // --- Edit mode: click-to-select, drag-to-move objects ---
+
+            // Drag start: pick to decide object-drag vs camera
+            if response.drag_started()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let vp = pos - rect.min.to_vec2();
+                if let Some(scene_id) = r.pick(vp.x, vp.y)
+                    && let Some(obj) = state
+                        .objects
+                        .iter()
+                        .find(|o| o.scene_object_id == Some(scene_id))
+                {
+                    let can_drag = obj.location.is_none()
+                        || matches!(obj.location, Some(ObjectLocation::Floor));
+                    if can_drag {
+                        let plane_y = obj.position.y;
+                        let hit = r
+                            .unproject_to_plane(vp.x, vp.y, plane_y)
+                            .unwrap_or(obj.position);
+                        state.drag_state = Some(DragState {
+                            object_id: obj.id.clone(),
+                            grab_offset: obj.position - hit,
+                            plane_y,
+                        });
+                        action = Some(NostrverseAction::SelectObject(Some(obj.id.clone())));
+                    }
+                }
+            }
+
+            // Dragging: move object or control camera
+            if response.dragged() {
+                if let Some(ref drag) = state.drag_state {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let vp = pos - rect.min.to_vec2();
+                        if let Some(hit) = r.unproject_to_plane(vp.x, vp.y, drag.plane_y) {
+                            let new_pos = hit + drag.grab_offset;
+                            action = Some(NostrverseAction::MoveObject {
+                                id: drag.object_id.clone(),
+                                position: new_pos,
+                            });
+                        }
+                    }
+                    ui.ctx().request_repaint();
+                } else {
+                    let delta = response.drag_delta();
+                    r.on_mouse_drag(delta.x, delta.y);
+                }
+            }
+
+            // Drag end: clear state
+            if response.drag_stopped() {
+                state.drag_state = None;
+            }
+
+            // Click (no drag): select/deselect
+            if response.clicked()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                let vp = pos - rect.min.to_vec2();
+                if let Some(scene_id) = r.pick(vp.x, vp.y) {
+                    if let Some(obj) = state
+                        .objects
+                        .iter()
+                        .find(|o| o.scene_object_id == Some(scene_id))
+                    {
+                        action = Some(NostrverseAction::SelectObject(Some(obj.id.clone())));
+                    }
+                } else {
+                    action = Some(NostrverseAction::SelectObject(None));
+                }
+            }
+        } else {
+            // --- View mode: camera only ---
+            if response.dragged() {
+                let delta = response.drag_delta();
+                r.on_mouse_drag(delta.x, delta.y);
+            }
         }
 
-        // Handle scroll for speed adjustment
+        // Scroll: always routes to camera (zoom/speed)
         if response.hover_pos().is_some() {
             let scroll = ui.input(|i| i.raw_scroll_delta.y);
             if scroll.abs() > 0.0 {
@@ -40,7 +119,7 @@ pub fn show_room_view(
             }
         }
 
-        // WASD + QE movement
+        // WASD + QE movement: always available
         let dt = ui.input(|i| i.stable_dt);
         let mut forward = 0.0_f32;
         let mut right = 0.0_f32;
@@ -83,10 +162,7 @@ pub fn show_room_view(
     let painter = ui.painter_at(rect);
     draw_info_overlay(&painter, state, rect);
 
-    NostrverseResponse {
-        response,
-        action: None,
-    }
+    NostrverseResponse { response, action }
 }
 
 fn draw_info_overlay(painter: &egui::Painter, state: &NostrverseState, rect: Rect) {
@@ -337,13 +413,19 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
     }
 
     // --- Scene body (syntax-highlighted, read-only) ---
+    // Only re-serialize when not actively dragging an object
+    if state.drag_state.is_none()
+        && let Some(room) = &state.room
+    {
+        let space = convert::build_space(room, &state.objects);
+        state.cached_scene_text = protoverse::serialize(&space);
+    }
+
     ui.add_space(12.0);
     ui.strong("Scene");
     ui.separator();
-    if let Some(room) = &state.room {
-        let space = convert::build_space(room, &state.objects);
-        let text = protoverse::serialize(&space);
-        let layout_job = highlight_sexp(&text, ui);
+    if !state.cached_scene_text.is_empty() {
+        let layout_job = highlight_sexp(&state.cached_scene_text, ui);
         let code_bg = if ui.visuals().dark_mode {
             Color32::from_rgb(0x1E, 0x1C, 0x19)
         } else {

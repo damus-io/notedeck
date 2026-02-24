@@ -1,4 +1,4 @@
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use crate::material::{MaterialUniform, make_material_gpudata};
 use crate::model::ModelData;
@@ -306,6 +306,26 @@ fn make_dynamic_object_buffer(
         },
         object_bgl,
     )
+}
+
+/// Ray-AABB intersection using the slab method.
+/// Transforms the ray into the object's local space via the inverse world matrix.
+/// Returns the distance along the ray if there's a hit.
+fn ray_aabb(origin: Vec3, dir: Vec3, aabb: &Aabb, world: &Mat4) -> Option<f32> {
+    let inv = world.inverse();
+    let lo = (inv * origin.extend(1.0)).truncate();
+    let ld = (inv * dir.extend(0.0)).truncate();
+    let t1 = (aabb.min - lo) / ld;
+    let t2 = (aabb.max - lo) / ld;
+    let tmin = t1.min(t2);
+    let tmax = t1.max(t2);
+    let enter = tmin.x.max(tmin.y).max(tmin.z);
+    let exit = tmax.x.min(tmax.y).min(tmax.z);
+    if exit >= enter.max(0.0) {
+        Some(enter.max(0.0))
+    } else {
+        None
+    }
 }
 
 impl Renderer {
@@ -716,6 +736,62 @@ impl Renderer {
     /// Get the axis-aligned bounding box for a loaded model.
     pub fn model_bounds(&self, model: Model) -> Option<Aabb> {
         self.models.get(&model).map(|md| md.bounds)
+    }
+
+    /// Convert screen coordinates (relative to viewport) to a world-space ray.
+    /// Returns (origin, direction).
+    fn screen_to_ray(&self, screen_x: f32, screen_y: f32) -> (Vec3, Vec3) {
+        let (w, h) = self.target_size;
+        let ndc_x = (screen_x / w as f32) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (screen_y / h as f32) * 2.0;
+        let vp = self.world.camera.view_proj(w as f32, h as f32);
+        let inv_vp = vp.inverse();
+        let near4 = inv_vp * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far4 = inv_vp * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let near = near4.truncate() / near4.w;
+        let far = far4.truncate() / far4.w;
+        (near, (far - near).normalize())
+    }
+
+    /// Pick the closest scene object at the given screen coordinates.
+    /// Coordinates are relative to the viewport (0,0 = top-left).
+    pub fn pick(&self, screen_x: f32, screen_y: f32) -> Option<ObjectId> {
+        let (origin, dir) = self.screen_to_ray(screen_x, screen_y);
+        let mut closest: Option<(ObjectId, f32)> = None;
+        for &id in self.world.renderables() {
+            let model = match self.world.node_model(id) {
+                Some(m) => m,
+                None => continue,
+            };
+            let aabb = match self.model_bounds(model) {
+                Some(a) => a,
+                None => continue,
+            };
+            let world = match self.world.world_matrix(id) {
+                Some(w) => w,
+                None => continue,
+            };
+            if let Some(t) = ray_aabb(origin, dir, &aabb, &world)
+                && closest.is_none_or(|(_, d)| t < d)
+            {
+                closest = Some((id, t));
+            }
+        }
+        closest.map(|(id, _)| id)
+    }
+
+    /// Unproject screen coordinates to a point on a horizontal plane at the given Y height.
+    /// Useful for constraining object drag to the ground plane.
+    pub fn unproject_to_plane(&self, screen_x: f32, screen_y: f32, plane_y: f32) -> Option<Vec3> {
+        let (origin, dir) = self.screen_to_ray(screen_x, screen_y);
+        if dir.y.abs() < 1e-6 {
+            return None;
+        }
+        let t = (plane_y - origin.y) / dir.y;
+        if t < 0.0 {
+            return None;
+        }
+        Some(origin + dir * t)
     }
 
     /// Handle mouse drag for camera look/orbit.

@@ -349,6 +349,14 @@ impl World {
         Some(&self.nodes[id.index as usize])
     }
 
+    /// Get the Model handle for a node, if it has one.
+    pub fn node_model(&self, id: NodeId) -> Option<Model> {
+        if !self.is_valid(id) {
+            return None;
+        }
+        self.nodes[id.index as usize].model
+    }
+
     /// Iterate renderable node ids (nodes with a Model).
     pub fn renderables(&self) -> &[NodeId] {
         &self.renderables

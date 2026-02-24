@@ -204,6 +204,16 @@ impl RoomUser {
     }
 }
 
+/// State for an active object drag in the 3D viewport
+pub struct DragState {
+    /// ID of the object being dragged
+    pub object_id: String,
+    /// Offset from object position to the initial grab point
+    pub grab_offset: Vec3,
+    /// Y height of the drag constraint plane
+    pub plane_y: f32,
+}
+
 /// State for a nostrverse view
 pub struct NostrverseState {
     /// Reference to the room being viewed
@@ -222,6 +232,10 @@ pub struct NostrverseState {
     pub smooth_avatar_yaw: f32,
     /// Room has unsaved edits
     pub dirty: bool,
+    /// Active drag state for viewport object manipulation
+    pub drag_state: Option<DragState>,
+    /// Cached serialized scene text (avoids re-serializing every frame)
+    pub cached_scene_text: String,
 }
 
 impl NostrverseState {
@@ -235,6 +249,8 @@ impl NostrverseState {
             edit_mode: true,
             smooth_avatar_yaw: 0.0,
             dirty: false,
+            drag_state: None,
+            cached_scene_text: String::new(),
         }
     }
 
