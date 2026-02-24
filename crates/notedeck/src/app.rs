@@ -9,13 +9,16 @@ use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
     DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
 };
-use crate::{Error, JobCache};
+use crate::{EguiWakeup, Error, JobCache, RemoteApi};
 use crate::{JobPool, MediaJobs};
 use crate::{NotedeckOptions, ScopedSubsState};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
-use enostr::{OutboxPool, PoolEventBuf, PoolRelay, RelayEvent, RelayMessage, RelayPool};
+use enostr::{
+    OutboxPool, OutboxSession, OutboxSessionHandler, PoolEventBuf, PoolRelay, RelayEvent,
+    RelayMessage, RelayPool,
+};
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -98,15 +101,14 @@ fn main_panel(style: &egui::Style) -> egui::CentralPanel {
     })
 }
 
-fn render_notedeck(notedeck: &mut Notedeck, ctx: &egui::Context) {
+#[profiling::function]
+fn render_notedeck(
+    app: Rc<RefCell<dyn App + 'static>>,
+    app_ctx: &mut AppContext,
+    ctx: &egui::Context,
+) {
     main_panel(&ctx.style()).show(ctx, |ui| {
-        // render app
-        let Some(app) = &notedeck.app else {
-            return;
-        };
-
-        let app = app.clone();
-        app.borrow_mut().update(&mut notedeck.app_context(), ui);
+        app.borrow_mut().update(app_ctx, ui);
 
         // Move the screen up when we have a virtual keyboard
         // NOTE: actually, we only want to do this if the keyboard is covering the focused element?
@@ -140,15 +142,27 @@ impl eframe::App for Notedeck {
         }
 
         self.nip05_cache.poll();
+        let Some(app) = &self.app else {
+            return;
+        };
+        let app = app.clone();
+        let mut app_ctx = self.app_context(ctx);
 
         // handle account updates
-        self.accounts
-            .update(&mut self.ndb, &mut self.legacy_pool, ctx);
+        app_ctx
+            .accounts
+            .update(app_ctx.ndb, app_ctx.legacy_pool, ctx);
 
-        self.zaps
-            .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
+        app_ctx
+            .zaps
+            .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
 
-        render_notedeck(self, ctx);
+        render_notedeck(app, &mut app_ctx, ctx);
+
+        {
+            profiling::scope!("outbox ingestion");
+            drop(app_ctx);
+        }
 
         self.settings.update_batch(|settings| {
             settings.zoom_factor = ctx.zoom_factor();
@@ -379,17 +393,28 @@ impl Notedeck {
         self
     }
 
-    pub fn app_context(&mut self) -> AppContext<'_> {
-        self.notedeck_ref().app_ctx
+    pub fn app_context(&mut self, ui_ctx: &egui::Context) -> AppContext<'_> {
+        self.notedeck_ref(ui_ctx, None).app_ctx
     }
 
-    pub fn notedeck_ref<'a>(&'a mut self) -> NotedeckRef<'a> {
+    pub fn notedeck_ref<'a>(
+        &'a mut self,
+        ui_ctx: &egui::Context,
+        session: Option<OutboxSession>,
+    ) -> NotedeckRef<'a> {
+        let outbox = if let Some(session) = session {
+            OutboxSessionHandler::import(&mut self.pool, session, EguiWakeup::new(ui_ctx.clone()))
+        } else {
+            OutboxSessionHandler::new(&mut self.pool, EguiWakeup::new(ui_ctx.clone()))
+        };
+
         NotedeckRef {
             app_ctx: AppContext {
                 ndb: &mut self.ndb,
                 img_cache: &mut self.img_cache,
                 unknown_ids: &mut self.unknown_ids,
                 legacy_pool: &mut self.legacy_pool,
+                remote: RemoteApi::new(outbox, &mut self.scoped_sub_state),
                 note_cache: &mut self.note_cache,
                 accounts: &mut self.accounts,
                 global_wallet: &mut self.global_wallet,

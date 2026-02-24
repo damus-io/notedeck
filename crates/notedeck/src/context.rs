@@ -1,7 +1,7 @@
 use crate::{
     account::accounts::Accounts, frame_history::FrameHistory, i18n::Localization,
     nip05::Nip05Cache, wallet::GlobalWallet, zaps::Zaps, Args, DataPath, Images, JobPool,
-    MediaJobs, NoteCache, SettingsHandler, UnknownIds,
+    MediaJobs, NoteCache, RemoteApi, SettingsHandler, UnknownIds,
 };
 use egui_winit::clipboard::Clipboard;
 
@@ -18,6 +18,8 @@ pub struct AppContext<'a> {
     pub img_cache: &'a mut Images,
     pub unknown_ids: &'a mut UnknownIds,
     pub legacy_pool: &'a mut RelayPool,
+    /// Relay/outbox transport APIs (scoped subs, oneshot, publish, relay inspect).
+    pub remote: RemoteApi<'a>,
     pub note_cache: &'a mut NoteCache,
     pub accounts: &'a mut Accounts,
     pub global_wallet: &'a mut GlobalWallet,

@@ -185,7 +185,7 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut notedeck = Notedeck::new(&ctx, &tmpdir, &args);
-        let mut app_ctx = notedeck.app_context();
+        let mut app_ctx = notedeck.app_context(&ctx);
         let app = Damus::new(&mut app_ctx, &args);
 
         assert_eq!(app.columns(app_ctx.accounts).columns().len(), 2);
@@ -234,13 +234,16 @@ mod tests {
 
         let ctx = egui::Context::default();
         let mut notedeck = Notedeck::new(&ctx, &tmpdir, &args);
-        let mut app_ctx = notedeck.app_context();
-        let app = Damus::new(&mut app_ctx, &args);
+        let unrecognized_args = {
+            let mut app_ctx = notedeck.app_context(&ctx);
+            let app = Damus::new(&mut app_ctx, &args);
+            app.unrecognized_args().clone()
+        };
 
         // ensure we recognized all the arguments
         let completely_unrecognized: Vec<String> = notedeck
             .unrecognized_args()
-            .intersection(app.unrecognized_args())
+            .intersection(&unrecognized_args)
             .cloned()
             .collect();
         assert_eq!(completely_unrecognized, ["--unknown-arg"]);

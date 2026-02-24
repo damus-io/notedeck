@@ -154,7 +154,7 @@ impl Chrome {
     ) -> Result<Self, Error> {
         stop_debug_mode(notedeck.options());
 
-        let notedeck_ref = &mut notedeck.notedeck_ref();
+        let notedeck_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx, None);
         let dave = Dave::new(
             cc.wgpu_render_state.as_ref(),
             notedeck_ref.app_ctx.ndb.clone(),
