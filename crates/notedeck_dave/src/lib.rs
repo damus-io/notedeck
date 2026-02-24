@@ -1494,16 +1494,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 );
                 session.chat = loaded.messages;
 
-                // Determine if this is a remote session (cwd doesn't exist locally)
-                let cwd = std::path::PathBuf::from(&state.cwd);
-                if !cwd.exists() {
+                // Determine if this is a remote session: hostname mismatch
+                // is the primary signal, with cwd non-existence as fallback
+                // for old events that may lack a hostname.
+                if (!state.hostname.is_empty() && state.hostname != self.hostname)
+                    || (state.hostname.is_empty() && !std::path::PathBuf::from(&state.cwd).exists())
+                {
                     session.source = session::SessionSource::Remote;
                 }
-                let is_remote = session.is_remote();
 
                 // Local sessions use the current machine's hostname;
                 // remote sessions use what was stored in the event.
-                session.details.hostname = if is_remote {
+                session.details.hostname = if session.is_remote() {
                     state.hostname.clone()
                 } else {
                     self.hostname.clone()
@@ -1707,9 +1709,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.chat = loaded.messages;
                 }
 
-                // Determine if this is a remote session
-                let cwd_path = std::path::PathBuf::from(&state.cwd);
-                if !cwd_path.exists() {
+                // Determine if this is a remote session: hostname mismatch
+                // is the primary signal, with cwd non-existence as fallback
+                // for old events that may lack a hostname.
+                if (!state.hostname.is_empty() && state.hostname != self.hostname)
+                    || (state.hostname.is_empty() && !std::path::PathBuf::from(&state.cwd).exists())
+                {
                     session.source = session::SessionSource::Remote;
                 }
 
