@@ -614,4 +614,20 @@ impl Aabb {
     pub fn radius(&self) -> f32 {
         self.half_extents().length()
     }
+
+    /// Clamp a point's XZ to the AABB's XZ extent. Y unchanged.
+    pub fn clamp_xz(&self, p: Vec3) -> Vec3 {
+        Vec3::new(
+            p.x.clamp(self.min.x, self.max.x),
+            p.y,
+            p.z.clamp(self.min.z, self.max.z),
+        )
+    }
+
+    /// Distance the point's XZ overshoots the AABB boundary. 0 if inside.
+    pub fn xz_overshoot(&self, p: Vec3) -> f32 {
+        let dx = (p.x - self.max.x).max(self.min.x - p.x).max(0.0);
+        let dz = (p.z - self.max.z).max(self.min.z - p.z).max(0.0);
+        (dx * dx + dz * dz).sqrt()
+    }
 }

@@ -5,13 +5,91 @@ use glam::Vec3;
 
 use super::convert;
 use super::room_state::{
-    DragState, NostrverseAction, NostrverseState, ObjectLocation, RoomObject, RoomShape,
+    DragMode, DragState, NostrverseAction, NostrverseState, ObjectLocation, RoomObject, RoomShape,
 };
 
 /// Response from rendering the nostrverse view
 pub struct NostrverseResponse {
     pub response: Response,
     pub action: Option<NostrverseAction>,
+}
+
+fn snap_to_grid(pos: Vec3, grid: f32) -> Vec3 {
+    Vec3::new(
+        (pos.x / grid).round() * grid,
+        pos.y,
+        (pos.z / grid).round() * grid,
+    )
+}
+
+/// Result of computing a drag update — fully owned, no borrows into state.
+enum DragUpdate {
+    Move {
+        id: String,
+        position: Vec3,
+    },
+    Breakaway {
+        id: String,
+        world_pos: Vec3,
+        new_grab_offset: Vec3,
+        new_plane_y: f32,
+    },
+}
+
+/// Pure computation: given current drag state and pointer, decide what to do.
+fn compute_drag_update(
+    drag: &DragState,
+    vp_x: f32,
+    vp_y: f32,
+    grid_snap: Option<f32>,
+    r: &renderbud::Renderer,
+) -> Option<DragUpdate> {
+    match &drag.mode {
+        DragMode::Free => {
+            let hit = r.unproject_to_plane(vp_x, vp_y, drag.plane_y)?;
+            let mut new_pos = hit + drag.grab_offset;
+            if let Some(grid) = grid_snap {
+                new_pos = snap_to_grid(new_pos, grid);
+            }
+            Some(DragUpdate::Move {
+                id: drag.object_id.clone(),
+                position: new_pos,
+            })
+        }
+        DragMode::Parented {
+            parent_scene_id,
+            parent_aabb,
+            local_y,
+            ..
+        } => {
+            let hit = r.unproject_to_plane(vp_x, vp_y, drag.plane_y)?;
+            let parent_world = r.world_matrix(*parent_scene_id)?;
+            let local_hit = parent_world.inverse().transform_point3(hit);
+            let mut local_pos = Vec3::new(
+                local_hit.x + drag.grab_offset.x,
+                *local_y,
+                local_hit.z + drag.grab_offset.z,
+            );
+            if let Some(grid) = grid_snap {
+                local_pos = snap_to_grid(local_pos, grid);
+            }
+
+            if parent_aabb.xz_overshoot(local_pos) > 1.0 {
+                let world_pos = parent_world.transform_point3(local_pos);
+                Some(DragUpdate::Breakaway {
+                    id: drag.object_id.clone(),
+                    world_pos,
+                    new_grab_offset: world_pos - hit,
+                    new_plane_y: world_pos.y,
+                })
+            } else {
+                Some(DragUpdate::Move {
+                    id: drag.object_id.clone(),
+                    position: parent_aabb.clamp_xz(local_pos),
+                })
+            }
+        }
+    }
 }
 
 /// Render the nostrverse room view with 3D scene
@@ -44,17 +122,65 @@ pub fn show_room_view(
                         .iter()
                         .find(|o| o.scene_object_id == Some(scene_id))
                 {
-                    let can_drag = obj.location.is_none()
-                        || matches!(obj.location, Some(ObjectLocation::Floor));
-                    if can_drag {
-                        let plane_y = obj.position.y;
-                        let hit = r
-                            .unproject_to_plane(vp.x, vp.y, plane_y)
-                            .unwrap_or(obj.position);
+                    let drag_info = match &obj.location {
+                        Some(ObjectLocation::TopOf(parent_id))
+                        | Some(ObjectLocation::Near(parent_id)) => {
+                            let parent_obj = state.objects.iter().find(|o| o.id == *parent_id);
+                            if let Some(parent) = parent_obj
+                                && let Some(parent_scene_id) = parent.scene_object_id
+                                && let Some(parent_model) = parent.model_handle
+                                && let Some(parent_aabb) = r.model_bounds(parent_model)
+                                && let Some(parent_world) = r.world_matrix(parent_scene_id)
+                            {
+                                let child_half_h = obj
+                                    .model_handle
+                                    .and_then(|m| r.model_bounds(m))
+                                    .map(|b| (b.max.y - b.min.y) * 0.5)
+                                    .unwrap_or(0.0);
+                                let local_y =
+                                    if matches!(&obj.location, Some(ObjectLocation::TopOf(_))) {
+                                        parent_aabb.max.y + child_half_h
+                                    } else {
+                                        0.0
+                                    };
+                                let obj_world = parent_world.transform_point3(obj.position);
+                                let plane_y = obj_world.y;
+                                let hit = r
+                                    .unproject_to_plane(vp.x, vp.y, plane_y)
+                                    .unwrap_or(obj_world);
+                                let local_hit = parent_world.inverse().transform_point3(hit);
+                                let grab_offset = obj.position - local_hit;
+                                Some((
+                                    DragMode::Parented {
+                                        parent_id: parent_id.clone(),
+                                        parent_scene_id,
+                                        parent_aabb,
+                                        local_y,
+                                    },
+                                    grab_offset,
+                                    plane_y,
+                                ))
+                            } else {
+                                None
+                            }
+                        }
+                        None | Some(ObjectLocation::Floor) => {
+                            let plane_y = obj.position.y;
+                            let hit = r
+                                .unproject_to_plane(vp.x, vp.y, plane_y)
+                                .unwrap_or(obj.position);
+                            let grab_offset = obj.position - hit;
+                            Some((DragMode::Free, grab_offset, plane_y))
+                        }
+                        _ => None, // Center/Ceiling/Custom: not draggable
+                    };
+
+                    if let Some((mode, grab_offset, plane_y)) = drag_info {
                         state.drag_state = Some(DragState {
                             object_id: obj.id.clone(),
-                            grab_offset: obj.position - hit,
+                            grab_offset,
                             plane_y,
+                            mode,
                         });
                         action = Some(NostrverseAction::SelectObject(Some(obj.id.clone())));
                     }
@@ -63,15 +189,47 @@ pub fn show_room_view(
 
             // Dragging: move object or control camera
             if response.dragged() {
-                if let Some(ref drag) = state.drag_state {
+                let has_drag = state.drag_state.is_some();
+                if has_drag {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let vp = pos - rect.min.to_vec2();
-                        if let Some(hit) = r.unproject_to_plane(vp.x, vp.y, drag.plane_y) {
-                            let new_pos = hit + drag.grab_offset;
-                            action = Some(NostrverseAction::MoveObject {
-                                id: drag.object_id.clone(),
-                                position: new_pos,
-                            });
+                        let grid = state.grid_snap_enabled.then_some(state.grid_snap);
+                        // Borrow of state.drag_state is scoped to this call
+                        let update = compute_drag_update(
+                            state.drag_state.as_ref().unwrap(),
+                            vp.x,
+                            vp.y,
+                            grid,
+                            &r,
+                        );
+                        // Borrow released — free to mutate state
+                        match update {
+                            Some(DragUpdate::Move { id, position }) => {
+                                action = Some(NostrverseAction::MoveObject { id, position });
+                            }
+                            Some(DragUpdate::Breakaway {
+                                id,
+                                world_pos,
+                                new_grab_offset,
+                                new_plane_y,
+                            }) => {
+                                if let Some(obj) = state.objects.iter_mut().find(|o| o.id == id) {
+                                    if let Some(sid) = obj.scene_object_id {
+                                        r.set_parent(sid, None);
+                                    }
+                                    obj.position = world_pos;
+                                    obj.location = None;
+                                    obj.location_base = None;
+                                    state.dirty = true;
+                                }
+                                state.drag_state = Some(DragState {
+                                    object_id: id,
+                                    grab_offset: new_grab_offset,
+                                    plane_y: new_plane_y,
+                                    mode: DragMode::Free,
+                                });
+                            }
+                            None => {}
                         }
                     }
                     ui.ctx().request_repaint();
@@ -117,6 +275,11 @@ pub fn show_room_view(
             if scroll.abs() > 0.0 {
                 r.on_scroll(scroll * 0.01);
             }
+        }
+
+        // G key: toggle grid snap
+        if ui.input(|i| i.key_pressed(egui::Key::G)) {
+            state.grid_snap_enabled = !state.grid_snap_enabled;
         }
 
         // WASD + QE movement: always available
@@ -404,6 +567,20 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
             action = Some(NostrverseAction::RemoveObject(selected_id.to_owned()));
         }
     }
+
+    // --- Grid Snap ---
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut state.grid_snap_enabled, "Grid Snap (G)");
+        if state.grid_snap_enabled {
+            ui.add(
+                egui::DragValue::new(&mut state.grid_snap)
+                    .speed(0.05)
+                    .range(0.05..=10.0)
+                    .suffix("m"),
+            );
+        }
+    });
 
     // --- Save button ---
     ui.add_space(12.0);

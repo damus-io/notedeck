@@ -794,6 +794,16 @@ impl Renderer {
         self.models.get(&model).map(|md| md.bounds)
     }
 
+    /// Get the cached world matrix for a scene object.
+    pub fn world_matrix(&self, id: ObjectId) -> Option<glam::Mat4> {
+        self.world.world_matrix(id)
+    }
+
+    /// Get the parent of a scene object, if it has one.
+    pub fn node_parent(&self, id: ObjectId) -> Option<ObjectId> {
+        self.world.node_parent(id)
+    }
+
     /// Convert screen coordinates (relative to viewport) to a world-space ray.
     /// Returns (origin, direction).
     fn screen_to_ray(&self, screen_x: f32, screen_y: f32) -> (Vec3, Vec3) {
