@@ -182,7 +182,11 @@ pub fn show_room_view(
                             plane_y,
                             mode,
                         });
-                        action = Some(NostrverseAction::SelectObject(Some(obj.id.clone())));
+                        // Set selection directly — can't use the action
+                        // system because dragged() fires on the same frame
+                        // and would overwrite with MoveObject.
+                        r.set_selected(Some(scene_id));
+                        state.selected_object = Some(obj.id.clone());
                     }
                 }
             }

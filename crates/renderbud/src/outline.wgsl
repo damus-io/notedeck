@@ -44,7 +44,7 @@ struct VSIn {
 
 @vertex
 fn vs_main(v: VSIn) -> @builtin(position) vec4<f32> {
-    let outline_width = 0.03;
+    let outline_width = 0.012;
     let inflated = v.pos + v.normal * outline_width;
     let world4 = object.model * vec4<f32>(inflated, 1.0);
     return globals.view_proj * world4;
