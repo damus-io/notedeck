@@ -18,7 +18,8 @@ use notedeck::{
     get_wallet_for, is_future_timestamp,
     note::{reaction_sent_id, ReactAction, ZapTargetAmount},
     unix_time_secs, Accounts, GlobalWallet, Images, MediaJobSender, NoteAction, NoteCache,
-    NoteZapTargetOwned, RemoteApi, UnknownIds, ZapAction, ZapTarget, ZappingError, Zaps,
+    NoteZapTargetOwned, PublishApi, RelayType, RemoteApi, UnknownIds, ZapAction, ZapTarget,
+    ZappingError, Zaps,
 };
 use notedeck_ui::media::MediaViewerFlags;
 use tracing::error;
@@ -101,7 +102,10 @@ fn execute_note_action(
         }
         NoteAction::React(react_action) => {
             if let Some(filled) = accounts.selected_filled() {
-                if let Err(err) = send_reaction_event(ndb, txn, pool, filled, &react_action) {
+                let mut publisher = remote.publisher(&*accounts);
+                if let Err(err) =
+                    send_reaction_event(ndb, txn, &mut publisher, filled, &react_action)
+                {
                     tracing::error!("Failed to send reaction: {err}");
                 }
                 ui.ctx().data_mut(|d| {
@@ -192,7 +196,7 @@ fn execute_note_action(
                     send_zap(
                         &sender,
                         zaps,
-                        pool,
+                        accounts,
                         target,
                         wallet.default_zap.get_default_zap_msats(),
                     )
@@ -315,7 +319,7 @@ pub fn execute_and_process_note_action(
 fn send_reaction_event(
     ndb: &mut Ndb,
     txn: &Transaction,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair<'_>,
     reaction: &ReactAction,
 ) -> Result<(), String> {
@@ -377,7 +381,7 @@ fn send_reaction_event(
 
     let _ = ndb.process_event_with(&json, IngestMetadata::new().client(true));
 
-    pool.send(event);
+    publisher.publish_note(&note, RelayType::AccountsWrite);
 
     Ok(())
 }
@@ -403,7 +407,7 @@ fn find_addressable_d_tag(note: &nostrdb::Note<'_>) -> Option<String> {
 fn send_zap(
     sender: &Pubkey,
     zaps: &mut Zaps,
-    pool: &RelayPool,
+    accounts: &Accounts,
     target_amount: &ZapTargetAmount,
     default_msats: u64,
 ) {
@@ -411,7 +415,14 @@ fn send_zap(
 
     let msats = target_amount.specified_msats.unwrap_or(default_msats);
 
-    let sender_relays: Vec<String> = pool.relays.iter().map(|r| r.url().to_string()).collect();
+    let sender_relays: Vec<String> = accounts
+        .selected_account_write_relays()
+        .into_iter()
+        .filter_map(|r| match r {
+            enostr::RelayId::Websocket(norm_relay_url) => Some(norm_relay_url.to_string()),
+            enostr::RelayId::Multicast => None,
+        })
+        .collect();
     zaps.send_zap(sender.bytes(), sender_relays, zap_target, msats);
 }
 
