@@ -291,8 +291,12 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
 
         let label = format!("{} ({})", state.objects[i].name, state.objects[i].id);
         if ui.selectable_label(is_selected, label).clicked() {
-            let id = state.objects[i].id.clone();
-            state.selected_object = if is_selected { None } else { Some(id) };
+            let selected = if is_selected {
+                None
+            } else {
+                Some(state.objects[i].id.clone())
+            };
+            action = Some(NostrverseAction::SelectObject(selected));
         }
     }
 

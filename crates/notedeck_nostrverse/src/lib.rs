@@ -657,6 +657,17 @@ impl NostrverseApp {
                 }
             }
             NostrverseAction::SelectObject(selected) => {
+                // Update renderer outline highlight
+                if let Some(renderer) = &self.renderer {
+                    let scene_id = selected.as_ref().and_then(|sel_id| {
+                        self.state
+                            .objects
+                            .iter()
+                            .find(|o| &o.id == sel_id)
+                            .and_then(|o| o.scene_object_id)
+                    });
+                    renderer.renderer.lock().unwrap().set_selected(scene_id);
+                }
                 self.state.selected_object = selected;
             }
             NostrverseAction::SaveRoom => {
@@ -671,6 +682,9 @@ impl NostrverseApp {
                 self.state.objects.retain(|o| o.id != id);
                 if self.state.selected_object.as_ref() == Some(&id) {
                     self.state.selected_object = None;
+                    if let Some(renderer) = &self.renderer {
+                        renderer.renderer.lock().unwrap().set_selected(None);
+                    }
                 }
                 self.state.dirty = true;
             }

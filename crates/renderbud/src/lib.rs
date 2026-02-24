@@ -119,6 +119,7 @@ pub struct Renderer {
     skybox_pipeline: wgpu::RenderPipeline,
     grid_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
+    outline_pipeline: wgpu::RenderPipeline,
 
     shadow_view: wgpu::TextureView,
     shadow_globals_bg: wgpu::BindGroup,
@@ -584,6 +585,55 @@ impl Renderer {
             multiview: None,
         });
 
+        // Outline pipeline (inverted hull, front-face culling)
+        let outline_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("outline_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("outline.wgsl").into()),
+        });
+
+        let outline_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("outline_pipeline_layout"),
+                bind_group_layouts: &[&shadow_globals_bgl, &object_bgl],
+                push_constant_ranges: &[],
+            });
+
+        let outline_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("outline_pipeline"),
+            cache: None,
+            layout: Some(&outline_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &outline_shader,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("vs_main"),
+                buffers: &[Vertex::desc()],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &outline_shader,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: Some(wgpu::Face::Front),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24Plus,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+        });
+
         let (depth_tex, depth_view) = create_depth(device, width, height);
 
         /* TODO: move to example
@@ -612,6 +662,7 @@ impl Renderer {
             skybox_pipeline,
             grid_pipeline,
             shadow_pipeline,
+            outline_pipeline,
             shadow_view,
             shadow_globals_bg,
             globals,
@@ -731,6 +782,11 @@ impl Renderer {
         self.camera_mode = CameraMode::Fly(camera::FlyController::from_camera(&self.world.camera));
 
         self.globals.data.set_camera(w, h, &self.world.camera);
+    }
+
+    /// Set or clear which object shows a selection outline.
+    pub fn set_selected(&mut self, id: Option<ObjectId>) {
+        self.world.selected_object = id;
     }
 
     /// Get the axis-aligned bounding box for a loaded model.
@@ -999,6 +1055,30 @@ impl Renderer {
                 rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
                 rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
                 rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+            }
+        }
+
+        // 4. Draw selection outline for selected object
+        if let Some(selected_id) = self.world.selected_object
+            && let Some(sel_idx) = self
+                .world
+                .renderables()
+                .iter()
+                .position(|&id| id == selected_id)
+        {
+            let node = self.world.get_node(selected_id).unwrap();
+            let model_handle = node.model.unwrap();
+            if let Some(model_data) = self.models.get(&model_handle) {
+                rpass.set_pipeline(&self.outline_pipeline);
+                rpass.set_bind_group(0, &self.shadow_globals_bg, &[]);
+                let dynamic_offset = (sel_idx as u64 * self.object_buf.stride) as u32;
+                rpass.set_bind_group(1, &self.object_buf.bindgroup, &[dynamic_offset]);
+
+                for d in &model_data.draws {
+                    rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
+                    rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                    rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
+                }
             }
         }
     }
