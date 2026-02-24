@@ -402,13 +402,25 @@ impl<'a> DaveUi<'a> {
         let mut response = DaveResponse::default();
         let is_agentic = self.ai_mode == AiMode::Agentic;
 
-        for message in self.chat {
+        // Find where queued (not-yet-dispatched) user messages start:
+        // trailing User messages while the session is working.
+        let queued_from = if self.flags.contains(DaveUiFlags::IsWorking) {
+            self.chat
+                .iter()
+                .rposition(|m| !matches!(m, Message::User(_)))
+                .map(|i| i + 1)
+        } else {
+            None
+        };
+
+        for (i, message) in self.chat.iter().enumerate() {
             match message {
                 Message::Error(err) => {
                     self.error_chat(ctx.i18n, err, ui);
                 }
                 Message::User(msg) => {
-                    self.user_chat(msg, ui);
+                    let is_queued = queued_from.is_some_and(|qi| i >= qi);
+                    self.user_chat(msg, is_queued, ui);
                 }
                 Message::Assistant(msg) => {
                     self.assistant_chat(msg, ui);
@@ -1181,7 +1193,7 @@ impl<'a> DaveUi<'a> {
         .inner
     }
 
-    fn user_chat(&self, msg: &str, ui: &mut egui::Ui) {
+    fn user_chat(&self, msg: &str, is_queued: bool, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             let r = egui::Frame::new()
                 .inner_margin(10.0)
@@ -1193,6 +1205,13 @@ impl<'a> DaveUi<'a> {
                             .wrap_mode(egui::TextWrapMode::Wrap)
                             .selectable(true),
                     );
+                    if is_queued {
+                        ui.label(
+                            egui::RichText::new("queued")
+                                .small()
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                    }
                 });
             r.response.context_menu(|ui| {
                 if ui.button("Copy").clicked() {

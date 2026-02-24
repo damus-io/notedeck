@@ -2190,6 +2190,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // needs_redispatch_after_stream_end() will dispatch it when the
             // current turn finishes.
             if session.is_streaming() {
+                tracing::info!("message queued, will dispatch after current turn");
                 return;
             }
         }
