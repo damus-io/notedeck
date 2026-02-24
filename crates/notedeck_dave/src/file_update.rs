@@ -20,6 +20,8 @@ pub enum FileUpdateType {
     },
     /// Write: create/overwrite entire file
     Write { content: String },
+    /// Unified diff from an external tool (e.g. Codex)
+    UnifiedDiff { diff: String },
 }
 
 /// A single line in a diff
@@ -132,7 +134,7 @@ impl FileUpdate {
                 }
                 deleted_lines <= max_lines && inserted_lines <= max_lines
             }
-            FileUpdateType::Write { .. } => false,
+            FileUpdateType::Write { .. } | FileUpdateType::UnifiedDiff { .. } => false,
         }
     }
 
@@ -217,6 +219,37 @@ impl FileUpdate {
                     .map(|line| DiffLine {
                         tag: DiffTag::Insert,
                         content: format!("{}\n", line),
+                    })
+                    .collect()
+            }
+            FileUpdateType::UnifiedDiff { diff } => {
+                // Parse unified diff format: lines starting with '+'/'-'/' '
+                // Skip header lines (---/+++/@@ lines)
+                diff.lines()
+                    .filter(|line| {
+                        !line.starts_with("---")
+                            && !line.starts_with("+++")
+                            && !line.starts_with("@@")
+                    })
+                    .map(|line| {
+                        if let Some(rest) = line.strip_prefix('+') {
+                            DiffLine {
+                                tag: DiffTag::Insert,
+                                content: format!("{}\n", rest),
+                            }
+                        } else if let Some(rest) = line.strip_prefix('-') {
+                            DiffLine {
+                                tag: DiffTag::Delete,
+                                content: format!("{}\n", rest),
+                            }
+                        } else {
+                            // Context line (starts with ' ' or is bare)
+                            let content = line.strip_prefix(' ').unwrap_or(line);
+                            DiffLine {
+                                tag: DiffTag::Equal,
+                                content: format!("{}\n", content),
+                            }
+                        }
                     })
                     .collect()
             }

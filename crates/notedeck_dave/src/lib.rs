@@ -25,7 +25,9 @@ mod update;
 mod vec3;
 
 use agent_status::AgentStatus;
-use backend::{AiBackend, BackendType, ClaudeBackend, OpenAiBackend, RemoteOnlyBackend};
+use backend::{
+    AiBackend, BackendType, ClaudeBackend, CodexBackend, OpenAiBackend, RemoteOnlyBackend,
+};
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
 use enostr::KeypairUnowned;
@@ -361,6 +363,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     .expect("Claude backend requires ANTHROPIC_API_KEY or CLAUDE_API_KEY");
                 Box::new(ClaudeBackend::new(api_key.clone()))
             }
+            BackendType::Codex => Box::new(CodexBackend::new(
+                std::env::var("CODEX_BINARY").unwrap_or_else(|_| "codex".to_string()),
+            )),
             BackendType::Remote => Box::new(RemoteOnlyBackend),
         };
 
