@@ -443,6 +443,94 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // UnifiedDiff tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_unified_diff_basic() {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::UnifiedDiff {
+                diff: "--- a/test.rs\n+++ b/test.rs\n@@ -1,3 +1,3 @@\n context\n-old line\n+new line\n more context\n"
+                    .to_string(),
+            },
+        );
+        let lines = FileUpdate::compute_diff_for(&update.update_type);
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0].tag, DiffTag::Equal);
+        assert_eq!(lines[0].content, "context\n");
+        assert_eq!(lines[1].tag, DiffTag::Delete);
+        assert_eq!(lines[1].content, "old line\n");
+        assert_eq!(lines[2].tag, DiffTag::Insert);
+        assert_eq!(lines[2].content, "new line\n");
+        assert_eq!(lines[3].tag, DiffTag::Equal);
+        assert_eq!(lines[3].content, "more context\n");
+    }
+
+    #[test]
+    fn test_unified_diff_skips_headers() {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::UnifiedDiff {
+                diff: "--- a/old.rs\n+++ b/new.rs\n@@ -10,4 +10,4 @@\n+added\n".to_string(),
+            },
+        );
+        let lines = FileUpdate::compute_diff_for(&update.update_type);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].tag, DiffTag::Insert);
+        assert_eq!(lines[0].content, "added\n");
+    }
+
+    #[test]
+    fn test_unified_diff_delete_only() {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::UnifiedDiff {
+                diff: "-removed line 1\n-removed line 2\n".to_string(),
+            },
+        );
+        let lines = FileUpdate::compute_diff_for(&update.update_type);
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().all(|l| l.tag == DiffTag::Delete));
+    }
+
+    #[test]
+    fn test_unified_diff_insert_only() {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::UnifiedDiff {
+                diff: "+new line 1\n+new line 2\n+new line 3\n".to_string(),
+            },
+        );
+        let lines = FileUpdate::compute_diff_for(&update.update_type);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.tag == DiffTag::Insert));
+    }
+
+    #[test]
+    fn test_unified_diff_empty() {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::UnifiedDiff {
+                diff: String::new(),
+            },
+        );
+        let lines = FileUpdate::compute_diff_for(&update.update_type);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_unified_diff_is_never_small_edit() {
+        let update = FileUpdate::new(
+            "test.rs".to_string(),
+            FileUpdateType::UnifiedDiff {
+                diff: "+x\n".to_string(),
+            },
+        );
+        assert!(!update.is_small_edit(100));
+    }
+
     #[test]
     fn test_line_count_behavior() {
         // Document how lines().count() behaves
