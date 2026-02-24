@@ -553,6 +553,82 @@ pub fn build_live_event(
 /// requests and respond. Tags include `perm-id` (UUID), `tool-name`, and
 /// `t: ai-permission` for filtering.
 ///
+/// Maximum serialized size for tool_input in permission request events.
+/// Keeps the final PNS-wrapped event well under typical relay limits
+/// (~64KB). Budget: 40KB content + ~500B inner event overhead + ~500B
+/// PNS outer overhead, with 1.33x base64 expansion ≈ 54KB total.
+const MAX_TOOL_INPUT_BYTES: usize = 40_000;
+
+/// Truncate large string values in a tool_input JSON object so that the
+/// serialized result fits within `max_bytes`.
+///
+/// Only modifies top-level string fields in an Object value.  Fields are
+/// truncated proportionally based on how much they exceed their share of
+/// the budget.  A `"_truncated": true` flag is added when any field is
+/// shortened.
+fn truncate_tool_input(tool_input: &serde_json::Value, max_bytes: usize) -> serde_json::Value {
+    use serde_json::Value;
+
+    let serialized = serde_json::to_string(tool_input).unwrap_or_default();
+    if serialized.len() <= max_bytes {
+        return tool_input.clone();
+    }
+
+    let obj = match tool_input.as_object() {
+        Some(o) => o,
+        None => return tool_input.clone(),
+    };
+
+    // Collect string field names sorted largest-first so we know what to trim
+    let mut string_fields: Vec<(&str, usize)> = obj
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.as_str(), s.len())))
+        .collect();
+    string_fields.sort_by(|a, b| b.1.cmp(&a.1));
+
+    if string_fields.is_empty() {
+        return tool_input.clone();
+    }
+
+    let excess = serialized.len() - max_bytes;
+    let suffix = "\n... (truncated)";
+    let suffix_len = suffix.len();
+    // Safety margin for JSON escaping differences and the added _truncated field
+    let trim_target = excess + suffix_len * string_fields.len() + 64;
+
+    // Distribute the trim proportionally among string fields
+    let total_string_bytes: usize = string_fields.iter().map(|(_, len)| len).sum();
+    let mut trim_amounts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (key, len) in &string_fields {
+        let share = (*len as f64 / total_string_bytes as f64 * trim_target as f64).ceil() as usize;
+        trim_amounts.insert(key, share.min(*len));
+    }
+
+    let mut result = serde_json::Map::new();
+    let mut did_truncate = false;
+    for (key, val) in obj {
+        if let Some(s) = val.as_str() {
+            let trim = trim_amounts.get(key.as_str()).copied().unwrap_or(0);
+            if trim > 0 && s.len() > suffix_len + trim {
+                let keep = s.len() - trim;
+                let cut = notedeck::abbrev::floor_char_boundary(s, keep);
+                let truncated = format!("{}{}", &s[..cut], suffix);
+                result.insert(key.clone(), Value::String(truncated));
+                did_truncate = true;
+            } else {
+                result.insert(key.clone(), val.clone());
+            }
+        } else {
+            result.insert(key.clone(), val.clone());
+        }
+    }
+
+    if did_truncate {
+        result.insert("_truncated".to_string(), Value::Bool(true));
+    }
+    Value::Object(result)
+}
+
 /// Does NOT participate in threading — permission events are ancillary.
 pub fn build_permission_request_event(
     perm_id: &uuid::Uuid,
@@ -561,10 +637,13 @@ pub fn build_permission_request_event(
     session_id: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
-    // Content is a JSON summary for display on remote clients
+    // Truncate large string values so the event fits within relay size
+    // limits after PNS wrapping.  The local UI keeps the full tool_input.
+    let tool_input_for_event = truncate_tool_input(tool_input, MAX_TOOL_INPUT_BYTES);
+
     let content = serde_json::json!({
         "tool_name": tool_name,
-        "tool_input": tool_input,
+        "tool_input": tool_input_for_event,
     })
     .to_string();
 
@@ -1062,6 +1141,60 @@ mod tests {
         assert!(json.contains(r#""t","ai-permission"#));
         // Content has tool info
         assert!(json.contains("rm -rf"));
+    }
+
+    #[test]
+    fn test_truncate_tool_input_small() {
+        // Small input should pass through unchanged
+        let input = serde_json::json!({"command": "ls -la"});
+        let result = truncate_tool_input(&input, 1000);
+        assert_eq!(input, result);
+        assert!(result.get("_truncated").is_none());
+    }
+
+    #[test]
+    fn test_truncate_tool_input_large_edit() {
+        // Large edit should be truncated
+        let big_old = "x".repeat(30_000);
+        let big_new = "y".repeat(30_000);
+        let input = serde_json::json!({
+            "file_path": "/some/file.rs",
+            "old_string": big_old,
+            "new_string": big_new,
+        });
+        let result = truncate_tool_input(&input, 40_000);
+
+        // Should fit within budget
+        let serialized = serde_json::to_string(&result).unwrap();
+        assert!(serialized.len() <= 40_000, "got {} bytes", serialized.len());
+
+        // Should be marked as truncated
+        assert_eq!(
+            result.get("_truncated").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        // file_path should be preserved
+        assert_eq!(
+            result.get("file_path").and_then(|v| v.as_str()),
+            Some("/some/file.rs")
+        );
+
+        // Truncated fields should end with the suffix
+        let old = result.get("old_string").and_then(|v| v.as_str()).unwrap();
+        assert!(old.ends_with("... (truncated)"));
+    }
+
+    #[test]
+    fn test_truncate_tool_input_utf8_boundary() {
+        // Multibyte chars should not be split
+        let big = "\u{1F600}".repeat(10_000); // 4-byte emoji repeated
+        let input = serde_json::json!({"content": big});
+        let result = truncate_tool_input(&input, 1000);
+
+        let content = result.get("content").and_then(|v| v.as_str()).unwrap();
+        // Should be valid UTF-8 (this would panic if not)
+        assert!(content.ends_with("... (truncated)"));
     }
 
     #[test]
