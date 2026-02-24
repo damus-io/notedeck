@@ -91,15 +91,23 @@ fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
     })
 }
 
-/// Represents which full-screen overlay (if any) is currently active
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Represents which full-screen overlay (if any) is currently active.
+/// Data-carrying variants hold the state needed for that step in the
+/// session-creation flow, replacing scattered `pending_*` fields.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DaveOverlay {
     #[default]
     None,
     Settings,
     DirectoryPicker,
-    SessionPicker,
-    BackendPicker,
+    /// Backend has been chosen; showing resumable-session list.
+    SessionPicker {
+        backend: BackendType,
+    },
+    /// Directory chosen; waiting for user to pick a backend.
+    BackendPicker {
+        cwd: PathBuf,
+    },
 }
 
 pub struct Dave {
@@ -143,8 +151,6 @@ pub struct Dave {
     active_overlay: DaveOverlay,
     /// IPC listener for external spawn-agent commands
     ipc_listener: Option<ipc::IpcListener>,
-    /// CWD waiting for backend selection (set when backend picker is shown)
-    pending_backend_cwd: Option<PathBuf>,
     /// Pending archive conversion: (jsonl_path, dave_session_id, claude_session_id).
     /// Set when resuming a session; processed in update() where AppContext is available.
     pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
@@ -468,7 +474,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session_picker: SessionPicker::new(),
             active_overlay,
             ipc_listener,
-            pending_backend_cwd: None,
             pending_archive_convert: None,
             pending_message_load: None,
             pending_relay_events: Vec::new(),
@@ -975,19 +980,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
-        // Check overlays first - they take over the entire UI
-        match self.active_overlay {
+        // Check overlays first — take ownership so we can call &mut self
+        // methods freely. Put the variant back if the overlay stays open.
+        let overlay = std::mem::take(&mut self.active_overlay);
+        match overlay {
             DaveOverlay::Settings => {
                 match ui::settings_overlay_ui(&mut self.settings_panel, &self.settings, ui) {
                     OverlayResult::ApplySettings(new_settings) => {
                         self.apply_settings(new_settings.clone());
-                        self.active_overlay = DaveOverlay::None;
                         return DaveResponse::new(DaveAction::UpdateSettings(new_settings));
                     }
-                    OverlayResult::Close => {
-                        self.active_overlay = DaveOverlay::None;
+                    OverlayResult::Close => {}
+                    _ => {
+                        self.active_overlay = DaveOverlay::Settings;
                     }
-                    _ => {}
                 }
                 return DaveResponse::default();
             }
@@ -996,25 +1002,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 match ui::directory_picker_overlay_ui(&mut self.directory_picker, has_sessions, ui)
                 {
                     OverlayResult::DirectorySelected(path) => {
-                        tracing::info!("directory selected (no resumable sessions): {:?}", path);
+                        tracing::info!("directory selected: {:?}", path);
                         self.create_or_pick_backend(path);
                     }
-                    OverlayResult::ShowSessionPicker(path) => {
-                        tracing::info!(
-                            "directory has resumable sessions, showing session picker: {:?}",
-                            path
-                        );
-                        self.session_picker.open(path);
-                        self.active_overlay = DaveOverlay::SessionPicker;
+                    OverlayResult::Close => {}
+                    _ => {
+                        self.active_overlay = DaveOverlay::DirectoryPicker;
                     }
-                    OverlayResult::Close => {
-                        self.active_overlay = DaveOverlay::None;
-                    }
-                    _ => {}
                 }
                 return DaveResponse::default();
             }
-            DaveOverlay::SessionPicker => {
+            DaveOverlay::SessionPicker { backend } => {
                 match ui::session_picker_overlay_ui(&mut self.session_picker, ui) {
                     OverlayResult::ResumeSession {
                         cwd,
@@ -1032,32 +1030,32 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         );
                         self.pending_archive_convert = Some((file_path, sid, claude_session_id));
                         self.session_picker.close();
-                        self.active_overlay = DaveOverlay::None;
                     }
                     OverlayResult::NewSession { cwd } => {
-                        tracing::info!("new session from session picker: {:?}", cwd);
+                        tracing::info!(
+                            "new session from session picker: {:?} (backend: {:?})",
+                            cwd,
+                            backend
+                        );
                         self.session_picker.close();
-                        self.create_or_pick_backend(cwd);
+                        self.create_session_with_cwd(cwd, backend);
                     }
                     OverlayResult::BackToDirectoryPicker => {
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::DirectoryPicker;
                     }
-                    _ => {}
+                    _ => {
+                        self.active_overlay = DaveOverlay::SessionPicker { backend };
+                    }
                 }
                 return DaveResponse::default();
             }
-            DaveOverlay::BackendPicker => {
-                tracing::info!(
-                    "rendering backend picker: {} backends available",
-                    self.available_backends.len()
-                );
+            DaveOverlay::BackendPicker { cwd } => {
                 if let Some(bt) = ui::backend_picker_overlay_ui(&self.available_backends, ui) {
                     tracing::info!("backend selected: {:?}", bt);
-                    if let Some(cwd) = self.pending_backend_cwd.take() {
-                        self.create_session_with_cwd(cwd, bt);
-                    }
-                    self.active_overlay = DaveOverlay::None;
+                    self.create_or_resume_session(cwd, bt);
+                } else {
+                    self.active_overlay = DaveOverlay::BackendPicker { cwd };
                 }
                 return DaveResponse::default();
             }
@@ -1277,7 +1275,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.session_manager.rebuild_host_groups();
 
             // Close directory picker if open
-            if self.active_overlay == DaveOverlay::DirectoryPicker {
+            if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
                 self.active_overlay = DaveOverlay::None;
             }
 
@@ -2170,20 +2168,39 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
         if let Some(bt) = self.single_agentic_backend() {
             tracing::info!("single backend detected, skipping picker: {:?}", bt);
-            self.create_session_with_cwd(cwd, bt);
-            self.active_overlay = DaveOverlay::None;
+            self.create_or_resume_session(cwd, bt);
         } else if self.available_backends.is_empty() {
             // No agentic backends — fall back to configured backend
-            self.create_session_with_cwd(cwd, self.model_config.backend);
-            self.active_overlay = DaveOverlay::None;
+            self.create_or_resume_session(cwd, self.model_config.backend);
         } else {
             tracing::info!(
                 "multiple backends available, showing backend picker: {:?}",
                 self.available_backends
             );
-            self.pending_backend_cwd = Some(cwd);
-            self.active_overlay = DaveOverlay::BackendPicker;
+            self.active_overlay = DaveOverlay::BackendPicker { cwd };
         }
+    }
+
+    /// After a backend is determined, either create a session directly or
+    /// show the session picker if there are resumable sessions for this backend.
+    fn create_or_resume_session(&mut self, cwd: PathBuf, backend_type: BackendType) {
+        // Only Claude has discoverable resumable sessions (from ~/.claude/)
+        if backend_type == BackendType::Claude {
+            let resumable = discover_sessions(&cwd);
+            if !resumable.is_empty() {
+                tracing::info!(
+                    "found {} resumable sessions, showing session picker",
+                    resumable.len()
+                );
+                self.session_picker.open(cwd);
+                self.active_overlay = DaveOverlay::SessionPicker {
+                    backend: backend_type,
+                };
+                return;
+            }
+        }
+        self.create_session_with_cwd(cwd, backend_type);
+        self.active_overlay = DaveOverlay::None;
     }
 
     /// Get the first pending permission request ID for the active session

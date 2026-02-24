@@ -35,7 +35,6 @@ use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
 use crate::session::{ChatSession, PermissionMessageState, SessionId, SessionManager};
-use crate::session_discovery::discover_sessions;
 use crate::update;
 use crate::DaveOverlay;
 use egui::include_image;
@@ -109,8 +108,6 @@ pub enum OverlayResult {
     Close,
     /// Directory was selected (no resumable sessions)
     DirectorySelected(std::path::PathBuf),
-    /// Show session picker for the given directory
-    ShowSessionPicker(std::path::PathBuf),
     /// Resume a session
     ResumeSession {
         cwd: std::path::PathBuf,
@@ -155,12 +152,7 @@ pub fn directory_picker_overlay_ui(
     if let Some(action) = directory_picker.overlay_ui(ui, has_sessions) {
         match action {
             DirectoryPickerAction::DirectorySelected(path) => {
-                let resumable_sessions = discover_sessions(&path);
-                if resumable_sessions.is_empty() {
-                    return OverlayResult::DirectorySelected(path);
-                } else {
-                    return OverlayResult::ShowSessionPicker(path);
-                }
+                return OverlayResult::DirectorySelected(path);
             }
             DirectoryPickerAction::Cancelled => {
                 if has_sessions {
