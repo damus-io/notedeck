@@ -621,7 +621,8 @@ fn process_render_nav_action(
         RenderNavAction::RepostAction(action) => action.process(
             ctx.ndb,
             &ctx.accounts.get_selected_account().key,
-            ctx.legacy_pool,
+            ctx.accounts,
+            &mut ctx.remote,
         ),
         RenderNavAction::ShowFollowing(pubkey) => Some(RouterAction::RouteTo(
             crate::route::Route::Following(pubkey),

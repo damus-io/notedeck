@@ -1,5 +1,6 @@
-use enostr::{Keypair, NoteId, RelayPool};
+use enostr::{Keypair, NoteId, RelayId};
 use nostrdb::{Ndb, Note, NoteBuilder, Transaction};
+use notedeck::{Accounts, RelayType, RemoteApi};
 
 use crate::{nav::RouterAction, Route};
 
@@ -7,7 +8,7 @@ pub fn generate_repost_event<'a>(
     ndb: &'a Ndb,
     noteid_to_repost: &NoteId,
     signer_nsec: &[u8; 32],
-    pool: &RelayPool,
+    accounts: &Accounts,
 ) -> Result<Note<'a>, String> {
     let txn = Transaction::new(ndb).expect("txn");
     let note_to_repost = ndb
@@ -21,7 +22,14 @@ pub fn generate_repost_event<'a>(
         ));
     }
 
-    let urls = pool.urls();
+    let urls: Vec<String> = accounts
+        .selected_account_write_relays()
+        .into_iter()
+        .filter_map(|r| match r {
+            RelayId::Websocket(url) => Some(url.to_string()),
+            RelayId::Multicast => None,
+        })
+        .collect();
     let Some(relay) = urls.first() else {
         return Err(
             "relay pool does not have any relays. This makes meeting the repost spec impossible"
@@ -59,7 +67,8 @@ impl RepostAction {
         self,
         ndb: &nostrdb::Ndb,
         current_user: &Keypair,
-        pool: &mut RelayPool,
+        accounts: &Accounts,
+        remote: &mut RemoteApi<'_>,
     ) -> Option<RouterAction> {
         match self {
             RepostAction::Quote(note_id) => {
@@ -75,7 +84,7 @@ impl RepostAction {
                     ndb,
                     &note_id,
                     &full_user.secret_key.secret_bytes(),
-                    pool,
+                    accounts,
                 )
                 .inspect_err(|e| tracing::error!("failure to generate repost event: {e}"))
                 .ok()?;
@@ -92,7 +101,8 @@ impl RepostAction {
 
                 let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
 
-                pool.send(event);
+                let mut publisher = remote.publisher(accounts);
+                publisher.publish_note(&repost_ev, RelayType::AccountsWrite);
 
                 Some(RouterAction::GoBack)
             }
