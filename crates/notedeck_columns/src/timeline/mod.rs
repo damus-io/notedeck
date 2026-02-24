@@ -164,6 +164,7 @@ impl TimelineTab {
         self.list.borrow_mut().reset();
     }
 
+    #[profiling::function]
     fn insert<'a>(
         &mut self,
         payloads: Vec<&'a NotePayload>,
@@ -409,6 +410,7 @@ impl Timeline {
         let now = unix_time_secs();
         let mut unknown_pks = HashSet::new();
         for note_ref in notes {
+            profiling::scope!("inserting notes");
             if is_future_timestamp(note_ref.created_at, now) {
                 continue;
             }
@@ -450,6 +452,7 @@ impl Timeline {
     /// The main function used for inserting notes into timelines. Handles
     /// inserting into multiple views if we have them. All timeline note
     /// insertions should use this function.
+    #[profiling::function]
     pub fn insert(
         &mut self,
         new_note_ids: &[NoteKey],
@@ -528,7 +531,10 @@ impl Timeline {
             .get_local()
             .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
 
-        let new_note_ids = ndb.poll_for_notes(sub, 500);
+        let new_note_ids = {
+            profiling::scope!("big ndb poll");
+            ndb.poll_for_notes(sub, 500)
+        };
         if new_note_ids.is_empty() {
             return Ok(());
         } else {
@@ -889,6 +895,7 @@ fn setup_timeline_nostrdb_sub(
 /// Our timelines may require additional data before it is functional. For
 /// example, when we have to fetch a contact list before we do the actual
 /// following list query.
+#[profiling::function]
 pub fn is_timeline_ready(
     ndb: &Ndb,
     pool: &mut RelayPool,

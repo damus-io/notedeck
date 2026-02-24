@@ -276,6 +276,7 @@ impl Zaps {
         states.push(*id);
     }
 
+    #[profiling::function]
     pub fn process(
         &mut self,
         accounts: &mut Accounts,

@@ -69,6 +69,7 @@ impl Contacts {
         }
     }
 
+    #[profiling::function]
     pub(super) fn poll_for_updates(&mut self, ndb: &Ndb, txn: &Transaction, sub: Subscription) {
         let nks = ndb.poll_for_notes(sub, 1);
 
@@ -104,6 +105,7 @@ impl Contacts {
     }
 }
 
+#[profiling::function]
 fn update_state(state: &mut ContactState, note: &Note, key: NoteKey) {
     match state {
         ContactState::Unreceived => {

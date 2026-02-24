@@ -164,6 +164,7 @@ impl UnknownIds {
         }
     }
 
+    #[profiling::function]
     pub fn update_from_note(
         txn: &Transaction,
         ndb: &Ndb,

@@ -53,6 +53,7 @@ impl Nip51SetCache {
         })
     }
 
+    #[profiling::function]
     pub fn poll_for_notes(&mut self, ndb: &Ndb, unknown_ids: &mut UnknownIds) {
         let new_notes = ndb.poll_for_notes(self.sub.local, 5);
 
@@ -86,6 +87,7 @@ impl Nip51SetCache {
     }
 }
 
+#[profiling::function]
 fn add(
     notes: Vec<Note>,
     cache: &mut IndexMap<PackId, Nip51Set>,

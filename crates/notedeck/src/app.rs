@@ -121,17 +121,21 @@ fn render_notedeck(notedeck: &mut Notedeck, ctx: &egui::Context) {
 }
 
 impl eframe::App for Notedeck {
+    #[profiling::function]
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         profiling::finish_frame!();
         self.frame_history
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
 
-        self.media_jobs.run_received(&mut self.job_pool, |id| {
-            crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
-        });
-        self.media_jobs.deliver_all_completed(|completed| {
-            crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
-        });
+        {
+            profiling::scope!("media jobs");
+            self.media_jobs.run_received(&mut self.job_pool, |id| {
+                crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
+            });
+            self.media_jobs.deliver_all_completed(|completed| {
+                crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
+            });
+        }
 
         self.nip05_cache.poll();
 

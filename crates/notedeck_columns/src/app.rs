@@ -77,6 +77,7 @@ pub struct Damus {
     hovered_column: Option<usize>,
 }
 
+#[profiling::function]
 fn handle_egui_events(
     input: &egui::InputState,
     columns: &mut Columns,
