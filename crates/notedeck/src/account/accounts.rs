@@ -1,3 +1,4 @@
+use hashbrown::HashSet;
 use uuid::Uuid;
 
 use crate::account::cache::AccountCache;
@@ -13,7 +14,7 @@ use crate::{
     AccountStorage, MuteFun, SingleUnkIdAction, UnifiedSubscription, UnknownIds, UserAccount,
     ZapWallet,
 };
-use enostr::{ClientMessage, FilledKeypair, Keypair, Pubkey, RelayPool};
+use enostr::{ClientMessage, FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId, RelayPool};
 use nostrdb::{Ndb, Note, Transaction};
 
 // TODO: remove this
@@ -367,6 +368,28 @@ impl Accounts {
 
     pub fn get_subs(&self) -> &AccountSubs {
         &self.subs
+    }
+
+    pub fn selected_account_read_relays(&self) -> HashSet<NormRelayUrl> {
+        self.get_selected_account()
+            .data
+            .relay
+            .advertised
+            .iter()
+            .filter(|r| r.is_readable())
+            .filter_map(|r| NormRelayUrl::new(&r.url).ok())
+            .collect()
+    }
+
+    pub fn selected_account_write_relays(&self) -> Vec<RelayId> {
+        self.get_selected_account()
+            .data
+            .relay
+            .advertised
+            .iter()
+            .filter(|r| r.is_writable())
+            .filter_map(|r| Some(RelayId::Websocket(NormRelayUrl::new(&r.url).ok()?)))
+            .collect()
     }
 }
 
