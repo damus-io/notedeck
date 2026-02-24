@@ -1,10 +1,10 @@
 use crate::{
     error::Error,
-    multi_subscriber::TimelineSub,
     subscriptions::{self, SubKind, Subscriptions},
     timeline::{
         kind::{people_list_note_filter, AlgoTimeline, ListKind, PeopleListRef},
         note_units::InsertManyResponse,
+        sub::TimelineSub,
         timeline_units::NotePayload,
     },
     Result,
@@ -29,6 +29,7 @@ pub mod cache;
 pub mod kind;
 mod note_units;
 pub mod route;
+mod sub;
 pub mod thread;
 mod timeline_units;
 mod unit;

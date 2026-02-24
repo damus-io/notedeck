@@ -7,9 +7,9 @@ use notedeck::{NoteCache, NoteRef, UnknownIds};
 
 use crate::{
     actionbar::{process_thread_notes, NewThreadNotes},
-    multi_subscriber::ThreadSubs,
     timeline::{
         note_units::{NoteUnits, UnitKey},
+        sub::ThreadSubs,
         unit::NoteUnit,
         InsertionResponse,
     },

@@ -15,7 +15,6 @@ mod draft;
 mod key_parsing;
 pub mod login_manager;
 mod media_upload;
-mod multi_subscriber;
 mod nav;
 mod onboarding;
 pub mod options;
