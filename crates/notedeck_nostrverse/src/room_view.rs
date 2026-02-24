@@ -286,6 +286,15 @@ pub fn show_room_view(
                     let delta_x = response.drag_delta().x;
                     let angle = delta_x * ROTATE_SENSITIVITY;
                     let new_rotation = Quat::from_rotation_y(angle) * obj.rotation;
+                    // Snap to angle increments when grid snap is enabled
+                    let new_rotation = if state.grid_snap_enabled {
+                        let (_, y, _) = new_rotation.to_euler(glam::EulerRot::YXZ);
+                        let snap_rad = state.rotation_snap.to_radians();
+                        let snapped_y = (y / snap_rad).round() * snap_rad;
+                        Quat::from_rotation_y(snapped_y)
+                    } else {
+                        new_rotation
+                    };
                     action = Some(NostrverseAction::RotateObject {
                         id: sel_id,
                         rotation: new_rotation,
@@ -732,14 +741,20 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
         // Editable Y rotation (degrees)
         let (_, angle_y, _) = obj.rotation.to_euler(glam::EulerRot::YXZ);
         let mut deg = angle_y.to_degrees();
+        let snap = state.grid_snap_enabled;
+        let snap_deg = state.rotation_snap;
         let rot_changed = ui
             .horizontal(|ui| {
                 ui.label("Rot Y:");
-                ui.add(egui::DragValue::new(&mut deg).speed(1.0).suffix("°"))
+                let speed = if snap { snap_deg } else { 1.0 };
+                ui.add(egui::DragValue::new(&mut deg).speed(speed).suffix("°"))
                     .changed()
             })
             .inner;
         if rot_changed {
+            if snap {
+                deg = (deg / snap_deg).round() * snap_deg;
+            }
             obj.rotation = Quat::from_rotation_y(deg.to_radians());
         }
 
@@ -777,6 +792,17 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
             );
         }
     });
+    if state.grid_snap_enabled {
+        ui.horizontal(|ui| {
+            ui.label("  Rot snap:");
+            ui.add(
+                egui::DragValue::new(&mut state.rotation_snap)
+                    .speed(1.0)
+                    .range(1.0..=90.0)
+                    .suffix("°"),
+            );
+        });
+    }
 
     // --- Save button ---
     ui.add_space(12.0);

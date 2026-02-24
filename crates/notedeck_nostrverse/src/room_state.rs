@@ -263,6 +263,8 @@ pub struct NostrverseState {
     pub rotate_mode: bool,
     /// Whether the current drag is a rotation drag (started on an object in rotate mode)
     pub rotate_drag: bool,
+    /// Rotation snap increment in degrees (used when grid snap is enabled)
+    pub rotation_snap: f32,
     /// Cached serialized scene text (avoids re-serializing every frame)
     pub cached_scene_text: String,
 }
@@ -283,6 +285,7 @@ impl NostrverseState {
             grid_snap_enabled: false,
             rotate_mode: false,
             rotate_drag: false,
+            rotation_snap: 15.0,
             cached_scene_text: String::new(),
         }
     }
