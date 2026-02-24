@@ -2,7 +2,7 @@ use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 use tracing::info;
 
-use crate::Muted;
+use crate::{Muted, PublishApi, RelayType};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ReportType {
@@ -102,6 +102,32 @@ pub fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, 
     let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
     info!("sending {}", &json);
     pool.send(event);
+}
+
+pub fn publish_note_builder(
+    builder: NoteBuilder,
+    ndb: &Ndb,
+    publisher: &mut PublishApi<'_, '_>,
+    kp: FilledKeypair,
+) {
+    let note = builder
+        .sign(&kp.secret_key.secret_bytes())
+        .build()
+        .expect("build note");
+
+    let Ok(event) = &enostr::ClientMessage::event(&note) else {
+        tracing::error!("send_note_builder: failed to build json");
+        return;
+    };
+
+    let Ok(json) = event.to_json() else {
+        tracing::error!("send_note_builder: failed to build json");
+        return;
+    };
+
+    let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
+    info!("sending {}", &json);
+    publisher.publish_note(&note, RelayType::AccountsWrite);
 }
 
 pub fn send_unmute_event(

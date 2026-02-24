@@ -603,6 +603,7 @@ fn process_render_nav_action(
             ui.ctx(),
             ctx.ndb,
             ctx.legacy_pool,
+            &mut ctx.remote,
             ctx.accounts,
         ),
         RenderNavAction::WalletAction(wallet_action) => {

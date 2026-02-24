@@ -2,8 +2,8 @@ use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey, RelayPool};
 use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
 use notedeck::{
-    builder_from_note, send_mute_event, send_note_builder, Accounts, ContactState, DataPath,
-    Localization, ProfileContext,
+    builder_from_note, note::publish::publish_note_builder, send_mute_event, Accounts,
+    ContactState, DataPath, Localization, ProfileContext, PublishApi, RelayType, RemoteApi,
 };
 use tracing::info;
 
@@ -54,6 +54,7 @@ impl ProfileAction {
         ctx: &egui::Context,
         ndb: &Ndb,
         pool: &mut RelayPool,
+        remote: &mut RemoteApi<'_>,
         accounts: &Accounts,
     ) -> Option<RouterAction> {
         match self {
@@ -74,16 +75,19 @@ impl ProfileAction {
                 let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
 
                 info!("sending {}", &json);
-                pool.send(&event);
+                let mut publisher = remote.publisher(accounts);
+                publisher.publish_note(&note, RelayType::AccountsWrite);
 
                 Some(RouterAction::GoBack)
             }
             ProfileAction::Follow(target_key) => {
-                Self::send_follow_user_event(ndb, pool, accounts, target_key);
+                let mut publisher = remote.publisher(accounts);
+                Self::send_follow_user_event(ndb, &mut publisher, accounts, target_key);
                 None
             }
             ProfileAction::Unfollow(target_key) => {
-                Self::send_unfollow_user_event(ndb, pool, accounts, target_key);
+                let mut publisher = remote.publisher(accounts);
+                Self::send_unfollow_user_event(ndb, &mut publisher, accounts, target_key);
                 None
             }
             ProfileAction::Context(profile_context) => {
@@ -156,20 +160,20 @@ impl ProfileAction {
 
     fn send_follow_user_event(
         ndb: &Ndb,
-        pool: &mut RelayPool,
+        publisher: &mut PublishApi<'_, '_>,
         accounts: &Accounts,
         target_key: &Pubkey,
     ) {
-        send_kind_3_event(ndb, pool, accounts, FollowAction::Follow(target_key));
+        send_kind_3_event(ndb, publisher, accounts, FollowAction::Follow(target_key));
     }
 
     fn send_unfollow_user_event(
         ndb: &Ndb,
-        pool: &mut RelayPool,
+        publisher: &mut PublishApi<'_, '_>,
         accounts: &Accounts,
         target_key: &Pubkey,
     ) {
-        send_kind_3_event(ndb, pool, accounts, FollowAction::Unfollow(target_key));
+        send_kind_3_event(ndb, publisher, accounts, FollowAction::Unfollow(target_key));
     }
 }
 
@@ -178,7 +182,12 @@ enum FollowAction<'a> {
     Unfollow(&'a Pubkey),
 }
 
-fn send_kind_3_event(ndb: &Ndb, pool: &mut RelayPool, accounts: &Accounts, action: FollowAction) {
+fn send_kind_3_event(
+    ndb: &Ndb,
+    publisher: &mut PublishApi<'_, '_>,
+    accounts: &Accounts,
+    action: FollowAction,
+) {
     let Some(kp) = accounts.get_selected_account().key.to_full() else {
         return;
     };
@@ -238,13 +247,13 @@ fn send_kind_3_event(ndb: &Ndb, pool: &mut RelayPool, accounts: &Accounts, actio
         ),
     };
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }
 
 pub fn send_new_contact_list(
     kp: FilledKeypair,
     ndb: &Ndb,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     mut pks_to_follow: Vec<Pubkey>,
 ) {
     if !pks_to_follow.contains(kp.pubkey) {
@@ -253,7 +262,7 @@ pub fn send_new_contact_list(
 
     let builder = construct_new_contact_list(pks_to_follow);
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }
 
 fn construct_new_contact_list<'a>(pks: Vec<Pubkey>) -> NoteBuilder<'a> {
@@ -269,8 +278,12 @@ fn construct_new_contact_list<'a>(pks: Vec<Pubkey>) -> NoteBuilder<'a> {
     builder
 }
 
-pub fn send_default_dms_relay_list(kp: FilledKeypair<'_>, ndb: &Ndb, pool: &mut RelayPool) {
-    send_note_builder(construct_default_dms_relay_list(), ndb, pool, kp);
+pub fn send_default_dms_relay_list(
+    kp: FilledKeypair<'_>,
+    ndb: &Ndb,
+    publisher: &mut PublishApi<'_, '_>,
+) {
+    publish_note_builder(construct_default_dms_relay_list(), ndb, publisher, kp);
 }
 
 fn construct_default_dms_relay_list<'a>() -> NoteBuilder<'a> {

@@ -183,13 +183,16 @@ pub fn process_login_view_response(
 
                 let kp = FullKeypair::generate();
 
-                send_new_contact_list(
-                    kp.to_filled(),
-                    app_ctx.ndb,
-                    app_ctx.legacy_pool,
-                    pks_to_follow,
-                );
-                send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, app_ctx.legacy_pool);
+                {
+                    let mut publisher = app_ctx.remote.publisher(app_ctx.accounts);
+                    send_new_contact_list(
+                        kp.to_filled(),
+                        app_ctx.ndb,
+                        &mut publisher,
+                        pks_to_follow,
+                    );
+                    send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, &mut publisher);
+                }
                 cur_router.go_back();
                 onboarding.end_onboarding(app_ctx.legacy_pool, app_ctx.ndb);
 
