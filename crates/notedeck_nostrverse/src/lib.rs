@@ -1,9 +1,9 @@
-//! Nostrverse: Virtual rooms as Nostr events
+//! Nostrverse: Virtual spaces as Nostr events
 //!
 //! This app implements spatial views for nostrverse - a protocol where
-//! rooms and objects are Nostr events (kinds 37555, 37556, 10555).
+//! spaces and objects are Nostr events (kinds 37555, 37556, 10555).
 //!
-//! Rooms are rendered as 3D scenes using renderbud's PBR pipeline,
+//! Spaces are rendered as 3D scenes using renderbud's PBR pipeline,
 //! embedded in egui via wgpu paint callbacks.
 
 mod convert;
@@ -14,8 +14,7 @@ mod room_view;
 mod subscriptions;
 
 pub use room_state::{
-    NostrverseAction, NostrverseState, Room, RoomObject, RoomObjectType, RoomRef, RoomShape,
-    RoomUser,
+    NostrverseAction, NostrverseState, RoomObject, RoomObjectType, RoomUser, SpaceInfo, SpaceRef,
 };
 pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
@@ -47,8 +46,8 @@ const MAX_EXTRAPOLATION_TIME: f64 = 3.0;
 /// Maximum extrapolation distance from last known position
 const MAX_EXTRAPOLATION_DISTANCE: f32 = 10.0;
 
-/// Demo room in protoverse .space format
-const DEMO_SPACE: &str = r#"(room (name "Demo Room") (shape rectangle) (width 20) (height 15) (depth 10)
+/// Demo space in protoverse .space format
+const DEMO_SPACE: &str = r#"(space (name "Demo Space")
   (group
     (table (id obj1) (name "Ironwood Table")
            (model-url "/home/jb55/var/models/ironwood/ironwood.glb")
@@ -67,9 +66,9 @@ pub mod kinds {
     pub const PRESENCE: u16 = 10555;
 }
 
-/// Nostrverse app - a 3D spatial canvas for virtual rooms
+/// Nostrverse app - a 3D spatial canvas for virtual spaces
 pub struct NostrverseApp {
-    /// Current room state
+    /// Current space state
     state: NostrverseState,
     /// 3D renderer (None if wgpu unavailable)
     renderer: Option<renderbud::egui::EguiRenderer>,
@@ -81,7 +80,7 @@ pub struct NostrverseApp {
     initialized: bool,
     /// Cached avatar model AABB for ground placement
     avatar_bounds: Option<renderbud::Aabb>,
-    /// Local nostrdb subscription for room events
+    /// Local nostrdb subscription for space events
     room_sub: Option<subscriptions::RoomSubscription>,
     /// Presence publisher (throttled heartbeats)
     presence_pub: presence::PresencePublisher,
@@ -89,8 +88,8 @@ pub struct NostrverseApp {
     presence_expiry: presence::PresenceExpiry,
     /// Local nostrdb subscription for presence events
     presence_sub: Option<subscriptions::PresenceSubscription>,
-    /// Cached room naddr string (avoids format! per frame)
-    room_naddr: String,
+    /// Cached space naddr string (avoids format! per frame)
+    space_naddr: String,
     /// Event ID of the last save we made (to skip our own echo in polls)
     last_save_id: Option<[u8; 32]>,
     /// Monotonic time tracker (seconds since app start)
@@ -98,16 +97,16 @@ pub struct NostrverseApp {
 }
 
 impl NostrverseApp {
-    /// Create a new nostrverse app with a room reference
-    pub fn new(room_ref: RoomRef, render_state: Option<&egui_wgpu::RenderState>) -> Self {
+    /// Create a new nostrverse app with a space reference
+    pub fn new(space_ref: SpaceRef, render_state: Option<&egui_wgpu::RenderState>) -> Self {
         let renderer = render_state.map(|rs| renderbud::egui::EguiRenderer::new(rs, (800, 600)));
 
         let device = render_state.map(|rs| rs.device.clone());
         let queue = render_state.map(|rs| rs.queue.clone());
 
-        let room_naddr = room_ref.to_naddr();
+        let space_naddr = space_ref.to_naddr();
         Self {
-            state: NostrverseState::new(room_ref),
+            state: NostrverseState::new(space_ref),
             renderer,
             device,
             queue,
@@ -117,16 +116,16 @@ impl NostrverseApp {
             presence_pub: presence::PresencePublisher::new(),
             presence_expiry: presence::PresenceExpiry::new(),
             presence_sub: None,
-            room_naddr,
+            space_naddr,
             last_save_id: None,
             start_time: std::time::Instant::now(),
         }
     }
 
-    /// Create with a demo room
+    /// Create with a demo space
     pub fn demo(render_state: Option<&egui_wgpu::RenderState>) -> Self {
-        let room_ref = RoomRef::new("demo-room".to_string(), demo_pubkey());
-        Self::new(room_ref, render_state)
+        let space_ref = SpaceRef::new("demo-room".to_string(), demo_pubkey());
+        Self::new(space_ref, render_state)
     }
 
     /// Load a glTF model and return its handle
@@ -144,22 +143,22 @@ impl NostrverseApp {
         }
     }
 
-    /// Initialize: ingest demo room into local nostrdb and subscribe.
+    /// Initialize: ingest demo space into local nostrdb and subscribe.
     fn initialize(&mut self, ctx: &mut AppContext<'_>) {
         if self.initialized {
             return;
         }
 
-        // Subscribe to room and presence events in local nostrdb
+        // Subscribe to space and presence events in local nostrdb
         self.room_sub = Some(subscriptions::RoomSubscription::new(ctx.ndb));
         self.presence_sub = Some(subscriptions::PresenceSubscription::new(ctx.ndb));
 
-        // Try to load an existing room from nostrdb first
+        // Try to load an existing space from nostrdb first
         let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-        self.load_room_from_ndb(ctx.ndb, &txn);
+        self.load_space_from_ndb(ctx.ndb, &txn);
 
-        // Only ingest the demo room if no saved room was found
-        if self.state.room.is_none() {
+        // Only ingest the demo space if no saved space was found
+        if self.state.space.is_none() {
             let space = match protoverse::parse(DEMO_SPACE) {
                 Ok(s) => s,
                 Err(e) => {
@@ -169,11 +168,11 @@ impl NostrverseApp {
             };
 
             if let Some(kp) = ctx.accounts.selected_filled() {
-                let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
+                let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
                 nostr_events::ingest_event(builder, ctx.ndb, kp);
             }
             // room_sub (set up above) will pick up the ingested event
-            // on the next poll_room_updates() frame.
+            // on the next poll_space_updates() frame.
         }
 
         // Add self user
@@ -218,12 +217,12 @@ impl NostrverseApp {
         self.initialized = true;
     }
 
-    /// Apply a parsed Space to the room state: convert, load models, update state.
+    /// Apply a parsed Space to the state: convert, load models, update state.
     /// Preserves renderer scene handles for objects that still exist by ID,
     /// and removes orphaned scene objects from the renderer.
     fn apply_space(&mut self, space: &protoverse::Space) {
-        let (room, mut objects) = convert::convert_space(space);
-        self.state.room = Some(room);
+        let (info, mut objects) = convert::convert_space(space);
+        self.state.space = Some(info);
 
         // Transfer scene/model handles from existing objects with matching IDs
         for new_obj in &mut objects {
@@ -250,44 +249,44 @@ impl NostrverseApp {
         self.state.dirty = false;
     }
 
-    /// Load room state from a nostrdb query result.
-    fn load_room_from_ndb(&mut self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) {
+    /// Load space state from a nostrdb query result.
+    fn load_space_from_ndb(&mut self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) {
         let notes = subscriptions::RoomSubscription::query_existing(ndb, txn);
 
         for note in &notes {
-            let Some(room_id) = nostr_events::get_room_id(note) else {
+            let Some(space_id) = nostr_events::get_space_id(note) else {
                 continue;
             };
-            if room_id != self.state.room_ref.id {
+            if space_id != self.state.space_ref.id {
                 continue;
             }
 
-            let Some(space) = nostr_events::parse_room_event(note) else {
-                tracing::warn!("Failed to parse room event content");
+            let Some(space) = nostr_events::parse_space_event(note) else {
+                tracing::warn!("Failed to parse space event content");
                 continue;
             };
 
             self.apply_space(&space);
-            tracing::info!("Loaded room '{}' from nostrdb", room_id);
+            tracing::info!("Loaded space '{}' from nostrdb", space_id);
             return;
         }
     }
 
-    /// Save current room state: build Space, serialize, ingest as new nostr event.
-    fn save_room(&mut self, ctx: &mut AppContext<'_>) {
-        let Some(room) = &self.state.room else {
-            tracing::warn!("save_room: no room to save");
+    /// Save current space state: build Space, serialize, ingest as new nostr event.
+    fn save_space(&mut self, ctx: &mut AppContext<'_>) {
+        let Some(info) = &self.state.space else {
+            tracing::warn!("save_space: no space to save");
             return;
         };
         let Some(kp) = ctx.accounts.selected_filled() else {
-            tracing::warn!("save_room: no keypair available");
+            tracing::warn!("save_space: no keypair available");
             return;
         };
 
-        let space = convert::build_space(room, &self.state.objects);
-        let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
+        let space = convert::build_space(info, &self.state.objects);
+        let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
         self.last_save_id = nostr_events::ingest_event(builder, ctx.ndb, kp);
-        tracing::info!("Saved room '{}'", self.state.room_ref.id);
+        tracing::info!("Saved space '{}'", self.state.space_ref.id);
     }
 
     /// Load 3D models for objects, then resolve any semantic locations
@@ -360,9 +359,9 @@ impl NostrverseApp {
         }
     }
 
-    /// Poll the room subscription for updates.
-    /// Skips applying updates while the room has unsaved local edits.
-    fn poll_room_updates(&mut self, ndb: &nostrdb::Ndb) {
+    /// Poll the space subscription for updates.
+    /// Skips applying updates while the space has unsaved local edits.
+    fn poll_space_updates(&mut self, ndb: &nostrdb::Ndb) {
         if self.state.dirty {
             return;
         }
@@ -381,19 +380,19 @@ impl NostrverseApp {
                 continue;
             }
 
-            let Some(room_id) = nostr_events::get_room_id(note) else {
+            let Some(space_id) = nostr_events::get_space_id(note) else {
                 continue;
             };
-            if room_id != self.state.room_ref.id {
+            if space_id != self.state.space_ref.id {
                 continue;
             }
 
-            let Some(space) = nostr_events::parse_room_event(note) else {
+            let Some(space) = nostr_events::parse_space_event(note) else {
                 continue;
             };
 
             self.apply_space(&space);
-            tracing::info!("Room '{}' updated from nostrdb", room_id);
+            tracing::info!("Space '{}' updated from nostrdb", space_id);
         }
     }
 
@@ -412,7 +411,7 @@ impl NostrverseApp {
                 .unwrap_or(Vec3::ZERO);
 
             self.presence_pub
-                .maybe_publish(ctx.ndb, kp, &self.room_naddr, self_pos, now);
+                .maybe_publish(ctx.ndb, kp, &self.space_naddr, self_pos, now);
         }
 
         // Poll for remote presence events
@@ -421,7 +420,7 @@ impl NostrverseApp {
             let changed = presence::poll_presence(
                 sub,
                 ctx.ndb,
-                &self.room_naddr,
+                &self.space_naddr,
                 &self_pubkey,
                 &mut self.state.users,
                 now,
@@ -454,7 +453,7 @@ impl NostrverseApp {
         }
     }
 
-    /// Sync room objects and user avatars to the renderbud scene
+    /// Sync space objects and user avatars to the renderbud scene
     fn sync_scene(&mut self) {
         let Some(renderer) = &self.renderer else {
             return;
@@ -588,8 +587,8 @@ impl notedeck::App for NostrverseApp {
         // Initialize on first frame
         self.initialize(ctx);
 
-        // Poll for room event updates
-        self.poll_room_updates(ctx.ndb);
+        // Poll for space event updates
+        self.poll_space_updates(ctx.ndb);
 
         // Presence: publish, poll, expire
         self.tick_presence(ctx);
@@ -668,8 +667,8 @@ impl NostrverseApp {
                 }
                 self.state.selected_object = selected;
             }
-            NostrverseAction::SaveRoom => {
-                self.save_room(ctx);
+            NostrverseAction::SaveSpace => {
+                self.save_space(ctx);
                 self.state.dirty = false;
             }
             NostrverseAction::AddObject(obj) => {

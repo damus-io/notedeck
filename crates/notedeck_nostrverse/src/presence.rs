@@ -167,11 +167,11 @@ pub fn poll_presence(
     let mut changed = false;
 
     for note in &notes {
-        // Filter to our room
-        let Some(event_room) = nostr_events::get_presence_room(note) else {
+        // Filter to our space
+        let Some(event_space) = nostr_events::get_presence_space(note) else {
             continue;
         };
-        if event_room != room_naddr {
+        if event_space != room_naddr {
             continue;
         }
 

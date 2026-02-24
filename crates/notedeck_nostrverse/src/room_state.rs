@@ -1,4 +1,4 @@
-//! Room state management for nostrverse views
+//! Space state management for nostrverse views
 
 use enostr::Pubkey;
 use glam::{Quat, Vec3};
@@ -11,8 +11,8 @@ pub enum NostrverseAction {
     MoveObject { id: String, position: Vec3 },
     /// Object was selected
     SelectObject(Option<String>),
-    /// Room or object was edited, needs re-ingest
-    SaveRoom,
+    /// Space or object was edited, needs re-ingest
+    SaveSpace,
     /// A new object was added
     AddObject(RoomObject),
     /// An object was removed
@@ -23,16 +23,16 @@ pub enum NostrverseAction {
     RotateObject { id: String, rotation: Quat },
 }
 
-/// Reference to a nostrverse room
+/// Reference to a nostrverse space
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct RoomRef {
-    /// Room identifier (d-tag)
+pub struct SpaceRef {
+    /// Space identifier (d-tag)
     pub id: String,
-    /// Room owner pubkey
+    /// Space owner pubkey
     pub pubkey: Pubkey,
 }
 
-impl RoomRef {
+impl SpaceRef {
     pub fn new(id: String, pubkey: Pubkey) -> Self {
         Self { id, pubkey }
     }
@@ -43,35 +43,18 @@ impl RoomRef {
     }
 }
 
-/// Parsed room data from event
+/// Parsed space data from event
 #[derive(Clone, Debug)]
-pub struct Room {
+pub struct SpaceInfo {
     pub name: String,
-    pub shape: RoomShape,
-    pub width: f32,
-    pub height: f32,
-    pub depth: f32,
 }
 
-impl Default for Room {
+impl Default for SpaceInfo {
     fn default() -> Self {
         Self {
-            name: "Untitled Room".to_string(),
-            shape: RoomShape::Rectangle,
-            width: 20.0,
-            height: 15.0,
-            depth: 10.0,
+            name: "Untitled Space".to_string(),
         }
     }
-}
-
-/// Room shape types
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum RoomShape {
-    #[default]
-    Rectangle,
-    Circle,
-    Custom,
 }
 
 /// Spatial location relative to the room or another object.
@@ -237,13 +220,13 @@ pub struct DragState {
 
 /// State for a nostrverse view
 pub struct NostrverseState {
-    /// Reference to the room being viewed
-    pub room_ref: RoomRef,
-    /// Parsed room data (if loaded)
-    pub room: Option<Room>,
-    /// Objects in the room
+    /// Reference to the space being viewed
+    pub space_ref: SpaceRef,
+    /// Parsed space data (if loaded)
+    pub space: Option<SpaceInfo>,
+    /// Objects in the space
     pub objects: Vec<RoomObject>,
-    /// Users currently in the room
+    /// Users currently in the space
     pub users: Vec<RoomUser>,
     /// Currently selected object ID
     pub selected_object: Option<String>,
@@ -251,7 +234,7 @@ pub struct NostrverseState {
     pub edit_mode: bool,
     /// Smoothed avatar yaw for lerped rotation
     pub smooth_avatar_yaw: f32,
-    /// Room has unsaved edits
+    /// Space has unsaved edits
     pub dirty: bool,
     /// Active drag state for viewport object manipulation
     pub drag_state: Option<DragState>,
@@ -270,10 +253,10 @@ pub struct NostrverseState {
 }
 
 impl NostrverseState {
-    pub fn new(room_ref: RoomRef) -> Self {
+    pub fn new(space_ref: SpaceRef) -> Self {
         Self {
-            room_ref,
-            room: None,
+            space_ref,
+            space: None,
             objects: Vec::new(),
             users: Vec::new(),
             selected_object: None,

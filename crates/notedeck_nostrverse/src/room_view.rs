@@ -1,11 +1,11 @@
-//! Room 3D rendering and editing UI for nostrverse via renderbud
+//! Space 3D rendering and editing UI for nostrverse via renderbud
 
 use egui::{Color32, Pos2, Rect, Response, Sense, Ui};
 use glam::{Quat, Vec3};
 
 use super::convert;
 use super::room_state::{
-    DragMode, DragState, NostrverseAction, NostrverseState, ObjectLocation, RoomObject, RoomShape,
+    DragMode, DragState, NostrverseAction, NostrverseState, ObjectLocation, RoomObject,
 };
 
 /// Radians of Y rotation per pixel of horizontal drag
@@ -512,13 +512,13 @@ pub fn show_room_view(
 }
 
 fn draw_info_overlay(painter: &egui::Painter, state: &NostrverseState, rect: Rect) {
-    let room_name = state
-        .room
+    let space_name = state
+        .space
         .as_ref()
-        .map(|r| r.name.as_str())
+        .map(|s| s.name.as_str())
         .unwrap_or("Loading...");
 
-    let mut info_text = format!("{} | Objects: {}", room_name, state.objects.len());
+    let mut info_text = format!("{} | Objects: {}", space_name, state.objects.len());
     if state.rotate_mode {
         info_text.push_str(" | Rotate (R)");
     }
@@ -543,83 +543,23 @@ fn draw_info_overlay(painter: &egui::Painter, state: &NostrverseState, rect: Rec
     painter.galley(text_pos, galley, Color32::PLACEHOLDER);
 }
 
-/// Render the side panel with room editing, object list, and object inspector.
+/// Render the side panel with space editing, object list, and object inspector.
 pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<NostrverseAction> {
     let mut action = None;
 
-    // --- Room Properties ---
-    if let Some(room) = &mut state.room {
-        ui.strong("Room");
+    // --- Space Properties ---
+    if let Some(info) = &mut state.space {
+        ui.strong("Space");
         ui.separator();
 
         let name_changed = ui
             .horizontal(|ui| {
                 ui.label("Name:");
-                ui.text_edit_singleline(&mut room.name).changed()
+                ui.text_edit_singleline(&mut info.name).changed()
             })
             .inner;
 
-        let mut width = room.width;
-        let mut height = room.height;
-        let mut depth = room.depth;
-
-        let dims_changed = ui
-            .horizontal(|ui| {
-                ui.label("W:");
-                let w = ui
-                    .add(
-                        egui::DragValue::new(&mut width)
-                            .speed(0.5)
-                            .range(1.0..=200.0),
-                    )
-                    .changed();
-                ui.label("H:");
-                let h = ui
-                    .add(
-                        egui::DragValue::new(&mut height)
-                            .speed(0.5)
-                            .range(1.0..=200.0),
-                    )
-                    .changed();
-                ui.label("D:");
-                let d = ui
-                    .add(
-                        egui::DragValue::new(&mut depth)
-                            .speed(0.5)
-                            .range(1.0..=200.0),
-                    )
-                    .changed();
-                w || h || d
-            })
-            .inner;
-
-        room.width = width;
-        room.height = height;
-        room.depth = depth;
-
-        let shape_changed = ui
-            .horizontal(|ui| {
-                ui.label("Shape:");
-                let mut changed = false;
-                egui::ComboBox::from_id_salt("room_shape")
-                    .selected_text(match room.shape {
-                        RoomShape::Rectangle => "Rectangle",
-                        RoomShape::Circle => "Circle",
-                        RoomShape::Custom => "Custom",
-                    })
-                    .show_ui(ui, |ui| {
-                        changed |= ui
-                            .selectable_value(&mut room.shape, RoomShape::Rectangle, "Rectangle")
-                            .changed();
-                        changed |= ui
-                            .selectable_value(&mut room.shape, RoomShape::Circle, "Circle")
-                            .changed();
-                    });
-                changed
-            })
-            .inner;
-
-        if name_changed || dims_changed || shape_changed {
+        if name_changed {
             state.dirty = true;
         }
 
@@ -812,15 +752,15 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
         .add_enabled(state.dirty, egui::Button::new(save_label))
         .clicked()
     {
-        action = Some(NostrverseAction::SaveRoom);
+        action = Some(NostrverseAction::SaveSpace);
     }
 
     // --- Scene body (syntax-highlighted, read-only) ---
     // Only re-serialize when not actively dragging an object
     if state.drag_state.is_none()
-        && let Some(room) = &state.room
+        && let Some(info) = &state.space
     {
-        let space = convert::build_space(room, &state.objects);
+        let space = convert::build_space(info, &state.objects);
         state.cached_scene_text = protoverse::serialize(&space);
     }
 

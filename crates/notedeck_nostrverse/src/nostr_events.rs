@@ -1,6 +1,6 @@
-//! Nostr event creation and parsing for nostrverse rooms.
+//! Nostr event creation and parsing for nostrverse spaces.
 //!
-//! Room events (kind 37555) are NIP-33 parameterized replaceable events
+//! Space events (kind 37555) are NIP-33 parameterized replaceable events
 //! where the content is a protoverse `.space` s-expression.
 
 use enostr::FilledKeypair;
@@ -9,21 +9,21 @@ use protoverse::Space;
 
 use crate::kinds;
 
-/// Build a room event (kind 37555) from a protoverse Space.
+/// Build a space event (kind 37555) from a protoverse Space.
 ///
-/// Tags: ["d", room_id], ["name", room_name], ["summary", text_description]
+/// Tags: ["d", space_id], ["name", space_name], ["summary", text_description]
 /// Content: serialized .space s-expression
-pub fn build_room_event<'a>(space: &Space, room_id: &str) -> NoteBuilder<'a> {
+pub fn build_space_event<'a>(space: &Space, space_id: &str) -> NoteBuilder<'a> {
     let content = protoverse::serialize(space);
     let summary = protoverse::describe(space);
-    let name = space.name(space.root).unwrap_or("Untitled Room");
+    let name = space.name(space.root).unwrap_or("Untitled Space");
 
     NoteBuilder::new()
         .kind(kinds::ROOM as u32)
         .content(&content)
         .start_tag()
         .tag_str("d")
-        .tag_str(room_id)
+        .tag_str(space_id)
         .start_tag()
         .tag_str("name")
         .tag_str(name)
@@ -32,8 +32,8 @@ pub fn build_room_event<'a>(space: &Space, room_id: &str) -> NoteBuilder<'a> {
         .tag_str(&summary)
 }
 
-/// Parse a room event's content into a protoverse Space.
-pub fn parse_room_event(note: &Note<'_>) -> Option<Space> {
+/// Parse a space event's content into a protoverse Space.
+pub fn parse_space_event(note: &Note<'_>) -> Option<Space> {
     let content = note.content();
     if content.is_empty() {
         return None;
@@ -41,8 +41,8 @@ pub fn parse_room_event(note: &Note<'_>) -> Option<Space> {
     protoverse::parse(content).ok()
 }
 
-/// Extract the "d" tag (room identifier) from a note.
-pub fn get_room_id<'a>(note: &'a Note<'a>) -> Option<&'a str> {
+/// Extract the "d" tag (space identifier) from a note.
+pub fn get_space_id<'a>(note: &'a Note<'a>) -> Option<&'a str> {
     get_tag_value(note, "d")
 }
 
@@ -126,8 +126,8 @@ pub fn parse_presence_velocity(note: &Note<'_>) -> glam::Vec3 {
     glam::Vec3::new(x, y, z)
 }
 
-/// Extract the "a" tag (room naddr) from a presence note.
-pub fn get_presence_room<'a>(note: &'a Note<'a>) -> Option<&'a str> {
+/// Extract the "a" tag (space naddr) from a presence note.
+pub fn get_presence_space<'a>(note: &'a Note<'a>) -> Option<&'a str> {
     get_tag_value(note, "a")
 }
 
@@ -160,20 +160,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_room_event() {
+    fn test_build_space_event() {
         let space = protoverse::parse(
-            r#"(room (name "Test Room") (shape rectangle) (width 10) (depth 8)
+            r#"(space (name "Test Space")
               (group (table (id desk) (name "My Desk"))))"#,
         )
         .unwrap();
 
-        let mut builder = build_room_event(&space, "my-room");
+        let mut builder = build_space_event(&space, "my-space");
         let note = builder.build().expect("build note");
 
         // Content should be the serialized space
         let content = note.content();
-        assert!(content.contains("room"));
-        assert!(content.contains("Test Room"));
+        assert!(content.contains("space"));
+        assert!(content.contains("Test Space"));
 
         // Should have d, name, summary tags
         let mut has_d = false;
@@ -186,11 +186,11 @@ mod tests {
             }
             match tag.get_str(0) {
                 Some("d") => {
-                    assert_eq!(tag.get_str(1), Some("my-room"));
+                    assert_eq!(tag.get_str(1), Some("my-space"));
                     has_d = true;
                 }
                 Some("name") => {
-                    assert_eq!(tag.get_str(1), Some("Test Room"));
+                    assert_eq!(tag.get_str(1), Some("Test Space"));
                     has_name = true;
                 }
                 Some("summary") => {
@@ -206,29 +206,29 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_room_event_roundtrip() {
-        let original = r#"(room (name "Test Room") (shape rectangle) (width 10) (depth 8)
+    fn test_parse_space_event_roundtrip() {
+        let original = r#"(space (name "Test Space")
               (group (table (id desk) (name "My Desk"))))"#;
 
         let space = protoverse::parse(original).unwrap();
-        let mut builder = build_room_event(&space, "test-room");
+        let mut builder = build_space_event(&space, "test-space");
         let note = builder.build().expect("build note");
 
         // Parse the event content back into a Space
-        let parsed = parse_room_event(&note).expect("parse room event");
-        assert_eq!(parsed.name(parsed.root), Some("Test Room"));
+        let parsed = parse_space_event(&note).expect("parse space event");
+        assert_eq!(parsed.name(parsed.root), Some("Test Space"));
 
         // Should have same structure
         assert_eq!(space.cells.len(), parsed.cells.len());
     }
 
     #[test]
-    fn test_get_room_id() {
-        let space = protoverse::parse("(room (name \"X\"))").unwrap();
-        let mut builder = build_room_event(&space, "my-id");
+    fn test_get_space_id() {
+        let space = protoverse::parse("(space (name \"X\"))").unwrap();
+        let mut builder = build_space_event(&space, "my-id");
         let note = builder.build().expect("build note");
 
-        assert_eq!(get_room_id(&note), Some("my-id"));
+        assert_eq!(get_space_id(&note), Some("my-id"));
     }
 
     #[test]
@@ -239,7 +239,7 @@ mod tests {
         let note = builder.build().expect("build note");
 
         assert_eq!(note.content(), "");
-        assert_eq!(get_presence_room(&note), Some("37555:abc123:my-room"));
+        assert_eq!(get_presence_space(&note), Some("37555:abc123:my-room"));
 
         let parsed_pos = parse_presence_position(&note).expect("parse position");
         assert!((parsed_pos.x - 1.5).abs() < 0.01);
