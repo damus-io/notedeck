@@ -286,6 +286,13 @@ pub fn show_room_view(
             state.grid_snap_enabled = !state.grid_snap_enabled;
         }
 
+        // Ctrl+D: duplicate selected object
+        if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D))
+            && let Some(id) = state.selected_object.clone()
+        {
+            action = Some(NostrverseAction::DuplicateObject(id));
+        }
+
         // WASD + QE movement: always available
         let dt = ui.input(|i| i.stable_dt);
         let mut forward = 0.0_f32;
@@ -567,9 +574,14 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
         }
 
         ui.add_space(8.0);
-        if ui.button("Delete Object").clicked() {
-            action = Some(NostrverseAction::RemoveObject(selected_id.to_owned()));
-        }
+        ui.horizontal(|ui| {
+            if ui.button("Duplicate").clicked() {
+                action = Some(NostrverseAction::DuplicateObject(selected_id.to_owned()));
+            }
+            if ui.button("Delete").clicked() {
+                action = Some(NostrverseAction::RemoveObject(selected_id.to_owned()));
+            }
+        });
     }
 
     // --- Grid Snap ---

@@ -17,6 +17,8 @@ pub enum NostrverseAction {
     AddObject(RoomObject),
     /// An object was removed
     RemoveObject(String),
+    /// Duplicate the selected object
+    DuplicateObject(String),
 }
 
 /// Reference to a nostrverse room

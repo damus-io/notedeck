@@ -688,6 +688,22 @@ impl NostrverseApp {
                 }
                 self.state.dirty = true;
             }
+            NostrverseAction::DuplicateObject(id) => {
+                let Some(src) = self.state.objects.iter().find(|o| o.id == id).cloned() else {
+                    return;
+                };
+                let new_id = format!("{}-copy-{}", src.id, self.state.objects.len());
+                let mut dup = src;
+                dup.id = new_id.clone();
+                dup.name = format!("{} (copy)", dup.name);
+                dup.position.x += 0.5;
+                // Clear scene node — sync_scene will create a new one.
+                // Keep model_handle: it's a shared ref to loaded GPU data.
+                dup.scene_object_id = None;
+                self.state.objects.push(dup);
+                self.state.dirty = true;
+                self.state.selected_object = Some(new_id);
+            }
         }
     }
 }
