@@ -135,12 +135,13 @@ fn execute_note_action(
                 tracing::error!("No thread selection for {}?", hex::encode(note_id.bytes()));
                 break 'ex;
             };
+            let mut scoped_subs = remote.scoped_subs(accounts);
 
             timeline_res = threads
                 .open(
                     ndb,
                     txn,
-                    pool,
+                    &mut scoped_subs,
                     &thread_selection,
                     preview,
                     col,

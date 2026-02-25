@@ -304,6 +304,7 @@ fn process_nav_resp(
                         &mut app.view_state,
                         ctx.ndb,
                         ctx.legacy_pool,
+                        &mut ctx.remote.scoped_subs(ctx.accounts),
                         return_type,
                         col,
                     );

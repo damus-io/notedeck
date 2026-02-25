@@ -1,8 +1,8 @@
 use egui_nav::ReturnType;
-use enostr::{NoteId, RelayPool};
+use enostr::NoteId;
 use hashbrown::HashMap;
 use nostrdb::{Filter, Ndb, Subscription};
-use uuid::Uuid;
+use notedeck::{RelaySelection, ScopedSubApi, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey};
 
 use crate::timeline::{
     sub::{ndb_sub, ndb_unsub},
@@ -22,14 +22,14 @@ type MetaId = usize;
 
 pub struct Remote {
     pub filter: Vec<Filter>,
-    subid: String,
+    owner: SubOwnerKey,
     dependers: usize,
 }
 
 impl std::fmt::Debug for Remote {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Remote")
-            .field("subid", &self.subid)
+            .field("owner", &self.owner)
             .field("dependers", &self.dependers)
             .finish()
     }
@@ -51,12 +51,12 @@ impl ThreadSubs {
     pub fn subscribe(
         &mut self,
         ndb: &mut Ndb,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
         meta_id: usize,
         id: &ThreadSelection,
         local_sub_filter: Vec<Filter>,
         new_scope: bool,
-        remote_sub_filter: impl FnOnce() -> Vec<Filter>,
+        remote_sub_filter: Vec<Filter>,
     ) {
         let cur_scopes = self.scopes.entry(meta_id).or_default();
 
@@ -72,7 +72,12 @@ impl ThreadSubs {
             hashbrown::hash_map::RawEntryMut::Vacant(entry) => {
                 let (_, res) = entry.insert(
                     NoteId::new(*id.root_id.bytes()),
-                    sub_remote(pool, remote_sub_filter, id),
+                    sub_remote(
+                        scoped_subs,
+                        &NoteId::new(*id.root_id.bytes()),
+                        remote_sub_filter,
+                        id,
+                    ),
                 );
 
                 res
@@ -92,7 +97,7 @@ impl ThreadSubs {
     pub fn unsubscribe(
         &mut self,
         ndb: &mut Ndb,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
         meta_id: usize,
         id: &ThreadSelection,
         return_type: ReturnType,
@@ -126,8 +131,8 @@ impl ThreadSubs {
                 .remotes
                 .remove(&id.root_id.bytes())
                 .expect("code above should guarentee existence");
-            tracing::debug!("Remotely unsubscribed: {}", remote.subid);
-            pool.unsubscribe(remote.subid);
+            tracing::debug!("Remotely unsubscribed: {:?}", remote.owner);
+            let _ = scoped_subs.drop_owner(remote.owner);
         }
 
         tracing::debug!(
@@ -218,6 +223,23 @@ fn log_scope_root_mismatch(scope: &Scope, id: &ThreadSelection) {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ThreadScopedSub {
+    RepliesByRoot,
+}
+
+fn thread_remote_sub_key(root_id: &RootNoteId) -> SubKey {
+    SubKey::builder(ThreadScopedSub::RepliesByRoot)
+        .with(*root_id.bytes())
+        .finish()
+}
+
+fn thread_remote_owner_key(root_id: &RootNoteId) -> SubOwnerKey {
+    SubOwnerKey::builder(ThreadScopedSub::RepliesByRoot)
+        .with(*root_id.bytes())
+        .finish()
+}
+
 fn sub_current_scope(
     ndb: &mut Ndb,
     selection: &ThreadSelection,
@@ -245,25 +267,30 @@ fn sub_current_scope(
 }
 
 fn sub_remote(
-    pool: &mut RelayPool,
-    remote_sub_filter: impl FnOnce() -> Vec<Filter>,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
+    root_id: &RootNoteId,
+    remote_sub_filter: Vec<Filter>,
     id: impl std::fmt::Debug,
 ) -> Remote {
-    let subid = Uuid::new_v4().to_string();
-
-    let filter = remote_sub_filter();
-
-    let remote = Remote {
-        filter: filter.clone(),
-        subid: subid.clone(),
-        dependers: 0,
-    };
+    let filter = remote_sub_filter;
+    let owner = thread_remote_owner_key(root_id);
+    let key = thread_remote_sub_key(root_id);
 
     tracing::debug!("Remote subscribe for {:?}", id);
 
-    pool.subscribe(subid, filter);
+    let identity = ScopedSubIdentity::global(owner, key);
+    let config = SubConfig {
+        relays: RelaySelection::AccountsRead,
+        filters: filter.clone(),
+        use_transparent: false,
+    };
+    let _ = scoped_subs.ensure_sub(identity, config);
 
-    remote
+    Remote {
+        filter,
+        owner,
+        dependers: 0,
+    }
 }
 
 fn local_sub_new_scope(
