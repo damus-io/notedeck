@@ -65,7 +65,7 @@ fn build_dave_ui<'a>(
     .plan_mode_active(plan_mode_active)
     .auto_steal_focus(auto_steal_focus)
     .is_remote(is_remote)
-    .dispatched_user_count(session.dispatched_user_count)
+    .dispatch_state(session.dispatch_state)
     .details(&session.details)
     .backend_type(session.backend_type);
 
