@@ -97,4 +97,15 @@ pub trait AiBackend: Send + Sync {
     /// Set the permission mode for a session.
     /// Plan mode makes Claude plan actions without executing them.
     fn set_permission_mode(&self, session_id: String, mode: PermissionMode, ctx: egui::Context);
+
+    /// Trigger manual context compaction for a session.
+    /// Returns a receiver for CompactionStarted/CompactionComplete events.
+    /// Default implementation does nothing (backends that don't support it).
+    fn compact_session(
+        &self,
+        _session_id: String,
+        _ctx: egui::Context,
+    ) -> Option<mpsc::Receiver<DaveApiResponse>> {
+        None
+    }
 }

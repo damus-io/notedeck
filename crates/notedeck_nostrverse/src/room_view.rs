@@ -1,11 +1,11 @@
-//! Room 3D rendering and editing UI for nostrverse via renderbud
+//! Space 3D rendering and editing UI for nostrverse via renderbud
 
 use egui::{Color32, Pos2, Rect, Response, Sense, Ui};
 use glam::{Quat, Vec3};
 
 use super::convert;
 use super::room_state::{
-    DragMode, DragState, NostrverseAction, NostrverseState, ObjectLocation, RoomObject, RoomShape,
+    DragMode, DragState, NostrverseAction, NostrverseState, ObjectLocation, RoomObject,
 };
 
 /// Radians of Y rotation per pixel of horizontal drag
@@ -169,6 +169,223 @@ fn compute_drag_update(
     }
 }
 
+/// Try to start an object drag. Returns the action (selection) if an object was picked.
+fn handle_drag_start(
+    state: &mut NostrverseState,
+    vp_x: f32,
+    vp_y: f32,
+    r: &mut renderbud::Renderer,
+) -> Option<NostrverseAction> {
+    let scene_id = r.pick(vp_x, vp_y)?;
+    let obj = state
+        .objects
+        .iter()
+        .find(|o| o.scene_object_id == Some(scene_id))?;
+
+    // Always select on drag start
+    r.set_selected(Some(scene_id));
+    state.selected_object = Some(obj.id.clone());
+
+    // In rotate mode, mark this as a rotation drag (don't start a position drag)
+    let drag_info = if state.rotate_mode {
+        state.rotate_drag = true;
+        None
+    } else {
+        compute_initial_drag(obj, state, vp_x, vp_y, r)
+    };
+
+    if let Some((mode, grab_offset, plane_y)) = drag_info {
+        state.drag_state = Some(DragState {
+            object_id: obj.id.clone(),
+            grab_offset,
+            plane_y,
+            mode,
+        });
+    }
+    None
+}
+
+/// Compute the initial drag mode and grab offset for an object.
+fn compute_initial_drag(
+    obj: &RoomObject,
+    state: &NostrverseState,
+    vp_x: f32,
+    vp_y: f32,
+    r: &renderbud::Renderer,
+) -> Option<(DragMode, Vec3, f32)> {
+    match &obj.location {
+        Some(ObjectLocation::TopOf(parent_id)) | Some(ObjectLocation::Near(parent_id)) => {
+            let parent = state.objects.iter().find(|o| o.id == *parent_id)?;
+            let parent_scene_id = parent.scene_object_id?;
+            let parent_aabb = r.model_bounds(parent.model_handle?)?;
+            let parent_world = r.world_matrix(parent_scene_id)?;
+
+            let child_half_h = obj
+                .model_handle
+                .and_then(|m| r.model_bounds(m))
+                .map(|b| (b.max.y - b.min.y) * 0.5)
+                .unwrap_or(0.0);
+            let local_y = if matches!(&obj.location, Some(ObjectLocation::TopOf(_))) {
+                parent_aabb.max.y + child_half_h
+            } else {
+                0.0
+            };
+            let obj_world = parent_world.transform_point3(obj.position);
+            let plane_y = obj_world.y;
+            let hit = r
+                .unproject_to_plane(vp_x, vp_y, plane_y)
+                .unwrap_or(obj_world);
+            let local_hit = parent_world.inverse().transform_point3(hit);
+            let grab_offset = obj.position - local_hit;
+            Some((
+                DragMode::Parented {
+                    parent_id: parent_id.clone(),
+                    parent_scene_id,
+                    parent_aabb,
+                    local_y,
+                },
+                grab_offset,
+                plane_y,
+            ))
+        }
+        None | Some(ObjectLocation::Floor) => {
+            let plane_y = obj.position.y;
+            let hit = r
+                .unproject_to_plane(vp_x, vp_y, plane_y)
+                .unwrap_or(obj.position);
+            let grab_offset = obj.position - hit;
+            Some((DragMode::Free, grab_offset, plane_y))
+        }
+        _ => None, // Center/Ceiling/Custom: not draggable
+    }
+}
+
+/// Apply a computed drag update to state and renderer.
+fn apply_drag_update(
+    update: DragUpdate,
+    state: &mut NostrverseState,
+    r: &mut renderbud::Renderer,
+) -> Option<NostrverseAction> {
+    match update {
+        DragUpdate::Move { id, position } => Some(NostrverseAction::MoveObject { id, position }),
+        DragUpdate::Breakaway {
+            id,
+            world_pos,
+            new_grab_offset,
+            new_plane_y,
+        } => {
+            if let Some(obj) = state.objects.iter_mut().find(|o| o.id == id) {
+                if let Some(sid) = obj.scene_object_id {
+                    r.set_parent(sid, None);
+                }
+                obj.position = world_pos;
+                obj.location = None;
+                obj.location_base = None;
+                state.dirty = true;
+            }
+            state.drag_state = Some(DragState {
+                object_id: id,
+                grab_offset: new_grab_offset,
+                plane_y: new_plane_y,
+                mode: DragMode::Free,
+            });
+            None
+        }
+        DragUpdate::SnapToParent {
+            id,
+            parent_id,
+            parent_scene_id,
+            parent_aabb,
+            local_pos,
+            local_y,
+            plane_y,
+            new_grab_offset,
+        } => {
+            if let Some(obj) = state.objects.iter_mut().find(|o| o.id == id) {
+                if let Some(sid) = obj.scene_object_id {
+                    r.set_parent(sid, Some(parent_scene_id));
+                }
+                obj.position = local_pos;
+                obj.location = Some(ObjectLocation::TopOf(parent_id.clone()));
+                obj.location_base = Some(Vec3::new(0.0, local_y, 0.0));
+                state.dirty = true;
+            }
+            state.drag_state = Some(DragState {
+                object_id: id,
+                grab_offset: new_grab_offset,
+                plane_y,
+                mode: DragMode::Parented {
+                    parent_id,
+                    parent_scene_id,
+                    parent_aabb,
+                    local_y,
+                },
+            });
+            None
+        }
+    }
+}
+
+/// Handle keyboard shortcuts and WASD movement. Returns an action if triggered.
+fn handle_keyboard_input(
+    ui: &Ui,
+    state: &mut NostrverseState,
+    r: &mut renderbud::Renderer,
+) -> Option<NostrverseAction> {
+    let mut action = None;
+
+    // G key: toggle grid snap
+    if ui.input(|i| i.key_pressed(egui::Key::G)) {
+        state.grid_snap_enabled = !state.grid_snap_enabled;
+    }
+
+    // R key: toggle rotate mode
+    if ui.input(|i| i.key_pressed(egui::Key::R)) {
+        state.rotate_mode = !state.rotate_mode;
+    }
+
+    // Ctrl+D: duplicate selected object
+    if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D))
+        && let Some(id) = state.selected_object.clone()
+    {
+        action = Some(NostrverseAction::DuplicateObject(id));
+    }
+
+    // WASD + QE movement: always available
+    let dt = ui.input(|i| i.stable_dt);
+    let mut forward = 0.0_f32;
+    let mut right = 0.0_f32;
+    let mut up = 0.0_f32;
+
+    ui.input(|i| {
+        if i.key_down(egui::Key::W) {
+            forward -= 1.0;
+        }
+        if i.key_down(egui::Key::S) {
+            forward += 1.0;
+        }
+        if i.key_down(egui::Key::D) {
+            right += 1.0;
+        }
+        if i.key_down(egui::Key::A) {
+            right -= 1.0;
+        }
+        if i.key_down(egui::Key::E) || i.key_down(egui::Key::Space) {
+            up += 1.0;
+        }
+        if i.key_down(egui::Key::Q) {
+            up -= 1.0;
+        }
+    });
+
+    if forward != 0.0 || right != 0.0 || up != 0.0 {
+        r.process_movement(forward, right, up, dt);
+        ui.ctx().request_repaint();
+    }
+
+    action
+}
+
 /// Render the nostrverse room view with 3D scene
 pub fn show_room_view(
     ui: &mut Ui,
@@ -193,86 +410,8 @@ pub fn show_room_view(
                 && let Some(pos) = response.interact_pointer_pos()
             {
                 let vp = pos - rect.min.to_vec2();
-                if let Some(scene_id) = r.pick(vp.x, vp.y)
-                    && let Some(obj) = state
-                        .objects
-                        .iter()
-                        .find(|o| o.scene_object_id == Some(scene_id))
-                {
-                    // Always select on drag start
-                    r.set_selected(Some(scene_id));
-                    state.selected_object = Some(obj.id.clone());
-
-                    // In rotate mode, mark this as a rotation drag
-                    // (don't start a position drag)
-                    let drag_info = if state.rotate_mode {
-                        state.rotate_drag = true;
-                        None
-                    } else {
-                        match &obj.location {
-                            Some(ObjectLocation::TopOf(parent_id))
-                            | Some(ObjectLocation::Near(parent_id)) => {
-                                let parent_obj = state.objects.iter().find(|o| o.id == *parent_id);
-                                if let Some(parent) = parent_obj
-                                    && let Some(parent_scene_id) = parent.scene_object_id
-                                    && let Some(parent_model) = parent.model_handle
-                                    && let Some(parent_aabb) = r.model_bounds(parent_model)
-                                    && let Some(parent_world) = r.world_matrix(parent_scene_id)
-                                {
-                                    let child_half_h = obj
-                                        .model_handle
-                                        .and_then(|m| r.model_bounds(m))
-                                        .map(|b| (b.max.y - b.min.y) * 0.5)
-                                        .unwrap_or(0.0);
-                                    let local_y = if matches!(
-                                        &obj.location,
-                                        Some(ObjectLocation::TopOf(_))
-                                    ) {
-                                        parent_aabb.max.y + child_half_h
-                                    } else {
-                                        0.0
-                                    };
-                                    let obj_world = parent_world.transform_point3(obj.position);
-                                    let plane_y = obj_world.y;
-                                    let hit = r
-                                        .unproject_to_plane(vp.x, vp.y, plane_y)
-                                        .unwrap_or(obj_world);
-                                    let local_hit = parent_world.inverse().transform_point3(hit);
-                                    let grab_offset = obj.position - local_hit;
-                                    Some((
-                                        DragMode::Parented {
-                                            parent_id: parent_id.clone(),
-                                            parent_scene_id,
-                                            parent_aabb,
-                                            local_y,
-                                        },
-                                        grab_offset,
-                                        plane_y,
-                                    ))
-                                } else {
-                                    None
-                                }
-                            }
-                            None | Some(ObjectLocation::Floor) => {
-                                let plane_y = obj.position.y;
-                                let hit = r
-                                    .unproject_to_plane(vp.x, vp.y, plane_y)
-                                    .unwrap_or(obj.position);
-                                let grab_offset = obj.position - hit;
-                                Some((DragMode::Free, grab_offset, plane_y))
-                            }
-                            _ => None, // Center/Ceiling/Custom: not draggable
-                        }
-                    };
-
-                    if let Some((mode, grab_offset, plane_y)) = drag_info {
-                        state.drag_state = Some(DragState {
-                            object_id: obj.id.clone(),
-                            grab_offset,
-                            plane_y,
-                            mode,
-                        });
-                    }
+                if let Some(a) = handle_drag_start(state, vp.x, vp.y, &mut r) {
+                    action = Some(a);
                 }
             }
 
@@ -286,7 +425,6 @@ pub fn show_room_view(
                     let delta_x = response.drag_delta().x;
                     let angle = delta_x * ROTATE_SENSITIVITY;
                     let new_rotation = Quat::from_rotation_y(angle) * obj.rotation;
-                    // Snap to angle increments when grid snap is enabled
                     let new_rotation = if state.grid_snap_enabled {
                         let (_, y, _) = new_rotation.to_euler(glam::EulerRot::YXZ);
                         let snap_rad = state.rotation_snap.to_radians();
@@ -304,9 +442,7 @@ pub fn show_room_view(
                     if let Some(pos) = response.interact_pointer_pos() {
                         let vp = pos - rect.min.to_vec2();
                         let grid = state.grid_snap_enabled.then_some(state.grid_snap);
-                        // Borrow of state.drag_state is scoped to this call
                         let update = compute_drag_update(drag, vp.x, vp.y, grid, &r);
-                        // Borrow released — free to mutate state
                         // For free drags, check if we should snap to a parent
                         let update = if let Some(DragUpdate::Move {
                             ref id,
@@ -342,64 +478,10 @@ pub fn show_room_view(
                             update
                         };
 
-                        match update {
-                            Some(DragUpdate::Move { id, position }) => {
-                                action = Some(NostrverseAction::MoveObject { id, position });
-                            }
-                            Some(DragUpdate::Breakaway {
-                                id,
-                                world_pos,
-                                new_grab_offset,
-                                new_plane_y,
-                            }) => {
-                                if let Some(obj) = state.objects.iter_mut().find(|o| o.id == id) {
-                                    if let Some(sid) = obj.scene_object_id {
-                                        r.set_parent(sid, None);
-                                    }
-                                    obj.position = world_pos;
-                                    obj.location = None;
-                                    obj.location_base = None;
-                                    state.dirty = true;
-                                }
-                                state.drag_state = Some(DragState {
-                                    object_id: id,
-                                    grab_offset: new_grab_offset,
-                                    plane_y: new_plane_y,
-                                    mode: DragMode::Free,
-                                });
-                            }
-                            Some(DragUpdate::SnapToParent {
-                                id,
-                                parent_id,
-                                parent_scene_id,
-                                parent_aabb,
-                                local_pos,
-                                local_y,
-                                plane_y,
-                                new_grab_offset,
-                            }) => {
-                                if let Some(obj) = state.objects.iter_mut().find(|o| o.id == id) {
-                                    if let Some(sid) = obj.scene_object_id {
-                                        r.set_parent(sid, Some(parent_scene_id));
-                                    }
-                                    obj.position = local_pos;
-                                    obj.location = Some(ObjectLocation::TopOf(parent_id.clone()));
-                                    obj.location_base = Some(Vec3::new(0.0, local_y, 0.0));
-                                    state.dirty = true;
-                                }
-                                state.drag_state = Some(DragState {
-                                    object_id: id,
-                                    grab_offset: new_grab_offset,
-                                    plane_y,
-                                    mode: DragMode::Parented {
-                                        parent_id,
-                                        parent_scene_id,
-                                        parent_aabb,
-                                        local_y,
-                                    },
-                                });
-                            }
-                            None => {}
+                        if let Some(update) = update
+                            && let Some(a) = apply_drag_update(update, state, &mut r)
+                        {
+                            action = Some(a);
                         }
                     }
                     ui.ctx().request_repaint();
@@ -448,53 +530,8 @@ pub fn show_room_view(
             }
         }
 
-        // G key: toggle grid snap
-        if ui.input(|i| i.key_pressed(egui::Key::G)) {
-            state.grid_snap_enabled = !state.grid_snap_enabled;
-        }
-
-        // R key: toggle rotate mode
-        if ui.input(|i| i.key_pressed(egui::Key::R)) {
-            state.rotate_mode = !state.rotate_mode;
-        }
-
-        // Ctrl+D: duplicate selected object
-        if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D))
-            && let Some(id) = state.selected_object.clone()
-        {
-            action = Some(NostrverseAction::DuplicateObject(id));
-        }
-
-        // WASD + QE movement: always available
-        let dt = ui.input(|i| i.stable_dt);
-        let mut forward = 0.0_f32;
-        let mut right = 0.0_f32;
-        let mut up = 0.0_f32;
-
-        ui.input(|i| {
-            if i.key_down(egui::Key::W) {
-                forward -= 1.0;
-            }
-            if i.key_down(egui::Key::S) {
-                forward += 1.0;
-            }
-            if i.key_down(egui::Key::D) {
-                right += 1.0;
-            }
-            if i.key_down(egui::Key::A) {
-                right -= 1.0;
-            }
-            if i.key_down(egui::Key::E) || i.key_down(egui::Key::Space) {
-                up += 1.0;
-            }
-            if i.key_down(egui::Key::Q) {
-                up -= 1.0;
-            }
-        });
-
-        if forward != 0.0 || right != 0.0 || up != 0.0 {
-            r.process_movement(forward, right, up, dt);
-            ui.ctx().request_repaint();
+        if let Some(a) = handle_keyboard_input(ui, state, &mut r) {
+            action = Some(a);
         }
     }
 
@@ -512,13 +549,13 @@ pub fn show_room_view(
 }
 
 fn draw_info_overlay(painter: &egui::Painter, state: &NostrverseState, rect: Rect) {
-    let room_name = state
-        .room
+    let space_name = state
+        .space
         .as_ref()
-        .map(|r| r.name.as_str())
+        .map(|s| s.name.as_str())
         .unwrap_or("Loading...");
 
-    let mut info_text = format!("{} | Objects: {}", room_name, state.objects.len());
+    let mut info_text = format!("{} | Objects: {}", space_name, state.objects.len());
     if state.rotate_mode {
         info_text.push_str(" | Rotate (R)");
     }
@@ -543,93 +580,12 @@ fn draw_info_overlay(painter: &egui::Painter, state: &NostrverseState, rect: Rec
     painter.galley(text_pos, galley, Color32::PLACEHOLDER);
 }
 
-/// Render the side panel with room editing, object list, and object inspector.
-pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<NostrverseAction> {
-    let mut action = None;
-
-    // --- Room Properties ---
-    if let Some(room) = &mut state.room {
-        ui.strong("Room");
-        ui.separator();
-
-        let name_changed = ui
-            .horizontal(|ui| {
-                ui.label("Name:");
-                ui.text_edit_singleline(&mut room.name).changed()
-            })
-            .inner;
-
-        let mut width = room.width;
-        let mut height = room.height;
-        let mut depth = room.depth;
-
-        let dims_changed = ui
-            .horizontal(|ui| {
-                ui.label("W:");
-                let w = ui
-                    .add(
-                        egui::DragValue::new(&mut width)
-                            .speed(0.5)
-                            .range(1.0..=200.0),
-                    )
-                    .changed();
-                ui.label("H:");
-                let h = ui
-                    .add(
-                        egui::DragValue::new(&mut height)
-                            .speed(0.5)
-                            .range(1.0..=200.0),
-                    )
-                    .changed();
-                ui.label("D:");
-                let d = ui
-                    .add(
-                        egui::DragValue::new(&mut depth)
-                            .speed(0.5)
-                            .range(1.0..=200.0),
-                    )
-                    .changed();
-                w || h || d
-            })
-            .inner;
-
-        room.width = width;
-        room.height = height;
-        room.depth = depth;
-
-        let shape_changed = ui
-            .horizontal(|ui| {
-                ui.label("Shape:");
-                let mut changed = false;
-                egui::ComboBox::from_id_salt("room_shape")
-                    .selected_text(match room.shape {
-                        RoomShape::Rectangle => "Rectangle",
-                        RoomShape::Circle => "Circle",
-                        RoomShape::Custom => "Custom",
-                    })
-                    .show_ui(ui, |ui| {
-                        changed |= ui
-                            .selectable_value(&mut room.shape, RoomShape::Rectangle, "Rectangle")
-                            .changed();
-                        changed |= ui
-                            .selectable_value(&mut room.shape, RoomShape::Circle, "Circle")
-                            .changed();
-                    });
-                changed
-            })
-            .inner;
-
-        if name_changed || dims_changed || shape_changed {
-            state.dirty = true;
-        }
-
-        ui.add_space(8.0);
-    }
-
-    // --- Object List ---
+/// Render the object list and add-object button. Returns an action if triggered.
+fn render_object_list(ui: &mut Ui, state: &NostrverseState) -> Option<NostrverseAction> {
     ui.strong("Objects");
     ui.separator();
 
+    let mut action = None;
     let num_objects = state.objects.len();
     for i in 0..num_objects {
         let is_selected = state
@@ -657,130 +613,140 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
         action = Some(NostrverseAction::AddObject(obj));
     }
 
-    ui.add_space(12.0);
+    action
+}
 
-    // --- Object Inspector ---
-    if let Some(selected_id) = state.selected_object.as_ref()
-        && let Some(obj) = state.objects.iter_mut().find(|o| &o.id == selected_id)
-    {
-        ui.strong("Inspector");
-        ui.separator();
+/// Render the object inspector panel for the selected object.
+/// Returns an action and whether any property changed.
+fn render_object_inspector(
+    ui: &mut Ui,
+    selected_id: &str,
+    obj: &mut RoomObject,
+    grid_snap_enabled: bool,
+    rotation_snap: f32,
+) -> (Option<NostrverseAction>, bool) {
+    let mut action = None;
 
-        ui.small(format!("ID: {}", obj.id));
-        ui.add_space(4.0);
+    ui.strong("Inspector");
+    ui.separator();
 
-        // Editable name
-        let name_changed = ui
-            .horizontal(|ui| {
-                ui.label("Name:");
-                ui.text_edit_singleline(&mut obj.name).changed()
-            })
-            .inner;
+    ui.small(format!("ID: {}", obj.id));
+    ui.add_space(4.0);
 
-        // Edit offset (relative to location base) or absolute position
-        let base = obj.location_base.unwrap_or(Vec3::ZERO);
-        let offset = obj.position - base;
-        let mut ox = offset.x;
-        let mut oy = offset.y;
-        let mut oz = offset.z;
-        let has_location = obj.location.is_some();
-        let pos_label = if has_location { "Offset:" } else { "Pos:" };
-        let pos_changed = ui
-            .horizontal(|ui| {
-                ui.label(pos_label);
-                let x = ui
-                    .add(egui::DragValue::new(&mut ox).speed(0.1).prefix("x:"))
-                    .changed();
-                let y = ui
-                    .add(egui::DragValue::new(&mut oy).speed(0.1).prefix("y:"))
-                    .changed();
-                let z = ui
-                    .add(egui::DragValue::new(&mut oz).speed(0.1).prefix("z:"))
-                    .changed();
-                x || y || z
-            })
-            .inner;
-        obj.position = base + Vec3::new(ox, oy, oz);
+    // Editable name
+    let name_changed = ui
+        .horizontal(|ui| {
+            ui.label("Name:");
+            ui.text_edit_singleline(&mut obj.name).changed()
+        })
+        .inner;
 
-        // Editable scale (uniform)
-        let mut sx = obj.scale.x;
-        let mut sy = obj.scale.y;
-        let mut sz = obj.scale.z;
-        let scale_changed = ui
-            .horizontal(|ui| {
-                ui.label("Scale:");
-                let x = ui
-                    .add(
-                        egui::DragValue::new(&mut sx)
-                            .speed(0.05)
-                            .prefix("x:")
-                            .range(0.01..=100.0),
-                    )
-                    .changed();
-                let y = ui
-                    .add(
-                        egui::DragValue::new(&mut sy)
-                            .speed(0.05)
-                            .prefix("y:")
-                            .range(0.01..=100.0),
-                    )
-                    .changed();
-                let z = ui
-                    .add(
-                        egui::DragValue::new(&mut sz)
-                            .speed(0.05)
-                            .prefix("z:")
-                            .range(0.01..=100.0),
-                    )
-                    .changed();
-                x || y || z
-            })
-            .inner;
-        obj.scale = Vec3::new(sx, sy, sz);
+    // Edit offset (relative to location base) or absolute position
+    let base = obj.location_base.unwrap_or(Vec3::ZERO);
+    let offset = obj.position - base;
+    let mut ox = offset.x;
+    let mut oy = offset.y;
+    let mut oz = offset.z;
+    let has_location = obj.location.is_some();
+    let pos_label = if has_location { "Offset:" } else { "Pos:" };
+    let pos_changed = ui
+        .horizontal(|ui| {
+            ui.label(pos_label);
+            let x = ui
+                .add(egui::DragValue::new(&mut ox).speed(0.1).prefix("x:"))
+                .changed();
+            let y = ui
+                .add(egui::DragValue::new(&mut oy).speed(0.1).prefix("y:"))
+                .changed();
+            let z = ui
+                .add(egui::DragValue::new(&mut oz).speed(0.1).prefix("z:"))
+                .changed();
+            x || y || z
+        })
+        .inner;
+    obj.position = base + Vec3::new(ox, oy, oz);
 
-        // Editable Y rotation (degrees)
-        let (_, angle_y, _) = obj.rotation.to_euler(glam::EulerRot::YXZ);
-        let mut deg = angle_y.to_degrees();
-        let snap = state.grid_snap_enabled;
-        let snap_deg = state.rotation_snap;
-        let rot_changed = ui
-            .horizontal(|ui| {
-                ui.label("Rot Y:");
-                let speed = if snap { snap_deg } else { 1.0 };
-                ui.add(egui::DragValue::new(&mut deg).speed(speed).suffix("°"))
-                    .changed()
-            })
-            .inner;
-        if rot_changed {
-            if snap {
-                deg = (deg / snap_deg).round() * snap_deg;
-            }
-            obj.rotation = Quat::from_rotation_y(deg.to_radians());
+    // Editable scale
+    let mut sx = obj.scale.x;
+    let mut sy = obj.scale.y;
+    let mut sz = obj.scale.z;
+    let scale_changed = ui
+        .horizontal(|ui| {
+            ui.label("Scale:");
+            let x = ui
+                .add(
+                    egui::DragValue::new(&mut sx)
+                        .speed(0.05)
+                        .prefix("x:")
+                        .range(0.01..=100.0),
+                )
+                .changed();
+            let y = ui
+                .add(
+                    egui::DragValue::new(&mut sy)
+                        .speed(0.05)
+                        .prefix("y:")
+                        .range(0.01..=100.0),
+                )
+                .changed();
+            let z = ui
+                .add(
+                    egui::DragValue::new(&mut sz)
+                        .speed(0.05)
+                        .prefix("z:")
+                        .range(0.01..=100.0),
+                )
+                .changed();
+            x || y || z
+        })
+        .inner;
+    obj.scale = Vec3::new(sx, sy, sz);
+
+    // Editable Y rotation (degrees)
+    let (_, angle_y, _) = obj.rotation.to_euler(glam::EulerRot::YXZ);
+    let mut deg = angle_y.to_degrees();
+    let rot_changed = ui
+        .horizontal(|ui| {
+            ui.label("Rot Y:");
+            let speed = if grid_snap_enabled {
+                rotation_snap
+            } else {
+                1.0
+            };
+            ui.add(egui::DragValue::new(&mut deg).speed(speed).suffix("°"))
+                .changed()
+        })
+        .inner;
+    if rot_changed {
+        if grid_snap_enabled {
+            deg = (deg / rotation_snap).round() * rotation_snap;
         }
-
-        // Model URL (read-only for now)
-        if let Some(url) = &obj.model_url {
-            ui.add_space(4.0);
-            ui.small(format!("Model: {}", url));
-        }
-
-        if name_changed || pos_changed || scale_changed || rot_changed {
-            state.dirty = true;
-        }
-
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui.button("Duplicate").clicked() {
-                action = Some(NostrverseAction::DuplicateObject(selected_id.to_owned()));
-            }
-            if ui.button("Delete").clicked() {
-                action = Some(NostrverseAction::RemoveObject(selected_id.to_owned()));
-            }
-        });
+        obj.rotation = Quat::from_rotation_y(deg.to_radians());
     }
 
-    // --- Grid Snap ---
+    // Model URL (read-only for now)
+    if let Some(url) = &obj.model_url {
+        ui.add_space(4.0);
+        ui.small(format!("Model: {}", url));
+    }
+
+    let changed = name_changed || pos_changed || scale_changed || rot_changed;
+
     ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if ui.button("Duplicate").clicked() {
+            action = Some(NostrverseAction::DuplicateObject(selected_id.to_owned()));
+        }
+        if ui.button("Delete").clicked() {
+            action = Some(NostrverseAction::RemoveObject(selected_id.to_owned()));
+        }
+    });
+
+    (action, changed)
+}
+
+/// Render grid snap and rotation snap controls.
+fn render_grid_snap_controls(ui: &mut Ui, state: &mut NostrverseState) {
     ui.horizontal(|ui| {
         ui.checkbox(&mut state.grid_snap_enabled, "Grid Snap (G)");
         if state.grid_snap_enabled {
@@ -803,24 +769,15 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
             );
         });
     }
+}
 
-    // --- Save button ---
-    ui.add_space(12.0);
-    ui.separator();
-    let save_label = if state.dirty { "Save *" } else { "Save" };
-    if ui
-        .add_enabled(state.dirty, egui::Button::new(save_label))
-        .clicked()
-    {
-        action = Some(NostrverseAction::SaveRoom);
-    }
-
-    // --- Scene body (syntax-highlighted, read-only) ---
+/// Render the syntax-highlighted scene source preview.
+fn render_scene_preview(ui: &mut Ui, state: &mut NostrverseState) {
     // Only re-serialize when not actively dragging an object
     if state.drag_state.is_none()
-        && let Some(room) = &state.room
+        && let Some(info) = &state.space
     {
-        let space = convert::build_space(room, &state.objects);
+        let space = convert::build_space(info, &state.objects);
         state.cached_scene_text = protoverse::serialize(&space);
     }
 
@@ -842,6 +799,74 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
                 ui.add(egui::Label::new(layout_job).wrap());
             });
     }
+}
+
+/// Render the side panel with space editing, object list, and object inspector.
+pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<NostrverseAction> {
+    let mut action = None;
+
+    // --- Space Properties ---
+    if let Some(info) = &mut state.space {
+        ui.strong("Space");
+        ui.separator();
+
+        let name_changed = ui
+            .horizontal(|ui| {
+                ui.label("Name:");
+                ui.text_edit_singleline(&mut info.name).changed()
+            })
+            .inner;
+
+        if name_changed {
+            state.dirty = true;
+        }
+
+        ui.add_space(8.0);
+    }
+
+    // --- Object List ---
+    if let Some(a) = render_object_list(ui, state) {
+        action = Some(a);
+    }
+
+    ui.add_space(12.0);
+
+    // --- Object Inspector ---
+    if let Some(selected_id) = state.selected_object.clone()
+        && let Some(obj) = state.objects.iter_mut().find(|o| o.id == selected_id)
+    {
+        let (inspector_action, changed) = render_object_inspector(
+            ui,
+            &selected_id,
+            obj,
+            state.grid_snap_enabled,
+            state.rotation_snap,
+        );
+        if let Some(a) = inspector_action {
+            action = Some(a);
+        }
+        if changed {
+            state.dirty = true;
+        }
+    }
+
+    // --- Grid Snap ---
+    ui.add_space(8.0);
+    render_grid_snap_controls(ui, state);
+
+    // --- Save button ---
+    ui.add_space(12.0);
+    ui.separator();
+    let save_label = if state.dirty { "Save *" } else { "Save" };
+    if ui
+        .add_enabled(state.dirty, egui::Button::new(save_label))
+        .clicked()
+    {
+        action = Some(NostrverseAction::SaveSpace);
+    }
+
+    // --- Scene body ---
+    render_scene_preview(ui, state);
 
     action
 }

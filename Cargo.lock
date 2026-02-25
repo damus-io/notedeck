@@ -4724,13 +4724,17 @@ version = "0.7.1"
 dependencies = [
  "egui",
  "egui-wgpu",
+ "ehttp",
  "enostr",
  "glam",
  "nostrdb",
  "notedeck",
+ "poll-promise",
  "protoverse",
  "renderbud",
+ "sha2 0.10.9",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

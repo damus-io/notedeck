@@ -13,3 +13,7 @@ nostrdb = { workspace = true }
 protoverse = { path = "../protoverse" }
 renderbud = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
+ehttp = { workspace = true }
+sha2 = { workspace = true }
+poll-promise = { workspace = true }

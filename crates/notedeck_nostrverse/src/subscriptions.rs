@@ -1,25 +1,43 @@
 //! Local nostrdb subscription management for nostrverse rooms.
 //!
-//! Subscribes to room events (kind 37555) in the local nostrdb and
-//! polls for updates each frame. No remote relay subscriptions — rooms
-//! are local-only for now.
+//! Subscribes to room events (kind 37555) and presence events (kind 10555)
+//! in the local nostrdb and polls for updates each frame.
 
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 
 use crate::kinds;
 
+/// A local nostrdb subscription that polls for notes of a given kind.
+struct KindSubscription {
+    sub: Subscription,
+}
+
+impl KindSubscription {
+    fn new(ndb: &Ndb, kind: u16) -> Self {
+        let filter = Filter::new().kinds([kind as u64]).build();
+        let sub = ndb.subscribe(&[filter]).expect("kind subscription");
+        Self { sub }
+    }
+
+    fn poll<'a>(&self, ndb: &'a Ndb, txn: &'a Transaction) -> Vec<Note<'a>> {
+        ndb.poll_for_notes(self.sub, 50)
+            .into_iter()
+            .filter_map(|nk| ndb.get_note_by_key(txn, nk).ok())
+            .collect()
+    }
+}
+
 /// Manages a local nostrdb subscription for room events.
 pub struct RoomSubscription {
-    /// Local nostrdb subscription handle
-    sub: Subscription,
+    inner: KindSubscription,
 }
 
 impl RoomSubscription {
     /// Subscribe to all room events (kind 37555) in the local nostrdb.
     pub fn new(ndb: &Ndb) -> Self {
-        let filter = Filter::new().kinds([kinds::ROOM as u64]).build();
-        let sub = ndb.subscribe(&[filter]).expect("room subscription");
-        Self { sub }
+        Self {
+            inner: KindSubscription::new(ndb, kinds::ROOM),
+        }
     }
 
     /// Subscribe to room events from a specific author.
@@ -30,16 +48,14 @@ impl RoomSubscription {
             .authors([author])
             .build();
         let sub = ndb.subscribe(&[filter]).expect("room subscription");
-        Self { sub }
+        Self {
+            inner: KindSubscription { sub },
+        }
     }
 
     /// Poll for new room events. Returns parsed notes.
     pub fn poll<'a>(&self, ndb: &'a Ndb, txn: &'a Transaction) -> Vec<Note<'a>> {
-        let note_keys = ndb.poll_for_notes(self.sub, 50);
-        note_keys
-            .into_iter()
-            .filter_map(|nk| ndb.get_note_by_key(txn, nk).ok())
-            .collect()
+        self.inner.poll(ndb, txn)
     }
 
     /// Query for existing room events (e.g. on startup).
@@ -55,23 +71,19 @@ impl RoomSubscription {
 
 /// Manages a local nostrdb subscription for presence events (kind 10555).
 pub struct PresenceSubscription {
-    sub: Subscription,
+    inner: KindSubscription,
 }
 
 impl PresenceSubscription {
     /// Subscribe to presence events in the local nostrdb.
     pub fn new(ndb: &Ndb) -> Self {
-        let filter = Filter::new().kinds([kinds::PRESENCE as u64]).build();
-        let sub = ndb.subscribe(&[filter]).expect("presence subscription");
-        Self { sub }
+        Self {
+            inner: KindSubscription::new(ndb, kinds::PRESENCE),
+        }
     }
 
     /// Poll for new presence events.
     pub fn poll<'a>(&self, ndb: &'a Ndb, txn: &'a Transaction) -> Vec<Note<'a>> {
-        let note_keys = ndb.poll_for_notes(self.sub, 50);
-        note_keys
-            .into_iter()
-            .filter_map(|nk| ndb.get_note_by_key(txn, nk).ok())
-            .collect()
+        self.inner.poll(ndb, txn)
     }
 }

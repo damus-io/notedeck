@@ -1,37 +1,20 @@
-//! Convert protoverse Space AST to renderer room state.
+//! Convert protoverse Space AST to renderer space state.
 
-use crate::room_state::{ObjectLocation, Room, RoomObject, RoomObjectType, RoomShape};
+use crate::room_state::{ObjectLocation, RoomObject, RoomObjectType, SpaceInfo};
 use glam::{Quat, Vec3};
-use protoverse::{Attribute, Cell, CellId, CellType, Location, ObjectType, Shape, Space};
+use protoverse::{Attribute, Cell, CellId, CellType, Location, ObjectType, Space};
 
-/// Convert a parsed protoverse Space into a Room and its objects.
-pub fn convert_space(space: &Space) -> (Room, Vec<RoomObject>) {
-    let room = extract_room(space, space.root);
+/// Convert a parsed protoverse Space into a SpaceInfo and its objects.
+pub fn convert_space(space: &Space) -> (SpaceInfo, Vec<RoomObject>) {
+    let info = extract_space_info(space, space.root);
     let mut objects = Vec::new();
     collect_objects(space, space.root, &mut objects);
-    (room, objects)
+    (info, objects)
 }
 
-fn extract_room(space: &Space, id: CellId) -> Room {
-    let name = space.name(id).unwrap_or("Untitled Room").to_string();
-
-    let shape = match space.shape(id) {
-        Some(Shape::Rectangle) | Some(Shape::Square) => RoomShape::Rectangle,
-        Some(Shape::Circle) => RoomShape::Circle,
-        None => RoomShape::Rectangle,
-    };
-
-    let width = space.width(id).unwrap_or(20.0) as f32;
-    let height = space.height(id).unwrap_or(15.0) as f32;
-    let depth = space.depth(id).unwrap_or(10.0) as f32;
-
-    Room {
-        name,
-        shape,
-        width,
-        height,
-        depth,
-    }
+fn extract_space_info(space: &Space, id: CellId) -> SpaceInfo {
+    let name = space.name(id).unwrap_or("Untitled Space").to_string();
+    SpaceInfo { name }
 }
 
 fn location_from_protoverse(loc: &Location) -> ObjectLocation {
@@ -122,36 +105,27 @@ fn collect_objects(space: &Space, id: CellId, objects: &mut Vec<RoomObject>) {
     }
 }
 
-/// Build a protoverse Space from Room and objects (reverse of convert_space).
+/// Build a protoverse Space from SpaceInfo and objects (reverse of convert_space).
 ///
-/// Produces: (room (name ...) (shape ...) (width ...) (height ...) (depth ...)
-///             (group <objects...>))
-pub fn build_space(room: &Room, objects: &[RoomObject]) -> Space {
+/// Produces: (space (name ...) (group <objects...>))
+pub fn build_space(info: &SpaceInfo, objects: &[RoomObject]) -> Space {
     let mut cells = Vec::new();
     let mut attributes = Vec::new();
     let mut child_ids = Vec::new();
 
-    // Room attributes
-    let room_attr_start = attributes.len() as u32;
-    attributes.push(Attribute::Name(room.name.clone()));
-    attributes.push(Attribute::Shape(match room.shape {
-        RoomShape::Rectangle => Shape::Rectangle,
-        RoomShape::Circle => Shape::Circle,
-        RoomShape::Custom => Shape::Rectangle,
-    }));
-    attributes.push(Attribute::Width(room.width as f64));
-    attributes.push(Attribute::Height(room.height as f64));
-    attributes.push(Attribute::Depth(room.depth as f64));
-    let room_attr_count = (attributes.len() as u32 - room_attr_start) as u16;
+    // Space attributes (just name)
+    let space_attr_start = attributes.len() as u32;
+    attributes.push(Attribute::Name(info.name.clone()));
+    let space_attr_count = (attributes.len() as u32 - space_attr_start) as u16;
 
-    // Room cell (index 0), child = group at index 1
-    let room_child_start = child_ids.len() as u32;
+    // Space cell (index 0), child = group at index 1
+    let space_child_start = child_ids.len() as u32;
     child_ids.push(CellId(1));
     cells.push(Cell {
-        cell_type: CellType::Room,
-        first_attr: room_attr_start,
-        attr_count: room_attr_count,
-        first_child: room_child_start,
+        cell_type: CellType::Space,
+        first_attr: space_attr_start,
+        attr_count: space_attr_count,
+        first_child: space_child_start,
         child_count: 1,
         parent: None,
     });
@@ -172,54 +146,7 @@ pub fn build_space(room: &Room, objects: &[RoomObject]) -> Space {
 
     // Object cells (indices 2..)
     for obj in objects {
-        let obj_attr_start = attributes.len() as u32;
-        attributes.push(Attribute::Id(obj.id.clone()));
-        attributes.push(Attribute::Name(obj.name.clone()));
-        if let Some(url) = &obj.model_url {
-            attributes.push(Attribute::ModelUrl(url.clone()));
-        }
-        if let Some(loc) = &obj.location {
-            attributes.push(Attribute::Location(location_to_protoverse(loc)));
-        }
-        // When the object has a resolved location base, save the offset
-        // from the base so that position remains relative to the location.
-        let pos = match obj.location_base {
-            Some(base) => obj.position - base,
-            None => obj.position,
-        };
-        attributes.push(Attribute::Position(
-            pos.x as f64,
-            pos.y as f64,
-            pos.z as f64,
-        ));
-        // Only emit rotation when non-identity to keep output clean
-        if obj.rotation.angle_between(Quat::IDENTITY) > 1e-4 {
-            let (y, x, z) = obj.rotation.to_euler(glam::EulerRot::YXZ);
-            attributes.push(Attribute::Rotation(
-                x.to_degrees() as f64,
-                y.to_degrees() as f64,
-                z.to_degrees() as f64,
-            ));
-        }
-        let obj_attr_count = (attributes.len() as u32 - obj_attr_start) as u16;
-
-        let obj_type = CellType::Object(match &obj.object_type {
-            RoomObjectType::Table => ObjectType::Table,
-            RoomObjectType::Chair => ObjectType::Chair,
-            RoomObjectType::Door => ObjectType::Door,
-            RoomObjectType::Light => ObjectType::Light,
-            RoomObjectType::Prop => ObjectType::Custom("prop".to_string()),
-            RoomObjectType::Custom(s) => ObjectType::Custom(s.clone()),
-        });
-
-        cells.push(Cell {
-            cell_type: obj_type,
-            first_attr: obj_attr_start,
-            attr_count: obj_attr_count,
-            first_child: child_ids.len() as u32,
-            child_count: 0,
-            parent: Some(CellId(1)),
-        });
+        build_object_cell(obj, &mut cells, &mut attributes, &child_ids);
     }
 
     Space {
@@ -230,6 +157,67 @@ pub fn build_space(room: &Room, objects: &[RoomObject]) -> Space {
     }
 }
 
+fn object_type_to_cell(obj_type: &RoomObjectType) -> CellType {
+    CellType::Object(match obj_type {
+        RoomObjectType::Table => ObjectType::Table,
+        RoomObjectType::Chair => ObjectType::Chair,
+        RoomObjectType::Door => ObjectType::Door,
+        RoomObjectType::Light => ObjectType::Light,
+        RoomObjectType::Prop => ObjectType::Custom("prop".to_string()),
+        RoomObjectType::Custom(s) => ObjectType::Custom(s.clone()),
+    })
+}
+
+/// Build a single object Cell with its attributes and append to the Space vectors.
+fn build_object_cell(
+    obj: &RoomObject,
+    cells: &mut Vec<Cell>,
+    attributes: &mut Vec<Attribute>,
+    child_ids: &[CellId],
+) {
+    let obj_attr_start = attributes.len() as u32;
+
+    attributes.push(Attribute::Id(obj.id.clone()));
+    attributes.push(Attribute::Name(obj.name.clone()));
+    if let Some(url) = &obj.model_url {
+        attributes.push(Attribute::ModelUrl(url.clone()));
+    }
+    if let Some(loc) = &obj.location {
+        attributes.push(Attribute::Location(location_to_protoverse(loc)));
+    }
+
+    // When the object has a resolved location base, save the offset
+    // from the base so that position remains relative to the location.
+    let pos = match obj.location_base {
+        Some(base) => obj.position - base,
+        None => obj.position,
+    };
+    attributes.push(Attribute::Position(
+        pos.x as f64,
+        pos.y as f64,
+        pos.z as f64,
+    ));
+
+    // Only emit rotation when non-identity to keep output clean
+    if obj.rotation.angle_between(Quat::IDENTITY) > 1e-4 {
+        let (y, x, z) = obj.rotation.to_euler(glam::EulerRot::YXZ);
+        attributes.push(Attribute::Rotation(
+            x.to_degrees() as f64,
+            y.to_degrees() as f64,
+            z.to_degrees() as f64,
+        ));
+    }
+
+    cells.push(Cell {
+        cell_type: object_type_to_cell(&obj.object_type),
+        first_attr: obj_attr_start,
+        attr_count: (attributes.len() as u32 - obj_attr_start) as u16,
+        first_child: child_ids.len() as u32,
+        child_count: 0,
+        parent: Some(CellId(1)),
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +225,7 @@ mod tests {
 
     #[test]
     fn test_convert_simple_room() {
+        // Still accepts (room ...) for backward compatibility
         let space = parse(
             r#"(room (name "Test Room") (shape rectangle) (width 10) (height 5) (depth 8)
               (group
@@ -245,13 +234,9 @@ mod tests {
         )
         .unwrap();
 
-        let (room, objects) = convert_space(&space);
+        let (info, objects) = convert_space(&space);
 
-        assert_eq!(room.name, "Test Room");
-        assert_eq!(room.shape, RoomShape::Rectangle);
-        assert_eq!(room.width, 10.0);
-        assert_eq!(room.height, 5.0);
-        assert_eq!(room.depth, 8.0);
+        assert_eq!(info.name, "Test Room");
 
         assert_eq!(objects.len(), 2);
 
@@ -269,7 +254,7 @@ mod tests {
     #[test]
     fn test_convert_with_model_url() {
         let space = parse(
-            r#"(room (name "Gallery")
+            r#"(space (name "Gallery")
               (group
                 (table (id t1) (name "Display Table")
                        (model-url "/models/table.glb")
@@ -285,7 +270,7 @@ mod tests {
     #[test]
     fn test_convert_custom_object() {
         let space = parse(
-            r#"(room (name "Test")
+            r#"(space (name "Test")
               (group
                 (prop (id p1) (name "Water Bottle"))))"#,
         )
@@ -299,12 +284,8 @@ mod tests {
 
     #[test]
     fn test_build_space_roundtrip() {
-        let room = Room {
-            name: "My Room".to_string(),
-            shape: RoomShape::Rectangle,
-            width: 15.0,
-            height: 10.0,
-            depth: 12.0,
+        let info = SpaceInfo {
+            name: "My Space".to_string(),
         };
         let objects = vec![
             RoomObject::new(
@@ -318,19 +299,16 @@ mod tests {
                 .with_object_type(RoomObjectType::Light),
         ];
 
-        let space = build_space(&room, &objects);
+        let space = build_space(&info, &objects);
 
         // Serialize and re-parse
         let serialized = protoverse::serialize(&space);
         let reparsed = parse(&serialized).unwrap();
 
         // Convert back
-        let (room2, objects2) = convert_space(&reparsed);
+        let (info2, objects2) = convert_space(&reparsed);
 
-        assert_eq!(room2.name, "My Room");
-        assert_eq!(room2.width, 15.0);
-        assert_eq!(room2.height, 10.0);
-        assert_eq!(room2.depth, 12.0);
+        assert_eq!(info2.name, "My Space");
 
         assert_eq!(objects2.len(), 2);
         assert_eq!(objects2[0].id, "desk");
@@ -346,20 +324,17 @@ mod tests {
 
     #[test]
     fn test_convert_defaults() {
-        let space = parse("(room)").unwrap();
-        let (room, objects) = convert_space(&space);
+        let space = parse("(space)").unwrap();
+        let (info, objects) = convert_space(&space);
 
-        assert_eq!(room.name, "Untitled Room");
-        assert_eq!(room.width, 20.0);
-        assert_eq!(room.height, 15.0);
-        assert_eq!(room.depth, 10.0);
+        assert_eq!(info.name, "Untitled Space");
         assert!(objects.is_empty());
     }
 
     #[test]
     fn test_convert_location_top_of() {
         let space = parse(
-            r#"(room (group
+            r#"(space (group
                 (table (id obj1) (name "Table") (position 0 0 0))
                 (prop (id obj2) (name "Bottle") (location top-of obj1))))"#,
         )
@@ -376,12 +351,8 @@ mod tests {
 
     #[test]
     fn test_build_space_always_emits_position() {
-        let room = Room {
+        let info = SpaceInfo {
             name: "Test".to_string(),
-            shape: RoomShape::Rectangle,
-            width: 10.0,
-            height: 10.0,
-            depth: 10.0,
         };
         let objects = vec![RoomObject::new(
             "a".to_string(),
@@ -389,7 +360,7 @@ mod tests {
             Vec3::ZERO,
         )];
 
-        let space = build_space(&room, &objects);
+        let space = build_space(&info, &objects);
         let serialized = protoverse::serialize(&space);
 
         // Position should appear even for Vec3::ZERO
@@ -398,12 +369,8 @@ mod tests {
 
     #[test]
     fn test_build_space_location_roundtrip() {
-        let room = Room {
+        let info = SpaceInfo {
             name: "Test".to_string(),
-            shape: RoomShape::Rectangle,
-            width: 10.0,
-            height: 10.0,
-            depth: 10.0,
         };
         let objects = vec![
             RoomObject::new("obj1".to_string(), "Table".to_string(), Vec3::ZERO)
@@ -416,7 +383,7 @@ mod tests {
             .with_location(ObjectLocation::TopOf("obj1".to_string())),
         ];
 
-        let space = build_space(&room, &objects);
+        let space = build_space(&info, &objects);
         let serialized = protoverse::serialize(&space);
         let reparsed = parse(&serialized).unwrap();
         let (_, objects2) = convert_space(&reparsed);

@@ -68,9 +68,8 @@ pub struct DaveUi<'a> {
     usage: Option<&'a crate::messages::UsageInfo>,
     /// Context window size for the current model
     context_window: u64,
-    /// Number of trailing user messages dispatched in the current stream.
-    /// Used by the queued indicator to skip dispatched messages.
-    dispatched_user_count: usize,
+    /// Dispatch lifecycle state, used for queued indicator logic.
+    dispatch_state: crate::session::DispatchState,
     /// Which backend this session uses
     backend_type: BackendType,
 }
@@ -154,6 +153,8 @@ pub enum DaveAction {
     TogglePlanMode,
     /// Toggle auto-steal focus mode (clicked AUTO badge)
     ToggleAutoSteal,
+    /// Trigger manual context compaction
+    Compact,
 }
 
 impl<'a> DaveUi<'a> {
@@ -185,7 +186,7 @@ impl<'a> DaveUi<'a> {
             status_dot_color: None,
             usage: None,
             context_window: crate::messages::context_window_for_model(None),
-            dispatched_user_count: 0,
+            dispatch_state: crate::session::DispatchState::default(),
             backend_type: BackendType::Remote,
         }
     }
@@ -225,8 +226,8 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn dispatched_user_count(mut self, count: usize) -> Self {
-        self.dispatched_user_count = count;
+    pub fn dispatch_state(mut self, state: crate::session::DispatchState) -> Self {
+        self.dispatch_state = state;
         self
     }
 
@@ -438,7 +439,7 @@ impl<'a> DaveUi<'a> {
         // When streaming, append_token inserts an Assistant between the
         // dispatched User and any queued Users, so all trailing Users
         // after that Assistant are queued. Before the first token arrives
-        // there's no Assistant yet, so we skip `dispatched_user_count`
+        // there's no Assistant yet, so we skip the dispatched count
         // trailing Users (they were all sent in the prompt).
         let queued_from = if self.flags.contains(DaveUiFlags::IsWorking) {
             let last_non_user = self
@@ -459,7 +460,7 @@ impl<'a> DaveUi<'a> {
                     // No streaming assistant yet — skip past the dispatched
                     // user messages (1 for single dispatch, N for batch)
                     let first_trailing = i + 1;
-                    let skip = self.dispatched_user_count.max(1);
+                    let skip = self.dispatch_state.dispatched_count().max(1);
                     let queued_start = first_trailing + skip;
                     if queued_start < self.chat.len() {
                         Some(queued_start)
@@ -1570,6 +1571,17 @@ fn toggle_badges_ui(
         .clicked()
     {
         action = Some(DaveAction::TogglePlanMode);
+    }
+
+    // COMPACT badge
+    let compact_badge =
+        super::badge::StatusBadge::new("COMPACT").variant(super::badge::BadgeVariant::Default);
+    if compact_badge
+        .show(ui)
+        .on_hover_text("Click to compact context")
+        .clicked()
+    {
+        action = Some(DaveAction::Compact);
     }
 
     action

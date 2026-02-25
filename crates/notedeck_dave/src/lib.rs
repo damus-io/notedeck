@@ -668,6 +668,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
 
+                // Backend produced real content — transition dispatch
+                // state so redispatch knows the backend consumed our
+                // messages (AwaitingResponse → Streaming).
+                if !matches!(
+                    res,
+                    DaveApiResponse::SessionInfo(_)
+                        | DaveApiResponse::CompactionStarted
+                        | DaveApiResponse::CompactionComplete(_)
+                        | DaveApiResponse::QueryComplete(_)
+                ) {
+                    session.dispatch_state.backend_responded();
+                }
+
                 match res {
                     DaveApiResponse::Failed(ref err) => {
                         session.chat.push(Message::Error(err.to_string()));
@@ -2213,6 +2226,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.auto_steal_focus = new_state;
                 None
             }
+            UiActionResult::Compact => {
+                if let Some(session) = self.session_manager.get_active() {
+                    let session_id = session.id.to_string();
+                    if let Some(rx) = get_backend(&self.backends, bt)
+                        .compact_session(session_id, ui.ctx().clone())
+                    {
+                        if let Some(session) = self.session_manager.get_active_mut() {
+                            session.incoming_tokens = Some(rx);
+                        }
+                    }
+                }
+                None
+            }
             UiActionResult::Handled => None,
         }
     }
@@ -2256,10 +2282,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 return;
             }
 
-            // If already streaming, queue the message in chat without dispatching.
+            // If already dispatched (waiting for or receiving response), queue
+            // the message in chat without dispatching.
             // needs_redispatch_after_stream_end() will dispatch it when the
             // current turn finishes.
-            if session.is_streaming() {
+            if session.is_dispatched() {
                 tracing::info!("message queued, will dispatch after current turn");
                 return;
             }
@@ -2287,15 +2314,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         }
 
-        // Count trailing user messages being dispatched so append_token
-        // knows how many to skip when inserting the assistant response.
-        let trailing_user_count = session
-            .chat
-            .iter()
-            .rev()
-            .take_while(|m| matches!(m, Message::User(_)))
-            .count();
-        session.dispatched_user_count = trailing_user_count;
+        // Record how many trailing user messages we're dispatching.
+        // DispatchState tracks this for append_token insert position,
+        // UI queued indicator, and redispatch-after-stream-end logic.
+        session.mark_dispatched();
 
         let user_id = calculate_user_id(app_ctx.accounts.get_selected_account().keypair());
         let session_id = format!("dave-session-{}", session.id);
@@ -2865,8 +2887,22 @@ fn handle_stream_end(
 
     session.task_handle = None;
 
-    // If chat ends with a user message, there's an unanswered remote message
-    // that arrived while we were streaming. Queue it for dispatch.
+    // If the backend returned nothing (dispatch_state never left
+    // AwaitingResponse), show an error so the user isn't left staring
+    // at silence.
+    if matches!(
+        session.dispatch_state,
+        session::DispatchState::AwaitingResponse { .. }
+    ) && session.last_assistant_text().is_none()
+    {
+        tracing::warn!("Session {}: backend returned empty response", session_id);
+        session
+            .chat
+            .push(Message::Error("No response from backend".into()));
+    }
+
+    // Check redispatch BEFORE resetting dispatch_state — the check
+    // reads the state to distinguish empty responses from new messages.
     if session.needs_redispatch_after_stream_end() {
         tracing::info!(
             "Session {}: redispatching queued user message after stream end",
@@ -2874,6 +2910,8 @@ fn handle_stream_end(
         );
         needs_send.insert(session_id);
     }
+
+    session.dispatch_state.stream_ended();
 
     // After compact & approve: compaction must have completed
     // (ReadyToProceed) before we send "Proceed".

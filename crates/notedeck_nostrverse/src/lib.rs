@@ -1,12 +1,13 @@
-//! Nostrverse: Virtual rooms as Nostr events
+//! Nostrverse: Virtual spaces as Nostr events
 //!
 //! This app implements spatial views for nostrverse - a protocol where
-//! rooms and objects are Nostr events (kinds 37555, 37556, 10555).
+//! spaces and objects are Nostr events (kinds 37555, 37556, 10555).
 //!
-//! Rooms are rendered as 3D scenes using renderbud's PBR pipeline,
+//! Spaces are rendered as 3D scenes using renderbud's PBR pipeline,
 //! embedded in egui via wgpu paint callbacks.
 
 mod convert;
+mod model_cache;
 mod nostr_events;
 mod presence;
 mod room_state;
@@ -14,13 +15,13 @@ mod room_view;
 mod subscriptions;
 
 pub use room_state::{
-    NostrverseAction, NostrverseState, Room, RoomObject, RoomObjectType, RoomRef, RoomShape,
-    RoomUser,
+    NostrverseAction, NostrverseState, RoomObject, RoomObjectType, RoomUser, SpaceInfo, SpaceRef,
 };
 pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
 use enostr::Pubkey;
 use glam::Vec3;
+use nostrdb::Filter;
 use notedeck::{AppContext, AppResponse};
 use renderbud::Transform;
 
@@ -47,8 +48,8 @@ const MAX_EXTRAPOLATION_TIME: f64 = 3.0;
 /// Maximum extrapolation distance from last known position
 const MAX_EXTRAPOLATION_DISTANCE: f32 = 10.0;
 
-/// Demo room in protoverse .space format
-const DEMO_SPACE: &str = r#"(room (name "Demo Room") (shape rectangle) (width 20) (height 15) (depth 10)
+/// Demo space in protoverse .space format
+const DEMO_SPACE: &str = r#"(space (name "Demo Space")
   (group
     (table (id obj1) (name "Ironwood Table")
            (model-url "/home/jb55/var/models/ironwood/ironwood.glb")
@@ -67,9 +68,9 @@ pub mod kinds {
     pub const PRESENCE: u16 = 10555;
 }
 
-/// Nostrverse app - a 3D spatial canvas for virtual rooms
+/// Nostrverse app - a 3D spatial canvas for virtual spaces
 pub struct NostrverseApp {
-    /// Current room state
+    /// Current space state
     state: NostrverseState,
     /// 3D renderer (None if wgpu unavailable)
     renderer: Option<renderbud::egui::EguiRenderer>,
@@ -81,7 +82,7 @@ pub struct NostrverseApp {
     initialized: bool,
     /// Cached avatar model AABB for ground placement
     avatar_bounds: Option<renderbud::Aabb>,
-    /// Local nostrdb subscription for room events
+    /// Local nostrdb subscription for space events
     room_sub: Option<subscriptions::RoomSubscription>,
     /// Presence publisher (throttled heartbeats)
     presence_pub: presence::PresencePublisher,
@@ -89,25 +90,37 @@ pub struct NostrverseApp {
     presence_expiry: presence::PresenceExpiry,
     /// Local nostrdb subscription for presence events
     presence_sub: Option<subscriptions::PresenceSubscription>,
-    /// Cached room naddr string (avoids format! per frame)
-    room_naddr: String,
+    /// Cached space naddr string (avoids format! per frame)
+    space_naddr: String,
     /// Event ID of the last save we made (to skip our own echo in polls)
     last_save_id: Option<[u8; 32]>,
     /// Monotonic time tracker (seconds since app start)
     start_time: std::time::Instant,
+    /// Model download/cache manager (initialized lazily in initialize())
+    model_cache: Option<model_cache::ModelCache>,
+    /// Dedicated relay URL for multiplayer sync (from NOSTRVERSE_RELAY env)
+    relay_url: Option<String>,
+    /// Pending relay subscription ID — Some means we still need to send REQ
+    pending_relay_sub: Option<String>,
 }
 
 impl NostrverseApp {
-    /// Create a new nostrverse app with a room reference
-    pub fn new(room_ref: RoomRef, render_state: Option<&egui_wgpu::RenderState>) -> Self {
+    const DEFAULT_RELAY: &str = "ws://relay.jb55.com";
+
+    /// Create a new nostrverse app with a space reference
+    pub fn new(space_ref: SpaceRef, render_state: Option<&egui_wgpu::RenderState>) -> Self {
         let renderer = render_state.map(|rs| renderbud::egui::EguiRenderer::new(rs, (800, 600)));
 
         let device = render_state.map(|rs| rs.device.clone());
         let queue = render_state.map(|rs| rs.queue.clone());
 
-        let room_naddr = room_ref.to_naddr();
+        let relay_url = Some(
+            std::env::var("NOSTRVERSE_RELAY").unwrap_or_else(|_| Self::DEFAULT_RELAY.to_string()),
+        );
+
+        let space_naddr = space_ref.to_naddr();
         Self {
-            state: NostrverseState::new(room_ref),
+            state: NostrverseState::new(space_ref),
             renderer,
             device,
             queue,
@@ -117,16 +130,51 @@ impl NostrverseApp {
             presence_pub: presence::PresencePublisher::new(),
             presence_expiry: presence::PresenceExpiry::new(),
             presence_sub: None,
-            room_naddr,
+            space_naddr,
             last_save_id: None,
             start_time: std::time::Instant::now(),
+            model_cache: None,
+            relay_url,
+            pending_relay_sub: None,
         }
     }
 
-    /// Create with a demo room
+    /// Create with a demo space
     pub fn demo(render_state: Option<&egui_wgpu::RenderState>) -> Self {
-        let room_ref = RoomRef::new("demo-room".to_string(), demo_pubkey());
-        Self::new(room_ref, render_state)
+        let space_ref = SpaceRef::new("demo-room".to_string(), demo_pubkey());
+        Self::new(space_ref, render_state)
+    }
+
+    /// Send a client message to the dedicated relay, if configured.
+    fn send_to_relay(&self, pool: &mut enostr::RelayPool, msg: &enostr::ClientMessage) {
+        if let Some(relay_url) = &self.relay_url {
+            pool.send_to(msg, relay_url);
+        }
+    }
+
+    /// Send the relay subscription once the relay is connected.
+    fn maybe_send_relay_sub(&mut self, pool: &mut enostr::RelayPool) {
+        let (Some(sub_id), Some(relay_url)) = (&self.pending_relay_sub, &self.relay_url) else {
+            return;
+        };
+
+        let connected = pool
+            .relays
+            .iter()
+            .any(|r| r.url() == relay_url && matches!(r.status(), enostr::RelayStatus::Connected));
+
+        if !connected {
+            return;
+        }
+
+        let room_filter = Filter::new().kinds([kinds::ROOM as u64]).build();
+        let presence_filter = Filter::new().kinds([kinds::PRESENCE as u64]).build();
+
+        let req = enostr::ClientMessage::req(sub_id.clone(), vec![room_filter, presence_filter]);
+        pool.send_to(&req, relay_url);
+
+        tracing::info!("Sent nostrverse subscription to {}", relay_url);
+        self.pending_relay_sub = None;
     }
 
     /// Load a glTF model and return its handle
@@ -144,22 +192,40 @@ impl NostrverseApp {
         }
     }
 
-    /// Initialize: ingest demo room into local nostrdb and subscribe.
-    fn initialize(&mut self, ctx: &mut AppContext<'_>) {
+    /// Initialize: ingest demo space into local nostrdb and subscribe.
+    fn initialize(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         if self.initialized {
             return;
         }
 
-        // Subscribe to room and presence events in local nostrdb
+        // Initialize model cache
+        let cache_dir = ctx.path.path(notedeck::DataPathType::Cache).join("models");
+        self.model_cache = Some(model_cache::ModelCache::new(cache_dir));
+
+        // Subscribe to space and presence events in local nostrdb
         self.room_sub = Some(subscriptions::RoomSubscription::new(ctx.ndb));
         self.presence_sub = Some(subscriptions::PresenceSubscription::new(ctx.ndb));
 
-        // Try to load an existing room from nostrdb first
-        let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-        self.load_room_from_ndb(ctx.ndb, &txn);
+        // Add dedicated relay to pool (subscription sent on connect in maybe_send_relay_sub)
+        if let Some(relay_url) = &self.relay_url {
+            let egui_ctx = egui_ctx.clone();
+            if let Err(e) = ctx
+                .pool
+                .add_url(relay_url.clone(), move || egui_ctx.request_repaint())
+            {
+                tracing::error!("Failed to add nostrverse relay {}: {}", relay_url, e);
+            } else {
+                tracing::info!("Added nostrverse relay: {}", relay_url);
+                self.pending_relay_sub = Some(format!("nostrverse-{}", uuid::Uuid::new_v4()));
+            }
+        }
 
-        // Only ingest the demo room if no saved room was found
-        if self.state.room.is_none() {
+        // Try to load an existing space from nostrdb first
+        let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+        self.load_space_from_ndb(ctx.ndb, &txn);
+
+        // Only ingest the demo space if no saved space was found
+        if self.state.space.is_none() {
             let space = match protoverse::parse(DEMO_SPACE) {
                 Ok(s) => s,
                 Err(e) => {
@@ -169,11 +235,13 @@ impl NostrverseApp {
             };
 
             if let Some(kp) = ctx.accounts.selected_filled() {
-                let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
-                nostr_events::ingest_event(builder, ctx.ndb, kp);
+                let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
+                if let Some((msg, _id)) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
+                    self.send_to_relay(ctx.pool, &msg);
+                }
             }
             // room_sub (set up above) will pick up the ingested event
-            // on the next poll_room_updates() frame.
+            // on the next poll_space_updates() frame.
         }
 
         // Add self user
@@ -206,9 +274,7 @@ impl NostrverseApp {
         if let Some(renderer) = &self.renderer {
             let self_pos = self
                 .state
-                .users
-                .iter()
-                .find(|u| u.is_self)
+                .self_user()
                 .map(|u| u.position)
                 .unwrap_or(Vec3::ZERO);
             let mut r = renderer.renderer.lock().unwrap();
@@ -218,12 +284,12 @@ impl NostrverseApp {
         self.initialized = true;
     }
 
-    /// Apply a parsed Space to the room state: convert, load models, update state.
+    /// Apply a parsed Space to the state: convert, load models, update state.
     /// Preserves renderer scene handles for objects that still exist by ID,
     /// and removes orphaned scene objects from the renderer.
     fn apply_space(&mut self, space: &protoverse::Space) {
-        let (room, mut objects) = convert::convert_space(space);
-        self.state.room = Some(room);
+        let (info, mut objects) = convert::convert_space(space);
+        self.state.space = Some(info);
 
         // Transfer scene/model handles from existing objects with matching IDs
         for new_obj in &mut objects {
@@ -250,119 +316,143 @@ impl NostrverseApp {
         self.state.dirty = false;
     }
 
-    /// Load room state from a nostrdb query result.
-    fn load_room_from_ndb(&mut self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) {
+    /// Load space state from a nostrdb query result.
+    fn load_space_from_ndb(&mut self, ndb: &nostrdb::Ndb, txn: &nostrdb::Transaction) {
         let notes = subscriptions::RoomSubscription::query_existing(ndb, txn);
 
         for note in &notes {
-            let Some(room_id) = nostr_events::get_room_id(note) else {
+            let Some(space_id) = nostr_events::get_space_id(note) else {
                 continue;
             };
-            if room_id != self.state.room_ref.id {
+            if space_id != self.state.space_ref.id {
                 continue;
             }
 
-            let Some(space) = nostr_events::parse_room_event(note) else {
-                tracing::warn!("Failed to parse room event content");
+            let Some(space) = nostr_events::parse_space_event(note) else {
+                tracing::warn!("Failed to parse space event content");
                 continue;
             };
 
             self.apply_space(&space);
-            tracing::info!("Loaded room '{}' from nostrdb", room_id);
+            tracing::info!("Loaded space '{}' from nostrdb", space_id);
             return;
         }
     }
 
-    /// Save current room state: build Space, serialize, ingest as new nostr event.
-    fn save_room(&mut self, ctx: &mut AppContext<'_>) {
-        let Some(room) = &self.state.room else {
-            tracing::warn!("save_room: no room to save");
+    /// Save current space state: build Space, serialize, ingest as new nostr event.
+    fn save_space(&mut self, ctx: &mut AppContext<'_>) {
+        let Some(info) = &self.state.space else {
+            tracing::warn!("save_space: no space to save");
             return;
         };
         let Some(kp) = ctx.accounts.selected_filled() else {
-            tracing::warn!("save_room: no keypair available");
+            tracing::warn!("save_space: no keypair available");
             return;
         };
 
-        let space = convert::build_space(room, &self.state.objects);
-        let builder = nostr_events::build_room_event(&space, &self.state.room_ref.id);
-        self.last_save_id = nostr_events::ingest_event(builder, ctx.ndb, kp);
-        tracing::info!("Saved room '{}'", self.state.room_ref.id);
+        let space = convert::build_space(info, &self.state.objects);
+        let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
+        if let Some((msg, id)) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
+            self.last_save_id = Some(id);
+            self.send_to_relay(ctx.pool, &msg);
+        }
+        tracing::info!("Saved space '{}'", self.state.space_ref.id);
     }
 
     /// Load 3D models for objects, then resolve any semantic locations
     /// (e.g. "top-of obj1") to concrete positions using AABB bounds.
-    fn load_object_models(&self, objects: &mut [RoomObject]) {
+    ///
+    /// For remote URLs (http/https), the model cache handles async download
+    /// and disk caching. Models that aren't yet downloaded will be loaded
+    /// on a future frame via `poll_model_downloads`.
+    fn load_object_models(&mut self, objects: &mut [RoomObject]) {
         let renderer = self.renderer.as_ref();
         let model_bounds_fn = |m: Option<renderbud::Model>| -> Option<renderbud::Aabb> {
             let r = renderer?.renderer.lock().unwrap();
             r.model_bounds(m?)
         };
 
-        // Phase 1: Load all models and cache their AABB bounds
+        // Phase 1: Load all models and cache their AABB bounds.
+        // Remote URLs may return None (download in progress); those objects
+        // will get their model_handle assigned later via poll_model_downloads.
         let mut bounds_by_id: std::collections::HashMap<String, renderbud::Aabb> =
             std::collections::HashMap::new();
 
         for obj in objects.iter_mut() {
-            if let Some(url) = &obj.model_url {
-                let model = self.load_model(url);
-                if let Some(bounds) = model_bounds_fn(model) {
+            // Skip if already loaded
+            if obj.model_handle.is_some() {
+                if let Some(bounds) = model_bounds_fn(obj.model_handle) {
                     bounds_by_id.insert(obj.id.clone(), bounds);
                 }
-                obj.model_handle = model;
-            }
-        }
-
-        // Phase 2: Resolve semantic locations to local offsets from parent.
-        // For parented objects (TopOf, Near), the position becomes local to the parent node.
-        // The location_base stores the bounds-derived offset so the editor can show user offset.
-        let mut resolved: Vec<(usize, Vec3, Vec3)> = Vec::new();
-
-        for (i, obj) in objects.iter().enumerate() {
-            let Some(loc) = &obj.location else {
                 continue;
-            };
+            }
 
-            let local_base = match loc {
-                room_state::ObjectLocation::TopOf(target_id) => {
-                    let target_top = bounds_by_id.get(target_id).map(|b| b.max.y).unwrap_or(0.0);
-                    let self_half_h = bounds_by_id
-                        .get(&obj.id)
-                        .map(|b| (b.max.y - b.min.y) * 0.5)
-                        .unwrap_or(0.0);
-                    Some(Vec3::new(0.0, target_top + self_half_h, 0.0))
-                }
-                room_state::ObjectLocation::Near(target_id) => {
-                    let offset = bounds_by_id
-                        .get(target_id)
-                        .map(|b| b.max.x - b.min.x)
-                        .unwrap_or(1.0);
-                    Some(Vec3::new(offset, 0.0, 0.0))
-                }
-                room_state::ObjectLocation::Floor => {
-                    let self_half_h = bounds_by_id
-                        .get(&obj.id)
-                        .map(|b| (b.max.y - b.min.y) * 0.5)
-                        .unwrap_or(0.0);
-                    Some(Vec3::new(0.0, self_half_h, 0.0))
-                }
-                _ => None,
-            };
+            if let Some(url) = obj.model_url.clone() {
+                let local_path = if let Some(cache) = &mut self.model_cache {
+                    cache.request(&url)
+                } else {
+                    Some(std::path::PathBuf::from(&url))
+                };
 
-            if let Some(base) = local_base {
-                resolved.push((i, base, base + obj.position));
+                if let Some(path) = local_path {
+                    let model = self.load_model(path.to_str().unwrap_or(&url));
+                    if let Some(bounds) = model_bounds_fn(model) {
+                        bounds_by_id.insert(obj.id.clone(), bounds);
+                    }
+                    obj.model_handle = model;
+                    if let Some(cache) = &mut self.model_cache {
+                        cache.mark_loaded(&url);
+                    }
+                }
             }
         }
 
-        for (i, base, pos) in resolved {
-            objects[i].location_base = Some(base);
-            objects[i].position = pos;
+        resolve_locations(objects, &bounds_by_id);
+    }
+
+    /// Poll for completed model downloads, load into GPU, and re-resolve
+    /// semantic locations so dependent objects are positioned correctly.
+    fn poll_model_downloads(&mut self) {
+        let Some(cache) = &mut self.model_cache else {
+            return;
+        };
+
+        let ready = cache.poll();
+        if ready.is_empty() {
+            return;
+        }
+
+        let mut any_loaded = false;
+        for (url, path) in ready {
+            let path_str = path.to_string_lossy();
+            let model = self.load_model(&path_str);
+
+            if model.is_none() {
+                tracing::warn!("Failed to load cached model at {}", path_str);
+                continue;
+            }
+
+            for obj in &mut self.state.objects {
+                if obj.model_url.as_deref() == Some(&url) && obj.model_handle.is_none() {
+                    obj.model_handle = model;
+                    obj.scene_object_id = None;
+                    any_loaded = true;
+                }
+            }
+
+            if let Some(cache) = &mut self.model_cache {
+                cache.mark_loaded(&url);
+            }
+        }
+
+        if any_loaded {
+            resolve_object_locations(self.renderer.as_ref(), &mut self.state.objects);
         }
     }
 
-    /// Poll the room subscription for updates.
-    /// Skips applying updates while the room has unsaved local edits.
-    fn poll_room_updates(&mut self, ndb: &nostrdb::Ndb) {
+    /// Poll the space subscription for updates.
+    /// Skips applying updates while the space has unsaved local edits.
+    fn poll_space_updates(&mut self, ndb: &nostrdb::Ndb) {
         if self.state.dirty {
             return;
         }
@@ -381,19 +471,19 @@ impl NostrverseApp {
                 continue;
             }
 
-            let Some(room_id) = nostr_events::get_room_id(note) else {
+            let Some(space_id) = nostr_events::get_space_id(note) else {
                 continue;
             };
-            if room_id != self.state.room_ref.id {
+            if space_id != self.state.space_ref.id {
                 continue;
             }
 
-            let Some(space) = nostr_events::parse_room_event(note) else {
+            let Some(space) = nostr_events::parse_space_event(note) else {
                 continue;
             };
 
             self.apply_space(&space);
-            tracing::info!("Room '{}' updated from nostrdb", room_id);
+            tracing::info!("Space '{}' updated from nostrdb", space_id);
         }
     }
 
@@ -405,14 +495,16 @@ impl NostrverseApp {
         if let Some(kp) = ctx.accounts.selected_filled() {
             let self_pos = self
                 .state
-                .users
-                .iter()
-                .find(|u| u.is_self)
+                .self_user()
                 .map(|u| u.position)
                 .unwrap_or(Vec3::ZERO);
 
-            self.presence_pub
-                .maybe_publish(ctx.ndb, kp, &self.room_naddr, self_pos, now);
+            if let Some(msg) =
+                self.presence_pub
+                    .maybe_publish(ctx.ndb, kp, &self.space_naddr, self_pos, now)
+            {
+                self.send_to_relay(ctx.pool, &msg);
+            }
         }
 
         // Poll for remote presence events
@@ -421,7 +513,7 @@ impl NostrverseApp {
             let changed = presence::poll_presence(
                 sub,
                 ctx.ndb,
-                &self.room_naddr,
+                &self.space_naddr,
                 &self_pubkey,
                 &mut self.state.users,
                 now,
@@ -429,12 +521,7 @@ impl NostrverseApp {
 
             // Assign avatar model to new users
             if changed {
-                let avatar_model = self
-                    .state
-                    .users
-                    .iter()
-                    .find(|u| u.is_self)
-                    .and_then(|u| u.model_handle);
+                let avatar_model = self.state.self_user().and_then(|u| u.model_handle);
                 if let Some(model) = avatar_model {
                     for user in &mut self.state.users {
                         if user.model_handle.is_none() {
@@ -454,122 +541,47 @@ impl NostrverseApp {
         }
     }
 
-    /// Sync room objects and user avatars to the renderbud scene
+    /// Sync space objects and user avatars to the renderbud scene
     fn sync_scene(&mut self) {
         let Some(renderer) = &self.renderer else {
             return;
         };
         let mut r = renderer.renderer.lock().unwrap();
 
-        // Build map of object string ID -> scene ObjectId for parenting lookups
-        let mut id_to_scene: std::collections::HashMap<String, renderbud::ObjectId> = self
-            .state
-            .objects
-            .iter()
-            .filter_map(|obj| Some((obj.id.clone(), obj.scene_object_id?)))
-            .collect();
+        sync_objects_to_scene(&mut self.state.objects, &mut r);
 
-        // Sync room objects to the scene graph
-        for obj in &mut self.state.objects {
-            let transform = Transform {
-                translation: obj.position,
-                rotation: obj.rotation,
-                scale: obj.scale,
-            };
-
-            if let Some(scene_id) = obj.scene_object_id {
-                r.update_object_transform(scene_id, transform);
-            } else if let Some(model) = obj.model_handle {
-                // Find parent scene node for objects with location references
-                let parent_scene_id = obj.location.as_ref().and_then(|loc| match loc {
-                    room_state::ObjectLocation::TopOf(target_id)
-                    | room_state::ObjectLocation::Near(target_id) => {
-                        id_to_scene.get(target_id).copied()
-                    }
-                    _ => None,
-                });
-
-                let scene_id = if let Some(parent_id) = parent_scene_id {
-                    r.place_object_with_parent(model, transform, parent_id)
-                } else {
-                    r.place_object(model, transform)
-                };
-
-                obj.scene_object_id = Some(scene_id);
-                id_to_scene.insert(obj.id.clone(), scene_id);
-            }
-        }
-
-        // Read avatar position/yaw from the third-person controller
-        let avatar_pos = r.avatar_position();
-        let avatar_yaw = r.avatar_yaw();
-
-        // Update self-user's position from the controller
-        if let Some(pos) = avatar_pos
-            && let Some(self_user) = self.state.users.iter_mut().find(|u| u.is_self)
+        // Update self-user's position from the camera controller
+        if let Some(pos) = r.avatar_position()
+            && let Some(self_user) = self.state.self_user_mut()
         {
             self_user.position = pos;
             self_user.display_position = pos;
         }
 
-        // Sync all user avatars to the scene
-        let avatar_half_h = self
+        // Smoothly lerp avatar yaw toward controller target
+        let dt = 1.0 / 60.0_f32;
+        if let Some(target_yaw) = r.avatar_yaw() {
+            self.state.smooth_avatar_yaw = lerp_yaw(
+                self.state.smooth_avatar_yaw,
+                target_yaw,
+                AVATAR_YAW_LERP_SPEED * dt,
+            );
+        }
+
+        let now = self.start_time.elapsed().as_secs_f64();
+        let avatar_y_offset = self
             .avatar_bounds
             .map(|b| (b.max.y - b.min.y) * 0.5)
-            .unwrap_or(0.0);
-        let avatar_y_offset = avatar_half_h * AVATAR_SCALE;
-        let now = self.start_time.elapsed().as_secs_f64();
-        let dt = 1.0 / 60.0_f32;
+            .unwrap_or(0.0)
+            * AVATAR_SCALE;
 
-        // Smoothly lerp avatar yaw toward target
-        if let Some(target_yaw) = avatar_yaw {
-            let current = self.state.smooth_avatar_yaw;
-            let mut diff = target_yaw - current;
-            diff = (diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-                - std::f32::consts::PI;
-            let t = (AVATAR_YAW_LERP_SPEED * dt).min(1.0);
-            self.state.smooth_avatar_yaw = current + diff * t;
-        }
-
-        for user in &mut self.state.users {
-            // Dead reckoning for remote users
-            if !user.is_self {
-                let time_since_update = (now - user.update_time).min(MAX_EXTRAPOLATION_TIME) as f32;
-                let extrapolated = user.position + user.velocity * time_since_update;
-
-                // Clamp extrapolation distance to prevent runaway drift
-                let offset = extrapolated - user.position;
-                let target = if offset.length() > MAX_EXTRAPOLATION_DISTANCE {
-                    user.position + offset.normalize() * MAX_EXTRAPOLATION_DISTANCE
-                } else {
-                    extrapolated
-                };
-
-                // Smooth lerp display_position toward the extrapolated target
-                let t = (AVATAR_POS_LERP_SPEED * dt).min(1.0);
-                user.display_position = user.display_position.lerp(target, t);
-            }
-
-            let render_pos = user.display_position;
-            let yaw = if user.is_self {
-                self.state.smooth_avatar_yaw
-            } else {
-                0.0
-            };
-
-            let transform = Transform {
-                translation: render_pos + Vec3::new(0.0, avatar_y_offset, 0.0),
-                rotation: glam::Quat::from_rotation_y(yaw),
-                scale: Vec3::splat(AVATAR_SCALE),
-            };
-
-            if let Some(scene_id) = user.scene_object_id {
-                r.update_object_transform(scene_id, transform);
-            } else if let Some(model) = user.model_handle {
-                let scene_id = r.place_object(model, transform);
-                user.scene_object_id = Some(scene_id);
-            }
-        }
+        update_remote_user_positions(&mut self.state.users, dt, now);
+        sync_users_to_scene(
+            &mut self.state.users,
+            self.state.smooth_avatar_yaw,
+            avatar_y_offset,
+            &mut r,
+        );
     }
 
     /// Get the current state
@@ -586,10 +598,17 @@ impl NostrverseApp {
 impl notedeck::App for NostrverseApp {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         // Initialize on first frame
-        self.initialize(ctx);
+        let egui_ctx = ui.ctx().clone();
+        self.initialize(ctx, &egui_ctx);
 
-        // Poll for room event updates
-        self.poll_room_updates(ctx.ndb);
+        // Send relay subscription once connected
+        self.maybe_send_relay_sub(ctx.pool);
+
+        // Poll for space event updates
+        self.poll_space_updates(ctx.ndb);
+
+        // Poll for completed model downloads
+        self.poll_model_downloads();
 
         // Presence: publish, poll, expire
         self.tick_presence(ctx);
@@ -668,11 +687,23 @@ impl NostrverseApp {
                 }
                 self.state.selected_object = selected;
             }
-            NostrverseAction::SaveRoom => {
-                self.save_room(ctx);
+            NostrverseAction::SaveSpace => {
+                self.save_space(ctx);
                 self.state.dirty = false;
             }
-            NostrverseAction::AddObject(obj) => {
+            NostrverseAction::AddObject(mut obj) => {
+                // Try to load model immediately (handles local + cached remote)
+                if let Some(url) = obj.model_url.clone() {
+                    let local_path = self.model_cache.as_mut().and_then(|c| c.request(&url));
+                    if let Some(path) = local_path {
+                        obj.model_handle = self.load_model(path.to_str().unwrap_or(&url));
+                        if obj.model_handle.is_some()
+                            && let Some(cache) = &mut self.model_cache
+                        {
+                            cache.mark_loaded(&url);
+                        }
+                    }
+                }
                 self.state.objects.push(obj);
                 self.state.dirty = true;
             }
@@ -710,4 +741,173 @@ impl NostrverseApp {
             }
         }
     }
+}
+
+/// Sync room objects to the renderbud scene graph.
+/// Updates transforms for existing objects and places new ones.
+fn sync_objects_to_scene(objects: &mut [RoomObject], r: &mut renderbud::Renderer) {
+    let mut id_to_scene: std::collections::HashMap<String, renderbud::ObjectId> = objects
+        .iter()
+        .filter_map(|obj| Some((obj.id.clone(), obj.scene_object_id?)))
+        .collect();
+
+    for obj in objects.iter_mut() {
+        let transform = Transform {
+            translation: obj.position,
+            rotation: obj.rotation,
+            scale: obj.scale,
+        };
+
+        if let Some(scene_id) = obj.scene_object_id {
+            r.update_object_transform(scene_id, transform);
+        } else if let Some(model) = obj.model_handle {
+            let parent_scene_id = obj.location.as_ref().and_then(|loc| match loc {
+                room_state::ObjectLocation::TopOf(target_id)
+                | room_state::ObjectLocation::Near(target_id) => {
+                    id_to_scene.get(target_id).copied()
+                }
+                _ => None,
+            });
+
+            let scene_id = if let Some(parent_id) = parent_scene_id {
+                r.place_object_with_parent(model, transform, parent_id)
+            } else {
+                r.place_object(model, transform)
+            };
+
+            obj.scene_object_id = Some(scene_id);
+            id_to_scene.insert(obj.id.clone(), scene_id);
+        }
+    }
+}
+
+/// Smoothly interpolate between two yaw angles, wrapping around TAU.
+fn lerp_yaw(current: f32, target: f32, speed: f32) -> f32 {
+    let mut diff = target - current;
+    diff = (diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    current + diff * speed.min(1.0)
+}
+
+/// Apply dead reckoning to remote users, smoothing their display positions.
+fn update_remote_user_positions(users: &mut [RoomUser], dt: f32, now: f64) {
+    for user in users.iter_mut() {
+        if user.is_self {
+            continue;
+        }
+        let time_since_update = (now - user.update_time).min(MAX_EXTRAPOLATION_TIME) as f32;
+        let extrapolated = user.position + user.velocity * time_since_update;
+
+        let offset = extrapolated - user.position;
+        let target = if offset.length() > MAX_EXTRAPOLATION_DISTANCE {
+            user.position + offset.normalize() * MAX_EXTRAPOLATION_DISTANCE
+        } else {
+            extrapolated
+        };
+
+        let t = (AVATAR_POS_LERP_SPEED * dt).min(1.0);
+        user.display_position = user.display_position.lerp(target, t);
+    }
+}
+
+/// Sync user avatars to the renderbud scene with proper transforms.
+fn sync_users_to_scene(
+    users: &mut [RoomUser],
+    smooth_yaw: f32,
+    avatar_y_offset: f32,
+    r: &mut renderbud::Renderer,
+) {
+    for user in users.iter_mut() {
+        let yaw = if user.is_self { smooth_yaw } else { 0.0 };
+
+        let transform = Transform {
+            translation: user.display_position + Vec3::new(0.0, avatar_y_offset, 0.0),
+            rotation: glam::Quat::from_rotation_y(yaw),
+            scale: Vec3::splat(AVATAR_SCALE),
+        };
+
+        if let Some(scene_id) = user.scene_object_id {
+            r.update_object_transform(scene_id, transform);
+        } else if let Some(model) = user.model_handle {
+            user.scene_object_id = Some(r.place_object(model, transform));
+        }
+    }
+}
+
+/// Resolve semantic locations (top-of, near, floor) to concrete positions
+/// using the provided AABB bounds map.
+fn resolve_locations(
+    objects: &mut [RoomObject],
+    bounds_by_id: &std::collections::HashMap<String, renderbud::Aabb>,
+) {
+    let mut resolved: Vec<(usize, Vec3, Vec3)> = Vec::new();
+
+    for (i, obj) in objects.iter().enumerate() {
+        let Some(loc) = &obj.location else {
+            continue;
+        };
+
+        let local_base = match loc {
+            room_state::ObjectLocation::TopOf(target_id) => {
+                let target_top = bounds_by_id.get(target_id).map(|b| b.max.y).unwrap_or(0.0);
+                let self_half_h = bounds_by_id
+                    .get(&obj.id)
+                    .map(|b| (b.max.y - b.min.y) * 0.5)
+                    .unwrap_or(0.0);
+                Some(Vec3::new(0.0, target_top + self_half_h, 0.0))
+            }
+            room_state::ObjectLocation::Near(target_id) => {
+                let offset = bounds_by_id
+                    .get(target_id)
+                    .map(|b| b.max.x - b.min.x)
+                    .unwrap_or(1.0);
+                Some(Vec3::new(offset, 0.0, 0.0))
+            }
+            room_state::ObjectLocation::Floor => {
+                let self_half_h = bounds_by_id
+                    .get(&obj.id)
+                    .map(|b| (b.max.y - b.min.y) * 0.5)
+                    .unwrap_or(0.0);
+                Some(Vec3::new(0.0, self_half_h, 0.0))
+            }
+            _ => None,
+        };
+
+        if let Some(base) = local_base {
+            resolved.push((i, base, base + obj.position));
+        }
+    }
+
+    for (i, base, pos) in resolved {
+        objects[i].location_base = Some(base);
+        objects[i].position = pos;
+    }
+}
+
+/// Collect AABB bounds for all objects that have a loaded model.
+fn collect_bounds(
+    renderer: Option<&renderbud::egui::EguiRenderer>,
+    objects: &[RoomObject],
+) -> std::collections::HashMap<String, renderbud::Aabb> {
+    let mut bounds = std::collections::HashMap::new();
+    let Some(renderer) = renderer else {
+        return bounds;
+    };
+    let r = renderer.renderer.lock().unwrap();
+    for obj in objects {
+        if let Some(model) = obj.model_handle
+            && let Some(b) = r.model_bounds(model)
+        {
+            bounds.insert(obj.id.clone(), b);
+        }
+    }
+    bounds
+}
+
+/// Re-resolve semantic locations (top-of, near, floor) using current model bounds.
+fn resolve_object_locations(
+    renderer: Option<&renderbud::egui::EguiRenderer>,
+    objects: &mut [RoomObject],
+) {
+    let bounds_by_id = collect_bounds(renderer, objects);
+    resolve_locations(objects, &bounds_by_id);
 }

@@ -83,6 +83,13 @@ pub struct ThreadResumeParams {
     pub thread_id: String,
 }
 
+/// `thread/compact/start` params
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadCompactParams {
+    pub thread_id: String,
+}
+
 /// `turn/start` params
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -254,4 +261,24 @@ pub struct TurnCompletedParams {
     pub status: String,
     pub turn_id: Option<String>,
     pub error: Option<String>,
+}
+
+/// `thread/tokenUsage/updated` params
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsageParams {
+    pub token_usage: TokenUsage,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenUsage {
+    pub total: TokenBreakdown,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenBreakdown {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
 }
