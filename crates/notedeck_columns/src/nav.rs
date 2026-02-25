@@ -731,11 +731,14 @@ fn render_nav_body(
                 }
             })
         }
-        Route::Relays => {
-            RelayView::new(ctx.legacy_pool, &mut app.view_state.id_string_map, ctx.i18n)
-                .ui(ui)
-                .map_output(RenderNavAction::RelayAction)
-        }
+        Route::Relays => RelayView::new(
+            ctx.remote.relay_inspect(),
+            ctx.accounts.selected_account_advertised_relays(),
+            &mut app.view_state.id_string_map,
+            ctx.i18n,
+        )
+        .ui(ui)
+        .map_output(RenderNavAction::RelayAction),
 
         Route::Settings => {
             let db_path = ctx.args.db_path(ctx.path);

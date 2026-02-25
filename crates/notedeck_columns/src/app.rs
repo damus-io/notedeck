@@ -1027,7 +1027,7 @@ fn timelines_view(
                     ctx.img_cache,
                     ctx.media_jobs.sender(),
                     current_route.as_ref(),
-                    ctx.legacy_pool,
+                    ctx.remote.relay_inspect(),
                 )
                 .show(ui);
 
