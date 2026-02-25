@@ -103,27 +103,26 @@ pub fn build_presence_event<'a>(
         .tag_str(&exp_str)
 }
 
-/// Parse a presence event's position tag into a Vec3.
-pub fn parse_presence_position(note: &Note<'_>) -> Option<glam::Vec3> {
-    let pos_str = get_tag_value(note, "position")?;
-    let mut parts = pos_str.split_whitespace();
+/// Parse a whitespace-separated "x y z" string into a Vec3.
+fn parse_vec3(s: &str) -> Option<glam::Vec3> {
+    let mut parts = s.split_whitespace();
     let x: f32 = parts.next()?.parse().ok()?;
     let y: f32 = parts.next()?.parse().ok()?;
     let z: f32 = parts.next()?.parse().ok()?;
     Some(glam::Vec3::new(x, y, z))
 }
 
+/// Parse a presence event's position tag into a Vec3.
+pub fn parse_presence_position(note: &Note<'_>) -> Option<glam::Vec3> {
+    parse_vec3(get_tag_value(note, "position")?)
+}
+
 /// Parse a presence event's velocity tag into a Vec3.
 /// Returns Vec3::ZERO if no velocity tag (backward compatible with old events).
 pub fn parse_presence_velocity(note: &Note<'_>) -> glam::Vec3 {
-    let Some(vel_str) = get_tag_value(note, "velocity") else {
-        return glam::Vec3::ZERO;
-    };
-    let mut parts = vel_str.split_whitespace();
-    let x: f32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    let y: f32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    let z: f32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    glam::Vec3::new(x, y, z)
+    get_tag_value(note, "velocity")
+        .and_then(parse_vec3)
+        .unwrap_or(glam::Vec3::ZERO)
 }
 
 /// Extract the "a" tag (space naddr) from a presence note.

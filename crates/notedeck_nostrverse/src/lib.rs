@@ -274,9 +274,7 @@ impl NostrverseApp {
         if let Some(renderer) = &self.renderer {
             let self_pos = self
                 .state
-                .users
-                .iter()
-                .find(|u| u.is_self)
+                .self_user()
                 .map(|u| u.position)
                 .unwrap_or(Vec3::ZERO);
             let mut r = renderer.renderer.lock().unwrap();
@@ -497,9 +495,7 @@ impl NostrverseApp {
         if let Some(kp) = ctx.accounts.selected_filled() {
             let self_pos = self
                 .state
-                .users
-                .iter()
-                .find(|u| u.is_self)
+                .self_user()
                 .map(|u| u.position)
                 .unwrap_or(Vec3::ZERO);
 
@@ -525,12 +521,7 @@ impl NostrverseApp {
 
             // Assign avatar model to new users
             if changed {
-                let avatar_model = self
-                    .state
-                    .users
-                    .iter()
-                    .find(|u| u.is_self)
-                    .and_then(|u| u.model_handle);
+                let avatar_model = self.state.self_user().and_then(|u| u.model_handle);
                 if let Some(model) = avatar_model {
                     for user in &mut self.state.users {
                         if user.model_handle.is_none() {
@@ -602,7 +593,7 @@ impl NostrverseApp {
 
         // Update self-user's position from the controller
         if let Some(pos) = avatar_pos
-            && let Some(self_user) = self.state.users.iter_mut().find(|u| u.is_self)
+            && let Some(self_user) = self.state.self_user_mut()
         {
             self_user.position = pos;
             self_user.display_position = pos;

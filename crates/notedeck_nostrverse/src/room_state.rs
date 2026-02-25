@@ -291,4 +291,14 @@ impl NostrverseState {
     pub fn get_object_mut(&mut self, id: &str) -> Option<&mut RoomObject> {
         self.objects.iter_mut().find(|o| o.id == id)
     }
+
+    /// Get the local user
+    pub fn self_user(&self) -> Option<&RoomUser> {
+        self.users.iter().find(|u| u.is_self)
+    }
+
+    /// Get the local user mutably
+    pub fn self_user_mut(&mut self) -> Option<&mut RoomUser> {
+        self.users.iter_mut().find(|u| u.is_self)
+    }
 }
