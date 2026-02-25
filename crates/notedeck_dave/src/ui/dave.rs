@@ -935,36 +935,36 @@ impl<'a> DaveUi<'a> {
         if let Some(file_update) = &result.file_update {
             // File edit with diff — show collapsible header with inline diff
             let expand_id = ui.id().with("exec_diff").with(&result.summary);
-            let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(false));
+            let is_small = file_update.diff_lines().len() < 10;
+            let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(is_small));
 
-            let header_resp = ui.horizontal(|ui| {
-                let arrow = if expanded { "▼" } else { "▶" };
-                ui.add(egui::Label::new(
-                    egui::RichText::new(arrow)
-                        .size(10.0)
-                        .color(ui.visuals().text_color().gamma_multiply(0.5)),
-                ));
-                ui.add(egui::Label::new(
-                    egui::RichText::new(&result.tool_name)
-                        .size(11.0)
-                        .color(ui.visuals().text_color().gamma_multiply(0.6))
-                        .monospace(),
-                ));
-                if !result.summary.is_empty() {
+            let header_resp = ui
+                .horizontal(|ui| {
+                    let arrow = if expanded { "▼" } else { "▶" };
                     ui.add(egui::Label::new(
-                        egui::RichText::new(&result.summary)
+                        egui::RichText::new(arrow)
+                            .size(10.0)
+                            .color(ui.visuals().text_color().gamma_multiply(0.5)),
+                    ));
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(&result.tool_name)
                             .size(11.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.4))
+                            .color(ui.visuals().text_color().gamma_multiply(0.6))
                             .monospace(),
                     ));
-                }
-            });
-
-            if header_resp
+                    if !result.summary.is_empty() {
+                        ui.add(egui::Label::new(
+                            egui::RichText::new(&result.summary)
+                                .size(11.0)
+                                .color(ui.visuals().text_color().gamma_multiply(0.4))
+                                .monospace(),
+                        ));
+                    }
+                })
                 .response
-                .interact(egui::Sense::click())
-                .clicked()
-            {
+                .interact(egui::Sense::click());
+
+            if header_resp.clicked() {
                 ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
             }
 
