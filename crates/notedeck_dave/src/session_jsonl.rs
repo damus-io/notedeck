@@ -303,14 +303,7 @@ pub fn display_content_for_block(block: &ContentBlock<'_>) -> String {
     }
 }
 
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_chars).collect();
-        format!("{}...", truncated)
-    }
-}
+use crate::session_loader::truncate as truncate_str;
 
 #[cfg(test)]
 mod tests {

@@ -256,6 +256,31 @@ pub struct SessionState {
     pub created_at: u64,
 }
 
+impl SessionState {
+    /// Build a SessionState from a kind-31988 note's tags.
+    ///
+    /// Returns None if the note has no d-tag (session ID).
+    pub fn from_note(note: &nostrdb::Note, session_id: Option<&str>) -> Option<Self> {
+        let claude_session_id = session_id
+            .map(|s| s.to_string())
+            .or_else(|| get_tag_value(note, "d").map(|s| s.to_string()))?;
+
+        Some(SessionState {
+            claude_session_id,
+            title: get_tag_value(note, "title")
+                .unwrap_or("Untitled")
+                .to_string(),
+            custom_title: get_tag_value(note, "custom_title").map(|s| s.to_string()),
+            cwd: get_tag_value(note, "cwd").unwrap_or("").to_string(),
+            status: get_tag_value(note, "status").unwrap_or("idle").to_string(),
+            hostname: get_tag_value(note, "hostname").unwrap_or("").to_string(),
+            home_dir: get_tag_value(note, "home_dir").unwrap_or("").to_string(),
+            backend: get_tag_value(note, "backend").map(|s| s.to_string()),
+            created_at: note.created_at(),
+        })
+    }
+}
+
 /// Load all session states from kind-31988 events in ndb.
 ///
 /// Uses `query_replaceable_filtered` to deduplicate by d-tag, keeping
@@ -285,23 +310,10 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
             continue;
         };
 
-        let Some(claude_session_id) = get_tag_value(&note, "d") else {
+        let Some(state) = SessionState::from_note(&note, None) else {
             continue;
         };
-
-        states.push(SessionState {
-            claude_session_id: claude_session_id.to_string(),
-            title: get_tag_value(&note, "title")
-                .unwrap_or("Untitled")
-                .to_string(),
-            custom_title: get_tag_value(&note, "custom_title").map(|s| s.to_string()),
-            cwd: get_tag_value(&note, "cwd").unwrap_or("").to_string(),
-            status: get_tag_value(&note, "status").unwrap_or("idle").to_string(),
-            hostname: get_tag_value(&note, "hostname").unwrap_or("").to_string(),
-            home_dir: get_tag_value(&note, "home_dir").unwrap_or("").to_string(),
-            backend: get_tag_value(&note, "backend").map(|s| s.to_string()),
-            created_at: note.created_at(),
-        });
+        states.push(state);
     }
 
     states
@@ -335,22 +347,10 @@ pub fn latest_valid_session(
         return None;
     }
 
-    Some(SessionState {
-        claude_session_id: session_id.to_string(),
-        title: get_tag_value(note, "title")
-            .unwrap_or("Untitled")
-            .to_string(),
-        custom_title: get_tag_value(note, "custom_title").map(|s| s.to_string()),
-        cwd: get_tag_value(note, "cwd").unwrap_or("").to_string(),
-        status: get_tag_value(note, "status").unwrap_or("idle").to_string(),
-        hostname: get_tag_value(note, "hostname").unwrap_or("").to_string(),
-        home_dir: get_tag_value(note, "home_dir").unwrap_or("").to_string(),
-        backend: get_tag_value(note, "backend").map(|s| s.to_string()),
-        created_at: note.created_at(),
-    })
+    SessionState::from_note(note, Some(session_id))
 }
 
-fn truncate(s: &str, max_chars: usize) -> String {
+pub(crate) fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
     } else {
