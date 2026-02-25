@@ -5,6 +5,15 @@ use nostrdb::{Ndb, Subscription};
 
 use crate::{subscriptions, timeline::sub::ndb_sub};
 
+fn unsubscribe_local(ndb: &mut Ndb, local: Subscription, context: &str) -> bool {
+    if let Err(e) = ndb.unsubscribe(local) {
+        tracing::error!("{context}: failed to unsubscribe from ndb: {e}");
+        return false;
+    }
+
+    true
+}
+
 #[derive(Debug)]
 pub struct TimelineSub {
     filter: Option<HybridFilter>,
@@ -49,28 +58,34 @@ impl TimelineSub {
     pub fn reset(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
         let before = self.state.clone();
 
-        let dependers = match &self.state {
-            SubState::NoSub { dependers } => *dependers,
+        let Some(dependers) = (match &self.state {
+            SubState::NoSub { dependers } => Some(*dependers),
 
             SubState::LocalOnly { local, dependers } => {
-                if let Err(e) = ndb.unsubscribe(*local) {
-                    tracing::error!("TimelineSub::reset: failed to unsubscribe from ndb: {e}");
+                if !unsubscribe_local(ndb, *local, "TimelineSub::reset") {
+                    return;
                 }
-                *dependers
+                Some(*dependers)
             }
 
             SubState::RemoteOnly { remote, dependers } => {
                 pool.unsubscribe(remote.to_owned());
-                *dependers
+                Some(*dependers)
             }
 
             SubState::Unified { unified, dependers } => {
                 pool.unsubscribe(unified.remote.to_owned());
-                if let Err(e) = ndb.unsubscribe(unified.local) {
-                    tracing::error!("TimelineSub::reset: failed to unsubscribe from ndb: {e}");
+                if !unsubscribe_local(ndb, unified.local, "TimelineSub::reset") {
+                    self.state = SubState::LocalOnly {
+                        local: unified.local,
+                        dependers: *dependers,
+                    };
+                    return;
                 }
-                *dependers
+                Some(*dependers)
             }
+        }) else {
+            return;
         };
 
         self.state = SubState::NoSub { dependers };
@@ -253,8 +268,8 @@ impl TimelineSub {
                         break 's;
                     }
 
-                    if let Err(e) = ndb.unsubscribe(*local) {
-                        tracing::error!("Could not unsub ndb: {e}");
+                    // Keep local state intact if NDB unsubscribe fails.
+                    if !unsubscribe_local(ndb, *local, "TimelineSub::unsubscribe_or_decrement") {
                         break 's;
                     }
 
@@ -278,8 +293,12 @@ impl TimelineSub {
 
                     pool.unsubscribe(unified.remote.to_owned());
 
-                    if let Err(e) = ndb.unsubscribe(unified.local) {
-                        tracing::error!("could not unsub ndb: {e}");
+                    // Remote is already gone above; fall back to local-only on NDB failure.
+                    if !unsubscribe_local(
+                        ndb,
+                        unified.local,
+                        "TimelineSub::unsubscribe_or_decrement",
+                    ) {
                         self.state = SubState::LocalOnly {
                             local: unified.local,
                             dependers: *dependers,
