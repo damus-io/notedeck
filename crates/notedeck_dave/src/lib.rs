@@ -2529,14 +2529,15 @@ impl notedeck::App for Dave {
 
             // If events were found and we haven't hit the round limit,
             // trigger another sync to pull more recent data.
-            if fetched > 0 {
+            if fetched.new_events > 0 {
                 self.neg_sync_round += 1;
                 if self.neg_sync_round < MAX_NEG_SYNC_ROUNDS {
                     tracing::info!(
-                        "negentropy: scheduling round {}/{} (got {} events)",
+                        "negentropy: scheduling round {}/{} (got {} new, {} skipped)",
                         self.neg_sync_round + 1,
                         MAX_NEG_SYNC_ROUNDS,
-                        fetched
+                        fetched.new_events,
+                        fetched.skipped
                     );
                     self.neg_sync.trigger_now();
                 } else {
