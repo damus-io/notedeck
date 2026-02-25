@@ -1413,6 +1413,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             }
 
+            // Remote sessions are owned by another machine — only the
+            // session owner should publish state events.
+            if session.is_remote() {
+                session.state_dirty = false;
+                continue;
+            }
+
             let Some(agentic) = &session.agentic else {
                 continue;
             };
@@ -1744,6 +1751,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let new_status = AgentStatus::from_status_str(status_str);
                 let new_custom_title =
                     session_events::get_tag_value(&note, "custom_title").map(|s| s.to_string());
+                let new_hostname = session_events::get_tag_value(&note, "hostname").unwrap_or("");
                 for session in self.session_manager.iter_mut() {
                     let is_remote = session.is_remote();
                     if let Some(agentic) = &mut session.agentic {
@@ -1758,6 +1766,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             if let Some(backend) = backend_tag {
                                 session.backend_type = backend;
                             }
+                            // Hostname syncs for remote sessions from the event
+                            if is_remote && !new_hostname.is_empty() {
+                                session.details.hostname = new_hostname.to_string();
+                            }
                             // Status only updates for remote sessions (local
                             // sessions derive status from the actual process)
                             if is_remote {
@@ -1766,6 +1778,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                 }
+                self.session_manager.rebuild_host_groups();
                 continue;
             }
 
@@ -2408,6 +2421,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(session) = self.session_manager.get_mut(sid) else {
             return;
         };
+
+        // Only dispatch if we have the backend this session needs.
+        // Without this guard, get_backend falls back to Remote which
+        // immediately disconnects, causing an infinite redispatch loop.
+        if !self.backends.contains_key(&session.backend_type) {
+            return;
+        }
 
         // Count trailing user messages being dispatched so append_token
         // knows how many to skip when inserting the assistant response.
