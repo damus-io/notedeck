@@ -191,22 +191,59 @@ pub struct ItemCompletedParams {
     pub content: Option<String>,
 }
 
-/// `item/commandExecution/requestApproval` params — server asks client to approve a command
+/// `item/commandExecution/requestApproval` params — server asks client to approve a command.
+///
+/// In V2, `command` and `cwd` are optional.  When absent the command can be
+/// reconstructed from `proposed_execpolicy_amendment` (an argv vec).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandApprovalParams {
-    pub command: String,
+    /// The command string (present in V2 when the Command presentation is used).
+    #[serde(default)]
+    pub command: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Reason the approval is needed (e.g. "Write outside workspace").
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Proposed execpolicy amendment — an argv array that can serve as a
+    /// fallback when `command` is absent.
+    #[serde(default)]
+    pub proposed_execpolicy_amendment: Option<Vec<String>>,
 }
 
-/// `item/fileChange/requestApproval` params — server asks client to approve a file change
+impl CommandApprovalParams {
+    /// Best-effort command string for display / auto-accept evaluation.
+    pub fn command_string(&self) -> String {
+        if let Some(ref cmd) = self.command {
+            return cmd.clone();
+        }
+        if let Some(ref argv) = self.proposed_execpolicy_amendment {
+            return argv.join(" ");
+        }
+        "unknown command".to_string()
+    }
+}
+
+/// `item/fileChange/requestApproval` params — server asks client to approve a file change.
+///
+/// In V2, the params are minimal (just item/thread/turn ids + reason).
+/// `file_path`, `diff`, and `kind` may be absent.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FileChangeApprovalParams {
-    pub file_path: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
     pub diff: Option<String>,
+    #[serde(default)]
     pub kind: Option<Value>,
+    /// Reason the approval is needed.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Root directory the agent is requesting write access for.
+    #[serde(default)]
+    pub grant_root: Option<String>,
 }
 
 /// `turn/completed` params

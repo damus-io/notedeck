@@ -473,10 +473,17 @@ fn handle_codex_message(
     let method = match &msg.method {
         Some(m) => m.as_str(),
         None => {
-            // Response to a request we sent (e.g. approval ack). Nothing to do.
+            tracing::debug!("codex msg with no method (response): id={:?}", msg.id);
             return HandleResult::Continue;
         }
     };
+
+    tracing::debug!(
+        "codex msg: method={} id={:?} has_params={}",
+        method,
+        msg.id,
+        msg.params.is_some()
+    );
 
     match method {
         "item/agentMessage/delta" => {
@@ -521,54 +528,94 @@ fn handle_codex_message(
         }
 
         "item/commandExecution/requestApproval" => {
+            tracing::info!(
+                "CMD APPROVAL: id={:?} has_params={}",
+                msg.id,
+                msg.params.is_some()
+            );
             if let (Some(rpc_id), Some(params)) = (msg.id, msg.params) {
-                if let Ok(approval) = serde_json::from_value::<CommandApprovalParams>(params) {
-                    return check_approval_or_forward(
-                        rpc_id,
-                        "Bash",
-                        serde_json::json!({ "command": approval.command }),
-                        response_tx,
-                        ctx,
-                    );
+                tracing::info!(
+                    "CMD APPROVAL params: {}",
+                    serde_json::to_string(&params).unwrap_or_default()
+                );
+                match serde_json::from_value::<CommandApprovalParams>(params) {
+                    Ok(approval) => {
+                        let cmd = approval.command_string();
+                        tracing::info!("CMD APPROVAL deserialized ok: command={}", cmd);
+                        return check_approval_or_forward(
+                            rpc_id,
+                            "Bash",
+                            serde_json::json!({ "command": cmd }),
+                            response_tx,
+                            ctx,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("CMD APPROVAL deser FAILED: {}", e);
+                    }
                 }
+            } else {
+                tracing::warn!("CMD APPROVAL missing id or params");
             }
         }
 
         "item/fileChange/requestApproval" => {
+            tracing::info!(
+                "FILE APPROVAL: id={:?} has_params={}",
+                msg.id,
+                msg.params.is_some()
+            );
             if let (Some(rpc_id), Some(params)) = (msg.id, msg.params) {
-                if let Ok(approval) = serde_json::from_value::<FileChangeApprovalParams>(params) {
-                    let kind_str = approval
-                        .kind
-                        .as_ref()
-                        .and_then(|k| k.get("type").and_then(|t| t.as_str()))
-                        .unwrap_or("edit");
+                tracing::info!(
+                    "FILE APPROVAL params: {}",
+                    serde_json::to_string(&params).unwrap_or_default()
+                );
+                match serde_json::from_value::<FileChangeApprovalParams>(params) {
+                    Ok(approval) => {
+                        let file_path = approval.file_path.as_deref().unwrap_or("unknown");
+                        let kind_str = approval
+                            .kind
+                            .as_ref()
+                            .and_then(|k| k.get("type").and_then(|t| t.as_str()))
+                            .unwrap_or("edit");
 
-                    let (tool_name, tool_input) = match kind_str {
-                        "create" => (
-                            "Write",
-                            serde_json::json!({
-                                "file_path": approval.file_path,
-                                "content": approval.diff.as_deref().unwrap_or(""),
-                            }),
-                        ),
-                        _ => (
-                            "Edit",
-                            serde_json::json!({
-                                "file_path": approval.file_path,
-                                "old_string": "",
-                                "new_string": approval.diff.as_deref().unwrap_or(""),
-                            }),
-                        ),
-                    };
+                        let (tool_name, tool_input) = match kind_str {
+                            "create" => (
+                                "Write",
+                                serde_json::json!({
+                                    "file_path": file_path,
+                                    "content": approval.diff.as_deref().unwrap_or(""),
+                                }),
+                            ),
+                            _ => (
+                                "Edit",
+                                serde_json::json!({
+                                    "file_path": file_path,
+                                    "old_string": "",
+                                    "new_string": approval.diff.as_deref().unwrap_or(""),
+                                }),
+                            ),
+                        };
 
-                    return check_approval_or_forward(
-                        rpc_id,
-                        tool_name,
-                        tool_input,
-                        response_tx,
-                        ctx,
-                    );
+                        tracing::info!(
+                            "FILE APPROVAL deserialized ok: tool={} file={}",
+                            tool_name,
+                            file_path
+                        );
+                        return check_approval_or_forward(
+                            rpc_id,
+                            tool_name,
+                            tool_input,
+                            response_tx,
+                            ctx,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("FILE APPROVAL deser FAILED: {}", e);
+                    }
                 }
+            } else {
+                tracing::warn!("FILE APPROVAL missing id or params");
             }
         }
 
@@ -592,7 +639,15 @@ fn handle_codex_message(
         }
 
         other => {
-            tracing::debug!("Unhandled codex notification: {}", other);
+            tracing::debug!(
+                "Unhandled codex notification: {} id={:?} params={}",
+                other,
+                msg.id,
+                msg.params
+                    .as_ref()
+                    .map(|p| serde_json::to_string(p).unwrap_or_default())
+                    .unwrap_or_default()
+            );
         }
     }
 
