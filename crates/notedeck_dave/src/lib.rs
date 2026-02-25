@@ -70,8 +70,8 @@ const DEFAULT_PNS_RELAY: &str = "ws://relay.jb55.com/";
 
 /// Maximum consecutive negentropy sync rounds before stopping.
 /// Each round pulls up to the relay's limit (typically 500 events),
-/// so 5 rounds fetches up to ~2500 recent events.
-const MAX_NEG_SYNC_ROUNDS: u8 = 5;
+/// so 20 rounds fetches up to ~10000 recent events.
+const MAX_NEG_SYNC_ROUNDS: u8 = 20;
 
 /// Normalize a relay URL to always have a trailing slash.
 fn normalize_relay_url(url: String) -> String {
