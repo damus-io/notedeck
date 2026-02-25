@@ -1698,6 +1698,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             };
 
             let status_str = session_events::get_tag_value(&note, "status").unwrap_or("idle");
+            let backend_tag =
+                session_events::get_tag_value(&note, "backend").and_then(BackendType::from_tag_str);
 
             // Skip deleted sessions entirely — don't create or keep them
             if status_str == "deleted" {
@@ -1753,6 +1755,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             if new_custom_title.is_some() {
                                 session.details.custom_title = new_custom_title.clone();
                             }
+                            if let Some(backend) = backend_tag {
+                                session.backend_type = backend;
+                            }
                             // Status only updates for remote sessions (local
                             // sessions derive status from the actual process)
                             if is_remote {
@@ -1781,13 +1786,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             existing_ids.insert(claude_sid.to_string());
 
+            let backend = state
+                .backend
+                .as_deref()
+                .and_then(BackendType::from_tag_str)
+                .unwrap_or(BackendType::Claude);
             let cwd = std::path::PathBuf::from(&state.cwd);
             let dave_sid = self.session_manager.new_resumed_session(
                 cwd,
                 claude_sid.to_string(),
                 state.title.clone(),
                 AiMode::Agentic,
-                BackendType::Remote,
+                backend,
             );
 
             // Load any conversation history that arrived with it
