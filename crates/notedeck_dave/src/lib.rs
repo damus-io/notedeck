@@ -1507,12 +1507,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 );
                 session.chat = loaded.messages;
 
-                // Determine if this is a remote session: hostname mismatch
-                // is the primary signal, with cwd non-existence as fallback
-                // for old events that may lack a hostname.
-                if (!state.hostname.is_empty() && state.hostname != self.hostname)
-                    || (state.hostname.is_empty() && !std::path::PathBuf::from(&state.cwd).exists())
-                {
+                if is_session_remote(&state.hostname, &state.cwd, &self.hostname) {
                     session.source = session::SessionSource::Remote;
                 }
 
@@ -1545,30 +1540,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     agentic.remote_status = AgentStatus::from_status_str(&state.status);
                     agentic.remote_status_ts = state.created_at;
 
-                    // Set up live conversation subscription so we can
-                    // receive messages from remote clients (e.g. phone)
-                    // even before the local backend is started.
-                    if agentic.live_conversation_sub.is_none() {
-                        let conv_filter = nostrdb::Filter::new()
-                            .kinds([session_events::AI_CONVERSATION_KIND as u64])
-                            .tags([state.claude_session_id.as_str()], 'd')
-                            .build();
-                        match ctx.ndb.subscribe(&[conv_filter]) {
-                            Ok(sub) => {
-                                agentic.live_conversation_sub = Some(sub);
-                                tracing::info!(
-                                    "subscribed for live conversation events for session '{}'",
-                                    state.title,
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "failed to subscribe for conversation events: {:?}",
-                                    e,
-                                );
-                            }
-                        }
-                    }
+                    setup_conversation_subscription(agentic, &state.claude_session_id, ctx.ndb);
                 }
             }
         }
@@ -1744,12 +1716,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.chat = loaded.messages;
                 }
 
-                // Determine if this is a remote session: hostname mismatch
-                // is the primary signal, with cwd non-existence as fallback
-                // for old events that may lack a hostname.
-                if (!state.hostname.is_empty() && state.hostname != self.hostname)
-                    || (state.hostname.is_empty() && !std::path::PathBuf::from(&state.cwd).exists())
-                {
+                if is_session_remote(&state.hostname, &state.cwd, &self.hostname) {
                     session.source = session::SessionSource::Remote;
                 }
 
@@ -1767,30 +1734,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     agentic.remote_status = AgentStatus::from_status_str(&state.status);
                     agentic.remote_status_ts = state.created_at;
 
-                    // Set up live conversation subscription so we can
-                    // receive messages from remote clients (e.g. phone)
-                    // even before the local backend is started.
-                    if agentic.live_conversation_sub.is_none() {
-                        let conv_filter = nostrdb::Filter::new()
-                            .kinds([session_events::AI_CONVERSATION_KIND as u64])
-                            .tags([claude_sid], 'd')
-                            .build();
-                        match ctx.ndb.subscribe(&[conv_filter]) {
-                            Ok(sub) => {
-                                agentic.live_conversation_sub = Some(sub);
-                                tracing::info!(
-                                    "subscribed for live conversation events for session '{}'",
-                                    &state.title,
-                                );
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "failed to subscribe for conversation events: {:?}",
-                                    e,
-                                );
-                            }
-                        }
-                    }
+                    setup_conversation_subscription(agentic, claude_sid, ctx.ndb);
                 }
             }
 
@@ -2822,6 +2766,45 @@ impl notedeck::App for Dave {
 /// single-window mode is particularly aggressive, so we use both
 /// NSRunningApplication::activateWithOptions and orderFrontRegardless
 /// on the key window.
+/// Set up a live conversation subscription for a session if not already subscribed.
+///
+/// Subscribes to kind-1988 events tagged with the session's claude ID so we
+/// receive messages from remote clients (phone) even before the local backend starts.
+fn setup_conversation_subscription(
+    agentic: &mut session::AgenticSessionData,
+    claude_session_id: &str,
+    ndb: &nostrdb::Ndb,
+) {
+    if agentic.live_conversation_sub.is_some() {
+        return;
+    }
+    let filter = nostrdb::Filter::new()
+        .kinds([session_events::AI_CONVERSATION_KIND as u64])
+        .tags([claude_session_id], 'd')
+        .build();
+    match ndb.subscribe(&[filter]) {
+        Ok(sub) => {
+            agentic.live_conversation_sub = Some(sub);
+            tracing::info!(
+                "subscribed for live conversation events (session {})",
+                claude_session_id,
+            );
+        }
+        Err(e) => {
+            tracing::warn!("failed to subscribe for conversation events: {:?}", e,);
+        }
+    }
+}
+
+/// Check if a session state represents a remote session.
+///
+/// A session is remote if its hostname differs from the local hostname,
+/// or (for old events without hostname) if the cwd doesn't exist locally.
+fn is_session_remote(hostname: &str, cwd: &str, local_hostname: &str) -> bool {
+    (!hostname.is_empty() && hostname != local_hostname)
+        || (hostname.is_empty() && !std::path::PathBuf::from(cwd).exists())
+}
+
 /// Handle a SessionInfo response from the AI backend.
 ///
 /// Sets up ndb subscriptions for permission responses and conversation events
@@ -2849,22 +2832,7 @@ fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo, nd
                     }
                 }
             }
-            // Conversation subscription for incoming remote user messages
-            if agentic.live_conversation_sub.is_none() {
-                let filter = nostrdb::Filter::new()
-                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
-                    .tags([csid.as_str()], 'd')
-                    .build();
-                match ndb.subscribe(&[filter]) {
-                    Ok(sub) => {
-                        tracing::info!("subscribed for conversation events (session {})", csid);
-                        agentic.live_conversation_sub = Some(sub);
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to subscribe for conversation events: {:?}", e);
-                    }
-                }
-            }
+            setup_conversation_subscription(agentic, csid, ndb);
         }
         agentic.session_info = Some(info);
     }
