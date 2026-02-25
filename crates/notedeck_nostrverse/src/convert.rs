@@ -146,7 +146,7 @@ pub fn build_space(info: &SpaceInfo, objects: &[RoomObject]) -> Space {
 
     // Object cells (indices 2..)
     for obj in objects {
-        build_object_cell(obj, &mut cells, &mut attributes, &mut child_ids);
+        build_object_cell(obj, &mut cells, &mut attributes, &child_ids);
     }
 
     Space {
