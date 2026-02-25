@@ -213,7 +213,7 @@ impl TimelineCache {
                 self.timelines.get_mut(id).expect("timeline inserted")
             };
 
-            if let Some(filter) = timeline.filter.get_any_ready() {
+            if let FilterState::Ready(filter) = &timeline.filter {
                 debug!("got open with subscription for {:?}", &timeline.kind);
                 timeline.subscription.try_add_local(account_pk, ndb, filter);
                 ensure_remote_timeline_subscription(
@@ -258,7 +258,7 @@ impl TimelineCache {
             Vitality::Fresh(timeline) => (None, timeline),
         };
 
-        if let Some(filter) = timeline.filter.get_any_ready() {
+        if let FilterState::Ready(filter) = &timeline.filter {
             debug!("got open with *new* subscription for {:?}", &timeline.kind);
             timeline.subscription.try_add_local(account_pk, ndb, filter);
             ensure_remote_timeline_subscription(
@@ -309,7 +309,7 @@ impl TimelineCache {
 }
 
 fn collect_stale_notes(timeline: &Timeline, txn: &Transaction, ndb: &Ndb) -> Vec<NoteRef> {
-    let Some(filter) = timeline.filter.get_any_ready() else {
+    let FilterState::Ready(filter) = &timeline.filter else {
         return Vec::new();
     };
 

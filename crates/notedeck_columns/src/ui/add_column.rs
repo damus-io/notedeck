@@ -924,8 +924,6 @@ fn attach_timeline_column(
         &mut timeline,
         ctx.ndb,
         &txn,
-        &mut app.subscriptions,
-        ctx.legacy_pool,
         &mut scoped_subs,
         ctx.note_cache,
         app.options.contains(AppOptions::SinceOptimize),
@@ -1146,13 +1144,12 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         return;
     };
 
+    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
     crate::timeline::setup_new_timeline(
         &mut timeline,
         ctx.ndb,
         &txn,
-        &mut app.subscriptions,
-        ctx.legacy_pool,
-        &mut ctx.remote.scoped_subs(ctx.accounts),
+        &mut scoped_subs,
         ctx.note_cache,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,

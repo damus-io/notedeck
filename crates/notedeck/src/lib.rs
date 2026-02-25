@@ -63,7 +63,7 @@ pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
 use enostr::{OutboxSessionHandler, Wakeup};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
-pub use filter::{FilterState, FilterStates, UnifiedSubscription};
+pub use filter::{FilterState, UnifiedSubscription};
 pub use fonts::NamedFontFamily;
 pub use i18n::{CacheStats, FluentArgs, FluentValue, LanguageIdentifier, Localization};
 pub use imgcache::{

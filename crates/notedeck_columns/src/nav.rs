@@ -1,6 +1,6 @@
 use crate::{
     accounts::{render_accounts_route, AccountsAction, AccountsResponse, AccountsRoute},
-    app::{get_active_columns_mut, get_decks_mut},
+    app::{get_active_columns_mut, get_decks_mut, setup_selected_account_timeline_subs},
     column::ColumnsAction,
     deck_state::DeckState,
     decks::{Deck, DecksAction, DecksCache},
@@ -119,6 +119,8 @@ impl SwitchingAction {
                     if switch_action.switching_to_new {
                         decks_cache.add_deck_default(ctx, timeline_cache, switch_action.switch_to);
                     }
+
+                    setup_selected_account_timeline_subs(timeline_cache, ctx);
 
                     // pop nav after switch
                     get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache)
