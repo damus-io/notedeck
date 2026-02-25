@@ -38,6 +38,27 @@ impl BackendType {
             BackendType::Remote => "",
         }
     }
+
+    /// Stable string for Nostr event tags.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BackendType::OpenAI => "openai",
+            BackendType::Claude => "claude",
+            BackendType::Codex => "codex",
+            BackendType::Remote => "remote",
+        }
+    }
+
+    /// Parse from a Nostr event tag value.
+    pub fn from_tag_str(s: &str) -> Option<BackendType> {
+        match s {
+            "openai" => Some(BackendType::OpenAI),
+            "claude" => Some(BackendType::Claude),
+            "codex" => Some(BackendType::Codex),
+            "remote" => Some(BackendType::Remote),
+            _ => None,
+        }
+    }
 }
 
 /// Trait for AI backend implementations

@@ -197,6 +197,7 @@ struct DeletedSessionInfo {
     title: String,
     cwd: String,
     home_dir: String,
+    backend: BackendType,
 }
 
 /// Subscription waiting for ndb to index 1988 conversation events.
@@ -1433,6 +1434,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     status,
                     &self.hostname,
                     &session.details.home_dir,
+                    session.backend_type.as_str(),
                     &sk,
                 ),
                 &format!("publishing session state: {} -> {}", claude_sid, status),
@@ -1466,6 +1468,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     "deleted",
                     &self.hostname,
                     &info.home_dir,
+                    info.backend.as_str(),
                     &sk,
                 ),
                 &format!(
@@ -1557,13 +1560,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         tracing::info!("restoring {} sessions from ndb", states.len());
 
         for state in &states {
+            let backend = state
+                .backend
+                .as_deref()
+                .and_then(BackendType::from_tag_str)
+                .unwrap_or(BackendType::Claude);
             let cwd = std::path::PathBuf::from(&state.cwd);
             let dave_sid = self.session_manager.new_resumed_session(
                 cwd,
                 state.claude_session_id.clone(),
                 state.title.clone(),
                 AiMode::Agentic,
-                BackendType::Claude,
+                backend,
             );
 
             // Load conversation history from kind-1988 events
@@ -2103,6 +2111,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         title: session.details.title.clone(),
                         cwd: agentic.cwd.to_string_lossy().to_string(),
                         home_dir: session.details.home_dir.clone(),
+                        backend: session.backend_type,
                     });
                 }
             }
