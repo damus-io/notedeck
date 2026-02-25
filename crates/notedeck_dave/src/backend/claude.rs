@@ -1,13 +1,10 @@
-use crate::auto_accept::AutoAcceptRules;
 use crate::backend::session_info::parse_session_info;
-use crate::backend::tool_summary::{
-    extract_response_content, format_tool_summary, truncate_output,
-};
+use crate::backend::shared::{self, SessionCommand, SessionHandle};
+use crate::backend::tool_summary::extract_response_content;
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, ExecutedTool, ParsedMarkdown, PendingPermission,
-    PermissionRequest, PermissionResponse, SubagentInfo, SubagentStatus,
+    CompactionInfo, DaveApiResponse, PermissionResponse, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -25,7 +22,6 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
-use uuid::Uuid;
 
 /// Convert a ToolResultContent to a serde_json::Value for use with tool summary formatting
 fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_json::Value {
@@ -34,30 +30,6 @@ fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_js
         Some(ToolResultContent::Blocks(blocks)) => serde_json::Value::Array(blocks.to_vec()),
         None => serde_json::Value::Null,
     }
-}
-
-/// Commands sent to a session's actor task
-enum SessionCommand {
-    Query {
-        prompt: String,
-        response_tx: mpsc::Sender<DaveApiResponse>,
-        ctx: egui::Context,
-    },
-    /// Interrupt the current query - stops the stream but preserves session
-    Interrupt {
-        ctx: egui::Context,
-    },
-    /// Set the permission mode (Default or Plan)
-    SetPermissionMode {
-        mode: PermissionMode,
-        ctx: egui::Context,
-    },
-    Shutdown,
-}
-
-/// Handle to a session's actor
-struct SessionHandle {
-    command_tx: tokio_mpsc::Sender<SessionCommand>,
 }
 
 pub struct ClaudeBackend {
@@ -70,64 +42,6 @@ impl ClaudeBackend {
         Self {
             sessions: DashMap::new(),
         }
-    }
-
-    /// Convert our messages to a prompt for Claude Code
-    fn messages_to_prompt(messages: &[Message]) -> String {
-        let mut prompt = String::new();
-
-        // Include system message if present
-        for msg in messages {
-            if let Message::System(content) = msg {
-                prompt.push_str(content);
-                prompt.push_str("\n\n");
-                break;
-            }
-        }
-
-        // Format conversation history
-        for msg in messages {
-            match msg {
-                Message::System(_) => {} // Already handled
-                Message::User(content) => {
-                    prompt.push_str("Human: ");
-                    prompt.push_str(content);
-                    prompt.push_str("\n\n");
-                }
-                Message::Assistant(content) => {
-                    prompt.push_str("Assistant: ");
-                    prompt.push_str(content.text());
-                    prompt.push_str("\n\n");
-                }
-                Message::ToolCalls(_)
-                | Message::ToolResponse(_)
-                | Message::Error(_)
-                | Message::PermissionRequest(_)
-                | Message::CompactionComplete(_)
-                | Message::Subagent(_) => {
-                    // Skip tool-related, error, permission, compaction, and subagent messages
-                }
-            }
-        }
-
-        prompt
-    }
-
-    /// Collect all trailing user messages and join them.
-    /// When multiple messages are queued, they're all sent as one prompt
-    /// so the AI sees everything at once instead of one at a time.
-    pub fn get_pending_user_messages(messages: &[Message]) -> String {
-        let mut trailing: Vec<&str> = messages
-            .iter()
-            .rev()
-            .take_while(|m| matches!(m, Message::User(_)))
-            .filter_map(|m| match m {
-                Message::User(content) => Some(content.as_str()),
-                _ => None,
-            })
-            .collect();
-        trailing.reverse();
-        trailing.join("\n")
     }
 }
 
@@ -334,52 +248,26 @@ async fn session_actor(
 
                         // Handle permission requests (they're blocking the SDK)
                         Some(perm_req) = perm_rx.recv() => {
-                            // Check auto-accept rules
-                            let auto_accept_rules = AutoAcceptRules::default();
-                            if auto_accept_rules.should_auto_accept(&perm_req.tool_name, &perm_req.tool_input) {
-                                tracing::debug!("Auto-accepting {}: matched auto-accept rule", perm_req.tool_name);
+                            if shared::should_auto_accept(&perm_req.tool_name, &perm_req.tool_input) {
                                 let _ = perm_req.response_tx.send(PermissionResult::Allow(PermissionResultAllow::default()));
                                 continue;
                             }
 
-                            // Forward permission request to UI
-                            let request_id = Uuid::new_v4();
-                            let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
-
-                            let cached_plan = if perm_req.tool_name == "ExitPlanMode" {
-                                perm_req
-                                    .tool_input
-                                    .get("plan")
-                                    .and_then(|v| v.as_str())
-                                    .map(ParsedMarkdown::parse)
-                            } else {
-                                None
+                            let ui_resp_rx = match shared::forward_permission_to_ui(
+                                &perm_req.tool_name,
+                                perm_req.tool_input.clone(),
+                                &response_tx,
+                                &ctx,
+                            ) {
+                                Some(rx) => rx,
+                                None => {
+                                    let _ = perm_req.response_tx.send(PermissionResult::Deny(PermissionResultDeny {
+                                        message: "UI channel closed".to_string(),
+                                        interrupt: true,
+                                    }));
+                                    continue;
+                                }
                             };
-
-                            let request = PermissionRequest {
-                                id: request_id,
-                                tool_name: perm_req.tool_name.clone(),
-                                tool_input: perm_req.tool_input.clone(),
-                                response: None,
-                                answer_summary: None,
-                                cached_plan,
-                            };
-
-                            let pending = PendingPermission {
-                                request,
-                                response_tx: ui_resp_tx,
-                            };
-
-                            if response_tx.send(DaveApiResponse::PermissionRequest(pending)).is_err() {
-                                tracing::error!("Failed to send permission request to UI");
-                                let _ = perm_req.response_tx.send(PermissionResult::Deny(PermissionResultDeny {
-                                    message: "UI channel closed".to_string(),
-                                    interrupt: true,
-                                }));
-                                continue;
-                            }
-
-                            ctx.request_repaint();
 
                             // Wait for UI response inline - blocking is OK since stream is
                             // waiting for permission result anyway
@@ -532,23 +420,13 @@ async fn session_actor(
 
                                                         // Check if this is a Task tool completion
                                                         if tool_name == "Task" {
-                                                            // Pop this subagent from the stack
-                                                            subagent_stack.retain(|id| id != tool_use_id);
                                                             let result_text = extract_response_content(&result_value)
                                                                 .unwrap_or_else(|| "completed".to_string());
-                                                            let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
-                                                                task_id: tool_use_id.to_string(),
-                                                                result: truncate_output(&result_text, 2000),
-                                                            });
+                                                            shared::complete_subagent(tool_use_id, &result_text, &mut subagent_stack, &response_tx, &ctx);
                                                         }
 
-                                                        // Attach parent subagent context (top of stack)
-                                                        let parent_task_id = subagent_stack.last().cloned();
-                                                        let summary = format_tool_summary(&tool_name, &tool_input, &result_value);
                                                         let file_update = FileUpdate::from_tool_call(&tool_name, &tool_input);
-                                                        let tool_result = ExecutedTool { tool_name, summary, parent_task_id, file_update };
-                                                        let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
-                                                        ctx.request_repaint();
+                                                        shared::send_tool_result(&tool_name, &tool_input, &result_value, file_update, &subagent_stack, &response_tx, &ctx);
                                                     }
                                                 }
                                             }
@@ -652,23 +530,7 @@ impl AiBackend for ClaudeBackend {
     ) {
         let (response_tx, response_rx) = mpsc::channel();
 
-        // For resumed sessions, always send just the latest message since
-        // Claude Code already has the full conversation context via --resume.
-        // For new sessions, send full prompt on the first message.
-        let prompt = if resume_session_id.is_some() {
-            Self::get_pending_user_messages(&messages)
-        } else {
-            let is_first_message = messages
-                .iter()
-                .filter(|m| matches!(m, Message::User(_)))
-                .count()
-                == 1;
-            if is_first_message {
-                Self::messages_to_prompt(&messages)
-            } else {
-                Self::get_pending_user_messages(&messages)
-            }
-        };
+        let prompt = shared::prepare_prompt(&messages, &resume_session_id);
 
         tracing::debug!(
             "Sending request to Claude Code: session={}, resumed={}, prompt length: {}, preview: {:?}",
@@ -769,7 +631,7 @@ mod tests {
     #[test]
     fn pending_messages_single_user() {
         let messages = vec![Message::User("hello".into())];
-        assert_eq!(ClaudeBackend::get_pending_user_messages(&messages), "hello");
+        assert_eq!(shared::get_pending_user_messages(&messages), "hello");
     }
 
     #[test]
@@ -782,7 +644,7 @@ mod tests {
             Message::User("fourth".into()),
         ];
         assert_eq!(
-            ClaudeBackend::get_pending_user_messages(&messages),
+            shared::get_pending_user_messages(&messages),
             "second\nthird\nfourth"
         );
     }
@@ -795,10 +657,7 @@ mod tests {
             Message::Assistant(AssistantMessage::from_text("reply".into())),
             Message::User("pending".into()),
         ];
-        assert_eq!(
-            ClaudeBackend::get_pending_user_messages(&messages),
-            "pending"
-        );
+        assert_eq!(shared::get_pending_user_messages(&messages), "pending");
     }
 
     #[test]
@@ -807,13 +666,13 @@ mod tests {
             Message::User("hello".into()),
             Message::Assistant(AssistantMessage::from_text("reply".into())),
         ];
-        assert_eq!(ClaudeBackend::get_pending_user_messages(&messages), "");
+        assert_eq!(shared::get_pending_user_messages(&messages), "");
     }
 
     #[test]
     fn pending_messages_empty_chat() {
         let messages: Vec<Message> = vec![];
-        assert_eq!(ClaudeBackend::get_pending_user_messages(&messages), "");
+        assert_eq!(shared::get_pending_user_messages(&messages), "");
     }
 
     #[test]
@@ -835,7 +694,7 @@ mod tests {
             Message::User("queued 2".into()),
         ];
         assert_eq!(
-            ClaudeBackend::get_pending_user_messages(&messages),
+            shared::get_pending_user_messages(&messages),
             "queued 1\nqueued 2"
         );
     }
@@ -847,9 +706,6 @@ mod tests {
             Message::User("b".into()),
             Message::User("c".into()),
         ];
-        assert_eq!(
-            ClaudeBackend::get_pending_user_messages(&messages),
-            "a\nb\nc"
-        );
+        assert_eq!(shared::get_pending_user_messages(&messages), "a\nb\nc");
     }
 }

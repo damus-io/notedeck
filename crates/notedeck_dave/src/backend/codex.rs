@@ -2,13 +2,11 @@
 //! via its JSON-RPC-over-stdio protocol.
 
 use super::codex_protocol::*;
-use super::tool_summary::{format_tool_summary, truncate_output};
-use crate::auto_accept::AutoAcceptRules;
+use super::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::traits::AiBackend;
 use crate::file_update::{FileUpdate, FileUpdateType};
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, ExecutedTool, PendingPermission, PermissionRequest,
-    PermissionResponse, SessionInfo, SubagentInfo, SubagentStatus,
+    CompactionInfo, DaveApiResponse, PermissionResponse, SessionInfo, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -28,28 +26,6 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 // Session actor
 // ---------------------------------------------------------------------------
-
-/// Commands sent to a Codex session actor.
-enum SessionCommand {
-    Query {
-        prompt: String,
-        response_tx: mpsc::Sender<DaveApiResponse>,
-        ctx: egui::Context,
-    },
-    Interrupt {
-        ctx: egui::Context,
-    },
-    SetPermissionMode {
-        mode: PermissionMode,
-        ctx: egui::Context,
-    },
-    Shutdown,
-}
-
-/// Handle kept by the backend to communicate with the actor.
-struct SessionHandle {
-    command_tx: tokio_mpsc::Sender<SessionCommand>,
-}
 
 /// Result of processing a single Codex JSON-RPC message.
 enum HandleResult {
@@ -674,16 +650,17 @@ fn handle_codex_message(
                             "diff": diff_text,
                         });
                         let result_value = serde_json::json!({ "status": "ok" });
-                        let summary = format_tool_summary(tool_name, &tool_input, &result_value);
-
                         let file_update =
                             make_codex_file_update(path, tool_name, change_type, &diff_text);
-                        let _ = response_tx.send(DaveApiResponse::ToolResult(ExecutedTool {
-                            tool_name: tool_name.to_string(),
-                            summary,
-                            parent_task_id: subagent_stack.last().cloned(),
+                        shared::send_tool_result(
+                            tool_name,
+                            &tool_input,
+                            &result_value,
                             file_update,
-                        }));
+                            subagent_stack,
+                            response_tx,
+                            ctx,
+                        );
                     }
                     ctx.request_repaint();
                 }
@@ -723,44 +700,14 @@ fn check_approval_or_forward(
     response_tx: &mpsc::Sender<DaveApiResponse>,
     ctx: &egui::Context,
 ) -> HandleResult {
-    let rules = AutoAcceptRules::default();
-    if rules.should_auto_accept(tool_name, &tool_input) {
-        tracing::debug!("Auto-accepting {} (rpc_id={})", tool_name, rpc_id);
+    if shared::should_auto_accept(tool_name, &tool_input) {
         return HandleResult::AutoAccepted(rpc_id);
     }
 
-    // Forward to UI
-    let request_id = Uuid::new_v4();
-    let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
-
-    let request = PermissionRequest {
-        id: request_id,
-        tool_name: tool_name.to_string(),
-        tool_input,
-        response: None,
-        answer_summary: None,
-        cached_plan: None,
-    };
-
-    let pending = PendingPermission {
-        request,
-        response_tx: ui_resp_tx,
-    };
-
-    if response_tx
-        .send(DaveApiResponse::PermissionRequest(pending))
-        .is_err()
-    {
-        tracing::error!("Failed to send permission request to UI");
-        // Return auto-decline — can't reach UI
-        return HandleResult::AutoAccepted(rpc_id); // Will send Accept; could add a Declined variant
-    }
-
-    ctx.request_repaint();
-
-    HandleResult::NeedsApproval {
-        rpc_id,
-        rx: ui_resp_rx,
+    match shared::forward_permission_to_ui(tool_name, tool_input, response_tx, ctx) {
+        Some(rx) => HandleResult::NeedsApproval { rpc_id, rx },
+        // Can't reach UI — auto-accept as fallback
+        None => HandleResult::AutoAccepted(rpc_id),
     }
 }
 
@@ -797,16 +744,15 @@ fn handle_item_completed(
 
             let tool_input = serde_json::json!({ "command": command });
             let result_value = serde_json::json!({ "output": output, "exit_code": exit_code });
-            let summary = format_tool_summary("Bash", &tool_input, &result_value);
-            let parent_task_id = subagent_stack.last().cloned();
-
-            let _ = response_tx.send(DaveApiResponse::ToolResult(ExecutedTool {
-                tool_name: "Bash".to_string(),
-                summary,
-                parent_task_id,
-                file_update: None,
-            }));
-            ctx.request_repaint();
+            shared::send_tool_result(
+                "Bash",
+                &tool_input,
+                &result_value,
+                None,
+                subagent_stack,
+                response_tx,
+                ctx,
+            );
         }
 
         "fileChange" => {
@@ -829,36 +775,30 @@ fn handle_item_completed(
                 "diff": diff,
             });
             let result_value = serde_json::json!({ "status": "ok" });
-            let summary = format_tool_summary(tool_name, &tool_input, &result_value);
-            let parent_task_id = subagent_stack.last().cloned();
-
             let file_update = make_codex_file_update(
                 &file_path,
                 tool_name,
                 kind_str,
                 diff.as_deref().unwrap_or(""),
             );
-            let _ = response_tx.send(DaveApiResponse::ToolResult(ExecutedTool {
-                tool_name: tool_name.to_string(),
-                summary,
-                parent_task_id,
+            shared::send_tool_result(
+                tool_name,
+                &tool_input,
+                &result_value,
                 file_update,
-            }));
-            ctx.request_repaint();
+                subagent_stack,
+                response_tx,
+                ctx,
+            );
         }
 
         "collabAgentToolCall" => {
             if let Some(item_id) = &completed.item_id {
-                subagent_stack.retain(|id| id != item_id);
                 let result_text = completed
                     .result
                     .clone()
                     .unwrap_or_else(|| "completed".to_string());
-                let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
-                    task_id: item_id.clone(),
-                    result: truncate_output(&result_text, 2000),
-                });
-                ctx.request_repaint();
+                shared::complete_subagent(item_id, &result_text, subagent_stack, response_tx, ctx);
             }
         }
 
@@ -1151,50 +1091,6 @@ impl CodexBackend {
             sessions: DashMap::new(),
         }
     }
-
-    /// Convert messages to a prompt string, same logic as the Claude backend.
-    fn messages_to_prompt(messages: &[Message]) -> String {
-        let mut prompt = String::new();
-        for msg in messages {
-            if let Message::System(content) = msg {
-                prompt.push_str(content);
-                prompt.push_str("\n\n");
-                break;
-            }
-        }
-        for msg in messages {
-            match msg {
-                Message::System(_) => {}
-                Message::User(content) => {
-                    prompt.push_str("Human: ");
-                    prompt.push_str(content);
-                    prompt.push_str("\n\n");
-                }
-                Message::Assistant(content) => {
-                    prompt.push_str("Assistant: ");
-                    prompt.push_str(content.text());
-                    prompt.push_str("\n\n");
-                }
-                _ => {}
-            }
-        }
-        prompt
-    }
-
-    /// Collect all trailing user messages and join them.
-    fn get_pending_user_messages(messages: &[Message]) -> String {
-        let mut trailing: Vec<&str> = messages
-            .iter()
-            .rev()
-            .take_while(|m| matches!(m, Message::User(_)))
-            .filter_map(|m| match m {
-                Message::User(content) => Some(content.as_str()),
-                _ => None,
-            })
-            .collect();
-        trailing.reverse();
-        trailing.join("\n")
-    }
 }
 
 impl AiBackend for CodexBackend {
@@ -1214,20 +1110,7 @@ impl AiBackend for CodexBackend {
     ) {
         let (response_tx, response_rx) = mpsc::channel();
 
-        let prompt = if resume_session_id.is_some() {
-            Self::get_pending_user_messages(&messages)
-        } else {
-            let is_first_message = messages
-                .iter()
-                .filter(|m| matches!(m, Message::User(_)))
-                .count()
-                == 1;
-            if is_first_message {
-                Self::messages_to_prompt(&messages)
-            } else {
-                Self::get_pending_user_messages(&messages)
-            }
-        };
+        let prompt = shared::prepare_prompt(&messages, &resume_session_id);
 
         tracing::debug!(
             "Codex request: session={}, resumed={}, prompt_len={}",
@@ -1972,7 +1855,7 @@ mod tests {
     #[test]
     fn pending_messages_single_user() {
         let messages = vec![Message::User("hello".into())];
-        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "hello");
+        assert_eq!(shared::get_pending_user_messages(&messages), "hello");
     }
 
     #[test]
@@ -1985,7 +1868,7 @@ mod tests {
             Message::User("fourth".into()),
         ];
         assert_eq!(
-            CodexBackend::get_pending_user_messages(&messages),
+            shared::get_pending_user_messages(&messages),
             "second\nthird\nfourth"
         );
     }
@@ -1998,10 +1881,7 @@ mod tests {
             Message::Assistant(AssistantMessage::from_text("reply".into())),
             Message::User("pending".into()),
         ];
-        assert_eq!(
-            CodexBackend::get_pending_user_messages(&messages),
-            "pending"
-        );
+        assert_eq!(shared::get_pending_user_messages(&messages), "pending");
     }
 
     #[test]
@@ -2010,13 +1890,13 @@ mod tests {
             Message::User("hello".into()),
             Message::Assistant(AssistantMessage::from_text("reply".into())),
         ];
-        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "");
+        assert_eq!(shared::get_pending_user_messages(&messages), "");
     }
 
     #[test]
     fn pending_messages_empty_chat() {
         let messages: Vec<Message> = vec![];
-        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "");
+        assert_eq!(shared::get_pending_user_messages(&messages), "");
     }
 
     #[test]
@@ -2038,7 +1918,7 @@ mod tests {
             Message::User("queued 2".into()),
         ];
         assert_eq!(
-            CodexBackend::get_pending_user_messages(&messages),
+            shared::get_pending_user_messages(&messages),
             "queued 1\nqueued 2"
         );
     }
@@ -2050,10 +1930,7 @@ mod tests {
             Message::User("b".into()),
             Message::User("c".into()),
         ];
-        assert_eq!(
-            CodexBackend::get_pending_user_messages(&messages),
-            "a\nb\nc"
-        );
+        assert_eq!(shared::get_pending_user_messages(&messages), "a\nb\nc");
     }
 
     // -----------------------------------------------------------------------

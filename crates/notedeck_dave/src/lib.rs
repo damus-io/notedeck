@@ -70,8 +70,8 @@ const DEFAULT_PNS_RELAY: &str = "ws://relay.jb55.com/";
 
 /// Maximum consecutive negentropy sync rounds before stopping.
 /// Each round pulls up to the relay's limit (typically 500 events),
-/// so 5 rounds fetches up to ~2500 recent events.
-const MAX_NEG_SYNC_ROUNDS: u8 = 5;
+/// so 20 rounds fetches up to ~10000 recent events.
+const MAX_NEG_SYNC_ROUNDS: u8 = 20;
 
 /// Normalize a relay URL to always have a trailing slash.
 fn normalize_relay_url(url: String) -> String {
@@ -2521,23 +2521,22 @@ impl notedeck::App for Dave {
             let filter = nostrdb::Filter::new()
                 .kinds([enostr::pns::PNS_KIND as u64])
                 .authors([pns_keys.keypair.pubkey.bytes()])
-                .limit(500)
                 .build();
-            let fetched =
+            let result =
                 self.neg_sync
                     .process(neg_events, ctx.ndb, ctx.pool, &filter, &self.pns_relay_url);
 
             // If events were found and we haven't hit the round limit,
             // trigger another sync to pull more recent data.
-            if fetched.new_events > 0 {
+            if result.new_events > 0 {
                 self.neg_sync_round += 1;
                 if self.neg_sync_round < MAX_NEG_SYNC_ROUNDS {
                     tracing::info!(
                         "negentropy: scheduling round {}/{} (got {} new, {} skipped)",
                         self.neg_sync_round + 1,
                         MAX_NEG_SYNC_ROUNDS,
-                        fetched.new_events,
-                        fetched.skipped
+                        result.new_events,
+                        result.skipped
                     );
                     self.neg_sync.trigger_now();
                 } else {
@@ -2546,6 +2545,11 @@ impl notedeck::App for Dave {
                         MAX_NEG_SYNC_ROUNDS
                     );
                 }
+            } else if result.skipped > 0 {
+                tracing::info!(
+                    "negentropy: relay has {} events we can't reconcile, stopping",
+                    result.skipped
+                );
             }
         }
 
