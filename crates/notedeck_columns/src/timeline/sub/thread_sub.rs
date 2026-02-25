@@ -107,49 +107,8 @@ impl ThreadSubs {
         };
 
         match return_type {
-            ReturnType::Drag => {
-                if let Some(scope) = scopes.last_mut() {
-                    let Some(cur_sub) = scope.stack.pop() else {
-                        tracing::error!("expected a scope to be left");
-                        return;
-                    };
-
-                    if scope.root_id.bytes() != id.root_id.bytes() {
-                        tracing::error!(
-                            "Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
-                            scope.root_id.hex(),
-                            id.root_id.bytes()
-                        );
-                    }
-
-                    if ndb_unsub(ndb, cur_sub.sub, id) {
-                        remote.dependers = remote.dependers.saturating_sub(1);
-                    }
-
-                    if scope.stack.is_empty() {
-                        scopes.pop();
-                    }
-                }
-            }
-            ReturnType::Click => {
-                let Some(scope) = scopes.pop() else {
-                    tracing::error!("called unsubscribe but there aren't any scopes left");
-                    return;
-                };
-
-                if scope.root_id.bytes() != id.root_id.bytes() {
-                    tracing::error!(
-                        "Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
-                        scope.root_id.hex(),
-                        id.root_id.bytes()
-                    );
-                }
-                for sub in scope.stack {
-                    if ndb_unsub(ndb, sub.sub, id) {
-                        remote.dependers = remote.dependers.saturating_sub(1);
-                    }
-                }
-            }
+            ReturnType::Drag => unsubscribe_drag(scopes, ndb, id, remote),
+            ReturnType::Click => unsubscribe_click(scopes, ndb, id, remote),
         }
 
         if scopes.is_empty() {
@@ -181,6 +140,59 @@ impl ThreadSubs {
             .as_ref()
             .and_then(|s| s.last())
             .and_then(|s| s.stack.last())
+    }
+}
+
+fn unsubscribe_drag(
+    scopes: &mut Vec<Scope>,
+    ndb: &mut Ndb,
+    id: &ThreadSelection,
+    remote: &mut Remote,
+) {
+    if let Some(scope) = scopes.last_mut() {
+        let Some(cur_sub) = scope.stack.pop() else {
+            tracing::error!("expected a scope to be left");
+            return;
+        };
+
+        log_scope_root_mismatch(scope, id);
+
+        if ndb_unsub(ndb, cur_sub.sub, id) {
+            remote.dependers = remote.dependers.saturating_sub(1);
+        }
+
+        if scope.stack.is_empty() {
+            scopes.pop();
+        }
+    }
+}
+
+fn unsubscribe_click(
+    scopes: &mut Vec<Scope>,
+    ndb: &mut Ndb,
+    id: &ThreadSelection,
+    remote: &mut Remote,
+) {
+    let Some(scope) = scopes.pop() else {
+        tracing::error!("called unsubscribe but there aren't any scopes left");
+        return;
+    };
+
+    log_scope_root_mismatch(&scope, id);
+    for sub in scope.stack {
+        if ndb_unsub(ndb, sub.sub, id) {
+            remote.dependers = remote.dependers.saturating_sub(1);
+        }
+    }
+}
+
+fn log_scope_root_mismatch(scope: &Scope, id: &ThreadSelection) {
+    if scope.root_id.bytes() != id.root_id.bytes() {
+        tracing::error!(
+            "Somehow the current scope's root is not equal to the selected note's root. scope's root: {:?}, thread's root: {:?}",
+            scope.root_id.hex(),
+            id.root_id.bytes()
+        );
     }
 }
 
