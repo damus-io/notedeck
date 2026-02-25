@@ -1,5 +1,6 @@
 use crate::auto_accept::AutoAcceptRules;
 use crate::backend::session_info::parse_session_info;
+use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::tool_summary::{
     extract_response_content, format_tool_summary, truncate_output,
 };
@@ -36,30 +37,6 @@ fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_js
     }
 }
 
-/// Commands sent to a session's actor task
-enum SessionCommand {
-    Query {
-        prompt: String,
-        response_tx: mpsc::Sender<DaveApiResponse>,
-        ctx: egui::Context,
-    },
-    /// Interrupt the current query - stops the stream but preserves session
-    Interrupt {
-        ctx: egui::Context,
-    },
-    /// Set the permission mode (Default or Plan)
-    SetPermissionMode {
-        mode: PermissionMode,
-        ctx: egui::Context,
-    },
-    Shutdown,
-}
-
-/// Handle to a session's actor
-struct SessionHandle {
-    command_tx: tokio_mpsc::Sender<SessionCommand>,
-}
-
 pub struct ClaudeBackend {
     /// Registry of active sessions (using dashmap for lock-free access)
     sessions: DashMap<String, SessionHandle>,
@@ -70,64 +47,6 @@ impl ClaudeBackend {
         Self {
             sessions: DashMap::new(),
         }
-    }
-
-    /// Convert our messages to a prompt for Claude Code
-    fn messages_to_prompt(messages: &[Message]) -> String {
-        let mut prompt = String::new();
-
-        // Include system message if present
-        for msg in messages {
-            if let Message::System(content) = msg {
-                prompt.push_str(content);
-                prompt.push_str("\n\n");
-                break;
-            }
-        }
-
-        // Format conversation history
-        for msg in messages {
-            match msg {
-                Message::System(_) => {} // Already handled
-                Message::User(content) => {
-                    prompt.push_str("Human: ");
-                    prompt.push_str(content);
-                    prompt.push_str("\n\n");
-                }
-                Message::Assistant(content) => {
-                    prompt.push_str("Assistant: ");
-                    prompt.push_str(content.text());
-                    prompt.push_str("\n\n");
-                }
-                Message::ToolCalls(_)
-                | Message::ToolResponse(_)
-                | Message::Error(_)
-                | Message::PermissionRequest(_)
-                | Message::CompactionComplete(_)
-                | Message::Subagent(_) => {
-                    // Skip tool-related, error, permission, compaction, and subagent messages
-                }
-            }
-        }
-
-        prompt
-    }
-
-    /// Collect all trailing user messages and join them.
-    /// When multiple messages are queued, they're all sent as one prompt
-    /// so the AI sees everything at once instead of one at a time.
-    pub fn get_pending_user_messages(messages: &[Message]) -> String {
-        let mut trailing: Vec<&str> = messages
-            .iter()
-            .rev()
-            .take_while(|m| matches!(m, Message::User(_)))
-            .filter_map(|m| match m {
-                Message::User(content) => Some(content.as_str()),
-                _ => None,
-            })
-            .collect();
-        trailing.reverse();
-        trailing.join("\n")
     }
 }
 
@@ -652,23 +571,7 @@ impl AiBackend for ClaudeBackend {
     ) {
         let (response_tx, response_rx) = mpsc::channel();
 
-        // For resumed sessions, always send just the latest message since
-        // Claude Code already has the full conversation context via --resume.
-        // For new sessions, send full prompt on the first message.
-        let prompt = if resume_session_id.is_some() {
-            Self::get_pending_user_messages(&messages)
-        } else {
-            let is_first_message = messages
-                .iter()
-                .filter(|m| matches!(m, Message::User(_)))
-                .count()
-                == 1;
-            if is_first_message {
-                Self::messages_to_prompt(&messages)
-            } else {
-                Self::get_pending_user_messages(&messages)
-            }
-        };
+        let prompt = shared::prepare_prompt(&messages, &resume_session_id);
 
         tracing::debug!(
             "Sending request to Claude Code: session={}, resumed={}, prompt length: {}, preview: {:?}",
@@ -769,7 +672,7 @@ mod tests {
     #[test]
     fn pending_messages_single_user() {
         let messages = vec![Message::User("hello".into())];
-        assert_eq!(ClaudeBackend::get_pending_user_messages(&messages), "hello");
+        assert_eq!(shared::get_pending_user_messages(&messages), "hello");
     }
 
     #[test]
@@ -782,7 +685,7 @@ mod tests {
             Message::User("fourth".into()),
         ];
         assert_eq!(
-            ClaudeBackend::get_pending_user_messages(&messages),
+            shared::get_pending_user_messages(&messages),
             "second\nthird\nfourth"
         );
     }
@@ -795,10 +698,7 @@ mod tests {
             Message::Assistant(AssistantMessage::from_text("reply".into())),
             Message::User("pending".into()),
         ];
-        assert_eq!(
-            ClaudeBackend::get_pending_user_messages(&messages),
-            "pending"
-        );
+        assert_eq!(shared::get_pending_user_messages(&messages), "pending");
     }
 
     #[test]
@@ -807,13 +707,13 @@ mod tests {
             Message::User("hello".into()),
             Message::Assistant(AssistantMessage::from_text("reply".into())),
         ];
-        assert_eq!(ClaudeBackend::get_pending_user_messages(&messages), "");
+        assert_eq!(shared::get_pending_user_messages(&messages), "");
     }
 
     #[test]
     fn pending_messages_empty_chat() {
         let messages: Vec<Message> = vec![];
-        assert_eq!(ClaudeBackend::get_pending_user_messages(&messages), "");
+        assert_eq!(shared::get_pending_user_messages(&messages), "");
     }
 
     #[test]
@@ -835,7 +735,7 @@ mod tests {
             Message::User("queued 2".into()),
         ];
         assert_eq!(
-            ClaudeBackend::get_pending_user_messages(&messages),
+            shared::get_pending_user_messages(&messages),
             "queued 1\nqueued 2"
         );
     }
@@ -847,9 +747,6 @@ mod tests {
             Message::User("b".into()),
             Message::User("c".into()),
         ];
-        assert_eq!(
-            ClaudeBackend::get_pending_user_messages(&messages),
-            "a\nb\nc"
-        );
+        assert_eq!(shared::get_pending_user_messages(&messages), "a\nb\nc");
     }
 }

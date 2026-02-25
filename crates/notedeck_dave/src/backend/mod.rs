@@ -4,6 +4,7 @@ mod codex_protocol;
 mod openai;
 mod remote;
 mod session_info;
+pub(crate) mod shared;
 mod tool_summary;
 mod traits;
 

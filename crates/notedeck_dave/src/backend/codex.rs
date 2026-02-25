@@ -2,6 +2,7 @@
 //! via its JSON-RPC-over-stdio protocol.
 
 use super::codex_protocol::*;
+use super::shared::{self, SessionCommand, SessionHandle};
 use super::tool_summary::{format_tool_summary, truncate_output};
 use crate::auto_accept::AutoAcceptRules;
 use crate::backend::traits::AiBackend;
@@ -28,28 +29,6 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 // Session actor
 // ---------------------------------------------------------------------------
-
-/// Commands sent to a Codex session actor.
-enum SessionCommand {
-    Query {
-        prompt: String,
-        response_tx: mpsc::Sender<DaveApiResponse>,
-        ctx: egui::Context,
-    },
-    Interrupt {
-        ctx: egui::Context,
-    },
-    SetPermissionMode {
-        mode: PermissionMode,
-        ctx: egui::Context,
-    },
-    Shutdown,
-}
-
-/// Handle kept by the backend to communicate with the actor.
-struct SessionHandle {
-    command_tx: tokio_mpsc::Sender<SessionCommand>,
-}
 
 /// Result of processing a single Codex JSON-RPC message.
 enum HandleResult {
@@ -1151,50 +1130,6 @@ impl CodexBackend {
             sessions: DashMap::new(),
         }
     }
-
-    /// Convert messages to a prompt string, same logic as the Claude backend.
-    fn messages_to_prompt(messages: &[Message]) -> String {
-        let mut prompt = String::new();
-        for msg in messages {
-            if let Message::System(content) = msg {
-                prompt.push_str(content);
-                prompt.push_str("\n\n");
-                break;
-            }
-        }
-        for msg in messages {
-            match msg {
-                Message::System(_) => {}
-                Message::User(content) => {
-                    prompt.push_str("Human: ");
-                    prompt.push_str(content);
-                    prompt.push_str("\n\n");
-                }
-                Message::Assistant(content) => {
-                    prompt.push_str("Assistant: ");
-                    prompt.push_str(content.text());
-                    prompt.push_str("\n\n");
-                }
-                _ => {}
-            }
-        }
-        prompt
-    }
-
-    /// Collect all trailing user messages and join them.
-    fn get_pending_user_messages(messages: &[Message]) -> String {
-        let mut trailing: Vec<&str> = messages
-            .iter()
-            .rev()
-            .take_while(|m| matches!(m, Message::User(_)))
-            .filter_map(|m| match m {
-                Message::User(content) => Some(content.as_str()),
-                _ => None,
-            })
-            .collect();
-        trailing.reverse();
-        trailing.join("\n")
-    }
 }
 
 impl AiBackend for CodexBackend {
@@ -1214,20 +1149,7 @@ impl AiBackend for CodexBackend {
     ) {
         let (response_tx, response_rx) = mpsc::channel();
 
-        let prompt = if resume_session_id.is_some() {
-            Self::get_pending_user_messages(&messages)
-        } else {
-            let is_first_message = messages
-                .iter()
-                .filter(|m| matches!(m, Message::User(_)))
-                .count()
-                == 1;
-            if is_first_message {
-                Self::messages_to_prompt(&messages)
-            } else {
-                Self::get_pending_user_messages(&messages)
-            }
-        };
+        let prompt = shared::prepare_prompt(&messages, &resume_session_id);
 
         tracing::debug!(
             "Codex request: session={}, resumed={}, prompt_len={}",
@@ -1972,7 +1894,7 @@ mod tests {
     #[test]
     fn pending_messages_single_user() {
         let messages = vec![Message::User("hello".into())];
-        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "hello");
+        assert_eq!(shared::get_pending_user_messages(&messages), "hello");
     }
 
     #[test]
@@ -1985,7 +1907,7 @@ mod tests {
             Message::User("fourth".into()),
         ];
         assert_eq!(
-            CodexBackend::get_pending_user_messages(&messages),
+            shared::get_pending_user_messages(&messages),
             "second\nthird\nfourth"
         );
     }
@@ -1998,10 +1920,7 @@ mod tests {
             Message::Assistant(AssistantMessage::from_text("reply".into())),
             Message::User("pending".into()),
         ];
-        assert_eq!(
-            CodexBackend::get_pending_user_messages(&messages),
-            "pending"
-        );
+        assert_eq!(shared::get_pending_user_messages(&messages), "pending");
     }
 
     #[test]
@@ -2010,13 +1929,13 @@ mod tests {
             Message::User("hello".into()),
             Message::Assistant(AssistantMessage::from_text("reply".into())),
         ];
-        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "");
+        assert_eq!(shared::get_pending_user_messages(&messages), "");
     }
 
     #[test]
     fn pending_messages_empty_chat() {
         let messages: Vec<Message> = vec![];
-        assert_eq!(CodexBackend::get_pending_user_messages(&messages), "");
+        assert_eq!(shared::get_pending_user_messages(&messages), "");
     }
 
     #[test]
@@ -2038,7 +1957,7 @@ mod tests {
             Message::User("queued 2".into()),
         ];
         assert_eq!(
-            CodexBackend::get_pending_user_messages(&messages),
+            shared::get_pending_user_messages(&messages),
             "queued 1\nqueued 2"
         );
     }
@@ -2050,10 +1969,7 @@ mod tests {
             Message::User("b".into()),
             Message::User("c".into()),
         ];
-        assert_eq!(
-            CodexBackend::get_pending_user_messages(&messages),
-            "a\nb\nc"
-        );
+        assert_eq!(shared::get_pending_user_messages(&messages), "a\nb\nc");
     }
 
     // -----------------------------------------------------------------------

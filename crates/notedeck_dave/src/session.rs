@@ -1363,7 +1363,7 @@ mod tests {
     #[test]
     fn batch_redispatch_full_lifecycle() {
         let mut session = test_session();
-        use crate::backend::claude::ClaudeBackend;
+        use crate::backend::shared;
 
         // Step 1: User sends first message, it gets dispatched (single)
         session.chat.push(Message::User("hello".into()));
@@ -1411,7 +1411,7 @@ mod tests {
 
         // Step 4: At redispatch time, get_pending_user_messages should
         // collect ALL trailing user messages
-        let prompt = ClaudeBackend::get_pending_user_messages(&session.chat);
+        let prompt = shared::get_pending_user_messages(&session.chat);
         assert_eq!(prompt, "also\ndo this\nand this");
 
         // Step 5: Backend dispatches with the batch prompt (3 messages)
