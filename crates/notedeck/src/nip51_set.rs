@@ -23,25 +23,8 @@ impl Nip51SetCache {
         nip51_set_filter: Vec<Filter>,
     ) -> Option<Self> {
         let subid = Uuid::new_v4().to_string();
-        let mut cached_notes = IndexMap::default();
-
-        let notes: Option<Vec<Note>> = if let Ok(results) = ndb.query(txn, &nip51_set_filter, 500) {
-            Some(results.into_iter().map(|r| r.note).collect())
-        } else {
-            None
-        };
-
-        if let Some(notes) = notes {
-            add(notes, &mut cached_notes, ndb, txn, unknown_ids);
-        }
-
-        let sub = match ndb.subscribe(&nip51_set_filter) {
-            Ok(sub) => sub,
-            Err(e) => {
-                tracing::error!("Could not ndb subscribe: {e}");
-                return None;
-            }
-        };
+        let (cached_notes, sub) =
+            load_cached_notes_and_local_sub(ndb, txn, unknown_ids, &nip51_set_filter)?;
         pool.subscribe(subid.clone(), nip51_set_filter);
 
         Some(Self {
@@ -85,6 +68,35 @@ impl Nip51SetCache {
     pub fn at_index(&self, index: usize) -> Option<&Nip51Set> {
         self.cached_notes.get_index(index).map(|(_, s)| s)
     }
+}
+
+fn load_cached_notes_and_local_sub(
+    ndb: &Ndb,
+    txn: &Transaction,
+    unknown_ids: &mut UnknownIds,
+    nip51_set_filter: &[Filter],
+) -> Option<(IndexMap<PackId, Nip51Set>, nostrdb::Subscription)> {
+    let mut cached_notes = IndexMap::default();
+
+    let notes: Option<Vec<Note>> = if let Ok(results) = ndb.query(txn, nip51_set_filter, 500) {
+        Some(results.into_iter().map(|r| r.note).collect())
+    } else {
+        None
+    };
+
+    if let Some(notes) = notes {
+        add(notes, &mut cached_notes, ndb, txn, unknown_ids);
+    }
+
+    let sub = match ndb.subscribe(nip51_set_filter) {
+        Ok(sub) => sub,
+        Err(e) => {
+            tracing::error!("Could not ndb subscribe: {e}");
+            return None;
+        }
+    };
+
+    Some((cached_notes, sub))
 }
 
 #[profiling::function]
