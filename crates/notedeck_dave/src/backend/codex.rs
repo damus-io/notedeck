@@ -381,6 +381,10 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                 }
 
                 current_turn_id = None;
+                // Drop the response channel so the main loop sees a
+                // Disconnected signal and finalizes the assistant message
+                // (builds kind-1988 event for Nostr replication).
+                drop(response_tx);
                 tracing::debug!("Turn complete for session {}", session_id);
             }
             SessionCommand::Interrupt { ctx } => {
