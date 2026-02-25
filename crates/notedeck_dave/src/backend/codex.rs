@@ -3,12 +3,10 @@
 
 use super::codex_protocol::*;
 use super::shared::{self, SessionCommand, SessionHandle};
-use crate::auto_accept::AutoAcceptRules;
 use crate::backend::traits::AiBackend;
 use crate::file_update::{FileUpdate, FileUpdateType};
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse,
-    SessionInfo, SubagentInfo, SubagentStatus,
+    CompactionInfo, DaveApiResponse, PermissionResponse, SessionInfo, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -702,44 +700,14 @@ fn check_approval_or_forward(
     response_tx: &mpsc::Sender<DaveApiResponse>,
     ctx: &egui::Context,
 ) -> HandleResult {
-    let rules = AutoAcceptRules::default();
-    if rules.should_auto_accept(tool_name, &tool_input) {
-        tracing::debug!("Auto-accepting {} (rpc_id={})", tool_name, rpc_id);
+    if shared::should_auto_accept(tool_name, &tool_input) {
         return HandleResult::AutoAccepted(rpc_id);
     }
 
-    // Forward to UI
-    let request_id = Uuid::new_v4();
-    let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
-
-    let request = PermissionRequest {
-        id: request_id,
-        tool_name: tool_name.to_string(),
-        tool_input,
-        response: None,
-        answer_summary: None,
-        cached_plan: None,
-    };
-
-    let pending = PendingPermission {
-        request,
-        response_tx: ui_resp_tx,
-    };
-
-    if response_tx
-        .send(DaveApiResponse::PermissionRequest(pending))
-        .is_err()
-    {
-        tracing::error!("Failed to send permission request to UI");
-        // Return auto-decline — can't reach UI
-        return HandleResult::AutoAccepted(rpc_id); // Will send Accept; could add a Declined variant
-    }
-
-    ctx.request_repaint();
-
-    HandleResult::NeedsApproval {
-        rpc_id,
-        rx: ui_resp_rx,
+    match shared::forward_permission_to_ui(tool_name, tool_input, response_tx, ctx) {
+        Some(rx) => HandleResult::NeedsApproval { rpc_id, rx },
+        // Can't reach UI — auto-accept as fallback
+        None => HandleResult::AutoAccepted(rpc_id),
     }
 }
 

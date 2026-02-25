@@ -1,12 +1,15 @@
 //! Shared utilities used by multiple AI backend implementations.
 
+use crate::auto_accept::AutoAcceptRules;
 use crate::backend::tool_summary::{format_tool_summary, truncate_output};
 use crate::file_update::FileUpdate;
-use crate::messages::{DaveApiResponse, ExecutedTool};
+use crate::messages::{DaveApiResponse, ExecutedTool, PendingPermission, PermissionRequest};
 use crate::Message;
 use claude_agent_sdk_rs::PermissionMode;
 use std::sync::mpsc;
 use tokio::sync::mpsc as tokio_mpsc;
+use tokio::sync::oneshot;
+use uuid::Uuid;
 
 /// Commands sent to a session's actor task.
 ///
@@ -132,6 +135,69 @@ pub fn send_tool_result(
     };
     let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
     ctx.request_repaint();
+}
+
+/// Check auto-accept rules for a tool invocation.
+///
+/// Returns `true` (and logs) when the tool should be silently
+/// accepted without asking the user.
+pub fn should_auto_accept(tool_name: &str, tool_input: &serde_json::Value) -> bool {
+    let rules = AutoAcceptRules::default();
+    let accepted = rules.should_auto_accept(tool_name, tool_input);
+    if accepted {
+        tracing::debug!("Auto-accepting {}: matched auto-accept rule", tool_name);
+    }
+    accepted
+}
+
+/// Build a [`PermissionRequest`] + [`PendingPermission`], send it to
+/// the UI via `response_tx`, and return the oneshot receiver the
+/// caller can `await` to get the user's decision.
+///
+/// Returns `None` if the UI channel is closed (the request could not
+/// be delivered).
+pub fn forward_permission_to_ui(
+    tool_name: &str,
+    tool_input: serde_json::Value,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    ctx: &egui::Context,
+) -> Option<oneshot::Receiver<crate::messages::PermissionResponse>> {
+    let request_id = Uuid::new_v4();
+    let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
+
+    let cached_plan = if tool_name == "ExitPlanMode" {
+        tool_input
+            .get("plan")
+            .and_then(|v| v.as_str())
+            .map(crate::messages::ParsedMarkdown::parse)
+    } else {
+        None
+    };
+
+    let request = PermissionRequest {
+        id: request_id,
+        tool_name: tool_name.to_string(),
+        tool_input,
+        response: None,
+        answer_summary: None,
+        cached_plan,
+    };
+
+    let pending = PendingPermission {
+        request,
+        response_tx: ui_resp_tx,
+    };
+
+    if response_tx
+        .send(DaveApiResponse::PermissionRequest(pending))
+        .is_err()
+    {
+        tracing::error!("Failed to send permission request to UI");
+        return None;
+    }
+
+    ctx.request_repaint();
+    Some(ui_resp_rx)
 }
 
 /// Decide which prompt to send based on whether we're resuming a

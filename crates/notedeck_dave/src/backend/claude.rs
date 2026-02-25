@@ -1,12 +1,10 @@
-use crate::auto_accept::AutoAcceptRules;
 use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::tool_summary::extract_response_content;
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, ParsedMarkdown, PendingPermission, PermissionRequest,
-    PermissionResponse, SubagentInfo, SubagentStatus,
+    CompactionInfo, DaveApiResponse, PermissionResponse, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -24,7 +22,6 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
-use uuid::Uuid;
 
 /// Convert a ToolResultContent to a serde_json::Value for use with tool summary formatting
 fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_json::Value {
@@ -251,52 +248,26 @@ async fn session_actor(
 
                         // Handle permission requests (they're blocking the SDK)
                         Some(perm_req) = perm_rx.recv() => {
-                            // Check auto-accept rules
-                            let auto_accept_rules = AutoAcceptRules::default();
-                            if auto_accept_rules.should_auto_accept(&perm_req.tool_name, &perm_req.tool_input) {
-                                tracing::debug!("Auto-accepting {}: matched auto-accept rule", perm_req.tool_name);
+                            if shared::should_auto_accept(&perm_req.tool_name, &perm_req.tool_input) {
                                 let _ = perm_req.response_tx.send(PermissionResult::Allow(PermissionResultAllow::default()));
                                 continue;
                             }
 
-                            // Forward permission request to UI
-                            let request_id = Uuid::new_v4();
-                            let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
-
-                            let cached_plan = if perm_req.tool_name == "ExitPlanMode" {
-                                perm_req
-                                    .tool_input
-                                    .get("plan")
-                                    .and_then(|v| v.as_str())
-                                    .map(ParsedMarkdown::parse)
-                            } else {
-                                None
+                            let ui_resp_rx = match shared::forward_permission_to_ui(
+                                &perm_req.tool_name,
+                                perm_req.tool_input.clone(),
+                                &response_tx,
+                                &ctx,
+                            ) {
+                                Some(rx) => rx,
+                                None => {
+                                    let _ = perm_req.response_tx.send(PermissionResult::Deny(PermissionResultDeny {
+                                        message: "UI channel closed".to_string(),
+                                        interrupt: true,
+                                    }));
+                                    continue;
+                                }
                             };
-
-                            let request = PermissionRequest {
-                                id: request_id,
-                                tool_name: perm_req.tool_name.clone(),
-                                tool_input: perm_req.tool_input.clone(),
-                                response: None,
-                                answer_summary: None,
-                                cached_plan,
-                            };
-
-                            let pending = PendingPermission {
-                                request,
-                                response_tx: ui_resp_tx,
-                            };
-
-                            if response_tx.send(DaveApiResponse::PermissionRequest(pending)).is_err() {
-                                tracing::error!("Failed to send permission request to UI");
-                                let _ = perm_req.response_tx.send(PermissionResult::Deny(PermissionResultDeny {
-                                    message: "UI channel closed".to_string(),
-                                    interrupt: true,
-                                }));
-                                continue;
-                            }
-
-                            ctx.request_repaint();
 
                             // Wait for UI response inline - blocking is OK since stream is
                             // waiting for permission result anyway
