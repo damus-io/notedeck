@@ -146,54 +146,7 @@ pub fn build_space(info: &SpaceInfo, objects: &[RoomObject]) -> Space {
 
     // Object cells (indices 2..)
     for obj in objects {
-        let obj_attr_start = attributes.len() as u32;
-        attributes.push(Attribute::Id(obj.id.clone()));
-        attributes.push(Attribute::Name(obj.name.clone()));
-        if let Some(url) = &obj.model_url {
-            attributes.push(Attribute::ModelUrl(url.clone()));
-        }
-        if let Some(loc) = &obj.location {
-            attributes.push(Attribute::Location(location_to_protoverse(loc)));
-        }
-        // When the object has a resolved location base, save the offset
-        // from the base so that position remains relative to the location.
-        let pos = match obj.location_base {
-            Some(base) => obj.position - base,
-            None => obj.position,
-        };
-        attributes.push(Attribute::Position(
-            pos.x as f64,
-            pos.y as f64,
-            pos.z as f64,
-        ));
-        // Only emit rotation when non-identity to keep output clean
-        if obj.rotation.angle_between(Quat::IDENTITY) > 1e-4 {
-            let (y, x, z) = obj.rotation.to_euler(glam::EulerRot::YXZ);
-            attributes.push(Attribute::Rotation(
-                x.to_degrees() as f64,
-                y.to_degrees() as f64,
-                z.to_degrees() as f64,
-            ));
-        }
-        let obj_attr_count = (attributes.len() as u32 - obj_attr_start) as u16;
-
-        let obj_type = CellType::Object(match &obj.object_type {
-            RoomObjectType::Table => ObjectType::Table,
-            RoomObjectType::Chair => ObjectType::Chair,
-            RoomObjectType::Door => ObjectType::Door,
-            RoomObjectType::Light => ObjectType::Light,
-            RoomObjectType::Prop => ObjectType::Custom("prop".to_string()),
-            RoomObjectType::Custom(s) => ObjectType::Custom(s.clone()),
-        });
-
-        cells.push(Cell {
-            cell_type: obj_type,
-            first_attr: obj_attr_start,
-            attr_count: obj_attr_count,
-            first_child: child_ids.len() as u32,
-            child_count: 0,
-            parent: Some(CellId(1)),
-        });
+        build_object_cell(obj, &mut cells, &mut attributes, &mut child_ids);
     }
 
     Space {
@@ -202,6 +155,67 @@ pub fn build_space(info: &SpaceInfo, objects: &[RoomObject]) -> Space {
         child_ids,
         root: CellId(0),
     }
+}
+
+fn object_type_to_cell(obj_type: &RoomObjectType) -> CellType {
+    CellType::Object(match obj_type {
+        RoomObjectType::Table => ObjectType::Table,
+        RoomObjectType::Chair => ObjectType::Chair,
+        RoomObjectType::Door => ObjectType::Door,
+        RoomObjectType::Light => ObjectType::Light,
+        RoomObjectType::Prop => ObjectType::Custom("prop".to_string()),
+        RoomObjectType::Custom(s) => ObjectType::Custom(s.clone()),
+    })
+}
+
+/// Build a single object Cell with its attributes and append to the Space vectors.
+fn build_object_cell(
+    obj: &RoomObject,
+    cells: &mut Vec<Cell>,
+    attributes: &mut Vec<Attribute>,
+    child_ids: &[CellId],
+) {
+    let obj_attr_start = attributes.len() as u32;
+
+    attributes.push(Attribute::Id(obj.id.clone()));
+    attributes.push(Attribute::Name(obj.name.clone()));
+    if let Some(url) = &obj.model_url {
+        attributes.push(Attribute::ModelUrl(url.clone()));
+    }
+    if let Some(loc) = &obj.location {
+        attributes.push(Attribute::Location(location_to_protoverse(loc)));
+    }
+
+    // When the object has a resolved location base, save the offset
+    // from the base so that position remains relative to the location.
+    let pos = match obj.location_base {
+        Some(base) => obj.position - base,
+        None => obj.position,
+    };
+    attributes.push(Attribute::Position(
+        pos.x as f64,
+        pos.y as f64,
+        pos.z as f64,
+    ));
+
+    // Only emit rotation when non-identity to keep output clean
+    if obj.rotation.angle_between(Quat::IDENTITY) > 1e-4 {
+        let (y, x, z) = obj.rotation.to_euler(glam::EulerRot::YXZ);
+        attributes.push(Attribute::Rotation(
+            x.to_degrees() as f64,
+            y.to_degrees() as f64,
+            z.to_degrees() as f64,
+        ));
+    }
+
+    cells.push(Cell {
+        cell_type: object_type_to_cell(&obj.object_type),
+        first_attr: obj_attr_start,
+        attr_count: (attributes.len() as u32 - obj_attr_start) as u16,
+        first_child: child_ids.len() as u32,
+        child_count: 0,
+        parent: Some(CellId(1)),
+    });
 }
 
 #[cfg(test)]

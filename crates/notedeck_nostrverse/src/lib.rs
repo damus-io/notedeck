@@ -548,115 +548,40 @@ impl NostrverseApp {
         };
         let mut r = renderer.renderer.lock().unwrap();
 
-        // Build map of object string ID -> scene ObjectId for parenting lookups
-        let mut id_to_scene: std::collections::HashMap<String, renderbud::ObjectId> = self
-            .state
-            .objects
-            .iter()
-            .filter_map(|obj| Some((obj.id.clone(), obj.scene_object_id?)))
-            .collect();
+        sync_objects_to_scene(&mut self.state.objects, &mut r);
 
-        // Sync room objects to the scene graph
-        for obj in &mut self.state.objects {
-            let transform = Transform {
-                translation: obj.position,
-                rotation: obj.rotation,
-                scale: obj.scale,
-            };
-
-            if let Some(scene_id) = obj.scene_object_id {
-                r.update_object_transform(scene_id, transform);
-            } else if let Some(model) = obj.model_handle {
-                // Find parent scene node for objects with location references
-                let parent_scene_id = obj.location.as_ref().and_then(|loc| match loc {
-                    room_state::ObjectLocation::TopOf(target_id)
-                    | room_state::ObjectLocation::Near(target_id) => {
-                        id_to_scene.get(target_id).copied()
-                    }
-                    _ => None,
-                });
-
-                let scene_id = if let Some(parent_id) = parent_scene_id {
-                    r.place_object_with_parent(model, transform, parent_id)
-                } else {
-                    r.place_object(model, transform)
-                };
-
-                obj.scene_object_id = Some(scene_id);
-                id_to_scene.insert(obj.id.clone(), scene_id);
-            }
-        }
-
-        // Read avatar position/yaw from the third-person controller
-        let avatar_pos = r.avatar_position();
-        let avatar_yaw = r.avatar_yaw();
-
-        // Update self-user's position from the controller
-        if let Some(pos) = avatar_pos
+        // Update self-user's position from the camera controller
+        if let Some(pos) = r.avatar_position()
             && let Some(self_user) = self.state.self_user_mut()
         {
             self_user.position = pos;
             self_user.display_position = pos;
         }
 
-        // Sync all user avatars to the scene
-        let avatar_half_h = self
+        // Smoothly lerp avatar yaw toward controller target
+        let dt = 1.0 / 60.0_f32;
+        if let Some(target_yaw) = r.avatar_yaw() {
+            self.state.smooth_avatar_yaw = lerp_yaw(
+                self.state.smooth_avatar_yaw,
+                target_yaw,
+                AVATAR_YAW_LERP_SPEED * dt,
+            );
+        }
+
+        let now = self.start_time.elapsed().as_secs_f64();
+        let avatar_y_offset = self
             .avatar_bounds
             .map(|b| (b.max.y - b.min.y) * 0.5)
-            .unwrap_or(0.0);
-        let avatar_y_offset = avatar_half_h * AVATAR_SCALE;
-        let now = self.start_time.elapsed().as_secs_f64();
-        let dt = 1.0 / 60.0_f32;
+            .unwrap_or(0.0)
+            * AVATAR_SCALE;
 
-        // Smoothly lerp avatar yaw toward target
-        if let Some(target_yaw) = avatar_yaw {
-            let current = self.state.smooth_avatar_yaw;
-            let mut diff = target_yaw - current;
-            diff = (diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
-                - std::f32::consts::PI;
-            let t = (AVATAR_YAW_LERP_SPEED * dt).min(1.0);
-            self.state.smooth_avatar_yaw = current + diff * t;
-        }
-
-        for user in &mut self.state.users {
-            // Dead reckoning for remote users
-            if !user.is_self {
-                let time_since_update = (now - user.update_time).min(MAX_EXTRAPOLATION_TIME) as f32;
-                let extrapolated = user.position + user.velocity * time_since_update;
-
-                // Clamp extrapolation distance to prevent runaway drift
-                let offset = extrapolated - user.position;
-                let target = if offset.length() > MAX_EXTRAPOLATION_DISTANCE {
-                    user.position + offset.normalize() * MAX_EXTRAPOLATION_DISTANCE
-                } else {
-                    extrapolated
-                };
-
-                // Smooth lerp display_position toward the extrapolated target
-                let t = (AVATAR_POS_LERP_SPEED * dt).min(1.0);
-                user.display_position = user.display_position.lerp(target, t);
-            }
-
-            let render_pos = user.display_position;
-            let yaw = if user.is_self {
-                self.state.smooth_avatar_yaw
-            } else {
-                0.0
-            };
-
-            let transform = Transform {
-                translation: render_pos + Vec3::new(0.0, avatar_y_offset, 0.0),
-                rotation: glam::Quat::from_rotation_y(yaw),
-                scale: Vec3::splat(AVATAR_SCALE),
-            };
-
-            if let Some(scene_id) = user.scene_object_id {
-                r.update_object_transform(scene_id, transform);
-            } else if let Some(model) = user.model_handle {
-                let scene_id = r.place_object(model, transform);
-                user.scene_object_id = Some(scene_id);
-            }
-        }
+        update_remote_user_positions(&mut self.state.users, dt, now);
+        sync_users_to_scene(
+            &mut self.state.users,
+            self.state.smooth_avatar_yaw,
+            avatar_y_offset,
+            &mut r,
+        );
     }
 
     /// Get the current state
@@ -814,6 +739,96 @@ impl NostrverseApp {
                 self.state.dirty = true;
                 self.state.selected_object = Some(new_id);
             }
+        }
+    }
+}
+
+/// Sync room objects to the renderbud scene graph.
+/// Updates transforms for existing objects and places new ones.
+fn sync_objects_to_scene(objects: &mut [RoomObject], r: &mut renderbud::Renderer) {
+    let mut id_to_scene: std::collections::HashMap<String, renderbud::ObjectId> = objects
+        .iter()
+        .filter_map(|obj| Some((obj.id.clone(), obj.scene_object_id?)))
+        .collect();
+
+    for obj in objects.iter_mut() {
+        let transform = Transform {
+            translation: obj.position,
+            rotation: obj.rotation,
+            scale: obj.scale,
+        };
+
+        if let Some(scene_id) = obj.scene_object_id {
+            r.update_object_transform(scene_id, transform);
+        } else if let Some(model) = obj.model_handle {
+            let parent_scene_id = obj.location.as_ref().and_then(|loc| match loc {
+                room_state::ObjectLocation::TopOf(target_id)
+                | room_state::ObjectLocation::Near(target_id) => {
+                    id_to_scene.get(target_id).copied()
+                }
+                _ => None,
+            });
+
+            let scene_id = if let Some(parent_id) = parent_scene_id {
+                r.place_object_with_parent(model, transform, parent_id)
+            } else {
+                r.place_object(model, transform)
+            };
+
+            obj.scene_object_id = Some(scene_id);
+            id_to_scene.insert(obj.id.clone(), scene_id);
+        }
+    }
+}
+
+/// Smoothly interpolate between two yaw angles, wrapping around TAU.
+fn lerp_yaw(current: f32, target: f32, speed: f32) -> f32 {
+    let mut diff = target - current;
+    diff = (diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+    current + diff * speed.min(1.0)
+}
+
+/// Apply dead reckoning to remote users, smoothing their display positions.
+fn update_remote_user_positions(users: &mut [RoomUser], dt: f32, now: f64) {
+    for user in users.iter_mut() {
+        if user.is_self {
+            continue;
+        }
+        let time_since_update = (now - user.update_time).min(MAX_EXTRAPOLATION_TIME) as f32;
+        let extrapolated = user.position + user.velocity * time_since_update;
+
+        let offset = extrapolated - user.position;
+        let target = if offset.length() > MAX_EXTRAPOLATION_DISTANCE {
+            user.position + offset.normalize() * MAX_EXTRAPOLATION_DISTANCE
+        } else {
+            extrapolated
+        };
+
+        let t = (AVATAR_POS_LERP_SPEED * dt).min(1.0);
+        user.display_position = user.display_position.lerp(target, t);
+    }
+}
+
+/// Sync user avatars to the renderbud scene with proper transforms.
+fn sync_users_to_scene(
+    users: &mut [RoomUser],
+    smooth_yaw: f32,
+    avatar_y_offset: f32,
+    r: &mut renderbud::Renderer,
+) {
+    for user in users.iter_mut() {
+        let yaw = if user.is_self { smooth_yaw } else { 0.0 };
+
+        let transform = Transform {
+            translation: user.display_position + Vec3::new(0.0, avatar_y_offset, 0.0),
+            rotation: glam::Quat::from_rotation_y(yaw),
+            scale: Vec3::splat(AVATAR_SCALE),
+        };
+
+        if let Some(scene_id) = user.scene_object_id {
+            r.update_object_transform(scene_id, transform);
+        } else if let Some(model) = user.model_handle {
+            user.scene_object_id = Some(r.place_object(model, transform));
         }
     }
 }
