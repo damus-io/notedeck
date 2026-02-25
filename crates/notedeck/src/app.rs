@@ -157,6 +157,8 @@ impl eframe::App for Notedeck {
             .zaps
             .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
 
+        app_ctx.remote.process_events(ctx, app_ctx.ndb);
+
         render_notedeck(app, &mut app_ctx, ctx);
 
         {
