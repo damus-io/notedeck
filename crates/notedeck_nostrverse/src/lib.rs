@@ -100,8 +100,8 @@ pub struct NostrverseApp {
     model_cache: Option<model_cache::ModelCache>,
     /// Dedicated relay URL for multiplayer sync (from NOSTRVERSE_RELAY env)
     relay_url: Option<String>,
-    /// Whether the relay connection has been initialized
-    relay_initialized: bool,
+    /// Pending relay subscription ID — Some means we still need to send REQ
+    pending_relay_sub: Option<String>,
 }
 
 impl NostrverseApp {
@@ -135,7 +135,7 @@ impl NostrverseApp {
             start_time: std::time::Instant::now(),
             model_cache: None,
             relay_url,
-            relay_initialized: false,
+            pending_relay_sub: None,
         }
     }
 
@@ -150,6 +150,31 @@ impl NostrverseApp {
         if let Some(relay_url) = &self.relay_url {
             pool.send_to(msg, relay_url);
         }
+    }
+
+    /// Send the relay subscription once the relay is connected.
+    fn maybe_send_relay_sub(&mut self, pool: &mut enostr::RelayPool) {
+        let (Some(sub_id), Some(relay_url)) = (&self.pending_relay_sub, &self.relay_url) else {
+            return;
+        };
+
+        let connected = pool
+            .relays
+            .iter()
+            .any(|r| r.url() == relay_url && matches!(r.status(), enostr::RelayStatus::Connected));
+
+        if !connected {
+            return;
+        }
+
+        let room_filter = Filter::new().kinds([kinds::ROOM as u64]).build();
+        let presence_filter = Filter::new().kinds([kinds::PRESENCE as u64]).build();
+
+        let req = enostr::ClientMessage::req(sub_id.clone(), vec![room_filter, presence_filter]);
+        pool.send_to(&req, relay_url);
+
+        tracing::info!("Sent nostrverse subscription to {}", relay_url);
+        self.pending_relay_sub = None;
     }
 
     /// Load a glTF model and return its handle
@@ -181,7 +206,7 @@ impl NostrverseApp {
         self.room_sub = Some(subscriptions::RoomSubscription::new(ctx.ndb));
         self.presence_sub = Some(subscriptions::PresenceSubscription::new(ctx.ndb));
 
-        // Connect to dedicated relay and subscribe for our event kinds
+        // Add dedicated relay to pool (subscription sent on connect in maybe_send_relay_sub)
         if let Some(relay_url) = &self.relay_url {
             let egui_ctx = egui_ctx.clone();
             if let Err(e) = ctx
@@ -191,15 +216,7 @@ impl NostrverseApp {
                 tracing::error!("Failed to add nostrverse relay {}: {}", relay_url, e);
             } else {
                 tracing::info!("Added nostrverse relay: {}", relay_url);
-
-                let room_filter = Filter::new().kinds([kinds::ROOM as u64]).build();
-                let presence_filter = Filter::new().kinds([kinds::PRESENCE as u64]).build();
-
-                let sub_id = format!("nostrverse-{}", uuid::Uuid::new_v4());
-                let req = enostr::ClientMessage::req(sub_id, vec![room_filter, presence_filter]);
-                ctx.pool.send_to(&req, relay_url);
-
-                self.relay_initialized = true;
+                self.pending_relay_sub = Some(format!("nostrverse-{}", uuid::Uuid::new_v4()));
             }
         }
 
@@ -667,6 +684,9 @@ impl notedeck::App for NostrverseApp {
         // Initialize on first frame
         let egui_ctx = ui.ctx().clone();
         self.initialize(ctx, &egui_ctx);
+
+        // Send relay subscription once connected
+        self.maybe_send_relay_sub(ctx.pool);
 
         // Poll for space event updates
         self.poll_space_updates(ctx.ndb);
