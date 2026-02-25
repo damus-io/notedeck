@@ -93,6 +93,9 @@ pub struct NegentropySync {
     sync_requested: bool,
     /// IDs accumulated across multi-round reconciliation.
     need_ids: Vec<[u8; 32]>,
+    /// IDs sent via REQ that we're waiting to see ingested into ndb
+    /// before starting the next round.
+    pending_fetch_ids: Vec<[u8; 32]>,
 }
 
 impl NegentropySync {
@@ -103,6 +106,7 @@ impl NegentropySync {
             neg: None,
             sync_requested: false,
             need_ids: Vec::new(),
+            pending_fetch_ids: Vec::new(),
         }
     }
 
@@ -150,6 +154,24 @@ impl NegentropySync {
                     }
                     tracing::warn!("negentropy NEG-ERR: {reason}");
                     self.reset_after_error();
+                }
+            }
+        }
+
+        // Wait for previously-fetched events to be ingested into ndb
+        // before starting the next round. Without this, the next round
+        // starts before the REQ responses arrive, causing the same
+        // events to be identified as missing every round.
+        if self.sync_requested && !self.pending_fetch_ids.is_empty() {
+            if let Ok(txn) = Transaction::new(ndb) {
+                if ndb.get_note_by_id(&txn, &self.pending_fetch_ids[0]).is_ok() {
+                    tracing::info!(
+                        "negentropy: fetched events ingested, proceeding with next round"
+                    );
+                    self.pending_fetch_ids.clear();
+                } else {
+                    // Events not yet ingested — wait for next frame
+                    return fetched;
                 }
             }
         }
@@ -261,6 +283,7 @@ impl NegentropySync {
                 if count > 0 {
                     tracing::info!("negentropy: fetching {} missing events", count);
                     Self::fetch_missing(&missing, pool, relay_url);
+                    self.pending_fetch_ids = missing;
                 }
                 count
             }
@@ -278,6 +301,7 @@ impl NegentropySync {
         self.sub_id = None;
         self.neg = None;
         self.need_ids.clear();
+        self.pending_fetch_ids.clear();
     }
 
     fn fetch_missing(ids: &[[u8; 32]], pool: &mut RelayPool, relay_url: &str) {
