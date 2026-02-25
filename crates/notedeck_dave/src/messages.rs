@@ -121,6 +121,9 @@ pub struct ExecutedTool {
     pub summary: String, // e.g., "154 lines", "exit 0", "3 matches"
     /// Which subagent (Task tool_use_id) produced this result, if any
     pub parent_task_id: Option<String>,
+    /// Pre-computed file update for diff rendering (not serialized)
+    #[serde(skip)]
+    pub file_update: Option<crate::file_update::FileUpdate>,
 }
 
 /// Session initialization info from Claude Code CLI

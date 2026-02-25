@@ -5,6 +5,7 @@ use super::codex_protocol::*;
 use super::tool_summary::{format_tool_summary, truncate_output};
 use crate::auto_accept::AutoAcceptRules;
 use crate::backend::traits::AiBackend;
+use crate::file_update::{FileUpdate, FileUpdateType};
 use crate::messages::{
     CompactionInfo, DaveApiResponse, ExecutedTool, PendingPermission, PermissionRequest,
     PermissionResponse, SessionInfo, SubagentInfo, SubagentStatus,
@@ -631,6 +632,60 @@ fn handle_codex_message(
             return HandleResult::TurnDone;
         }
 
+        "codex/event/patch_apply_begin" => {
+            // Legacy event carrying full file-change details (paths + diffs).
+            // The V2 `item/completed` for fileChange is sparse, so we extract
+            // the diff from the legacy event and emit ToolResults here.
+            if let Some(params) = &msg.params {
+                if let Some(changes) = params
+                    .get("msg")
+                    .and_then(|m| m.get("changes"))
+                    .and_then(|c| c.as_object())
+                {
+                    for (path, change) in changes {
+                        let change_type = change
+                            .get("type")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("update");
+
+                        let (tool_name, diff_text) = match change_type {
+                            "add" => {
+                                let content =
+                                    change.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                                ("Write", content.to_string())
+                            }
+                            "delete" => ("Edit", "(file deleted)".to_string()),
+                            _ => {
+                                // "update" — has unified_diff
+                                let diff = change
+                                    .get("unified_diff")
+                                    .and_then(|d| d.as_str())
+                                    .unwrap_or("");
+                                ("Edit", diff.to_string())
+                            }
+                        };
+
+                        let tool_input = serde_json::json!({
+                            "file_path": path,
+                            "diff": diff_text,
+                        });
+                        let result_value = serde_json::json!({ "status": "ok" });
+                        let summary = format_tool_summary(tool_name, &tool_input, &result_value);
+
+                        let file_update =
+                            make_codex_file_update(path, tool_name, change_type, &diff_text);
+                        let _ = response_tx.send(DaveApiResponse::ToolResult(ExecutedTool {
+                            tool_name: tool_name.to_string(),
+                            summary,
+                            parent_task_id: subagent_stack.last().cloned(),
+                            file_update,
+                        }));
+                    }
+                    ctx.request_repaint();
+                }
+            }
+        }
+
         "codex/event/error" | "error" => {
             let err_msg: String = extract_codex_error(&msg);
             tracing::warn!("Codex error: {}", err_msg);
@@ -705,6 +760,24 @@ fn check_approval_or_forward(
     }
 }
 
+/// Build a `FileUpdate` from codex file-change data.
+fn make_codex_file_update(
+    path: &str,
+    tool_name: &str,
+    change_type: &str,
+    diff_text: &str,
+) -> Option<FileUpdate> {
+    let update_type = match (tool_name, change_type) {
+        ("Write", _) | (_, "add") | (_, "create") => FileUpdateType::Write {
+            content: diff_text.to_string(),
+        },
+        _ => FileUpdateType::UnifiedDiff {
+            diff: diff_text.to_string(),
+        },
+    };
+    Some(FileUpdate::new(path.to_string(), update_type))
+}
+
 /// Handle a completed item from Codex.
 fn handle_item_completed(
     completed: &ItemCompletedParams,
@@ -727,6 +800,7 @@ fn handle_item_completed(
                 tool_name: "Bash".to_string(),
                 summary,
                 parent_task_id,
+                file_update: None,
             }));
             ctx.request_repaint();
         }
@@ -754,10 +828,17 @@ fn handle_item_completed(
             let summary = format_tool_summary(tool_name, &tool_input, &result_value);
             let parent_task_id = subagent_stack.last().cloned();
 
+            let file_update = make_codex_file_update(
+                &file_path,
+                tool_name,
+                kind_str,
+                diff.as_deref().unwrap_or(""),
+            );
             let _ = response_tx.send(DaveApiResponse::ToolResult(ExecutedTool {
                 tool_name: tool_name.to_string(),
                 summary,
                 parent_task_id,
+                file_update,
             }));
             ctx.request_repaint();
         }

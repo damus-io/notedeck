@@ -178,6 +178,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                             .to_string(),
                         summary,
                         parent_task_id: None,
+                        file_update: None,
                     },
                 )))
             }

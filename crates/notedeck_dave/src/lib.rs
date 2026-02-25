@@ -1975,6 +1975,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                     tool_name,
                                     summary,
                                     parent_task_id: None,
+                                    file_update: None,
                                 },
                             )));
                     }

@@ -4,6 +4,7 @@ use crate::backend::tool_summary::{
     extract_response_content, format_tool_summary, truncate_output,
 };
 use crate::backend::traits::AiBackend;
+use crate::file_update::FileUpdate;
 use crate::messages::{
     CompactionInfo, DaveApiResponse, ExecutedTool, ParsedMarkdown, PendingPermission,
     PermissionRequest, PermissionResponse, SubagentInfo, SubagentStatus,
@@ -544,7 +545,8 @@ async fn session_actor(
                                                         // Attach parent subagent context (top of stack)
                                                         let parent_task_id = subagent_stack.last().cloned();
                                                         let summary = format_tool_summary(&tool_name, &tool_input, &result_value);
-                                                        let tool_result = ExecutedTool { tool_name, summary, parent_task_id };
+                                                        let file_update = FileUpdate::from_tool_call(&tool_name, &tool_input);
+                                                        let tool_result = ExecutedTool { tool_name, summary, parent_task_id, file_update };
                                                         let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
                                                         ctx.request_repaint();
                                                     }

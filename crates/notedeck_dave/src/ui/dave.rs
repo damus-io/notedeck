@@ -932,25 +932,65 @@ impl<'a> DaveUi<'a> {
 
     /// Render tool result metadata as a compact line
     fn executed_tool_ui(result: &ExecutedTool, ui: &mut egui::Ui) {
-        // Compact single-line display with subdued styling
-        ui.horizontal(|ui| {
-            // Tool name in slightly brighter text
-            ui.add(egui::Label::new(
-                egui::RichText::new(&result.tool_name)
-                    .size(11.0)
-                    .color(ui.visuals().text_color().gamma_multiply(0.6))
-                    .monospace(),
-            ));
-            // Summary in more subdued text
-            if !result.summary.is_empty() {
+        if let Some(file_update) = &result.file_update {
+            // File edit with diff — show collapsible header with inline diff
+            let expand_id = ui.id().with("exec_diff").with(&result.summary);
+            let expanded: bool = ui.data(|d| d.get_temp(expand_id).unwrap_or(false));
+
+            let header_resp = ui.horizontal(|ui| {
+                let arrow = if expanded { "▼" } else { "▶" };
                 ui.add(egui::Label::new(
-                    egui::RichText::new(&result.summary)
+                    egui::RichText::new(arrow)
+                        .size(10.0)
+                        .color(ui.visuals().text_color().gamma_multiply(0.5)),
+                ));
+                ui.add(egui::Label::new(
+                    egui::RichText::new(&result.tool_name)
                         .size(11.0)
-                        .color(ui.visuals().text_color().gamma_multiply(0.4))
+                        .color(ui.visuals().text_color().gamma_multiply(0.6))
                         .monospace(),
                 ));
+                if !result.summary.is_empty() {
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(&result.summary)
+                            .size(11.0)
+                            .color(ui.visuals().text_color().gamma_multiply(0.4))
+                            .monospace(),
+                    ));
+                }
+            });
+
+            if header_resp
+                .response
+                .interact(egui::Sense::click())
+                .clicked()
+            {
+                ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
             }
-        });
+
+            if expanded {
+                diff::file_path_header(file_update, ui);
+                diff::file_update_ui(file_update, false, ui);
+            }
+        } else {
+            // Compact single-line display with subdued styling
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(
+                    egui::RichText::new(&result.tool_name)
+                        .size(11.0)
+                        .color(ui.visuals().text_color().gamma_multiply(0.6))
+                        .monospace(),
+                ));
+                if !result.summary.is_empty() {
+                    ui.add(egui::Label::new(
+                        egui::RichText::new(&result.summary)
+                            .size(11.0)
+                            .color(ui.visuals().text_color().gamma_multiply(0.4))
+                            .monospace(),
+                    ));
+                }
+            });
+        }
     }
 
     /// Render compaction complete notification
