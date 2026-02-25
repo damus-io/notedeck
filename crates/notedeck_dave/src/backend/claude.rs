@@ -233,6 +233,11 @@ async fn session_actor(
                                     }
                                     mode_ctx.request_repaint();
                                 }
+                                SessionCommand::Compact { response_tx: compact_tx, .. } => {
+                                    let _ = compact_tx.send(DaveApiResponse::Failed(
+                                        "Cannot compact during active turn".to_string(),
+                                    ));
+                                }
                                 SessionCommand::Shutdown => {
                                     tracing::debug!("Session actor {} shutting down during query", session_id);
                                     // Drop stream and disconnect - break to exit loop first
@@ -499,6 +504,16 @@ async fn session_actor(
                 }
                 ctx.request_repaint();
             }
+            SessionCommand::Compact { response_tx, .. } => {
+                // Claude compact is normally routed via compact_session() which
+                // sends /compact as a Query. If a Compact command arrives directly,
+                // just drop the tx — the caller will see it disconnected.
+                tracing::debug!(
+                    "Session {} received Compact command (not expected for Claude)",
+                    session_id
+                );
+                drop(response_tx);
+            }
             SessionCommand::Shutdown => {
                 tracing::debug!("Session actor {} shutting down", session_id);
                 break;
@@ -620,6 +635,29 @@ impl AiBackend for ClaudeBackend {
                 session_id
             );
         }
+    }
+
+    fn compact_session(
+        &self,
+        session_id: String,
+        ctx: egui::Context,
+    ) -> Option<mpsc::Receiver<DaveApiResponse>> {
+        let handle = self.sessions.get(&session_id)?;
+        let command_tx = handle.command_tx.clone();
+        let (response_tx, response_rx) = mpsc::channel();
+        tokio::spawn(async move {
+            if let Err(err) = command_tx
+                .send(SessionCommand::Query {
+                    prompt: "/compact".to_string(),
+                    response_tx,
+                    ctx,
+                })
+                .await
+            {
+                tracing::warn!("Failed to send compact query to claude session: {}", err);
+            }
+        });
+        Some(response_rx)
     }
 }
 

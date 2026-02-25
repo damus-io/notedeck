@@ -2213,6 +2213,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.auto_steal_focus = new_state;
                 None
             }
+            UiActionResult::Compact => {
+                if let Some(session) = self.session_manager.get_active() {
+                    let session_id = session.id.to_string();
+                    if let Some(rx) = get_backend(&self.backends, bt)
+                        .compact_session(session_id, ui.ctx().clone())
+                    {
+                        if let Some(session) = self.session_manager.get_active_mut() {
+                            session.incoming_tokens = Some(rx);
+                        }
+                    }
+                }
+                None
+            }
             UiActionResult::Handled => None,
         }
     }

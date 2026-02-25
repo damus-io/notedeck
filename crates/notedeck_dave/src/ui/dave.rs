@@ -154,6 +154,8 @@ pub enum DaveAction {
     TogglePlanMode,
     /// Toggle auto-steal focus mode (clicked AUTO badge)
     ToggleAutoSteal,
+    /// Trigger manual context compaction
+    Compact,
 }
 
 impl<'a> DaveUi<'a> {
@@ -1570,6 +1572,17 @@ fn toggle_badges_ui(
         .clicked()
     {
         action = Some(DaveAction::TogglePlanMode);
+    }
+
+    // COMPACT badge
+    let compact_badge =
+        super::badge::StatusBadge::new("COMPACT").variant(super::badge::BadgeVariant::Default);
+    if compact_badge
+        .show(ui)
+        .on_hover_text("Click to compact context")
+        .clicked()
+    {
+        action = Some(DaveAction::Compact);
     }
 
     action

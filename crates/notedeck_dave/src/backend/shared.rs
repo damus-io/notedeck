@@ -29,6 +29,11 @@ pub(crate) enum SessionCommand {
         mode: PermissionMode,
         ctx: egui::Context,
     },
+    /// Trigger manual context compaction
+    Compact {
+        response_tx: mpsc::Sender<DaveApiResponse>,
+        ctx: egui::Context,
+    },
     Shutdown,
 }
 

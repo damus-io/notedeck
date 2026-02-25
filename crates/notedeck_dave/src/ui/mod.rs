@@ -769,6 +769,8 @@ pub enum UiActionResult {
     PublishPermissionResponse(update::PermissionPublish),
     /// Toggle auto-steal focus mode (needs state from DaveApp)
     ToggleAutoSteal,
+    /// Trigger manual context compaction
+    Compact,
 }
 
 /// Handle a UI action from DaveUi.
@@ -877,5 +879,6 @@ pub fn handle_ui_action(
                 UiActionResult::PublishPermissionResponse,
             )
         }
+        DaveAction::Compact => UiActionResult::Compact,
     }
 }
