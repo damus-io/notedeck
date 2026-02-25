@@ -351,9 +351,17 @@ impl ConversationMetadata {
     }
 }
 
+/// Tracks the conversation list initialization and subscription lifecycle.
 #[derive(Default)]
 pub enum ConversationListState {
+    /// No loader request has been issued yet.
     #[default]
     Initializing,
+    /// Loader is streaming the initial conversation list.
+    Loading {
+        /// Optional live subscription for incoming conversation updates.
+        subscription: Option<Subscription>,
+    },
+    /// Initial load completed; subscription remains active if available.
     Initialized(Option<Subscription>), // conversation list filter
 }

@@ -4700,6 +4700,7 @@ name = "notedeck_messages"
 version = "0.7.1"
 dependencies = [
  "chrono",
+ "crossbeam-channel",
  "egui",
  "egui_extras",
  "egui_nav",

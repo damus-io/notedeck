@@ -21,3 +21,4 @@ notedeck_ui = { workspace = true }
 chrono = { workspace = true }
 nostr = { workspace = true }
 egui_nav = { workspace = true }
+crossbeam-channel = { workspace = true }
