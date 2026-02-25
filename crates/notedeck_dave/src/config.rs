@@ -63,7 +63,7 @@ impl AiProvider {
             AiProvider::OpenAI => "gpt-5.2",
             AiProvider::Anthropic => "claude-sonnet-4-20250514",
             AiProvider::Ollama => "hhao/qwen2.5-coder-tools:latest",
-            AiProvider::Codex => "gpt-5.2-codex",
+            AiProvider::Codex => "gpt-5.3-codex",
         }
     }
 
@@ -247,7 +247,7 @@ impl Default for ModelConfig {
             .unwrap_or_else(|| match backend {
                 BackendType::OpenAI => "gpt-4.1-mini".to_string(),
                 BackendType::Claude => "claude-sonnet-4.5".to_string(),
-                BackendType::Codex => "gpt-5.2-codex".to_string(),
+                BackendType::Codex => AiProvider::Codex.default_model().to_string(),
                 BackendType::Remote => String::new(),
             });
 
