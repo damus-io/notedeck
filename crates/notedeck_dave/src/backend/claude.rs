@@ -1,14 +1,12 @@
 use crate::auto_accept::AutoAcceptRules;
 use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
-use crate::backend::tool_summary::{
-    extract_response_content, format_tool_summary, truncate_output,
-};
+use crate::backend::tool_summary::extract_response_content;
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, ExecutedTool, ParsedMarkdown, PendingPermission,
-    PermissionRequest, PermissionResponse, SubagentInfo, SubagentStatus,
+    CompactionInfo, DaveApiResponse, ParsedMarkdown, PendingPermission, PermissionRequest,
+    PermissionResponse, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -451,23 +449,13 @@ async fn session_actor(
 
                                                         // Check if this is a Task tool completion
                                                         if tool_name == "Task" {
-                                                            // Pop this subagent from the stack
-                                                            subagent_stack.retain(|id| id != tool_use_id);
                                                             let result_text = extract_response_content(&result_value)
                                                                 .unwrap_or_else(|| "completed".to_string());
-                                                            let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
-                                                                task_id: tool_use_id.to_string(),
-                                                                result: truncate_output(&result_text, 2000),
-                                                            });
+                                                            shared::complete_subagent(tool_use_id, &result_text, &mut subagent_stack, &response_tx, &ctx);
                                                         }
 
-                                                        // Attach parent subagent context (top of stack)
-                                                        let parent_task_id = subagent_stack.last().cloned();
-                                                        let summary = format_tool_summary(&tool_name, &tool_input, &result_value);
                                                         let file_update = FileUpdate::from_tool_call(&tool_name, &tool_input);
-                                                        let tool_result = ExecutedTool { tool_name, summary, parent_task_id, file_update };
-                                                        let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
-                                                        ctx.request_repaint();
+                                                        shared::send_tool_result(&tool_name, &tool_input, &result_value, file_update, &subagent_stack, &response_tx, &ctx);
                                                     }
                                                 }
                                             }

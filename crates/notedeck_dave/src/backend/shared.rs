@@ -1,6 +1,8 @@
 //! Shared utilities used by multiple AI backend implementations.
 
-use crate::messages::DaveApiResponse;
+use crate::backend::tool_summary::{format_tool_summary, truncate_output};
+use crate::file_update::FileUpdate;
+use crate::messages::{DaveApiResponse, ExecutedTool};
 use crate::Message;
 use claude_agent_sdk_rs::PermissionMode;
 use std::sync::mpsc;
@@ -91,6 +93,45 @@ pub fn get_pending_user_messages(messages: &[Message]) -> String {
         .collect();
     trailing.reverse();
     trailing.join("\n")
+}
+
+/// Remove a completed subagent from the stack and notify the UI.
+pub fn complete_subagent(
+    task_id: &str,
+    result_text: &str,
+    subagent_stack: &mut Vec<String>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    ctx: &egui::Context,
+) {
+    subagent_stack.retain(|id| id != task_id);
+    let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
+        task_id: task_id.to_string(),
+        result: truncate_output(result_text, 2000),
+    });
+    ctx.request_repaint();
+}
+
+/// Build an [`ExecutedTool`] from a completed tool call and send it
+/// to the UI along with a repaint request.
+pub fn send_tool_result(
+    tool_name: &str,
+    tool_input: &serde_json::Value,
+    result_value: &serde_json::Value,
+    file_update: Option<FileUpdate>,
+    subagent_stack: &[String],
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    ctx: &egui::Context,
+) {
+    let summary = format_tool_summary(tool_name, tool_input, result_value);
+    let parent_task_id = subagent_stack.last().cloned();
+    let tool_result = ExecutedTool {
+        tool_name: tool_name.to_string(),
+        summary,
+        parent_task_id,
+        file_update,
+    };
+    let _ = response_tx.send(DaveApiResponse::ToolResult(tool_result));
+    ctx.request_repaint();
 }
 
 /// Decide which prompt to send based on whether we're resuming a

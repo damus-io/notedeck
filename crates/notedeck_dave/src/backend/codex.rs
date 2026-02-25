@@ -3,13 +3,12 @@
 
 use super::codex_protocol::*;
 use super::shared::{self, SessionCommand, SessionHandle};
-use super::tool_summary::{format_tool_summary, truncate_output};
 use crate::auto_accept::AutoAcceptRules;
 use crate::backend::traits::AiBackend;
 use crate::file_update::{FileUpdate, FileUpdateType};
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, ExecutedTool, PendingPermission, PermissionRequest,
-    PermissionResponse, SessionInfo, SubagentInfo, SubagentStatus,
+    CompactionInfo, DaveApiResponse, PendingPermission, PermissionRequest, PermissionResponse,
+    SessionInfo, SubagentInfo, SubagentStatus,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -653,16 +652,17 @@ fn handle_codex_message(
                             "diff": diff_text,
                         });
                         let result_value = serde_json::json!({ "status": "ok" });
-                        let summary = format_tool_summary(tool_name, &tool_input, &result_value);
-
                         let file_update =
                             make_codex_file_update(path, tool_name, change_type, &diff_text);
-                        let _ = response_tx.send(DaveApiResponse::ToolResult(ExecutedTool {
-                            tool_name: tool_name.to_string(),
-                            summary,
-                            parent_task_id: subagent_stack.last().cloned(),
+                        shared::send_tool_result(
+                            tool_name,
+                            &tool_input,
+                            &result_value,
                             file_update,
-                        }));
+                            subagent_stack,
+                            response_tx,
+                            ctx,
+                        );
                     }
                     ctx.request_repaint();
                 }
@@ -776,16 +776,15 @@ fn handle_item_completed(
 
             let tool_input = serde_json::json!({ "command": command });
             let result_value = serde_json::json!({ "output": output, "exit_code": exit_code });
-            let summary = format_tool_summary("Bash", &tool_input, &result_value);
-            let parent_task_id = subagent_stack.last().cloned();
-
-            let _ = response_tx.send(DaveApiResponse::ToolResult(ExecutedTool {
-                tool_name: "Bash".to_string(),
-                summary,
-                parent_task_id,
-                file_update: None,
-            }));
-            ctx.request_repaint();
+            shared::send_tool_result(
+                "Bash",
+                &tool_input,
+                &result_value,
+                None,
+                subagent_stack,
+                response_tx,
+                ctx,
+            );
         }
 
         "fileChange" => {
@@ -808,36 +807,30 @@ fn handle_item_completed(
                 "diff": diff,
             });
             let result_value = serde_json::json!({ "status": "ok" });
-            let summary = format_tool_summary(tool_name, &tool_input, &result_value);
-            let parent_task_id = subagent_stack.last().cloned();
-
             let file_update = make_codex_file_update(
                 &file_path,
                 tool_name,
                 kind_str,
                 diff.as_deref().unwrap_or(""),
             );
-            let _ = response_tx.send(DaveApiResponse::ToolResult(ExecutedTool {
-                tool_name: tool_name.to_string(),
-                summary,
-                parent_task_id,
+            shared::send_tool_result(
+                tool_name,
+                &tool_input,
+                &result_value,
                 file_update,
-            }));
-            ctx.request_repaint();
+                subagent_stack,
+                response_tx,
+                ctx,
+            );
         }
 
         "collabAgentToolCall" => {
             if let Some(item_id) = &completed.item_id {
-                subagent_stack.retain(|id| id != item_id);
                 let result_text = completed
                     .result
                     .clone()
                     .unwrap_or_else(|| "completed".to_string());
-                let _ = response_tx.send(DaveApiResponse::SubagentCompleted {
-                    task_id: item_id.clone(),
-                    result: truncate_output(&result_text, 2000),
-                });
-                ctx.request_repaint();
+                shared::complete_subagent(item_id, &result_text, subagent_stack, response_tx, ctx);
             }
         }
 
