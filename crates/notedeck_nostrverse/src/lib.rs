@@ -7,6 +7,7 @@
 //! embedded in egui via wgpu paint callbacks.
 
 mod convert;
+mod model_cache;
 mod nostr_events;
 mod presence;
 mod room_state;
@@ -20,6 +21,7 @@ pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
 use enostr::Pubkey;
 use glam::Vec3;
+use nostrdb::Filter;
 use notedeck::{AppContext, AppResponse};
 use renderbud::Transform;
 
@@ -94,15 +96,27 @@ pub struct NostrverseApp {
     last_save_id: Option<[u8; 32]>,
     /// Monotonic time tracker (seconds since app start)
     start_time: std::time::Instant,
+    /// Model download/cache manager (initialized lazily in initialize())
+    model_cache: Option<model_cache::ModelCache>,
+    /// Dedicated relay URL for multiplayer sync (from NOSTRVERSE_RELAY env)
+    relay_url: Option<String>,
+    /// Whether the relay connection has been initialized
+    relay_initialized: bool,
 }
 
 impl NostrverseApp {
+    const DEFAULT_RELAY: &str = "ws://relay.jb55.com";
+
     /// Create a new nostrverse app with a space reference
     pub fn new(space_ref: SpaceRef, render_state: Option<&egui_wgpu::RenderState>) -> Self {
         let renderer = render_state.map(|rs| renderbud::egui::EguiRenderer::new(rs, (800, 600)));
 
         let device = render_state.map(|rs| rs.device.clone());
         let queue = render_state.map(|rs| rs.queue.clone());
+
+        let relay_url = Some(
+            std::env::var("NOSTRVERSE_RELAY").unwrap_or_else(|_| Self::DEFAULT_RELAY.to_string()),
+        );
 
         let space_naddr = space_ref.to_naddr();
         Self {
@@ -119,6 +133,9 @@ impl NostrverseApp {
             space_naddr,
             last_save_id: None,
             start_time: std::time::Instant::now(),
+            model_cache: None,
+            relay_url,
+            relay_initialized: false,
         }
     }
 
@@ -126,6 +143,13 @@ impl NostrverseApp {
     pub fn demo(render_state: Option<&egui_wgpu::RenderState>) -> Self {
         let space_ref = SpaceRef::new("demo-room".to_string(), demo_pubkey());
         Self::new(space_ref, render_state)
+    }
+
+    /// Send a client message to the dedicated relay, if configured.
+    fn send_to_relay(&self, pool: &mut enostr::RelayPool, msg: &enostr::ClientMessage) {
+        if let Some(relay_url) = &self.relay_url {
+            pool.send_to(msg, relay_url);
+        }
     }
 
     /// Load a glTF model and return its handle
@@ -144,14 +168,40 @@ impl NostrverseApp {
     }
 
     /// Initialize: ingest demo space into local nostrdb and subscribe.
-    fn initialize(&mut self, ctx: &mut AppContext<'_>) {
+    fn initialize(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         if self.initialized {
             return;
         }
 
+        // Initialize model cache
+        let cache_dir = ctx.path.path(notedeck::DataPathType::Cache).join("models");
+        self.model_cache = Some(model_cache::ModelCache::new(cache_dir));
+
         // Subscribe to space and presence events in local nostrdb
         self.room_sub = Some(subscriptions::RoomSubscription::new(ctx.ndb));
         self.presence_sub = Some(subscriptions::PresenceSubscription::new(ctx.ndb));
+
+        // Connect to dedicated relay and subscribe for our event kinds
+        if let Some(relay_url) = &self.relay_url {
+            let egui_ctx = egui_ctx.clone();
+            if let Err(e) = ctx
+                .pool
+                .add_url(relay_url.clone(), move || egui_ctx.request_repaint())
+            {
+                tracing::error!("Failed to add nostrverse relay {}: {}", relay_url, e);
+            } else {
+                tracing::info!("Added nostrverse relay: {}", relay_url);
+
+                let room_filter = Filter::new().kinds([kinds::ROOM as u64]).build();
+                let presence_filter = Filter::new().kinds([kinds::PRESENCE as u64]).build();
+
+                let sub_id = format!("nostrverse-{}", uuid::Uuid::new_v4());
+                let req = enostr::ClientMessage::req(sub_id, vec![room_filter, presence_filter]);
+                ctx.pool.send_to(&req, relay_url);
+
+                self.relay_initialized = true;
+            }
+        }
 
         // Try to load an existing space from nostrdb first
         let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
@@ -169,7 +219,9 @@ impl NostrverseApp {
 
             if let Some(kp) = ctx.accounts.selected_filled() {
                 let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
-                nostr_events::ingest_event(builder, ctx.ndb, kp);
+                if let Some((msg, _id)) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
+                    self.send_to_relay(ctx.pool, &msg);
+                }
             }
             // room_sub (set up above) will pick up the ingested event
             // on the next poll_space_updates() frame.
@@ -285,77 +337,101 @@ impl NostrverseApp {
 
         let space = convert::build_space(info, &self.state.objects);
         let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
-        self.last_save_id = nostr_events::ingest_event(builder, ctx.ndb, kp);
+        if let Some((msg, id)) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
+            self.last_save_id = Some(id);
+            self.send_to_relay(ctx.pool, &msg);
+        }
         tracing::info!("Saved space '{}'", self.state.space_ref.id);
     }
 
     /// Load 3D models for objects, then resolve any semantic locations
     /// (e.g. "top-of obj1") to concrete positions using AABB bounds.
-    fn load_object_models(&self, objects: &mut [RoomObject]) {
+    ///
+    /// For remote URLs (http/https), the model cache handles async download
+    /// and disk caching. Models that aren't yet downloaded will be loaded
+    /// on a future frame via `poll_model_downloads`.
+    fn load_object_models(&mut self, objects: &mut [RoomObject]) {
         let renderer = self.renderer.as_ref();
         let model_bounds_fn = |m: Option<renderbud::Model>| -> Option<renderbud::Aabb> {
             let r = renderer?.renderer.lock().unwrap();
             r.model_bounds(m?)
         };
 
-        // Phase 1: Load all models and cache their AABB bounds
+        // Phase 1: Load all models and cache their AABB bounds.
+        // Remote URLs may return None (download in progress); those objects
+        // will get their model_handle assigned later via poll_model_downloads.
         let mut bounds_by_id: std::collections::HashMap<String, renderbud::Aabb> =
             std::collections::HashMap::new();
 
         for obj in objects.iter_mut() {
-            if let Some(url) = &obj.model_url {
-                let model = self.load_model(url);
-                if let Some(bounds) = model_bounds_fn(model) {
+            // Skip if already loaded
+            if obj.model_handle.is_some() {
+                if let Some(bounds) = model_bounds_fn(obj.model_handle) {
                     bounds_by_id.insert(obj.id.clone(), bounds);
                 }
-                obj.model_handle = model;
-            }
-        }
-
-        // Phase 2: Resolve semantic locations to local offsets from parent.
-        // For parented objects (TopOf, Near), the position becomes local to the parent node.
-        // The location_base stores the bounds-derived offset so the editor can show user offset.
-        let mut resolved: Vec<(usize, Vec3, Vec3)> = Vec::new();
-
-        for (i, obj) in objects.iter().enumerate() {
-            let Some(loc) = &obj.location else {
                 continue;
-            };
+            }
 
-            let local_base = match loc {
-                room_state::ObjectLocation::TopOf(target_id) => {
-                    let target_top = bounds_by_id.get(target_id).map(|b| b.max.y).unwrap_or(0.0);
-                    let self_half_h = bounds_by_id
-                        .get(&obj.id)
-                        .map(|b| (b.max.y - b.min.y) * 0.5)
-                        .unwrap_or(0.0);
-                    Some(Vec3::new(0.0, target_top + self_half_h, 0.0))
-                }
-                room_state::ObjectLocation::Near(target_id) => {
-                    let offset = bounds_by_id
-                        .get(target_id)
-                        .map(|b| b.max.x - b.min.x)
-                        .unwrap_or(1.0);
-                    Some(Vec3::new(offset, 0.0, 0.0))
-                }
-                room_state::ObjectLocation::Floor => {
-                    let self_half_h = bounds_by_id
-                        .get(&obj.id)
-                        .map(|b| (b.max.y - b.min.y) * 0.5)
-                        .unwrap_or(0.0);
-                    Some(Vec3::new(0.0, self_half_h, 0.0))
-                }
-                _ => None,
-            };
+            if let Some(url) = obj.model_url.clone() {
+                let local_path = if let Some(cache) = &mut self.model_cache {
+                    cache.request(&url)
+                } else {
+                    Some(std::path::PathBuf::from(&url))
+                };
 
-            if let Some(base) = local_base {
-                resolved.push((i, base, base + obj.position));
+                if let Some(path) = local_path {
+                    let model = self.load_model(path.to_str().unwrap_or(&url));
+                    if let Some(bounds) = model_bounds_fn(model) {
+                        bounds_by_id.insert(obj.id.clone(), bounds);
+                    }
+                    obj.model_handle = model;
+                    if let Some(cache) = &mut self.model_cache {
+                        cache.mark_loaded(&url);
+                    }
+                }
             }
         }
 
-        for (i, base, pos) in resolved {
-            objects[i].location_base = Some(base);
-            objects[i].position = pos;
+        resolve_locations(objects, &bounds_by_id);
+    }
+
+    /// Poll for completed model downloads, load into GPU, and re-resolve
+    /// semantic locations so dependent objects are positioned correctly.
+    fn poll_model_downloads(&mut self) {
+        let Some(cache) = &mut self.model_cache else {
+            return;
+        };
+
+        let ready = cache.poll();
+        if ready.is_empty() {
+            return;
+        }
+
+        let mut any_loaded = false;
+        for (url, path) in ready {
+            let path_str = path.to_string_lossy();
+            let model = self.load_model(&path_str);
+
+            if model.is_none() {
+                tracing::warn!("Failed to load cached model at {}", path_str);
+                continue;
+            }
+
+            for obj in &mut self.state.objects {
+                if obj.model_url.as_deref() == Some(&url) && obj.model_handle.is_none() {
+                    obj.model_handle = model;
+                    obj.scene_object_id = None;
+                    any_loaded = true;
+                }
+            }
+
+            if let Some(cache) = &mut self.model_cache {
+                cache.mark_loaded(&url);
+            }
+        }
+
+        if any_loaded {
+            resolve_object_locations(self.renderer.as_ref(), &mut self.state.objects);
         }
     }
 
@@ -410,8 +486,12 @@ impl NostrverseApp {
                 .map(|u| u.position)
                 .unwrap_or(Vec3::ZERO);
 
-            self.presence_pub
-                .maybe_publish(ctx.ndb, kp, &self.space_naddr, self_pos, now);
+            if let Some(msg) =
+                self.presence_pub
+                    .maybe_publish(ctx.ndb, kp, &self.space_naddr, self_pos, now)
+            {
+                self.send_to_relay(ctx.pool, &msg);
+            }
         }
 
         // Poll for remote presence events
@@ -585,10 +665,14 @@ impl NostrverseApp {
 impl notedeck::App for NostrverseApp {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         // Initialize on first frame
-        self.initialize(ctx);
+        let egui_ctx = ui.ctx().clone();
+        self.initialize(ctx, &egui_ctx);
 
         // Poll for space event updates
         self.poll_space_updates(ctx.ndb);
+
+        // Poll for completed model downloads
+        self.poll_model_downloads();
 
         // Presence: publish, poll, expire
         self.tick_presence(ctx);
@@ -671,7 +755,19 @@ impl NostrverseApp {
                 self.save_space(ctx);
                 self.state.dirty = false;
             }
-            NostrverseAction::AddObject(obj) => {
+            NostrverseAction::AddObject(mut obj) => {
+                // Try to load model immediately (handles local + cached remote)
+                if let Some(url) = obj.model_url.clone() {
+                    let local_path = self.model_cache.as_mut().and_then(|c| c.request(&url));
+                    if let Some(path) = local_path {
+                        obj.model_handle = self.load_model(path.to_str().unwrap_or(&url));
+                        if obj.model_handle.is_some() {
+                            if let Some(cache) = &mut self.model_cache {
+                                cache.mark_loaded(&url);
+                            }
+                        }
+                    }
+                }
                 self.state.objects.push(obj);
                 self.state.dirty = true;
             }
@@ -709,4 +805,83 @@ impl NostrverseApp {
             }
         }
     }
+}
+
+/// Resolve semantic locations (top-of, near, floor) to concrete positions
+/// using the provided AABB bounds map.
+fn resolve_locations(
+    objects: &mut [RoomObject],
+    bounds_by_id: &std::collections::HashMap<String, renderbud::Aabb>,
+) {
+    let mut resolved: Vec<(usize, Vec3, Vec3)> = Vec::new();
+
+    for (i, obj) in objects.iter().enumerate() {
+        let Some(loc) = &obj.location else {
+            continue;
+        };
+
+        let local_base = match loc {
+            room_state::ObjectLocation::TopOf(target_id) => {
+                let target_top = bounds_by_id.get(target_id).map(|b| b.max.y).unwrap_or(0.0);
+                let self_half_h = bounds_by_id
+                    .get(&obj.id)
+                    .map(|b| (b.max.y - b.min.y) * 0.5)
+                    .unwrap_or(0.0);
+                Some(Vec3::new(0.0, target_top + self_half_h, 0.0))
+            }
+            room_state::ObjectLocation::Near(target_id) => {
+                let offset = bounds_by_id
+                    .get(target_id)
+                    .map(|b| b.max.x - b.min.x)
+                    .unwrap_or(1.0);
+                Some(Vec3::new(offset, 0.0, 0.0))
+            }
+            room_state::ObjectLocation::Floor => {
+                let self_half_h = bounds_by_id
+                    .get(&obj.id)
+                    .map(|b| (b.max.y - b.min.y) * 0.5)
+                    .unwrap_or(0.0);
+                Some(Vec3::new(0.0, self_half_h, 0.0))
+            }
+            _ => None,
+        };
+
+        if let Some(base) = local_base {
+            resolved.push((i, base, base + obj.position));
+        }
+    }
+
+    for (i, base, pos) in resolved {
+        objects[i].location_base = Some(base);
+        objects[i].position = pos;
+    }
+}
+
+/// Collect AABB bounds for all objects that have a loaded model.
+fn collect_bounds(
+    renderer: Option<&renderbud::egui::EguiRenderer>,
+    objects: &[RoomObject],
+) -> std::collections::HashMap<String, renderbud::Aabb> {
+    let mut bounds = std::collections::HashMap::new();
+    let Some(renderer) = renderer else {
+        return bounds;
+    };
+    let r = renderer.renderer.lock().unwrap();
+    for obj in objects {
+        if let Some(model) = obj.model_handle {
+            if let Some(b) = r.model_bounds(model) {
+                bounds.insert(obj.id.clone(), b);
+            }
+        }
+    }
+    bounds
+}
+
+/// Re-resolve semantic locations (top-of, near, floor) using current model bounds.
+fn resolve_object_locations(
+    renderer: Option<&renderbud::egui::EguiRenderer>,
+    objects: &mut [RoomObject],
+) {
+    let bounds_by_id = collect_bounds(renderer, objects);
+    resolve_locations(objects, &bounds_by_id);
 }

@@ -131,9 +131,14 @@ pub fn get_presence_space<'a>(note: &'a Note<'a>) -> Option<&'a str> {
     get_tag_value(note, "a")
 }
 
-/// Sign and ingest a nostr event into the local nostrdb only (no relay publishing).
-/// Returns the 32-byte event ID on success.
-pub fn ingest_event(builder: NoteBuilder<'_>, ndb: &Ndb, kp: FilledKeypair) -> Option<[u8; 32]> {
+/// Sign and ingest a nostr event into the local nostrdb.
+/// Returns the ClientMessage (for optional relay publishing) and
+/// the 32-byte event ID on success.
+pub fn ingest_event(
+    builder: NoteBuilder<'_>,
+    ndb: &Ndb,
+    kp: FilledKeypair,
+) -> Option<(enostr::ClientMessage, [u8; 32])> {
     let note = builder
         .sign(&kp.secret_key.secret_bytes())
         .build()
@@ -141,7 +146,7 @@ pub fn ingest_event(builder: NoteBuilder<'_>, ndb: &Ndb, kp: FilledKeypair) -> O
 
     let id = *note.id();
 
-    let Ok(event) = &enostr::ClientMessage::event(&note) else {
+    let Ok(event) = enostr::ClientMessage::event(&note) else {
         tracing::error!("ingest_event: failed to build client message");
         return None;
     };
@@ -152,7 +157,8 @@ pub fn ingest_event(builder: NoteBuilder<'_>, ndb: &Ndb, kp: FilledKeypair) -> O
     };
 
     let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
-    Some(id)
+
+    Some((event, id))
 }
 
 #[cfg(test)]
