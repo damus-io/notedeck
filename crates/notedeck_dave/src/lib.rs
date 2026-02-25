@@ -2521,22 +2521,19 @@ impl notedeck::App for Dave {
             let filter = nostrdb::Filter::new()
                 .kinds([enostr::pns::PNS_KIND as u64])
                 .authors([pns_keys.keypair.pubkey.bytes()])
-                .limit(500)
                 .build();
-            let fetched =
+            let result =
                 self.neg_sync
                     .process(neg_events, ctx.ndb, ctx.pool, &filter, &self.pns_relay_url);
 
-            // If events were found and we haven't hit the round limit,
-            // trigger another sync to pull more recent data.
-            if fetched > 0 {
+            if result.new_events > 0 {
                 self.neg_sync_round += 1;
                 if self.neg_sync_round < MAX_NEG_SYNC_ROUNDS {
                     tracing::info!(
                         "negentropy: scheduling round {}/{} (got {} events)",
                         self.neg_sync_round + 1,
                         MAX_NEG_SYNC_ROUNDS,
-                        fetched
+                        result.new_events
                     );
                     self.neg_sync.trigger_now();
                 } else {
@@ -2545,6 +2542,11 @@ impl notedeck::App for Dave {
                         MAX_NEG_SYNC_ROUNDS
                     );
                 }
+            } else if result.skipped > 0 {
+                tracing::info!(
+                    "negentropy: relay has {} events we can't reconcile, stopping",
+                    result.skipped
+                );
             }
         }
 
