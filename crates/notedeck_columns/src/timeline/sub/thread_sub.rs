@@ -106,9 +106,13 @@ impl ThreadSubs {
             return;
         };
 
-        match return_type {
+        let unsubscribed = match return_type {
             ReturnType::Drag => unsubscribe_drag(scopes, ndb, id, remote),
             ReturnType::Click => unsubscribe_click(scopes, ndb, id, remote),
+        };
+
+        if !unsubscribed {
+            return;
         }
 
         if scopes.is_empty() {
@@ -148,23 +152,32 @@ fn unsubscribe_drag(
     ndb: &mut Ndb,
     id: &ThreadSelection,
     remote: &mut Remote,
-) {
-    if let Some(scope) = scopes.last_mut() {
-        let Some(cur_sub) = scope.stack.pop() else {
-            tracing::error!("expected a scope to be left");
-            return;
-        };
+) -> bool {
+    let Some(scope) = scopes.last_mut() else {
+        tracing::error!("called drag unsubscribe but there aren't any scopes left");
+        return false;
+    };
 
-        log_scope_root_mismatch(scope, id);
+    let Some(cur_sub) = scope.stack.pop() else {
+        tracing::error!("expected a scope to be left");
+        return false;
+    };
 
-        if ndb_unsub(ndb, cur_sub.sub, id) {
-            remote.dependers = remote.dependers.saturating_sub(1);
-        }
+    log_scope_root_mismatch(scope, id);
 
-        if scope.stack.is_empty() {
-            scopes.pop();
-        }
+    if !ndb_unsub(ndb, cur_sub.sub, id) {
+        // Keep local bookkeeping aligned with NDB when unsubscribe fails.
+        scope.stack.push(cur_sub);
+        return false;
     }
+
+    remote.dependers = remote.dependers.saturating_sub(1);
+
+    if scope.stack.is_empty() {
+        scopes.pop();
+    }
+
+    true
 }
 
 fn unsubscribe_click(
@@ -172,18 +185,27 @@ fn unsubscribe_click(
     ndb: &mut Ndb,
     id: &ThreadSelection,
     remote: &mut Remote,
-) {
-    let Some(scope) = scopes.pop() else {
+) -> bool {
+    let Some(mut scope) = scopes.pop() else {
         tracing::error!("called unsubscribe but there aren't any scopes left");
-        return;
+        return false;
     };
 
     log_scope_root_mismatch(&scope, id);
-    for sub in scope.stack {
+    while let Some(sub) = scope.stack.pop() {
         if ndb_unsub(ndb, sub.sub, id) {
             remote.dependers = remote.dependers.saturating_sub(1);
+            continue;
         }
+
+        // Partial rollback: restore the failed local sub (and any remaining ones)
+        // to thread bookkeeping and keep the remote owner alive.
+        scope.stack.push(sub);
+        scopes.push(scope);
+        return false;
     }
+
+    true
 }
 
 fn log_scope_root_mismatch(scope: &Scope, id: &ThreadSelection) {
