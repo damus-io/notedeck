@@ -919,12 +919,14 @@ fn attach_timeline_column(
         return false;
     };
 
+    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
     crate::timeline::setup_new_timeline(
         &mut timeline,
         ctx.ndb,
         &txn,
         &mut app.subscriptions,
         ctx.legacy_pool,
+        &mut scoped_subs,
         ctx.note_cache,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,
@@ -936,7 +938,11 @@ fn attach_timeline_column(
         .column_mut(col)
         .router_mut()
         .route_to_replaced(Route::timeline(route_kind.clone()));
-    app.timeline_cache.insert(route_kind, account_pk, timeline);
+    app.timeline_cache.insert(
+        route_kind,
+        *ctx.accounts.selected_account_pubkey(),
+        timeline,
+    );
 
     true
 }
@@ -1146,6 +1152,7 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         &txn,
         &mut app.subscriptions,
         ctx.legacy_pool,
+        &mut ctx.remote.scoped_subs(ctx.accounts),
         ctx.note_cache,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,

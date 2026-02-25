@@ -35,7 +35,7 @@ use crate::{
 use egui_nav::{
     Nav, NavAction, NavResponse, NavUiType, PopupResponse, PopupSheet, RouteResponse, Split,
 };
-use enostr::{ProfileState, RelayPool};
+use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
@@ -134,12 +134,13 @@ impl SwitchingAction {
                         break 's;
                     }
 
+                    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
                     decks_cache.remove(
                         ctx.i18n,
                         to_remove,
                         timeline_cache,
                         ctx.ndb,
-                        ctx.legacy_pool,
+                        &mut scoped_subs,
                     );
                 }
             },
@@ -147,11 +148,9 @@ impl SwitchingAction {
                 ColumnsAction::Remove(index) => {
                     let kinds_to_pop = get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache)
                         .delete_column(index);
-                    let selected_account_pk = *ctx.accounts.selected_account_pubkey();
                     for kind in &kinds_to_pop {
-                        if let Err(err) =
-                            timeline_cache.pop(kind, selected_account_pk, ctx.ndb, ctx.legacy_pool)
-                        {
+                        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+                        if let Err(err) = timeline_cache.pop(kind, ctx.ndb, &mut scoped_subs) {
                             error!("error popping timeline: {err}");
                         }
                     }
@@ -166,12 +165,12 @@ impl SwitchingAction {
                     get_decks_mut(ctx.i18n, ctx.accounts, decks_cache).set_active(index)
                 }
                 DecksAction::Removing(index) => {
+                    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
                     get_decks_mut(ctx.i18n, ctx.accounts, decks_cache).remove_deck(
                         index,
                         timeline_cache,
                         ctx.ndb,
-                        *ctx.accounts.selected_account_pubkey(),
-                        ctx.legacy_pool,
+                        &mut scoped_subs,
                     );
                 }
             },
@@ -307,7 +306,6 @@ fn process_nav_resp(
                         &mut app.threads,
                         &mut app.view_state,
                         ctx.ndb,
-                        ctx.legacy_pool,
                         &mut ctx.remote.scoped_subs(ctx.accounts),
                         return_type,
                         col,
@@ -324,14 +322,17 @@ fn process_nav_resp(
                     .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
 
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
-                handle_navigating_timeline(
-                    ctx.ndb,
-                    ctx.note_cache,
-                    ctx.legacy_pool,
-                    ctx.accounts,
-                    app,
-                    col,
-                );
+                {
+                    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+                    handle_navigating_timeline(
+                        ctx.ndb,
+                        ctx.note_cache,
+                        &mut scoped_subs,
+                        ctx.accounts,
+                        app,
+                        col,
+                    );
+                }
 
                 let cur_router = app
                     .columns_mut(ctx.i18n, ctx.accounts)
@@ -355,14 +356,17 @@ fn process_nav_resp(
                     .select_column(col as i32);
 
                 handle_navigating_edit_profile(ctx.ndb, ctx.accounts, app, col);
-                handle_navigating_timeline(
-                    ctx.ndb,
-                    ctx.note_cache,
-                    ctx.legacy_pool,
-                    ctx.accounts,
-                    app,
-                    col,
-                );
+                {
+                    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+                    handle_navigating_timeline(
+                        ctx.ndb,
+                        ctx.note_cache,
+                        &mut scoped_subs,
+                        ctx.accounts,
+                        app,
+                        col,
+                    );
+                }
             }
         }
     }
@@ -411,27 +415,36 @@ fn handle_navigating_edit_profile(ndb: &Ndb, accounts: &Accounts, app: &mut Damu
 fn handle_navigating_timeline(
     ndb: &Ndb,
     note_cache: &mut NoteCache,
-    pool: &mut RelayPool,
+    scoped_subs: &mut notedeck::ScopedSubApi<'_, '_>,
     accounts: &Accounts,
     app: &mut Damus,
     col: usize,
 ) {
-    let account_pk = *accounts.selected_account_pubkey();
+    let account_pk = accounts.selected_account_pubkey();
     let kind = {
         let Route::Timeline(kind) = app.columns(accounts).column(col).router().top() else {
             return;
         };
 
-        if app.timeline_cache.get(kind).is_some() {
-            return;
+        if let Some(timeline) = app.timeline_cache.get(kind) {
+            if timeline.subscription.dependers(account_pk) > 0 {
+                return;
+            }
         }
 
         kind.to_owned()
     };
 
     let txn = Transaction::new(ndb).expect("txn");
-    app.timeline_cache
-        .open(ndb, note_cache, &txn, account_pk, pool, &kind, false);
+    app.timeline_cache.open(
+        ndb,
+        note_cache,
+        &txn,
+        scoped_subs,
+        &kind,
+        *account_pk,
+        false,
+    );
 }
 
 pub enum RouterAction {
@@ -538,13 +551,10 @@ fn process_render_nav_action(
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
         RenderNavAction::RemoveColumn => {
             let kinds_to_pop = app.columns_mut(ctx.i18n, ctx.accounts).delete_column(col);
-            let selected_account_pk = *ctx.accounts.selected_account_pubkey();
 
             for kind in &kinds_to_pop {
-                if let Err(err) =
-                    app.timeline_cache
-                        .pop(kind, selected_account_pk, ctx.ndb, ctx.legacy_pool)
-                {
+                let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+                if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, &mut scoped_subs) {
                     error!("error popping timeline: {err}");
                 }
             }
@@ -582,7 +592,6 @@ fn process_render_nav_action(
                 &mut app.timeline_cache,
                 &mut app.threads,
                 ctx.note_cache,
-                ctx.legacy_pool,
                 &mut ctx.remote,
                 &txn,
                 ctx.unknown_ids,

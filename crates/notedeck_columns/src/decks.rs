@@ -1,8 +1,8 @@
 use std::collections::{hash_map::ValuesMut, HashMap};
 
-use enostr::{Pubkey, RelayPool};
+use enostr::Pubkey;
 use nostrdb::Transaction;
-use notedeck::{tr, AppContext, Localization, FALLBACK_PUBKEY};
+use notedeck::{tr, AppContext, Localization, ScopedSubApi, FALLBACK_PUBKEY};
 use tracing::{error, info};
 
 use crate::{
@@ -171,14 +171,14 @@ impl DecksCache {
         key: &Pubkey,
         timeline_cache: &mut TimelineCache,
         ndb: &mut nostrdb::Ndb,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
     ) {
         let Some(decks) = self.account_to_decks.remove(key) else {
             return;
         };
         info!("Removing decks for {:?}", key);
 
-        decks.unsubscribe_all(timeline_cache, ndb, *key, pool);
+        decks.unsubscribe_all(timeline_cache, ndb, scoped_subs);
 
         if !self.account_to_decks.contains_key(&self.fallback_pubkey) {
             self.account_to_decks
@@ -294,14 +294,13 @@ impl Decks {
         index: usize,
         timeline_cache: &mut TimelineCache,
         ndb: &mut nostrdb::Ndb,
-        account_pk: Pubkey,
-        pool: &mut enostr::RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
     ) {
         let Some(deck) = self.remove_deck_internal(index) else {
             return;
         };
 
-        delete_deck(deck, timeline_cache, ndb, account_pk, pool);
+        delete_deck(deck, timeline_cache, ndb, scoped_subs);
     }
 
     fn remove_deck_internal(&mut self, index: usize) -> Option<Deck> {
@@ -358,11 +357,10 @@ impl Decks {
         self,
         timeline_cache: &mut TimelineCache,
         ndb: &mut nostrdb::Ndb,
-        account_pk: Pubkey,
-        pool: &mut enostr::RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
     ) {
         for deck in self.decks {
-            delete_deck(deck, timeline_cache, ndb, account_pk, pool);
+            delete_deck(deck, timeline_cache, ndb, scoped_subs);
         }
     }
 }
@@ -371,8 +369,7 @@ fn delete_deck(
     mut deck: Deck,
     timeline_cache: &mut TimelineCache,
     ndb: &mut nostrdb::Ndb,
-    account_pk: Pubkey,
-    pool: &mut enostr::RelayPool,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
 ) {
     let cols = deck.columns_mut();
     let num_cols = cols.num_columns();
@@ -380,7 +377,7 @@ fn delete_deck(
         let kinds_to_pop = cols.delete_column(i);
 
         for kind in &kinds_to_pop {
-            if let Err(err) = timeline_cache.pop(kind, account_pk, ndb, pool) {
+            if let Err(err) = timeline_cache.pop(kind, ndb, scoped_subs) {
                 error!("error popping timeline: {err}");
             }
         }
@@ -459,14 +456,15 @@ pub fn add_demo_columns(
     let txn = Transaction::new(ctx.ndb).unwrap();
 
     for kind in &timeline_kinds {
+        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
         if let Some(results) = columns.add_new_timeline_column(
             timeline_cache,
             &txn,
             ctx.ndb,
             ctx.note_cache,
-            *ctx.accounts.selected_account_pubkey(),
-            ctx.legacy_pool,
+            &mut scoped_subs,
             kind,
+            pubkey,
         ) {
             results.process(
                 ctx.ndb,

@@ -187,6 +187,7 @@ fn try_process_event(
 
     try_process_events_core(app_ctx, ctx, |app_ctx, ev| match (&ev.event).into() {
         RelayEvent::Opened => {
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
             timeline::send_initial_timeline_filters(
                 damus.options.contains(AppOptions::SinceOptimize),
                 &mut damus.timeline_cache,
@@ -194,6 +195,7 @@ fn try_process_event(
                 app_ctx.legacy_pool,
                 &ev.relay,
                 app_ctx.accounts,
+                &mut scoped_subs,
             );
         }
         RelayEvent::Message(msg) => {
@@ -204,12 +206,10 @@ fn try_process_event(
 
     for (kind, timeline) in &mut damus.timeline_cache {
         let selected_account_pk = *app_ctx.accounts.selected_account_pubkey();
-        let is_ready = timeline::is_timeline_ready(
-            app_ctx.ndb,
-            app_ctx.legacy_pool,
-            timeline,
-            app_ctx.accounts,
-        );
+        let is_ready = {
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            timeline::is_timeline_ready(app_ctx.ndb, &mut scoped_subs, timeline, app_ctx.accounts)
+        };
 
         if is_ready {
             schedule_timeline_load(
@@ -607,14 +607,15 @@ impl Damus {
             let txn = Transaction::new(app_context.ndb).unwrap();
             for col in &parsed_args.columns {
                 let timeline_kind = col.clone().into_timeline_kind();
+                let mut scoped_subs = app_context.remote.scoped_subs(app_context.accounts);
                 if let Some(add_result) = columns.add_new_timeline_column(
                     &mut timeline_cache,
                     &txn,
                     app_context.ndb,
                     app_context.note_cache,
-                    *app_context.accounts.selected_account_pubkey(),
-                    app_context.legacy_pool,
+                    &mut scoped_subs,
                     &timeline_kind,
+                    *app_context.accounts.selected_account_pubkey(),
                 ) {
                     add_result.process(
                         app_context.ndb,

@@ -1,5 +1,6 @@
 use crate::{
     error::Error,
+    scoped_sub_owner_keys::timeline_remote_owner_key,
     subscriptions::{self, SubKind, Subscriptions},
     timeline::{
         kind::{people_list_note_filter, AlgoTimeline, ListKind, PeopleListRef},
@@ -14,7 +15,8 @@ use notedeck::{
     contacts::hybrid_contacts_filter,
     filter::{self, HybridFilter},
     is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
-    FilterState, FilterStates, Localization, NoteCache, NoteRef, UnknownIds,
+    FilterState, FilterStates, Localization, NoteCache, NoteRef, RelaySelection, ScopedSubApi,
+    ScopedSubIdentity, SubConfig, SubKey, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
@@ -39,6 +41,60 @@ pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
 pub use timeline_units::{TimelineUnits, UnknownPks};
 pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit};
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum TimelineScopedSub {
+    RemoteByKind,
+}
+
+fn timeline_remote_sub_key(kind: &TimelineKind) -> SubKey {
+    SubKey::builder(TimelineScopedSub::RemoteByKind)
+        .with(kind)
+        .finish()
+}
+
+fn timeline_remote_sub_config(remote_filters: Vec<Filter>) -> SubConfig {
+    SubConfig {
+        relays: RelaySelection::AccountsRead,
+        filters: remote_filters,
+        use_transparent: false,
+    }
+}
+
+pub(crate) fn ensure_remote_timeline_subscription(
+    timeline: &mut Timeline,
+    account_pk: Pubkey,
+    remote_filters: Vec<Filter>,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
+) {
+    let owner = timeline_remote_owner_key(account_pk, &timeline.kind);
+    let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
+    let config = timeline_remote_sub_config(remote_filters);
+    let _ = scoped_subs.ensure_sub(identity, config);
+    timeline.subscription.mark_remote_seeded(account_pk);
+}
+
+pub(crate) fn update_remote_timeline_subscription(
+    timeline: &mut Timeline,
+    account_pk: Pubkey,
+    remote_filters: Vec<Filter>,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
+) {
+    let owner = timeline_remote_owner_key(account_pk, &timeline.kind);
+    let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
+    let config = timeline_remote_sub_config(remote_filters);
+    let _ = scoped_subs.set_sub(identity, config);
+    timeline.subscription.mark_remote_seeded(account_pk);
+}
+
+pub fn drop_timeline_remote_owner(
+    timeline: &Timeline,
+    account_pk: Pubkey,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
+) {
+    let owner = timeline_remote_owner_key(account_pk, &timeline.kind);
+    let _ = scoped_subs.drop_owner(owner);
+}
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, Default, PartialOrd, Ord)]
 pub enum ViewFilter {
@@ -628,6 +684,7 @@ pub fn setup_new_timeline(
     txn: &Transaction,
     subs: &mut Subscriptions,
     pool: &mut RelayPool,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
     note_cache: &mut NoteCache,
     since_optimize: bool,
     accounts: &Accounts,
@@ -635,7 +692,7 @@ pub fn setup_new_timeline(
 ) {
     let account_pk = *accounts.selected_account_pubkey();
     // if we're ready, setup local subs
-    if is_timeline_ready(ndb, pool, timeline, accounts) {
+    if is_timeline_ready(ndb, scoped_subs, timeline, accounts) {
         if let Err(err) =
             setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline, unknown_ids, account_pk)
         {
@@ -644,7 +701,7 @@ pub fn setup_new_timeline(
     }
 
     for relay in &mut pool.relays {
-        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
+        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts, scoped_subs);
     }
     timeline.subscription.increment(account_pk);
 }
@@ -661,12 +718,13 @@ pub fn send_initial_timeline_filters(
     pool: &mut RelayPool,
     relay_id: &str,
     accounts: &Accounts,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
 ) -> Option<()> {
     info!("Sending initial filters to {}", relay_id);
     let relay = &mut pool.relays.iter_mut().find(|r| r.url() == relay_id)?;
 
     for (_kind, timeline) in timeline_cache {
-        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
+        send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts, scoped_subs);
     }
 
     Some(())
@@ -678,6 +736,7 @@ pub fn send_initial_timeline_filter(
     relay: &mut PoolRelay,
     timeline: &mut Timeline,
     accounts: &Accounts,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
 ) {
     let account_pk = *accounts.selected_account_pubkey();
     let filter_state = timeline.filter.get_mut(relay.url());
@@ -726,15 +785,7 @@ pub fn send_initial_timeline_filter(
                 filter
             }).collect();
 
-            //let sub_id = damus.gen_subid(&SubKind::Initial);
-            let sub_id = subscriptions::new_sub_id();
-            subs.subs.insert(sub_id.clone(), SubKind::Initial);
-
-            if let Err(err) = relay.subscribe(sub_id.clone(), new_filters.clone()) {
-                error!("error subscribing: {err}");
-            } else {
-                timeline.subscription.force_add_remote(account_pk, sub_id);
-            }
+            update_remote_timeline_subscription(timeline, account_pk, new_filters, scoped_subs);
         }
 
         // we need some data first
@@ -874,6 +925,10 @@ pub fn setup_initial_nostrdb_subs(
     account_pk: Pubkey,
 ) -> Result<()> {
     for (_kind, timeline) in timeline_cache {
+        if timeline.subscription.dependers(&account_pk) == 0 {
+            continue;
+        }
+
         let txn = Transaction::new(ndb).expect("txn");
         if let Err(err) =
             setup_timeline_nostrdb_sub(ndb, &txn, note_cache, timeline, unknown_ids, account_pk)
@@ -919,13 +974,24 @@ fn setup_timeline_nostrdb_sub(
 #[profiling::function]
 pub fn is_timeline_ready(
     ndb: &Ndb,
-    pool: &mut RelayPool,
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
     timeline: &mut Timeline,
     accounts: &Accounts,
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have
     // seen all of the different contact lists from each relay
-    if let Some(_f) = timeline.filter.get_any_ready() {
+    if let Some(filter) = timeline.filter.get_any_ready() {
+        let account_pk = *accounts.selected_account_pubkey();
+        if timeline.subscription.dependers(&account_pk) > 0
+            && !timeline.subscription.remote_seeded(&account_pk)
+        {
+            ensure_remote_timeline_subscription(
+                timeline,
+                account_pk,
+                filter.remote().to_vec(),
+                scoped_subs,
+            );
+        }
         return true;
     }
 
@@ -1029,10 +1095,11 @@ pub fn is_timeline_ready(
 
             //let ck = &timeline.kind;
             //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
-            timeline.subscription.try_add_remote(
+            update_remote_timeline_subscription(
+                timeline,
                 *accounts.selected_account_pubkey(),
-                pool,
-                &filter,
+                filter.remote().to_vec(),
+                scoped_subs,
             );
             true
         }

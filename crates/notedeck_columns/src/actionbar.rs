@@ -12,7 +12,7 @@ use crate::{
 };
 
 use egui_nav::Percent;
-use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
+use enostr::{FilledKeypair, NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder, NoteKey, Transaction};
 use notedeck::{
     get_wallet_for, is_future_timestamp,
@@ -52,7 +52,6 @@ fn execute_note_action(
     timeline_cache: &mut TimelineCache,
     threads: &mut Threads,
     note_cache: &mut NoteCache,
-    pool: &mut RelayPool,
     remote: &mut RemoteApi<'_>,
     txn: &Transaction,
     accounts: &mut Accounts,
@@ -121,14 +120,15 @@ fn execute_note_action(
         NoteAction::Profile(pubkey) => {
             let kind = TimelineKind::Profile(pubkey);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
+            let mut scoped_subs = remote.scoped_subs(accounts);
             timeline_res = timeline_cache
                 .open(
                     ndb,
                     note_cache,
                     txn,
-                    *accounts.selected_account_pubkey(),
-                    pool,
+                    &mut scoped_subs,
                     &kind,
+                    *accounts.selected_account_pubkey(),
                     false,
                 )
                 .map(NotesOpenResult::Timeline);
@@ -144,7 +144,6 @@ fn execute_note_action(
                 break 'ex;
             };
             let mut scoped_subs = remote.scoped_subs(accounts);
-
             timeline_res = threads
                 .open(
                     ndb,
@@ -167,14 +166,15 @@ fn execute_note_action(
         NoteAction::Hashtag(htag) => {
             let kind = TimelineKind::Hashtag(vec![htag.clone()]);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
+            let mut scoped_subs = remote.scoped_subs(&*accounts);
             timeline_res = timeline_cache
                 .open(
                     ndb,
                     note_cache,
                     txn,
-                    *accounts.selected_account_pubkey(),
-                    pool,
+                    &mut scoped_subs,
                     &kind,
+                    *accounts.selected_account_pubkey(),
                     false,
                 )
                 .map(NotesOpenResult::Timeline);
@@ -277,7 +277,6 @@ pub fn execute_and_process_note_action(
     timeline_cache: &mut TimelineCache,
     threads: &mut Threads,
     note_cache: &mut NoteCache,
-    pool: &mut RelayPool,
     remote: &mut RemoteApi<'_>,
     txn: &Transaction,
     unknown_ids: &mut UnknownIds,
@@ -305,7 +304,6 @@ pub fn execute_and_process_note_action(
         timeline_cache,
         threads,
         note_cache,
-        pool,
         remote,
         txn,
         accounts,

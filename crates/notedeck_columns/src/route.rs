@@ -1,5 +1,5 @@
 use egui_nav::{Percent, ReturnType};
-use enostr::{NoteId, Pubkey, RelayPool};
+use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
 use notedeck::{
     tr, Localization, NoteZapTargetOwned, ReplacementType, ReportTarget, RootNoteIdBuf, Router,
@@ -799,16 +799,13 @@ pub fn cleanup_popped_route(
     threads: &mut Threads,
     view_state: &mut ViewState,
     ndb: &mut Ndb,
-    pool: &mut RelayPool,
     scoped_subs: &mut ScopedSubApi,
     return_type: ReturnType,
     col_index: usize,
 ) {
     match route {
         Route::Timeline(kind) => {
-            if let Err(err) =
-                timeline_cache.pop(kind, scoped_subs.selected_account_pubkey(), ndb, pool)
-            {
+            if let Err(err) = timeline_cache.pop(kind, ndb, scoped_subs) {
                 tracing::error!("popping timeline had an error: {err} for {:?}", kind);
             }
         }

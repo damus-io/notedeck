@@ -3,9 +3,9 @@ use crate::{
     route::{ColumnsRouter, Route, SingletonRouter},
     timeline::{Timeline, TimelineCache, TimelineKind},
 };
-use enostr::{Pubkey, RelayPool};
+use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::NoteCache;
+use notedeck::{NoteCache, ScopedSubApi};
 use std::iter::Iterator;
 use tracing::warn;
 
@@ -108,13 +108,13 @@ impl Columns {
         txn: &Transaction,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
-        account_pk: Pubkey,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
         kind: &TimelineKind,
+        account_pk: Pubkey,
     ) -> Option<TimelineOpenResult> {
         self.columns
             .push(Column::new(vec![Route::timeline(kind.to_owned())]));
-        timeline_cache.open(ndb, note_cache, txn, account_pk, pool, kind, false)
+        timeline_cache.open(ndb, note_cache, txn, scoped_subs, kind, account_pk, false)
     }
 
     pub fn new_column_picker(&mut self) {

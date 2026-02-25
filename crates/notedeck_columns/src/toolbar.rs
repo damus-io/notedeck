@@ -102,7 +102,6 @@ fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
                 &mut app.threads,
                 &mut app.view_state,
                 ctx.ndb,
-                ctx.legacy_pool,
                 &mut ctx.remote.scoped_subs(ctx.accounts),
                 ReturnType::Click,
                 col_index,
