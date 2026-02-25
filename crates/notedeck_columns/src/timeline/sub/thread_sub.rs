@@ -1,8 +1,10 @@
 use egui_nav::ReturnType;
-use enostr::{NoteId, Pubkey};
+use enostr::{Filter, NoteId, Pubkey};
 use hashbrown::HashMap;
-use nostrdb::{Filter, Ndb, Subscription};
-use notedeck::{RelaySelection, ScopedSubApi, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey};
+use nostrdb::{Ndb, Subscription};
+use notedeck::{
+    Accounts, RelaySelection, ScopedSubApi, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
+};
 
 use crate::scoped_sub_owner_keys::thread_scope_owner_key;
 use crate::timeline::{
@@ -11,11 +13,6 @@ use crate::timeline::{
 };
 
 type RootNoteId = NoteId;
-
-#[derive(Default)]
-pub struct ThreadSubs {
-    scopes: HashMap<MetaId, Vec<Scope>>,
-}
 
 // column id
 type MetaId = usize;
@@ -31,15 +28,32 @@ enum UnsubscribeOutcome {
     DropOwner(RootNoteId),
 }
 
+/// Thread subscription manager keyed by account and column scope.
+///
+/// Each opened thread scope installs one local NostrDB sub plus one scoped
+/// remote sub owner. Closing scope releases owner and tears down local state.
+#[derive(Default)]
+pub struct ThreadSubs {
+    /// Per-account thread subscription bookkeeping.
+    by_account: HashMap<Pubkey, AccountThreadSubs>,
+}
+
+#[derive(Default)]
+struct AccountThreadSubs {
+    scopes: HashMap<MetaId, Vec<Scope>>,
+}
+
 struct Scope {
-    pub root_id: NoteId,
+    root_id: NoteId,
     stack: Vec<Sub>,
 }
 
-pub struct Sub {
-    pub selected_id: NoteId,
-    pub sub: Subscription,
-    pub filter: Vec<Filter>,
+struct Sub {
+    _selected_id: NoteId,
+    sub: Subscription,
+    // Keep local filters alive for the full subscription lifetime. Thread
+    // filters use custom callbacks and can crash if dropped early.
+    _filters: Vec<Filter>,
 }
 
 impl ThreadSubs {
@@ -55,8 +69,8 @@ impl ThreadSubs {
         remote_sub_filter: Vec<Filter>,
     ) {
         let account_pk = scoped_subs.selected_account_pubkey();
-        let cur_scopes = self.scopes.entry(meta_id).or_default();
-
+        let account_subs = self.by_account.entry(account_pk).or_default();
+        let cur_scopes = account_subs.scopes.entry(meta_id).or_default();
         let added_local = if new_scope || cur_scopes.is_empty() {
             local_sub_new_scope(
                 ndb,
@@ -74,7 +88,11 @@ impl ThreadSubs {
         };
 
         if added_local {
-            tracing::debug!("Sub stats: num locals: {}", self.scopes.len());
+            tracing::debug!(
+                "Sub stats: account={:?}, num locals: {}",
+                account_pk,
+                account_subs.scopes.len(),
+            );
         }
     }
 
@@ -87,40 +105,73 @@ impl ThreadSubs {
         return_type: ReturnType,
     ) {
         let account_pk = scoped_subs.selected_account_pubkey();
-        let Some(scopes) = self.scopes.get_mut(&meta_id) else {
-            return;
+        let (owner_to_drop, remove_account_entry) = {
+            let Some(account_subs) = self.by_account.get_mut(&account_pk) else {
+                return;
+            };
+
+            let Some(scopes) = account_subs.scopes.get_mut(&meta_id) else {
+                return;
+            };
+
+            let scope_depth = scopes.len().saturating_sub(1);
+            let Some(unsub_outcome) = (match return_type {
+                ReturnType::Drag => unsubscribe_drag(scopes, ndb, id),
+                ReturnType::Click => unsubscribe_click(scopes, ndb, id),
+            }) else {
+                return;
+            };
+
+            if scopes.is_empty() {
+                account_subs.scopes.remove(&meta_id);
+            }
+
+            tracing::debug!(
+                "unsub stats: account={:?}, num locals: {}, released owner: {}",
+                account_pk,
+                account_subs.scopes.len(),
+                matches!(unsub_outcome, UnsubscribeOutcome::DropOwner(_)),
+            );
+
+            (
+                match unsub_outcome {
+                    UnsubscribeOutcome::KeepOwner => None,
+                    UnsubscribeOutcome::DropOwner(root_id) => Some(thread_scope_owner_key(
+                        account_pk,
+                        meta_id,
+                        &root_id,
+                        scope_depth,
+                    )),
+                },
+                account_subs.scopes.is_empty(),
+            )
         };
 
-        let scope_depth = scopes.len().saturating_sub(1);
-        let Some(unsub_outcome) = (match return_type {
-            ReturnType::Drag => unsubscribe_drag(scopes, ndb, id),
-            ReturnType::Click => unsubscribe_click(scopes, ndb, id),
-        }) else {
-            return;
-        };
-
-        if scopes.is_empty() {
-            self.scopes.remove(&meta_id);
+        if remove_account_entry {
+            self.by_account.remove(&account_pk);
         }
 
-        if let UnsubscribeOutcome::DropOwner(root_id) = unsub_outcome {
-            let owner = thread_scope_owner_key(account_pk, meta_id, &root_id, scope_depth);
+        if let Some(owner) = owner_to_drop {
             let _ = scoped_subs.drop_owner(owner);
         }
-
-        tracing::debug!(
-            "unsub stats: num locals: {}, released owner: {}",
-            self.scopes.len(),
-            matches!(unsub_outcome, UnsubscribeOutcome::DropOwner(_)),
-        );
     }
 
-    pub fn get_local(&self, meta_id: usize) -> Option<&Sub> {
-        self.scopes
+    pub fn get_local(&self, account_pk: &Pubkey, meta_id: usize) -> Option<&Subscription> {
+        self.by_account
+            .get(account_pk)?
+            .scopes
             .get(&meta_id)
-            .as_ref()
             .and_then(|s| s.last())
             .and_then(|s| s.stack.last())
+            .map(|s| &s.sub)
+    }
+
+    pub fn get_local_for_selected<'a>(
+        &'a self,
+        accounts: &Accounts,
+        meta_id: usize,
+    ) -> Option<&'a Subscription> {
+        self.get_local(accounts.selected_account_pubkey(), meta_id)
     }
 }
 
@@ -177,7 +228,6 @@ fn unsubscribe_click(
         scopes.push(scope);
         return None;
     }
-
     Some(UnsubscribeOutcome::DropOwner(scope.root_id))
 }
 
@@ -216,9 +266,9 @@ fn sub_current_scope(
 
     if let Some(sub) = ndb_sub(ndb, &local_sub_filter, selection) {
         cur_scope.stack.push(Sub {
-            selected_id: NoteId::new(*selection.selected_or_root()),
+            _selected_id: NoteId::new(*selection.selected_or_root()),
             sub,
-            filter: local_sub_filter,
+            _filters: local_sub_filter,
         });
         return true;
     }
@@ -277,9 +327,9 @@ fn local_sub_new_scope(
     scopes.push(Scope {
         root_id,
         stack: vec![Sub {
-            selected_id: NoteId::new(*id.selected_or_root()),
+            _selected_id: NoteId::new(*id.selected_or_root()),
             sub,
-            filter: local_sub_filter,
+            _filters: local_sub_filter,
         }],
     });
 

@@ -3,7 +3,7 @@ use egui_virtual_list::VirtualList;
 use enostr::NoteId;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Filter, Ndb, Note, NoteKey, NoteReplyBuf, Transaction};
-use notedeck::{NoteCache, NoteRef, ScopedSubApi, UnknownIds};
+use notedeck::{Accounts, NoteCache, NoteRef, ScopedSubApi, UnknownIds};
 
 use crate::{
     actionbar::{process_thread_notes, NewThreadNotes},
@@ -152,6 +152,7 @@ impl Threads {
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
+        accounts: &Accounts,
         col: usize,
     ) {
         let Some(selected_key) = selected.key() else {
@@ -169,12 +170,12 @@ impl Threads {
             .get_mut(&selected.id())
             .expect("should be guarenteed to exist from `Self::fill_reply_chain_recursive`");
 
-        let Some(sub) = self.subs.get_local(col) else {
+        let Some(sub) = self.subs.get_local_for_selected(accounts, col) else {
             tracing::error!("Was expecting to find local sub");
             return;
         };
 
-        let keys = ndb.poll_for_notes(sub.sub, 10);
+        let keys = ndb.poll_for_notes(*sub, 10);
 
         if keys.is_empty() {
             return;
