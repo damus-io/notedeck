@@ -285,6 +285,7 @@ impl Timeline {
         ))
     }
 
+    /// Create a hashtag timeline with ready filters.
     pub fn hashtag(hashtag: Vec<String>) -> Self {
         let filters = hashtag
             .iter()
@@ -297,6 +298,10 @@ impl Timeline {
                     .build()
             })
             .collect::<Vec<_>>();
+
+        if filters.is_empty() {
+            warn!(?hashtag, "hashtag timeline created with no usable tags");
+        }
 
         Timeline::new(
             TimelineKind::Hashtag(hashtag),
@@ -617,7 +622,7 @@ pub fn setup_new_timeline(
     unknown_ids: &mut UnknownIds,
 ) {
     // if we're ready, setup local subs
-    if is_timeline_ready(ndb, pool, note_cache, timeline, accounts, unknown_ids) {
+    if is_timeline_ready(ndb, pool, timeline, accounts) {
         if let Err(err) = setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline, unknown_ids) {
             error!("setup_new_timeline: {err}");
         }
@@ -843,10 +848,8 @@ fn setup_timeline_nostrdb_sub(
 pub fn is_timeline_ready(
     ndb: &Ndb,
     pool: &mut RelayPool,
-    note_cache: &mut NoteCache,
     timeline: &mut Timeline,
     accounts: &Accounts,
-    unknown_ids: &mut UnknownIds,
 ) -> bool {
     // TODO: we should debounce the filter states a bit to make sure we have
     // seen all of the different contact lists from each relay
@@ -916,12 +919,8 @@ pub fn is_timeline_ready(
             false
         }
         Ok(filter) => {
-            // we just switched to the ready state, we should send initial
-            // queries and setup the local subscription
-            info!("Found contact list! Setting up local and remote contact list query");
-            let txn = Transaction::new(ndb).expect("txn");
-            setup_initial_timeline(ndb, &txn, timeline, note_cache, unknown_ids, &filter)
-                .expect("setup init");
+            // We just switched to the ready state; remote subscriptions can start now.
+            info!("Found contact list! Setting up remote contact list query");
             timeline
                 .filter
                 .set_relay_state(relay_id, FilterState::ready_hybrid(filter.clone()));

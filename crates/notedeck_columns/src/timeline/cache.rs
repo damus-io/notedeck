@@ -169,10 +169,11 @@ impl TimelineCache {
         }
     }
 
-    /// Open a timeline, this is another way of saying insert a timeline
-    /// into the timeline cache. If there exists a timeline already, we
-    /// bump its subscription reference count. If it's new we start a new
-    /// subscription
+    /// Open a timeline, optionally loading local notes.
+    ///
+    /// When `load_local` is false, the timeline is created and subscribed
+    /// without running a blocking local query. Use this for startup paths
+    /// where initial notes are loaded asynchronously.
     pub fn open(
         &mut self,
         ndb: &Ndb,
@@ -180,7 +181,35 @@ impl TimelineCache {
         txn: &Transaction,
         pool: &mut RelayPool,
         id: &TimelineKind,
+        load_local: bool,
     ) -> Option<TimelineOpenResult> {
+        if !load_local {
+            let timeline = if let Some(timeline) = self.timelines.get_mut(id) {
+                timeline
+            } else {
+                let Some(timeline) = id.clone().into_timeline(txn, ndb) else {
+                    error!("Error creating timeline from {:?}", id);
+                    return None;
+                };
+                self.timelines.insert(id.clone(), timeline);
+                self.timelines.get_mut(id).expect("timeline inserted")
+            };
+
+            if let Some(filter) = timeline.filter.get_any_ready() {
+                debug!("got open with subscription for {:?}", &timeline.kind);
+                timeline.subscription.try_add_local(ndb, filter);
+                timeline.subscription.try_add_remote(pool, filter);
+            } else {
+                debug!(
+                    "open skipped subscription; filter not ready for {:?}",
+                    &timeline.kind
+                );
+            }
+
+            timeline.subscription.increment();
+            return None;
+        }
+
         let notes_resp = self.notes(ndb, note_cache, txn, id);
         let (mut open_result, timeline) = match notes_resp.vitality {
             Vitality::Stale(timeline) => {

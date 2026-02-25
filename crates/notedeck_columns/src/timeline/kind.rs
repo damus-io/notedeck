@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Clone, Hash, Copy, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PubkeySource {
@@ -461,6 +461,7 @@ impl TimelineKind {
     }
 
     // TODO: probably should set default limit here
+    /// Build the filter state for this timeline kind.
     pub fn filters(&self, txn: &Transaction, ndb: &Ndb) -> FilterState {
         match self {
             TimelineKind::Search(s) => FilterState::ready(search_filter(s)),
@@ -477,24 +478,34 @@ impl TimelineKind {
             }
 
             TimelineKind::Hashtag(hashtag) => {
-                let filters = hashtag
-                    .iter()
-                    .filter(|tag| !tag.is_empty())
-                    .map(|tag| {
+                let mut filters = Vec::new();
+                for tag in hashtag.iter().filter(|tag| !tag.is_empty()) {
+                    let tag_lower = tag.to_lowercase();
+                    filters.push(
                         Filter::new()
                             .kinds([1])
                             .limit(filter::default_limit())
-                            .tags([tag.to_lowercase().as_str()], 't')
-                            .build()
-                    })
-                    .collect::<Vec<_>>();
+                            .tags([tag_lower.as_str()], 't')
+                            .build(),
+                    );
+                }
+
+                if filters.is_empty() {
+                    warn!(?hashtag, "hashtag timeline has no usable tags");
+                } else if filters.len() != hashtag.len() {
+                    debug!(
+                        ?hashtag,
+                        usable_tags = filters.len(),
+                        "hashtag timeline dropped empty tags"
+                    );
+                }
 
                 FilterState::ready(filters)
             }
 
             TimelineKind::Algo(algo_timeline) => match algo_timeline {
                 AlgoTimeline::LastPerPubkey(list_k) => match list_k {
-                    ListKind::Contact(pubkey) => last_per_pubkey_filter_state(ndb, pubkey),
+                    ListKind::Contact(pubkey) => last_per_pubkey_filter_state(txn, ndb, pubkey),
                 },
             },
 
@@ -685,12 +696,17 @@ impl<'a> ColumnTitle<'a> {
     }
 }
 
+/// Build the filter state for a contact list timeline.
 fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterState {
     let contact_filter = contacts_filter(pk);
 
-    let results = ndb
-        .query(txn, std::slice::from_ref(&contact_filter), 1)
-        .expect("contact query failed?");
+    let results = match ndb.query(txn, std::slice::from_ref(&contact_filter), 1) {
+        Ok(results) => results,
+        Err(err) => {
+            error!("contact query failed: {err}");
+            return FilterState::Broken(FilterError::EmptyContactList);
+        }
+    };
 
     if results.is_empty() {
         FilterState::needs_remote()
@@ -709,13 +725,17 @@ fn contact_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterStat
     }
 }
 
-fn last_per_pubkey_filter_state(ndb: &Ndb, pk: &Pubkey) -> FilterState {
+/// Build the filter state for a last-per-pubkey timeline.
+fn last_per_pubkey_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> FilterState {
     let contact_filter = contacts_filter(pk.bytes());
 
-    let txn = Transaction::new(ndb).expect("txn");
-    let results = ndb
-        .query(&txn, std::slice::from_ref(&contact_filter), 1)
-        .expect("contact query failed?");
+    let results = match ndb.query(txn, std::slice::from_ref(&contact_filter), 1) {
+        Ok(results) => results,
+        Err(err) => {
+            error!("contact query failed: {err}");
+            return FilterState::Broken(FilterError::EmptyContactList);
+        }
+    };
 
     if results.is_empty() {
         FilterState::needs_remote()

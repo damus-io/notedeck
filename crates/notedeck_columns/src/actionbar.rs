@@ -117,7 +117,7 @@ fn execute_note_action(
             let kind = TimelineKind::Profile(pubkey);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             timeline_res = timeline_cache
-                .open(ndb, note_cache, txn, pool, &kind)
+                .open(ndb, note_cache, txn, pool, &kind, false)
                 .map(NotesOpenResult::Timeline);
         }
         NoteAction::Note {
@@ -154,7 +154,7 @@ fn execute_note_action(
             let kind = TimelineKind::Hashtag(vec![htag.clone()]);
             router_action = Some(RouterAction::route_to(Route::Timeline(kind.clone())));
             timeline_res = timeline_cache
-                .open(ndb, note_cache, txn, pool, &kind)
+                .open(ndb, note_cache, txn, pool, &kind, false)
                 .map(NotesOpenResult::Timeline);
         }
         NoteAction::Repost(note_id) => {

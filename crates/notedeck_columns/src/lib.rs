@@ -28,6 +28,7 @@ mod subscriptions;
 mod support;
 mod test_data;
 pub mod timeline;
+mod timeline_loader;
 mod toolbar;
 pub mod ui;
 mod view_state;

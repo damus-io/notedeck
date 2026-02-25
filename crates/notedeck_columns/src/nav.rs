@@ -417,7 +417,8 @@ fn handle_navigating_timeline(
     };
 
     let txn = Transaction::new(ndb).expect("txn");
-    app.timeline_cache.open(ndb, note_cache, &txn, pool, &kind);
+    app.timeline_cache
+        .open(ndb, note_cache, &txn, pool, &kind, false);
 }
 
 pub enum RouterAction {

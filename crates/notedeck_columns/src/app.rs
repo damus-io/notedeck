@@ -11,6 +11,7 @@ use crate::{
     subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
+    timeline_loader::{TimelineLoader, TimelineLoaderMsg},
     toolbar::unseen_notification,
     ui::{self, toolbar::toolbar, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
@@ -28,10 +29,13 @@ use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
     NoteOptions,
 };
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use tracing::{error, info, warn};
 use uuid::Uuid;
+
+/// Max timeline loader messages to process per frame to avoid UI stalls.
+const MAX_TIMELINE_LOADER_MSGS_PER_FRAME: usize = 8;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum DamusState {
@@ -50,6 +54,12 @@ pub struct Damus {
     pub subscriptions: Subscriptions,
     pub support: Support,
     pub threads: Threads,
+    /// Background loader for initial timeline scans.
+    timeline_loader: TimelineLoader,
+    /// Timelines currently loading initial notes.
+    inflight_timeline_loads: HashSet<TimelineKind>,
+    /// Timelines that have completed their initial load.
+    loaded_timeline_loads: HashSet<TimelineKind>,
 
     //frame_history: crate::frame_history::FrameHistory,
 
@@ -192,16 +202,18 @@ fn try_process_event(
     });
 
     for (kind, timeline) in &mut damus.timeline_cache {
-        let is_ready = timeline::is_timeline_ready(
-            app_ctx.ndb,
-            app_ctx.pool,
-            app_ctx.note_cache,
-            timeline,
-            app_ctx.accounts,
-            app_ctx.unknown_ids,
-        );
+        let is_ready =
+            timeline::is_timeline_ready(app_ctx.ndb, app_ctx.pool, timeline, app_ctx.accounts);
 
         if is_ready {
+            schedule_timeline_load(
+                &damus.timeline_loader,
+                &mut damus.inflight_timeline_loads,
+                &damus.loaded_timeline_loads,
+                app_ctx.ndb,
+                kind,
+                timeline,
+            );
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             // only thread timelines are reversed
             let reversed = false;
@@ -230,9 +242,73 @@ fn try_process_event(
     Ok(())
 }
 
+/// Schedule an initial timeline load if it is not already in-flight or complete.
+fn schedule_timeline_load(
+    loader: &TimelineLoader,
+    inflight: &mut HashSet<TimelineKind>,
+    loaded: &HashSet<TimelineKind>,
+    ndb: &nostrdb::Ndb,
+    kind: &TimelineKind,
+    timeline: &mut timeline::Timeline,
+) {
+    if loaded.contains(kind) || inflight.contains(kind) {
+        return;
+    }
+
+    let Some(filter) = timeline.filter.get_any_ready().cloned() else {
+        return;
+    };
+
+    if timeline.kind.should_subscribe_locally() {
+        timeline.subscription.try_add_local(ndb, &filter);
+    }
+
+    loader.load_timeline(kind.clone());
+    inflight.insert(kind.clone());
+}
+
+/// Drain timeline loader messages and apply them to the timeline cache.
+#[profiling::function]
+fn handle_timeline_loader_messages(damus: &mut Damus, app_ctx: &mut AppContext<'_>) {
+    let mut handled = 0;
+    while handled < MAX_TIMELINE_LOADER_MSGS_PER_FRAME {
+        let Some(msg) = damus.timeline_loader.try_recv() else {
+            break;
+        };
+        handled += 1;
+
+        match msg {
+            TimelineLoaderMsg::TimelineBatch { kind, notes } => {
+                let Some(timeline) = damus.timeline_cache.get_mut(&kind) else {
+                    warn!("timeline loader batch for missing timeline {:?}", kind);
+                    continue;
+                };
+                let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                if let Some(pks) =
+                    timeline.insert_new(&txn, app_ctx.ndb, app_ctx.note_cache, &notes)
+                {
+                    pks.process(app_ctx.ndb, &txn, app_ctx.unknown_ids);
+                }
+            }
+            TimelineLoaderMsg::TimelineFinished { kind } => {
+                damus.inflight_timeline_loads.remove(&kind);
+                damus.loaded_timeline_loads.insert(kind);
+            }
+            TimelineLoaderMsg::Failed { kind, error } => {
+                warn!("timeline loader failed for {:?}: {}", kind, error);
+                damus.inflight_timeline_loads.remove(&kind);
+            }
+        }
+    }
+}
+
 #[profiling::function]
 fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Context) {
     app_ctx.img_cache.urls.cache.handle_io();
+
+    damus
+        .timeline_loader
+        .start(ctx.clone(), app_ctx.ndb.clone());
 
     if damus.columns(app_ctx.accounts).columns().is_empty() {
         damus
@@ -247,14 +323,6 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
             damus
                 .subscriptions()
                 .insert("unknownids".to_string(), SubKind::OneShot);
-            if let Err(err) = timeline::setup_initial_nostrdb_subs(
-                app_ctx.ndb,
-                app_ctx.note_cache,
-                &mut damus.timeline_cache,
-                app_ctx.unknown_ids,
-            ) {
-                warn!("update_damus init: {err}");
-            }
 
             if !app_ctx.settings.welcome_completed() {
                 let split =
@@ -275,6 +343,8 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
 
         DamusState::Initialized => (),
     };
+
+    handle_timeline_loader_messages(damus, app_ctx);
 
     if let Err(err) = try_process_event(damus, app_ctx, ctx) {
         error!("error processing event: {}", err);
@@ -546,6 +616,9 @@ impl Damus {
             threads,
             onboarding: Onboarding::default(),
             hovered_column: None,
+            timeline_loader: TimelineLoader::default(),
+            inflight_timeline_loads: HashSet::new(),
+            loaded_timeline_loads: HashSet::new(),
         }
     }
 
@@ -597,6 +670,9 @@ impl Damus {
             threads: Threads::default(),
             onboarding: Onboarding::default(),
             hovered_column: None,
+            timeline_loader: TimelineLoader::default(),
+            inflight_timeline_loads: HashSet::new(),
+            loaded_timeline_loads: HashSet::new(),
         }
     }
 

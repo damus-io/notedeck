@@ -112,7 +112,7 @@ impl Columns {
     ) -> Option<TimelineOpenResult> {
         self.columns
             .push(Column::new(vec![Route::timeline(kind.to_owned())]));
-        timeline_cache.open(ndb, note_cache, txn, pool, kind)
+        timeline_cache.open(ndb, note_cache, txn, pool, kind, false)
     }
 
     pub fn new_column_picker(&mut self) {

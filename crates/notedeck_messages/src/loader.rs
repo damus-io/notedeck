@@ -1,10 +1,10 @@
 //! Background loader for Messages NostrDB queries.
 
-use std::thread;
-
 use crossbeam_channel as chan;
 use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
+
+use notedeck::AsyncLoader;
 
 use crate::{
     cache::ConversationId,
@@ -44,41 +44,28 @@ pub enum LoaderMsg {
 
 /// Handle for driving the messages loader worker thread.
 pub struct MessagesLoader {
-    cmd_tx: Option<chan::Sender<LoaderCmd>>,
-    msg_rx: Option<chan::Receiver<LoaderMsg>>,
+    loader: AsyncLoader<LoaderCmd, LoaderMsg>,
 }
 
 impl MessagesLoader {
     /// Create an uninitialized loader handle.
     pub fn new() -> Self {
         Self {
-            cmd_tx: None,
-            msg_rx: None,
+            loader: AsyncLoader::new(),
         }
     }
 
-    /// Start the loader thread if it has not been started yet.
+    /// Start the loader workers if they have not been started yet.
     pub fn start(&mut self, egui_ctx: egui::Context, ndb: Ndb) {
-        if self.cmd_tx.is_some() {
-            return;
-        }
-
-        let (cmd_tx, cmd_rx) = chan::unbounded::<LoaderCmd>();
-        let (msg_tx, msg_rx) = chan::unbounded::<LoaderMsg>();
-
-        self.cmd_tx = Some(cmd_tx.clone());
-        self.msg_rx = Some(msg_rx);
-
-        spawn_worker(egui_ctx, ndb, cmd_rx, msg_tx);
+        let _ = self
+            .loader
+            .start(egui_ctx, ndb, 1, "messages-loader", handle_cmd);
     }
 
     /// Request a conversation list load for the given account.
     pub fn load_conversation_list(&self, account_pubkey: Pubkey) {
-        let Some(tx) = &self.cmd_tx else {
-            return;
-        };
-
-        let _ = tx.send(LoaderCmd::LoadConversationList { account_pubkey });
+        self.loader
+            .send(LoaderCmd::LoadConversationList { account_pubkey });
     }
 
     /// Request a conversation message load for the given conversation.
@@ -88,11 +75,7 @@ impl MessagesLoader {
         participants: Vec<Pubkey>,
         me: Pubkey,
     ) {
-        let Some(tx) = &self.cmd_tx else {
-            return;
-        };
-
-        let _ = tx.send(LoaderCmd::LoadConversationMessages {
+        self.loader.send(LoaderCmd::LoadConversationMessages {
             conversation_id,
             participants,
             me,
@@ -101,11 +84,7 @@ impl MessagesLoader {
 
     /// Try to receive the next loader message without blocking.
     pub fn try_recv(&self) -> Option<LoaderMsg> {
-        let Some(rx) = &self.msg_rx else {
-            return None;
-        };
-
-        rx.try_recv().ok()
+        self.loader.try_recv()
     }
 }
 
@@ -163,44 +142,6 @@ impl FoldAcc {
     }
 }
 
-/// Spawn the background loader worker thread.
-fn spawn_worker(
-    egui_ctx: egui::Context,
-    ndb: Ndb,
-    cmd_rx: chan::Receiver<LoaderCmd>,
-    msg_tx: chan::Sender<LoaderMsg>,
-) {
-    thread::Builder::new()
-        .name("messages-loader".into())
-        .spawn(move || {
-            while let Ok(cmd) = cmd_rx.recv() {
-                let result = match cmd {
-                    LoaderCmd::LoadConversationList { account_pubkey } => {
-                        load_conversation_list(&egui_ctx, &ndb, &msg_tx, account_pubkey)
-                    }
-                    LoaderCmd::LoadConversationMessages {
-                        conversation_id,
-                        participants,
-                        me,
-                    } => load_conversation_messages(
-                        &egui_ctx,
-                        &ndb,
-                        &msg_tx,
-                        conversation_id,
-                        participants,
-                        me,
-                    ),
-                };
-
-                if let Err(err) = result {
-                    let _ = msg_tx.send(LoaderMsg::Failed(err));
-                    egui_ctx.request_repaint();
-                }
-            }
-        })
-        .expect("failed to spawn messages loader thread");
-}
-
 /// Run a conversation list load and stream note keys.
 fn load_conversation_list(
     egui_ctx: &egui::Context,
@@ -213,6 +154,30 @@ fn load_conversation_list(
     let _ = msg_tx.send(LoaderMsg::ConversationFinished);
     egui_ctx.request_repaint();
     Ok(())
+}
+
+/// Handle loader commands on a worker thread.
+fn handle_cmd(
+    cmd: LoaderCmd,
+    egui_ctx: &egui::Context,
+    ndb: &Ndb,
+    msg_tx: &chan::Sender<LoaderMsg>,
+) {
+    let result = match cmd {
+        LoaderCmd::LoadConversationList { account_pubkey } => {
+            load_conversation_list(egui_ctx, ndb, msg_tx, account_pubkey)
+        }
+        LoaderCmd::LoadConversationMessages {
+            conversation_id,
+            participants,
+            me,
+        } => load_conversation_messages(egui_ctx, ndb, msg_tx, conversation_id, participants, me),
+    };
+
+    if let Err(err) = result {
+        let _ = msg_tx.send(LoaderMsg::Failed(err));
+        egui_ctx.request_repaint();
+    }
 }
 
 /// Run a conversation messages load and stream note keys.
