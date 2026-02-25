@@ -1,6 +1,8 @@
 use notedeck::{filter::HybridFilter, UnifiedSubscription};
 
+use enostr::Pubkey;
 use enostr::RelayPool;
+use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
 
 use crate::{subscriptions, timeline::sub::ndb_sub};
@@ -14,10 +16,14 @@ fn unsubscribe_local(ndb: &mut Ndb, local: Subscription, context: &str) -> bool 
     true
 }
 
-#[derive(Debug)]
+/// Per-account timeline subscription state with ref-counting.
+///
+/// This still manages legacy relay-pool remote subscriptions for now; scoped-sub
+/// remote ownership is migrated in a follow-up refactor.
+#[derive(Debug, Default)]
 pub struct TimelineSub {
     filter: Option<HybridFilter>,
-    state: SubState,
+    by_account: HashMap<Pubkey, SubState>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,213 +45,212 @@ enum SubState {
     },
 }
 
-impl Default for TimelineSub {
+impl Default for SubState {
     fn default() -> Self {
-        Self {
-            state: SubState::NoSub { dependers: 0 },
-            filter: None,
-        }
+        Self::NoSub { dependers: 0 }
     }
 }
 
 impl TimelineSub {
-    /// Reset the subscription state, properly unsubscribing from ndb and
-    /// relay pool before clearing.
-    ///
-    /// Used when the contact list changes and we need to rebuild the
-    /// timeline with a new filter. Preserves the depender count so that
-    /// shared subscription reference counting remains correct.
-    pub fn reset(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
-        let before = self.state.clone();
-
-        let Some(dependers) = (match &self.state {
-            SubState::NoSub { dependers } => Some(*dependers),
-
-            SubState::LocalOnly { local, dependers } => {
-                if !unsubscribe_local(ndb, *local, "TimelineSub::reset") {
-                    return;
-                }
-                Some(*dependers)
-            }
-
-            SubState::RemoteOnly { remote, dependers } => {
-                pool.unsubscribe(remote.to_owned());
-                Some(*dependers)
-            }
-
-            SubState::Unified { unified, dependers } => {
-                pool.unsubscribe(unified.remote.to_owned());
-                if !unsubscribe_local(ndb, unified.local, "TimelineSub::reset") {
-                    self.state = SubState::LocalOnly {
-                        local: unified.local,
-                        dependers: *dependers,
-                    };
-                    return;
-                }
-                Some(*dependers)
-            }
-        }) else {
-            return;
-        };
-
-        self.state = SubState::NoSub { dependers };
-        self.filter = None;
-
-        tracing::debug!("TimelineSub::reset: {:?} => {:?}", before, self.state);
+    fn state_for_account(&self, account_pk: &Pubkey) -> SubState {
+        self.by_account.get(account_pk).cloned().unwrap_or_default()
     }
 
-    pub fn try_add_local(&mut self, ndb: &Ndb, filter: &HybridFilter) {
-        let before = self.state.clone();
-        match &mut self.state {
+    fn set_state_for_account(&mut self, account_pk: Pubkey, state: SubState) {
+        if matches!(state, SubState::NoSub { dependers: 0 }) {
+            self.by_account.remove(&account_pk);
+            return;
+        }
+
+        self.by_account.insert(account_pk, state);
+    }
+
+    /// Reset one account's subscription state while preserving its depender count.
+    pub fn reset_for_account(&mut self, account_pk: Pubkey, ndb: &mut Ndb, pool: &mut RelayPool) {
+        let before = self.state_for_account(&account_pk);
+
+        let next = match before.clone() {
+            SubState::NoSub { dependers } => SubState::NoSub { dependers },
+            SubState::LocalOnly { local, dependers } => {
+                if !unsubscribe_local(ndb, local, "TimelineSub::reset_for_account") {
+                    return;
+                }
+                SubState::NoSub { dependers }
+            }
+            SubState::RemoteOnly { remote, dependers } => {
+                pool.unsubscribe(remote);
+                SubState::NoSub { dependers }
+            }
+            SubState::Unified { unified, dependers } => {
+                pool.unsubscribe(unified.remote.clone());
+                if !unsubscribe_local(ndb, unified.local, "TimelineSub::reset_for_account") {
+                    self.set_state_for_account(
+                        account_pk,
+                        SubState::LocalOnly {
+                            local: unified.local,
+                            dependers,
+                        },
+                    );
+                    return;
+                }
+                SubState::NoSub { dependers }
+            }
+        };
+
+        self.set_state_for_account(account_pk, next);
+        self.filter = None;
+
+        tracing::debug!(
+            "TimelineSub::reset_for_account({account_pk:?}): {:?} => {:?}",
+            before,
+            self.state_for_account(&account_pk)
+        );
+    }
+
+    pub fn try_add_local(&mut self, account_pk: Pubkey, ndb: &Ndb, filter: &HybridFilter) {
+        let before = self.state_for_account(&account_pk);
+
+        let Some(next) = (match before.clone() {
             SubState::NoSub { dependers } => {
                 let Some(sub) = ndb_sub(ndb, &filter.local().combined(), "") else {
                     return;
                 };
-
                 self.filter = Some(filter.to_owned());
-                self.state = SubState::LocalOnly {
+                Some(SubState::LocalOnly {
                     local: sub,
-                    dependers: *dependers,
-                }
+                    dependers,
+                })
             }
-            SubState::LocalOnly {
-                local: _,
-                dependers: _,
-            } => {}
+            SubState::LocalOnly { .. } => None,
             SubState::RemoteOnly { remote, dependers } => {
                 let Some(local) = ndb_sub(ndb, &filter.local().combined(), "") else {
                     return;
                 };
-                self.state = SubState::Unified {
+                Some(SubState::Unified {
+                    unified: UnifiedSubscription { local, remote },
+                    dependers,
+                })
+            }
+            SubState::Unified { .. } => None,
+        }) else {
+            return;
+        };
+
+        self.set_state_for_account(account_pk, next);
+
+        tracing::debug!(
+            "TimelineSub::try_add_local({account_pk:?}): {:?} => {:?}",
+            before,
+            self.state_for_account(&account_pk)
+        );
+    }
+
+    pub fn force_add_remote(&mut self, account_pk: Pubkey, subid: String) {
+        let before = self.state_for_account(&account_pk);
+
+        let next = match before.clone() {
+            SubState::NoSub { dependers } => SubState::RemoteOnly {
+                remote: subid,
+                dependers,
+            },
+            SubState::LocalOnly { local, dependers } => SubState::Unified {
+                unified: UnifiedSubscription {
+                    local,
+                    remote: subid,
+                },
+                dependers,
+            },
+            SubState::RemoteOnly { .. } | SubState::Unified { .. } => return,
+        };
+
+        self.set_state_for_account(account_pk, next);
+
+        tracing::debug!(
+            "TimelineSub::force_add_remote({account_pk:?}): {:?} => {:?}",
+            before,
+            self.state_for_account(&account_pk)
+        );
+    }
+
+    pub fn try_add_remote(
+        &mut self,
+        account_pk: Pubkey,
+        pool: &mut RelayPool,
+        filter: &HybridFilter,
+    ) {
+        let before = self.state_for_account(&account_pk);
+
+        let next = match before.clone() {
+            SubState::NoSub { dependers } => {
+                let subid = subscriptions::new_sub_id();
+                pool.subscribe(subid.clone(), filter.remote().to_vec());
+                self.filter = Some(filter.to_owned());
+                SubState::RemoteOnly {
+                    remote: subid,
+                    dependers,
+                }
+            }
+            SubState::LocalOnly { local, dependers } => {
+                let subid = subscriptions::new_sub_id();
+                pool.subscribe(subid.clone(), filter.remote().to_vec());
+                self.filter = Some(filter.to_owned());
+                SubState::Unified {
                     unified: UnifiedSubscription {
                         local,
-                        remote: remote.to_owned(),
-                    },
-                    dependers: *dependers,
-                };
-            }
-            SubState::Unified {
-                unified: _,
-                dependers: _,
-            } => {}
-        }
-        tracing::debug!(
-            "TimelineSub::try_add_local: {:?} => {:?}",
-            before,
-            self.state
-        );
-    }
-
-    pub fn force_add_remote(&mut self, subid: String) {
-        let before = self.state.clone();
-        match &mut self.state {
-            SubState::NoSub { dependers } => {
-                self.state = SubState::RemoteOnly {
-                    remote: subid,
-                    dependers: *dependers,
-                }
-            }
-            SubState::LocalOnly { local, dependers } => {
-                self.state = SubState::Unified {
-                    unified: UnifiedSubscription {
-                        local: *local,
                         remote: subid,
                     },
-                    dependers: *dependers,
+                    dependers,
                 }
             }
-            SubState::RemoteOnly {
-                remote: _,
-                dependers: _,
-            } => {}
-            SubState::Unified {
-                unified: _,
-                dependers: _,
-            } => {}
-        }
+            SubState::RemoteOnly { .. } | SubState::Unified { .. } => return,
+        };
+
+        self.set_state_for_account(account_pk, next);
+
         tracing::debug!(
-            "TimelineSub::force_add_remote: {:?} => {:?}",
+            "TimelineSub::try_add_remote({account_pk:?}): {:?} => {:?}",
             before,
-            self.state
+            self.state_for_account(&account_pk)
         );
     }
 
-    pub fn try_add_remote(&mut self, pool: &mut RelayPool, filter: &HybridFilter) {
-        let before = self.state.clone();
-        match &mut self.state {
-            SubState::NoSub { dependers } => {
-                let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.remote().to_vec());
-                self.filter = Some(filter.to_owned());
-                self.state = SubState::RemoteOnly {
-                    remote: subid,
-                    dependers: *dependers,
-                };
-            }
-            SubState::LocalOnly { local, dependers } => {
-                let subid = subscriptions::new_sub_id();
-                pool.subscribe(subid.clone(), filter.remote().to_vec());
-                self.filter = Some(filter.to_owned());
-                self.state = SubState::Unified {
-                    unified: UnifiedSubscription {
-                        local: *local,
-                        remote: subid,
-                    },
-                    dependers: *dependers,
-                }
-            }
-            SubState::RemoteOnly {
-                remote: _,
-                dependers: _,
-            } => {}
-            SubState::Unified {
-                unified: _,
-                dependers: _,
-            } => {}
-        }
+    pub fn increment(&mut self, account_pk: Pubkey) {
+        let before = self.state_for_account(&account_pk);
+
+        let next = match before.clone() {
+            SubState::NoSub { dependers } => SubState::NoSub {
+                dependers: dependers + 1,
+            },
+            SubState::LocalOnly { local, dependers } => SubState::LocalOnly {
+                local,
+                dependers: dependers + 1,
+            },
+            SubState::RemoteOnly { remote, dependers } => SubState::RemoteOnly {
+                remote,
+                dependers: dependers + 1,
+            },
+            SubState::Unified { unified, dependers } => SubState::Unified {
+                unified,
+                dependers: dependers + 1,
+            },
+        };
+
+        self.set_state_for_account(account_pk, next);
+
         tracing::debug!(
-            "TimelineSub::try_add_remote: {:?} => {:?}",
+            "TimelineSub::increment({account_pk:?}): {:?} => {:?}",
             before,
-            self.state
+            self.state_for_account(&account_pk)
         );
     }
 
-    pub fn increment(&mut self) {
-        let before = self.state.clone();
-        match &mut self.state {
-            SubState::NoSub { dependers } => {
-                *dependers += 1;
-            }
-            SubState::LocalOnly {
-                local: _,
-                dependers,
-            } => {
-                *dependers += 1;
-            }
-            SubState::RemoteOnly {
-                remote: _,
-                dependers,
-            } => {
-                *dependers += 1;
-            }
-            SubState::Unified {
-                unified: _,
-                dependers,
-            } => {
-                *dependers += 1;
-            }
-        }
-
-        tracing::debug!("TimelineSub::increment: {:?} => {:?}", before, self.state);
-    }
-
-    pub fn get_local(&self) -> Option<Subscription> {
-        match &self.state {
+    pub fn get_local(&self, account_pk: &Pubkey) -> Option<Subscription> {
+        match self.state_for_account(account_pk) {
             SubState::NoSub { dependers: _ } => None,
             SubState::LocalOnly {
                 local,
                 dependers: _,
-            } => Some(*local),
+            } => Some(local),
             SubState::RemoteOnly {
                 remote: _,
                 dependers: _,
@@ -257,62 +262,97 @@ impl TimelineSub {
         }
     }
 
-    pub fn unsubscribe_or_decrement(&mut self, ndb: &mut Ndb, pool: &mut RelayPool) {
-        let before = self.state.clone();
-        's: {
-            match &mut self.state {
-                SubState::NoSub { dependers } => *dependers = dependers.saturating_sub(1),
-                SubState::LocalOnly { local, dependers } => {
-                    if *dependers > 1 {
-                        *dependers = dependers.saturating_sub(1);
-                        break 's;
-                    }
+    pub fn unsubscribe_or_decrement(
+        &mut self,
+        account_pk: Pubkey,
+        ndb: &mut Ndb,
+        pool: &mut RelayPool,
+    ) {
+        let before = self.state_for_account(&account_pk);
 
-                    // Keep local state intact if NDB unsubscribe fails.
-                    if !unsubscribe_local(ndb, *local, "TimelineSub::unsubscribe_or_decrement") {
-                        break 's;
-                    }
-
-                    self.state = SubState::NoSub { dependers: 0 };
+        let next = match before.clone() {
+            SubState::NoSub { dependers } => SubState::NoSub {
+                dependers: dependers.saturating_sub(1),
+            },
+            SubState::LocalOnly { local, dependers } => {
+                if dependers > 1 {
+                    return self.set_and_log_after_decrement(
+                        account_pk,
+                        before,
+                        SubState::LocalOnly {
+                            local,
+                            dependers: dependers.saturating_sub(1),
+                        },
+                    );
                 }
-                SubState::RemoteOnly { remote, dependers } => {
-                    if *dependers > 1 {
-                        *dependers = dependers.saturating_sub(1);
-                        break 's;
-                    }
 
-                    pool.unsubscribe(remote.to_owned());
-
-                    self.state = SubState::NoSub { dependers: 0 };
+                // Keep local state intact if NDB unsubscribe fails.
+                if !unsubscribe_local(ndb, local, "TimelineSub::unsubscribe_or_decrement") {
+                    return;
                 }
-                SubState::Unified { unified, dependers } => {
-                    if *dependers > 1 {
-                        *dependers = dependers.saturating_sub(1);
-                        break 's;
-                    }
 
-                    pool.unsubscribe(unified.remote.to_owned());
+                SubState::NoSub { dependers: 0 }
+            }
+            SubState::RemoteOnly { remote, dependers } => {
+                if dependers > 1 {
+                    return self.set_and_log_after_decrement(
+                        account_pk,
+                        before,
+                        SubState::RemoteOnly {
+                            remote,
+                            dependers: dependers.saturating_sub(1),
+                        },
+                    );
+                }
 
-                    // Remote is already gone above; fall back to local-only on NDB failure.
-                    if !unsubscribe_local(
-                        ndb,
-                        unified.local,
-                        "TimelineSub::unsubscribe_or_decrement",
-                    ) {
-                        self.state = SubState::LocalOnly {
-                            local: unified.local,
-                            dependers: *dependers,
-                        }
-                    } else {
-                        self.state = SubState::NoSub { dependers: 0 };
+                pool.unsubscribe(remote);
+                SubState::NoSub { dependers: 0 }
+            }
+            SubState::Unified { unified, dependers } => {
+                if dependers > 1 {
+                    return self.set_and_log_after_decrement(
+                        account_pk,
+                        before,
+                        SubState::Unified {
+                            unified,
+                            dependers: dependers.saturating_sub(1),
+                        },
+                    );
+                }
+
+                pool.unsubscribe(unified.remote.clone());
+
+                // Remote is already gone above; fall back to local-only on NDB failure.
+                if !unsubscribe_local(ndb, unified.local, "TimelineSub::unsubscribe_or_decrement") {
+                    SubState::LocalOnly {
+                        local: unified.local,
+                        dependers,
                     }
+                } else {
+                    SubState::NoSub { dependers: 0 }
                 }
             }
-        }
+        };
+
+        self.set_state_for_account(account_pk, next);
         tracing::debug!(
-            "TimelineSub::unsubscribe_or_decrement: {:?} => {:?}",
+            "TimelineSub::unsubscribe_or_decrement({account_pk:?}): {:?} => {:?}",
             before,
-            self.state
+            self.state_for_account(&account_pk)
+        );
+    }
+
+    fn set_and_log_after_decrement(
+        &mut self,
+        account_pk: Pubkey,
+        before: SubState,
+        next: SubState,
+    ) {
+        self.set_state_for_account(account_pk, next);
+        tracing::debug!(
+            "TimelineSub::unsubscribe_or_decrement({account_pk:?}): {:?} => {:?}",
+            before,
+            self.state_for_account(&account_pk)
         );
     }
 
@@ -320,25 +360,32 @@ impl TimelineSub {
         self.filter.as_ref()
     }
 
-    pub fn no_sub(&self) -> bool {
-        matches!(self.state, SubState::NoSub { dependers: _ })
+    pub fn no_sub(&self, account_pk: &Pubkey) -> bool {
+        matches!(
+            self.state_for_account(account_pk),
+            SubState::NoSub { dependers: _ }
+        )
     }
 
-    pub fn dependers(&self) -> usize {
-        match &self.state {
-            SubState::NoSub { dependers } => *dependers,
+    pub fn has_any_subs(&self) -> bool {
+        !self.by_account.is_empty()
+    }
+
+    pub fn dependers(&self, account_pk: &Pubkey) -> usize {
+        match self.state_for_account(account_pk) {
+            SubState::NoSub { dependers } => dependers,
             SubState::LocalOnly {
                 local: _,
                 dependers,
-            } => *dependers,
+            } => dependers,
             SubState::RemoteOnly {
                 remote: _,
                 dependers,
-            } => *dependers,
+            } => dependers,
             SubState::Unified {
                 unified: _,
                 dependers,
-            } => *dependers,
+            } => dependers,
         }
     }
 }

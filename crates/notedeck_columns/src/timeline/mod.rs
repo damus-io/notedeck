@@ -516,6 +516,7 @@ impl Timeline {
     #[profiling::function]
     pub fn poll_notes_into_view(
         &mut self,
+        account_pk: &Pubkey,
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
@@ -529,7 +530,7 @@ impl Timeline {
 
         let sub = self
             .subscription
-            .get_local()
+            .get_local(account_pk)
             .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
 
         let new_note_ids = {
@@ -632,9 +633,12 @@ pub fn setup_new_timeline(
     accounts: &Accounts,
     unknown_ids: &mut UnknownIds,
 ) {
+    let account_pk = *accounts.selected_account_pubkey();
     // if we're ready, setup local subs
     if is_timeline_ready(ndb, pool, timeline, accounts) {
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline, unknown_ids) {
+        if let Err(err) =
+            setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline, unknown_ids, account_pk)
+        {
             error!("setup_new_timeline: {err}");
         }
     }
@@ -642,7 +646,7 @@ pub fn setup_new_timeline(
     for relay in &mut pool.relays {
         send_initial_timeline_filter(since_optimize, subs, relay, timeline, accounts);
     }
-    timeline.subscription.increment();
+    timeline.subscription.increment(account_pk);
 }
 
 /// Send initial filters for a specific relay. This typically gets called
@@ -675,6 +679,7 @@ pub fn send_initial_timeline_filter(
     timeline: &mut Timeline,
     accounts: &Accounts,
 ) {
+    let account_pk = *accounts.selected_account_pubkey();
     let filter_state = timeline.filter.get_mut(relay.url());
 
     match filter_state {
@@ -728,7 +733,7 @@ pub fn send_initial_timeline_filter(
             if let Err(err) = relay.subscribe(sub_id.clone(), new_filters.clone()) {
                 error!("error subscribing: {err}");
             } else {
-                timeline.subscription.force_add_remote(sub_id);
+                timeline.subscription.force_add_remote(account_pk, sub_id);
             }
         }
 
@@ -812,10 +817,13 @@ fn setup_initial_timeline(
     note_cache: &mut NoteCache,
     unknown_ids: &mut UnknownIds,
     filters: &HybridFilter,
+    account_pk: Pubkey,
 ) -> Result<()> {
     // some timelines are one-shot and a refreshed, like last_per_pubkey algo feed
     if timeline.kind.should_subscribe_locally() {
-        timeline.subscription.try_add_local(ndb, filters);
+        timeline
+            .subscription
+            .try_add_local(account_pk, ndb, filters);
     }
 
     debug!(
@@ -863,10 +871,13 @@ pub fn setup_initial_nostrdb_subs(
     note_cache: &mut NoteCache,
     timeline_cache: &mut TimelineCache,
     unknown_ids: &mut UnknownIds,
+    account_pk: Pubkey,
 ) -> Result<()> {
     for (_kind, timeline) in timeline_cache {
         let txn = Transaction::new(ndb).expect("txn");
-        if let Err(err) = setup_timeline_nostrdb_sub(ndb, &txn, note_cache, timeline, unknown_ids) {
+        if let Err(err) =
+            setup_timeline_nostrdb_sub(ndb, &txn, note_cache, timeline, unknown_ids, account_pk)
+        {
             error!("setup_initial_nostrdb_subs: {err}");
         }
     }
@@ -880,6 +891,7 @@ fn setup_timeline_nostrdb_sub(
     note_cache: &mut NoteCache,
     timeline: &mut Timeline,
     unknown_ids: &mut UnknownIds,
+    account_pk: Pubkey,
 ) -> Result<()> {
     let filter_state = timeline
         .filter
@@ -887,7 +899,15 @@ fn setup_timeline_nostrdb_sub(
         .ok_or(Error::App(notedeck::Error::empty_contact_list()))?
         .to_owned();
 
-    setup_initial_timeline(ndb, txn, timeline, note_cache, unknown_ids, &filter_state)?;
+    setup_initial_timeline(
+        ndb,
+        txn,
+        timeline,
+        note_cache,
+        unknown_ids,
+        &filter_state,
+        account_pk,
+    )?;
 
     Ok(())
 }
@@ -1009,7 +1029,11 @@ pub fn is_timeline_ready(
 
             //let ck = &timeline.kind;
             //let subid = damus.gen_subid(&SubKind::Column(ck.clone()));
-            timeline.subscription.try_add_remote(pool, &filter);
+            timeline.subscription.try_add_remote(
+                *accounts.selected_account_pubkey(),
+                pool,
+                &filter,
+            );
             true
         }
     }

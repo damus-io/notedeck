@@ -893,14 +893,15 @@ fn attach_timeline_column(
     col: usize,
     timeline_kind: TimelineKind,
 ) -> bool {
+    let account_pk = *ctx.accounts.selected_account_pubkey();
     let already_open_for_account = app
         .timeline_cache
         .get(&timeline_kind)
-        .is_some_and(|timeline| timeline.subscription.dependers() > 0);
+        .is_some_and(|timeline| timeline.subscription.dependers(&account_pk) > 0);
 
     if already_open_for_account {
         if let Some(timeline) = app.timeline_cache.get_mut(&timeline_kind) {
-            timeline.subscription.increment();
+            timeline.subscription.increment(account_pk);
         }
 
         app.columns_mut(ctx.i18n, ctx.accounts)
@@ -935,7 +936,7 @@ fn attach_timeline_column(
         .column_mut(col)
         .router_mut()
         .route_to_replaced(Route::timeline(route_kind.clone()));
-    app.timeline_cache.insert(route_kind, timeline);
+    app.timeline_cache.insert(route_kind, account_pk, timeline);
 
     true
 }
@@ -1156,7 +1157,11 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         .router_mut()
         .route_to_replaced(Route::timeline(timeline.kind.clone()));
 
-    app.timeline_cache.insert(timeline.kind.clone(), timeline);
+    app.timeline_cache.insert(
+        timeline.kind.clone(),
+        *ctx.accounts.selected_account_pubkey(),
+        timeline,
+    );
 }
 
 pub fn hashtag_ui(

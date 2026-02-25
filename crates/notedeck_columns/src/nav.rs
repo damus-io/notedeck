@@ -147,8 +147,11 @@ impl SwitchingAction {
                 ColumnsAction::Remove(index) => {
                     let kinds_to_pop = get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache)
                         .delete_column(index);
+                    let selected_account_pk = *ctx.accounts.selected_account_pubkey();
                     for kind in &kinds_to_pop {
-                        if let Err(err) = timeline_cache.pop(kind, ctx.ndb, ctx.legacy_pool) {
+                        if let Err(err) =
+                            timeline_cache.pop(kind, selected_account_pk, ctx.ndb, ctx.legacy_pool)
+                        {
                             error!("error popping timeline: {err}");
                         }
                     }
@@ -167,6 +170,7 @@ impl SwitchingAction {
                         index,
                         timeline_cache,
                         ctx.ndb,
+                        *ctx.accounts.selected_account_pubkey(),
                         ctx.legacy_pool,
                     );
                 }
@@ -412,6 +416,7 @@ fn handle_navigating_timeline(
     app: &mut Damus,
     col: usize,
 ) {
+    let account_pk = *accounts.selected_account_pubkey();
     let kind = {
         let Route::Timeline(kind) = app.columns(accounts).column(col).router().top() else {
             return;
@@ -426,7 +431,7 @@ fn handle_navigating_timeline(
 
     let txn = Transaction::new(ndb).expect("txn");
     app.timeline_cache
-        .open(ndb, note_cache, &txn, pool, &kind, false);
+        .open(ndb, note_cache, &txn, account_pk, pool, &kind, false);
 }
 
 pub enum RouterAction {
@@ -533,9 +538,13 @@ fn process_render_nav_action(
         RenderNavAction::PfpClicked => Some(RouterAction::PfpClicked),
         RenderNavAction::RemoveColumn => {
             let kinds_to_pop = app.columns_mut(ctx.i18n, ctx.accounts).delete_column(col);
+            let selected_account_pk = *ctx.accounts.selected_account_pubkey();
 
             for kind in &kinds_to_pop {
-                if let Err(err) = app.timeline_cache.pop(kind, ctx.ndb, ctx.legacy_pool) {
+                if let Err(err) =
+                    app.timeline_cache
+                        .pop(kind, selected_account_pk, ctx.ndb, ctx.legacy_pool)
+                {
                     error!("error popping timeline: {err}");
                 }
             }

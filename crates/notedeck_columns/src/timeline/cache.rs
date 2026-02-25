@@ -6,7 +6,7 @@ use crate::{
 
 use notedeck::{filter, FilterState, NoteCache, NoteRef};
 
-use enostr::RelayPool;
+use enostr::{Pubkey, RelayPool};
 use nostrdb::{Filter, Ndb, Transaction};
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -53,6 +53,7 @@ impl TimelineCache {
     pub fn pop(
         &mut self,
         id: &TimelineKind,
+        account_pk: Pubkey,
         ndb: &mut Ndb,
         pool: &mut RelayPool,
     ) -> Result<(), Error> {
@@ -62,9 +63,11 @@ impl TimelineCache {
             return Err(Error::TimelineNotFound);
         };
 
-        timeline.subscription.unsubscribe_or_decrement(ndb, pool);
+        timeline
+            .subscription
+            .unsubscribe_or_decrement(account_pk, ndb, pool);
 
-        if timeline.subscription.no_sub() {
+        if !timeline.subscription.has_any_subs() {
             debug!(
                 "popped last timeline {:?}, removing from timeline cache",
                 id
@@ -105,12 +108,13 @@ impl TimelineCache {
         res
     }
 
-    pub fn insert(&mut self, id: TimelineKind, timeline: Timeline) {
+    pub fn insert(&mut self, id: TimelineKind, account_pk: Pubkey, mut timeline: Timeline) {
         if let Some(cur_timeline) = self.timelines.get_mut(&id) {
-            cur_timeline.subscription.increment();
+            cur_timeline.subscription.increment(account_pk);
             return;
         };
 
+        timeline.subscription.increment(account_pk);
         self.timelines.insert(id, timeline);
     }
 
@@ -177,11 +181,13 @@ impl TimelineCache {
     /// without running a blocking local query. Use this for startup paths
     /// where initial notes are loaded asynchronously.
     #[profiling::function]
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         &mut self,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         txn: &Transaction,
+        account_pk: Pubkey,
         pool: &mut RelayPool,
         id: &TimelineKind,
         load_local: bool,
@@ -200,8 +206,10 @@ impl TimelineCache {
 
             if let Some(filter) = timeline.filter.get_any_ready() {
                 debug!("got open with subscription for {:?}", &timeline.kind);
-                timeline.subscription.try_add_local(ndb, filter);
-                timeline.subscription.try_add_remote(pool, filter);
+                timeline.subscription.try_add_local(account_pk, ndb, filter);
+                timeline
+                    .subscription
+                    .try_add_remote(account_pk, pool, filter);
             } else {
                 debug!(
                     "open skipped subscription; filter not ready for {:?}",
@@ -209,7 +217,7 @@ impl TimelineCache {
                 );
             }
 
-            timeline.subscription.increment();
+            timeline.subscription.increment(account_pk);
             return None;
         }
 
@@ -251,8 +259,10 @@ impl TimelineCache {
 
         if let Some(filter) = timeline.filter.get_any_ready() {
             debug!("got open with *new* subscription for {:?}", &timeline.kind);
-            timeline.subscription.try_add_local(ndb, filter);
-            timeline.subscription.try_add_remote(pool, filter);
+            timeline.subscription.try_add_local(account_pk, ndb, filter);
+            timeline
+                .subscription
+                .try_add_remote(account_pk, pool, filter);
         } else {
             // This should never happen reasoning, self.notes would have
             // failed above if the filter wasn't ready
@@ -261,7 +271,7 @@ impl TimelineCache {
             );
         };
 
-        timeline.subscription.increment();
+        timeline.subscription.increment(account_pk);
 
         if let Some(unknowns) = notes_resp.unknown_pks {
             match &mut open_result {

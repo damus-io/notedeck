@@ -806,7 +806,9 @@ pub fn cleanup_popped_route(
 ) {
     match route {
         Route::Timeline(kind) => {
-            if let Err(err) = timeline_cache.pop(kind, ndb, pool) {
+            if let Err(err) =
+                timeline_cache.pop(kind, scoped_subs.selected_account_pubkey(), ndb, pool)
+            {
                 tracing::error!("popping timeline had an error: {err} for {:?}", kind);
             }
         }

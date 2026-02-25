@@ -331,7 +331,7 @@ fn deserialize_columns(
         match CleanIntermediaryRoute::parse(&mut parser, deck_user) {
             Ok(route_intermediary) => {
                 if let Some(ir) = route_intermediary.into_intermediary_route(ndb) {
-                    cols.insert_intermediary_routes(timeline_cache, vec![ir]);
+                    cols.insert_intermediary_routes(timeline_cache, *deck_user, vec![ir]);
                 }
             }
             Err(err) => {

@@ -203,6 +203,7 @@ fn try_process_event(
     });
 
     for (kind, timeline) in &mut damus.timeline_cache {
+        let selected_account_pk = *app_ctx.accounts.selected_account_pubkey();
         let is_ready = timeline::is_timeline_ready(
             app_ctx.ndb,
             app_ctx.legacy_pool,
@@ -218,12 +219,14 @@ fn try_process_event(
                 app_ctx.ndb,
                 kind,
                 timeline,
+                app_ctx.accounts.selected_account_pubkey(),
             );
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             // only thread timelines are reversed
             let reversed = false;
 
             if let Err(err) = timeline.poll_notes_into_view(
+                &selected_account_pk,
                 app_ctx.ndb,
                 &txn,
                 app_ctx.unknown_ids,
@@ -279,6 +282,7 @@ fn schedule_timeline_load(
     ndb: &nostrdb::Ndb,
     kind: &TimelineKind,
     timeline: &mut timeline::Timeline,
+    account_pk: &Pubkey,
 ) {
     if loaded.contains(kind) || inflight.contains(kind) {
         return;
@@ -289,7 +293,9 @@ fn schedule_timeline_load(
     };
 
     if timeline.kind.should_subscribe_locally() {
-        timeline.subscription.try_add_local(ndb, &filter);
+        timeline
+            .subscription
+            .try_add_local(*account_pk, ndb, &filter);
     }
 
     loader.load_timeline(kind.clone());
@@ -352,6 +358,16 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
             damus
                 .subscriptions()
                 .insert("unknownids".to_string(), SubKind::OneShot);
+
+            if let Err(err) = timeline::setup_initial_nostrdb_subs(
+                app_ctx.ndb,
+                app_ctx.note_cache,
+                &mut damus.timeline_cache,
+                app_ctx.unknown_ids,
+                *app_ctx.accounts.selected_account_pubkey(),
+            ) {
+                warn!("update_damus init: {err}");
+            }
 
             if !app_ctx.settings.welcome_completed() {
                 let split =
@@ -596,6 +612,7 @@ impl Damus {
                     &txn,
                     app_context.ndb,
                     app_context.note_cache,
+                    *app_context.accounts.selected_account_pubkey(),
                     app_context.legacy_pool,
                     &timeline_kind,
                 ) {
