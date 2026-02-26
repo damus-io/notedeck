@@ -4722,6 +4722,7 @@ dependencies = [
 name = "notedeck_nostrverse"
 version = "0.7.1"
 dependencies = [
+ "bytemuck",
  "egui",
  "egui-wgpu",
  "ehttp",

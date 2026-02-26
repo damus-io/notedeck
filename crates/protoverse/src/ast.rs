@@ -39,6 +39,7 @@ pub enum CellType {
     Room,
     Space,
     Group,
+    Tilemap,
     Object(ObjectType),
 }
 
@@ -68,6 +69,10 @@ pub enum Attribute {
     /// Euler rotation in degrees (X, Y, Z), applied in YXZ order.
     Rotation(f64, f64, f64),
     ModelUrl(String),
+    /// Tilemap tile type names, e.g. ["grass", "stone", "water"].
+    Tileset(Vec<String>),
+    /// Compact tile data string, e.g. "0" (fill-all) or "0 0 1 1 0 0".
+    Data(String),
 }
 
 /// Spatial location relative to the room or another object.
@@ -121,6 +126,7 @@ impl fmt::Display for CellType {
             CellType::Room => write!(f, "room"),
             CellType::Space => write!(f, "space"),
             CellType::Group => write!(f, "group"),
+            CellType::Tilemap => write!(f, "tilemap"),
             CellType::Object(o) => write!(f, "{}", o),
         }
     }
@@ -254,6 +260,20 @@ impl Space {
     pub fn shape(&self, id: CellId) -> Option<&Shape> {
         self.attrs(id).iter().find_map(|a| match a {
             Attribute::Shape(s) => Some(s),
+            _ => None,
+        })
+    }
+
+    pub fn tileset(&self, id: CellId) -> Option<&Vec<String>> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Tileset(v) => Some(v),
+            _ => None,
+        })
+    }
+
+    pub fn data(&self, id: CellId) -> Option<&str> {
+        self.attrs(id).iter().find_map(|a| match a {
+            Attribute::Data(s) => Some(s.as_str()),
             _ => None,
         })
     }

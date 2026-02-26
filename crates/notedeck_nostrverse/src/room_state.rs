@@ -43,18 +43,28 @@ impl SpaceRef {
     }
 }
 
-/// Parsed space data from event
+/// Parsed space definition from event
 #[derive(Clone, Debug)]
 pub struct SpaceInfo {
     pub name: String,
+    /// Tilemap ground plane (if present)
+    pub tilemap: Option<TilemapData>,
 }
 
 impl Default for SpaceInfo {
     fn default() -> Self {
         Self {
             name: "Untitled Space".to_string(),
+            tilemap: None,
         }
     }
+}
+
+/// Converted space data: space info + objects.
+/// Used as the return type from convert_space to avoid fragile tuples.
+pub struct SpaceData {
+    pub info: SpaceInfo,
+    pub objects: Vec<RoomObject>,
 }
 
 /// Spatial location relative to the room or another object.
@@ -143,6 +153,62 @@ impl RoomObject {
     pub fn with_scale(mut self, scale: Vec3) -> Self {
         self.scale = scale;
         self
+    }
+}
+
+/// Parsed tilemap data — compact tile grid representation.
+#[derive(Clone, Debug)]
+pub struct TilemapData {
+    /// Grid width in tiles
+    pub width: u32,
+    /// Grid height in tiles
+    pub height: u32,
+    /// Tile type names (index 0 = first name, etc.)
+    pub tileset: Vec<String>,
+    /// Tile indices, row-major. Length == 1 means fill-all with that value.
+    pub tiles: Vec<u8>,
+    /// Runtime: renderbud scene object handle for the tilemap mesh
+    pub scene_object_id: Option<ObjectId>,
+    /// Runtime: loaded model handle for the tilemap mesh
+    pub model_handle: Option<Model>,
+}
+
+impl TilemapData {
+    /// Get the tile index at grid position (x, y).
+    pub fn tile_at(&self, x: u32, y: u32) -> u8 {
+        if self.tiles.len() == 1 {
+            return self.tiles[0];
+        }
+        let idx = (y * self.width + x) as usize;
+        self.tiles.get(idx).copied().unwrap_or(0)
+    }
+
+    /// Encode tiles back to the compact data string.
+    /// If all tiles are the same value, returns just that value.
+    pub fn encode_data(&self) -> String {
+        if self.tiles.len() == 1 {
+            return self.tiles[0].to_string();
+        }
+        if self.tiles.iter().all(|&t| t == self.tiles[0]) {
+            return self.tiles[0].to_string();
+        }
+        self.tiles
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Parse the compact data string into tile indices.
+    pub fn decode_data(data: &str) -> Vec<u8> {
+        let parts: Vec<&str> = data.split_whitespace().collect();
+        if parts.len() == 1 {
+            // Fill-all mode: single value
+            let val = parts[0].parse::<u8>().unwrap_or(0);
+            vec![val]
+        } else {
+            parts.iter().map(|s| s.parse::<u8>().unwrap_or(0)).collect()
+        }
     }
 }
 
@@ -290,6 +356,16 @@ impl NostrverseState {
     /// Get a mutable reference to an object by ID
     pub fn get_object_mut(&mut self, id: &str) -> Option<&mut RoomObject> {
         self.objects.iter_mut().find(|o| o.id == id)
+    }
+
+    /// Get the tilemap (if present in the space info)
+    pub fn tilemap(&self) -> Option<&TilemapData> {
+        self.space.as_ref()?.tilemap.as_ref()
+    }
+
+    /// Get the tilemap mutably (if present in the space info)
+    pub fn tilemap_mut(&mut self) -> Option<&mut TilemapData> {
+        self.space.as_mut()?.tilemap.as_mut()
     }
 
     /// Get the local user

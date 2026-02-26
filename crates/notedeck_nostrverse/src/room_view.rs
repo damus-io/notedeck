@@ -952,12 +952,16 @@ fn is_sexp_keyword(word: &str) -> bool {
     matches!(
         word,
         "room"
+            | "space"
             | "group"
             | "table"
             | "chair"
             | "door"
             | "light"
             | "prop"
+            | "tilemap"
+            | "tileset"
+            | "data"
             | "name"
             | "id"
             | "shape"

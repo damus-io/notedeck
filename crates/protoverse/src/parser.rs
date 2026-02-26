@@ -228,6 +228,18 @@ impl<'a> Parser<'a> {
             "model-url" => self
                 .eat_string()
                 .map(|s| Attribute::ModelUrl(s.to_string())),
+            "tileset" => {
+                let mut names = Vec::new();
+                while let Some(s) = self.eat_string() {
+                    names.push(s.to_string());
+                }
+                if names.is_empty() {
+                    None
+                } else {
+                    Some(Attribute::Tileset(names))
+                }
+            }
+            "data" => self.eat_string().map(|s| Attribute::Data(s.to_string())),
             _ => None,
         };
 
@@ -364,6 +376,10 @@ impl<'a> Parser<'a> {
         Some(id)
     }
 
+    fn try_parse_tilemap(&mut self) -> Option<CellId> {
+        self.try_parse_named_cell("tilemap", CellType::Tilemap)
+    }
+
     fn try_parse_object(&mut self) -> Option<CellId> {
         let cp = self.checkpoint();
 
@@ -398,6 +414,7 @@ impl<'a> Parser<'a> {
             .try_parse_group()
             .or_else(|| self.try_parse_room())
             .or_else(|| self.try_parse_space())
+            .or_else(|| self.try_parse_tilemap())
             .or_else(|| self.try_parse_object());
 
         match id {
@@ -505,6 +522,35 @@ mod tests {
         assert_eq!(
             space.location(space.root),
             Some(&Location::Custom("somewhere".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_tilemap() {
+        let input = r#"(tilemap (width 10) (height 10) (tileset "grass" "stone") (data "0"))"#;
+        let space = parse(input).unwrap();
+        let root = space.cell(space.root);
+        assert_eq!(root.cell_type, CellType::Tilemap);
+        assert_eq!(space.width(space.root), Some(10.0));
+        assert_eq!(space.height(space.root), Some(10.0));
+        assert_eq!(
+            space.tileset(space.root),
+            Some(&vec!["grass".to_string(), "stone".to_string()])
+        );
+        assert_eq!(space.data(space.root), Some("0"));
+    }
+
+    #[test]
+    fn test_parse_tilemap_in_group() {
+        let input = r#"(space (name "Test") (group (tilemap (width 5) (height 5) (tileset "grass") (data "0")) (table (id t1))))"#;
+        let space = parse(input).unwrap();
+        let group_id = space.children(space.root)[0];
+        let children = space.children(group_id);
+        assert_eq!(children.len(), 2);
+        assert_eq!(space.cell(children[0]).cell_type, CellType::Tilemap);
+        assert_eq!(
+            space.cell(children[1]).cell_type,
+            CellType::Object(ObjectType::Table)
         );
     }
 
