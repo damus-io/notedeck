@@ -1,4 +1,4 @@
-use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey, RelayPool};
+use enostr::{FilledKeypair, FullKeypair, ProfileState, Pubkey};
 use nostrdb::{Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
 use notedeck::{
@@ -53,7 +53,6 @@ impl ProfileAction {
         i18n: &mut Localization,
         ctx: &egui::Context,
         ndb: &Ndb,
-        pool: &mut RelayPool,
         remote: &mut RemoteApi<'_>,
         accounts: &Accounts,
     ) -> Option<RouterAction> {
@@ -123,17 +122,25 @@ impl ProfileAction {
                         let kp = accounts.get_selected_account().key.to_full()?;
                         let muted = accounts.mute();
                         let txn = Transaction::new(ndb).expect("txn");
+                        let publisher = &mut remote.publisher(accounts);
                         if muted.is_pk_muted(profile_context.profile.bytes()) {
                             notedeck::send_unmute_event(
                                 ndb,
                                 &txn,
-                                pool,
+                                publisher,
                                 kp,
                                 &muted,
                                 &profile_context.profile,
                             );
                         } else {
-                            send_mute_event(ndb, &txn, pool, kp, &muted, &profile_context.profile);
+                            send_mute_event(
+                                ndb,
+                                &txn,
+                                publisher,
+                                kp,
+                                &muted,
+                                &profile_context.profile,
+                            );
                         }
                         None
                     }

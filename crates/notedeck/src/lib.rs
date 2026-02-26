@@ -84,9 +84,9 @@ pub use nav::DragResponse;
 pub use nip05::{Nip05Cache, Nip05Status};
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
-    builder_from_note, get_p_tags, send_mute_event, send_note_builder, send_people_list_event,
-    send_report_event, send_unmute_event, BroadcastContext, ContextSelection, NoteAction,
-    NoteContext, NoteContextSelection, NoteRef, ReportTarget, ReportType, RootIdError, RootNoteId,
+    builder_from_note, get_p_tags, send_mute_event, send_people_list_event, send_report_event,
+    send_unmute_event, BroadcastContext, ContextSelection, NoteAction, NoteContext,
+    NoteContextSelection, NoteRef, ReportTarget, ReportType, RootIdError, RootNoteId,
     RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};

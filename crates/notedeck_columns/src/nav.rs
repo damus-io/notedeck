@@ -603,7 +603,6 @@ fn process_render_nav_action(
             ctx.i18n,
             ui.ctx(),
             ctx.ndb,
-            ctx.legacy_pool,
             &mut ctx.remote,
             ctx.accounts,
         ),
@@ -1184,7 +1183,13 @@ fn render_nav_body(
                 ui::report::ReportView::new(&mut app.view_state.selected_report_type).show(ui);
 
             if let Some(report_type) = resp {
-                notedeck::send_report_event(ctx.ndb, ctx.legacy_pool, kp, target, report_type);
+                notedeck::send_report_event(
+                    ctx.ndb,
+                    &mut ctx.remote.publisher(ctx.accounts),
+                    kp,
+                    target,
+                    report_type,
+                );
                 app.view_state.selected_report_type = None;
                 return DragResponse::output(Some(RenderNavAction::Back));
             }

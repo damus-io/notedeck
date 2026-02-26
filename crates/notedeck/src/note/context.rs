@@ -1,4 +1,4 @@
-use enostr::{NoteId, Pubkey, RelayId, RelayPool};
+use enostr::{NoteId, Pubkey, RelayId};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use tracing::error;
 
@@ -48,13 +48,11 @@ fn note_nip19_event_bech(note: &Note<'_>, txn: &Transaction) -> Option<String> {
 }
 
 impl NoteContextSelection {
-    #[allow(clippy::too_many_arguments)]
     pub fn process_selection(
         &self,
         ui: &mut egui::Ui,
         note: &Note<'_>,
         ndb: &Ndb,
-        pool: &mut RelayPool,
         remote: &mut RemoteApi,
         txn: &Transaction,
         accounts: &Accounts,
@@ -104,9 +102,23 @@ impl NoteContextSelection {
                 };
                 let muted = accounts.mute();
                 if muted.is_pk_muted(target.bytes()) {
-                    super::publish::send_unmute_event(ndb, txn, pool, kp, &muted, &target);
+                    super::publish::send_unmute_event(
+                        ndb,
+                        txn,
+                        &mut remote.publisher(accounts),
+                        kp,
+                        &muted,
+                        &target,
+                    );
                 } else {
-                    super::publish::send_mute_event(ndb, txn, pool, kp, &muted, &target);
+                    super::publish::send_mute_event(
+                        ndb,
+                        txn,
+                        &mut remote.publisher(accounts),
+                        kp,
+                        &muted,
+                        &target,
+                    );
                 }
             }
             NoteContextSelection::ReportUser => {}

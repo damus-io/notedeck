@@ -1,4 +1,4 @@
-use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
+use enostr::{FilledKeypair, NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 use tracing::info;
 
@@ -83,27 +83,6 @@ where
     builder
 }
 
-pub fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, kp: FilledKeypair) {
-    let note = builder
-        .sign(&kp.secret_key.secret_bytes())
-        .build()
-        .expect("build note");
-
-    let Ok(event) = &enostr::ClientMessage::event(&note) else {
-        tracing::error!("send_note_builder: failed to build json");
-        return;
-    };
-
-    let Ok(json) = event.to_json() else {
-        tracing::error!("send_note_builder: failed to build json");
-        return;
-    };
-
-    let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
-    info!("sending {}", &json);
-    pool.send(event);
-}
-
 pub fn publish_note_builder(
     builder: NoteBuilder,
     ndb: &Ndb,
@@ -133,7 +112,7 @@ pub fn publish_note_builder(
 pub fn send_unmute_event(
     ndb: &Ndb,
     txn: &Transaction,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair,
     muted: &Muted,
     target: &Pubkey,
@@ -178,13 +157,13 @@ pub fn send_unmute_event(
         }),
     );
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }
 
 pub fn send_mute_event(
     ndb: &Ndb,
     txn: &Transaction,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair,
     muted: &Muted,
     target: &Pubkey,
@@ -226,7 +205,7 @@ pub fn send_mute_event(
             .tag_str(&target.hex())
     };
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }
 
 pub fn send_people_list_event(
@@ -256,7 +235,7 @@ pub fn send_people_list_event(
 
 pub fn send_report_event(
     ndb: &Ndb,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair,
     target: &ReportTarget,
     report_type: ReportType,
@@ -280,5 +259,5 @@ pub fn send_report_event(
             .tag_str(report_str);
     }
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }

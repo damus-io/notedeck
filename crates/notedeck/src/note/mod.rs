@@ -5,8 +5,8 @@ pub mod publish;
 pub use action::{NoteAction, ReactAction, ScrollInfo, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 pub use publish::{
-    builder_from_note, send_mute_event, send_note_builder, send_people_list_event,
-    send_report_event, send_unmute_event, ReportTarget, ReportType,
+    builder_from_note, send_mute_event, send_people_list_event, send_report_event,
+    send_unmute_event, ReportTarget, ReportType,
 };
 
 use crate::jobs::MediaJobSender;

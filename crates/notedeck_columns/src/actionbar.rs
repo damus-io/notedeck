@@ -222,7 +222,7 @@ fn execute_note_action(
                 } else {
                     context
                         .action
-                        .process_selection(ui, &note, ndb, pool, remote, txn, accounts);
+                        .process_selection(ui, &note, ndb, remote, txn, accounts);
                 }
             }
         },
