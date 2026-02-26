@@ -1,30 +1,38 @@
 use std::{cell::RefCell, rc::Rc};
 
 use egui_virtual_list::VirtualList;
-use enostr::{Pubkey, RelayPool};
+use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
-use notedeck::{create_nip51_set, filter::default_limit, Nip51SetCache, UnknownIds};
-use uuid::Uuid;
-
-use crate::subscriptions::Subscriptions;
+use notedeck::{
+    create_nip51_set, filter::default_limit, Nip51SetCache, RelaySelection, ScopedSubApi,
+    ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey, UnknownIds,
+};
 
 #[derive(Debug)]
 enum OnboardingState {
     AwaitingTrustedPksList(Vec<Filter>),
-    HaveFollowPacks(Nip51SetCache),
+    HaveFollowPacks { packs: Nip51SetCache },
 }
 
-/// Manages the onboarding process. Responsible for retriving the kind 30000 list of trusted pubkeys
-/// and then retrieving all follow packs from the trusted pks updating when new ones arrive
+/// Manages onboarding discovery of trusted follow packs.
+///
+/// This first requests the trusted-author list (kind `30000`) and then
+/// installs a scoped account subscription for follow packs from those authors.
 #[derive(Default)]
 pub struct Onboarding {
     state: Option<Result<OnboardingState, OnboardingError>>,
     pub list: Rc<RefCell<VirtualList>>,
 }
 
+/// Side effects emitted by one `Onboarding::process` pass.
+pub enum OnboardingEffect {
+    /// Request a one-shot fetch for the provided filters.
+    Oneshot(Vec<Filter>),
+}
+
 impl Onboarding {
     pub fn get_follow_packs(&self) -> Option<&Nip51SetCache> {
-        let Some(Ok(OnboardingState::HaveFollowPacks(packs))) = &self.state else {
+        let Some(Ok(OnboardingState::HaveFollowPacks { packs, .. })) = &self.state else {
             return None;
         };
 
@@ -32,71 +40,79 @@ impl Onboarding {
     }
 
     pub fn get_follow_packs_mut(&mut self) -> Option<&mut Nip51SetCache> {
-        let Some(Ok(OnboardingState::HaveFollowPacks(packs))) = &mut self.state else {
+        let Some(Ok(OnboardingState::HaveFollowPacks { packs, .. })) = &mut self.state else {
             return None;
         };
 
         Some(packs)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &mut self,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
+        owner: SubOwnerKey,
         ndb: &Ndb,
-        subs: &mut Subscriptions,
         unknown_ids: &mut UnknownIds,
-    ) {
+    ) -> Option<OnboardingEffect> {
         match &self.state {
             Some(res) => {
                 let Ok(OnboardingState::AwaitingTrustedPksList(filter)) = res else {
-                    return;
+                    return None;
                 };
 
                 let txn = Transaction::new(ndb).expect("txns");
                 let Ok(res) = ndb.query(&txn, filter, 1) else {
-                    return;
+                    return None;
                 };
 
                 if res.is_empty() {
-                    return;
+                    return None;
                 }
 
                 let key = res.first().expect("checked empty").note_key;
 
                 let new_state = get_trusted_authors(ndb, &txn, key).and_then(|trusted_pks| {
                     let pks: Vec<&[u8; 32]> = trusted_pks.iter().map(|f| f.bytes()).collect();
-                    Nip51SetCache::new(pool, ndb, &txn, unknown_ids, vec![follow_packs_filter(pks)])
-                        .map(OnboardingState::HaveFollowPacks)
+                    let follow_filter = follow_packs_filter(pks);
+                    let sub_key = follow_packs_sub_key();
+                    let identity = ScopedSubIdentity::account(owner, sub_key);
+                    let sub_config = SubConfig {
+                        relays: RelaySelection::AccountsRead,
+                        filters: vec![follow_filter.clone()],
+                        use_transparent: false,
+                    };
+                    let _ = scoped_subs.ensure_sub(identity, sub_config);
+
+                    Nip51SetCache::new_local(ndb, &txn, unknown_ids, vec![follow_filter])
+                        .map(|packs| OnboardingState::HaveFollowPacks { packs })
                         .ok_or(OnboardingError::InvalidNip51Set)
                 });
 
                 self.state = Some(new_state);
+                None
             }
             None => {
                 let filter = vec![trusted_pks_list_filter()];
-
-                let subid = Uuid::new_v4().to_string();
-                pool.subscribe(subid.clone(), filter.clone());
-                subs.subs
-                    .insert(subid, crate::subscriptions::SubKind::OneShot);
-
                 let new_state = Some(Ok(OnboardingState::AwaitingTrustedPksList(filter)));
                 self.state = new_state;
+                let Some(Ok(OnboardingState::AwaitingTrustedPksList(filters))) = &self.state else {
+                    return None;
+                };
+
+                Some(OnboardingEffect::Oneshot(filters.clone()))
             }
         }
     }
 
     // Unsubscribe and clear state
-    pub fn end_onboarding(&mut self, pool: &mut RelayPool, ndb: &mut Ndb) {
-        let Some(Ok(OnboardingState::HaveFollowPacks(state))) = &mut self.state else {
+    pub fn end_onboarding(&mut self, ndb: &mut Ndb) {
+        let Some(Ok(OnboardingState::HaveFollowPacks { packs })) = &mut self.state else {
             self.state = None;
             return;
         };
 
-        let unified = &state.sub;
-
-        pool.unsubscribe(unified.remote.clone());
-        let _ = ndb.unsubscribe(unified.local);
+        let _ = ndb.unsubscribe(packs.local_sub());
 
         self.state = None;
     }
@@ -104,9 +120,17 @@ impl Onboarding {
 
 #[derive(Debug)]
 pub enum OnboardingError {
+    /// Follow-pack note could not be parsed as a valid NIP-51 set.
     InvalidNip51Set,
+    /// Trusted-author note exists but is not kind `30000`.
     InvalidTrustedPksListKind,
+    /// Trusted-author note key could not be resolved from NostrDB.
     NdbCouldNotFindNote,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum OnboardingScopedSub {
+    FollowPacks,
 }
 
 // author providing the list of trusted follow pack authors
@@ -132,6 +156,10 @@ pub fn follow_packs_filter(pks: Vec<&[u8; 32]>) -> Filter {
         .build()
 }
 
+fn follow_packs_sub_key() -> SubKey {
+    SubKey::builder(OnboardingScopedSub::FollowPacks).finish()
+}
+
 /// gets the pubkeys from a kind 30000 follow set
 fn get_trusted_authors(
     ndb: &Ndb,
@@ -151,4 +179,80 @@ fn get_trusted_authors(
     };
 
     Ok(nip51set.pks)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enostr::{OutboxPool, OutboxSessionHandler};
+    use nostrdb::Config;
+    use notedeck::{Accounts, EguiWakeup, ScopedSubsState, FALLBACK_PUBKEY};
+    use tempfile::TempDir;
+
+    fn test_harness() -> (
+        TempDir,
+        Ndb,
+        Accounts,
+        UnknownIds,
+        ScopedSubsState,
+        OutboxPool,
+    ) {
+        let tmp = TempDir::new().expect("tmp dir");
+        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut unknown_ids = UnknownIds::default();
+        let accounts = Accounts::new(
+            None,
+            vec!["wss://relay-onboarding.example.com".to_owned()],
+            FALLBACK_PUBKEY(),
+            &mut ndb,
+            &txn,
+            &mut unknown_ids,
+        );
+
+        (
+            tmp,
+            ndb,
+            accounts,
+            unknown_ids,
+            ScopedSubsState::default(),
+            OutboxPool::default(),
+        )
+    }
+
+    /// Verifies onboarding emits a one-time oneshot effect on first process call
+    /// and does not emit duplicate oneshot effects on subsequent calls.
+    #[test]
+    fn process_initially_emits_oneshot_effect_once() {
+        let (_tmp, ndb, accounts, mut unknown_ids, mut scoped_sub_state, mut pool) = test_harness();
+        let owner = SubOwnerKey::new(("onboarding", 1usize));
+        let mut onboarding = Onboarding::default();
+
+        let first = {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
+            let mut scoped_subs = scoped_sub_state.api(&mut outbox, &accounts);
+            onboarding.process(&mut scoped_subs, owner, &ndb, &mut unknown_ids)
+        };
+
+        match first {
+            Some(OnboardingEffect::Oneshot(filters)) => {
+                assert_eq!(filters.len(), 1);
+                assert_eq!(
+                    filters[0].json().expect("json"),
+                    trusted_pks_list_filter().json().expect("json")
+                );
+            }
+            None => panic!("expected onboarding oneshot effect"),
+        }
+
+        let second = {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
+            let mut scoped_subs = scoped_sub_state.api(&mut outbox, &accounts);
+            onboarding.process(&mut scoped_subs, owner, &ndb, &mut unknown_ids)
+        };
+
+        assert!(second.is_none());
+    }
 }

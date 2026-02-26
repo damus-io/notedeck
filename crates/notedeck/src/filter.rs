@@ -1,5 +1,6 @@
 use crate::error::{Error, FilterError};
 use crate::note::NoteRef;
+use enostr::OutboxSubId;
 use nostrdb::{Filter, FilterBuilder, Note, Subscription};
 use tracing::{debug, warn};
 
@@ -8,7 +9,7 @@ use tracing::{debug, warn};
 #[derive(Debug, Clone)]
 pub struct UnifiedSubscription {
     pub local: Subscription,
-    pub remote: String,
+    pub remote: OutboxSubId, // abstracted ID to a remote subscription
 }
 
 /// We may need to fetch some data from relays before our filter is ready.

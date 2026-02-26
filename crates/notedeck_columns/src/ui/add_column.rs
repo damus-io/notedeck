@@ -199,7 +199,6 @@ pub struct AddColumnView<'a> {
     contacts: &'a ContactState,
     i18n: &'a mut Localization,
     jobs: &'a MediaJobSender,
-    pool: &'a mut enostr::RelayPool,
     unknown_ids: &'a mut notedeck::UnknownIds,
     people_lists: &'a mut Option<notedeck::Nip51SetCache>,
 }
@@ -215,7 +214,6 @@ impl<'a> AddColumnView<'a> {
         contacts: &'a ContactState,
         i18n: &'a mut Localization,
         jobs: &'a MediaJobSender,
-        pool: &'a mut enostr::RelayPool,
         unknown_ids: &'a mut notedeck::UnknownIds,
         people_lists: &'a mut Option<notedeck::Nip51SetCache>,
     ) -> Self {
@@ -228,7 +226,6 @@ impl<'a> AddColumnView<'a> {
             contacts,
             i18n,
             jobs,
-            pool,
             unknown_ids,
             people_lists,
         }
@@ -308,13 +305,8 @@ impl<'a> AddColumnView<'a> {
                 .kinds([30000])
                 .limit(50)
                 .build();
-            *self.people_lists = notedeck::Nip51SetCache::new(
-                self.pool,
-                self.ndb,
-                &txn,
-                self.unknown_ids,
-                vec![filter],
-            );
+            *self.people_lists =
+                notedeck::Nip51SetCache::new_local(self.ndb, &txn, self.unknown_ids, vec![filter]);
         }
 
         // Poll for newly arrived notes each frame
@@ -969,7 +961,6 @@ pub fn render_add_column_routes(
                 contacts,
                 ctx.i18n,
                 ctx.media_jobs.sender(),
-                ctx.legacy_pool,
                 ctx.unknown_ids,
                 &mut app.view_state.people_lists,
             );

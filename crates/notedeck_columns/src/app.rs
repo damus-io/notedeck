@@ -252,10 +252,10 @@ fn try_process_event(
                 _ => {}
             }
         }
-    }
 
-    if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
-        follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
+        if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
+            follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
+        }
     }
 
     Ok(())

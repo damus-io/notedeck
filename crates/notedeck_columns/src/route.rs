@@ -9,6 +9,8 @@ use std::ops::Range;
 
 use crate::{
     accounts::AccountsRoute,
+    onboarding::Onboarding,
+    scoped_sub_owner_keys::onboarding_owner_key,
     timeline::{kind::ColumnTitle, thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
     view_state::ViewState,
@@ -797,6 +799,7 @@ pub fn cleanup_popped_route(
     route: &Route,
     timeline_cache: &mut TimelineCache,
     threads: &mut Threads,
+    onboarding: &mut Onboarding,
     view_state: &mut ViewState,
     ndb: &mut Ndb,
     scoped_subs: &mut ScopedSubApi,
@@ -814,6 +817,10 @@ pub fn cleanup_popped_route(
         }
         Route::EditProfile(pk) => {
             view_state.pubkey_to_profile_state.remove(pk);
+        }
+        Route::Accounts(AccountsRoute::Onboarding) => {
+            onboarding.end_onboarding(ndb);
+            let _ = scoped_subs.drop_owner(onboarding_owner_key(col_index));
         }
         _ => {}
     }

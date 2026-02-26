@@ -281,6 +281,7 @@ fn process_nav_resp(
                         route,
                         &mut app.timeline_cache,
                         &mut app.threads,
+                        &mut app.onboarding,
                         &mut app.view_state,
                         ctx.ndb,
                         &mut ctx.remote.scoped_subs(ctx.accounts),
