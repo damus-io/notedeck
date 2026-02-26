@@ -229,8 +229,32 @@ fn try_process_event(
             }
         } else {
             // TODO: show loading?
-            if matches!(kind, TimelineKind::List(ListKind::Contact(_))) {
-                timeline::fetch_contact_list(&mut damus.subscriptions, timeline, app_ctx.accounts);
+            match kind {
+                TimelineKind::List(ListKind::Contact(_))
+                | TimelineKind::Algo(timeline::kind::AlgoTimeline::LastPerPubkey(
+                    ListKind::Contact(_),
+                )) => {
+                    timeline::fetch_contact_list(
+                        &mut damus.subscriptions,
+                        timeline,
+                        app_ctx.accounts,
+                    );
+                }
+                TimelineKind::List(ListKind::PeopleList(plr))
+                | TimelineKind::Algo(timeline::kind::AlgoTimeline::LastPerPubkey(
+                    ListKind::PeopleList(plr),
+                )) => {
+                    let plr = plr.clone();
+                    for relay in &mut app_ctx.pool.relays {
+                        timeline::fetch_people_list(
+                            &mut damus.subscriptions,
+                            relay,
+                            timeline,
+                            &plr,
+                        );
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -423,6 +447,9 @@ fn handle_eose(
                 }
                 notedeck::filter::FetchingRemoteType::Contact => {
                     FilterState::GotRemote(notedeck::filter::GotRemoteType::Contact)
+                }
+                notedeck::filter::FetchingRemoteType::PeopleList => {
+                    FilterState::GotRemote(notedeck::filter::GotRemoteType::PeopleList)
                 }
             };
 
@@ -896,6 +923,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
             match timeline_kind {
                 TimelineKind::List(list_kind) => match list_kind {
                     ListKind::Contact(_pk) => true,
+                    ListKind::PeopleList(_) => true,
                 },
 
                 TimelineKind::Algo(_pk) => true,

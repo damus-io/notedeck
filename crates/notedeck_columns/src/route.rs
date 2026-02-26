@@ -414,6 +414,11 @@ impl Route {
                     "Subscribe to someone else's notes",
                     "Column title for subscribing to external user"
                 )),
+                AddColumnRoute::PeopleList => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Select a People List",
+                    "Column title for selecting a people list"
+                )),
             },
             Route::Support => {
                 ColumnTitle::formatted(tr!(i18n, "Damus Support", "Column title for support page"))

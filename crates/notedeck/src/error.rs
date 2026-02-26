@@ -67,6 +67,9 @@ pub enum FilterError {
     #[error("empty contact list")]
     EmptyContactList,
 
+    #[error("empty list")]
+    EmptyList,
+
     #[error("filter not ready")]
     FilterNotReady,
 }

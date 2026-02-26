@@ -2,7 +2,11 @@ use crate::{
     error::Error,
     multi_subscriber::TimelineSub,
     subscriptions::{self, SubKind, Subscriptions},
-    timeline::{kind::ListKind, note_units::InsertManyResponse, timeline_units::NotePayload},
+    timeline::{
+        kind::{people_list_note_filter, AlgoTimeline, ListKind, PeopleListRef},
+        note_units::InsertManyResponse,
+        timeline_units::NotePayload,
+    },
     Result,
 };
 
@@ -279,7 +283,7 @@ impl Timeline {
         let filter = filter::last_n_per_pubkey_from_tags(list, kind, notes_per_pk)?;
 
         Ok(Timeline::new(
-            TimelineKind::last_per_pubkey(*list_kind),
+            TimelineKind::last_per_pubkey(list_kind.clone()),
             FilterState::ready(filter),
             TimelineTab::only_notes_and_replies(),
         ))
@@ -722,7 +726,20 @@ pub fn send_initial_timeline_filter(
         }
 
         // we need some data first
-        FilterState::NeedsRemote => fetch_contact_list(subs, timeline, accounts),
+        FilterState::NeedsRemote => {
+            let people_list_ref = match &timeline.kind {
+                TimelineKind::List(ListKind::PeopleList(plr))
+                | TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::PeopleList(plr))) => {
+                    Some(plr.clone())
+                }
+                _ => None,
+            };
+            if let Some(plr) = people_list_ref {
+                fetch_people_list(subs, relay, timeline, &plr);
+            } else {
+                fetch_contact_list(subs, timeline, accounts);
+            }
+        }
     }
 }
 
@@ -751,6 +768,33 @@ pub fn fetch_contact_list(subs: &mut Subscriptions, timeline: &mut Timeline, acc
 
     let sub_kind = SubKind::FetchingContactList(timeline.kind.clone());
     subs.subs.insert(sub.remote.clone(), sub_kind);
+}
+
+pub fn fetch_people_list(
+    subs: &mut Subscriptions,
+    relay: &mut PoolRelay,
+    timeline: &mut Timeline,
+    plr: &PeopleListRef,
+) {
+    if timeline.filter.get_any_ready().is_some() {
+        return;
+    }
+
+    let filter = people_list_note_filter(plr);
+    let sub_id = subscriptions::new_sub_id();
+
+    if let Err(err) = relay.subscribe(sub_id.clone(), vec![filter]) {
+        error!("error subscribing for people list: {err}");
+        return;
+    }
+
+    timeline.filter.set_relay_state(
+        relay.url().to_string(),
+        FilterState::FetchingRemote(filter::FetchingRemoteType::PeopleList),
+    );
+
+    let sub_kind = SubKind::FetchingContactList(timeline.kind.clone());
+    subs.subs.insert(sub_id, sub_kind);
 }
 
 #[profiling::function]
@@ -890,6 +934,36 @@ pub fn is_timeline_ready(
 
             (relay_id, *note_key)
         }
+        filter::GotRemoteResult::PeopleList { relay_id } => {
+            // Query ndb directly for the kind 30000 note. It should
+            // have been ingested from the relay by now.
+            let plr = match &timeline.kind {
+                TimelineKind::List(ListKind::PeopleList(plr))
+                | TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::PeopleList(plr))) => plr,
+                _ => {
+                    error!("GotRemoteResult::PeopleList but timeline kind is not PeopleList");
+                    return false;
+                }
+            };
+
+            let list_filter = people_list_note_filter(plr);
+            let txn = Transaction::new(ndb).expect("txn");
+            let results = match ndb.query(&txn, std::slice::from_ref(&list_filter), 1) {
+                Ok(results) => results,
+                Err(err) => {
+                    error!("people list query failed in is_timeline_ready: {err}");
+                    return false;
+                }
+            };
+
+            if results.is_empty() {
+                debug!("people list note not yet in ndb for {:?}", plr);
+                return false;
+            }
+
+            info!("found people list note after GotRemote!");
+            (relay_id, results[0].note_key)
+        }
     };
 
     let with_hashtags = false;
@@ -915,7 +989,7 @@ pub fn is_timeline_ready(
             error!("got broken when building filter {err}");
             timeline
                 .filter
-                .set_relay_state(relay_id, FilterState::broken(FilterError::EmptyContactList));
+                .set_relay_state(relay_id, FilterState::broken(FilterError::EmptyList));
             false
         }
         Ok(filter) => {

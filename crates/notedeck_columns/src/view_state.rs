@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use enostr::Pubkey;
 use notedeck::compact::CompactState;
+use notedeck::Nip51SetCache;
 use notedeck::ReportType;
 use notedeck_ui::nip51_set::Nip51SetUiCache;
 
@@ -41,6 +42,9 @@ pub struct ViewState {
 
     /// Database compaction state
     pub compact: CompactState,
+
+    /// Cache for people list selection in "Add Column" UI
+    pub people_lists: Option<Nip51SetCache>,
 }
 
 impl ViewState {

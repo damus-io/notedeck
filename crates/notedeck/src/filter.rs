@@ -48,6 +48,9 @@ impl FilterStates {
                     GotRemoteType::Contact => Some(GotRemoteResult::Contact {
                         relay_id: k.to_owned(),
                     }),
+                    GotRemoteType::PeopleList => Some(GotRemoteResult::PeopleList {
+                        relay_id: k.to_owned(),
+                    }),
                 };
             }
         }
@@ -114,18 +117,23 @@ pub enum GotRemoteResult {
     Contact {
         relay_id: String,
     },
+    PeopleList {
+        relay_id: String,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub enum FetchingRemoteType {
     Normal(UnifiedSubscription),
     Contact,
+    PeopleList,
 }
 
 #[derive(Debug, Clone)]
 pub enum GotRemoteType {
     Normal(Subscription),
     Contact,
+    PeopleList,
 }
 
 impl FilterState {

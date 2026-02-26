@@ -6,7 +6,7 @@ use egui::{
     Separator, Ui, Vec2, Widget,
 };
 use enostr::Pubkey;
-use nostrdb::{Ndb, Transaction};
+use nostrdb::{Filter, Ndb, Transaction};
 use tracing::error;
 
 use crate::{
@@ -16,7 +16,6 @@ use crate::{
     timeline::{kind::ListKind, PubkeySource, TimelineKind},
     Damus,
 };
-
 use notedeck::{
     tr, AppContext, ContactState, Images, Localization, MediaJobSender, NotedeckTextStyle,
     UserAccount,
@@ -38,6 +37,7 @@ pub enum AddColumnResponse {
     Algo(AlgoOption),
     UndecidedIndividual,
     ExternalIndividual,
+    PeopleList,
 }
 
 struct SelectionHandler<'a> {
@@ -79,6 +79,7 @@ enum AddColumnOption {
     UndecidedIndividual,
     ExternalIndividual,
     Individual(PubkeySource),
+    UndecidedPeopleList,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug, Default, Hash)]
@@ -97,6 +98,7 @@ pub enum AddColumnRoute {
     Algo(AddAlgoRoute),
     UndecidedIndividual,
     ExternalIndividual,
+    PeopleList,
 }
 
 // Parser for the common case without any payloads
@@ -125,7 +127,9 @@ impl AddColumnRoute {
             Self::Algo(AddAlgoRoute::Base) => &["column", "algo_selection"],
             Self::Algo(AddAlgoRoute::LastPerPubkey) => {
                 &["column", "algo_selection", "last_per_pubkey"]
-            } // NOTE!!! When adding to this, update the parser for TokenSerializable below
+            }
+            Self::PeopleList => &["column", "people_list"],
+            // NOTE!!! When adding to this, update the parser for TokenSerializable below
         }
     }
 }
@@ -151,6 +155,7 @@ impl TokenSerializable for AddColumnRoute {
                 |p| parse_column_route(p, AddColumnRoute::Hashtag),
                 |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::Base)),
                 |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey)),
+                |p| parse_column_route(p, AddColumnRoute::PeopleList),
             ],
         )
     }
@@ -175,6 +180,7 @@ impl AddColumnOption {
             AddColumnOption::Individual(pubkey_source) => AddColumnResponse::Timeline(
                 TimelineKind::profile(*pubkey_source.as_pubkey(&cur_account.key.pubkey)),
             ),
+            AddColumnOption::UndecidedPeopleList => AddColumnResponse::PeopleList,
         }
     }
 }
@@ -188,6 +194,9 @@ pub struct AddColumnView<'a> {
     contacts: &'a ContactState,
     i18n: &'a mut Localization,
     jobs: &'a MediaJobSender,
+    pool: &'a mut enostr::RelayPool,
+    unknown_ids: &'a mut notedeck::UnknownIds,
+    people_lists: &'a mut Option<notedeck::Nip51SetCache>,
 }
 
 impl<'a> AddColumnView<'a> {
@@ -201,6 +210,9 @@ impl<'a> AddColumnView<'a> {
         contacts: &'a ContactState,
         i18n: &'a mut Localization,
         jobs: &'a MediaJobSender,
+        pool: &'a mut enostr::RelayPool,
+        unknown_ids: &'a mut notedeck::UnknownIds,
+        people_lists: &'a mut Option<notedeck::Nip51SetCache>,
     ) -> Self {
         Self {
             key_state_map,
@@ -211,6 +223,9 @@ impl<'a> AddColumnView<'a> {
             contacts,
             i18n,
             jobs,
+            pool,
+            unknown_ids,
+            people_lists,
         }
     }
 
@@ -277,6 +292,60 @@ impl<'a> AddColumnView<'a> {
         self.column_option_ui(ui, algo_option)
             .clicked()
             .then(|| option.take_as_response(self.cur_account))
+    }
+
+    fn people_list_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
+        // Initialize the cache on first visit — subscribes locally and to relays
+        if self.people_lists.is_none() {
+            let txn = Transaction::new(self.ndb).expect("txn");
+            let filter = Filter::new()
+                .authors([self.cur_account.key.pubkey.bytes()])
+                .kinds([30000])
+                .limit(50)
+                .build();
+            *self.people_lists = notedeck::Nip51SetCache::new(
+                self.pool,
+                self.ndb,
+                &txn,
+                self.unknown_ids,
+                vec![filter],
+            );
+        }
+
+        // Poll for newly arrived notes each frame
+        if let Some(cache) = self.people_lists.as_mut() {
+            cache.poll_for_notes(self.ndb, self.unknown_ids);
+        }
+
+        padding(16.0, ui, |ui| {
+            let Some(cache) = self.people_lists.as_ref() else {
+                ui.label("Loading lists from relays...");
+                return None;
+            };
+
+            if cache.is_empty() {
+                ui.label("Loading lists from relays...");
+                return None;
+            }
+
+            let mut response = None;
+            for set in cache.iter() {
+                let title = set.title.as_deref().unwrap_or(&set.identifier);
+                let label = format!("{} ({} members)", title, set.pks.len());
+
+                if ui.button(&label).clicked() {
+                    response = Some(AddColumnResponse::Timeline(TimelineKind::people_list(
+                        self.cur_account.key.pubkey,
+                        set.identifier.clone(),
+                    )));
+                }
+
+                ui.add(Separator::default().spacing(4.0));
+            }
+
+            response
+        })
+        .inner
     }
 
     fn algo_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
@@ -542,6 +611,16 @@ impl<'a> AddColumnView<'a> {
             ),
             icon: app_images::add_column_individual_image(),
             option: AddColumnOption::UndecidedIndividual,
+        });
+        vec.push(ColumnOptionData {
+            title: tr!(self.i18n, "People List", "Title for people list column"),
+            description: tr!(
+                self.i18n,
+                "See notes from a NIP-51 people list",
+                "Description for people list column"
+            ),
+            icon: app_images::home_image(),
+            option: AddColumnOption::UndecidedPeopleList,
         });
         vec.push(ColumnOptionData {
             title: tr!(self.i18n, "Algo", "Title for algorithmic feeds column"),
@@ -817,6 +896,9 @@ pub fn render_add_column_routes(
             contacts,
             ctx.i18n,
             ctx.media_jobs.sender(),
+            ctx.pool,
+            ctx.unknown_ids,
+            &mut app.view_state.people_lists,
         );
         match route {
             AddColumnRoute::Base => add_column_view.ui(ui),
@@ -831,6 +913,7 @@ pub fn render_add_column_routes(
             AddColumnRoute::Hashtag => unreachable!(),
             AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
             AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
+            AddColumnRoute::PeopleList => add_column_view.people_list_ui(ui),
         }
     };
 
@@ -883,8 +966,8 @@ pub fn render_add_column_routes(
                 // add it to our list of timelines
                 AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
                     let txn = Transaction::new(ctx.ndb).unwrap();
-                    let maybe_timeline =
-                        TimelineKind::last_per_pubkey(list_kind).into_timeline(&txn, ctx.ndb);
+                    let maybe_timeline = TimelineKind::last_per_pubkey(list_kind.clone())
+                        .into_timeline(&txn, ctx.ndb);
 
                     if let Some(mut timeline) = maybe_timeline {
                         crate::timeline::setup_new_timeline(
@@ -951,6 +1034,12 @@ pub fn render_add_column_routes(
                     .route_to(crate::route::Route::AddColumn(
                         AddColumnRoute::ExternalIndividual,
                     ));
+            }
+            AddColumnResponse::PeopleList => {
+                app.columns_mut(ctx.i18n, ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(AddColumnRoute::PeopleList));
             }
         };
     }
