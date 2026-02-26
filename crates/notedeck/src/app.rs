@@ -2,16 +2,17 @@ use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
 use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
+use crate::scoped_sub_state::ScopedSubsState;
 use crate::unknowns::unknown_id_send;
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, RemoteApi, UnknownIds,
 };
-use crate::{EguiWakeup, Error, JobCache, RemoteApi};
+use crate::{EguiWakeup, NotedeckOptions};
+use crate::{Error, JobCache};
 use crate::{JobPool, MediaJobs};
-use crate::{NotedeckOptions, ScopedSubsState};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;

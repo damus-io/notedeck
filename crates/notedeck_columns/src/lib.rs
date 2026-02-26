@@ -24,7 +24,6 @@ mod repost;
 mod route;
 mod scoped_sub_owner_keys;
 mod search;
-mod subscriptions;
 mod support;
 mod test_data;
 pub mod timeline;

@@ -10,7 +10,6 @@ use crate::decks::DecksCache;
 use crate::onboarding::{Onboarding, OnboardingEffect};
 use crate::profile::{send_default_dms_relay_list, send_new_contact_list};
 use crate::scoped_sub_owner_keys::onboarding_owner_key;
-use crate::subscriptions::Subscriptions;
 use crate::ui::onboarding::{FollowPackOnboardingView, FollowPacksResponse, OnboardingResponse};
 use crate::{
     login_manager::AcquireKeyState,
@@ -153,7 +152,6 @@ pub fn process_accounts_view_response(
 pub fn process_login_view_response(
     app_ctx: &mut AppContext,
     decks: &mut DecksCache,
-    subs: &mut Subscriptions,
     onboarding: &mut Onboarding,
     col: usize,
     response: AccountLoginResponse,
@@ -258,7 +256,6 @@ impl AccountsRouteResponse {
                 let action = process_login_view_response(
                     app_ctx,
                     &mut app.decks_cache,
-                    &mut app.subscriptions,
                     &mut app.onboarding,
                     col,
                     response,

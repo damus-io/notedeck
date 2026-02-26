@@ -8,7 +8,6 @@ use crate::{
     options::AppOptions,
     route::Route,
     storage,
-    subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
     timeline_loader::{TimelineLoader, TimelineLoaderMsg},
@@ -32,7 +31,6 @@ use notedeck_ui::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 /// Max timeline loader messages to process per frame to avoid UI stalls.
 const MAX_TIMELINE_LOADER_MSGS_PER_FRAME: usize = 8;
@@ -51,7 +49,6 @@ pub struct Damus {
     pub view_state: ViewState,
     pub drafts: Drafts,
     pub timeline_cache: TimelineCache,
-    pub subscriptions: Subscriptions,
     pub support: Support,
     pub threads: Threads,
     /// Background loader for initial timeline scans.
@@ -341,11 +338,6 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
     match damus.state {
         DamusState::Initializing => {
             damus.state = DamusState::Initialized;
-            // this lets our eose handler know to close unknownids right away
-            damus
-                .subscriptions()
-                .insert("unknownids".to_string(), SubKind::OneShot);
-
             setup_selected_account_timeline_subs(&mut damus.timeline_cache, app_ctx);
 
             if !app_ctx.settings.welcome_completed() {
@@ -540,7 +532,6 @@ impl Damus {
         let threads = Threads::default();
 
         Self {
-            subscriptions: Subscriptions::default(),
             timeline_cache,
             drafts: Drafts::default(),
             state: DamusState::Initializing,
@@ -574,14 +565,6 @@ impl Damus {
         get_active_columns(accounts, &self.decks_cache)
     }
 
-    pub fn gen_subid(&self, kind: &SubKind) -> String {
-        if self.options.contains(AppOptions::Debug) {
-            format!("{kind:?}")
-        } else {
-            Uuid::new_v4().to_string()
-        }
-    }
-
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
         let mut i18n = Localization::default();
         let decks_cache = DecksCache::default_decks_cache(&mut i18n);
@@ -594,7 +577,6 @@ impl Damus {
         let support = Support::new(&path);
 
         Self {
-            subscriptions: Subscriptions::default(),
             timeline_cache: TimelineCache::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
@@ -612,10 +594,6 @@ impl Damus {
             inflight_timeline_loads: HashSet::new(),
             loaded_timeline_loads: HashSet::new(),
         }
-    }
-
-    pub fn subscriptions(&mut self) -> &mut HashMap<String, SubKind> {
-        &mut self.subscriptions.subs
     }
 
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {
