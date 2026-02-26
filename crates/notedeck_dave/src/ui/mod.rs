@@ -48,7 +48,7 @@ fn build_dave_ui<'a>(
 ) -> DaveUi<'a> {
     let is_working = session.status() == AgentStatus::Working;
     let has_pending_permission = session.has_pending_permissions();
-    let plan_mode_active = session.is_plan_mode();
+    let permission_mode = session.permission_mode();
     let is_remote = session.is_remote();
 
     let mut ui_builder = DaveUi::new(
@@ -62,7 +62,7 @@ fn build_dave_ui<'a>(
     .is_working(is_working)
     .interrupt_pending(is_interrupt_pending)
     .has_pending_permission(has_pending_permission)
-    .plan_mode_active(plan_mode_active)
+    .permission_mode(permission_mode)
     .auto_steal_focus(auto_steal_focus)
     .is_remote(is_remote)
     .dispatch_state(session.dispatch_state)
@@ -642,8 +642,8 @@ pub fn handle_key_action(
         KeyAction::CloneAgent => KeyActionResult::CloneAgent,
         KeyAction::Interrupt => KeyActionResult::HandleInterrupt,
         KeyAction::ToggleView => KeyActionResult::ToggleView,
-        KeyAction::TogglePlanMode => {
-            update::toggle_plan_mode(session_manager, backend, ctx);
+        KeyAction::CyclePermissionMode => {
+            update::cycle_permission_mode(session_manager, backend, ctx);
             if let Some(session) = session_manager.get_active_mut() {
                 session.focus_requested = true;
             }
@@ -826,8 +826,8 @@ pub fn handle_ui_action(
             UiActionResult::Handled,
             UiActionResult::PublishPermissionResponse,
         ),
-        DaveAction::TogglePlanMode => {
-            update::toggle_plan_mode(session_manager, backend, ctx);
+        DaveAction::CyclePermissionMode => {
+            update::cycle_permission_mode(session_manager, backend, ctx);
             if let Some(session) = session_manager.get_active_mut() {
                 session.focus_requested = true;
             }

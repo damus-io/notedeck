@@ -13,9 +13,11 @@ mod presence;
 mod room_state;
 mod room_view;
 mod subscriptions;
+mod tilemap;
 
 pub use room_state::{
-    NostrverseAction, NostrverseState, RoomObject, RoomObjectType, RoomUser, SpaceInfo, SpaceRef,
+    NostrverseAction, NostrverseState, RoomObject, RoomObjectType, RoomUser, SpaceData, SpaceInfo,
+    SpaceRef,
 };
 pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
@@ -51,6 +53,9 @@ const MAX_EXTRAPOLATION_DISTANCE: f32 = 10.0;
 /// Demo space in protoverse .space format
 const DEMO_SPACE: &str = r#"(space (name "Demo Space")
   (group
+    (tilemap (width 10) (height 10)
+      (tileset "grass")
+      (data "0"))
     (table (id obj1) (name "Ironwood Table")
            (model-url "/home/jb55/var/models/ironwood/ironwood.glb")
            (position 0 0 0))
@@ -288,15 +293,26 @@ impl NostrverseApp {
     /// Preserves renderer scene handles for objects that still exist by ID,
     /// and removes orphaned scene objects from the renderer.
     fn apply_space(&mut self, space: &protoverse::Space) {
-        let (info, mut objects) = convert::convert_space(space);
-        self.state.space = Some(info);
+        let mut data = convert::convert_space(space);
 
         // Transfer scene/model handles from existing objects with matching IDs
-        for new_obj in &mut objects {
+        for new_obj in &mut data.objects {
             if let Some(old_obj) = self.state.objects.iter().find(|o| o.id == new_obj.id) {
                 new_obj.scene_object_id = old_obj.scene_object_id;
                 new_obj.model_handle = old_obj.model_handle;
             }
+        }
+
+        // Transfer tilemap handles before overwriting state
+        let old_tilemap_handles = self
+            .state
+            .tilemap()
+            .map(|tm| (tm.scene_object_id, tm.model_handle));
+        if let (Some(new_tm), Some((scene_id, model_handle))) =
+            (&mut data.info.tilemap, old_tilemap_handles)
+        {
+            new_tm.scene_object_id = scene_id;
+            new_tm.model_handle = model_handle;
         }
 
         // Remove orphaned scene objects (old objects not in the new set)
@@ -304,15 +320,20 @@ impl NostrverseApp {
             let mut r = renderer.renderer.lock().unwrap();
             for old_obj in &self.state.objects {
                 if let Some(scene_id) = old_obj.scene_object_id
-                    && !objects.iter().any(|o| o.id == old_obj.id)
+                    && !data.objects.iter().any(|o| o.id == old_obj.id)
                 {
                     r.remove_object(scene_id);
                 }
             }
+            // Remove old tilemap scene object if being replaced
+            if let Some((Some(scene_id), _)) = old_tilemap_handles {
+                r.remove_object(scene_id);
+            }
         }
 
-        self.load_object_models(&mut objects);
-        self.state.objects = objects;
+        self.load_object_models(&mut data.objects);
+        self.state.space = Some(data.info);
+        self.state.objects = data.objects;
         self.state.dirty = false;
     }
 
@@ -549,6 +570,25 @@ impl NostrverseApp {
         let mut r = renderer.renderer.lock().unwrap();
 
         sync_objects_to_scene(&mut self.state.objects, &mut r);
+
+        // Build + place tilemap if needed
+        if let Some(tm) = self.state.tilemap_mut() {
+            if tm.model_handle.is_none()
+                && let (Some(device), Some(queue)) = (&self.device, &self.queue)
+            {
+                tm.model_handle = Some(tilemap::build_tilemap_model(tm, &mut r, device, queue));
+            }
+            if tm.scene_object_id.is_none()
+                && let Some(model) = tm.model_handle
+            {
+                let transform = renderbud::Transform {
+                    translation: glam::Vec3::ZERO,
+                    rotation: glam::Quat::IDENTITY,
+                    scale: glam::Vec3::ONE,
+                };
+                tm.scene_object_id = Some(r.place_object(model, transform));
+            }
+        }
 
         // Update self-user's position from the camera controller
         if let Some(pos) = r.avatar_position()

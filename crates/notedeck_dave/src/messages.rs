@@ -341,8 +341,10 @@ pub struct UsageInfo {
 }
 
 impl UsageInfo {
-    pub fn total_tokens(&self) -> u64 {
-        self.input_tokens + self.output_tokens
+    /// Context window fill: only input tokens consume context space.
+    /// Output tokens are generated from the context, not part of it.
+    pub fn context_tokens(&self) -> u64 {
+        self.input_tokens
     }
 }
 

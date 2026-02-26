@@ -8,6 +8,11 @@ pub fn has_binary_on_path(binary: &str) -> bool {
     env::var_os("PATH")
         .map(|paths| env::split_paths(&paths).any(|dir| dir.join(binary).is_file()))
         .unwrap_or(false)
+        || env::var_os("PATH")
+            .map(|paths| {
+                env::split_paths(&paths).any(|dir| dir.join(format!("{}.exe", binary)).is_file())
+            })
+            .unwrap_or(false)
 }
 
 /// Detect which agentic backends are available based on binaries in PATH.

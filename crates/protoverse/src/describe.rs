@@ -43,6 +43,7 @@ fn describe_cell(space: &Space, id: CellId, buf: &mut String) -> bool {
         CellType::Room => describe_area(space, id, "room", buf),
         CellType::Space => describe_area(space, id, "space", buf),
         CellType::Group => describe_group(space, id, buf),
+        CellType::Tilemap => false,
         CellType::Object(_) => false, // unimplemented in C reference
     }
 }

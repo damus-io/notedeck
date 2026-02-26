@@ -345,11 +345,10 @@ pub fn load_gltf_model(
                 .map(|tc| tc.into_f32().collect())
                 .unwrap_or_else(|| vec![[0.0, 0.0]; positions.len()]);
 
-            // TODO(jb55): switch to u32 indices
-            let indices: Vec<u16> = if let Some(read) = reader.read_indices() {
-                read.into_u32().map(|i| i as u16).collect()
+            let indices: Vec<u32> = if let Some(read) = reader.read_indices() {
+                read.into_u32().collect()
             } else {
-                (0..positions.len() as u16).collect()
+                (0..positions.len() as u32).collect()
             };
 
             /*
@@ -464,7 +463,7 @@ fn map_mag_filter(f: Option<gltf::texture::MagFilter>) -> wgpu::FilterMode {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn make_material_gpu(
+pub(crate) fn make_material_gpu(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     material_bgl: &wgpu::BindGroupLayout,
@@ -518,7 +517,7 @@ fn make_material_gpu(
     }
 }
 
-fn compute_tangents(verts: &mut [Vertex], indices: &[u16]) {
+fn compute_tangents(verts: &mut [Vertex], indices: &[u32]) {
     use glam::{Vec2, Vec3};
 
     let n = verts.len();

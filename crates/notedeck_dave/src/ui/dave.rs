@@ -18,6 +18,7 @@ use crate::{
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse, ToolResponses},
 };
 use bitflags::bitflags;
+use claude_agent_sdk_rs::PermissionMode;
 use egui::{Align, Key, KeyboardShortcut, Layout, Modifiers};
 use nostrdb::Transaction;
 use notedeck::{tr, AppContext, Localization, NoteAction, NoteContext};
@@ -34,10 +35,9 @@ bitflags! {
         const IsWorking        = 1 << 2;
         const InterruptPending = 1 << 3;
         const HasPendingPerm   = 1 << 4;
-        const PlanModeActive   = 1 << 5;
-        const IsCompacting     = 1 << 6;
-        const AutoStealFocus   = 1 << 7;
-        const IsRemote         = 1 << 8;
+        const IsCompacting     = 1 << 5;
+        const AutoStealFocus   = 1 << 6;
+        const IsRemote         = 1 << 7;
     }
 }
 
@@ -72,6 +72,8 @@ pub struct DaveUi<'a> {
     dispatch_state: crate::session::DispatchState,
     /// Which backend this session uses
     backend_type: BackendType,
+    /// Current permission mode (Default, Plan, AcceptEdits)
+    permission_mode: PermissionMode,
 }
 
 /// The response the app generates. The response contains an optional
@@ -149,8 +151,8 @@ pub enum DaveAction {
     CompactAndApprove {
         request_id: Uuid,
     },
-    /// Toggle plan mode (clicked PLAN badge)
-    TogglePlanMode,
+    /// Cycle permission mode: Default → Plan → AcceptEdits (clicked mode badge)
+    CyclePermissionMode,
     /// Toggle auto-steal focus mode (clicked AUTO badge)
     ToggleAutoSteal,
     /// Trigger manual context compaction
@@ -188,6 +190,7 @@ impl<'a> DaveUi<'a> {
             context_window: crate::messages::context_window_for_model(None),
             dispatch_state: crate::session::DispatchState::default(),
             backend_type: BackendType::Remote,
+            permission_mode: PermissionMode::Default,
         }
     }
 
@@ -241,8 +244,8 @@ impl<'a> DaveUi<'a> {
         self
     }
 
-    pub fn plan_mode_active(mut self, val: bool) -> Self {
-        self.flags.set(DaveUiFlags::PlanModeActive, val);
+    pub fn permission_mode(mut self, mode: PermissionMode) -> Self {
+        self.permission_mode = mode;
         self
     }
 
@@ -349,7 +352,7 @@ impl<'a> DaveUi<'a> {
                         .inner;
 
                     {
-                        let plan_mode_active = self.flags.contains(DaveUiFlags::PlanModeActive);
+                        let permission_mode = self.permission_mode;
                         let auto_steal_focus = self.flags.contains(DaveUiFlags::AutoStealFocus);
                         let is_agentic = self.ai_mode == AiMode::Agentic;
                         let has_git = self.git_status.is_some();
@@ -377,7 +380,7 @@ impl<'a> DaveUi<'a> {
                                             status_bar_ui(
                                                 self.git_status.as_deref_mut(),
                                                 is_agentic,
-                                                plan_mode_active,
+                                                permission_mode,
                                                 auto_steal_focus,
                                                 self.usage,
                                                 self.context_window,
@@ -1194,100 +1197,107 @@ impl<'a> DaveUi<'a> {
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let i18n = &mut *app_ctx.i18n;
-        //ui.add_space(Self::chat_margin(ui.ctx()) as f32);
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
-                let mut dave_response = DaveResponse::none();
+        // Constrain input height based on line count (min 1, max 8 lines)
+        let line_count = self.input.lines().count().max(1).clamp(1, 8);
+        let line_height = 20.0;
+        let base_height = 44.0;
+        let input_height = base_height + (line_count as f32 * line_height);
+        ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                    let mut dave_response = DaveResponse::none();
 
-                // Always show Ask button (messages queue while working)
-                if ui
-                    .add(
-                        egui::Button::new(tr!(
-                            i18n,
-                            "Ask",
-                            "Button to send message to Dave AI assistant"
-                        ))
-                        .min_size(egui::vec2(60.0, 44.0)),
-                    )
-                    .clicked()
-                {
-                    dave_response = DaveResponse::send();
-                }
-
-                // Show Stop button alongside Ask for local working sessions
-                if self.flags.contains(DaveUiFlags::IsWorking)
-                    && !self.flags.contains(DaveUiFlags::IsRemote)
-                {
+                    // Always show Ask button (messages queue while working)
                     if ui
                         .add(
                             egui::Button::new(tr!(
                                 i18n,
-                                "Stop",
-                                "Button to interrupt/stop the AI operation"
+                                "Ask",
+                                "Button to send message to Dave AI assistant"
                             ))
                             .min_size(egui::vec2(60.0, 44.0)),
                         )
                         .clicked()
                     {
-                        dave_response = DaveResponse::new(DaveAction::Interrupt);
+                        dave_response = DaveResponse::send();
                     }
 
-                    // Show "Press Esc again" indicator when interrupt is pending
-                    if self.flags.contains(DaveUiFlags::InterruptPending) {
-                        ui.label(
-                            egui::RichText::new("Press Esc again to stop")
-                                .color(ui.visuals().warn_fg_color),
-                        );
-                    }
-                }
+                    // Show Stop button alongside Ask for local working sessions
+                    if self.flags.contains(DaveUiFlags::IsWorking)
+                        && !self.flags.contains(DaveUiFlags::IsRemote)
+                    {
+                        if ui
+                            .add(
+                                egui::Button::new(tr!(
+                                    i18n,
+                                    "Stop",
+                                    "Button to interrupt/stop the AI operation"
+                                ))
+                                .min_size(egui::vec2(60.0, 44.0)),
+                            )
+                            .clicked()
+                        {
+                            dave_response = DaveResponse::new(DaveAction::Interrupt);
+                        }
 
-                let r = ui.add(
-                    egui::TextEdit::multiline(self.input)
-                        .desired_width(f32::INFINITY)
-                        .return_key(KeyboardShortcut::new(
-                            Modifiers {
-                                shift: true,
-                                ..Default::default()
-                            },
-                            Key::Enter,
-                        ))
-                        .hint_text(
-                            egui::RichText::new(tr!(
-                                i18n,
-                                "Ask dave anything...",
-                                "Placeholder text for Dave AI input field"
+                        // Show "Press Esc again" indicator when interrupt is pending
+                        if self.flags.contains(DaveUiFlags::InterruptPending) {
+                            ui.label(
+                                egui::RichText::new("Press Esc again to stop")
+                                    .color(ui.visuals().warn_fg_color),
+                            );
+                        }
+                    }
+
+                    let r = ui.add(
+                        egui::TextEdit::multiline(self.input)
+                            .desired_width(f32::INFINITY)
+                            .return_key(KeyboardShortcut::new(
+                                Modifiers {
+                                    shift: true,
+                                    ..Default::default()
+                                },
+                                Key::Enter,
                             ))
-                            .weak(),
-                        )
-                        .frame(false),
-                );
-                notedeck_ui::context_menu::input_context(
-                    ui,
-                    &r,
-                    app_ctx.clipboard,
-                    self.input,
-                    notedeck_ui::context_menu::PasteBehavior::Append,
-                );
+                            .hint_text(
+                                egui::RichText::new(tr!(
+                                    i18n,
+                                    "Ask dave anything...",
+                                    "Placeholder text for Dave AI input field"
+                                ))
+                                .weak(),
+                            )
+                            .frame(false),
+                    );
+                    notedeck_ui::context_menu::input_context(
+                        ui,
+                        &r,
+                        app_ctx.clipboard,
+                        self.input,
+                        notedeck_ui::context_menu::PasteBehavior::Append,
+                    );
 
-                // Request focus if flagged (e.g., after spawning a new agent or entering tentative state)
-                if *self.focus_requested {
-                    r.request_focus();
-                    *self.focus_requested = false;
-                }
+                    // Request focus if flagged (e.g., after spawning a new agent or entering tentative state)
+                    if *self.focus_requested {
+                        r.request_focus();
+                        *self.focus_requested = false;
+                    }
 
-                // Unfocus text input when there's a pending permission request
-                // UNLESS we're in tentative state (user needs to type message)
-                let in_tentative_state =
-                    self.permission_message_state != PermissionMessageState::None;
-                if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
-                    r.surrender_focus();
-                }
+                    // Unfocus text input when there's a pending permission request
+                    // UNLESS we're in tentative state (user needs to type message)
+                    let in_tentative_state =
+                        self.permission_message_state != PermissionMessageState::None;
+                    if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
+                        r.surrender_focus();
+                    }
 
-                if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    DaveResponse::send()
-                } else {
-                    dave_response
-                }
+                    if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        DaveResponse::send()
+                    } else {
+                        dave_response
+                    }
+                })
+                .inner
             })
             .inner
         })
@@ -1404,7 +1414,7 @@ fn add_msg_link(ui: &mut egui::Ui, shift_held: bool, action: &mut Option<DaveAct
 fn status_bar_ui(
     mut git_status: Option<&mut GitStatusCache>,
     is_agentic: bool,
-    plan_mode_active: bool,
+    permission_mode: PermissionMode,
     auto_steal_focus: bool,
     usage: Option<&crate::messages::UsageInfo>,
     context_window: u64,
@@ -1425,7 +1435,7 @@ fn status_bar_ui(
                     // Right-aligned section: usage bar, badges, then refresh
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let badge_action = if is_agentic {
-                            toggle_badges_ui(ui, plan_mode_active, auto_steal_focus)
+                            toggle_badges_ui(ui, permission_mode, auto_steal_focus)
                         } else {
                             None
                         };
@@ -1438,7 +1448,7 @@ fn status_bar_ui(
                 } else if is_agentic {
                     // No git status (remote session) - just show badges and usage
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let badge_action = toggle_badges_ui(ui, plan_mode_active, auto_steal_focus);
+                        let badge_action = toggle_badges_ui(ui, permission_mode, auto_steal_focus);
                         usage_bar_ui(usage, context_window, ui);
                         badge_action
                     })
@@ -1475,7 +1485,7 @@ fn usage_bar_ui(
     context_window: u64,
     ui: &mut egui::Ui,
 ) {
-    let total = usage.map(|u| u.total_tokens()).unwrap_or(0);
+    let total = usage.map(|u| u.context_tokens()).unwrap_or(0);
     if total == 0 {
         return;
     }
@@ -1530,10 +1540,10 @@ fn usage_bar_ui(
     painter.rect_filled(fill_rect, 3.0, bar_color);
 }
 
-/// Render clickable PLAN and AUTO toggle badges. Returns an action if clicked.
+/// Render clickable permission mode and AUTO toggle badges. Returns an action if clicked.
 fn toggle_badges_ui(
     ui: &mut egui::Ui,
-    plan_mode_active: bool,
+    permission_mode: PermissionMode,
     auto_steal_focus: bool,
 ) -> Option<DaveAction> {
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
@@ -1556,21 +1566,22 @@ fn toggle_badges_ui(
         action = Some(DaveAction::ToggleAutoSteal);
     }
 
-    // PLAN badge
-    let mut plan_badge = super::badge::StatusBadge::new("PLAN").variant(if plan_mode_active {
-        super::badge::BadgeVariant::Info
-    } else {
-        super::badge::BadgeVariant::Default
-    });
+    // Permission mode badge: cycles Default → Plan → AcceptEdits
+    let (label, variant) = match permission_mode {
+        PermissionMode::Plan => ("PLAN", BadgeVariant::Info),
+        PermissionMode::AcceptEdits => ("AUTO EDIT", BadgeVariant::Warning),
+        _ => ("PLAN", BadgeVariant::Default),
+    };
+    let mut mode_badge = StatusBadge::new(label).variant(variant);
     if ctrl_held {
-        plan_badge = plan_badge.keybind("M");
+        mode_badge = mode_badge.keybind("M");
     }
-    if plan_badge
+    if mode_badge
         .show(ui)
-        .on_hover_text("Click or Ctrl+M to toggle plan mode")
+        .on_hover_text("Click or Ctrl+M to cycle: Default → Plan → Auto Edit")
         .clicked()
     {
-        action = Some(DaveAction::TogglePlanMode);
+        action = Some(DaveAction::CyclePermissionMode);
     }
 
     // COMPACT badge

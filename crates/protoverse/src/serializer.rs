@@ -116,6 +116,16 @@ fn write_attr(attr: &Attribute, out: &mut String) {
         Attribute::ModelUrl(s) => {
             let _ = write!(out, "(model-url \"{}\")", s);
         }
+        Attribute::Tileset(names) => {
+            out.push_str("(tileset");
+            for name in names {
+                let _ = write!(out, " \"{}\"", name);
+            }
+            out.push(')');
+        }
+        Attribute::Data(s) => {
+            let _ = write!(out, "(data \"{}\")", s);
+        }
     }
 }
 
@@ -131,6 +141,21 @@ mod tests {
         assert!(output.contains("(room"));
         assert!(output.contains("(name \"Test\")"));
         assert!(output.contains("(width 10)"));
+    }
+
+    #[test]
+    fn test_tilemap_roundtrip() {
+        let input =
+            r#"(tilemap (width 10) (height 10) (tileset "grass" "stone") (data "0 0 1 1"))"#;
+        let space = parse(input).unwrap();
+        let serialized = serialize(&space);
+        let reparsed = parse(&serialized).unwrap();
+        assert_eq!(reparsed.cell(reparsed.root).cell_type, CellType::Tilemap);
+        assert_eq!(
+            reparsed.tileset(reparsed.root),
+            Some(&vec!["grass".to_string(), "stone".to_string()])
+        );
+        assert_eq!(reparsed.data(reparsed.root), Some("0 0 1 1"));
     }
 
     #[test]

@@ -1,20 +1,27 @@
 //! Convert protoverse Space AST to renderer space state.
 
-use crate::room_state::{ObjectLocation, RoomObject, RoomObjectType, SpaceInfo};
+use crate::room_state::{
+    ObjectLocation, RoomObject, RoomObjectType, SpaceData, SpaceInfo, TilemapData,
+};
 use glam::{Quat, Vec3};
 use protoverse::{Attribute, Cell, CellId, CellType, Location, ObjectType, Space};
 
-/// Convert a parsed protoverse Space into a SpaceInfo and its objects.
-pub fn convert_space(space: &Space) -> (SpaceInfo, Vec<RoomObject>) {
-    let info = extract_space_info(space, space.root);
+/// Convert a parsed protoverse Space into a SpaceData (info + objects).
+pub fn convert_space(space: &Space) -> SpaceData {
+    let mut info = extract_space_info(space, space.root);
     let mut objects = Vec::new();
-    collect_objects(space, space.root, &mut objects);
-    (info, objects)
+    let mut tilemap = None;
+    collect_objects(space, space.root, &mut objects, &mut tilemap);
+    info.tilemap = tilemap;
+    SpaceData { info, objects }
 }
 
 fn extract_space_info(space: &Space, id: CellId) -> SpaceInfo {
     let name = space.name(id).unwrap_or("Untitled Space").to_string();
-    SpaceInfo { name }
+    SpaceInfo {
+        name,
+        tilemap: None,
+    }
 }
 
 fn location_from_protoverse(loc: &Location) -> ObjectLocation {
@@ -50,10 +57,32 @@ fn object_type_from_cell(obj_type: &ObjectType) -> RoomObjectType {
     }
 }
 
-fn collect_objects(space: &Space, id: CellId, objects: &mut Vec<RoomObject>) {
+fn collect_objects(
+    space: &Space,
+    id: CellId,
+    objects: &mut Vec<RoomObject>,
+    tilemap: &mut Option<TilemapData>,
+) {
     let cell = space.cell(id);
 
-    if let CellType::Object(ref obj_type) = cell.cell_type {
+    if cell.cell_type == CellType::Tilemap {
+        let width = space.width(id).unwrap_or(10.0) as u32;
+        let height = space.height(id).unwrap_or(10.0) as u32;
+        let tileset = space
+            .tileset(id)
+            .cloned()
+            .unwrap_or_else(|| vec!["grass".to_string()]);
+        let data_str = space.data(id).unwrap_or("0");
+        let tiles = TilemapData::decode_data(data_str);
+        *tilemap = Some(TilemapData {
+            width,
+            height,
+            tileset,
+            tiles,
+            scene_object_id: None,
+            model_handle: None,
+        });
+    } else if let CellType::Object(ref obj_type) = cell.cell_type {
         let obj_id = space.id_str(id).unwrap_or("").to_string();
 
         // Generate a fallback id if none specified
@@ -101,14 +130,15 @@ fn collect_objects(space: &Space, id: CellId, objects: &mut Vec<RoomObject>) {
 
     // Recurse into children
     for &child_id in space.children(id) {
-        collect_objects(space, child_id, objects);
+        collect_objects(space, child_id, objects, tilemap);
     }
 }
 
-/// Build a protoverse Space from SpaceInfo and objects (reverse of convert_space).
+/// Build a protoverse Space from SpaceInfo and objects.
 ///
-/// Produces: (space (name ...) (group <objects...>))
+/// Produces: (space (name ...) (group [tilemap] <objects...>))
 pub fn build_space(info: &SpaceInfo, objects: &[RoomObject]) -> Space {
+    let tilemap = info.tilemap.as_ref();
     let mut cells = Vec::new();
     let mut attributes = Vec::new();
     let mut child_ids = Vec::new();
@@ -130,21 +160,31 @@ pub fn build_space(info: &SpaceInfo, objects: &[RoomObject]) -> Space {
         parent: None,
     });
 
-    // Group cell (index 1), children = objects at indices 2..
+    // Group cell (index 1), children start at index 2
+    let tilemap_offset: u32 = if tilemap.is_some() { 1 } else { 0 };
     let group_child_start = child_ids.len() as u32;
-    for i in 0..objects.len() {
-        child_ids.push(CellId(2 + i as u32));
+    if tilemap.is_some() {
+        child_ids.push(CellId(2));
     }
+    for i in 0..objects.len() {
+        child_ids.push(CellId(2 + tilemap_offset + i as u32));
+    }
+    let total_children = tilemap_offset as u16 + objects.len() as u16;
     cells.push(Cell {
         cell_type: CellType::Group,
         first_attr: attributes.len() as u32,
         attr_count: 0,
         first_child: group_child_start,
-        child_count: objects.len() as u16,
+        child_count: total_children,
         parent: Some(CellId(0)),
     });
 
-    // Object cells (indices 2..)
+    // Tilemap cell (index 2, if present)
+    if let Some(tm) = tilemap {
+        build_tilemap_cell(tm, &mut cells, &mut attributes, &child_ids);
+    }
+
+    // Object cells
     for obj in objects {
         build_object_cell(obj, &mut cells, &mut attributes, &child_ids);
     }
@@ -155,6 +195,28 @@ pub fn build_space(info: &SpaceInfo, objects: &[RoomObject]) -> Space {
         child_ids,
         root: CellId(0),
     }
+}
+
+fn build_tilemap_cell(
+    tm: &TilemapData,
+    cells: &mut Vec<Cell>,
+    attributes: &mut Vec<Attribute>,
+    child_ids: &[CellId],
+) {
+    let attr_start = attributes.len() as u32;
+    attributes.push(Attribute::Width(tm.width as f64));
+    attributes.push(Attribute::Height(tm.height as f64));
+    attributes.push(Attribute::Tileset(tm.tileset.clone()));
+    attributes.push(Attribute::Data(tm.encode_data()));
+
+    cells.push(Cell {
+        cell_type: CellType::Tilemap,
+        first_attr: attr_start,
+        attr_count: (attributes.len() as u32 - attr_start) as u16,
+        first_child: child_ids.len() as u32,
+        child_count: 0,
+        parent: Some(CellId(1)),
+    });
 }
 
 fn object_type_to_cell(obj_type: &RoomObjectType) -> CellType {
@@ -234,21 +296,21 @@ mod tests {
         )
         .unwrap();
 
-        let (info, objects) = convert_space(&space);
+        let data = convert_space(&space);
 
-        assert_eq!(info.name, "Test Room");
+        assert_eq!(data.info.name, "Test Room");
 
-        assert_eq!(objects.len(), 2);
+        assert_eq!(data.objects.len(), 2);
 
-        assert_eq!(objects[0].id, "desk");
-        assert_eq!(objects[0].name, "My Desk");
-        assert_eq!(objects[0].position, Vec3::new(1.0, 0.0, 2.0));
-        assert!(matches!(objects[0].object_type, RoomObjectType::Table));
+        assert_eq!(data.objects[0].id, "desk");
+        assert_eq!(data.objects[0].name, "My Desk");
+        assert_eq!(data.objects[0].position, Vec3::new(1.0, 0.0, 2.0));
+        assert!(matches!(data.objects[0].object_type, RoomObjectType::Table));
 
-        assert_eq!(objects[1].id, "chair1");
-        assert_eq!(objects[1].name, "Office Chair");
-        assert_eq!(objects[1].position, Vec3::ZERO);
-        assert!(matches!(objects[1].object_type, RoomObjectType::Chair));
+        assert_eq!(data.objects[1].id, "chair1");
+        assert_eq!(data.objects[1].name, "Office Chair");
+        assert_eq!(data.objects[1].position, Vec3::ZERO);
+        assert!(matches!(data.objects[1].object_type, RoomObjectType::Chair));
     }
 
     #[test]
@@ -262,9 +324,12 @@ mod tests {
         )
         .unwrap();
 
-        let (_, objects) = convert_space(&space);
-        assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0].model_url.as_deref(), Some("/models/table.glb"));
+        let data = convert_space(&space);
+        assert_eq!(data.objects.len(), 1);
+        assert_eq!(
+            data.objects[0].model_url.as_deref(),
+            Some("/models/table.glb")
+        );
     }
 
     #[test]
@@ -276,16 +341,17 @@ mod tests {
         )
         .unwrap();
 
-        let (_, objects) = convert_space(&space);
-        assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0].id, "p1");
-        assert_eq!(objects[0].name, "Water Bottle");
+        let data = convert_space(&space);
+        assert_eq!(data.objects.len(), 1);
+        assert_eq!(data.objects[0].id, "p1");
+        assert_eq!(data.objects[0].name, "Water Bottle");
     }
 
     #[test]
     fn test_build_space_roundtrip() {
         let info = SpaceInfo {
             name: "My Space".to_string(),
+            tilemap: None,
         };
         let objects = vec![
             RoomObject::new(
@@ -306,29 +372,32 @@ mod tests {
         let reparsed = parse(&serialized).unwrap();
 
         // Convert back
-        let (info2, objects2) = convert_space(&reparsed);
+        let data = convert_space(&reparsed);
 
-        assert_eq!(info2.name, "My Space");
+        assert_eq!(data.info.name, "My Space");
 
-        assert_eq!(objects2.len(), 2);
-        assert_eq!(objects2[0].id, "desk");
-        assert_eq!(objects2[0].name, "Office Desk");
-        assert_eq!(objects2[0].model_url.as_deref(), Some("/models/desk.glb"));
-        assert_eq!(objects2[0].position, Vec3::new(2.0, 0.0, 3.0));
-        assert!(matches!(objects2[0].object_type, RoomObjectType::Table));
+        assert_eq!(data.objects.len(), 2);
+        assert_eq!(data.objects[0].id, "desk");
+        assert_eq!(data.objects[0].name, "Office Desk");
+        assert_eq!(
+            data.objects[0].model_url.as_deref(),
+            Some("/models/desk.glb")
+        );
+        assert_eq!(data.objects[0].position, Vec3::new(2.0, 0.0, 3.0));
+        assert!(matches!(data.objects[0].object_type, RoomObjectType::Table));
 
-        assert_eq!(objects2[1].id, "lamp");
-        assert_eq!(objects2[1].name, "Floor Lamp");
-        assert!(matches!(objects2[1].object_type, RoomObjectType::Light));
+        assert_eq!(data.objects[1].id, "lamp");
+        assert_eq!(data.objects[1].name, "Floor Lamp");
+        assert!(matches!(data.objects[1].object_type, RoomObjectType::Light));
     }
 
     #[test]
     fn test_convert_defaults() {
         let space = parse("(space)").unwrap();
-        let (info, objects) = convert_space(&space);
+        let data = convert_space(&space);
 
-        assert_eq!(info.name, "Untitled Space");
-        assert!(objects.is_empty());
+        assert_eq!(data.info.name, "Untitled Space");
+        assert!(data.objects.is_empty());
     }
 
     #[test]
@@ -340,11 +409,11 @@ mod tests {
         )
         .unwrap();
 
-        let (_, objects) = convert_space(&space);
-        assert_eq!(objects.len(), 2);
-        assert_eq!(objects[0].location, None);
+        let data = convert_space(&space);
+        assert_eq!(data.objects.len(), 2);
+        assert_eq!(data.objects[0].location, None);
         assert_eq!(
-            objects[1].location,
+            data.objects[1].location,
             Some(ObjectLocation::TopOf("obj1".to_string()))
         );
     }
@@ -353,6 +422,7 @@ mod tests {
     fn test_build_space_always_emits_position() {
         let info = SpaceInfo {
             name: "Test".to_string(),
+            tilemap: None,
         };
         let objects = vec![RoomObject::new(
             "a".to_string(),
@@ -371,6 +441,7 @@ mod tests {
     fn test_build_space_location_roundtrip() {
         let info = SpaceInfo {
             name: "Test".to_string(),
+            tilemap: None,
         };
         let objects = vec![
             RoomObject::new("obj1".to_string(), "Table".to_string(), Vec3::ZERO)
@@ -386,12 +457,67 @@ mod tests {
         let space = build_space(&info, &objects);
         let serialized = protoverse::serialize(&space);
         let reparsed = parse(&serialized).unwrap();
-        let (_, objects2) = convert_space(&reparsed);
+        let data = convert_space(&reparsed);
 
         assert_eq!(
-            objects2[1].location,
+            data.objects[1].location,
             Some(ObjectLocation::TopOf("obj1".to_string()))
         );
-        assert_eq!(objects2[1].position, Vec3::new(0.0, 1.5, 0.0));
+        assert_eq!(data.objects[1].position, Vec3::new(0.0, 1.5, 0.0));
+    }
+
+    #[test]
+    fn test_convert_tilemap() {
+        let space = parse(
+            r#"(space (name "Test") (group
+                (tilemap (width 5) (height 5) (tileset "grass" "stone") (data "0"))
+                (table (id t1) (name "Table") (position 0 0 0))))"#,
+        )
+        .unwrap();
+
+        let data = convert_space(&space);
+        assert_eq!(data.info.name, "Test");
+        assert_eq!(data.objects.len(), 1);
+        assert_eq!(data.objects[0].id, "t1");
+
+        let tm = data.info.tilemap.unwrap();
+        assert_eq!(tm.width, 5);
+        assert_eq!(tm.height, 5);
+        assert_eq!(tm.tileset, vec!["grass", "stone"]);
+        assert_eq!(tm.tiles, vec![0]); // fill-all
+    }
+
+    #[test]
+    fn test_build_space_tilemap_roundtrip() {
+        let info = SpaceInfo {
+            name: "Test".to_string(),
+            tilemap: Some(TilemapData {
+                width: 8,
+                height: 8,
+                tileset: vec!["grass".to_string(), "water".to_string()],
+                tiles: vec![0], // fill-all
+                scene_object_id: None,
+                model_handle: None,
+            }),
+        };
+        let objects = vec![RoomObject::new(
+            "a".to_string(),
+            "Thing".to_string(),
+            Vec3::ZERO,
+        )];
+
+        let space = build_space(&info, &objects);
+        let serialized = protoverse::serialize(&space);
+        let reparsed = parse(&serialized).unwrap();
+        let data = convert_space(&reparsed);
+
+        assert_eq!(data.objects.len(), 1);
+        assert_eq!(data.objects[0].id, "a");
+
+        let tm = data.info.tilemap.unwrap();
+        assert_eq!(tm.width, 8);
+        assert_eq!(tm.height, 8);
+        assert_eq!(tm.tileset, vec!["grass", "water"]);
+        assert_eq!(tm.tiles, vec![0]);
     }
 }

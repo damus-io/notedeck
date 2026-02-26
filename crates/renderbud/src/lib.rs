@@ -1,8 +1,6 @@
 use glam::{Mat4, Vec2, Vec3, Vec4};
 
-use crate::material::{MaterialUniform, make_material_gpudata};
-use crate::model::ModelData;
-use crate::model::Vertex;
+use crate::material::make_material_gpudata;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 
@@ -17,7 +15,9 @@ mod world;
 pub mod egui;
 
 pub use camera::{ArcballController, Camera, FlyController, ThirdPersonController};
-pub use model::{Aabb, Model};
+pub use material::{MaterialGpu, MaterialUniform};
+pub use model::{Aabb, Mesh, Model, ModelData, ModelDraw, Vertex};
+pub use texture::upload_rgba8_texture_2d;
 pub use world::{Node, NodeId, ObjectId, Transform, World};
 
 /// Active camera controller mode.
@@ -703,6 +703,55 @@ impl Renderer {
         Ok(id)
     }
 
+    /// Register a procedurally-generated model. Returns a handle that can
+    /// be placed in the scene with [`place_object`].
+    pub fn insert_model(&mut self, model_data: ModelData) -> Model {
+        self.model_ids += 1;
+        let id = Model { id: self.model_ids };
+        self.models.insert(id, model_data);
+        id
+    }
+
+    /// Create a PBR material from a base color texture view.
+    /// Used for procedural geometry (tilemaps, etc.).
+    pub fn create_material(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sampler: &wgpu::Sampler,
+        basecolor: &wgpu::TextureView,
+        uniform: MaterialUniform,
+    ) -> MaterialGpu {
+        let default_mr = texture::upload_rgba8_texture_2d(
+            device,
+            queue,
+            1,
+            1,
+            &[0, 255, 0, 255],
+            wgpu::TextureFormat::Rgba8Unorm,
+            "tilemap_mr",
+        );
+        let default_normal = texture::upload_rgba8_texture_2d(
+            device,
+            queue,
+            1,
+            1,
+            &[128, 128, 255, 255],
+            wgpu::TextureFormat::Rgba8Unorm,
+            "tilemap_normal",
+        );
+        model::make_material_gpu(
+            device,
+            queue,
+            &self.material_bgl,
+            sampler,
+            basecolor,
+            &default_mr,
+            &default_normal,
+            uniform,
+        )
+    }
+
     /// Place a loaded model in the scene with the given transform.
     pub fn place_object(&mut self, model: Model, transform: Transform) -> ObjectId {
         self.world.add_object(model, transform)
@@ -988,7 +1037,7 @@ impl Renderer {
 
             for d in &model_data.draws {
                 shadow_pass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                shadow_pass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                shadow_pass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint32);
                 shadow_pass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
             }
         }
@@ -1063,7 +1112,7 @@ impl Renderer {
             for d in &model_data.draws {
                 rpass.set_bind_group(2, &model_data.materials[d.material_index].bindgroup, &[]);
                 rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint32);
                 rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
             }
         }
@@ -1086,7 +1135,7 @@ impl Renderer {
 
                 for d in &model_data.draws {
                     rpass.set_vertex_buffer(0, d.mesh.vert_buf.slice(..));
-                    rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint16);
+                    rpass.set_index_buffer(d.mesh.ind_buf.slice(..), wgpu::IndexFormat::Uint32);
                     rpass.draw_indexed(0..d.mesh.num_indices, 0, 0..1);
                 }
             }
