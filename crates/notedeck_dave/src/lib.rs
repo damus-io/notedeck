@@ -685,198 +685,48 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::Failed(ref err) => {
                         session.chat.push(Message::Error(err.to_string()));
                     }
-
                     DaveApiResponse::Token(token) => {
                         session.append_token(&token);
                     }
-
                     DaveApiResponse::ToolCalls(toolcalls) => {
-                        tracing::info!("got tool calls: {:?}", toolcalls);
-                        session.chat.push(Message::ToolCalls(toolcalls.clone()));
-
-                        let txn = Transaction::new(app_ctx.ndb).unwrap();
-                        for call in &toolcalls {
-                            // execute toolcall
-                            match call.calls() {
-                                ToolCalls::PresentNotes(present) => {
-                                    session.chat.push(Message::ToolResponse(ToolResponse::new(
-                                        call.id().to_owned(),
-                                        ToolResponses::PresentNotes(present.note_ids.len() as i32),
-                                    )));
-
-                                    needs_send.insert(session_id);
-                                }
-
-                                ToolCalls::Invalid(invalid) => {
-                                    session.chat.push(Message::tool_error(
-                                        call.id().to_string(),
-                                        invalid.error.clone(),
-                                    ));
-
-                                    needs_send.insert(session_id);
-                                }
-
-                                ToolCalls::Query(search_call) => {
-                                    let resp = search_call.execute(&txn, app_ctx.ndb);
-                                    session.chat.push(Message::ToolResponse(ToolResponse::new(
-                                        call.id().to_owned(),
-                                        ToolResponses::Query(resp),
-                                    )));
-
-                                    needs_send.insert(session_id);
-                                }
-                            }
+                        if handle_tool_calls(session, &toolcalls, app_ctx.ndb) {
+                            needs_send.insert(session_id);
                         }
                     }
-
                     DaveApiResponse::PermissionRequest(pending) => {
-                        tracing::info!(
-                            "Permission request for tool '{}': {:?}",
-                            pending.request.tool_name,
-                            pending.request.tool_input
+                        handle_permission_request(
+                            session,
+                            pending,
+                            &secret_key,
+                            app_ctx.ndb,
+                            &mut events_to_publish,
                         );
-
-                        // Build and publish a proper permission request event
-                        // with perm-id, tool-name tags for remote clients
-                        if let Some(sk) = &secret_key {
-                            let event_session_id = session
-                                .agentic
-                                .as_ref()
-                                .and_then(|a| a.event_session_id().map(|s| s.to_string()));
-
-                            if let Some(sid) = event_session_id {
-                                match session_events::build_permission_request_event(
-                                    &pending.request.id,
-                                    &pending.request.tool_name,
-                                    &pending.request.tool_input,
-                                    &sid,
-                                    sk,
-                                ) {
-                                    Ok(evt) => {
-                                        // PNS-wrap and ingest into local ndb
-                                        pns_ingest(app_ctx.ndb, &evt.note_json, sk);
-                                        // Store note_id for linking responses
-                                        if let Some(agentic) = &mut session.agentic {
-                                            agentic
-                                                .permissions
-                                                .request_note_ids
-                                                .insert(pending.request.id, evt.note_id);
-                                        }
-                                        events_to_publish.push(evt);
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "failed to build permission request event: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        // Store the response sender for later (agentic only)
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic
-                                .permissions
-                                .pending
-                                .insert(pending.request.id, pending.response_tx);
-                        }
-
-                        // Add the request to chat for UI display
-                        session
-                            .chat
-                            .push(Message::PermissionRequest(pending.request));
                     }
-
                     DaveApiResponse::ToolResult(result) => {
-                        tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
-
-                        // Invalidate git status after file-modifying tools.
-                        // tool_name is a String from the Claude SDK, no enum available.
-                        if matches!(result.tool_name.as_str(), "Bash" | "Write" | "Edit") {
-                            if let Some(agentic) = &mut session.agentic {
-                                agentic.git_status.invalidate();
-                            }
-                        }
-                        if let Some(result) = session.fold_tool_result(result) {
-                            session
-                                .chat
-                                .push(Message::ToolResponse(ToolResponse::executed_tool(result)));
-                        }
+                        handle_tool_result(session, result);
                     }
-
                     DaveApiResponse::SessionInfo(info) => {
-                        tracing::debug!(
-                            "Session info: model={:?}, tools={}, agents={}",
-                            info.model,
-                            info.tools.len(),
-                            info.agents.len()
-                        );
                         handle_session_info(session, info, app_ctx.ndb);
                     }
-
                     DaveApiResponse::SubagentSpawned(subagent) => {
-                        tracing::debug!(
-                            "Subagent spawned: {} ({}) - {}",
-                            subagent.task_id,
-                            subagent.subagent_type,
-                            subagent.description
-                        );
-                        let task_id = subagent.task_id.clone();
-                        let idx = session.chat.len();
-                        session.chat.push(Message::Subagent(subagent));
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.subagent_indices.insert(task_id, idx);
-                        }
+                        handle_subagent_spawned(session, subagent);
                     }
-
                     DaveApiResponse::SubagentOutput { task_id, output } => {
                         session.update_subagent_output(&task_id, &output);
                     }
-
                     DaveApiResponse::SubagentCompleted { task_id, result } => {
-                        tracing::debug!("Subagent completed: {}", task_id);
                         session.complete_subagent(&task_id, &result);
                     }
-
                     DaveApiResponse::CompactionStarted => {
-                        tracing::debug!("Compaction started for session {}", session_id);
                         if let Some(agentic) = &mut session.agentic {
                             agentic.is_compacting = true;
                         }
                     }
-
                     DaveApiResponse::CompactionComplete(info) => {
-                        tracing::debug!(
-                            "Compaction completed for session {}: pre_tokens={}",
-                            session_id,
-                            info.pre_tokens
-                        );
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.is_compacting = false;
-                            agentic.last_compaction = Some(info.clone());
-
-                            // Advance compact-and-proceed: compaction done,
-                            // proceed message will fire at stream-end.
-                            if agentic.compact_and_proceed
-                                == crate::session::CompactAndProceedState::WaitingForCompaction
-                            {
-                                agentic.compact_and_proceed =
-                                    crate::session::CompactAndProceedState::ReadyToProceed;
-                            }
-                        }
-                        session.chat.push(Message::CompactionComplete(info));
+                        handle_compaction_complete(session, session_id, info);
                     }
-
                     DaveApiResponse::QueryComplete(info) => {
-                        if let Some(agentic) = &mut session.agentic {
-                            agentic.usage.input_tokens = info.input_tokens;
-                            agentic.usage.output_tokens = info.output_tokens;
-                            agentic.usage.num_turns = info.num_turns;
-                            if let Some(cost) = info.cost_usd {
-                                agentic.usage.cost_usd = Some(cost);
-                            }
-                        }
+                        handle_query_complete(session, info);
                     }
                 }
             }
@@ -2825,6 +2675,190 @@ fn setup_conversation_subscription(
 fn is_session_remote(hostname: &str, cwd: &str, local_hostname: &str) -> bool {
     (!hostname.is_empty() && hostname != local_hostname)
         || (hostname.is_empty() && !std::path::PathBuf::from(cwd).exists())
+}
+
+/// Handle tool calls from the AI backend.
+///
+/// Pushes the tool calls to chat, executes each one, and pushes the
+/// responses. Returns `true` if any tool produced a response that
+/// needs to be sent back to the backend.
+fn handle_tool_calls(
+    session: &mut session::ChatSession,
+    toolcalls: &[ToolCall],
+    ndb: &nostrdb::Ndb,
+) -> bool {
+    tracing::info!("got tool calls: {:?}", toolcalls);
+    session.chat.push(Message::ToolCalls(toolcalls.to_vec()));
+
+    let txn = Transaction::new(ndb).unwrap();
+    let mut needs_send = false;
+
+    for call in toolcalls {
+        match call.calls() {
+            ToolCalls::PresentNotes(present) => {
+                session.chat.push(Message::ToolResponse(ToolResponse::new(
+                    call.id().to_owned(),
+                    ToolResponses::PresentNotes(present.note_ids.len() as i32),
+                )));
+                needs_send = true;
+            }
+            ToolCalls::Invalid(invalid) => {
+                session.chat.push(Message::tool_error(
+                    call.id().to_string(),
+                    invalid.error.clone(),
+                ));
+                needs_send = true;
+            }
+            ToolCalls::Query(search_call) => {
+                let resp = search_call.execute(&txn, ndb);
+                session.chat.push(Message::ToolResponse(ToolResponse::new(
+                    call.id().to_owned(),
+                    ToolResponses::Query(resp),
+                )));
+                needs_send = true;
+            }
+        }
+    }
+
+    needs_send
+}
+
+/// Handle a permission request from the AI backend.
+///
+/// Builds and publishes a permission request event for remote clients,
+/// stores the response sender for later, and adds the request to chat.
+fn handle_permission_request(
+    session: &mut session::ChatSession,
+    pending: messages::PendingPermission,
+    secret_key: &Option<[u8; 32]>,
+    ndb: &nostrdb::Ndb,
+    events_to_publish: &mut Vec<session_events::BuiltEvent>,
+) {
+    tracing::info!(
+        "Permission request for tool '{}': {:?}",
+        pending.request.tool_name,
+        pending.request.tool_input
+    );
+
+    // Build and publish a proper permission request event
+    // with perm-id, tool-name tags for remote clients
+    if let Some(sk) = secret_key {
+        let event_session_id = session
+            .agentic
+            .as_ref()
+            .and_then(|a| a.event_session_id().map(|s| s.to_string()));
+
+        if let Some(sid) = event_session_id {
+            match session_events::build_permission_request_event(
+                &pending.request.id,
+                &pending.request.tool_name,
+                &pending.request.tool_input,
+                &sid,
+                sk,
+            ) {
+                Ok(evt) => {
+                    pns_ingest(ndb, &evt.note_json, sk);
+                    if let Some(agentic) = &mut session.agentic {
+                        agentic
+                            .permissions
+                            .request_note_ids
+                            .insert(pending.request.id, evt.note_id);
+                    }
+                    events_to_publish.push(evt);
+                }
+                Err(e) => {
+                    tracing::warn!("failed to build permission request event: {}", e);
+                }
+            }
+        }
+    }
+
+    // Store the response sender for later (agentic only)
+    if let Some(agentic) = &mut session.agentic {
+        agentic
+            .permissions
+            .pending
+            .insert(pending.request.id, pending.response_tx);
+    }
+
+    // Add the request to chat for UI display
+    session
+        .chat
+        .push(Message::PermissionRequest(pending.request));
+}
+
+/// Handle a tool result (execution metadata) from the AI backend.
+///
+/// Invalidates git status after file-modifying tools, then either folds
+/// the result into a subagent or pushes it as a standalone tool response.
+fn handle_tool_result(session: &mut session::ChatSession, result: ExecutedTool) {
+    tracing::debug!("Tool result: {} - {}", result.tool_name, result.summary);
+
+    if matches!(result.tool_name.as_str(), "Bash" | "Write" | "Edit") {
+        if let Some(agentic) = &mut session.agentic {
+            agentic.git_status.invalidate();
+        }
+    }
+    if let Some(result) = session.fold_tool_result(result) {
+        session
+            .chat
+            .push(Message::ToolResponse(ToolResponse::executed_tool(result)));
+    }
+}
+
+/// Handle a subagent spawn event from the AI backend.
+fn handle_subagent_spawned(session: &mut session::ChatSession, subagent: SubagentInfo) {
+    tracing::debug!(
+        "Subagent spawned: {} ({}) - {}",
+        subagent.task_id,
+        subagent.subagent_type,
+        subagent.description
+    );
+    let task_id = subagent.task_id.clone();
+    let idx = session.chat.len();
+    session.chat.push(Message::Subagent(subagent));
+    if let Some(agentic) = &mut session.agentic {
+        agentic.subagent_indices.insert(task_id, idx);
+    }
+}
+
+/// Handle compaction completion from the AI backend.
+///
+/// Updates agentic state, advances compact-and-proceed if waiting,
+/// and pushes the compaction info to chat.
+fn handle_compaction_complete(
+    session: &mut session::ChatSession,
+    session_id: SessionId,
+    info: messages::CompactionInfo,
+) {
+    tracing::debug!(
+        "Compaction completed for session {}: pre_tokens={}",
+        session_id,
+        info.pre_tokens
+    );
+    if let Some(agentic) = &mut session.agentic {
+        agentic.is_compacting = false;
+        agentic.last_compaction = Some(info.clone());
+
+        if agentic.compact_and_proceed
+            == crate::session::CompactAndProceedState::WaitingForCompaction
+        {
+            agentic.compact_and_proceed = crate::session::CompactAndProceedState::ReadyToProceed;
+        }
+    }
+    session.chat.push(Message::CompactionComplete(info));
+}
+
+/// Handle query completion (usage metrics) from the AI backend.
+fn handle_query_complete(session: &mut session::ChatSession, info: messages::UsageInfo) {
+    if let Some(agentic) = &mut session.agentic {
+        agentic.usage.input_tokens = info.input_tokens;
+        agentic.usage.output_tokens = info.output_tokens;
+        agentic.usage.num_turns = info.num_turns;
+        if let Some(cost) = info.cost_usd {
+            agentic.usage.cost_usd = Some(cost);
+        }
+    }
 }
 
 /// Handle a SessionInfo response from the AI backend.
