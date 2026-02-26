@@ -38,6 +38,8 @@ pub enum AddColumnResponse {
     UndecidedIndividual,
     ExternalIndividual,
     PeopleList,
+    CreatePeopleList,
+    FinishCreatePeopleList,
 }
 
 struct SelectionHandler<'a> {
@@ -99,6 +101,7 @@ pub enum AddColumnRoute {
     UndecidedIndividual,
     ExternalIndividual,
     PeopleList,
+    CreatePeopleList,
 }
 
 // Parser for the common case without any payloads
@@ -129,6 +132,7 @@ impl AddColumnRoute {
                 &["column", "algo_selection", "last_per_pubkey"]
             }
             Self::PeopleList => &["column", "people_list"],
+            Self::CreatePeopleList => &["column", "create_people_list"],
             // NOTE!!! When adding to this, update the parser for TokenSerializable below
         }
     }
@@ -156,6 +160,7 @@ impl TokenSerializable for AddColumnRoute {
                 |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::Base)),
                 |p| parse_column_route(p, AddColumnRoute::Algo(AddAlgoRoute::LastPerPubkey)),
                 |p| parse_column_route(p, AddColumnRoute::PeopleList),
+                |p| parse_column_route(p, AddColumnRoute::CreatePeopleList),
             ],
         )
     }
@@ -318,13 +323,20 @@ impl<'a> AddColumnView<'a> {
         }
 
         padding(16.0, ui, |ui| {
+            // Always show "New List" button at the top
+            if ui.button("+ New List").clicked() {
+                return Some(AddColumnResponse::CreatePeopleList);
+            }
+
+            ui.add_space(8.0);
+
             let Some(cache) = self.people_lists.as_ref() else {
                 ui.label("Loading lists from relays...");
                 return None;
             };
 
             if cache.is_empty() {
-                ui.label("Loading lists from relays...");
+                ui.label("No people lists found.");
                 return None;
             }
 
@@ -881,39 +893,44 @@ pub fn render_add_column_routes(
     col: usize,
     route: &AddColumnRoute,
 ) {
-    // Handle hashtag separately since it borrows id_string_map directly
-    let resp = if matches!(route, AddColumnRoute::Hashtag) {
-        hashtag_ui(ui, ctx.i18n, &mut app.view_state.id_string_map)
-    } else {
-        let account = ctx.accounts.get_selected_account();
-        let contacts = account.data.contacts.get_state();
-        let mut add_column_view = AddColumnView::new(
-            &mut app.view_state.id_state_map,
-            &mut app.view_state.id_string_map,
-            ctx.ndb,
-            ctx.img_cache,
-            account,
-            contacts,
-            ctx.i18n,
-            ctx.media_jobs.sender(),
-            ctx.pool,
-            ctx.unknown_ids,
-            &mut app.view_state.people_lists,
-        );
-        match route {
-            AddColumnRoute::Base => add_column_view.ui(ui),
-            AddColumnRoute::Algo(r) => match r {
-                AddAlgoRoute::Base => add_column_view.algo_ui(ui),
-                AddAlgoRoute::LastPerPubkey => {
-                    add_column_view.algo_last_per_pk_ui(ui, account.key.pubkey)
+    // Hashtag and CreatePeopleList are handled separately because they
+    // borrow ViewState fields directly (conflicting with AddColumnView)
+    let resp = match route {
+        AddColumnRoute::Hashtag => hashtag_ui(ui, ctx.i18n, &mut app.view_state.id_string_map),
+        AddColumnRoute::CreatePeopleList => create_people_list_ui(ui, app, ctx),
+        _ => {
+            let account = ctx.accounts.get_selected_account();
+            let contacts = account.data.contacts.get_state();
+            let mut add_column_view = AddColumnView::new(
+                &mut app.view_state.id_state_map,
+                &mut app.view_state.id_string_map,
+                ctx.ndb,
+                ctx.img_cache,
+                account,
+                contacts,
+                ctx.i18n,
+                ctx.media_jobs.sender(),
+                ctx.pool,
+                ctx.unknown_ids,
+                &mut app.view_state.people_lists,
+            );
+            match route {
+                AddColumnRoute::Base => add_column_view.ui(ui),
+                AddColumnRoute::Algo(r) => match r {
+                    AddAlgoRoute::Base => add_column_view.algo_ui(ui),
+                    AddAlgoRoute::LastPerPubkey => {
+                        add_column_view.algo_last_per_pk_ui(ui, account.key.pubkey)
+                    }
+                },
+                AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
+                AddColumnRoute::ExternalNotification => {
+                    add_column_view.external_notification_ui(ui)
                 }
-            },
-            AddColumnRoute::UndecidedNotification => add_column_view.notifications_ui(ui),
-            AddColumnRoute::ExternalNotification => add_column_view.external_notification_ui(ui),
-            AddColumnRoute::Hashtag => unreachable!(),
-            AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
-            AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
-            AddColumnRoute::PeopleList => add_column_view.people_list_ui(ui),
+                AddColumnRoute::UndecidedIndividual => add_column_view.individual_ui(ui),
+                AddColumnRoute::ExternalIndividual => add_column_view.external_individual_ui(ui),
+                AddColumnRoute::PeopleList => add_column_view.people_list_ui(ui),
+                AddColumnRoute::Hashtag | AddColumnRoute::CreatePeopleList => unreachable!(),
+            }
         }
     };
 
@@ -1041,8 +1058,89 @@ pub fn render_add_column_routes(
                     .router_mut()
                     .route_to(crate::route::Route::AddColumn(AddColumnRoute::PeopleList));
             }
+            AddColumnResponse::CreatePeopleList => {
+                app.columns_mut(ctx.i18n, ctx.accounts)
+                    .column_mut(col)
+                    .router_mut()
+                    .route_to(crate::route::Route::AddColumn(
+                        AddColumnRoute::CreatePeopleList,
+                    ));
+            }
+            AddColumnResponse::FinishCreatePeopleList => {
+                handle_create_people_list(app, ctx, col);
+            }
         };
     }
+}
+
+fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usize) {
+    let name_id = Id::new("create_people_list_name");
+    let name = app
+        .view_state
+        .id_string_map
+        .get(&name_id)
+        .cloned()
+        .unwrap_or_default();
+
+    if name.is_empty() {
+        return;
+    }
+
+    let members: Vec<Pubkey> = app
+        .view_state
+        .create_people_list
+        .selected_members
+        .iter()
+        .copied()
+        .collect();
+
+    if members.is_empty() {
+        return;
+    }
+
+    let Some(kp) = ctx.accounts.selected_filled() else {
+        error!("Cannot create people list: no signing key available");
+        return;
+    };
+
+    notedeck::send_people_list_event(ctx.ndb, ctx.pool, kp, &name, &members);
+
+    // Reset the people_lists cache so it picks up the new list
+    app.view_state.people_lists = None;
+
+    // Clear creation state
+    app.view_state.id_string_map.remove(&name_id);
+    let search_id = Id::new("create_people_list_search");
+    app.view_state.id_string_map.remove(&search_id);
+    app.view_state.create_people_list.selected_members.clear();
+
+    // Create the timeline column immediately
+    let pubkey = ctx.accounts.get_selected_account().key.pubkey;
+    let timeline_kind = TimelineKind::people_list(pubkey, name);
+    let txn = Transaction::new(ctx.ndb).unwrap();
+    let Some(mut timeline) = timeline_kind.into_timeline(&txn, ctx.ndb) else {
+        error!("Could not create timeline from people list");
+        return;
+    };
+
+    crate::timeline::setup_new_timeline(
+        &mut timeline,
+        ctx.ndb,
+        &txn,
+        &mut app.subscriptions,
+        ctx.pool,
+        ctx.note_cache,
+        app.options.contains(AppOptions::SinceOptimize),
+        ctx.accounts,
+        ctx.unknown_ids,
+    );
+
+    app.columns_mut(ctx.i18n, ctx.accounts)
+        .column_mut(col)
+        .router_mut()
+        .route_to_replaced(Route::timeline(timeline.kind.clone()));
+
+    app.timeline_cache.insert(timeline.kind.clone(), timeline);
 }
 
 pub fn hashtag_ui(
@@ -1093,6 +1191,175 @@ pub fn hashtag_ui(
         } else {
             None
         }
+    })
+    .inner
+}
+
+pub fn create_people_list_ui(
+    ui: &mut Ui,
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+) -> Option<AddColumnResponse> {
+    let account = ctx.accounts.get_selected_account();
+    let contacts = account.data.contacts.get_state();
+
+    padding(16.0, ui, |ui| {
+        // Use Id::new so IDs are stable across UI contexts (not dependent on parent widget)
+        let name_id = Id::new("create_people_list_name");
+        let name_buffer = app.view_state.id_string_map.entry(name_id).or_default();
+
+        ui.label(RichText::new("List Name").text_style(NotedeckTextStyle::Body.text_style()));
+        ui.add_space(4.0);
+        let name_edit = egui::TextEdit::singleline(name_buffer)
+            .hint_text(
+                RichText::new("Enter list name...")
+                    .text_style(NotedeckTextStyle::Body.text_style()),
+            )
+            .vertical_align(Align::Center)
+            .desired_width(f32::INFINITY)
+            .min_size(Vec2::new(0.0, 40.0))
+            .margin(Margin::same(12));
+        ui.add(name_edit);
+
+        ui.add_space(8.0);
+
+        // Selected members count
+        let member_count = app.view_state.create_people_list.selected_members.len();
+        ui.label(
+            RichText::new(format!("{} members selected", member_count))
+                .text_style(NotedeckTextStyle::Body.text_style())
+                .weak(),
+        );
+
+        ui.add_space(8.0);
+
+        // Search bar
+        let search_id = Id::new("create_people_list_search");
+        let search_buffer = app.view_state.id_string_map.entry(search_id).or_default();
+
+        ui.add(search_input_box(search_buffer, "Search profiles..."));
+
+        ui.add_space(8.0);
+
+        // Profile results area
+        let txn = Transaction::new(ctx.ndb).expect("txn");
+        let search_query = app
+            .view_state
+            .id_string_map
+            .get(&search_id)
+            .cloned()
+            .unwrap_or_default();
+
+        ScrollArea::vertical().show(ui, |ui| {
+            if search_query.is_empty() {
+                // Show contacts
+                if let ContactState::Received {
+                    contacts: contact_set,
+                    ..
+                } = contacts
+                {
+                    for pk in contact_set {
+                        let profile = ctx.ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+                        let is_selected = app
+                            .view_state
+                            .create_people_list
+                            .selected_members
+                            .contains(pk);
+
+                        ui.horizontal(|ui| {
+                            let mut checked = is_selected;
+                            ui.checkbox(&mut checked, "");
+                            let clicked = profile_row(
+                                ui,
+                                profile.as_ref(),
+                                false,
+                                ctx.img_cache,
+                                ctx.media_jobs.sender(),
+                                ctx.i18n,
+                            );
+                            if clicked || checked != is_selected {
+                                if is_selected {
+                                    app.view_state
+                                        .create_people_list
+                                        .selected_members
+                                        .remove(pk);
+                                } else {
+                                    app.view_state
+                                        .create_people_list
+                                        .selected_members
+                                        .insert(*pk);
+                                }
+                            }
+                        });
+                    }
+                } else {
+                    ui.label(RichText::new("No contacts loaded yet.").weak());
+                }
+            } else {
+                // Show search results
+                let results = search_profiles(ctx.ndb, &txn, &search_query, contacts, 128);
+
+                if results.is_empty() {
+                    ui.add_space(20.0);
+                    ui.label(RichText::new("No profiles found").weak());
+                } else {
+                    for result in &results {
+                        let pk = Pubkey::new(result.pk);
+                        let profile = ctx.ndb.get_profile_by_pubkey(&txn, &result.pk).ok();
+                        let is_selected = app
+                            .view_state
+                            .create_people_list
+                            .selected_members
+                            .contains(&pk);
+
+                        ui.horizontal(|ui| {
+                            let mut checked = is_selected;
+                            ui.checkbox(&mut checked, "");
+                            let clicked = profile_row(
+                                ui,
+                                profile.as_ref(),
+                                result.is_contact,
+                                ctx.img_cache,
+                                ctx.media_jobs.sender(),
+                                ctx.i18n,
+                            );
+                            if clicked || checked != is_selected {
+                                if is_selected {
+                                    app.view_state
+                                        .create_people_list
+                                        .selected_members
+                                        .remove(&pk);
+                                } else {
+                                    app.view_state
+                                        .create_people_list
+                                        .selected_members
+                                        .insert(pk);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        });
+
+        ui.add_space(8.0);
+
+        // Create button
+        let name_text = app
+            .view_state
+            .id_string_map
+            .get(&name_id)
+            .cloned()
+            .unwrap_or_default();
+        let can_create = !name_text.is_empty() && member_count > 0;
+
+        let create_btn = egui::Button::new("Create List");
+        let resp = ui.add_enabled(can_create, create_btn);
+        if resp.clicked() {
+            return Some(AddColumnResponse::FinishCreatePeopleList);
+        }
+
+        None
     })
     .inner
 }

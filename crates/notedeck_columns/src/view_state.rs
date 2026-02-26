@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use enostr::Pubkey;
 use notedeck::compact::CompactState;
@@ -45,6 +45,14 @@ pub struct ViewState {
 
     /// Cache for people list selection in "Add Column" UI
     pub people_lists: Option<Nip51SetCache>,
+
+    /// State for the "Create People List" flow
+    pub create_people_list: CreatePeopleListState,
+}
+
+#[derive(Default)]
+pub struct CreatePeopleListState {
+    pub selected_members: HashSet<Pubkey>,
 }
 
 impl ViewState {

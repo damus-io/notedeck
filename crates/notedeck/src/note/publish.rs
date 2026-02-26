@@ -203,6 +203,31 @@ pub fn send_mute_event(
     send_note_builder(builder, ndb, pool, kp);
 }
 
+pub fn send_people_list_event(
+    ndb: &Ndb,
+    pool: &mut RelayPool,
+    kp: FilledKeypair,
+    name: &str,
+    members: &[Pubkey],
+) {
+    let mut builder = NoteBuilder::new()
+        .content("")
+        .kind(30000)
+        .options(NoteBuildOptions::default())
+        .start_tag()
+        .tag_str("d")
+        .tag_str(name)
+        .start_tag()
+        .tag_str("title")
+        .tag_str(name);
+
+    for pk in members {
+        builder = builder.start_tag().tag_str("p").tag_str(&pk.hex());
+    }
+
+    send_note_builder(builder, ndb, pool, kp);
+}
+
 pub fn send_report_event(
     ndb: &Ndb,
     pool: &mut RelayPool,

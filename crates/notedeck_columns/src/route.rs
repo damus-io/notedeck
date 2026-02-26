@@ -419,6 +419,11 @@ impl Route {
                     "Select a People List",
                     "Column title for selecting a people list"
                 )),
+                AddColumnRoute::CreatePeopleList => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Create People List",
+                    "Column title for creating a people list"
+                )),
             },
             Route::Support => {
                 ColumnTitle::formatted(tr!(i18n, "Damus Support", "Column title for support page"))
