@@ -69,7 +69,8 @@ fn build_dave_ui<'a>(
     .is_remote(is_remote)
     .dispatch_state(session.dispatch_state)
     .details(&session.details)
-    .backend_type(session.backend_type);
+    .backend_type(session.backend_type)
+    .last_activity(session.last_activity);
 
     if let Some(agentic) = &mut session.agentic {
         let model = agentic

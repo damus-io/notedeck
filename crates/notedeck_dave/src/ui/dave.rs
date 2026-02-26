@@ -74,6 +74,8 @@ pub struct DaveUi<'a> {
     backend_type: BackendType,
     /// Current permission mode (Default, Plan, AcceptEdits)
     permission_mode: PermissionMode,
+    /// When the last AI response token was received
+    last_activity: Option<std::time::Instant>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -191,7 +193,13 @@ impl<'a> DaveUi<'a> {
             dispatch_state: crate::session::DispatchState::default(),
             backend_type: BackendType::Remote,
             permission_mode: PermissionMode::Default,
+            last_activity: None,
         }
+    }
+
+    pub fn last_activity(mut self, instant: Option<std::time::Instant>) -> Self {
+        self.last_activity = instant;
+        self
     }
 
     pub fn backend_type(mut self, bt: BackendType) -> Self {
@@ -384,6 +392,7 @@ impl<'a> DaveUi<'a> {
                                                 auto_steal_focus,
                                                 self.usage,
                                                 self.context_window,
+                                                self.last_activity,
                                                 ui,
                                             )
                                         })
@@ -1410,6 +1419,20 @@ fn add_msg_link(ui: &mut egui::Ui, shift_held: bool, action: &mut Option<DaveAct
     }
 }
 
+/// Format an Instant as a relative time string (e.g. "just now", "3m ago").
+fn format_relative_time(instant: std::time::Instant) -> String {
+    let elapsed = instant.elapsed().as_secs();
+    if elapsed < 60 {
+        "just now".to_string()
+    } else if elapsed < 3600 {
+        format!("{}m ago", elapsed / 60)
+    } else if elapsed < 86400 {
+        format!("{}h ago", elapsed / 3600)
+    } else {
+        format!("{}d ago", elapsed / 86400)
+    }
+}
+
 /// Renders the status bar containing git status and toggle badges.
 fn status_bar_ui(
     mut git_status: Option<&mut GitStatusCache>,
@@ -1418,6 +1441,7 @@ fn status_bar_ui(
     auto_steal_focus: bool,
     usage: Option<&crate::messages::UsageInfo>,
     context_window: u64,
+    last_activity: Option<std::time::Instant>,
     ui: &mut egui::Ui,
 ) -> Option<DaveAction> {
     let snapshot = git_status
@@ -1440,6 +1464,13 @@ fn status_bar_ui(
                             None
                         };
                         if is_agentic {
+                            if let Some(instant) = last_activity {
+                                ui.label(
+                                    egui::RichText::new(format_relative_time(instant))
+                                        .size(10.0)
+                                        .color(ui.visuals().weak_text_color()),
+                                );
+                            }
                             usage_bar_ui(usage, context_window, ui);
                         }
                         badge_action
@@ -1449,6 +1480,13 @@ fn status_bar_ui(
                     // No git status (remote session) - just show badges and usage
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let badge_action = toggle_badges_ui(ui, permission_mode, auto_steal_focus);
+                        if let Some(instant) = last_activity {
+                            ui.label(
+                                egui::RichText::new(format_relative_time(instant))
+                                    .size(10.0)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
+                        }
                         usage_bar_ui(usage, context_window, ui);
                         badge_action
                     })

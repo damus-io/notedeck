@@ -2260,7 +2260,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             UiActionResult::Compact => {
                 if let Some(session) = self.session_manager.get_active() {
-                    let session_id = session.id.to_string();
+                    let session_id = format!("dave-session-{}", session.id);
                     if let Some(rx) = get_backend(&self.backends, bt)
                         .compact_session(session_id, ui.ctx().clone())
                     {

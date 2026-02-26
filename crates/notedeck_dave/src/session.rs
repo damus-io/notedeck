@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 use crate::agent_status::AgentStatus;
 use crate::backend::BackendType;
@@ -383,6 +384,8 @@ pub struct ChatSession {
     pub details: SessionDetails,
     /// Which backend this session uses (Claude, Codex, etc.)
     pub backend_type: BackendType,
+    /// When the last AI response token was received (for "5m ago" display)
+    pub last_activity: Option<Instant>,
 }
 
 impl Drop for ChatSession {
@@ -428,6 +431,7 @@ impl ChatSession {
                     .unwrap_or_default(),
             },
             backend_type,
+            last_activity: None,
         }
     }
 
@@ -833,6 +837,17 @@ impl SessionManager {
         &self.chat_ids
     }
 
+    /// Session IDs in visual/display order (host groups then chats).
+    /// Keybinding numbers (Ctrl+1-9) map to this order.
+    pub fn visual_order(&self) -> Vec<SessionId> {
+        let mut ids = Vec::new();
+        for (_, group_ids) in &self.host_groups {
+            ids.extend_from_slice(group_ids);
+        }
+        ids.extend_from_slice(&self.chat_ids);
+        ids
+    }
+
     /// Get a session's index in the recency-ordered list (for keyboard shortcuts).
     pub fn session_index(&self, id: SessionId) -> Option<usize> {
         self.order.iter().position(|&oid| oid == id)
@@ -894,6 +909,7 @@ impl ChatSession {
     pub fn append_token(&mut self, token: &str) {
         // Content arrived — transition AwaitingResponse → Streaming.
         self.dispatch_state.backend_responded();
+        self.last_activity = Some(Instant::now());
 
         // Fast path: last message is the active assistant response
         if let Some(Message::Assistant(msg)) = self.chat.last_mut() {
