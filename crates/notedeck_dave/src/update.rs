@@ -534,38 +534,6 @@ pub fn toggle_auto_steal(
     new_state
 }
 
-/// Clear Done indicators for sessions whose clearing condition is met.
-///
-/// - **Local agentic sessions**: cleared when the git working tree is clean
-///   (the user has committed or reverted changes).
-/// - **Chat and remote sessions**: cleared when the session is the active one
-///   (the user is viewing it).
-pub fn clear_done_indicators(session_manager: &SessionManager, focus_queue: &mut FocusQueue) {
-    let active_id = session_manager.active_id();
-    for session in session_manager.iter() {
-        if focus_queue.get_session_priority(session.id) != Some(FocusPriority::Done) {
-            continue;
-        }
-        let should_clear = if !session.is_remote() {
-            if let Some(agentic) = &session.agentic {
-                agentic
-                    .git_status
-                    .current()
-                    .is_some_and(|r| r.as_ref().is_ok_and(|d| d.is_clean()))
-            } else {
-                // Chat session: clear when viewing
-                active_id == Some(session.id)
-            }
-        } else {
-            // Remote session: clear when viewing
-            active_id == Some(session.id)
-        };
-        if should_clear {
-            focus_queue.dequeue_done(session.id);
-        }
-    }
-}
-
 /// Process auto-steal focus logic: switch to focus queue items as needed.
 /// Returns true if focus was stolen (switched to a NeedsInput or Done session),
 /// which can be used to raise the OS window.

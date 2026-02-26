@@ -2737,9 +2737,6 @@ impl notedeck::App for Dave {
             notedeck::platform::try_vibrate();
         }
 
-        // Clear Done indicators whose condition is met
-        update::clear_done_indicators(&self.session_manager, &mut self.focus_queue);
-
         // Suppress auto-steal while the user is typing (non-empty input)
         let user_is_typing = self
             .session_manager
