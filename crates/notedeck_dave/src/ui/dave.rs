@@ -139,6 +139,12 @@ pub enum DaveAction {
     TentativeAccept,
     /// Enter tentative deny mode (Shift+click on No)
     TentativeDeny,
+    /// Allow always — add to session allowlist and accept
+    AllowAlways {
+        request_id: Uuid,
+    },
+    /// Tentative allow always — add to session allowlist, enter message mode
+    TentativeAllowAlways,
     /// User responded to an AskUserQuestion
     QuestionResponse {
         request_id: Uuid,
@@ -786,6 +792,16 @@ impl<'a> DaveUi<'a> {
                 .show(ui)
                 .on_hover_text("Press 2 to deny, Shift+2 to deny with message");
 
+                // Always button (blue) — allow and don't ask again this session
+                let always_response = super::badge::ActionButton::new(
+                    "Always",
+                    egui::Color32::from_rgb(30, 100, 180),
+                    button_text_color,
+                )
+                .keybind("3")
+                .show(ui)
+                .on_hover_text("Press 3 to allow always for this session, Shift+3 with message");
+
                 if deny_response.clicked() {
                     if shift_held {
                         *action = Some(DaveAction::TentativeDeny);
@@ -806,6 +822,16 @@ impl<'a> DaveUi<'a> {
                         *action = Some(DaveAction::PermissionResponse {
                             request_id: request.id,
                             response: PermissionResponse::Allow { message: None },
+                        });
+                    }
+                }
+
+                if always_response.clicked() {
+                    if shift_held {
+                        *action = Some(DaveAction::TentativeAllowAlways);
+                    } else {
+                        *action = Some(DaveAction::AllowAlways {
+                            request_id: request.id,
                         });
                     }
                 }
@@ -1434,6 +1460,7 @@ fn format_relative_time(instant: std::time::Instant) -> String {
 }
 
 /// Renders the status bar containing git status and toggle badges.
+#[allow(clippy::too_many_arguments)]
 fn status_bar_ui(
     mut git_status: Option<&mut GitStatusCache>,
     is_agentic: bool,

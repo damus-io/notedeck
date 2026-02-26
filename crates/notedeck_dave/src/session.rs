@@ -234,6 +234,10 @@ pub struct AgenticSessionData {
     pub compact_and_proceed: CompactAndProceedState,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
+    /// Runtime allowlist for auto-accepting permissions this session.
+    /// For Bash: stores binary names (first word of command).
+    /// For other tools: stores the tool name.
+    pub runtime_allows: HashSet<String>,
 }
 
 impl AgenticSessionData {
@@ -268,7 +272,44 @@ impl AgenticSessionData {
             seen_note_ids: HashSet::new(),
             compact_and_proceed: CompactAndProceedState::Idle,
             usage: Default::default(),
+            runtime_allows: HashSet::new(),
         }
+    }
+
+    /// Extract the runtime allow key from a permission request.
+    /// For Bash: first word of the command (binary name).
+    /// For other tools: the tool name itself.
+    fn runtime_allow_key(tool_name: &str, tool_input: &serde_json::Value) -> Option<String> {
+        if tool_name == "Bash" {
+            tool_input
+                .get("command")
+                .and_then(|v| v.as_str())
+                .and_then(|cmd| cmd.split_whitespace().next())
+                .map(|s| s.to_string())
+        } else {
+            Some(tool_name.to_string())
+        }
+    }
+
+    /// Check if a permission request matches the runtime allowlist.
+    pub fn should_runtime_allow(&self, tool_name: &str, tool_input: &serde_json::Value) -> bool {
+        if let Some(key) = Self::runtime_allow_key(tool_name, tool_input) {
+            self.runtime_allows.contains(&key)
+        } else {
+            false
+        }
+    }
+
+    /// Add a runtime allow rule from a permission request.
+    /// Returns the key that was added (for logging).
+    pub fn add_runtime_allow(
+        &mut self,
+        tool_name: &str,
+        tool_input: &serde_json::Value,
+    ) -> Option<String> {
+        let key = Self::runtime_allow_key(tool_name, tool_input)?;
+        self.runtime_allows.insert(key.clone());
+        Some(key)
     }
 
     /// Get the session ID to use for live kind-1988 events.

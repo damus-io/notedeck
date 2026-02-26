@@ -90,6 +90,29 @@ pub fn check_interrupt_timeout(pending_since: Option<Instant>) -> Option<Instant
 // Plan Mode
 // =============================================================================
 
+/// Add the current pending permission's tool to the session's runtime allowlist.
+/// Returns the key that was added (for logging), or None if no pending permission.
+pub fn allow_always(session_manager: &mut SessionManager) -> Option<String> {
+    let session = session_manager.get_active_mut()?;
+    let agentic = session.agentic.as_mut()?;
+
+    // Find the last pending (unresponded) permission request
+    let (tool_name, tool_input) = session.chat.iter().rev().find_map(|msg| {
+        if let crate::messages::Message::PermissionRequest(req) = msg {
+            if req.response.is_none() {
+                return Some((req.tool_name.clone(), req.tool_input.clone()));
+            }
+        }
+        None
+    })?;
+
+    let key = agentic.add_runtime_allow(&tool_name, &tool_input);
+    if let Some(ref k) = key {
+        tracing::info!("allow_always: added runtime allow for '{}'", k);
+    }
+    key
+}
+
 /// Cycle permission mode for the active session: Default → Plan → AcceptEdits → Default.
 /// Info needed to publish a permission mode command to a remote host.
 pub struct ModeCommandPublish {

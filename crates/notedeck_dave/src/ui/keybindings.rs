@@ -12,6 +12,10 @@ pub enum KeyAction {
     TentativeAccept,
     /// Tentatively deny, waiting for message (Shift+2)
     TentativeDeny,
+    /// Allow always — add to session allowlist and accept (3)
+    AllowAlways,
+    /// Tentatively allow always, waiting for message (Shift+3)
+    TentativeAllowAlways,
     /// Cancel tentative state (Escape when tentative)
     CancelTentative,
     /// Switch to agent by number (0-indexed)
@@ -193,18 +197,24 @@ pub fn check_keybindings(
             if i.modifiers.shift && i.key_pressed(Key::Num2) {
                 return Some(KeyAction::TentativeDeny);
             }
+            // Shift+3: tentative allow always
+            if i.modifiers.shift && i.key_pressed(Key::Num3) {
+                return Some(KeyAction::TentativeAllowAlways);
+            }
             None
         }) {
             return Some(action);
         }
 
-        // Bare keypresses (no modifiers) for immediate accept/deny
+        // Bare keypresses (no modifiers) for immediate accept/deny/always
         if let Some(action) = ctx.input(|i| {
             if !i.modifiers.any() {
                 if i.key_pressed(Key::Num1) {
                     return Some(KeyAction::AcceptPermission);
                 } else if i.key_pressed(Key::Num2) {
                     return Some(KeyAction::DenyPermission);
+                } else if i.key_pressed(Key::Num3) {
+                    return Some(KeyAction::AllowAlways);
                 }
             }
             None

@@ -644,6 +644,28 @@ pub fn handle_key_action(
             set_tentative_state(session_manager, PermissionMessageState::TentativeDeny);
             KeyActionResult::None
         }
+        KeyAction::AllowAlways => {
+            update::allow_always(session_manager);
+            if let Some(request_id) = update::first_pending_permission(session_manager) {
+                let result = update::handle_permission_response(
+                    session_manager,
+                    request_id,
+                    PermissionResponse::Allow { message: None },
+                );
+                if let Some(session) = session_manager.get_active_mut() {
+                    session.focus_requested = true;
+                }
+                if let Some(publish) = result {
+                    return KeyActionResult::PublishPermissionResponse(publish);
+                }
+            }
+            KeyActionResult::None
+        }
+        KeyAction::TentativeAllowAlways => {
+            update::allow_always(session_manager);
+            set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
+            KeyActionResult::None
+        }
         KeyAction::CancelTentative => {
             if let Some(session) = session_manager.get_active_mut() {
                 if let Some(agentic) = &mut session.agentic {
@@ -847,6 +869,23 @@ pub fn handle_ui_action(
         }
         DaveAction::TentativeDeny => {
             set_tentative_state(session_manager, PermissionMessageState::TentativeDeny);
+            UiActionResult::Handled
+        }
+        DaveAction::AllowAlways { request_id } => {
+            update::allow_always(session_manager);
+            update::handle_permission_response(
+                session_manager,
+                request_id,
+                PermissionResponse::Allow { message: None },
+            )
+            .map_or(
+                UiActionResult::Handled,
+                UiActionResult::PublishPermissionResponse,
+            )
+        }
+        DaveAction::TentativeAllowAlways => {
+            update::allow_always(session_manager);
+            set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
             UiActionResult::Handled
         }
         DaveAction::QuestionResponse {

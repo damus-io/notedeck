@@ -1907,54 +1907,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             )));
                     }
                     Some("permission_request") => {
-                        if let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content)
-                        {
-                            let tool_name = content_json["tool_name"]
-                                .as_str()
-                                .unwrap_or("unknown")
-                                .to_string();
-                            let tool_input = content_json
-                                .get("tool_input")
-                                .cloned()
-                                .unwrap_or(serde_json::Value::Null);
-                            let perm_id = session_events::get_tag_value(note, "perm-id")
-                                .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                                .unwrap_or_else(uuid::Uuid::new_v4);
-
-                            // Check if we already responded
-                            let response = if agentic.permissions.responded.contains(&perm_id) {
-                                Some(crate::messages::PermissionResponseType::Allowed)
-                            } else {
-                                None
-                            };
-
-                            // Store the note ID for linking responses
-                            agentic
-                                .permissions
-                                .request_note_ids
-                                .insert(perm_id, *note.id());
-
-                            // Parse plan markdown for ExitPlanMode requests
-                            let cached_plan = if tool_name == "ExitPlanMode" {
-                                tool_input
-                                    .get("plan")
-                                    .and_then(|v| v.as_str())
-                                    .map(crate::messages::ParsedMarkdown::parse)
-                            } else {
-                                None
-                            };
-
-                            session.chat.push(Message::PermissionRequest(
-                                crate::messages::PermissionRequest {
-                                    id: perm_id,
-                                    tool_name,
-                                    tool_input,
-                                    response,
-                                    answer_summary: None,
-                                    cached_plan,
-                                },
-                            ));
-                        }
+                        handle_remote_permission_request(
+                            note,
+                            content,
+                            agentic,
+                            &mut session.chat,
+                            secret_key,
+                            &mut events_to_publish,
+                        );
                     }
                     Some("permission_response") => {
                         // Track that this permission was responded to
@@ -2984,6 +2944,23 @@ fn handle_permission_request(
         pending.request.tool_input
     );
 
+    // Check runtime allowlist — auto-accept and show as already-allowed in chat
+    if let Some(agentic) = &session.agentic {
+        if agentic.should_runtime_allow(&pending.request.tool_name, &pending.request.tool_input) {
+            tracing::info!(
+                "runtime allow: auto-accepting '{}' for this session",
+                pending.request.tool_name,
+            );
+            let _ = pending
+                .response_tx
+                .send(PermissionResponse::Allow { message: None });
+            let mut request = pending.request;
+            request.response = Some(crate::messages::PermissionResponseType::Allowed);
+            session.chat.push(Message::PermissionRequest(request));
+            return;
+        }
+    }
+
     // Build and publish a proper permission request event
     // with perm-id, tool-name tags for remote clients
     if let Some(sk) = secret_key {
@@ -3029,6 +3006,100 @@ fn handle_permission_request(
     session
         .chat
         .push(Message::PermissionRequest(pending.request));
+}
+
+/// Handle a remote permission request from a kind-1988 conversation event.
+/// Checks runtime allowlist for auto-accept, otherwise adds to chat for UI display.
+fn handle_remote_permission_request(
+    note: &nostrdb::Note,
+    content: &str,
+    agentic: &mut session::AgenticSessionData,
+    chat: &mut Vec<Message>,
+    secret_key: Option<&[u8; 32]>,
+    events_to_publish: &mut Vec<session_events::BuiltEvent>,
+) {
+    let Ok(content_json) = serde_json::from_str::<serde_json::Value>(content) else {
+        return;
+    };
+    let tool_name = content_json["tool_name"]
+        .as_str()
+        .unwrap_or("unknown")
+        .to_string();
+    let tool_input = content_json
+        .get("tool_input")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let perm_id = session_events::get_tag_value(note, "perm-id")
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+        .unwrap_or_else(uuid::Uuid::new_v4);
+
+    // Store the note ID for linking responses
+    agentic
+        .permissions
+        .request_note_ids
+        .insert(perm_id, *note.id());
+
+    // Runtime allowlist auto-accept
+    if agentic.should_runtime_allow(&tool_name, &tool_input) {
+        tracing::info!(
+            "runtime allow: auto-accepting remote '{}' for this session",
+            tool_name,
+        );
+        agentic.permissions.responded.insert(perm_id);
+        if let Some(sk) = secret_key {
+            if let Some(sid) = agentic.event_session_id().map(|s| s.to_string()) {
+                if let Ok(evt) = session_events::build_permission_response_event(
+                    &perm_id,
+                    note.id(),
+                    true,
+                    None,
+                    &sid,
+                    sk,
+                ) {
+                    events_to_publish.push(evt);
+                }
+            }
+        }
+        chat.push(Message::PermissionRequest(
+            crate::messages::PermissionRequest {
+                id: perm_id,
+                tool_name,
+                tool_input,
+                response: Some(crate::messages::PermissionResponseType::Allowed),
+                answer_summary: None,
+                cached_plan: None,
+            },
+        ));
+        return;
+    }
+
+    // Check if we already responded
+    let response = if agentic.permissions.responded.contains(&perm_id) {
+        Some(crate::messages::PermissionResponseType::Allowed)
+    } else {
+        None
+    };
+
+    // Parse plan markdown for ExitPlanMode requests
+    let cached_plan = if tool_name == "ExitPlanMode" {
+        tool_input
+            .get("plan")
+            .and_then(|v| v.as_str())
+            .map(crate::messages::ParsedMarkdown::parse)
+    } else {
+        None
+    };
+
+    chat.push(Message::PermissionRequest(
+        crate::messages::PermissionRequest {
+            id: perm_id,
+            tool_name,
+            tool_input,
+            response,
+            answer_summary: None,
+            cached_plan,
+        },
+    ));
 }
 
 /// Handle a remote permission response from a kind-1988 event.
