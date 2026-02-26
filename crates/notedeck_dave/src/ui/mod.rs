@@ -584,6 +584,8 @@ pub enum KeyActionResult {
     SetAutoSteal(bool),
     /// Permission response needs relay publishing.
     PublishPermissionResponse(update::PermissionPublish),
+    /// Permission mode command needs relay publishing (observer → host).
+    PublishModeCommand(update::ModeCommandPublish),
 }
 
 /// Handle a keybinding action.
@@ -667,11 +669,14 @@ pub fn handle_key_action(
         KeyAction::Interrupt => KeyActionResult::HandleInterrupt,
         KeyAction::ToggleView => KeyActionResult::ToggleView,
         KeyAction::CyclePermissionMode => {
-            update::cycle_permission_mode(session_manager, backend, ctx);
+            let publish = update::cycle_permission_mode(session_manager, backend, ctx);
             if let Some(session) = session_manager.get_active_mut() {
                 session.focus_requested = true;
             }
-            KeyActionResult::None
+            match publish {
+                Some(cmd) => KeyActionResult::PublishModeCommand(cmd),
+                None => KeyActionResult::None,
+            }
         }
         KeyAction::DeleteActiveSession => {
             if let Some(id) = session_manager.active_id() {
@@ -797,6 +802,8 @@ pub enum UiActionResult {
     NewChat,
     /// Trigger manual context compaction
     Compact,
+    /// Permission mode command needs relay publishing (observer → host).
+    PublishModeCommand(update::ModeCommandPublish),
 }
 
 /// Handle a UI action from DaveUi.
@@ -850,11 +857,14 @@ pub fn handle_ui_action(
             UiActionResult::PublishPermissionResponse,
         ),
         DaveAction::CyclePermissionMode => {
-            update::cycle_permission_mode(session_manager, backend, ctx);
+            let publish = update::cycle_permission_mode(session_manager, backend, ctx);
             if let Some(session) = session_manager.get_active_mut() {
                 session.focus_requested = true;
             }
-            UiActionResult::Handled
+            match publish {
+                Some(cmd) => UiActionResult::PublishModeCommand(cmd),
+                None => UiActionResult::Handled,
+            }
         }
         DaveAction::ToggleAutoSteal => UiActionResult::ToggleAutoSteal,
         DaveAction::ExitPlanMode {

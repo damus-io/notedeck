@@ -743,6 +743,7 @@ pub fn build_session_state_event(
     hostname: &str,
     home_dir: &str,
     backend: &str,
+    permission_mode: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     let mut builder = init_note_builder(AI_SESSION_STATE_KIND, "", Some(now_secs()));
@@ -760,6 +761,10 @@ pub fn build_session_state_event(
     builder = builder.start_tag().tag_str("hostname").tag_str(hostname);
     builder = builder.start_tag().tag_str("home_dir").tag_str(home_dir);
     builder = builder.start_tag().tag_str("backend").tag_str(backend);
+    builder = builder
+        .start_tag()
+        .tag_str("permission-mode")
+        .tag_str(permission_mode);
 
     // Discoverability
     builder = builder.start_tag().tag_str("t").tag_str("ai-session-state");
@@ -807,6 +812,37 @@ pub fn build_spawn_command_event(
         .tag_str("notedeck-dave");
 
     finalize_built_event(builder, secret_key, AI_SESSION_COMMAND_KIND)
+}
+
+/// Build a kind-1988 command event to set permission mode on a remote session.
+///
+/// Published by remote observers to request a permission mode change on the host.
+/// The host subscribes for these and applies them via its local backend.
+pub fn build_set_permission_mode_event(
+    mode: &str,
+    session_id: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let content = serde_json::json!({
+        "mode": mode,
+    })
+    .to_string();
+
+    let mut builder = init_note_builder(AI_CONVERSATION_KIND, &content, Some(now_secs()));
+
+    builder = builder.start_tag().tag_str("d").tag_str(session_id);
+    builder = builder
+        .start_tag()
+        .tag_str("role")
+        .tag_str("set_permission_mode");
+    builder = builder
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
+    builder = builder.start_tag().tag_str("t").tag_str("ai-command");
+
+    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
 
 #[cfg(test)]
@@ -1304,6 +1340,7 @@ mod tests {
             "my-laptop",
             "/home/testuser",
             "claude",
+            "plan",
             &sk,
         )
         .unwrap();
@@ -1324,6 +1361,7 @@ mod tests {
         assert!(json.contains("/tmp/project"));
         assert!(json.contains(r#""hostname","my-laptop"#));
         assert!(json.contains(r#""backend","claude"#));
+        assert!(json.contains(r#""permission-mode","plan"#));
     }
 
     #[test]

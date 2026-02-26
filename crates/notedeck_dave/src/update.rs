@@ -91,30 +91,54 @@ pub fn check_interrupt_timeout(pending_since: Option<Instant>) -> Option<Instant
 // =============================================================================
 
 /// Cycle permission mode for the active session: Default → Plan → AcceptEdits → Default.
+/// Info needed to publish a permission mode command to a remote host.
+pub struct ModeCommandPublish {
+    pub session_id: String,
+    pub mode: &'static str,
+}
+
 pub fn cycle_permission_mode(
     session_manager: &mut SessionManager,
     backend: &dyn AiBackend,
     ctx: &egui::Context,
-) {
-    if let Some(session) = session_manager.get_active_mut() {
-        if let Some(agentic) = &mut session.agentic {
-            let new_mode = match agentic.permission_mode {
-                PermissionMode::Default => PermissionMode::Plan,
-                PermissionMode::Plan => PermissionMode::AcceptEdits,
-                _ => PermissionMode::Default,
-            };
-            agentic.permission_mode = new_mode;
+) -> Option<ModeCommandPublish> {
+    let session = session_manager.get_active_mut()?;
+    let is_remote = session.is_remote();
+    let session_id = session.id;
+    let agentic = session.agentic.as_mut()?;
 
-            let session_id = format!("dave-session-{}", session.id);
-            backend.set_permission_mode(session_id, new_mode, ctx.clone());
+    let new_mode = match agentic.permission_mode {
+        PermissionMode::Default => PermissionMode::Plan,
+        PermissionMode::Plan => PermissionMode::AcceptEdits,
+        _ => PermissionMode::Default,
+    };
+    agentic.permission_mode = new_mode;
 
-            tracing::debug!(
-                "Cycled permission mode for session {} to {:?}",
-                session.id,
-                new_mode
-            );
-        }
-    }
+    let mode_str = crate::session::permission_mode_to_str(new_mode);
+
+    let result = if is_remote {
+        // Remote session: return info for caller to publish command event
+        let event_sid = agentic.event_session_id()?.to_string();
+        Some(ModeCommandPublish {
+            session_id: event_sid,
+            mode: mode_str,
+        })
+    } else {
+        // Local session: apply directly and mark dirty for state event publish
+        let backend_sid = format!("dave-session-{}", session_id);
+        backend.set_permission_mode(backend_sid, new_mode, ctx.clone());
+        session.state_dirty = true;
+        None
+    };
+
+    tracing::debug!(
+        "Cycled permission mode for session {} to {:?} (remote={})",
+        session_id,
+        new_mode,
+        is_remote,
+    );
+
+    result
 }
 
 /// Exit plan mode for the active session (switch to Default mode).

@@ -19,6 +19,26 @@ use uuid::Uuid;
 
 pub type SessionId = u32;
 
+/// Convert PermissionMode to a stable string for nostr tags.
+pub fn permission_mode_to_str(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Default => "default",
+        PermissionMode::Plan => "plan",
+        PermissionMode::AcceptEdits => "accept_edits",
+        PermissionMode::BypassPermissions => "bypass",
+    }
+}
+
+/// Parse PermissionMode from a nostr tag string.
+pub fn permission_mode_from_str(s: &str) -> PermissionMode {
+    match s {
+        "plan" => PermissionMode::Plan,
+        "accept_edits" => PermissionMode::AcceptEdits,
+        "bypass" => PermissionMode::BypassPermissions,
+        _ => PermissionMode::Default,
+    }
+}
+
 /// Whether this session runs locally or is observed remotely via relays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SessionSource {
@@ -194,9 +214,9 @@ pub struct AgenticSessionData {
     pub git_status: GitStatusCache,
     /// Threading state for live kind-1988 event generation.
     pub live_threading: ThreadingState,
-    /// Subscription for remote permission response events (kind-1988, t=ai-permission).
+    /// Subscription for remote kind-1988 events (permission responses, commands).
     /// Set up once when the session's claude_session_id becomes known.
-    pub perm_response_sub: Option<nostrdb::Subscription>,
+    pub conversation_action_sub: Option<nostrdb::Subscription>,
     /// Status as reported by the remote desktop's kind-31988 event.
     /// Only meaningful when session source is Remote.
     pub remote_status: Option<AgentStatus>,
@@ -241,7 +261,7 @@ impl AgenticSessionData {
             resume_session_id: None,
             git_status,
             live_threading: ThreadingState::new(),
-            perm_response_sub: None,
+            conversation_action_sub: None,
             remote_status: None,
             remote_status_ts: 0,
             live_conversation_sub: None,

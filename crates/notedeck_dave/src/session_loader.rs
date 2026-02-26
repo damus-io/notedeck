@@ -253,6 +253,7 @@ pub struct SessionState {
     pub hostname: String,
     pub home_dir: String,
     pub backend: Option<String>,
+    pub permission_mode: Option<String>,
     pub created_at: u64,
 }
 
@@ -276,6 +277,7 @@ impl SessionState {
             hostname: get_tag_value(note, "hostname").unwrap_or("").to_string(),
             home_dir: get_tag_value(note, "home_dir").unwrap_or("").to_string(),
             backend: get_tag_value(note, "backend").map(|s| s.to_string()),
+            permission_mode: get_tag_value(note, "permission-mode").map(|s| s.to_string()),
             created_at: note.created_at(),
         })
     }

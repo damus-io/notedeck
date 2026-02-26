@@ -183,6 +183,8 @@ pub struct Dave {
     /// Permission responses queued for relay publishing (from remote sessions).
     /// Built and published in the update loop where AppContext is available.
     pending_perm_responses: Vec<PermissionPublish>,
+    /// Permission mode commands queued for relay publishing (observer → host).
+    pending_mode_commands: Vec<update::ModeCommandPublish>,
     /// Sessions pending deletion state event publication.
     /// Populated in delete_session(), drained in the update loop where AppContext is available.
     pending_deletions: Vec<DeletedSessionInfo>,
@@ -499,6 +501,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             processed_commands: std::collections::HashSet::new(),
             pending_spawn_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
+            pending_mode_commands: Vec::new(),
             pending_deletions: Vec::new(),
             pending_summaries: Vec::new(),
             hostname,
@@ -1163,30 +1166,35 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Poll for remote permission responses arriving via nostr relays.
+    /// Poll for remote conversation actions arriving via nostr relays.
     ///
-    /// Remote clients (phone) publish kind-1988 events with
-    /// `role=permission_response` and a `perm-id` tag. We poll each
-    /// session's subscription and route matching responses through the
-    /// existing oneshot channel, racing with the local UI.
-    fn poll_remote_permission_responses(&mut self, ndb: &nostrdb::Ndb) {
+    /// Dispatches kind-1988 events by `role` tag:
+    /// - `permission_response`: route through oneshot channel (first-response-wins)
+    /// - `set_permission_mode`: apply mode change locally
+    ///
+    /// Returns (backend_session_id, backend_type, mode) tuples for mode changes
+    /// that need to be applied to the local CLI backend.
+    fn poll_remote_conversation_actions(
+        &mut self,
+        ndb: &nostrdb::Ndb,
+    ) -> Vec<(String, BackendType, claude_agent_sdk_rs::PermissionMode)> {
+        let mut mode_applies = Vec::new();
         let session_ids = self.session_manager.session_ids();
         for session_id in session_ids {
             let Some(session) = self.session_manager.get_mut(session_id) else {
                 continue;
             };
-            // Only local sessions poll for remote responses
+            // Only local sessions poll for remote actions
             if session.is_remote() {
                 continue;
             }
             let Some(agentic) = &mut session.agentic else {
                 continue;
             };
-            let Some(sub) = agentic.perm_response_sub else {
+            let Some(sub) = agentic.conversation_action_sub else {
                 continue;
             };
 
-            // Poll for new notes (non-blocking)
             let note_keys = ndb.poll_for_notes(sub, 64);
             if note_keys.is_empty() {
                 continue;
@@ -1202,76 +1210,42 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     continue;
                 };
 
-                // Only process permission_response events
-                let role = session_events::get_tag_value(&note, "role");
-                if role != Some("permission_response") {
-                    continue;
-                }
-
-                // Extract perm-id
-                let Some(perm_id_str) = session_events::get_tag_value(&note, "perm-id") else {
-                    tracing::warn!("permission_response event missing perm-id tag");
-                    continue;
-                };
-                let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) else {
-                    tracing::warn!("invalid perm-id UUID: {}", perm_id_str);
-                    continue;
-                };
-
-                // Parse the content to determine allow/deny
-                let content = note.content();
-                let (allowed, message) = match serde_json::from_str::<serde_json::Value>(content) {
-                    Ok(v) => {
-                        let decision = v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny");
-                        let msg = v
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string());
-                        (decision == "allow", msg)
+                match session_events::get_tag_value(&note, "role") {
+                    Some("permission_response") => {
+                        handle_remote_permission_response(&note, agentic, &mut session.chat);
                     }
-                    Err(_) => (false, None),
-                };
+                    Some("set_permission_mode") => {
+                        let content = note.content();
+                        let mode_str = match serde_json::from_str::<serde_json::Value>(content) {
+                            Ok(v) => v
+                                .get("mode")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("default")
+                                .to_string(),
+                            Err(_) => continue,
+                        };
 
-                // Route through the existing oneshot channel (first-response-wins)
-                if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
-                    let response = if allowed {
-                        PermissionResponse::Allow { message }
-                    } else {
-                        PermissionResponse::Deny {
-                            reason: message.unwrap_or_else(|| "Denied by remote".to_string()),
-                        }
-                    };
+                        let new_mode = crate::session::permission_mode_from_str(&mode_str);
+                        agentic.permission_mode = new_mode;
+                        session.state_dirty = true;
 
-                    // Mark in UI
-                    let response_type = if allowed {
-                        crate::messages::PermissionResponseType::Allowed
-                    } else {
-                        crate::messages::PermissionResponseType::Denied
-                    };
-                    for msg in &mut session.chat {
-                        if let Message::PermissionRequest(req) = msg {
-                            if req.id == perm_id {
-                                req.response = Some(response_type);
-                                break;
-                            }
-                        }
-                    }
+                        mode_applies.push((
+                            format!("dave-session-{}", session_id),
+                            session.backend_type,
+                            new_mode,
+                        ));
 
-                    if sender.send(response).is_err() {
-                        tracing::warn!("failed to send remote permission response for {}", perm_id);
-                    } else {
                         tracing::info!(
-                            "remote permission response for {}: {}",
-                            perm_id,
-                            if allowed { "allowed" } else { "denied" }
+                            "remote command: set permission mode to {:?} for session {}",
+                            new_mode,
+                            session_id,
                         );
                     }
+                    _ => {}
                 }
-                // If sender not found, either local UI already responded or
-                // this is a stale event — just ignore it silently.
             }
         }
+        mode_applies
     }
 
     /// Publish kind-31988 state events for sessions whose status changed.
@@ -1303,6 +1277,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             let cwd = agentic.cwd.to_string_lossy();
             let status = session.status().as_str();
+            let perm_mode = crate::session::permission_mode_to_str(agentic.permission_mode);
 
             queue_built_event(
                 session_events::build_session_state_event(
@@ -1314,6 +1289,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &self.hostname,
                     &session.details.home_dir,
                     session.backend_type.as_str(),
+                    perm_mode,
                     &sk,
                 ),
                 &format!("publishing session state: {} -> {}", claude_sid, status),
@@ -1348,6 +1324,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &self.hostname,
                     &info.home_dir,
                     info.backend.as_str(),
+                    "default",
                     &sk,
                 ),
                 &format!(
@@ -1412,6 +1389,33 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     "queued remote permission response for {} ({})",
                     resp.perm_id,
                     if resp.allowed { "allow" } else { "deny" }
+                ),
+                ctx.ndb,
+                &sk,
+                &mut self.pending_relay_events,
+            );
+        }
+    }
+
+    /// Publish permission mode command events for remote sessions.
+    /// Called in the update loop where AppContext is available.
+    fn publish_pending_mode_commands(&mut self, ctx: &AppContext<'_>) {
+        if self.pending_mode_commands.is_empty() {
+            return;
+        }
+
+        let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) else {
+            tracing::warn!("no secret key for publishing mode commands");
+            self.pending_mode_commands.clear();
+            return;
+        };
+
+        for cmd in std::mem::take(&mut self.pending_mode_commands) {
+            queue_built_event(
+                session_events::build_set_permission_mode_event(cmd.mode, &cmd.session_id, &sk),
+                &format!(
+                    "publishing permission mode command: {} -> {}",
+                    cmd.session_id, cmd.mode
                 ),
                 ctx.ndb,
                 &sk,
@@ -1494,9 +1498,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         loaded.permissions.request_note_ids,
                     );
                     agentic.seen_note_ids = loaded.note_ids;
-                    // Set remote status from state event
+                    // Set remote status and permission mode from state event
                     agentic.remote_status = AgentStatus::from_status_str(&state.status);
                     agentic.remote_status_ts = state.created_at;
+                    if let Some(ref pm) = state.permission_mode {
+                        agentic.permission_mode = crate::session::permission_mode_from_str(pm);
+                    }
 
                     setup_conversation_subscription(agentic, &state.claude_session_id, ctx.ndb);
                 }
@@ -1619,10 +1626,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             if is_remote && !new_hostname.is_empty() {
                                 session.details.hostname = new_hostname.to_string();
                             }
-                            // Status only updates for remote sessions (local
-                            // sessions derive status from the actual process)
+                            // Status and permission mode only update for remote
+                            // sessions (local sessions derive from the process)
                             if is_remote {
                                 agentic.remote_status = new_status;
+                                if let Some(pm) =
+                                    session_events::get_tag_value(&note, "permission-mode")
+                                {
+                                    agentic.permission_mode =
+                                        crate::session::permission_mode_from_str(pm);
+                                }
                             }
                         }
                     }
@@ -1699,9 +1712,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         loaded.permissions.request_note_ids,
                     );
                     agentic.seen_note_ids = loaded.note_ids;
-                    // Set remote status
+                    // Set remote status and permission mode
                     agentic.remote_status = AgentStatus::from_status_str(&state.status);
                     agentic.remote_status_ts = state.created_at;
+                    if let Some(ref pm) = state.permission_mode {
+                        agentic.permission_mode = crate::session::permission_mode_from_str(pm);
+                    }
 
                     setup_conversation_subscription(agentic, claude_sid, ctx.ndb);
                 }
@@ -2182,6 +2198,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             KeyActionResult::PublishPermissionResponse(publish) => {
                 self.pending_perm_responses.push(publish);
             }
+            KeyActionResult::PublishModeCommand(cmd) => {
+                self.pending_mode_commands.push(cmd);
+            }
             KeyActionResult::None => {}
         }
     }
@@ -2241,6 +2260,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             UiActionResult::PublishPermissionResponse(publish) => {
                 self.pending_perm_responses.push(publish);
+                None
+            }
+            UiActionResult::PublishModeCommand(cmd) => {
+                self.pending_mode_commands.push(cmd);
                 None
             }
             UiActionResult::ToggleAutoSteal => {
@@ -2753,6 +2776,9 @@ impl notedeck::App for Dave {
             }
         }
 
+        // Build permission mode command events for remote sessions
+        self.publish_pending_mode_commands(ctx);
+
         // PNS-wrap and publish events to relays
         let pending = std::mem::take(&mut self.pending_relay_events);
         let all_events = events_to_publish.iter().chain(pending.iter());
@@ -2769,10 +2795,15 @@ impl notedeck::App for Dave {
             }
         }
 
-        // Poll for remote permission responses from relay events.
-        // These arrive as kind-1988 events with role=permission_response,
-        // published by phone/remote clients. First-response-wins with local UI.
-        self.poll_remote_permission_responses(ctx.ndb);
+        // Poll for remote conversation actions (permission responses, commands).
+        let mode_applies = self.poll_remote_conversation_actions(ctx.ndb);
+        for (backend_sid, bt, mode) in mode_applies {
+            get_backend(&self.backends, bt).set_permission_mode(
+                backend_sid,
+                mode,
+                ui.ctx().clone(),
+            );
+        }
 
         // Poll git status for local agentic sessions
         for session in self.session_manager.iter_mut() {
@@ -3000,6 +3031,70 @@ fn handle_permission_request(
         .push(Message::PermissionRequest(pending.request));
 }
 
+/// Handle a remote permission response from a kind-1988 event.
+fn handle_remote_permission_response(
+    note: &nostrdb::Note,
+    agentic: &mut session::AgenticSessionData,
+    chat: &mut [Message],
+) {
+    let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") else {
+        tracing::warn!("permission_response event missing perm-id tag");
+        return;
+    };
+    let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) else {
+        tracing::warn!("invalid perm-id UUID: {}", perm_id_str);
+        return;
+    };
+
+    let content = note.content();
+    let (allowed, message) = match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(v) => {
+            let decision = v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny");
+            let msg = v
+                .get("message")
+                .and_then(|m| m.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            (decision == "allow", msg)
+        }
+        Err(_) => (false, None),
+    };
+
+    if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
+        let response = if allowed {
+            PermissionResponse::Allow { message }
+        } else {
+            PermissionResponse::Deny {
+                reason: message.unwrap_or_else(|| "Denied by remote".to_string()),
+            }
+        };
+
+        let response_type = if allowed {
+            crate::messages::PermissionResponseType::Allowed
+        } else {
+            crate::messages::PermissionResponseType::Denied
+        };
+        for msg in chat.iter_mut() {
+            if let Message::PermissionRequest(req) = msg {
+                if req.id == perm_id {
+                    req.response = Some(response_type);
+                    break;
+                }
+            }
+        }
+
+        if sender.send(response).is_err() {
+            tracing::warn!("failed to send remote permission response for {}", perm_id);
+        } else {
+            tracing::info!(
+                "remote permission response for {}: {}",
+                perm_id,
+                if allowed { "allowed" } else { "denied" }
+            );
+        }
+    }
+}
+
 /// Handle a tool result (execution metadata) from the AI backend.
 ///
 /// Invalidates git status after file-modifying tools, then either folds
@@ -3081,26 +3176,23 @@ fn handle_query_complete(session: &mut session::ChatSession, info: messages::Usa
 fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo, ndb: &nostrdb::Ndb) {
     if let Some(agentic) = &mut session.agentic {
         if let Some(ref csid) = info.claude_session_id {
-            // Permission response subscription (filtered to ai-permission tag)
-            if agentic.perm_response_sub.is_none() {
+            // Subscribe for kind-1988 events (permission responses, commands)
+            if agentic.conversation_action_sub.is_none() {
                 let filter = nostrdb::Filter::new()
                     .kinds([session_events::AI_CONVERSATION_KIND as u64])
                     .tags([csid.as_str()], 'd')
-                    .tags(["ai-permission"], 't')
                     .build();
                 match ndb.subscribe(&[filter]) {
                     Ok(sub) => {
-                        tracing::info!(
-                            "subscribed for remote permission responses (session {})",
-                            csid
-                        );
-                        agentic.perm_response_sub = Some(sub);
+                        tracing::info!("subscribed for conversation actions (session {})", csid);
+                        agentic.conversation_action_sub = Some(sub);
                     }
                     Err(e) => {
-                        tracing::warn!("failed to subscribe for permission responses: {:?}", e);
+                        tracing::warn!("failed to subscribe for conversation actions: {:?}", e);
                     }
                 }
             }
+
             setup_conversation_subscription(agentic, csid, ndb);
         }
         agentic.session_info = Some(info);
