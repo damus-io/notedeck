@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 use crate::agent_status::AgentStatus;
 use crate::backend::BackendType;
@@ -383,6 +384,8 @@ pub struct ChatSession {
     pub details: SessionDetails,
     /// Which backend this session uses (Claude, Codex, etc.)
     pub backend_type: BackendType,
+    /// When the last AI response token was received (for "5m ago" display)
+    pub last_activity: Option<Instant>,
 }
 
 impl Drop for ChatSession {
@@ -428,6 +431,7 @@ impl ChatSession {
                     .unwrap_or_default(),
             },
             backend_type,
+            last_activity: None,
         }
     }
 
@@ -905,6 +909,7 @@ impl ChatSession {
     pub fn append_token(&mut self, token: &str) {
         // Content arrived — transition AwaitingResponse → Streaming.
         self.dispatch_state.backend_responded();
+        self.last_activity = Some(Instant::now());
 
         // Fast path: last message is the active assistant response
         if let Some(Message::Assistant(msg)) = self.chat.last_mut() {
