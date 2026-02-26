@@ -3,18 +3,22 @@ pub mod convo_renderable;
 pub mod loader;
 pub mod nav;
 pub mod nip17;
+mod relay_ensure;
 pub mod ui;
 
 use enostr::Pubkey;
 use hashbrown::{HashMap, HashSet};
 use nav::{process_messages_ui_response, Route};
-use nostrdb::{Subscription, Transaction};
-use notedeck::{ui::is_narrow, Accounts, App, AppContext, AppResponse, Router};
+use nostrdb::{Ndb, Subscription, Transaction};
+use notedeck::{
+    ui::is_narrow, Accounts, App, AppContext, AppResponse, RemoteApi, Router, SubKey, SubOwnerKey,
+};
 
 use crate::{
     cache::{ConversationCache, ConversationListState, ConversationStates},
     loader::{LoaderMsg, MessagesLoader},
     nip17::conversation_filter,
+    relay_ensure::ensure_selected_account_dm_list,
     ui::{login_nsec_prompt, messages::messages_ui},
 };
 
@@ -83,6 +87,8 @@ impl App for MessagesApp {
                 tracing::error!("failed to spawn process_giftwraps thread: {err}");
             }
         }
+
+        ensure_selected_account_dm_relay_list(ctx.ndb, &mut ctx.remote, ctx.accounts, cache);
 
         match cache.state {
             ConversationListState::Initializing => {
@@ -285,6 +291,38 @@ fn request_conversation_messages(
         conversation.metadata.participants.clone(),
         *me,
     );
+}
+
+/// Scoped-sub owner namespace for messages DM relay-list lifecycles.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum RelayListOwner {
+    Ensure,
+}
+
+const RELAY_LIST_KEY: &str = "dm_relay_list";
+
+/// Stable owner for selected-account DM relay-list ensure subscriptions per selected account.
+fn list_ensure_owner_key(account_pk: Pubkey) -> SubOwnerKey {
+    SubOwnerKey::builder(RelayListOwner::Ensure)
+        .with(account_pk)
+        .finish()
+}
+
+/// Stable key for one participant's DM relay-list remote stream.
+pub fn list_fetch_sub_key(participant: &Pubkey) -> SubKey {
+    SubKey::builder(RELAY_LIST_KEY)
+        .with(*participant.bytes())
+        .finish()
+}
+
+#[profiling::function]
+pub(crate) fn ensure_selected_account_dm_relay_list(
+    ndb: &mut Ndb,
+    remote: &mut RemoteApi<'_>,
+    accounts: &Accounts,
+    cache: &mut ConversationCache,
+) {
+    ensure_selected_account_dm_list(ndb, remote, accounts, cache.dm_relay_list_ensure_mut())
 }
 
 /// Storage for conversations per account. Account management is performed by `Accounts`

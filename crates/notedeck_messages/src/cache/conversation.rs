@@ -10,6 +10,7 @@ use crate::{
     },
     convo_renderable::ConversationRenderable,
     nip17::get_participants,
+    relay_ensure::DmListState,
 };
 
 use super::message_store::MessageStore;
@@ -23,6 +24,7 @@ pub struct ConversationCache {
     conversations: HashMap<ConversationId, Conversation>,
     order: Vec<ConversationOrder>,
     pub state: ConversationListState,
+    dm_relay_list_ensure: DmListState,
     pub active: Option<ConversationId>,
 }
 
@@ -97,6 +99,11 @@ impl ConversationCache {
 
     pub fn first_convo_id(&self) -> Option<ConversationId> {
         Some(self.order.first()?.id)
+    }
+
+    /// Mutable access to the selected-account DM relay-list ensure state.
+    pub fn dm_relay_list_ensure_mut(&mut self) -> &mut DmListState {
+        &mut self.dm_relay_list_ensure
     }
 }
 
@@ -231,6 +238,7 @@ impl Default for ConversationCache {
             conversations: HashMap::new(),
             order: Vec::new(),
             state: Default::default(),
+            dm_relay_list_ensure: Default::default(),
             active: None,
         }
     }
