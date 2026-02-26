@@ -21,6 +21,11 @@ pub const AI_SOURCE_DATA_KIND: u32 = 1989;
 /// `d` tag = claude_session_id.
 pub const AI_SESSION_STATE_KIND: u32 = 31988;
 
+/// Nostr event kind for AI session commands (parameterized replaceable, NIP-33).
+/// Fire-and-forget commands to create sessions on remote hosts.
+/// `d` tag = command UUID.
+pub const AI_SESSION_COMMAND_KIND: u32 = 31989;
+
 /// Extract the value of a named tag from a note.
 pub fn get_tag_value<'a>(note: &'a nostrdb::Note<'a>, tag_name: &str) -> Option<&'a str> {
     for tag in note.tags() {
@@ -765,6 +770,43 @@ pub fn build_session_state_event(
         .tag_str("notedeck-dave");
 
     finalize_built_event(builder, secret_key, AI_SESSION_STATE_KIND)
+}
+
+/// Build a kind-31989 spawn command event.
+///
+/// This is a fire-and-forget command that tells a remote host to create a new
+/// session. The target host discovers the command via its ndb subscription,
+/// creates the session locally, and publishes a kind-31988 state event.
+pub fn build_spawn_command_event(
+    target_host: &str,
+    cwd: &str,
+    backend: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let command_id = uuid::Uuid::new_v4().to_string();
+    let mut builder = init_note_builder(AI_SESSION_COMMAND_KIND, "", Some(now_secs()));
+
+    builder = builder.start_tag().tag_str("d").tag_str(&command_id);
+    builder = builder
+        .start_tag()
+        .tag_str("command")
+        .tag_str("spawn_session");
+    builder = builder
+        .start_tag()
+        .tag_str("target_host")
+        .tag_str(target_host);
+    builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
+    builder = builder.start_tag().tag_str("backend").tag_str(backend);
+    builder = builder
+        .start_tag()
+        .tag_str("t")
+        .tag_str("ai-session-command");
+    builder = builder
+        .start_tag()
+        .tag_str("source")
+        .tag_str("notedeck-dave");
+
+    finalize_built_event(builder, secret_key, AI_SESSION_COMMAND_KIND)
 }
 
 #[cfg(test)]

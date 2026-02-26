@@ -4,6 +4,7 @@ mod dave;
 pub mod diff;
 pub mod directory_picker;
 mod git_status_ui;
+pub mod host_picker;
 pub mod keybind_hint;
 pub mod keybindings;
 pub mod markdown_ui;
@@ -18,6 +19,7 @@ mod top_buttons;
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use dave::{DaveAction, DaveResponse, DaveUi};
 pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
+pub use host_picker::HostPickerAction;
 pub use keybind_hint::{keybind_hint, paint_keybind_hint};
 pub use keybindings::{check_keybindings, KeyAction};
 pub use scene::{AgentScene, SceneAction, SceneResponse};
@@ -122,6 +124,8 @@ pub enum OverlayResult {
     BackToDirectoryPicker,
     /// Apply new settings
     ApplySettings(DaveSettings),
+    /// Host was selected. `None` = local, `Some(hostname)` = remote.
+    HostSelected(Option<String>),
 }
 
 /// Render the settings overlay UI.
@@ -190,6 +194,28 @@ pub fn session_picker_overlay_ui(
             }
             SessionPickerAction::BackToDirectoryPicker => {
                 return OverlayResult::BackToDirectoryPicker;
+            }
+        }
+    }
+    OverlayResult::None
+}
+
+/// Render the host picker overlay UI.
+pub fn host_picker_overlay_ui(
+    local_hostname: &str,
+    known_hosts: &[String],
+    has_sessions: bool,
+    ui: &mut egui::Ui,
+) -> OverlayResult {
+    if let Some(action) =
+        host_picker::host_picker_overlay_ui(ui, local_hostname, known_hosts, has_sessions)
+    {
+        match action {
+            HostPickerAction::HostSelected(host) => {
+                return OverlayResult::HostSelected(host);
+            }
+            HostPickerAction::Cancelled => {
+                return OverlayResult::Close;
             }
         }
     }
@@ -552,6 +578,7 @@ pub enum KeyActionResult {
     ToggleView,
     HandleInterrupt,
     CloneAgent,
+    NewAgent,
     DeleteSession(SessionId),
     SetAutoSteal(bool),
     /// Permission response needs relay publishing.
@@ -569,7 +596,6 @@ pub fn handle_key_action(
     show_scene: bool,
     auto_steal_focus: bool,
     home_session: &mut Option<SessionId>,
-    active_overlay: &mut DaveOverlay,
     ctx: &egui::Context,
 ) -> KeyActionResult {
     match key_action {
@@ -635,10 +661,7 @@ pub fn handle_key_action(
             update::cycle_prev_agent(session_manager, scene, show_scene);
             KeyActionResult::None
         }
-        KeyAction::NewAgent => {
-            *active_overlay = DaveOverlay::DirectoryPicker;
-            KeyActionResult::None
-        }
+        KeyAction::NewAgent => KeyActionResult::NewAgent,
         KeyAction::CloneAgent => KeyActionResult::CloneAgent,
         KeyAction::Interrupt => KeyActionResult::HandleInterrupt,
         KeyAction::ToggleView => KeyActionResult::ToggleView,
@@ -769,6 +792,8 @@ pub enum UiActionResult {
     PublishPermissionResponse(update::PermissionPublish),
     /// Toggle auto-steal focus mode (needs state from DaveApp)
     ToggleAutoSteal,
+    /// New chat requested — caller routes through handle_new_chat()
+    NewChat,
     /// Trigger manual context compaction
     Compact,
 }
@@ -786,10 +811,7 @@ pub fn handle_ui_action(
     match action {
         DaveAction::ToggleChrome => UiActionResult::AppAction(notedeck::AppAction::ToggleChrome),
         DaveAction::Note(n) => UiActionResult::AppAction(notedeck::AppAction::Note(n)),
-        DaveAction::NewChat => {
-            *active_overlay = DaveOverlay::DirectoryPicker;
-            UiActionResult::Handled
-        }
+        DaveAction::NewChat => UiActionResult::NewChat,
         DaveAction::Send => UiActionResult::SendAction,
         DaveAction::ShowSessionList => {
             *show_session_list = !*show_session_list;

@@ -10,7 +10,7 @@ use crate::session_events::{get_tag_value, is_conversation_role, AI_CONVERSATION
 use crate::tools::ToolResponse;
 use crate::Message;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Query replaceable events via `ndb.fold`, deduplicating by `d` tag.
 ///
@@ -348,6 +348,64 @@ pub fn latest_valid_session(
     }
 
     SessionState::from_note(note, Some(session_id))
+}
+
+/// Extract recent working directories grouped by hostname from kind-31988
+/// session state events.
+///
+/// Returns up to `MAX_RECENT_PER_HOST` unique paths per hostname, ordered
+/// by most recently seen first. Useful for populating the directory picker
+/// with previously used paths (both local and remote hosts).
+pub fn load_recent_paths_by_host(
+    ndb: &Ndb,
+    txn: &Transaction,
+) -> HashMap<String, Vec<std::path::PathBuf>> {
+    use crate::session_events::AI_SESSION_STATE_KIND;
+
+    const MAX_RECENT_PER_HOST: usize = 10;
+
+    let filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]).build();
+
+    let is_valid = |note: &nostrdb::Note| {
+        if get_tag_value(note, "status") == Some("deleted") {
+            return false;
+        }
+        if note.content().starts_with('{') {
+            return false;
+        }
+        true
+    };
+
+    let note_keys = query_replaceable_filtered(ndb, txn, &[filter], is_valid);
+
+    // Collect (hostname, cwd, created_at) triples
+    let mut entries: Vec<(String, String, u64)> = Vec::new();
+    for key in note_keys {
+        let Ok(note) = ndb.get_note_by_key(txn, key) else {
+            continue;
+        };
+        let hostname = get_tag_value(&note, "hostname").unwrap_or("").to_string();
+        let cwd = get_tag_value(&note, "cwd").unwrap_or("").to_string();
+        if cwd.is_empty() {
+            continue;
+        }
+        entries.push((hostname, cwd, note.created_at()));
+    }
+
+    // Sort by created_at descending (most recent first)
+    entries.sort_by(|a, b| b.2.cmp(&a.2));
+
+    // Group by hostname, dedup cwds, cap per host
+    let mut result: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
+    for (hostname, cwd, _) in entries {
+        let paths = result.entry(hostname).or_default();
+        let path = std::path::PathBuf::from(&cwd);
+        if !paths.contains(&path) && paths.len() < MAX_RECENT_PER_HOST {
+            paths.push(path);
+        }
+    }
+
+    result
 }
 
 pub(crate) fn truncate(s: &str, max_chars: usize) -> String {

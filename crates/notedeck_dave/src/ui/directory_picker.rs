@@ -1,6 +1,7 @@
 use crate::path_utils::abbreviate_path;
 use crate::ui::keybind_hint::paint_keybind_hint;
 use egui::{RichText, Vec2};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Maximum number of recent directories to store
@@ -27,6 +28,10 @@ pub struct DirectoryPicker {
     path_input: String,
     /// Pending async folder picker result
     pending_folder_pick: Option<std::sync::mpsc::Receiver<Option<PathBuf>>>,
+    /// When set, the picker targets a remote host (no browse, event-sourced paths).
+    pub target_host: Option<String>,
+    /// Per-host recent paths extracted from kind-31988 session state events.
+    pub host_recent_paths: HashMap<String, Vec<PathBuf>>,
 }
 
 impl Default for DirectoryPicker {
@@ -42,6 +47,8 @@ impl DirectoryPicker {
             is_open: false,
             path_input: String::new(),
             pending_folder_pick: None,
+            target_host: None,
+            host_recent_paths: HashMap::new(),
         }
     }
 
@@ -55,6 +62,32 @@ impl DirectoryPicker {
     pub fn close(&mut self) {
         self.is_open = false;
         self.pending_folder_pick = None;
+    }
+
+    /// Populate per-host recent paths from session state events.
+    /// Also seeds `recent_directories` from the local host's paths.
+    pub fn seed_host_paths(&mut self, paths: HashMap<String, Vec<PathBuf>>, local_hostname: &str) {
+        // Seed local recent_directories from this host's event-sourced paths
+        if let Some(local_paths) = paths.get(local_hostname) {
+            for path in local_paths {
+                if !self.recent_directories.contains(path) {
+                    self.recent_directories.push(path.clone());
+                }
+            }
+            self.recent_directories.truncate(MAX_RECENT_DIRECTORIES);
+        }
+        self.host_recent_paths = paths;
+    }
+
+    /// Record a path for a specific host (called when new session state events arrive).
+    pub fn add_host_path(&mut self, hostname: &str, path: PathBuf) {
+        let paths = self
+            .host_recent_paths
+            .entry(hostname.to_string())
+            .or_default();
+        paths.retain(|p| p != &path);
+        paths.insert(0, path);
+        paths.truncate(MAX_RECENT_DIRECTORIES);
     }
 
     /// Add a directory to the recent list
@@ -105,11 +138,22 @@ impl DirectoryPicker {
         let mut action = None;
         let is_narrow = notedeck::ui::is_narrow(ui.ctx());
         let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+        let is_remote = self.target_host.is_some();
+
+        // Choose which path list to display based on target host
+        let display_paths: &[PathBuf] = if let Some(ref host) = self.target_host {
+            self.host_recent_paths
+                .get(host)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[])
+        } else {
+            &self.recent_directories
+        };
 
         // Handle keyboard shortcuts for recent directories (Ctrl+1-9)
         // Only trigger when Ctrl is held to avoid intercepting TextEdit input
         if ctrl_held {
-            for (idx, path) in self.recent_directories.iter().take(9).enumerate() {
+            for (idx, path) in display_paths.iter().take(9).enumerate() {
                 let key = match idx {
                     0 => egui::Key::Num1,
                     1 => egui::Key::Num2,
@@ -148,7 +192,11 @@ impl DirectoryPicker {
                         }
                         ui.add_space(16.0);
                     }
-                    ui.heading("Select Working Directory");
+                    if let Some(ref host) = self.target_host {
+                        ui.heading(format!("Select Directory on {}", host));
+                    } else {
+                        ui.heading("Select Working Directory");
+                    }
                 });
 
                 ui.add_space(16.0);
@@ -166,7 +214,7 @@ impl DirectoryPicker {
                     egui::Layout::top_down(egui::Align::LEFT),
                     |ui| {
                         // Recent directories section
-                        if !self.recent_directories.is_empty() {
+                        if !display_paths.is_empty() {
                             ui.label(RichText::new("Recent Directories").strong());
                             ui.add_space(8.0);
 
@@ -180,9 +228,7 @@ impl DirectoryPicker {
                             egui::ScrollArea::vertical()
                                 .max_height(scroll_height)
                                 .show(ui, |ui| {
-                                    for (idx, path) in
-                                        self.recent_directories.clone().iter().enumerate()
-                                    {
+                                    for (idx, path) in display_paths.iter().enumerate() {
                                         let display = abbreviate_path(path);
 
                                         // Full-width button style with larger touch targets on mobile
@@ -233,14 +279,16 @@ impl DirectoryPicker {
                             ui.add_space(12.0);
                         }
 
-                        // Browse button (larger touch target on mobile)
-                        ui.horizontal(|ui| {
-                            let browse_button =
-                                egui::Button::new(RichText::new("Browse...").size(if is_narrow {
-                                    16.0
-                                } else {
-                                    14.0
-                                }))
+                        // Browse button — only for local targets (can't browse remote fs)
+                        if !is_remote {
+                            ui.horizontal(|ui| {
+                                let browse_button = egui::Button::new(
+                                    RichText::new("Browse...").size(if is_narrow {
+                                        16.0
+                                    } else {
+                                        14.0
+                                    }),
+                                )
                                 .min_size(Vec2::new(
                                     if is_narrow {
                                         ui.available_width() - 28.0
@@ -250,59 +298,60 @@ impl DirectoryPicker {
                                     if is_narrow { 48.0 } else { 32.0 },
                                 ));
 
-                            let response = ui.add(browse_button);
+                                let response = ui.add(browse_button);
 
-                            // Show keybind hint when Ctrl is held
-                            if ctrl_held {
-                                let hint_center =
-                                    response.rect.right_center() + egui::vec2(14.0, 0.0);
-                                paint_keybind_hint(ui, hint_center, "B", 18.0);
-                            }
+                                // Show keybind hint when Ctrl is held
+                                if ctrl_held {
+                                    let hint_center =
+                                        response.rect.right_center() + egui::vec2(14.0, 0.0);
+                                    paint_keybind_hint(ui, hint_center, "B", 18.0);
+                                }
 
-                            #[cfg(any(
-                                target_os = "windows",
-                                target_os = "macos",
-                                target_os = "linux"
-                            ))]
-                            if response
-                                .on_hover_text("Open folder picker dialog (B)")
-                                .clicked()
-                                || trigger_browse
-                            {
-                                // Spawn async folder picker
-                                let (tx, rx) = std::sync::mpsc::channel();
-                                let ctx_clone = ui.ctx().clone();
-                                std::thread::spawn(move || {
-                                    let result = rfd::FileDialog::new().pick_folder();
-                                    let _ = tx.send(result);
-                                    ctx_clone.request_repaint();
-                                });
-                                self.pending_folder_pick = Some(rx);
-                            }
+                                #[cfg(any(
+                                    target_os = "windows",
+                                    target_os = "macos",
+                                    target_os = "linux"
+                                ))]
+                                if response
+                                    .on_hover_text("Open folder picker dialog (B)")
+                                    .clicked()
+                                    || trigger_browse
+                                {
+                                    // Spawn async folder picker
+                                    let (tx, rx) = std::sync::mpsc::channel();
+                                    let ctx_clone = ui.ctx().clone();
+                                    std::thread::spawn(move || {
+                                        let result = rfd::FileDialog::new().pick_folder();
+                                        let _ = tx.send(result);
+                                        ctx_clone.request_repaint();
+                                    });
+                                    self.pending_folder_pick = Some(rx);
+                                }
 
-                            // On platforms without rfd (e.g., Android), just show the button disabled
-                            #[cfg(not(any(
-                                target_os = "windows",
-                                target_os = "macos",
-                                target_os = "linux"
-                            )))]
-                            {
-                                let _ = response;
-                                let _ = trigger_browse;
-                            }
-                        });
-
-                        if self.pending_folder_pick.is_some() {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Opening dialog...");
+                                // On platforms without rfd (e.g., Android), just show the button disabled
+                                #[cfg(not(any(
+                                    target_os = "windows",
+                                    target_os = "macos",
+                                    target_os = "linux"
+                                )))]
+                                {
+                                    let _ = response;
+                                    let _ = trigger_browse;
+                                }
                             });
+
+                            if self.pending_folder_pick.is_some() {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label("Opening dialog...");
+                                });
+                            }
+
+                            ui.add_space(16.0);
                         }
 
-                        ui.add_space(16.0);
-
                         // Manual path input
-                        ui.label("Or enter path:");
+                        ui.label("Enter path:");
                         ui.add_space(4.0);
 
                         let response = ui.add(
@@ -326,8 +375,11 @@ impl DirectoryPicker {
                             || response.lost_focus()
                                 && ui.input(|i| i.key_pressed(egui::Key::Enter))
                         {
-                            let path = PathBuf::from(&self.path_input);
-                            if path.exists() && path.is_dir() {
+                            let path = PathBuf::from(self.path_input.trim());
+                            // For remote targets we can't verify the path locally
+                            if !self.path_input.trim().is_empty()
+                                && (is_remote || (path.exists() && path.is_dir()))
+                            {
                                 action = Some(DirectoryPickerAction::DirectorySelected(path));
                             }
                         }

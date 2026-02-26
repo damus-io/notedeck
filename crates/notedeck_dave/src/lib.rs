@@ -38,7 +38,7 @@ use notedeck::{
     AppContext, AppResponse, DataPath, DataPathType,
 };
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::string::ToString;
 use std::sync::Arc;
 use std::time::Instant;
@@ -91,6 +91,13 @@ fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
     })
 }
 
+/// A pending spawn command waiting to be built and published.
+struct PendingSpawnCommand {
+    target_host: String,
+    cwd: PathBuf,
+    backend: BackendType,
+}
+
 /// Represents which full-screen overlay (if any) is currently active.
 /// Data-carrying variants hold the state needed for that step in the
 /// session-creation flow, replacing scattered `pending_*` fields.
@@ -99,6 +106,7 @@ pub enum DaveOverlay {
     #[default]
     None,
     Settings,
+    HostPicker,
     DirectoryPicker,
     /// Backend has been chosen; showing resumable-session list.
     SessionPicker {
@@ -166,6 +174,12 @@ pub struct Dave {
     /// Local ndb subscription for kind-31988 session state events.
     /// Fires when new session states are unwrapped from PNS events.
     session_state_sub: Option<nostrdb::Subscription>,
+    /// Local ndb subscription for kind-31989 session command events.
+    session_command_sub: Option<nostrdb::Subscription>,
+    /// Command UUIDs already processed (dedup for spawn commands).
+    processed_commands: std::collections::HashSet<String>,
+    /// Spawn commands waiting to be built+published in update() where secret key is available.
+    pending_spawn_commands: Vec<PendingSpawnCommand>,
     /// Permission responses queued for relay publishing (from remote sessions).
     /// Built and published in the update loop where AppContext is available.
     pending_perm_responses: Vec<PermissionPublish>,
@@ -481,6 +495,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             sessions_restored: false,
             pns_relay_sub: None,
             session_state_sub: None,
+            session_command_sub: None,
+            processed_commands: std::collections::HashSet::new(),
+            pending_spawn_commands: Vec::new(),
             pending_perm_responses: Vec::new(),
             pending_deletions: Vec::new(),
             pending_summaries: Vec::new(),
@@ -775,15 +792,45 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 return DaveResponse::default();
             }
+            DaveOverlay::HostPicker => {
+                let has_sessions = !self.session_manager.is_empty();
+                let known_hosts = self.known_remote_hosts();
+                match ui::host_picker_overlay_ui(&self.hostname, &known_hosts, has_sessions, ui) {
+                    OverlayResult::HostSelected(host) => {
+                        self.directory_picker.target_host = host;
+                        self.active_overlay = DaveOverlay::DirectoryPicker;
+                    }
+                    OverlayResult::Close => {}
+                    _ => {
+                        self.active_overlay = DaveOverlay::HostPicker;
+                    }
+                }
+                return DaveResponse::default();
+            }
             DaveOverlay::DirectoryPicker => {
                 let has_sessions = !self.session_manager.is_empty();
                 match ui::directory_picker_overlay_ui(&mut self.directory_picker, has_sessions, ui)
                 {
                     OverlayResult::DirectorySelected(path) => {
-                        tracing::info!("directory selected: {:?}", path);
-                        self.create_or_pick_backend(path);
+                        if let Some(target_host) = self.directory_picker.target_host.take() {
+                            tracing::info!(
+                                "remote directory selected: {:?} on {}",
+                                path,
+                                target_host
+                            );
+                            self.queue_spawn_command(
+                                &target_host,
+                                &path,
+                                self.model_config.backend,
+                            );
+                        } else {
+                            tracing::info!("directory selected: {:?}", path);
+                            self.create_or_pick_backend(path);
+                        }
                     }
-                    OverlayResult::Close => {}
+                    OverlayResult::Close => {
+                        self.directory_picker.target_host = None;
+                    }
                     _ => {
                         self.active_overlay = DaveOverlay::DirectoryPicker;
                     }
@@ -975,10 +1022,38 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.create_session_with_cwd(cwd, self.model_config.backend);
             }
             AiMode::Agentic => {
-                // In agentic mode, show the directory picker to select a working directory
-                self.active_overlay = DaveOverlay::DirectoryPicker;
+                // If remote hosts are known, show host picker first
+                if !self.known_remote_hosts().is_empty() {
+                    self.active_overlay = DaveOverlay::HostPicker;
+                } else {
+                    self.directory_picker.target_host = None;
+                    self.active_overlay = DaveOverlay::DirectoryPicker;
+                }
             }
         }
+    }
+
+    /// Collect remote hostnames from session host_groups and directory picker's
+    /// event-sourced paths. Excludes the local hostname.
+    fn known_remote_hosts(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = Vec::new();
+
+        // From active session groups
+        for (hostname, _) in self.session_manager.host_groups() {
+            if hostname != &self.hostname && !hosts.contains(hostname) {
+                hosts.push(hostname.clone());
+            }
+        }
+
+        // From event-sourced paths (may include hosts with no active sessions)
+        for hostname in self.directory_picker.host_recent_paths.keys() {
+            if hostname != &self.hostname && !hosts.contains(hostname) {
+                hosts.push(hostname.clone());
+            }
+        }
+
+        hosts.sort();
+        hosts
     }
 
     /// Create a new session with the given cwd (called after directory picker selection)
@@ -1019,6 +1094,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Clone the active agent, creating a new session with the same working directory
     fn clone_active_agent(&mut self) {
+        let Some(active) = self.session_manager.get_active() else {
+            return;
+        };
+
+        // If the active session is remote, send a spawn command to its host
+        if active.is_remote() {
+            if let Some(cwd) = active.cwd().cloned() {
+                let host = active.details.hostname.clone();
+                let backend = active.backend_type;
+                self.queue_spawn_command(&host, &cwd, backend);
+                return;
+            }
+        }
+
         update::clone_active_agent(
             &mut self.session_manager,
             &mut self.directory_picker,
@@ -1416,6 +1505,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         self.session_manager.rebuild_host_groups();
 
+        // Seed per-host recent paths from session state events
+        let host_paths = session_loader::load_recent_paths_by_host(ctx.ndb, &txn);
+        self.directory_picker
+            .seed_host_paths(host_paths, &self.hostname);
+
         // Skip the directory picker since we restored sessions
         self.active_overlay = DaveOverlay::None;
     }
@@ -1554,6 +1648,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             existing_ids.insert(claude_sid.to_string());
 
+            // Track this host+cwd for the directory picker
+            if !state.cwd.is_empty() {
+                self.directory_picker
+                    .add_host_path(&state.hostname, PathBuf::from(&state.cwd));
+            }
+
             let backend = state
                 .backend
                 .as_deref()
@@ -1613,6 +1713,67 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
                 self.active_overlay = DaveOverlay::None;
             }
+        }
+    }
+
+    /// Poll for kind-31989 spawn command events.
+    ///
+    /// When a remote device wants to create a session on this host, it publishes
+    /// a kind-31989 event with `target_host` matching our hostname. We pick it up
+    /// here and create the session locally.
+    fn poll_session_command_events(&mut self, ctx: &mut AppContext<'_>) {
+        let Some(sub) = self.session_command_sub else {
+            return;
+        };
+
+        let note_keys = ctx.ndb.poll_for_notes(sub, 16);
+        if note_keys.is_empty() {
+            return;
+        }
+
+        let txn = match Transaction::new(ctx.ndb) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+
+        for key in note_keys {
+            let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
+                continue;
+            };
+
+            let Some(command_id) = session_events::get_tag_value(&note, "d") else {
+                continue;
+            };
+
+            // Dedup: skip already-processed commands
+            if self.processed_commands.contains(command_id) {
+                continue;
+            }
+
+            let command = session_events::get_tag_value(&note, "command").unwrap_or("");
+            if command != "spawn_session" {
+                continue;
+            }
+
+            let target = session_events::get_tag_value(&note, "target_host").unwrap_or("");
+            if target != self.hostname {
+                continue;
+            }
+
+            let cwd = session_events::get_tag_value(&note, "cwd").unwrap_or("");
+            let backend_str = session_events::get_tag_value(&note, "backend").unwrap_or("");
+            let backend =
+                BackendType::from_tag_str(backend_str).unwrap_or(self.model_config.backend);
+
+            tracing::info!(
+                "received spawn command {}: cwd={}, backend={:?}",
+                command_id,
+                cwd,
+                backend
+            );
+
+            self.processed_commands.insert(command_id.to_string());
+            self.create_session_with_cwd(PathBuf::from(cwd), backend);
         }
     }
 
@@ -1918,8 +2079,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Create a session with the given cwd, or show the backend picker if
-    /// multiple agentic backends are available.
+    /// Queue a spawn command request. The event is built and published in
+    /// update() where AppContext (and thus the secret key) is available.
+    fn queue_spawn_command(&mut self, target_host: &str, cwd: &Path, backend: BackendType) {
+        tracing::info!("queuing spawn command for {} at {:?}", target_host, cwd);
+        self.pending_spawn_commands.push(PendingSpawnCommand {
+            target_host: target_host.to_string(),
+            cwd: cwd.to_path_buf(),
+            backend,
+        });
+    }
+
     fn create_or_pick_backend(&mut self, cwd: PathBuf) {
         tracing::info!(
             "create_or_pick_backend: {} available backends: {:?}",
@@ -1989,7 +2159,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.show_scene,
             self.auto_steal_focus,
             &mut self.home_session,
-            &mut self.active_overlay,
             ui.ctx(),
         ) {
             KeyActionResult::ToggleView => {
@@ -2000,6 +2169,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             KeyActionResult::CloneAgent => {
                 self.clone_active_agent();
+            }
+            KeyActionResult::NewAgent => {
+                self.handle_new_chat();
             }
             KeyActionResult::DeleteSession(id) => {
                 self.delete_session(id);
@@ -2080,6 +2252,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &mut self.home_session,
                 );
                 self.auto_steal_focus = new_state;
+                None
+            }
+            UiActionResult::NewChat => {
+                self.handle_new_chat();
                 None
             }
             UiActionResult::Compact => {
@@ -2456,6 +2632,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     tracing::warn!("failed to subscribe for session state events: {:?}", e);
                 }
             }
+
+            // Local: subscribe in ndb for kind-31989 session command events
+            let cmd_filter = nostrdb::Filter::new()
+                .kinds([session_events::AI_SESSION_COMMAND_KIND as u64])
+                .build();
+            match ctx.ndb.subscribe(&[cmd_filter]) {
+                Ok(sub) => {
+                    self.session_command_sub = Some(sub);
+                    tracing::info!("subscribed for session command events in ndb");
+                }
+                Err(e) => {
+                    tracing::warn!("failed to subscribe for session command events: {:?}", e);
+                }
+            }
         }
     }
 }
@@ -2487,6 +2677,9 @@ impl notedeck::App for Dave {
 
         // Poll for new session states from PNS-unwrapped relay events
         self.poll_session_state_events(ctx);
+
+        // Poll for spawn commands targeting this host
+        self.poll_session_command_events(ctx);
 
         // Poll for live conversation events on all sessions.
         // Returns user messages from remote clients that need backend dispatch.
@@ -2542,6 +2735,23 @@ impl notedeck::App for Dave {
 
         // Build permission response events from remote sessions
         self.publish_pending_perm_responses(ctx);
+
+        // Build spawn command events (need secret key from AppContext)
+        if !self.pending_spawn_commands.is_empty() {
+            if let Some(sk) = secret_key_bytes(ctx.accounts.get_selected_account().keypair()) {
+                for cmd in std::mem::take(&mut self.pending_spawn_commands) {
+                    match session_events::build_spawn_command_event(
+                        &cmd.target_host,
+                        &cmd.cwd.to_string_lossy(),
+                        cmd.backend.as_str(),
+                        &sk,
+                    ) {
+                        Ok(evt) => self.pending_relay_events.push(evt),
+                        Err(e) => tracing::warn!("failed to build spawn command: {:?}", e),
+                    }
+                }
+            }
+        }
 
         // PNS-wrap and publish events to relays
         let pending = std::mem::take(&mut self.pending_relay_events);
