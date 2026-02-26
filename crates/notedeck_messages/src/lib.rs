@@ -9,9 +9,7 @@ use enostr::Pubkey;
 use hashbrown::{HashMap, HashSet};
 use nav::{process_messages_ui_response, Route};
 use nostrdb::{Subscription, Transaction};
-use notedeck::{
-    try_process_events_core, ui::is_narrow, Accounts, App, AppContext, AppResponse, Router,
-};
+use notedeck::{ui::is_narrow, Accounts, App, AppContext, AppResponse, Router};
 
 use crate::{
     cache::{ConversationCache, ConversationListState, ConversationStates},
@@ -53,8 +51,6 @@ impl Default for MessagesApp {
 impl App for MessagesApp {
     #[profiling::function]
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        try_process_events_core(ctx, ui.ctx(), |_, _| {});
-
         let Some(cache) = self.messages.get_current_mut(ctx.accounts) else {
             login_nsec_prompt(ui, ctx.i18n);
             return AppResponse::none();

@@ -57,7 +57,7 @@ pub use account::accounts::{AccountData, AccountSubs, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;
 pub use account::FALLBACK_PUBKEY;
-pub use app::{try_process_events_core, App, AppAction, AppResponse, Notedeck};
+pub use app::{App, AppAction, AppResponse, Notedeck};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
@@ -115,7 +115,9 @@ pub use time::{
     is_future_timestamp, time_ago_since, time_format, unix_time_secs, MAX_FUTURE_NOTE_SKEW_SECS,
 };
 pub use timecache::TimeCached;
-pub use unknowns::{get_unknown_note_ids, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds};
+pub use unknowns::{
+    get_unknown_note_ids, unknown_id_send, NoteRefsUnkIdAction, SingleUnkIdAction, UnknownIds,
+};
 pub use urls::{supported_mime_hosted_at_url, SupportedMimeType, UrlMimes};
 pub use user_account::UserAccount;
 pub use wallet::{

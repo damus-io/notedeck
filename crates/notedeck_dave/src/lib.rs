@@ -3,6 +3,7 @@ mod auto_accept;
 mod avatar;
 mod backend;
 pub mod config;
+pub mod events;
 pub mod file_update;
 mod focus_queue;
 pub(crate) mod git_status;
@@ -34,8 +35,8 @@ use enostr::KeypairUnowned;
 use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
-    timed_serializer::TimedSerializer, try_process_events_core, ui::is_narrow, AppAction,
-    AppContext, AppResponse, DataPath, DataPathType,
+    timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
+    DataPathType,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -206,6 +207,8 @@ pub struct Dave {
 }
 
 use update::PermissionPublish;
+
+use crate::events::try_process_events_core;
 
 /// Info captured from a session before deletion, for publishing a "deleted" state event.
 struct DeletedSessionInfo {

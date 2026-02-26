@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel as chan;
 
 use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{AppContext, AppResponse, try_process_events_core};
+use notedeck::{AppContext, AppResponse};
 
 use chrono::{Datelike, TimeZone, Utc};
 
@@ -245,8 +245,6 @@ impl Default for Dashboard {
 
 impl notedeck::App for Dashboard {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        try_process_events_core(ctx, ui.ctx(), |_, _| {});
-
         if !self.initialized {
             self.initialized = true;
             self.init(ui.ctx().clone(), ctx);
