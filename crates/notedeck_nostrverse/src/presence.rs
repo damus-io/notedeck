@@ -125,7 +125,8 @@ impl PresencePublisher {
     }
 
     /// Maybe publish a presence heartbeat.
-    /// Returns the ClientMessage if published (for optional relay forwarding).
+    ///
+    /// Returns the ingested note if published so the caller can forward it.
     pub fn maybe_publish(
         &mut self,
         ndb: &Ndb,
@@ -133,7 +134,7 @@ impl PresencePublisher {
         room_naddr: &str,
         position: Vec3,
         now: f64,
-    ) -> Option<enostr::ClientMessage> {
+    ) -> Option<nostrdb::Note<'static>> {
         let velocity = self.compute_velocity(position, now);
 
         // Always update position sample for velocity computation
@@ -148,7 +149,7 @@ impl PresencePublisher {
         let result = nostr_events::ingest_event(builder, ndb, kp);
 
         self.record_publish(position, velocity, now);
-        result.map(|(msg, _id)| msg)
+        result
     }
 }
 
