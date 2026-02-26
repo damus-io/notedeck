@@ -37,80 +37,6 @@ enum DragUpdate {
         new_grab_offset: Vec3,
         new_plane_y: f32,
     },
-    SnapToParent {
-        id: String,
-        parent_id: String,
-        parent_scene_id: renderbud::ObjectId,
-        parent_aabb: renderbud::Aabb,
-        local_pos: Vec3,
-        local_y: f32,
-        plane_y: f32,
-        new_grab_offset: Vec3,
-    },
-}
-
-/// During a free drag, check if the world position lands on another object's
-/// top surface. Returns snap info if a suitable parent is found.
-/// Takes viewport coords to re-unproject onto the new drag plane for a
-/// smooth grab-offset transition.
-fn find_snap_parent(
-    world_pos: Vec3,
-    drag_id: &str,
-    child_half_h: f32,
-    vp_x: f32,
-    vp_y: f32,
-    objects: &[RoomObject],
-    r: &renderbud::Renderer,
-) -> Option<DragUpdate> {
-    for obj in objects {
-        if obj.id == drag_id {
-            continue;
-        }
-        let Some(scene_id) = obj.scene_object_id else {
-            continue;
-        };
-        let Some(model) = obj.model_handle else {
-            continue;
-        };
-        let Some(aabb) = r.model_bounds(model) else {
-            continue;
-        };
-        let Some(parent_world) = r.world_matrix(scene_id) else {
-            continue;
-        };
-        let inv_parent = parent_world.inverse();
-        let local_hit = inv_parent.transform_point3(world_pos);
-
-        // Check if XZ is within the parent's AABB
-        if aabb.xz_overshoot(local_hit) < 0.01 {
-            let local_y = aabb.max.y + child_half_h;
-            let local_pos = aabb.clamp_xz(Vec3::new(local_hit.x, local_y, local_hit.z));
-            let snapped_world = parent_world.transform_point3(local_pos);
-            let plane_y = snapped_world.y;
-
-            // Compute grab offset so the object doesn't jump:
-            // re-unproject cursor onto the new (higher) drag plane,
-            // then compute offset in parent-local space.
-            let grab_offset = if let Some(new_hit) = r.unproject_to_plane(vp_x, vp_y, plane_y) {
-                let new_local = inv_parent.transform_point3(new_hit);
-                Vec3::new(local_pos.x - new_local.x, 0.0, local_pos.z - new_local.z)
-            } else {
-                Vec3::ZERO
-            };
-
-            return Some(DragUpdate::SnapToParent {
-                id: drag_id.to_string(),
-                parent_id: obj.id.clone(),
-                parent_scene_id: scene_id,
-                parent_aabb: aabb,
-                local_pos,
-                local_y,
-                plane_y,
-                new_grab_offset: grab_offset,
-            });
-        }
-    }
-    None
 }
 
 /// Pure computation: given current drag state and pointer, decide what to do.
@@ -291,38 +217,6 @@ fn apply_drag_update(
             });
             None
         }
-        DragUpdate::SnapToParent {
-            id,
-            parent_id,
-            parent_scene_id,
-            parent_aabb,
-            local_pos,
-            local_y,
-            plane_y,
-            new_grab_offset,
-        } => {
-            if let Some(obj) = state.objects.iter_mut().find(|o| o.id == id) {
-                if let Some(sid) = obj.scene_object_id {
-                    r.set_parent(sid, Some(parent_scene_id));
-                }
-                obj.position = local_pos;
-                obj.location = Some(ObjectLocation::TopOf(parent_id.clone()));
-                obj.location_base = Some(Vec3::new(0.0, local_y, 0.0));
-                state.dirty = true;
-            }
-            state.drag_state = Some(DragState {
-                object_id: id,
-                grab_offset: new_grab_offset,
-                plane_y,
-                mode: DragMode::Parented {
-                    parent_id,
-                    parent_scene_id,
-                    parent_aabb,
-                    local_y,
-                },
-            });
-            None
-        }
     }
 }
 
@@ -443,40 +337,6 @@ pub fn show_room_view(
                         let vp = pos - rect.min.to_vec2();
                         let grid = state.grid_snap_enabled.then_some(state.grid_snap);
                         let update = compute_drag_update(drag, vp.x, vp.y, grid, &r);
-                        // For free drags, check if we should snap to a parent
-                        let update = if let Some(DragUpdate::Move {
-                            ref id,
-                            ref position,
-                        }) = update
-                        {
-                            if matches!(
-                                state.drag_state.as_ref().map(|d| &d.mode),
-                                Some(DragMode::Free)
-                            ) {
-                                let child_half_h = state
-                                    .objects
-                                    .iter()
-                                    .find(|o| o.id == *id)
-                                    .and_then(|o| o.model_handle)
-                                    .and_then(|m| r.model_bounds(m))
-                                    .map(|b| (b.max.y - b.min.y) * 0.5)
-                                    .unwrap_or(0.0);
-                                find_snap_parent(
-                                    *position,
-                                    id,
-                                    child_half_h,
-                                    vp.x,
-                                    vp.y,
-                                    &state.objects,
-                                    &r,
-                                )
-                                .or(update)
-                            } else {
-                                update
-                            }
-                        } else {
-                            update
-                        };
 
                         if let Some(update) = update
                             && let Some(a) = apply_drag_update(update, state, &mut r)
