@@ -17,6 +17,7 @@ pub enum SessionListAction {
     SwitchTo(SessionId),
     Delete(SessionId),
     Rename(SessionId, String),
+    DismissDone(SessionId),
 }
 
 /// UI component for displaying the session list sidebar
@@ -168,8 +169,9 @@ impl<'a> SessionListUi<'a> {
         } else {
             session.details.display_title()
         };
-        let response = self.session_item_ui(
+        let (response, dot_action) = self.session_item_ui(
             ui,
+            session.id,
             display_title,
             cwd,
             &session.details.home_dir,
@@ -181,7 +183,7 @@ impl<'a> SessionListUi<'a> {
             session.backend_type,
         );
 
-        let mut action = None;
+        let mut action = dot_action;
 
         if is_renaming {
             let outcome = renaming
@@ -245,6 +247,7 @@ impl<'a> SessionListUi<'a> {
     fn session_item_ui(
         &self,
         ui: &mut egui::Ui,
+        session_id: SessionId,
         title: &str,
         cwd: &Path,
         home_dir: &str,
@@ -254,7 +257,8 @@ impl<'a> SessionListUi<'a> {
         queue_priority: Option<FocusPriority>,
         session_ai_mode: AiMode,
         backend_type: BackendType,
-    ) -> egui::Response {
+    ) -> (egui::Response, Option<SessionListAction>) {
+        let mut dot_action = None;
         // Per-session: Chat sessions get shorter height (no CWD), no status bar
         // Agentic sessions get taller height with CWD and status bar
         let show_cwd = session_ai_mode == AiMode::Agentic;
@@ -322,6 +326,26 @@ impl<'a> SessionListUi<'a> {
             let dot_center = rect.right_center() - egui::vec2(right_offset + dot_radius + 4.0, 0.0);
             ui.painter()
                 .circle_filled(dot_center, dot_radius, priority.color());
+
+            // Make the dot clickable to dismiss Done indicators
+            if priority == FocusPriority::Done {
+                let dot_rect = egui::Rect::from_center_size(
+                    dot_center,
+                    egui::vec2(dot_radius * 4.0, dot_radius * 4.0),
+                );
+                let dot_response = ui.interact(
+                    dot_rect,
+                    ui.id().with(("dismiss_dot", session_id)),
+                    egui::Sense::click(),
+                );
+                if dot_response.clicked() {
+                    dot_action = Some(SessionListAction::DismissDone(session_id));
+                }
+                if dot_response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            }
+
             right_offset + dot_radius * 2.0 + 8.0 // Space reserved for the dot
         } else {
             right_offset
@@ -366,7 +390,7 @@ impl<'a> SessionListUi<'a> {
             cwd_ui(ui, cwd, home_dir, cwd_pos, max_text_width);
         }
 
-        response
+        (response, dot_action)
     }
 }
 

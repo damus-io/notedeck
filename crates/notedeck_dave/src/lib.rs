@@ -918,6 +918,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::Rename(id, new_title) => {
                     self.rename_session(id, new_title);
                 }
+                SessionListAction::DismissDone(id) => {
+                    self.focus_queue.dequeue_done(id);
+                }
             }
         }
 
@@ -954,6 +957,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::Rename(id, new_title) => {
                     self.rename_session(id, new_title);
+                }
+                SessionListAction::DismissDone(id) => {
+                    self.focus_queue.dequeue_done(id);
                 }
             }
         }
