@@ -500,41 +500,47 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
 
     // Use first header's byte offset as id_salt so multiple tables don't clash
     let salt = headers.first().map_or(0, |h| h.start);
-    let mut builder = TableBuilder::new(ui)
-        .id_salt(salt)
-        .vscroll(false)
-        .auto_shrink([false, false]);
-    for _ in 0..num_cols {
-        builder = builder.column(Column::auto().resizable(true));
-    }
 
-    let header_bg = theme.code_bg;
-
-    builder
-        .header(28.0, |mut header| {
-            for h in headers {
-                header.col(|ui| {
-                    ui.painter().rect_filled(ui.max_rect(), 0.0, header_bg);
-                    egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                        ui.strong(h.resolve(buffer));
-                    });
-                });
+    // Wrap in horizontal scroll so wide tables don't break layout on small screens
+    egui::ScrollArea::horizontal()
+        .id_salt(("md_table_scroll", salt))
+        .show(ui, |ui| {
+            let mut builder = TableBuilder::new(ui)
+                .id_salt(salt)
+                .vscroll(false)
+                .auto_shrink([false, false]);
+            for _ in 0..num_cols {
+                builder = builder.column(Column::auto().resizable(true));
             }
-        })
-        .body(|mut body| {
-            for row in rows {
-                body.row(28.0, |mut table_row| {
-                    for i in 0..num_cols {
-                        table_row.col(|ui| {
+
+            let header_bg = theme.code_bg;
+
+            builder
+                .header(28.0, |mut header| {
+                    for h in headers {
+                        header.col(|ui| {
+                            ui.painter().rect_filled(ui.max_rect(), 0.0, header_bg);
                             egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                                if let Some(cell) = row.get(i) {
-                                    ui.label(cell.resolve(buffer));
-                                }
+                                ui.strong(h.resolve(buffer));
                             });
                         });
                     }
+                })
+                .body(|mut body| {
+                    for row in rows {
+                        body.row(28.0, |mut table_row| {
+                            for i in 0..num_cols {
+                                table_row.col(|ui| {
+                                    egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
+                                        if let Some(cell) = row.get(i) {
+                                            ui.label(cell.resolve(buffer));
+                                        }
+                                    });
+                                });
+                            }
+                        });
+                    }
                 });
-            }
         });
     ui.add_space(8.0);
 }
