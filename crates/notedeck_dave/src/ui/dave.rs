@@ -1485,7 +1485,7 @@ fn usage_bar_ui(
     context_window: u64,
     ui: &mut egui::Ui,
 ) {
-    let total = usage.map(|u| u.total_tokens()).unwrap_or(0);
+    let total = usage.map(|u| u.context_tokens()).unwrap_or(0);
     if total == 0 {
         return;
     }

@@ -377,6 +377,12 @@ async fn session_actor(
                                             }
 
                                             // Extract usage metrics
+                                            tracing::debug!(
+                                                "ResultMessage usage: {:?}, total_cost_usd: {:?}, num_turns: {}",
+                                                result_msg.usage,
+                                                result_msg.total_cost_usd,
+                                                result_msg.num_turns
+                                            );
                                             let (input_tokens, output_tokens) = result_msg
                                                 .usage
                                                 .as_ref()
