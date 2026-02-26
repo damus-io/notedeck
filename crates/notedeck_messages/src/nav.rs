@@ -9,6 +9,7 @@ use crate::{
     },
     loader::MessagesLoader,
     nip17::send_conversation_message,
+    open_conversation_with_prefetch,
 };
 
 #[derive(Clone, Debug)]
@@ -160,7 +161,7 @@ fn handle_messages_action(
                 ));
 
             cache.initialize_conversation(id, vec![recipient, *selected]);
-            cache.active = Some(id);
+            open_conversation_with_prefetch(&mut ctx.remote, ctx.accounts, cache, id);
             request_conversation_messages(
                 cache,
                 ctx.accounts.selected_account_pubkey(),
@@ -197,7 +198,7 @@ fn open_coversation_action(
     loader: &MessagesLoader,
     inflight_messages: &mut HashSet<ConversationId>,
 ) {
-    cache.active = Some(id);
+    open_conversation_with_prefetch(&mut ctx.remote, ctx.accounts, cache, id);
     request_conversation_messages(
         cache,
         ctx.accounts.selected_account_pubkey(),

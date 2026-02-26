@@ -1,7 +1,9 @@
+use nostrdb::Transaction;
+use notedeck::enostr::RelayId;
 use notedeck::{AppContext, RelayType};
 
 use crate::cache::{ConversationCache, ConversationId};
-use crate::nip17::{build_rumor_json, giftwrap_message, OsRng};
+use crate::nip17::{build_rumor_json, giftwrap_message, query_participant_dm_relays, OsRng};
 
 pub fn send_conversation_message(
     conversation_id: ConversationId,
@@ -36,6 +38,7 @@ pub fn send_conversation_message(
         return;
     };
 
+    let txn = Transaction::new(ctx.ndb).expect("txn");
     let mut rng = OsRng;
     for participant in &conversation.metadata.participants {
         let Some(gifrwrap_note) =
@@ -53,7 +56,19 @@ pub fn send_conversation_message(
             }
         }
 
+        let participant_relays = query_participant_dm_relays(ctx.ndb, &txn, participant);
+        let relay_type = if participant_relays.is_empty() {
+            RelayType::AccountsWrite
+        } else {
+            RelayType::Explicit(
+                participant_relays
+                    .into_iter()
+                    .map(RelayId::Websocket)
+                    .collect(),
+            )
+        };
+
         let mut publisher = ctx.remote.publisher(ctx.accounts);
-        publisher.publish_note(&gifrwrap_note, RelayType::AccountsWrite);
+        publisher.publish_note(&gifrwrap_note, relay_type);
     }
 }

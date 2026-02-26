@@ -4,6 +4,7 @@ pub mod loader;
 pub mod nav;
 pub mod nip17;
 mod relay_ensure;
+mod relay_prefetch;
 pub mod ui;
 
 use enostr::Pubkey;
@@ -226,7 +227,12 @@ fn handle_loader_messages(
 
                 if cache.active.is_none() && !is_narrow {
                     if let Some(first) = cache.first_convo_id() {
-                        cache.active = Some(first);
+                        open_conversation_with_prefetch(
+                            &mut ctx.remote,
+                            ctx.accounts,
+                            cache,
+                            first,
+                        );
                         request_conversation_messages(
                             cache,
                             ctx.accounts.selected_account_pubkey(),
@@ -296,10 +302,18 @@ fn request_conversation_messages(
 /// Scoped-sub owner namespace for messages DM relay-list lifecycles.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum RelayListOwner {
+    Prefetch,
     Ensure,
 }
 
 const RELAY_LIST_KEY: &str = "dm_relay_list";
+
+/// Stable owner for DM relay-list prefetch subscriptions per selected account.
+fn list_prefetch_owner_key(account_pk: Pubkey) -> SubOwnerKey {
+    SubOwnerKey::builder(RelayListOwner::Prefetch)
+        .with(account_pk)
+        .finish()
+}
 
 /// Stable owner for selected-account DM relay-list ensure subscriptions per selected account.
 fn list_ensure_owner_key(account_pk: Pubkey) -> SubOwnerKey {
@@ -323,6 +337,18 @@ pub(crate) fn ensure_selected_account_dm_relay_list(
     cache: &mut ConversationCache,
 ) {
     ensure_selected_account_dm_list(ndb, remote, accounts, cache.dm_relay_list_ensure_mut())
+}
+
+/// Marks a conversation active and ensures participant relay-list prefetch.
+#[profiling::function]
+pub(crate) fn open_conversation_with_prefetch(
+    remote: &mut RemoteApi<'_>,
+    accounts: &Accounts,
+    cache: &mut ConversationCache,
+    conversation_id: cache::ConversationId,
+) {
+    cache.active = Some(conversation_id);
+    relay_prefetch::ensure_conversation_prefetch(remote, accounts, cache, conversation_id);
 }
 
 /// Storage for conversations per account. Account management is performed by `Accounts`
