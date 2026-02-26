@@ -1,22 +1,22 @@
-use hashbrown::HashSet;
-use uuid::Uuid;
-
 use crate::account::cache::AccountCache;
 use crate::account::contacts::Contacts;
 use crate::account::mute::AccountMutedData;
 use crate::account::relay::{
-    modify_advertised_relays, update_relay_configuration, AccountRelayData, RelayAction,
+    calculate_relays, modify_advertised_relays, write_relays, AccountRelayData, RelayAction,
     RelayDefaults,
 };
+use crate::scoped_subs::{RelaySelection, ScopedSubIdentity, SubConfig, SubKey};
 use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;
 use crate::{
-    AccountStorage, MuteFun, SingleUnkIdAction, UnifiedSubscription, UnknownIds, UserAccount,
-    ZapWallet,
+    AccountStorage, MuteFun, RemoteApi, ScopedSubApi, SingleUnkIdAction, SubOwnerKey, UnknownIds,
+    UserAccount, ZapWallet,
 };
-use enostr::{ClientMessage, FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId, RelayPool};
-use nostrdb::{Ndb, Note, Transaction};
+use enostr::{FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId};
+use hashbrown::HashSet;
+use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 
+use std::slice::from_ref;
 // TODO: remove this
 use std::sync::Arc;
 
@@ -26,7 +26,8 @@ pub struct Accounts {
     pub cache: AccountCache,
     storage_writer: Option<AccountStorageWriter>,
     relay_defaults: RelayDefaults,
-    subs: AccountSubs,
+    ndb_subs: AccountNdbSubs,
+    scoped_remote_initialized: bool,
 }
 
 impl Accounts {
@@ -37,8 +38,6 @@ impl Accounts {
         fallback: Pubkey,
         ndb: &mut Ndb,
         txn: &Transaction,
-        pool: &mut RelayPool,
-        ctx: &egui::Context,
         unknown_ids: &mut UnknownIds,
     ) -> Self {
         let (mut cache, unknown_id) = AccountCache::new(UserAccount::new(
@@ -79,31 +78,31 @@ impl Accounts {
 
         selected_data.query(ndb, txn);
 
-        let subs = {
-            AccountSubs::new(
-                ndb,
-                pool,
-                &relay_defaults,
-                &selected.key.pubkey,
-                selected_data,
-                create_wakeup(ctx),
-            )
-        };
+        let ndb_subs = AccountNdbSubs::new(ndb, selected_data);
 
         Accounts {
             cache,
             storage_writer,
             relay_defaults,
-            subs,
+            ndb_subs,
+            scoped_remote_initialized: false,
         }
     }
 
-    pub fn remove_account(
+    pub(crate) fn remove_account(
         &mut self,
         pk: &Pubkey,
         ndb: &mut Ndb,
-        pool: &mut RelayPool,
-        ctx: &egui::Context,
+        remote: &mut RemoteApi<'_>,
+    ) -> bool {
+        self.remove_account_internal(pk, ndb, remote)
+    }
+
+    fn remove_account_internal(
+        &mut self,
+        pk: &Pubkey,
+        ndb: &mut Ndb,
+        remote: &mut RemoteApi<'_>,
     ) -> bool {
         let Some(resp) = self.cache.remove(pk) else {
             return false;
@@ -118,8 +117,14 @@ impl Accounts {
         }
 
         if let Some(swap_to) = resp.swap_to {
+            let old_pk = resp.deleted.pubkey;
             let txn = Transaction::new(ndb).expect("txn");
-            self.select_account_internal(&swap_to, ndb, &txn, pool, ctx);
+            self.select_account_internal(&swap_to, old_pk, ndb, &txn, remote);
+        }
+
+        {
+            let mut scoped_subs = remote.scoped_subs(&*self);
+            clear_account_remote_subs_for_account(&mut scoped_subs, resp.deleted.pubkey);
         }
 
         true
@@ -220,29 +225,40 @@ impl Accounts {
         &self.cache.selected().data
     }
 
-    pub fn select_account(
+    pub(crate) fn select_account(
         &mut self,
         pk_to_select: &Pubkey,
         ndb: &mut Ndb,
         txn: &Transaction,
-        pool: &mut RelayPool,
-        ctx: &egui::Context,
+        remote: &mut RemoteApi<'_>,
     ) {
+        self.select_account_internal_entry(pk_to_select, ndb, txn, remote);
+    }
+
+    fn select_account_internal_entry(
+        &mut self,
+        pk_to_select: &Pubkey,
+        ndb: &mut Ndb,
+        txn: &Transaction,
+        remote: &mut RemoteApi<'_>,
+    ) {
+        let old_pk = *self.selected_account_pubkey();
+
         if !self.cache.select(*pk_to_select) {
             return;
         }
 
-        self.select_account_internal(pk_to_select, ndb, txn, pool, ctx);
+        self.select_account_internal(pk_to_select, old_pk, ndb, txn, remote);
     }
 
     /// Have already selected in `AccountCache`, updating other things
     fn select_account_internal(
         &mut self,
         pk_to_select: &Pubkey,
+        old_pk: Pubkey,
         ndb: &mut Ndb,
         txn: &Transaction,
-        pool: &mut RelayPool,
-        ctx: &egui::Context,
+        remote: &mut RemoteApi<'_>,
     ) {
         if let Some(key_store) = &self.storage_writer {
             if let Err(e) = key_store.select_key(Some(*pk_to_select)) {
@@ -251,14 +267,11 @@ impl Accounts {
         }
 
         self.get_selected_account_mut().data.query(ndb, txn);
-        self.subs.swap_to(
-            ndb,
-            pool,
-            &self.relay_defaults,
-            pk_to_select,
-            &self.cache.selected().data,
-            create_wakeup(ctx),
-        );
+        self.ndb_subs.swap_to(ndb, &self.cache.selected().data);
+
+        remote.on_account_switched(old_pk, *pk_to_select, self);
+
+        self.ensure_selected_account_remote_subs(remote);
     }
 
     pub fn mutefun(&self) -> Box<MuteFun> {
@@ -279,106 +292,52 @@ impl Accounts {
         }
     }
 
-    pub fn send_initial_filters(&mut self, pool: &mut RelayPool, relay_url: &str) {
-        let data = &self.get_selected_account().data;
-        // send the active account's relay list subscription
-        pool.send_to(
-            &ClientMessage::req(
-                self.subs.relay.remote.clone(),
-                vec![data.relay.filter.clone()],
-            ),
-            relay_url,
-        );
-        // send the active account's muted subscription
-        pool.send_to(
-            &ClientMessage::req(
-                self.subs.mute.remote.clone(),
-                vec![data.muted.filter.clone()],
-            ),
-            relay_url,
-        );
-        pool.send_to(
-            &ClientMessage::req(
-                self.subs.contacts.remote.clone(),
-                vec![data.contacts.filter.clone()],
-            ),
-            relay_url,
-        );
-        if let Some(cur_pk) = self.selected_filled().map(|s| s.pubkey) {
-            let giftwraps_filter = nostrdb::Filter::new()
-                .kinds([1059])
-                .pubkeys([cur_pk.bytes()])
-                .build();
-            pool.send_to(
-                &ClientMessage::req(self.subs.giftwraps.remote.clone(), vec![giftwraps_filter]),
-                relay_url,
-            );
-        }
-    }
-
-    pub fn update(&mut self, ndb: &mut Ndb, pool: &mut RelayPool, ctx: &egui::Context) {
+    #[profiling::function]
+    pub fn update(&mut self, ndb: &mut Ndb, remote: &mut RemoteApi<'_>) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
 
-        let Some(update) = self
+        let relay_updated = self
             .cache
             .selected_mut()
             .data
-            .poll_for_updates(ndb, &self.subs)
-        else {
-            return;
-        };
+            .poll_for_updates(ndb, &self.ndb_subs);
 
-        match update {
-            // If needed, update the relay configuration
-            AccountDataUpdate::Relay => {
-                let acc = self.cache.selected();
-                update_relay_configuration(
-                    pool,
-                    &self.relay_defaults,
-                    &acc.key.pubkey,
-                    &acc.data.relay,
-                    create_wakeup(ctx),
-                );
-            }
+        if !self.scoped_remote_initialized {
+            self.ensure_selected_account_remote_subs(remote);
+            return;
         }
+
+        if !relay_updated {
+            return;
+        }
+
+        self.retarget_selected_account_read_relays(remote);
     }
 
     pub fn get_full<'a>(&'a self, pubkey: &Pubkey) -> Option<FilledKeypair<'a>> {
         self.cache.get(pubkey).and_then(|r| r.key.to_full())
     }
 
-    pub fn process_relay_action(
-        &mut self,
-        ctx: &egui::Context,
-        pool: &mut RelayPool,
-        action: RelayAction,
-    ) {
+    pub(crate) fn process_relay_action(&mut self, remote: &mut RemoteApi<'_>, action: RelayAction) {
         let acc = self.cache.selected_mut();
-        modify_advertised_relays(&acc.key, action, pool, &self.relay_defaults, &mut acc.data);
-
-        update_relay_configuration(
-            pool,
+        modify_advertised_relays(
+            &acc.key,
+            action,
+            remote,
             &self.relay_defaults,
-            &acc.key.pubkey,
-            &acc.data.relay,
-            create_wakeup(ctx),
+            &mut acc.data,
         );
-    }
 
-    pub fn get_subs(&self) -> &AccountSubs {
-        &self.subs
+        self.retarget_selected_account_read_relays(remote);
     }
 
     pub fn selected_account_read_relays(&self) -> HashSet<NormRelayUrl> {
-        self.get_selected_account()
-            .data
-            .relay
-            .advertised
-            .iter()
-            .filter(|r| r.is_readable())
-            .filter_map(|r| NormRelayUrl::new(&r.url).ok())
-            .collect()
+        calculate_relays(
+            &self.relay_defaults,
+            &self.get_selected_account_data().relay,
+            true,
+        )
     }
 
     /// Return the selected account's advertised NIP-65 relays with marker metadata.
@@ -389,14 +348,23 @@ impl Accounts {
     }
 
     pub fn selected_account_write_relays(&self) -> Vec<RelayId> {
-        self.get_selected_account()
-            .data
-            .relay
-            .advertised
-            .iter()
-            .filter(|r| r.is_writable())
-            .filter_map(|r| Some(RelayId::Websocket(NormRelayUrl::new(&r.url).ok()?)))
-            .collect()
+        write_relays(
+            &self.relay_defaults,
+            &self.get_selected_account_data().relay,
+        )
+    }
+
+    fn ensure_selected_account_remote_subs(&mut self, remote: &mut RemoteApi<'_>) {
+        {
+            let mut scoped_subs = remote.scoped_subs(&*self);
+            ensure_selected_account_remote_subs_api(&mut scoped_subs, self);
+        }
+        self.scoped_remote_initialized = true;
+    }
+
+    fn retarget_selected_account_read_relays(&mut self, remote: &mut RemoteApi<'_>) {
+        remote.retarget_selected_account_read_relays(self);
+        self.scoped_remote_initialized = true;
     }
 }
 
@@ -411,13 +379,6 @@ impl<'a> AccType<'a> {
             AccType::Entry(occupied_entry) => occupied_entry.get(),
             AccType::Acc(user_account) => user_account,
         }
-    }
-}
-
-fn create_wakeup(ctx: &egui::Context) -> impl Fn() + Send + Sync + Clone + 'static {
-    let ctx = ctx.clone();
-    move || {
-        ctx.request_repaint();
     }
 }
 
@@ -473,22 +434,16 @@ impl AccountData {
         }
     }
 
-    pub(super) fn poll_for_updates(
-        &mut self,
-        ndb: &Ndb,
-        subs: &AccountSubs,
-    ) -> Option<AccountDataUpdate> {
+    #[profiling::function]
+    pub(super) fn poll_for_updates(&mut self, ndb: &Ndb, ndb_subs: &AccountNdbSubs) -> bool {
         let txn = Transaction::new(ndb).expect("txn");
-        let mut resp = None;
-        if self.relay.poll_for_updates(ndb, &txn, subs.relay.local) {
-            resp = Some(AccountDataUpdate::Relay);
-        }
+        let relay_updated = self.relay.poll_for_updates(ndb, &txn, ndb_subs.relay_ndb);
 
-        self.muted.poll_for_updates(ndb, &txn, subs.mute.local);
+        self.muted.poll_for_updates(ndb, &txn, ndb_subs.mute_ndb);
         self.contacts
-            .poll_for_updates(ndb, &txn, subs.contacts.local);
+            .poll_for_updates(ndb, &txn, ndb_subs.contacts_ndb);
 
-        resp
+        relay_updated
     }
 
     /// Note: query should be called as close to the subscription as possible
@@ -499,90 +454,125 @@ impl AccountData {
     }
 }
 
-pub(super) enum AccountDataUpdate {
-    Relay,
-}
-
 pub struct AddAccountResponse {
     pub switch_to: Pubkey,
     pub unk_id_action: SingleUnkIdAction,
 }
 
-pub struct AccountSubs {
-    relay: UnifiedSubscription,
-    giftwraps: UnifiedSubscription,
-    mute: UnifiedSubscription,
-    pub contacts: UnifiedSubscription,
+fn giftwrap_filter(pk: &Pubkey) -> Filter {
+    // TODO: since optimize
+    nostrdb::Filter::new()
+        .kinds([1059])
+        .pubkeys([pk.bytes()])
+        .build()
 }
 
-impl AccountSubs {
-    pub(super) fn new(
-        ndb: &mut Ndb,
-        pool: &mut RelayPool,
-        relay_defaults: &RelayDefaults,
-        pk: &Pubkey,
-        data: &AccountData,
-        wakeup: impl Fn() + Send + Sync + Clone + 'static,
-    ) -> Self {
-        // TODO: since optimize
-        let giftwraps_filter = nostrdb::Filter::new()
-            .kinds([1059])
-            .pubkeys([pk.bytes()])
-            .build();
+fn account_remote_owner_key() -> SubOwnerKey {
+    SubOwnerKey::new("core/accounts/remote-subs")
+}
 
-        update_relay_configuration(pool, relay_defaults, pk, &data.relay, wakeup);
+fn ensure_selected_account_remote_subs_api(
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
+    accounts: &Accounts,
+) {
+    let owner = account_remote_owner_key();
+    for kind in account_remote_sub_kinds() {
+        let key = account_remote_sub_key(kind);
+        let identity = ScopedSubIdentity::account(owner, key);
+        let config = selected_account_remote_config(accounts, kind);
+        let _ = scoped_subs.ensure_sub(identity, config);
+    }
+}
 
-        let relay = subscribe(ndb, pool, &data.relay.filter);
-        let giftwraps = subscribe(ndb, pool, &giftwraps_filter);
-        let mute = subscribe(ndb, pool, &data.muted.filter);
-        let contacts = subscribe(ndb, pool, &data.contacts.filter);
+fn clear_account_remote_subs_for_account(
+    scoped_subs: &mut ScopedSubApi<'_, '_>,
+    account_pk: Pubkey,
+) {
+    let owner = account_remote_owner_key();
+    for kind in account_remote_sub_kinds() {
+        let key = account_remote_sub_key(kind);
+        let identity = ScopedSubIdentity::account(owner, key);
+        let _ = scoped_subs.clear_sub_for_account(account_pk, identity);
+    }
+}
 
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+enum AccountRemoteSubKind {
+    RelayList,
+    MuteList,
+    ContactsList,
+    Giftwrap,
+}
+
+fn account_remote_sub_kinds() -> [AccountRemoteSubKind; 4] {
+    [
+        AccountRemoteSubKind::RelayList,
+        AccountRemoteSubKind::MuteList,
+        AccountRemoteSubKind::ContactsList,
+        AccountRemoteSubKind::Giftwrap,
+    ]
+}
+
+fn account_remote_sub_key(kind: AccountRemoteSubKind) -> SubKey {
+    SubKey::new(kind)
+}
+
+fn make_account_remote_config(filters: Vec<Filter>, use_transparent: bool) -> SubConfig {
+    SubConfig {
+        relays: RelaySelection::AccountsRead,
+        filters,
+        use_transparent,
+    }
+}
+
+fn selected_account_remote_config(accounts: &Accounts, kind: AccountRemoteSubKind) -> SubConfig {
+    let selected = accounts.get_selected_account_data();
+    match kind {
+        AccountRemoteSubKind::RelayList => {
+            make_account_remote_config(vec![selected.relay.filter.clone()], false)
+        }
+        AccountRemoteSubKind::MuteList => {
+            make_account_remote_config(vec![selected.muted.filter.clone()], false)
+        }
+        AccountRemoteSubKind::ContactsList => {
+            make_account_remote_config(vec![selected.contacts.filter.clone()], true)
+        }
+        AccountRemoteSubKind::Giftwrap => make_account_remote_config(
+            vec![giftwrap_filter(accounts.selected_account_pubkey())],
+            false,
+        ),
+    }
+}
+
+struct AccountNdbSubs {
+    relay_ndb: Subscription,
+    mute_ndb: Subscription,
+    contacts_ndb: Subscription,
+}
+
+impl AccountNdbSubs {
+    pub fn new(ndb: &mut Ndb, data: &AccountData) -> Self {
+        let relay_ndb = ndb
+            .subscribe(from_ref(&data.relay.filter))
+            .expect("ndb relay list subscription");
+        let mute_ndb = ndb
+            .subscribe(from_ref(&data.muted.filter))
+            .expect("ndb sub");
+        let contacts_ndb = ndb
+            .subscribe(from_ref(&data.contacts.filter))
+            .expect("ndb sub");
         Self {
-            relay,
-            mute,
-            contacts,
-            giftwraps,
+            relay_ndb,
+            mute_ndb,
+            contacts_ndb,
         }
     }
 
-    pub(super) fn swap_to(
-        &mut self,
-        ndb: &mut Ndb,
-        pool: &mut RelayPool,
-        relay_defaults: &RelayDefaults,
-        pk: &Pubkey,
-        new_selection_data: &AccountData,
-        wakeup: impl Fn() + Send + Sync + Clone + 'static,
-    ) {
-        unsubscribe(ndb, pool, &self.relay);
-        unsubscribe(ndb, pool, &self.mute);
-        unsubscribe(ndb, pool, &self.contacts);
-        unsubscribe(ndb, pool, &self.giftwraps);
+    pub fn swap_to(&mut self, ndb: &mut Ndb, new_selection_data: &AccountData) {
+        let _ = ndb.unsubscribe(self.relay_ndb);
+        let _ = ndb.unsubscribe(self.mute_ndb);
+        let _ = ndb.unsubscribe(self.contacts_ndb);
 
-        *self = AccountSubs::new(ndb, pool, relay_defaults, pk, new_selection_data, wakeup);
+        *self = AccountNdbSubs::new(ndb, new_selection_data);
     }
-}
-
-fn subscribe(ndb: &Ndb, pool: &mut RelayPool, filter: &nostrdb::Filter) -> UnifiedSubscription {
-    let filters = vec![filter.clone()];
-    let sub = ndb
-        .subscribe(&filters)
-        .expect("ndb relay list subscription");
-
-    // remote subscription
-    let subid = Uuid::new_v4().to_string();
-    pool.subscribe(subid.clone(), filters);
-
-    UnifiedSubscription {
-        local: sub,
-        remote: subid,
-    }
-}
-
-fn unsubscribe(ndb: &mut Ndb, pool: &mut RelayPool, sub: &UnifiedSubscription) {
-    pool.unsubscribe(sub.remote.clone());
-
-    // local subscription
-    ndb.unsubscribe(sub.local)
-        .expect("ndb relay list unsubscribe");
 }

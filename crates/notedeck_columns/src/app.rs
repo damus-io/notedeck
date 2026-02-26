@@ -751,14 +751,7 @@ fn render_damus_mobile(
                                 let kp = enostr::Keypair::only_pubkey(pubkey);
                                 let _ = app_ctx.accounts.add_account(kp);
 
-                                let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
-                                app_ctx.accounts.select_account(
-                                    &pubkey,
-                                    app_ctx.ndb,
-                                    &txn,
-                                    app_ctx.legacy_pool,
-                                    ui.ctx(),
-                                );
+                                app_ctx.select_account(&pubkey);
                                 setup_selected_account_timeline_subs(
                                     &mut app.timeline_cache,
                                     app_ctx,
@@ -1011,14 +1004,7 @@ fn timelines_view(
     // StripBuilder rendering
     let mut save_cols = false;
     if let Some(action) = side_panel_action {
-        save_cols = save_cols
-            || action.process(
-                &mut app.timeline_cache,
-                &mut app.decks_cache,
-                ctx,
-                &mut app.subscriptions,
-                ui.ctx(),
-            );
+        save_cols = save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
     }
 
     let mut app_action: Option<AppAction> = None;
@@ -1039,9 +1025,7 @@ fn timelines_view(
                     let kp = enostr::Keypair::only_pubkey(pubkey);
                     let _ = ctx.accounts.add_account(kp);
 
-                    let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-                    ctx.accounts
-                        .select_account(&pubkey, ctx.ndb, &txn, ctx.legacy_pool, ui.ctx());
+                    ctx.select_account(&pubkey);
                     setup_selected_account_timeline_subs(&mut app.timeline_cache, ctx);
                 }
 

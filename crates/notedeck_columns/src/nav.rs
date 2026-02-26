@@ -8,11 +8,9 @@ use crate::{
     profile::{ProfileAction, SaveProfileChanges},
     repost::RepostAction,
     route::{cleanup_popped_route, ColumnsRouter, Route, SingletonRouter},
-    subscriptions::Subscriptions,
     timeline::{
-        kind::ListKind,
         route::{render_thread_route, render_timeline_route},
-        TimelineCache, TimelineKind,
+        TimelineCache,
     },
     ui::{
         self,
@@ -90,31 +88,11 @@ impl SwitchingAction {
         timeline_cache: &mut TimelineCache,
         decks_cache: &mut DecksCache,
         ctx: &mut AppContext<'_>,
-        subs: &mut Subscriptions,
-        ui_ctx: &egui::Context,
     ) -> bool {
         match &self {
             SwitchingAction::Accounts(account_action) => match account_action {
                 AccountsAction::Switch(switch_action) => {
-                    {
-                        let txn = Transaction::new(ctx.ndb).expect("txn");
-                        ctx.accounts.select_account(
-                            &switch_action.switch_to,
-                            ctx.ndb,
-                            &txn,
-                            ctx.legacy_pool,
-                            ui_ctx,
-                        );
-
-                        let contacts_sub = ctx.accounts.get_subs().contacts.remote.clone();
-                        // this is cringe but we're gonna get a new sub manager soon...
-                        subs.subs.insert(
-                            contacts_sub,
-                            crate::subscriptions::SubKind::FetchingContactList(TimelineKind::List(
-                                ListKind::Contact(*ctx.accounts.selected_account_pubkey()),
-                            )),
-                        );
-                    }
+                    ctx.select_account(&switch_action.switch_to);
 
                     if switch_action.switching_to_new {
                         decks_cache.add_deck_default(ctx, timeline_cache, switch_action.switch_to);
@@ -129,10 +107,7 @@ impl SwitchingAction {
                         .go_back();
                 }
                 AccountsAction::Remove(to_remove) => 's: {
-                    if !ctx
-                        .accounts
-                        .remove_account(to_remove, ctx.ndb, ctx.legacy_pool, ui_ctx)
-                    {
+                    if !ctx.remove_account(to_remove) {
                         break 's;
                     }
 
@@ -607,13 +582,7 @@ fn process_render_nav_action(
             )
         }
         RenderNavAction::SwitchingAction(switching_action) => {
-            if switching_action.process(
-                &mut app.timeline_cache,
-                &mut app.decks_cache,
-                ctx,
-                &mut app.subscriptions,
-                ui.ctx(),
-            ) {
+            if switching_action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx) {
                 return Some(ProcessNavResult::SwitchOccurred);
             } else {
                 return None;
@@ -632,8 +601,7 @@ fn process_render_nav_action(
             wallet_action.process(ctx.accounts, ctx.global_wallet)
         }
         RenderNavAction::RelayAction(action) => {
-            ctx.accounts
-                .process_relay_action(ui.ctx(), ctx.legacy_pool, action);
+            ctx.process_relay_action(action);
             None
         }
         RenderNavAction::SettingsAction(action) => {

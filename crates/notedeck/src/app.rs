@@ -146,9 +146,7 @@ impl eframe::App for Notedeck {
         let mut app_ctx = self.app_context(ctx);
 
         // handle account updates
-        app_ctx
-            .accounts
-            .update(app_ctx.ndb, app_ctx.legacy_pool, ctx);
+        app_ctx.accounts.update(app_ctx.ndb, &mut app_ctx.remote);
 
         app_ctx
             .zaps
@@ -287,8 +285,6 @@ impl Notedeck {
             FALLBACK_PUBKEY(),
             &mut ndb,
             &txn,
-            &mut legacy_pool,
-            ctx,
             &mut unknown_ids,
         );
 
@@ -307,11 +303,9 @@ impl Notedeck {
             }
         }
 
-        if let Some(first) = parsed_args.keys.first() {
-            accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut legacy_pool, ctx);
-        }
         let outbox_session = if let Some(first) = parsed_args.keys.first() {
-            let remote = RemoteApi::new(outbox_session, &mut scoped_sub_state);
+            let mut remote = RemoteApi::new(outbox_session, &mut scoped_sub_state);
+            accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut remote);
             remote.export_session()
         } else {
             outbox_session.export()

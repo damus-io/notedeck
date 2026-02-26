@@ -5,8 +5,8 @@ use crate::{
 };
 use egui_winit::clipboard::Clipboard;
 
-use enostr::RelayPool;
-use nostrdb::Ndb;
+use enostr::{Pubkey, RelayPool};
+use nostrdb::{Ndb, Transaction};
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
@@ -53,6 +53,21 @@ impl SoftKeyboardContext {
 }
 
 impl<'a> AppContext<'a> {
+    pub fn select_account(&mut self, pubkey: &Pubkey) {
+        let txn = Transaction::new(self.ndb).expect("txn");
+        self.accounts
+            .select_account(pubkey, self.ndb, &txn, &mut self.remote);
+    }
+
+    pub fn remove_account(&mut self, pubkey: &Pubkey) -> bool {
+        self.accounts
+            .remove_account(pubkey, self.ndb, &mut self.remote)
+    }
+
+    pub fn process_relay_action(&mut self, action: crate::RelayAction) {
+        self.accounts.process_relay_action(&mut self.remote, action);
+    }
+
     pub fn soft_keyboard_rect(&self, screen_rect: Rect, ctx: SoftKeyboardContext) -> Option<Rect> {
         match ctx {
             SoftKeyboardContext::Virtual => {

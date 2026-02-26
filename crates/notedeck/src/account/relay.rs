@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-use crate::{AccountData, RelaySpec};
-use enostr::{Keypair, Pubkey, RelayPool};
-use nostrdb::{Filter, Ndb, NoteBuilder, NoteKey, Subscription, Transaction};
+use crate::{AccountData, RelaySpec, RemoteApi};
+use enostr::{Keypair, NormRelayUrl, RelayId};
+use hashbrown::HashSet;
+use nostrdb::{Filter, Ndb, Note, NoteBuilder, NoteKey, Subscription, Transaction};
 use tracing::{debug, error, info};
-use url::Url;
 
 #[derive(Clone)]
 pub(crate) struct AccountRelayData {
@@ -47,14 +47,6 @@ impl AccountRelayData {
         self.advertised = relays.into_iter().collect()
     }
 
-    // standardize the format (ie, trailing slashes) to avoid dups
-    pub fn canonicalize_url(url: &str) -> String {
-        match Url::parse(url) {
-            Ok(parsed_url) => parsed_url.to_string(),
-            Err(_) => url.to_owned(), // If parsing fails, return the original URL.
-        }
-    }
-
     pub(crate) fn harvest_nip65_relays(
         ndb: &Ndb,
         txn: &Transaction,
@@ -73,8 +65,12 @@ impl AccountRelayData {
                                 let has_write_marker = tag
                                     .get(2)
                                     .is_some_and(|m| m.variant().str() == Some("write"));
+
+                                let Ok(norm_url) = NormRelayUrl::new(url) else {
+                                    continue;
+                                };
                                 relays.push(RelaySpec::new(
-                                    Self::canonicalize_url(url),
+                                    norm_url,
                                     has_read_marker,
                                     has_write_marker,
                                 ));
@@ -96,20 +92,23 @@ impl AccountRelayData {
         relays
     }
 
-    pub fn publish_nip65_relays(&self, seckey: &[u8; 32], pool: &mut RelayPool) {
+    pub fn new_nip65_relays_note(&'_ self, seckey: &[u8; 32]) -> Note<'_> {
         let mut builder = NoteBuilder::new().kind(10002).content("");
         for rs in &self.advertised {
-            builder = builder.start_tag().tag_str("r").tag_str(&rs.url);
+            builder = builder
+                .start_tag()
+                .tag_str("r")
+                .tag_str(&rs.url.to_string());
             if rs.has_read_marker {
                 builder = builder.tag_str("read");
             } else if rs.has_write_marker {
                 builder = builder.tag_str("write");
             }
         }
-        let note = builder.sign(seckey).build().expect("note build");
-        pool.send(&enostr::ClientMessage::event(&note).expect("note client message"));
+        builder.sign(seckey).build().expect("note build")
     }
 
+    #[profiling::function]
     pub fn poll_for_updates(&mut self, ndb: &Ndb, txn: &Transaction, sub: Subscription) -> bool {
         let nks = ndb.poll_for_notes(sub, 1);
 
@@ -134,7 +133,7 @@ impl RelayDefaults {
     pub(crate) fn new(forced_relays: Vec<String>) -> Self {
         let forced_relays: BTreeSet<RelaySpec> = forced_relays
             .into_iter()
-            .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
+            .filter_map(|u| Some(RelaySpec::new(NormRelayUrl::new(&u).ok()?, false, false)))
             .collect();
         let bootstrap_relays = [
             "wss://relay.damus.io",
@@ -145,7 +144,7 @@ impl RelayDefaults {
         ]
         .iter()
         .map(|&url| url.to_string())
-        .map(|u| RelaySpec::new(AccountRelayData::canonicalize_url(&u), false, false))
+        .filter_map(|u| Some(RelaySpec::new(NormRelayUrl::new(&u).ok()?, false, false)))
         .collect();
 
         Self {
@@ -155,25 +154,40 @@ impl RelayDefaults {
     }
 }
 
-pub(super) fn update_relay_configuration(
-    pool: &mut RelayPool,
+pub fn calculate_relays(
     relay_defaults: &RelayDefaults,
-    pk: &Pubkey,
     data: &AccountRelayData,
-    wakeup: impl Fn() + Send + Sync + Clone + 'static,
-) {
-    debug!(
-        "updating relay configuration for currently selected {:?}",
-        pk.hex()
-    );
-
+    readable: bool, // are we calculating the readable relays? or the writable?
+) -> HashSet<NormRelayUrl> {
     // If forced relays are set use them only
     let mut desired_relays = relay_defaults.forced_relays.clone();
 
     // Compose the desired relay lists from the selected account
     if desired_relays.is_empty() {
-        desired_relays.extend(data.local.iter().cloned());
-        desired_relays.extend(data.advertised.iter().cloned());
+        desired_relays.extend(
+            data.local
+                .iter()
+                .filter(|l| {
+                    if readable {
+                        l.is_readable()
+                    } else {
+                        l.is_writable()
+                    }
+                })
+                .cloned(),
+        );
+        desired_relays.extend(
+            data.advertised
+                .iter()
+                .filter(|l| {
+                    if readable {
+                        l.is_readable()
+                    } else {
+                        l.is_writable()
+                    }
+                })
+                .cloned(),
+        );
     }
 
     // If no relays are specified at this point use the bootstrap list
@@ -181,33 +195,12 @@ pub(super) fn update_relay_configuration(
         desired_relays = relay_defaults.bootstrap_relays.clone();
     }
 
-    debug!("current relays: {:?}", pool.urls());
     debug!("desired relays: {:?}", desired_relays);
 
-    let pool_specs = pool
-        .urls()
-        .iter()
-        .map(|url| RelaySpec::new(url.clone(), false, false))
-        .collect();
-    let add: BTreeSet<RelaySpec> = desired_relays.difference(&pool_specs).cloned().collect();
-    let mut sub: BTreeSet<RelaySpec> = pool_specs.difference(&desired_relays).cloned().collect();
-    if !add.is_empty() {
-        debug!("configuring added relays: {:?}", add);
-        let _ = pool.add_urls(add.iter().map(|r| r.url.clone()).collect(), wakeup);
-    }
-    if !sub.is_empty() {
-        // certain relays are persistent like the multicast relay,
-        // although we should probably have a way to explicitly
-        // disable it
-        sub.remove(&RelaySpec::new("multicast", false, false));
-
-        debug!("removing unwanted relays: {:?}", sub);
-        pool.remove_urls(&sub.iter().map(|r| r.url.clone()).collect());
-    }
-
-    debug!("current relays: {:?}", pool.urls());
+    desired_relays.into_iter().map(|r| r.url).collect()
 }
 
+// TODO(kernelkind): these should have `NormRelayUrl` instead of `String`...
 pub enum RelayAction {
     Add(String),
     Remove(String),
@@ -225,14 +218,18 @@ impl RelayAction {
 pub(super) fn modify_advertised_relays(
     kp: &Keypair,
     action: RelayAction,
-    pool: &mut RelayPool,
+    remote: &mut RemoteApi<'_>,
     relay_defaults: &RelayDefaults,
     account_data: &mut AccountData,
 ) {
-    let relay_url = AccountRelayData::canonicalize_url(action.get_url());
+    let Ok(relay_url) = NormRelayUrl::new(action.get_url()) else {
+        return;
+    };
+
+    let relay_url_str = relay_url.to_string();
     match action {
-        RelayAction::Add(_) => info!("add advertised relay \"{}\"", relay_url),
-        RelayAction::Remove(_) => info!("remove advertised relay \"{}\"", relay_url),
+        RelayAction::Add(_) => info!("add advertised relay \"{relay_url_str}\""),
+        RelayAction::Remove(_) => info!("remove advertised relay \"{relay_url_str}\""),
     }
 
     // let selected = self.cache.selected_mut();
@@ -254,8 +251,22 @@ pub(super) fn modify_advertised_relays(
 
     // If we have the secret key publish the NIP-65 relay list
     if let Some(secretkey) = &kp.secret_key {
-        account_data
+        let note = account_data
             .relay
-            .publish_nip65_relays(&secretkey.to_secret_bytes(), pool);
+            .new_nip65_relays_note(&secretkey.to_secret_bytes());
+
+        let mut publisher = remote.publisher_explicit();
+        publisher.publish_note(&note, write_relays(relay_defaults, &account_data.relay));
     }
+}
+
+pub fn write_relays(relay_defaults: &RelayDefaults, data: &AccountRelayData) -> Vec<RelayId> {
+    let mut relays: Vec<RelayId> = calculate_relays(relay_defaults, data, false)
+        .into_iter()
+        .map(RelayId::Websocket)
+        .collect();
+
+    relays.push(RelayId::Multicast);
+
+    relays
 }
