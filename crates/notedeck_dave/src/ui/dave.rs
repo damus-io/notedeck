@@ -1194,100 +1194,107 @@ impl<'a> DaveUi<'a> {
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let i18n = &mut *app_ctx.i18n;
-        //ui.add_space(Self::chat_margin(ui.ctx()) as f32);
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
-                let mut dave_response = DaveResponse::none();
+        // Constrain input height based on line count (min 1, max 8 lines)
+        let line_count = self.input.lines().count().max(1).clamp(1, 8);
+        let line_height = 20.0;
+        let base_height = 44.0;
+        let input_height = base_height + (line_count as f32 * line_height);
+        ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                    let mut dave_response = DaveResponse::none();
 
-                // Always show Ask button (messages queue while working)
-                if ui
-                    .add(
-                        egui::Button::new(tr!(
-                            i18n,
-                            "Ask",
-                            "Button to send message to Dave AI assistant"
-                        ))
-                        .min_size(egui::vec2(60.0, 44.0)),
-                    )
-                    .clicked()
-                {
-                    dave_response = DaveResponse::send();
-                }
-
-                // Show Stop button alongside Ask for local working sessions
-                if self.flags.contains(DaveUiFlags::IsWorking)
-                    && !self.flags.contains(DaveUiFlags::IsRemote)
-                {
+                    // Always show Ask button (messages queue while working)
                     if ui
                         .add(
                             egui::Button::new(tr!(
                                 i18n,
-                                "Stop",
-                                "Button to interrupt/stop the AI operation"
+                                "Ask",
+                                "Button to send message to Dave AI assistant"
                             ))
                             .min_size(egui::vec2(60.0, 44.0)),
                         )
                         .clicked()
                     {
-                        dave_response = DaveResponse::new(DaveAction::Interrupt);
+                        dave_response = DaveResponse::send();
                     }
 
-                    // Show "Press Esc again" indicator when interrupt is pending
-                    if self.flags.contains(DaveUiFlags::InterruptPending) {
-                        ui.label(
-                            egui::RichText::new("Press Esc again to stop")
-                                .color(ui.visuals().warn_fg_color),
-                        );
-                    }
-                }
+                    // Show Stop button alongside Ask for local working sessions
+                    if self.flags.contains(DaveUiFlags::IsWorking)
+                        && !self.flags.contains(DaveUiFlags::IsRemote)
+                    {
+                        if ui
+                            .add(
+                                egui::Button::new(tr!(
+                                    i18n,
+                                    "Stop",
+                                    "Button to interrupt/stop the AI operation"
+                                ))
+                                .min_size(egui::vec2(60.0, 44.0)),
+                            )
+                            .clicked()
+                        {
+                            dave_response = DaveResponse::new(DaveAction::Interrupt);
+                        }
 
-                let r = ui.add(
-                    egui::TextEdit::multiline(self.input)
-                        .desired_width(f32::INFINITY)
-                        .return_key(KeyboardShortcut::new(
-                            Modifiers {
-                                shift: true,
-                                ..Default::default()
-                            },
-                            Key::Enter,
-                        ))
-                        .hint_text(
-                            egui::RichText::new(tr!(
-                                i18n,
-                                "Ask dave anything...",
-                                "Placeholder text for Dave AI input field"
+                        // Show "Press Esc again" indicator when interrupt is pending
+                        if self.flags.contains(DaveUiFlags::InterruptPending) {
+                            ui.label(
+                                egui::RichText::new("Press Esc again to stop")
+                                    .color(ui.visuals().warn_fg_color),
+                            );
+                        }
+                    }
+
+                    let r = ui.add(
+                        egui::TextEdit::multiline(self.input)
+                            .desired_width(f32::INFINITY)
+                            .return_key(KeyboardShortcut::new(
+                                Modifiers {
+                                    shift: true,
+                                    ..Default::default()
+                                },
+                                Key::Enter,
                             ))
-                            .weak(),
-                        )
-                        .frame(false),
-                );
-                notedeck_ui::context_menu::input_context(
-                    ui,
-                    &r,
-                    app_ctx.clipboard,
-                    self.input,
-                    notedeck_ui::context_menu::PasteBehavior::Append,
-                );
+                            .hint_text(
+                                egui::RichText::new(tr!(
+                                    i18n,
+                                    "Ask dave anything...",
+                                    "Placeholder text for Dave AI input field"
+                                ))
+                                .weak(),
+                            )
+                            .frame(false),
+                    );
+                    notedeck_ui::context_menu::input_context(
+                        ui,
+                        &r,
+                        app_ctx.clipboard,
+                        self.input,
+                        notedeck_ui::context_menu::PasteBehavior::Append,
+                    );
 
-                // Request focus if flagged (e.g., after spawning a new agent or entering tentative state)
-                if *self.focus_requested {
-                    r.request_focus();
-                    *self.focus_requested = false;
-                }
+                    // Request focus if flagged (e.g., after spawning a new agent or entering tentative state)
+                    if *self.focus_requested {
+                        r.request_focus();
+                        *self.focus_requested = false;
+                    }
 
-                // Unfocus text input when there's a pending permission request
-                // UNLESS we're in tentative state (user needs to type message)
-                let in_tentative_state =
-                    self.permission_message_state != PermissionMessageState::None;
-                if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
-                    r.surrender_focus();
-                }
+                    // Unfocus text input when there's a pending permission request
+                    // UNLESS we're in tentative state (user needs to type message)
+                    let in_tentative_state =
+                        self.permission_message_state != PermissionMessageState::None;
+                    if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
+                        r.surrender_focus();
+                    }
 
-                if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    DaveResponse::send()
-                } else {
-                    dave_response
-                }
+                    if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        DaveResponse::send()
+                    } else {
+                        dave_response
+                    }
+                })
+                .inner
             })
             .inner
         })
