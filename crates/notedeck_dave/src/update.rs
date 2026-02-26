@@ -90,8 +90,8 @@ pub fn check_interrupt_timeout(pending_since: Option<Instant>) -> Option<Instant
 // Plan Mode
 // =============================================================================
 
-/// Toggle plan mode for the active session.
-pub fn toggle_plan_mode(
+/// Cycle permission mode for the active session: Default → Plan → AcceptEdits → Default.
+pub fn cycle_permission_mode(
     session_manager: &mut SessionManager,
     backend: &dyn AiBackend,
     ctx: &egui::Context,
@@ -99,8 +99,9 @@ pub fn toggle_plan_mode(
     if let Some(session) = session_manager.get_active_mut() {
         if let Some(agentic) = &mut session.agentic {
             let new_mode = match agentic.permission_mode {
-                PermissionMode::Plan => PermissionMode::Default,
-                _ => PermissionMode::Plan,
+                PermissionMode::Default => PermissionMode::Plan,
+                PermissionMode::Plan => PermissionMode::AcceptEdits,
+                _ => PermissionMode::Default,
             };
             agentic.permission_mode = new_mode;
 
@@ -108,7 +109,7 @@ pub fn toggle_plan_mode(
             backend.set_permission_mode(session_id, new_mode, ctx.clone());
 
             tracing::debug!(
-                "Toggled plan mode for session {} to {:?}",
+                "Cycled permission mode for session {} to {:?}",
                 session.id,
                 new_mode
             );

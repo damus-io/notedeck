@@ -500,6 +500,14 @@ impl ChatSession {
             .is_some_and(|a| a.permission_mode == PermissionMode::Plan)
     }
 
+    /// Get the current permission mode (defaults to Default for non-agentic)
+    pub fn permission_mode(&self) -> PermissionMode {
+        self.agentic
+            .as_ref()
+            .map(|a| a.permission_mode)
+            .unwrap_or(PermissionMode::Default)
+    }
+
     /// Get the working directory (agentic only)
     pub fn cwd(&self) -> Option<&PathBuf> {
         self.agentic.as_ref().map(|a| &a.cwd)
