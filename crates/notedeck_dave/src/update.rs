@@ -406,14 +406,14 @@ pub fn switch_and_focus_session(
     }
 }
 
-/// Switch to agent by index in the ordered list (0-indexed).
+/// Switch to agent by index in the visual display order (0-indexed).
 pub fn switch_to_agent_by_index(
     session_manager: &mut SessionManager,
     scene: &mut AgentScene,
     show_scene: bool,
     index: usize,
 ) {
-    let ids = session_manager.session_ids();
+    let ids = session_manager.visual_order();
     if let Some(&id) = ids.get(index) {
         switch_and_focus_session(session_manager, scene, show_scene, id);
     }
@@ -426,7 +426,7 @@ fn cycle_agent(
     show_scene: bool,
     index_fn: impl FnOnce(usize, usize) -> usize,
 ) {
-    let ids = session_manager.session_ids();
+    let ids = session_manager.visual_order();
     if ids.is_empty() {
         return;
     }

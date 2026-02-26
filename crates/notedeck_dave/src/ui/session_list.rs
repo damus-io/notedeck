@@ -92,6 +92,7 @@ impl<'a> SessionListUi<'a> {
     fn sessions_list_ui(&self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
         let active_id = self.session_manager.active_id();
+        let mut visual_index: usize = 0;
 
         // Agents grouped by hostname (pre-computed, no per-frame allocation)
         for (hostname, ids) in self.session_manager.host_groups() {
@@ -108,10 +109,11 @@ impl<'a> SessionListUi<'a> {
             ui.add_space(4.0);
             for &id in ids {
                 if let Some(session) = self.session_manager.get(id) {
-                    let index = self.session_manager.session_index(id).unwrap_or(0);
-                    if let Some(a) = self.render_session_item(ui, session, index, active_id) {
+                    if let Some(a) = self.render_session_item(ui, session, visual_index, active_id)
+                    {
                         action = Some(a);
                     }
+                    visual_index += 1;
                 }
             }
             ui.add_space(8.0);
@@ -128,10 +130,11 @@ impl<'a> SessionListUi<'a> {
             ui.add_space(4.0);
             for &id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
-                    let index = self.session_manager.session_index(id).unwrap_or(0);
-                    if let Some(a) = self.render_session_item(ui, session, index, active_id) {
+                    if let Some(a) = self.render_session_item(ui, session, visual_index, active_id)
+                    {
                         action = Some(a);
                     }
+                    visual_index += 1;
                 }
             }
         }

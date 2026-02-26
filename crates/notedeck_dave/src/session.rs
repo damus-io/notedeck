@@ -833,6 +833,17 @@ impl SessionManager {
         &self.chat_ids
     }
 
+    /// Session IDs in visual/display order (host groups then chats).
+    /// Keybinding numbers (Ctrl+1-9) map to this order.
+    pub fn visual_order(&self) -> Vec<SessionId> {
+        let mut ids = Vec::new();
+        for (_, group_ids) in &self.host_groups {
+            ids.extend_from_slice(group_ids);
+        }
+        ids.extend_from_slice(&self.chat_ids);
+        ids
+    }
+
     /// Get a session's index in the recency-ordered list (for keyboard shortcuts).
     pub fn session_index(&self, id: SessionId) -> Option<usize> {
         self.order.iter().position(|&oid| oid == id)
