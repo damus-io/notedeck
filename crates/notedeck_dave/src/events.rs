@@ -1,23 +1,24 @@
-use enostr::{PoolEventBuf, PoolRelay, RelayEvent, RelayMessage};
+use enostr::{PoolEventBuf, PoolRelay, RelayEvent, RelayMessage, RelayPool};
 use notedeck::{AppContext, UnknownIds};
 use tracing::{error, info};
 
 pub fn try_process_events_core(
     app_ctx: &mut AppContext<'_>,
+    pool: &mut enostr::RelayPool,
     ctx: &egui::Context,
-    mut receive: impl FnMut(&mut AppContext, PoolEventBuf),
+    mut receive: impl FnMut(&mut AppContext, &mut RelayPool, PoolEventBuf),
 ) {
     let ctx2 = ctx.clone();
     let wakeup = move || {
         ctx2.request_repaint();
     };
 
-    app_ctx.legacy_pool.keepalive_ping(wakeup);
+    pool.keepalive_ping(wakeup);
 
     // NOTE: we don't use the while let loop due to borrow issues
     #[allow(clippy::while_let_loop)]
     loop {
-        let ev = if let Some(ev) = app_ctx.legacy_pool.try_recv() {
+        let ev = if let Some(ev) = pool.try_recv() {
             ev.into_owned()
         } else {
             break;
@@ -33,28 +34,32 @@ pub fn try_process_events_core(
             }
             RelayEvent::Error(error) => error!("relay {} had error: {error:?}", &ev.relay),
             RelayEvent::Message(msg) => {
-                process_message_core(app_ctx, &ev.relay, &msg);
+                process_message_core(app_ctx, pool, &ev.relay, &msg);
             }
         }
 
-        receive(app_ctx, ev);
+        receive(app_ctx, pool, ev);
     }
 
     if app_ctx.unknown_ids.ready_to_send() {
-        pool_unknown_id_send(app_ctx.unknown_ids, app_ctx.legacy_pool);
+        pool_unknown_id_send(app_ctx.unknown_ids, pool);
     }
 }
 
-fn process_message_core(ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
+fn process_message_core(
+    ctx: &mut AppContext<'_>,
+    pool: &mut enostr::RelayPool,
+    relay: &str,
+    msg: &RelayMessage,
+) {
     match msg {
         RelayMessage::Event(_subid, ev) => {
-            let relay =
-                if let Some(relay) = ctx.legacy_pool.relays.iter().find(|r| r.url() == relay) {
-                    relay
-                } else {
-                    error!("couldn't find relay {} for note processing!?", relay);
-                    return;
-                };
+            let relay = if let Some(relay) = pool.relays.iter().find(|r| r.url() == relay) {
+                relay
+            } else {
+                error!("couldn't find relay {} for note processing!?", relay);
+                return;
+            };
 
             match relay {
                 PoolRelay::Websocket(_) => {

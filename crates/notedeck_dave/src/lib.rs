@@ -31,7 +31,7 @@ use backend::{
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
-use enostr::KeypairUnowned;
+use enostr::{KeypairUnowned, RelayPool};
 use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
@@ -120,6 +120,7 @@ pub enum DaveOverlay {
 }
 
 pub struct Dave {
+    pool: RelayPool,
     /// AI interaction mode (Chat vs Agentic)
     ai_mode: AiMode,
     /// Manages multiple chat sessions
@@ -473,7 +474,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             AiMode::Agentic => (SessionManager::new(), DaveOverlay::DirectoryPicker),
         };
 
+        let pool = RelayPool::new();
+
         Dave {
+            pool,
             ai_mode,
             backends,
             available_backends,
@@ -2494,7 +2498,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let pns_sub_id = self.pns_relay_sub.clone();
         let pns_relay = self.pns_relay_url.clone();
         let mut neg_events: Vec<enostr::negentropy::NegEvent> = Vec::new();
-        try_process_events_core(ctx, ui.ctx(), |app_ctx, ev| {
+        try_process_events_core(ctx, &mut self.pool, ui.ctx(), |app_ctx, pool, ev| {
             if ev.relay == pns_relay {
                 if let enostr::RelayEvent::Opened = (&ev.event).into() {
                     neg_events.push(enostr::negentropy::NegEvent::RelayOpened);
@@ -2509,7 +2513,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 .limit(500)
                                 .build();
                             let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
-                            app_ctx.legacy_pool.send_to(&req, &pns_relay);
+                            pool.send_to(&req, &pns_relay);
                             tracing::info!("re-subscribed for PNS events after relay reconnect");
                         }
                     }
@@ -2538,7 +2542,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let result = self.neg_sync.process(
                 neg_events,
                 ctx.ndb,
-                ctx.legacy_pool,
+                &mut self.pool,
                 &filter,
                 &self.pns_relay_url,
             );
@@ -2593,7 +2597,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Ensure the PNS relay is in the pool
             let egui_ctx = ui.ctx().clone();
             let wakeup = move || egui_ctx.request_repaint();
-            if let Err(e) = ctx.legacy_pool.add_url(self.pns_relay_url.clone(), wakeup) {
+            if let Err(e) = self.pool.add_url(self.pns_relay_url.clone(), wakeup) {
                 tracing::warn!("failed to add PNS relay {}: {:?}", self.pns_relay_url, e);
             }
 
@@ -2605,7 +2609,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .build();
             let sub_id = uuid::Uuid::new_v4().to_string();
             let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
-            ctx.legacy_pool.send_to(&req, &self.pns_relay_url);
+            self.pool.send_to(&req, &self.pns_relay_url);
             self.pns_relay_sub = Some(sub_id);
             tracing::info!("subscribed for PNS events on {}", self.pns_relay_url);
 
@@ -2754,7 +2758,7 @@ impl notedeck::App for Dave {
             for event in all_events {
                 match session_events::wrap_pns(&event.note_json, &pns_keys) {
                     Ok(pns_json) => match enostr::ClientMessage::event_json(pns_json) {
-                        Ok(msg) => ctx.legacy_pool.send_to(&msg, &self.pns_relay_url),
+                        Ok(msg) => self.pool.send_to(&msg, &self.pns_relay_url),
                         Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
                     },
                     Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),

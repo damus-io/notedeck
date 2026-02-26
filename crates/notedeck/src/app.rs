@@ -7,7 +7,7 @@ use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, UnknownIds,
 };
 use crate::{EguiWakeup, Error, JobCache, RemoteApi};
 use crate::{JobPool, MediaJobs};
@@ -15,7 +15,7 @@ use crate::{NotedeckOptions, ScopedSubsState};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
-use enostr::{OutboxPool, OutboxSession, OutboxSessionHandler, RelayPool};
+use enostr::{OutboxPool, OutboxSession, OutboxSessionHandler};
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -65,7 +65,6 @@ pub struct Notedeck {
     ndb: Ndb,
     img_cache: Images,
     unknown_ids: UnknownIds,
-    legacy_pool: RelayPool,
     pool: OutboxPool,
     scoped_sub_state: ScopedSubsState,
     note_cache: NoteCache,
@@ -180,16 +179,6 @@ impl eframe::App for Notedeck {
         });
         self.app_size.try_save_app_size(ctx);
 
-        if self.args.options.contains(NotedeckOptions::RelayDebug) {
-            if self.legacy_pool.debug.is_none() {
-                self.legacy_pool.use_debug();
-            }
-
-            if let Some(debug) = &mut self.legacy_pool.debug {
-                RelayDebugView::window(ctx, debug);
-            }
-        }
-
         #[cfg(feature = "puffin")]
         puffin_egui::profiler_window(ctx);
     }
@@ -261,15 +250,6 @@ impl Notedeck {
         } else {
             None
         };
-
-        // AccountManager will setup the pool on first update
-        let mut legacy_pool = RelayPool::new();
-        {
-            let ctx = ctx.clone();
-            if let Err(err) = legacy_pool.add_multicast_relay(move || ctx.request_repaint()) {
-                error!("error setting up multicast relay: {err}");
-            }
-        }
 
         let mut unknown_ids = UnknownIds::default();
         try_swap_compacted_db(&dbpath_str);
@@ -350,7 +330,6 @@ impl Notedeck {
             ndb,
             img_cache,
             unknown_ids,
-            legacy_pool,
             pool,
             scoped_sub_state,
             note_cache,
@@ -426,7 +405,6 @@ impl Notedeck {
                 ndb: &mut self.ndb,
                 img_cache: &mut self.img_cache,
                 unknown_ids: &mut self.unknown_ids,
-                legacy_pool: &mut self.legacy_pool,
                 remote: RemoteApi::new(outbox, &mut self.scoped_sub_state),
                 note_cache: &mut self.note_cache,
                 accounts: &mut self.accounts,
