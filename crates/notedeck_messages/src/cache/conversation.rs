@@ -9,13 +9,13 @@ use crate::{
         },
     },
     convo_renderable::ConversationRenderable,
-    nip17::{chatroom_filter, conversation_filter, get_participants},
+    nip17::get_participants,
 };
 
 use super::message_store::MessageStore;
 use enostr::Pubkey;
 use hashbrown::HashMap;
-use nostrdb::{Ndb, Note, NoteKey, QueryResult, Subscription, Transaction};
+use nostrdb::{Ndb, Note, NoteKey, Subscription, Transaction};
 use notedeck::{note::event_tag, NoteCache, NoteRef, UnknownIds};
 
 pub struct ConversationCache {
@@ -49,85 +49,6 @@ impl ConversationCache {
 
     pub fn get_active(&self) -> Option<&Conversation> {
         self.conversations.get(&self.active?)
-    }
-
-    /// A conversation is "opened" when the user navigates to the conversation
-    #[profiling::function]
-    pub fn open_conversation(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        id: ConversationId,
-        note_cache: &mut NoteCache,
-        unknown_ids: &mut UnknownIds,
-        selected: &Pubkey,
-    ) {
-        let Some(conversation) = self.conversations.get_mut(&id) else {
-            return;
-        };
-
-        let pubkeys = conversation.metadata.participants.clone();
-        let participants: Vec<&[u8; 32]> = pubkeys.iter().map(|p| p.bytes()).collect();
-
-        // We should try and get more messages... this isn't ideal
-        let chatroom_filter = chatroom_filter(participants, selected);
-
-        let mut updated = false;
-        {
-            profiling::scope!("chatroom_filter");
-            let results = match ndb.query(txn, &chatroom_filter, 500) {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::error!("problem with chatroom filter ndb::query: {e:?}");
-                    return;
-                }
-            };
-
-            for res in results {
-                let participants = get_participants(&res.note);
-                let parts = ParticipantSetUnowned::new(participants);
-                let cur_id = self
-                    .registry
-                    .get_or_insert(ConversationIdentifierUnowned::Nip17(parts));
-
-                if cur_id != id {
-                    // this note isn't relevant to the current conversation, unfortunately...
-                    continue;
-                }
-
-                UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &res.note);
-                updated |= conversation.ingest_kind_14(res.note, res.note_key);
-            }
-        }
-
-        if updated {
-            let latest = conversation.last_activity();
-            refresh_order(&mut self.order, id, LatestMessage::Latest(latest));
-        }
-
-        self.active = Some(id);
-        tracing::info!("Set active to {id}");
-    }
-
-    #[profiling::function]
-    pub fn init_conversations(
-        &mut self,
-        ndb: &Ndb,
-        txn: &Transaction,
-        cur_acc: &Pubkey,
-        note_cache: &mut NoteCache,
-        unknown_ids: &mut UnknownIds,
-    ) {
-        let Some(results) = get_conversations(ndb, txn, cur_acc) else {
-            tracing::warn!("Got no conversations from ndb");
-            return;
-        };
-
-        tracing::trace!("Received {} conversations from ndb", results.len());
-
-        for res in results {
-            self.ingest_chatroom_msg(res.note, res.note_key, ndb, txn, note_cache, unknown_ids);
-        }
     }
 
     #[profiling::function]
@@ -311,21 +232,6 @@ impl Default for ConversationCache {
             order: Vec::new(),
             state: Default::default(),
             active: None,
-        }
-    }
-}
-
-#[profiling::function]
-fn get_conversations<'a>(
-    ndb: &Ndb,
-    txn: &'a Transaction,
-    cur_acc: &Pubkey,
-) -> Option<Vec<QueryResult<'a>>> {
-    match ndb.query(txn, &conversation_filter(cur_acc), 500) {
-        Ok(r) => Some(r),
-        Err(e) => {
-            tracing::error!("error fetching kind 14 messages: {e}");
-            None
         }
     }
 }
