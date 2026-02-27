@@ -381,6 +381,13 @@ impl Accounts {
             .collect()
     }
 
+    /// Return the selected account's advertised NIP-65 relays with marker metadata.
+    pub fn selected_account_advertised_relays(
+        &self,
+    ) -> &std::collections::BTreeSet<crate::RelaySpec> {
+        &self.get_selected_account_data().relay.advertised
+    }
+
     pub fn selected_account_write_relays(&self) -> Vec<RelayId> {
         self.get_selected_account()
             .data
