@@ -237,7 +237,7 @@ pub fn build_tilemap_model(
     // Center the tilemap so origin is in the middle
     let offset_x = -(w as f32) / 2.0;
     let offset_z = -(h as f32) / 2.0;
-    let y = 0.001_f32; // Just above ground to avoid z-fighting with grid
+    let y = 0.01_f32; // Above ground plane to avoid z-fighting with grid
 
     let normal = [0.0_f32, 1.0, 0.0]; // Facing up
     let tangent = [1.0_f32, 0.0, 0.0, 1.0]; // Tangent along +X

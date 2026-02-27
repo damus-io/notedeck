@@ -320,7 +320,7 @@ pub fn show_room_view(
                     let angle = delta_x * ROTATE_SENSITIVITY;
                     let new_rotation = Quat::from_rotation_y(angle) * obj.rotation;
                     let new_rotation = if state.grid_snap_enabled {
-                        let (_, y, _) = new_rotation.to_euler(glam::EulerRot::YXZ);
+                        let (y, _, _) = new_rotation.to_euler(glam::EulerRot::YXZ);
                         let snap_rad = state.rotation_snap.to_radians();
                         let snapped_y = (y / snap_rad).round() * snap_rad;
                         Quat::from_rotation_y(snapped_y)
@@ -563,7 +563,7 @@ fn render_object_inspector(
     obj.scale = Vec3::new(sx, sy, sz);
 
     // Editable Y rotation (degrees)
-    let (_, angle_y, _) = obj.rotation.to_euler(glam::EulerRot::YXZ);
+    let (angle_y, _, _) = obj.rotation.to_euler(glam::EulerRot::YXZ);
     let mut deg = angle_y.to_degrees();
     let rot_changed = ui
         .horizontal(|ui| {
