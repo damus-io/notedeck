@@ -221,16 +221,15 @@ impl MediaCache {
             &config,
         );
 
-        let _ = data.iter().fold(0i32, |acc_timestamp, frame| {
+        let mut timestamp = 0i32;
+        for frame in data.iter() {
             let [width, height] = frame.image.size;
             let delay = frame.delay.as_millis();
-            let frame_delay = if delay < i32::MAX as u128 {
+            let frame_delay = if delay <= i32::MAX as u128 {
                 delay as i32
             } else {
                 300i32
             };
-
-            let timestamp = acc_timestamp;
 
             encoder.add_frame(AnimFrame::from_rgba(
                 frame.image.as_raw(),
@@ -239,8 +238,8 @@ impl MediaCache {
                 timestamp,
             ));
 
-            acc_timestamp.saturating_add(frame_delay)
-        });
+            timestamp = timestamp.saturating_add(frame_delay);
+        }
 
         let webp = encoder.encode();
 
