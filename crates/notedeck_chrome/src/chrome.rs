@@ -46,6 +46,10 @@ pub struct Chrome {
     options: ChromeOptions,
     apps: Vec<NotedeckApp>,
 
+    /// Track which apps have been opened (activated) at least once.
+    /// Only opened apps receive `update()` calls each frame.
+    opened: Vec<bool>,
+
     /// The state of the soft keyboard animation
     soft_kb_anim_state: AnimState,
 
@@ -246,6 +250,7 @@ impl Chrome {
 
     pub fn add_app(&mut self, app: NotedeckApp) {
         self.apps.push(app);
+        self.opened.push(false);
     }
 
     fn get_columns_app(&mut self) -> Option<&mut Damus> {
@@ -262,6 +267,9 @@ impl Chrome {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Columns(_) = app {
                 self.active = i as i32;
+                if let Some(opened) = self.opened.get_mut(i) {
+                    *opened = true;
+                }
             }
         }
     }
@@ -279,12 +287,18 @@ impl Chrome {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Dave(_) = app {
                 self.active = i as i32;
+                if let Some(opened) = self.opened.get_mut(i) {
+                    *opened = true;
+                }
             }
         }
     }
 
     pub fn set_active(&mut self, app: i32) {
         self.active = app;
+        if let Some(opened) = self.opened.get_mut(app as usize) {
+            *opened = true;
+        }
     }
 
     /// The chrome side panel
@@ -429,10 +443,13 @@ impl Chrome {
 
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, egui_ctx: &egui::Context) {
-        // Update ALL apps every frame so background processing
-        // (relay pools, subscriptions, etc.) stays alive
-        for app in &mut self.apps {
-            app.update(ctx, egui_ctx);
+        // Update opened apps every frame so background processing
+        // (relay pools, subscriptions, etc.) stays alive.
+        // Apps that haven't been opened yet are skipped.
+        for (i, app) in self.apps.iter_mut().enumerate() {
+            if self.opened.get(i).copied().unwrap_or(false) {
+                app.update(ctx, egui_ctx);
+            }
         }
     }
 
@@ -964,6 +981,9 @@ fn topdown_sidebar(
 
                     if resp.clicked() {
                         chrome.active = i as i32;
+                        if let Some(opened) = chrome.opened.get_mut(i) {
+                            *opened = true;
+                        }
                         chrome.nav.close();
                     }
                 })
