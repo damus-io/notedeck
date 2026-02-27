@@ -1,12 +1,12 @@
 use crate::{
     account::accounts::Accounts, frame_history::FrameHistory, i18n::Localization,
     nip05::Nip05Cache, wallet::GlobalWallet, zaps::Zaps, Args, DataPath, Images, JobPool,
-    MediaJobs, NoteCache, SettingsHandler, UnknownIds,
+    MediaJobs, NoteCache, RemoteApi, SettingsHandler, UnknownIds,
 };
 use egui_winit::clipboard::Clipboard;
+use enostr::Pubkey;
 
-use enostr::RelayPool;
-use nostrdb::Ndb;
+use nostrdb::{Ndb, Transaction};
 
 #[cfg(target_os = "android")]
 use android_activity::AndroidApp;
@@ -17,7 +17,8 @@ pub struct AppContext<'a> {
     pub ndb: &'a mut Ndb,
     pub img_cache: &'a mut Images,
     pub unknown_ids: &'a mut UnknownIds,
-    pub pool: &'a mut RelayPool,
+    /// Relay/outbox transport APIs (scoped subs, oneshot, publish, relay inspect).
+    pub remote: RemoteApi<'a>,
     pub note_cache: &'a mut NoteCache,
     pub accounts: &'a mut Accounts,
     pub global_wallet: &'a mut GlobalWallet,
@@ -51,6 +52,21 @@ impl SoftKeyboardContext {
 }
 
 impl<'a> AppContext<'a> {
+    pub fn select_account(&mut self, pubkey: &Pubkey) {
+        let txn = Transaction::new(self.ndb).expect("txn");
+        self.accounts
+            .select_account(pubkey, self.ndb, &txn, &mut self.remote);
+    }
+
+    pub fn remove_account(&mut self, pubkey: &Pubkey) -> bool {
+        self.accounts
+            .remove_account(pubkey, self.ndb, &mut self.remote)
+    }
+
+    pub fn process_relay_action(&mut self, action: crate::RelayAction) {
+        self.accounts.process_relay_action(&mut self.remote, action);
+    }
+
     pub fn soft_keyboard_rect(&self, screen_rect: Rect, ctx: SoftKeyboardContext) -> Option<Rect> {
         match ctx {
             SoftKeyboardContext::Virtual => {

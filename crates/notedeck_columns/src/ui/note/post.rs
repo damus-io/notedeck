@@ -10,7 +10,7 @@ use egui::{
     widgets::text_edit::TextEdit,
     Frame, Layout, Margin, Pos2, ScrollArea, Sense, TextBuffer,
 };
-use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey, RelayPool};
+use enostr::{FilledKeypair, FullKeypair, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::media::latest::LatestImageTex;
 use notedeck::media::AnimationMode;
@@ -18,7 +18,8 @@ use notedeck::media::AnimationMode;
 use notedeck::platform::android::try_open_file_picker;
 use notedeck::platform::get_next_selected_file;
 use notedeck::{
-    name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction, NoteContext,
+    name::get_display_name, supported_mime_hosted_at_url, tr, Localization, NoteAction,
+    NoteContext, PublishApi, RelayType,
 };
 use notedeck::{DragResponse, PixelDimensions};
 use notedeck_ui::{
@@ -70,7 +71,7 @@ impl NewPostAction {
         &self,
         ndb: &Ndb,
         txn: &Transaction,
-        pool: &mut RelayPool,
+        publisher: &mut PublishApi<'_, '_>,
         drafts: &mut Drafts,
     ) -> Result<()> {
         let seckey = self.post.account.secret_key.to_secret_bytes();
@@ -96,7 +97,7 @@ impl NewPostAction {
             let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
         }
 
-        pool.send(&event);
+        publisher.publish_note(&note, RelayType::AccountsWrite);
         drafts.get_from_post_type(&self.post_type).clear();
 
         Ok(())
@@ -899,7 +900,6 @@ mod preview {
                 img_cache: app.img_cache,
                 note_cache: app.note_cache,
                 zaps: app.zaps,
-                pool: app.pool,
                 jobs: app.media_jobs.sender(),
                 unknown_ids: app.unknown_ids,
                 nip05_cache: app.nip05_cache,

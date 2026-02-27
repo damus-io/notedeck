@@ -1,225 +1,239 @@
-use ewebsock::{Options, WsEvent, WsMessage, WsReceiver, WsSender};
-use mio::net::UdpSocket;
-use std::io;
-use std::net::IpAddr;
-use std::net::{SocketAddr, SocketAddrV4};
-use std::time::{Duration, Instant};
-
-use crate::{ClientMessage, EventClientMessage, Result};
-use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::net::Ipv4Addr;
-use tracing::{debug, error};
-
+mod broadcast;
+mod compaction;
+mod coordinator;
+mod identity;
+mod limits;
 pub mod message;
+mod multicast;
+mod outbox;
 pub mod pool;
+mod queue;
 pub mod subs_debug;
+mod subscription;
+mod transparent;
+mod websocket;
 
-#[derive(Debug, Copy, Clone)]
+pub use broadcast::{BroadcastCache, BroadcastRelay};
+pub use identity::{
+    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs,
+};
+pub use limits::{
+    RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,
+};
+pub use multicast::{MulticastRelay, MulticastRelayCache};
+use nostrdb::Filter;
+pub use outbox::{OutboxPool, OutboxSession, OutboxSessionHandler};
+pub use queue::QueuedTasks;
+pub use subscription::{
+    FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask, OutboxSubscriptions,
+    OutboxTask, SubscribeTask,
+};
+pub use websocket::{WebsocketConn, WebsocketRelay};
+
+#[cfg(test)]
+pub mod test_utils;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RelayStatus {
     Connected,
     Connecting,
     Disconnected,
 }
 
-pub struct MulticastRelay {
-    last_join: Instant,
-    status: RelayStatus,
-    address: SocketAddrV4,
-    socket: UdpSocket,
-    interface: Ipv4Addr,
+enum UnownedRelay<'a> {
+    Websocket(&'a mut WebsocketRelay),
+    Multicast(&'a mut MulticastRelay),
 }
 
-impl MulticastRelay {
-    pub fn new(address: SocketAddrV4, socket: UdpSocket, interface: Ipv4Addr) -> Self {
-        let last_join = Instant::now();
-        let status = RelayStatus::Connected;
-        MulticastRelay {
-            status,
-            address,
-            socket,
-            interface,
-            last_join,
+/// RawEventData is the event raw data from a relay
+pub struct RawEventData<'a> {
+    pub url: &'a str,
+    pub event_json: &'a str,
+    pub relay_type: RelayImplType,
+}
+
+/// RelayImplType identifies whether an event came from a websocket or multicast relay.
+pub enum RelayImplType {
+    Websocket,
+    Multicast,
+}
+
+pub enum RelayTask {
+    Unsubscribe,
+    Subscribe,
+}
+
+pub struct FilterMetadata {
+    filter_json_size: usize,
+    last_seen: Option<u64>,
+}
+
+pub struct MetadataFilters {
+    filters: Vec<Filter>,
+    meta: Vec<FilterMetadata>,
+}
+
+impl MetadataFilters {
+    pub fn new(filters: Vec<Filter>) -> Self {
+        let meta = filters
+            .iter()
+            .map(|f| FilterMetadata {
+                filter_json_size: f.json().ok().map(|j| j.len()).unwrap_or(0),
+                last_seen: None,
+            })
+            .collect();
+        Self { filters, meta }
+    }
+
+    pub fn json_size_sum(&self) -> usize {
+        self.meta.iter().map(|f| f.filter_json_size).sum()
+    }
+
+    pub fn since_optimize(&mut self) {
+        for (filter, meta) in self.filters.iter_mut().zip(self.meta.iter()) {
+            let Some(last_seen) = meta.last_seen else {
+                continue;
+            };
+
+            *filter = filter.clone().since_mut(last_seen);
         }
     }
 
-    /// Multicast seems to fail every 260 seconds. We force a rejoin every 200 seconds or
-    /// so to ensure we are always in the group
-    pub fn rejoin(&mut self) -> Result<()> {
-        self.last_join = Instant::now();
-        self.status = RelayStatus::Disconnected;
-        self.socket
-            .leave_multicast_v4(self.address.ip(), &self.interface)?;
-        self.socket
-            .join_multicast_v4(self.address.ip(), &self.interface)?;
-        self.status = RelayStatus::Connected;
-        Ok(())
+    pub fn get_filters(&self) -> &Vec<Filter> {
+        &self.filters
     }
 
-    pub fn should_rejoin(&self) -> bool {
-        (Instant::now() - self.last_join) >= Duration::from_secs(200)
-    }
-
-    pub fn try_recv(&self) -> Option<WsEvent> {
-        let mut buffer = [0u8; 65535];
-        // Read the size header
-        match self.socket.recv_from(&mut buffer) {
-            Ok((size, src)) => {
-                let parsed_size = u32::from_be_bytes(buffer[0..4].try_into().ok()?) as usize;
-                debug!("multicast: read size {} from start of header", size - 4);
-
-                if size != parsed_size + 4 {
-                    error!(
-                        "multicast: partial data received: expected {}, got {}",
-                        parsed_size, size
-                    );
-                    return None;
-                }
-
-                let text = String::from_utf8_lossy(&buffer[4..size]);
-                debug!("multicast: received {} bytes from {}: {}", size, src, &text);
-                Some(WsEvent::Message(WsMessage::Text(text.to_string())))
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                // No data available, continue
-                None
-            }
-            Err(e) => {
-                error!("multicast: error receiving data: {}", e);
-                None
-            }
+    #[allow(dead_code)]
+    pub fn iter(&self) -> MetadataFiltersIter<'_> {
+        MetadataFiltersIter {
+            filters: self.filters.iter(),
+            meta: self.meta.iter(),
         }
     }
 
-    pub fn send(&self, msg: &EventClientMessage) -> Result<()> {
-        let json = msg.to_json();
-        let len = json.len();
-
-        debug!("writing to multicast relay");
-        let mut buf: Vec<u8> = Vec::with_capacity(4 + len);
-
-        // Write the length of the message as 4 bytes (big-endian)
-        buf.extend_from_slice(&(len as u32).to_be_bytes());
-
-        // Append the JSON message bytes
-        buf.extend_from_slice(json.as_bytes());
-
-        self.socket.send_to(&buf, SocketAddr::V4(self.address))?;
-        Ok(())
-    }
-}
-
-pub fn setup_multicast_relay(
-    wakeup: impl Fn() + Send + Sync + Clone + 'static,
-) -> Result<MulticastRelay> {
-    use mio::{Events, Interest, Poll, Token};
-
-    let port = 9797;
-    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
-    let multicast_ip = Ipv4Addr::new(239, 19, 88, 1);
-
-    let mut socket = UdpSocket::bind(address)?;
-    let interface = Ipv4Addr::UNSPECIFIED;
-    let multicast_address = SocketAddrV4::new(multicast_ip, port);
-
-    socket.join_multicast_v4(&multicast_ip, &interface)?;
-
-    let mut poll = Poll::new()?;
-    poll.registry().register(
-        &mut socket,
-        Token(0),
-        Interest::READABLE | Interest::WRITABLE,
-    )?;
-
-    // wakeup our render thread when we have new stuff on the socket
-    std::thread::spawn(move || {
-        let mut events = Events::with_capacity(1);
-        loop {
-            if let Err(err) = poll.poll(&mut events, None) {
-                error!("multicast socket poll error: {err}. ending multicast poller.");
-                return;
-            }
-            wakeup();
-
-            std::thread::yield_now();
+    pub fn iter_mut(&mut self) -> MetadataFiltersIterMut<'_> {
+        MetadataFiltersIterMut {
+            filters: self.filters.iter_mut(),
+            meta: self.meta.iter_mut(),
         }
-    });
+    }
 
-    Ok(MulticastRelay::new(multicast_address, socket, interface))
-}
-
-pub struct Relay {
-    pub url: nostr::RelayUrl,
-    pub status: RelayStatus,
-    pub sender: WsSender,
-    pub receiver: WsReceiver,
-}
-
-impl fmt::Debug for Relay {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Relay")
-            .field("url", &self.url)
-            .field("status", &self.status)
-            .finish()
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.filters.iter().all(|f| f.num_elements() == 0)
     }
 }
 
-impl Hash for Relay {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Hashes the Relay by hashing the URL
-        self.url.hash(state);
+#[allow(dead_code)]
+pub struct MetadataFiltersIter<'a> {
+    filters: std::slice::Iter<'a, Filter>,
+    meta: std::slice::Iter<'a, FilterMetadata>,
+}
+
+impl<'a> Iterator for MetadataFiltersIter<'a> {
+    type Item = (&'a Filter, &'a FilterMetadata);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some((self.filters.next()?, self.meta.next()?))
     }
 }
 
-impl PartialEq for Relay {
-    fn eq(&self, other: &Self) -> bool {
-        self.url == other.url
+pub struct MetadataFiltersIterMut<'a> {
+    filters: std::slice::IterMut<'a, Filter>,
+    meta: std::slice::IterMut<'a, FilterMetadata>,
+}
+
+impl<'a> Iterator for MetadataFiltersIterMut<'a> {
+    type Item = (&'a mut Filter, &'a mut FilterMetadata);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some((self.filters.next()?, self.meta.next()?))
     }
 }
 
-impl Eq for Relay {}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Relay {
-    pub fn new(url: nostr::RelayUrl, wakeup: impl Fn() + Send + Sync + 'static) -> Result<Self> {
-        let status = RelayStatus::Connecting;
-        let (sender, receiver) =
-            ewebsock::connect_with_wakeup(url.as_str(), Options::default(), wakeup)?;
-
-        Ok(Self {
-            url,
-            sender,
-            receiver,
-            status,
-        })
+    fn filter_has_since(filter: &Filter, expected: u64) -> bool {
+        let json = filter.json().expect("filter json");
+        json.contains(&format!("\"since\":{}", expected))
     }
 
-    pub fn send(&mut self, msg: &ClientMessage) {
-        let json = match msg.to_json() {
-            Ok(json) => {
-                debug!("sending {} to {}", json, self.url);
-                json
-            }
-            Err(e) => {
-                error!("error serializing json for filter: {e}");
-                return;
-            }
-        };
+    #[test]
+    fn since_optimize_applies_last_seen_to_filter() {
+        let filter = Filter::new().kinds(vec![1]).build();
+        let mut metadata_filters = MetadataFilters::new(vec![filter]);
 
-        let txt = WsMessage::Text(json);
-        self.sender.send(txt);
+        // Initially no since
+        let json_before = metadata_filters.get_filters()[0]
+            .json()
+            .expect("filter json");
+        assert!(
+            !json_before.contains("\"since\""),
+            "filter should not have since initially"
+        );
+
+        // Set last_seen on metadata
+        metadata_filters.meta[0].last_seen = Some(12345);
+
+        // Call since_optimize
+        metadata_filters.since_optimize();
+
+        // Now filter should have since
+        assert!(
+            filter_has_since(&metadata_filters.get_filters()[0], 12345),
+            "filter should have since:12345 after optimization"
+        );
     }
 
-    pub fn connect(&mut self, wakeup: impl Fn() + Send + Sync + 'static) -> Result<()> {
-        let (sender, receiver) =
-            ewebsock::connect_with_wakeup(self.url.as_str(), Options::default(), wakeup)?;
-        self.status = RelayStatus::Connecting;
-        self.sender = sender;
-        self.receiver = receiver;
-        Ok(())
+    #[test]
+    fn since_optimize_skips_filters_without_last_seen() {
+        let filter1 = Filter::new().kinds(vec![1]).build();
+        let filter2 = Filter::new().kinds(vec![2]).build();
+        let mut metadata_filters = MetadataFilters::new(vec![filter1, filter2]);
+
+        // Only set last_seen on first filter
+        metadata_filters.meta[0].last_seen = Some(99999);
+
+        metadata_filters.since_optimize();
+
+        // First filter should have since
+        assert!(
+            filter_has_since(&metadata_filters.get_filters()[0], 99999),
+            "first filter should have since"
+        );
+
+        // Second filter should NOT have since
+        let json_second = metadata_filters.get_filters()[1]
+            .json()
+            .expect("filter json");
+        assert!(
+            !json_second.contains("\"since\""),
+            "second filter should not have since"
+        );
     }
 
-    pub fn ping(&mut self) {
-        let msg = WsMessage::Ping(vec![]);
-        self.sender.send(msg);
+    #[test]
+    fn since_optimize_overwrites_existing_since() {
+        // Create filter with initial since value
+        let filter = Filter::new().kinds(vec![1]).since(100).build();
+        let mut metadata_filters = MetadataFilters::new(vec![filter]);
+
+        // Verify initial since
+        assert!(
+            filter_has_since(&metadata_filters.get_filters()[0], 100),
+            "filter should have initial since:100"
+        );
+
+        // Set different last_seen
+        metadata_filters.meta[0].last_seen = Some(200);
+        metadata_filters.since_optimize();
+
+        // Since should be updated to new value
+        assert!(
+            filter_has_since(&metadata_filters.get_filters()[0], 200),
+            "filter should have updated since:200"
+        );
     }
 }

@@ -1,8 +1,8 @@
-use enostr::{FilledKeypair, NoteId, Pubkey, RelayPool};
+use enostr::{FilledKeypair, NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 use tracing::info;
 
-use crate::Muted;
+use crate::{Muted, PublishApi, RelayType};
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ReportType {
@@ -83,7 +83,12 @@ where
     builder
 }
 
-pub fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, kp: FilledKeypair) {
+pub fn publish_note_builder(
+    builder: NoteBuilder,
+    ndb: &Ndb,
+    publisher: &mut PublishApi<'_, '_>,
+    kp: FilledKeypair,
+) {
     let note = builder
         .sign(&kp.secret_key.secret_bytes())
         .build()
@@ -101,13 +106,13 @@ pub fn send_note_builder(builder: NoteBuilder, ndb: &Ndb, pool: &mut RelayPool, 
 
     let _ = ndb.process_event_with(&json, nostrdb::IngestMetadata::new().client(true));
     info!("sending {}", &json);
-    pool.send(event);
+    publisher.publish_note(&note, RelayType::AccountsWrite);
 }
 
 pub fn send_unmute_event(
     ndb: &Ndb,
     txn: &Transaction,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair,
     muted: &Muted,
     target: &Pubkey,
@@ -152,13 +157,13 @@ pub fn send_unmute_event(
         }),
     );
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }
 
 pub fn send_mute_event(
     ndb: &Ndb,
     txn: &Transaction,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair,
     muted: &Muted,
     target: &Pubkey,
@@ -200,12 +205,12 @@ pub fn send_mute_event(
             .tag_str(&target.hex())
     };
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }
 
 pub fn send_people_list_event(
     ndb: &Ndb,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair,
     name: &str,
     members: &[Pubkey],
@@ -225,12 +230,12 @@ pub fn send_people_list_event(
         builder = builder.start_tag().tag_str("p").tag_str(&pk.hex());
     }
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }
 
 pub fn send_report_event(
     ndb: &Ndb,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair,
     target: &ReportTarget,
     report_type: ReportType,
@@ -254,5 +259,5 @@ pub fn send_report_event(
             .tag_str(report_str);
     }
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }

@@ -89,6 +89,7 @@ impl<'a, 'd> ThreadView<'a, 'd> {
             self.note_context.ndb,
             txn,
             self.note_context.unknown_ids,
+            self.note_context.accounts,
             self.col,
         );
 

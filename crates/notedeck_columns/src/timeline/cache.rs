@@ -1,12 +1,16 @@
 use crate::{
     actionbar::TimelineOpenResult,
     error::Error,
-    timeline::{Timeline, TimelineKind, UnknownPksOwned},
+    timeline::{
+        drop_timeline_remote_owner, ensure_remote_timeline_subscription, Timeline, TimelineKind,
+        UnknownPksOwned,
+    },
 };
 
+use notedeck::ScopedSubApi;
 use notedeck::{filter, FilterState, NoteCache, NoteRef};
 
-use enostr::RelayPool;
+use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, Transaction};
 use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
@@ -54,7 +58,7 @@ impl TimelineCache {
         &mut self,
         id: &TimelineKind,
         ndb: &mut Ndb,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
     ) -> Result<(), Error> {
         let timeline = if let Some(timeline) = self.timelines.get_mut(id) {
             timeline
@@ -62,9 +66,17 @@ impl TimelineCache {
             return Err(Error::TimelineNotFound);
         };
 
-        timeline.subscription.unsubscribe_or_decrement(ndb, pool);
+        let account_pk = scoped_subs.selected_account_pubkey();
+        timeline
+            .subscription
+            .unsubscribe_or_decrement(account_pk, ndb);
 
-        if timeline.subscription.no_sub() {
+        if timeline.subscription.no_sub(&account_pk) {
+            timeline.subscription.clear_remote_seeded(account_pk);
+            drop_timeline_remote_owner(timeline, account_pk, scoped_subs);
+        }
+
+        if !timeline.subscription.has_any_subs() {
             debug!(
                 "popped last timeline {:?}, removing from timeline cache",
                 id
@@ -105,16 +117,18 @@ impl TimelineCache {
         res
     }
 
-    pub fn insert(&mut self, id: TimelineKind, timeline: Timeline) {
+    pub fn insert(&mut self, id: TimelineKind, account_pk: Pubkey, mut timeline: Timeline) {
         if let Some(cur_timeline) = self.timelines.get_mut(&id) {
-            cur_timeline.subscription.increment();
+            cur_timeline.subscription.increment(account_pk);
             return;
         };
 
+        timeline.subscription.increment(account_pk);
         self.timelines.insert(id, timeline);
     }
 
     /// Get and/or update the notes associated with this timeline
+    #[profiling::function]
     fn notes<'a>(
         &'a mut self,
         ndb: &Ndb,
@@ -137,6 +151,7 @@ impl TimelineCache {
             let mut notes = Vec::new();
 
             for package in filters.local().packages {
+                profiling::scope!("ndb query");
                 if let Ok(results) = ndb.query(txn, package.filters, 1000) {
                     let cur_notes: Vec<NoteRef> = results
                         .into_iter()
@@ -174,13 +189,16 @@ impl TimelineCache {
     /// When `load_local` is false, the timeline is created and subscribed
     /// without running a blocking local query. Use this for startup paths
     /// where initial notes are loaded asynchronously.
+    #[profiling::function]
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         &mut self,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
         txn: &Transaction,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
         id: &TimelineKind,
+        account_pk: Pubkey,
         load_local: bool,
     ) -> Option<TimelineOpenResult> {
         if !load_local {
@@ -195,10 +213,15 @@ impl TimelineCache {
                 self.timelines.get_mut(id).expect("timeline inserted")
             };
 
-            if let Some(filter) = timeline.filter.get_any_ready() {
+            if let FilterState::Ready(filter) = &timeline.filter {
                 debug!("got open with subscription for {:?}", &timeline.kind);
-                timeline.subscription.try_add_local(ndb, filter);
-                timeline.subscription.try_add_remote(pool, filter);
+                timeline.subscription.try_add_local(account_pk, ndb, filter);
+                ensure_remote_timeline_subscription(
+                    timeline,
+                    account_pk,
+                    filter.remote().to_vec(),
+                    scoped_subs,
+                );
             } else {
                 debug!(
                     "open skipped subscription; filter not ready for {:?}",
@@ -206,27 +229,16 @@ impl TimelineCache {
                 );
             }
 
-            timeline.subscription.increment();
+            timeline.subscription.increment(account_pk);
             return None;
         }
 
+        let account_pk = scoped_subs.selected_account_pubkey();
         let notes_resp = self.notes(ndb, note_cache, txn, id);
         let (mut open_result, timeline) = match notes_resp.vitality {
             Vitality::Stale(timeline) => {
                 // The timeline cache is stale, let's update it
-                let notes = {
-                    let mut notes = Vec::new();
-                    for package in timeline.subscription.get_filter()?.local().packages {
-                        let cur_notes = find_new_notes(
-                            timeline.all_or_any_entries().latest(),
-                            package.filters,
-                            txn,
-                            ndb,
-                        );
-                        notes.extend(cur_notes);
-                    }
-                    notes
-                };
+                let notes = collect_stale_notes(timeline, txn, ndb);
 
                 let open_result = if notes.is_empty() {
                     None
@@ -246,10 +258,15 @@ impl TimelineCache {
             Vitality::Fresh(timeline) => (None, timeline),
         };
 
-        if let Some(filter) = timeline.filter.get_any_ready() {
+        if let FilterState::Ready(filter) = &timeline.filter {
             debug!("got open with *new* subscription for {:?}", &timeline.kind);
-            timeline.subscription.try_add_local(ndb, filter);
-            timeline.subscription.try_add_remote(pool, filter);
+            timeline.subscription.try_add_local(account_pk, ndb, filter);
+            ensure_remote_timeline_subscription(
+                timeline,
+                account_pk,
+                filter.remote().to_vec(),
+                scoped_subs,
+            );
         } else {
             // This should never happen reasoning, self.notes would have
             // failed above if the filter wasn't ready
@@ -258,7 +275,7 @@ impl TimelineCache {
             );
         };
 
-        timeline.subscription.increment();
+        timeline.subscription.increment(account_pk);
 
         if let Some(unknowns) = notes_resp.unknown_pks {
             match &mut open_result {
@@ -289,6 +306,24 @@ impl TimelineCache {
 
         tl.seen_latest_notes = true;
     }
+}
+
+fn collect_stale_notes(timeline: &Timeline, txn: &Transaction, ndb: &Ndb) -> Vec<NoteRef> {
+    let FilterState::Ready(filter) = &timeline.filter else {
+        return Vec::new();
+    };
+
+    let mut notes = Vec::new();
+    for package in filter.local().packages {
+        let cur_notes = find_new_notes(
+            timeline.all_or_any_entries().latest(),
+            package.filters,
+            txn,
+            ndb,
+        );
+        notes.extend(cur_notes);
+    }
+    notes
 }
 
 pub struct GetNotesResponse<'a> {

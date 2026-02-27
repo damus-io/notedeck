@@ -66,13 +66,18 @@ pub async fn android_main(android_app: AndroidApp) {
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
 
-            let mut notedeck = Notedeck::new(ctx, path, &app_args);
-            notedeck.set_android_context(android_app);
-            notedeck.setup(ctx);
-            let chrome = Chrome::new_with_apps(cc, &app_args, &mut notedeck)?;
-            notedeck.set_app(chrome);
+            let mut notedeck_ctx = Notedeck::init(ctx, path, &app_args);
+            notedeck_ctx.notedeck.set_android_context(android_app);
+            notedeck_ctx.notedeck.setup(ctx);
+            let chrome = Chrome::new_with_apps(
+                cc,
+                &app_args,
+                &mut notedeck_ctx.notedeck,
+                notedeck_ctx.outbox_session,
+            )?;
+            notedeck_ctx.notedeck.set_app(chrome);
 
-            Ok(Box::new(notedeck))
+            Ok(Box::new(notedeck_ctx.notedeck))
         }),
     );
 }

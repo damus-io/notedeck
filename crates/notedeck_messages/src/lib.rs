@@ -3,20 +3,23 @@ pub mod convo_renderable;
 pub mod loader;
 pub mod nav;
 pub mod nip17;
+mod relay_ensure;
+mod relay_prefetch;
 pub mod ui;
 
 use enostr::Pubkey;
 use hashbrown::{HashMap, HashSet};
 use nav::{process_messages_ui_response, Route};
-use nostrdb::{Subscription, Transaction};
+use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{
-    try_process_events_core, ui::is_narrow, Accounts, App, AppContext, AppResponse, Router,
+    ui::is_narrow, Accounts, App, AppContext, AppResponse, RemoteApi, Router, SubKey, SubOwnerKey,
 };
 
 use crate::{
     cache::{ConversationCache, ConversationListState, ConversationStates},
     loader::{LoaderMsg, MessagesLoader},
     nip17::conversation_filter,
+    relay_ensure::ensure_selected_account_dm_list,
     ui::{login_nsec_prompt, messages::messages_ui},
 };
 
@@ -53,8 +56,6 @@ impl Default for MessagesApp {
 impl App for MessagesApp {
     #[profiling::function]
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        try_process_events_core(ctx, ui.ctx(), |_, _| {});
-
         let Some(cache) = self.messages.get_current_mut(ctx.accounts) else {
             login_nsec_prompt(ui, ctx.i18n);
             return AppResponse::none();
@@ -87,6 +88,8 @@ impl App for MessagesApp {
                 tracing::error!("failed to spawn process_giftwraps thread: {err}");
             }
         }
+
+        ensure_selected_account_dm_relay_list(ctx.ndb, &mut ctx.remote, ctx.accounts, cache);
 
         match cache.state {
             ConversationListState::Initializing => {
@@ -224,7 +227,12 @@ fn handle_loader_messages(
 
                 if cache.active.is_none() && !is_narrow {
                     if let Some(first) = cache.first_convo_id() {
-                        cache.active = Some(first);
+                        open_conversation_with_prefetch(
+                            &mut ctx.remote,
+                            ctx.accounts,
+                            cache,
+                            first,
+                        );
                         request_conversation_messages(
                             cache,
                             ctx.accounts.selected_account_pubkey(),
@@ -289,6 +297,58 @@ fn request_conversation_messages(
         conversation.metadata.participants.clone(),
         *me,
     );
+}
+
+/// Scoped-sub owner namespace for messages DM relay-list lifecycles.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum RelayListOwner {
+    Prefetch,
+    Ensure,
+}
+
+const RELAY_LIST_KEY: &str = "dm_relay_list";
+
+/// Stable owner for DM relay-list prefetch subscriptions per selected account.
+fn list_prefetch_owner_key(account_pk: Pubkey) -> SubOwnerKey {
+    SubOwnerKey::builder(RelayListOwner::Prefetch)
+        .with(account_pk)
+        .finish()
+}
+
+/// Stable owner for selected-account DM relay-list ensure subscriptions per selected account.
+fn list_ensure_owner_key(account_pk: Pubkey) -> SubOwnerKey {
+    SubOwnerKey::builder(RelayListOwner::Ensure)
+        .with(account_pk)
+        .finish()
+}
+
+/// Stable key for one participant's DM relay-list remote stream.
+pub fn list_fetch_sub_key(participant: &Pubkey) -> SubKey {
+    SubKey::builder(RELAY_LIST_KEY)
+        .with(*participant.bytes())
+        .finish()
+}
+
+#[profiling::function]
+pub(crate) fn ensure_selected_account_dm_relay_list(
+    ndb: &mut Ndb,
+    remote: &mut RemoteApi<'_>,
+    accounts: &Accounts,
+    cache: &mut ConversationCache,
+) {
+    ensure_selected_account_dm_list(ndb, remote, accounts, cache.dm_relay_list_ensure_mut())
+}
+
+/// Marks a conversation active and ensures participant relay-list prefetch.
+#[profiling::function]
+pub(crate) fn open_conversation_with_prefetch(
+    remote: &mut RemoteApi<'_>,
+    accounts: &Accounts,
+    cache: &mut ConversationCache,
+    conversation_id: cache::ConversationId,
+) {
+    cache.active = Some(conversation_id);
+    relay_prefetch::ensure_conversation_prefetch(remote, accounts, cache, conversation_id);
 }
 
 /// Storage for conversations per account. Account management is performed by `Accounts`

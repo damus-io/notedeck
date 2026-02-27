@@ -199,7 +199,6 @@ pub struct AddColumnView<'a> {
     contacts: &'a ContactState,
     i18n: &'a mut Localization,
     jobs: &'a MediaJobSender,
-    pool: &'a mut enostr::RelayPool,
     unknown_ids: &'a mut notedeck::UnknownIds,
     people_lists: &'a mut Option<notedeck::Nip51SetCache>,
 }
@@ -215,7 +214,6 @@ impl<'a> AddColumnView<'a> {
         contacts: &'a ContactState,
         i18n: &'a mut Localization,
         jobs: &'a MediaJobSender,
-        pool: &'a mut enostr::RelayPool,
         unknown_ids: &'a mut notedeck::UnknownIds,
         people_lists: &'a mut Option<notedeck::Nip51SetCache>,
     ) -> Self {
@@ -228,7 +226,6 @@ impl<'a> AddColumnView<'a> {
             contacts,
             i18n,
             jobs,
-            pool,
             unknown_ids,
             people_lists,
         }
@@ -308,13 +305,8 @@ impl<'a> AddColumnView<'a> {
                 .kinds([30000])
                 .limit(50)
                 .build();
-            *self.people_lists = notedeck::Nip51SetCache::new(
-                self.pool,
-                self.ndb,
-                &txn,
-                self.unknown_ids,
-                vec![filter],
-            );
+            *self.people_lists =
+                notedeck::Nip51SetCache::new_local(self.ndb, &txn, self.unknown_ids, vec![filter]);
         }
 
         // Poll for newly arrived notes each frame
@@ -886,6 +878,65 @@ struct ColumnOptionData {
     option: AddColumnOption,
 }
 
+/// Attach a new timeline column by building and initializing its timeline state.
+fn attach_timeline_column(
+    app: &mut Damus,
+    ctx: &mut AppContext<'_>,
+    col: usize,
+    timeline_kind: TimelineKind,
+) -> bool {
+    let account_pk = *ctx.accounts.selected_account_pubkey();
+    let already_open_for_account = app
+        .timeline_cache
+        .get(&timeline_kind)
+        .is_some_and(|timeline| timeline.subscription.dependers(&account_pk) > 0);
+
+    if already_open_for_account {
+        if let Some(timeline) = app.timeline_cache.get_mut(&timeline_kind) {
+            timeline.subscription.increment(account_pk);
+        }
+
+        app.columns_mut(ctx.i18n, ctx.accounts)
+            .column_mut(col)
+            .router_mut()
+            .route_to_replaced(Route::timeline(timeline_kind));
+        return true;
+    }
+
+    let txn = Transaction::new(ctx.ndb).expect("txn");
+    let mut timeline = if let Some(timeline) = timeline_kind.clone().into_timeline(&txn, ctx.ndb) {
+        timeline
+    } else {
+        error!("Could not convert column response to timeline");
+        return false;
+    };
+
+    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+    crate::timeline::setup_new_timeline(
+        &mut timeline,
+        ctx.ndb,
+        &txn,
+        &mut scoped_subs,
+        ctx.note_cache,
+        app.options.contains(AppOptions::SinceOptimize),
+        ctx.accounts,
+        ctx.unknown_ids,
+    );
+
+    let route_kind = timeline.kind.clone();
+    app.columns_mut(ctx.i18n, ctx.accounts)
+        .column_mut(col)
+        .router_mut()
+        .route_to_replaced(Route::timeline(route_kind.clone()));
+    app.timeline_cache.insert(
+        route_kind,
+        *ctx.accounts.selected_account_pubkey(),
+        timeline,
+    );
+
+    true
+}
+
 pub fn render_add_column_routes(
     ui: &mut egui::Ui,
     app: &mut Damus,
@@ -910,7 +961,6 @@ pub fn render_add_column_routes(
                 contacts,
                 ctx.i18n,
                 ctx.media_jobs.sender(),
-                ctx.pool,
                 ctx.unknown_ids,
                 &mut app.view_state.people_lists,
             );
@@ -936,34 +986,8 @@ pub fn render_add_column_routes(
 
     if let Some(resp) = resp {
         match resp {
-            AddColumnResponse::Timeline(timeline_kind) => 'leave: {
-                let txn = Transaction::new(ctx.ndb).unwrap();
-                let mut timeline =
-                    if let Some(timeline) = timeline_kind.into_timeline(&txn, ctx.ndb) {
-                        timeline
-                    } else {
-                        error!("Could not convert column response to timeline");
-                        break 'leave;
-                    };
-
-                crate::timeline::setup_new_timeline(
-                    &mut timeline,
-                    ctx.ndb,
-                    &txn,
-                    &mut app.subscriptions,
-                    ctx.pool,
-                    ctx.note_cache,
-                    app.options.contains(AppOptions::SinceOptimize),
-                    ctx.accounts,
-                    ctx.unknown_ids,
-                );
-
-                app.columns_mut(ctx.i18n, ctx.accounts)
-                    .column_mut(col)
-                    .router_mut()
-                    .route_to_replaced(Route::timeline(timeline.kind.clone()));
-
-                app.timeline_cache.insert(timeline.kind.clone(), timeline);
+            AddColumnResponse::Timeline(timeline_kind) => {
+                let _ = attach_timeline_column(app, ctx, col, timeline_kind);
             }
 
             AddColumnResponse::Algo(algo_option) => match algo_option {
@@ -982,30 +1006,12 @@ pub fn render_add_column_routes(
                 // source to be, so let's create a timeline from that and
                 // add it to our list of timelines
                 AlgoOption::LastPerPubkey(Decision::Decided(list_kind)) => {
-                    let txn = Transaction::new(ctx.ndb).unwrap();
-                    let maybe_timeline = TimelineKind::last_per_pubkey(list_kind.clone())
-                        .into_timeline(&txn, ctx.ndb);
-
-                    if let Some(mut timeline) = maybe_timeline {
-                        crate::timeline::setup_new_timeline(
-                            &mut timeline,
-                            ctx.ndb,
-                            &txn,
-                            &mut app.subscriptions,
-                            ctx.pool,
-                            ctx.note_cache,
-                            app.options.contains(AppOptions::SinceOptimize),
-                            ctx.accounts,
-                            ctx.unknown_ids,
-                        );
-
-                        app.columns_mut(ctx.i18n, ctx.accounts)
-                            .column_mut(col)
-                            .router_mut()
-                            .route_to_replaced(Route::timeline(timeline.kind.clone()));
-
-                        app.timeline_cache.insert(timeline.kind.clone(), timeline);
-                    } else {
+                    if !attach_timeline_column(
+                        app,
+                        ctx,
+                        col,
+                        TimelineKind::last_per_pubkey(list_kind.clone()),
+                    ) {
                         // we couldn't fetch the timeline yet... let's let
                         // the user know ?
 
@@ -1103,7 +1109,13 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         return;
     };
 
-    notedeck::send_people_list_event(ctx.ndb, ctx.pool, kp, &name, &members);
+    notedeck::send_people_list_event(
+        ctx.ndb,
+        &mut ctx.remote.publisher(ctx.accounts),
+        kp,
+        &name,
+        &members,
+    );
 
     // Reset the people_lists cache so it picks up the new list
     app.view_state.people_lists = None;
@@ -1123,12 +1135,12 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         return;
     };
 
+    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
     crate::timeline::setup_new_timeline(
         &mut timeline,
         ctx.ndb,
         &txn,
-        &mut app.subscriptions,
-        ctx.pool,
+        &mut scoped_subs,
         ctx.note_cache,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,
@@ -1140,7 +1152,11 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         .router_mut()
         .route_to_replaced(Route::timeline(timeline.kind.clone()));
 
-    app.timeline_cache.insert(timeline.kind.clone(), timeline);
+    app.timeline_cache.insert(
+        timeline.kind.clone(),
+        *ctx.accounts.selected_account_pubkey(),
+        timeline,
+    );
 }
 
 pub fn hashtag_ui(

@@ -1,15 +1,15 @@
 use egui_nav::ReturnType;
 use egui_virtual_list::VirtualList;
-use enostr::{NoteId, RelayPool};
+use enostr::NoteId;
 use hashbrown::{hash_map::RawEntryMut, HashMap};
 use nostrdb::{Filter, Ndb, Note, NoteKey, NoteReplyBuf, Transaction};
-use notedeck::{NoteCache, NoteRef, UnknownIds};
+use notedeck::{Accounts, NoteCache, NoteRef, ScopedSubApi, UnknownIds};
 
 use crate::{
     actionbar::{process_thread_notes, NewThreadNotes},
-    multi_subscriber::ThreadSubs,
     timeline::{
         note_units::{NoteUnits, UnitKey},
+        sub::ThreadSubs,
         unit::NoteUnit,
         InsertionResponse,
     },
@@ -61,11 +61,12 @@ impl Threads {
     /// Opening a thread.
     /// Similar to [[super::cache::TimelineCache::open]]
     #[allow(clippy::too_many_arguments)]
+    #[profiling::function]
     pub fn open(
         &mut self,
         ndb: &mut Ndb,
         txn: &Transaction,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
         thread: &ThreadSelection,
         new_scope: bool,
         col: usize,
@@ -112,10 +113,15 @@ impl Threads {
                 .collect::<Vec<_>>()
         });
 
-        self.subs
-            .subscribe(ndb, pool, col, thread, local_sub_filter, new_scope, || {
-                replies_filter_remote(thread)
-            });
+        self.subs.subscribe(
+            ndb,
+            scoped_subs,
+            col,
+            thread,
+            local_sub_filter,
+            new_scope,
+            replies_filter_remote(thread),
+        );
 
         new_notes.map(|notes| NewThreadNotes {
             selected_note_id: NoteId::new(*selected_note_id),
@@ -126,16 +132,19 @@ impl Threads {
     pub fn close(
         &mut self,
         ndb: &mut Ndb,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
         thread: &ThreadSelection,
         return_type: ReturnType,
         id: usize,
     ) {
         tracing::info!("Closing thread: {:?}", thread);
-        self.subs.unsubscribe(ndb, pool, id, thread, return_type);
+        self.subs
+            .unsubscribe(ndb, scoped_subs, id, thread, return_type);
     }
 
     /// Responsible for making sure the chain and the direct replies are up to date
+    #[allow(clippy::too_many_arguments)]
+    #[profiling::function]
     pub fn update(
         &mut self,
         selected: &Note<'_>,
@@ -143,6 +152,7 @@ impl Threads {
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
+        accounts: &Accounts,
         col: usize,
     ) {
         let Some(selected_key) = selected.key() else {
@@ -160,12 +170,12 @@ impl Threads {
             .get_mut(&selected.id())
             .expect("should be guarenteed to exist from `Self::fill_reply_chain_recursive`");
 
-        let Some(sub) = self.subs.get_local(col) else {
+        let Some(sub) = self.subs.get_local_for_selected(accounts, col) else {
             tracing::error!("Was expecting to find local sub");
             return;
         };
 
-        let keys = ndb.poll_for_notes(sub.sub, 10);
+        let keys = ndb.poll_for_notes(*sub, 10);
 
         if keys.is_empty() {
             return;

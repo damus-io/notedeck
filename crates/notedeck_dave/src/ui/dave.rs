@@ -1142,7 +1142,6 @@ impl<'a> DaveUi<'a> {
             img_cache: ctx.img_cache,
             note_cache: ctx.note_cache,
             zaps: ctx.zaps,
-            pool: ctx.pool,
             jobs: ctx.media_jobs.sender(),
             unknown_ids: ctx.unknown_ids,
             nip05_cache: ctx.nip05_cache,

@@ -8,7 +8,6 @@ use crate::{
     options::AppOptions,
     route::Route,
     storage,
-    subscriptions::{SubKind, Subscriptions},
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
     timeline_loader::{TimelineLoader, TimelineLoaderMsg},
@@ -18,12 +17,12 @@ use crate::{
     Result,
 };
 use egui_extras::{Size, StripBuilder};
-use enostr::{ClientMessage, Pubkey, RelayEvent, RelayMessage};
+use enostr::Pubkey;
 use nostrdb::Transaction;
 use notedeck::{
-    tr, try_process_events_core, ui::is_compiled_as_mobile, ui::is_narrow, Accounts, AppAction,
-    AppContext, AppResponse, DataPath, DataPathType, FilterState, Images, Localization,
-    MediaJobSender, NotedeckOptions, SettingsHandler,
+    tr, ui::is_compiled_as_mobile, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse,
+    DataPath, DataPathType, FilterState, Images, Localization, MediaJobSender, NotedeckOptions,
+    SettingsHandler,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -32,7 +31,6 @@ use notedeck_ui::{
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 /// Max timeline loader messages to process per frame to avoid UI stalls.
 const MAX_TIMELINE_LOADER_MSGS_PER_FRAME: usize = 8;
@@ -51,7 +49,6 @@ pub struct Damus {
     pub view_state: ViewState,
     pub drafts: Drafts,
     pub timeline_cache: TimelineCache,
-    pub subscriptions: Subscriptions,
     pub support: Support,
     pub threads: Threads,
     /// Background loader for initial timeline scans.
@@ -77,6 +74,7 @@ pub struct Damus {
     hovered_column: Option<usize>,
 }
 
+#[profiling::function]
 fn handle_egui_events(
     input: &egui::InputState,
     columns: &mut Columns,
@@ -184,26 +182,29 @@ fn try_process_event(
         )
     });
 
-    try_process_events_core(app_ctx, ctx, |app_ctx, ev| match (&ev.event).into() {
-        RelayEvent::Opened => {
-            timeline::send_initial_timeline_filters(
-                damus.options.contains(AppOptions::SinceOptimize),
-                &mut damus.timeline_cache,
-                &mut damus.subscriptions,
-                app_ctx.pool,
-                &ev.relay,
-                app_ctx.accounts,
-            );
-        }
-        RelayEvent::Message(msg) => {
-            process_message(damus, app_ctx, &ev.relay, &msg);
-        }
-        _ => {}
-    });
-
+    let selected_account_pk = *app_ctx.accounts.selected_account_pubkey();
     for (kind, timeline) in &mut damus.timeline_cache {
-        let is_ready =
-            timeline::is_timeline_ready(app_ctx.ndb, app_ctx.pool, timeline, app_ctx.accounts);
+        if timeline.subscription.dependers(&selected_account_pk) == 0 {
+            continue;
+        }
+
+        if let FilterState::Ready(filter) = &timeline.filter {
+            if timeline.kind.should_subscribe_locally()
+                && timeline
+                    .subscription
+                    .get_local(&selected_account_pk)
+                    .is_none()
+            {
+                timeline
+                    .subscription
+                    .try_add_local(selected_account_pk, app_ctx.ndb, filter);
+            }
+        }
+
+        let is_ready = {
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            timeline::is_timeline_ready(app_ctx.ndb, &mut scoped_subs, timeline, app_ctx.accounts)
+        };
 
         if is_ready {
             schedule_timeline_load(
@@ -213,12 +214,14 @@ fn try_process_event(
                 app_ctx.ndb,
                 kind,
                 timeline,
+                app_ctx.accounts.selected_account_pubkey(),
             );
             let txn = Transaction::new(app_ctx.ndb).expect("txn");
             // only thread timelines are reversed
             let reversed = false;
 
             if let Err(err) = timeline.poll_notes_into_view(
+                &selected_account_pk,
                 app_ctx.ndb,
                 &txn,
                 app_ctx.unknown_ids,
@@ -234,33 +237,22 @@ fn try_process_event(
                 | TimelineKind::Algo(timeline::kind::AlgoTimeline::LastPerPubkey(
                     ListKind::Contact(_),
                 )) => {
-                    timeline::fetch_contact_list(
-                        &mut damus.subscriptions,
-                        timeline,
-                        app_ctx.accounts,
-                    );
+                    timeline::fetch_contact_list(timeline, app_ctx.accounts);
                 }
-                TimelineKind::List(ListKind::PeopleList(plr))
+                TimelineKind::List(ListKind::PeopleList(_))
                 | TimelineKind::Algo(timeline::kind::AlgoTimeline::LastPerPubkey(
-                    ListKind::PeopleList(plr),
+                    ListKind::PeopleList(_),
                 )) => {
-                    let plr = plr.clone();
-                    for relay in &mut app_ctx.pool.relays {
-                        timeline::fetch_people_list(
-                            &mut damus.subscriptions,
-                            relay,
-                            timeline,
-                            &plr,
-                        );
-                    }
+                    let txn = Transaction::new(app_ctx.ndb).expect("txn");
+                    timeline::fetch_people_list(app_ctx.ndb, &txn, timeline);
                 }
                 _ => {}
             }
         }
-    }
 
-    if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
-        follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
+        if let Some(follow_packs) = damus.onboarding.get_follow_packs_mut() {
+            follow_packs.poll_for_notes(app_ctx.ndb, app_ctx.unknown_ids);
+        }
     }
 
     Ok(())
@@ -274,17 +266,20 @@ fn schedule_timeline_load(
     ndb: &nostrdb::Ndb,
     kind: &TimelineKind,
     timeline: &mut timeline::Timeline,
+    account_pk: &Pubkey,
 ) {
     if loaded.contains(kind) || inflight.contains(kind) {
         return;
     }
 
-    let Some(filter) = timeline.filter.get_any_ready().cloned() else {
+    let FilterState::Ready(filter) = timeline.filter.clone() else {
         return;
     };
 
     if timeline.kind.should_subscribe_locally() {
-        timeline.subscription.try_add_local(ndb, &filter);
+        timeline
+            .subscription
+            .try_add_local(*account_pk, ndb, &filter);
     }
 
     loader.load_timeline(kind.clone());
@@ -343,10 +338,7 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
     match damus.state {
         DamusState::Initializing => {
             damus.state = DamusState::Initialized;
-            // this lets our eose handler know to close unknownids right away
-            damus
-                .subscriptions()
-                .insert("unknownids".to_string(), SubKind::OneShot);
+            setup_selected_account_timeline_subs(&mut damus.timeline_cache, app_ctx);
 
             if !app_ctx.settings.welcome_completed() {
                 let split =
@@ -375,109 +367,18 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
     }
 }
 
-fn handle_eose(
-    subscriptions: &Subscriptions,
+pub(crate) fn setup_selected_account_timeline_subs(
     timeline_cache: &mut TimelineCache,
-    ctx: &mut AppContext<'_>,
-    subid: &str,
-    relay_url: &str,
-) -> Result<()> {
-    let sub_kind = if let Some(sub_kind) = subscriptions.subs.get(subid) {
-        sub_kind
-    } else {
-        let n_subids = subscriptions.subs.len();
-        warn!(
-            "got unknown eose subid {}, {} tracked subscriptions",
-            subid, n_subids
-        );
-        return Ok(());
-    };
-
-    match sub_kind {
-        SubKind::Timeline(_) => {
-            // eose on timeline? whatevs
-        }
-        SubKind::Initial => {
-            //let txn = Transaction::new(ctx.ndb)?;
-            //unknowns::update_from_columns(
-            //    &txn,
-            //    ctx.unknown_ids,
-            //    timeline_cache,
-            //    ctx.ndb,
-            //    ctx.note_cache,
-            //);
-            //// this is possible if this is the first time
-            //if ctx.unknown_ids.ready_to_send() {
-            //    unknown_id_send(ctx.unknown_ids, ctx.pool);
-            //}
-        }
-
-        // oneshot subs just close when they're done
-        SubKind::OneShot => {
-            let msg = ClientMessage::close(subid.to_string());
-            ctx.pool.send_to(&msg, relay_url);
-        }
-
-        SubKind::FetchingContactList(timeline_uid) => {
-            let timeline = if let Some(tl) = timeline_cache.get_mut(timeline_uid) {
-                tl
-            } else {
-                error!(
-                    "timeline uid:{:?} not found for FetchingContactList",
-                    timeline_uid
-                );
-                return Ok(());
-            };
-
-            let filter_state = timeline.filter.get_mut(relay_url);
-
-            let FilterState::FetchingRemote(fetching_remote_type) = filter_state else {
-                // TODO: we could have multiple contact list results, we need
-                // to check to see if this one is newer and use that instead
-                warn!(
-                    "Expected timeline to have FetchingRemote state but was {:?}",
-                    timeline.filter
-                );
-                return Ok(());
-            };
-
-            let new_filter_state = match fetching_remote_type {
-                notedeck::filter::FetchingRemoteType::Normal(unified_subscription) => {
-                    FilterState::got_remote(unified_subscription.local)
-                }
-                notedeck::filter::FetchingRemoteType::Contact => {
-                    FilterState::GotRemote(notedeck::filter::GotRemoteType::Contact)
-                }
-                notedeck::filter::FetchingRemoteType::PeopleList => {
-                    FilterState::GotRemote(notedeck::filter::GotRemoteType::PeopleList)
-                }
-            };
-
-            // We take the subscription id and pass it to the new state of
-            // "GotRemote". This will let future frames know that it can try
-            // to look for the contact list in nostrdb.
-            timeline
-                .filter
-                .set_relay_state(relay_url.to_string(), new_filter_state);
-        }
-    }
-
-    Ok(())
-}
-
-fn process_message(damus: &mut Damus, ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
-    let RelayMessage::Eose(sid) = msg else {
-        return;
-    };
-
-    if let Err(err) = handle_eose(
-        &damus.subscriptions,
-        &mut damus.timeline_cache,
-        ctx,
-        sid,
-        relay,
+    app_ctx: &mut AppContext<'_>,
+) {
+    if let Err(err) = timeline::setup_initial_nostrdb_subs(
+        app_ctx.ndb,
+        app_ctx.note_cache,
+        timeline_cache,
+        app_ctx.unknown_ids,
+        *app_ctx.accounts.selected_account_pubkey(),
     ) {
-        error!("error handling eose: {}", err);
+        warn!("update_damus init: {err}");
     }
 }
 
@@ -586,13 +487,15 @@ impl Damus {
             let txn = Transaction::new(app_context.ndb).unwrap();
             for col in &parsed_args.columns {
                 let timeline_kind = col.clone().into_timeline_kind();
+                let mut scoped_subs = app_context.remote.scoped_subs(app_context.accounts);
                 if let Some(add_result) = columns.add_new_timeline_column(
                     &mut timeline_cache,
                     &txn,
                     app_context.ndb,
                     app_context.note_cache,
-                    app_context.pool,
+                    &mut scoped_subs,
                     &timeline_kind,
+                    *app_context.accounts.selected_account_pubkey(),
                 ) {
                     add_result.process(
                         app_context.ndb,
@@ -629,7 +532,6 @@ impl Damus {
         let threads = Threads::default();
 
         Self {
-            subscriptions: Subscriptions::default(),
             timeline_cache,
             drafts: Drafts::default(),
             state: DamusState::Initializing,
@@ -663,14 +565,6 @@ impl Damus {
         get_active_columns(accounts, &self.decks_cache)
     }
 
-    pub fn gen_subid(&self, kind: &SubKind) -> String {
-        if self.options.contains(AppOptions::Debug) {
-            format!("{kind:?}")
-        } else {
-            Uuid::new_v4().to_string()
-        }
-    }
-
     pub fn mock<P: AsRef<Path>>(data_path: P) -> Self {
         let mut i18n = Localization::default();
         let decks_cache = DecksCache::default_decks_cache(&mut i18n);
@@ -683,7 +577,6 @@ impl Damus {
         let support = Support::new(&path);
 
         Self {
-            subscriptions: Subscriptions::default(),
             timeline_cache: TimelineCache::default(),
             drafts: Drafts::default(),
             state: DamusState::Initializing,
@@ -701,10 +594,6 @@ impl Damus {
             inflight_timeline_loads: HashSet::new(),
             loaded_timeline_loads: HashSet::new(),
         }
-    }
-
-    pub fn subscriptions(&mut self) -> &mut HashMap<String, SubKind> {
-        &mut self.subscriptions.subs
     }
 
     pub fn unrecognized_args(&self) -> &BTreeSet<String> {
@@ -840,13 +729,10 @@ fn render_damus_mobile(
                                 let kp = enostr::Keypair::only_pubkey(pubkey);
                                 let _ = app_ctx.accounts.add_account(kp);
 
-                                let txn = nostrdb::Transaction::new(app_ctx.ndb).expect("txn");
-                                app_ctx.accounts.select_account(
-                                    &pubkey,
-                                    app_ctx.ndb,
-                                    &txn,
-                                    app_ctx.pool,
-                                    ui.ctx(),
+                                app_ctx.select_account(&pubkey);
+                                setup_selected_account_timeline_subs(
+                                    &mut app.timeline_cache,
+                                    app_ctx,
                                 );
                             }
 
@@ -1022,7 +908,7 @@ fn timelines_view(
                     ctx.img_cache,
                     ctx.media_jobs.sender(),
                     current_route.as_ref(),
-                    ctx.pool,
+                    ctx.remote.relay_inspect(),
                 )
                 .show(ui);
 
@@ -1096,14 +982,7 @@ fn timelines_view(
     // StripBuilder rendering
     let mut save_cols = false;
     if let Some(action) = side_panel_action {
-        save_cols = save_cols
-            || action.process(
-                &mut app.timeline_cache,
-                &mut app.decks_cache,
-                ctx,
-                &mut app.subscriptions,
-                ui.ctx(),
-            );
+        save_cols = save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
     }
 
     let mut app_action: Option<AppAction> = None;
@@ -1124,9 +1003,8 @@ fn timelines_view(
                     let kp = enostr::Keypair::only_pubkey(pubkey);
                     let _ = ctx.accounts.add_account(kp);
 
-                    let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-                    ctx.accounts
-                        .select_account(&pubkey, ctx.ndb, &txn, ctx.pool, ui.ctx());
+                    ctx.select_account(&pubkey);
+                    setup_selected_account_timeline_subs(&mut app.timeline_cache, ctx);
                 }
 
                 ProcessNavResult::ExternalNoteAction(note_action) => {

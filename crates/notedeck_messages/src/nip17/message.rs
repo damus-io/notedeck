@@ -1,8 +1,9 @@
-use enostr::ClientMessage;
-use notedeck::AppContext;
+use nostrdb::Transaction;
+use notedeck::enostr::RelayId;
+use notedeck::{AppContext, RelayType};
 
 use crate::cache::{ConversationCache, ConversationId};
-use crate::nip17::{build_rumor_json, giftwrap_message, OsRng};
+use crate::nip17::{build_rumor_json, giftwrap_message, query_participant_dm_relays, OsRng};
 
 pub fn send_conversation_message(
     conversation_id: ConversationId,
@@ -37,21 +38,37 @@ pub fn send_conversation_message(
         return;
     };
 
+    let txn = Transaction::new(ctx.ndb).expect("txn");
     let mut rng = OsRng;
     for participant in &conversation.metadata.participants {
-        let Some(giftwrap_json) =
+        let Some(gifrwrap_note) =
             giftwrap_message(&mut rng, sender_secret, participant, &rumor_json)
         else {
             continue;
         };
         if participant == selected_kp.pubkey {
+            let Some(giftwrap_json) = gifrwrap_note.json().ok() else {
+                continue;
+            };
+
             if let Err(e) = ctx.ndb.process_client_event(&giftwrap_json) {
                 tracing::error!("Could not ingest event: {e:?}");
             }
         }
-        match ClientMessage::event_json(giftwrap_json.clone()) {
-            Ok(msg) => ctx.pool.send(&msg),
-            Err(err) => tracing::error!("failed to build client message: {err}"),
+
+        let participant_relays = query_participant_dm_relays(ctx.ndb, &txn, participant);
+        let relay_type = if participant_relays.is_empty() {
+            RelayType::AccountsWrite
+        } else {
+            RelayType::Explicit(
+                participant_relays
+                    .into_iter()
+                    .map(RelayId::Websocket)
+                    .collect(),
+            )
         };
+
+        let mut publisher = ctx.remote.publisher(ctx.accounts);
+        publisher.publish_note(&gifrwrap_note, relay_type);
     }
 }

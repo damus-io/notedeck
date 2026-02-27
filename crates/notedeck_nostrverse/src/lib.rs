@@ -21,10 +21,12 @@ pub use room_state::{
 };
 pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
-use enostr::Pubkey;
+use enostr::{NormRelayUrl, Pubkey, RelayId};
 use glam::Vec3;
 use nostrdb::Filter;
-use notedeck::{AppContext, AppResponse};
+use notedeck::{
+    AppContext, AppResponse, RelaySelection, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
+};
 use renderbud::Transform;
 
 use egui_wgpu::wgpu;
@@ -37,6 +39,47 @@ const FALLBACK_PUBKEY_HEX: &str =
 fn demo_pubkey() -> Pubkey {
     Pubkey::from_hex(DEMO_PUBKEY_HEX)
         .unwrap_or_else(|_| Pubkey::from_hex(FALLBACK_PUBKEY_HEX).unwrap())
+}
+
+/// Scoped-sub identity for nostrverse's dedicated relay room/presence feed.
+fn nostrverse_remote_sub_identity() -> ScopedSubIdentity {
+    ScopedSubIdentity::account(
+        SubOwnerKey::new("nostrverse-owner"),
+        SubKey::new("nostrverse-room-presence"),
+    )
+}
+
+/// Publish a locally ingested note to the dedicated nostrverse relay.
+fn publish_ingested_note(
+    publisher: &mut notedeck::ExplicitPublishApi<'_, '_>,
+    relay_url: &NormRelayUrl,
+    note: &nostrdb::Note<'_>,
+) {
+    publisher.publish_note(note, vec![RelayId::Websocket(relay_url.clone())]);
+}
+
+fn configured_relay_url() -> NormRelayUrl {
+    let raw = std::env::var("NOSTRVERSE_RELAY")
+        .unwrap_or_else(|_| NostrverseApp::DEFAULT_RELAY.to_string());
+    match NormRelayUrl::new(&raw) {
+        Ok(url) => url,
+        Err(err) => {
+            tracing::warn!(
+                "Invalid NOSTRVERSE_RELAY '{}': {err:?}; falling back to {}",
+                raw,
+                NostrverseApp::DEFAULT_RELAY
+            );
+            NormRelayUrl::new(NostrverseApp::DEFAULT_RELAY).expect("default nostrverse relay URL")
+        }
+    }
+}
+
+fn room_filter() -> Filter {
+    Filter::new().kinds([kinds::ROOM as u64]).build()
+}
+
+fn presence_filter() -> Filter {
+    Filter::new().kinds([kinds::PRESENCE as u64]).build()
 }
 
 /// Avatar scale: water bottle model is ~0.26m, scaled to human height (~1.8m)
@@ -104,9 +147,7 @@ pub struct NostrverseApp {
     /// Model download/cache manager (initialized lazily in initialize())
     model_cache: Option<model_cache::ModelCache>,
     /// Dedicated relay URL for multiplayer sync (from NOSTRVERSE_RELAY env)
-    relay_url: Option<String>,
-    /// Pending relay subscription ID — Some means we still need to send REQ
-    pending_relay_sub: Option<String>,
+    relay_url: NormRelayUrl,
 }
 
 impl NostrverseApp {
@@ -119,9 +160,7 @@ impl NostrverseApp {
         let device = render_state.map(|rs| rs.device.clone());
         let queue = render_state.map(|rs| rs.queue.clone());
 
-        let relay_url = Some(
-            std::env::var("NOSTRVERSE_RELAY").unwrap_or_else(|_| Self::DEFAULT_RELAY.to_string()),
-        );
+        let relay_url = configured_relay_url();
 
         let space_naddr = space_ref.to_naddr();
         Self {
@@ -140,7 +179,6 @@ impl NostrverseApp {
             start_time: std::time::Instant::now(),
             model_cache: None,
             relay_url,
-            pending_relay_sub: None,
         }
     }
 
@@ -148,38 +186,6 @@ impl NostrverseApp {
     pub fn demo(render_state: Option<&egui_wgpu::RenderState>) -> Self {
         let space_ref = SpaceRef::new("demo-room".to_string(), demo_pubkey());
         Self::new(space_ref, render_state)
-    }
-
-    /// Send a client message to the dedicated relay, if configured.
-    fn send_to_relay(&self, pool: &mut enostr::RelayPool, msg: &enostr::ClientMessage) {
-        if let Some(relay_url) = &self.relay_url {
-            pool.send_to(msg, relay_url);
-        }
-    }
-
-    /// Send the relay subscription once the relay is connected.
-    fn maybe_send_relay_sub(&mut self, pool: &mut enostr::RelayPool) {
-        let (Some(sub_id), Some(relay_url)) = (&self.pending_relay_sub, &self.relay_url) else {
-            return;
-        };
-
-        let connected = pool
-            .relays
-            .iter()
-            .any(|r| r.url() == relay_url && matches!(r.status(), enostr::RelayStatus::Connected));
-
-        if !connected {
-            return;
-        }
-
-        let room_filter = Filter::new().kinds([kinds::ROOM as u64]).build();
-        let presence_filter = Filter::new().kinds([kinds::PRESENCE as u64]).build();
-
-        let req = enostr::ClientMessage::req(sub_id.clone(), vec![room_filter, presence_filter]);
-        pool.send_to(&req, relay_url);
-
-        tracing::info!("Sent nostrverse subscription to {}", relay_url);
-        self.pending_relay_sub = None;
     }
 
     /// Load a glTF model and return its handle
@@ -198,7 +204,7 @@ impl NostrverseApp {
     }
 
     /// Initialize: ingest demo space into local nostrdb and subscribe.
-    fn initialize(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+    fn initialize(&mut self, ctx: &mut AppContext<'_>) {
         if self.initialized {
             return;
         }
@@ -211,19 +217,21 @@ impl NostrverseApp {
         self.room_sub = Some(subscriptions::RoomSubscription::new(ctx.ndb));
         self.presence_sub = Some(subscriptions::PresenceSubscription::new(ctx.ndb));
 
-        // Add dedicated relay to pool (subscription sent on connect in maybe_send_relay_sub)
-        if let Some(relay_url) = &self.relay_url {
-            let egui_ctx = egui_ctx.clone();
-            if let Err(e) = ctx
-                .pool
-                .add_url(relay_url.clone(), move || egui_ctx.request_repaint())
-            {
-                tracing::error!("Failed to add nostrverse relay {}: {}", relay_url, e);
-            } else {
-                tracing::info!("Added nostrverse relay: {}", relay_url);
-                self.pending_relay_sub = Some(format!("nostrverse-{}", uuid::Uuid::new_v4()));
-            }
-        }
+        // Declare remote room/presence feed on the dedicated relay.
+        let relays = std::iter::once(self.relay_url.clone()).collect();
+        let config = SubConfig {
+            relays: RelaySelection::Explicit(relays),
+            filters: vec![room_filter(), presence_filter()],
+            use_transparent: false,
+        };
+        let _ = ctx
+            .remote
+            .scoped_subs(ctx.accounts)
+            .set_sub(nostrverse_remote_sub_identity(), config);
+        tracing::info!(
+            "Declared nostrverse scoped relay subscription on {}",
+            self.relay_url
+        );
 
         // Try to load an existing space from nostrdb first
         let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
@@ -241,8 +249,9 @@ impl NostrverseApp {
 
             if let Some(kp) = ctx.accounts.selected_filled() {
                 let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
-                if let Some((msg, _id)) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
-                    self.send_to_relay(ctx.pool, &msg);
+                if let Some(note) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
+                    let mut publisher = ctx.remote.publisher_explicit();
+                    publish_ingested_note(&mut publisher, &self.relay_url, &note);
                 }
             }
             // room_sub (set up above) will pick up the ingested event
@@ -373,9 +382,9 @@ impl NostrverseApp {
 
         let space = convert::build_space(info, &self.state.objects);
         let builder = nostr_events::build_space_event(&space, &self.state.space_ref.id);
-        if let Some((msg, id)) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
-            self.last_save_id = Some(id);
-            self.send_to_relay(ctx.pool, &msg);
+        if let Some(note) = nostr_events::ingest_event(builder, ctx.ndb, kp) {
+            self.last_save_id = Some(*note.id());
+            publish_ingested_note(&mut ctx.remote.publisher_explicit(), &self.relay_url, &note);
         }
         tracing::info!("Saved space '{}'", self.state.space_ref.id);
     }
@@ -520,11 +529,11 @@ impl NostrverseApp {
                 .map(|u| u.position)
                 .unwrap_or(Vec3::ZERO);
 
-            if let Some(msg) =
+            if let Some(note) =
                 self.presence_pub
                     .maybe_publish(ctx.ndb, kp, &self.space_naddr, self_pos, now)
             {
-                self.send_to_relay(ctx.pool, &msg);
+                publish_ingested_note(&mut ctx.remote.publisher_explicit(), &self.relay_url, &note);
             }
         }
 
@@ -638,11 +647,7 @@ impl NostrverseApp {
 impl notedeck::App for NostrverseApp {
     fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         // Initialize on first frame
-        let egui_ctx = ui.ctx().clone();
-        self.initialize(ctx, &egui_ctx);
-
-        // Send relay subscription once connected
-        self.maybe_send_relay_sub(ctx.pool);
+        self.initialize(ctx);
 
         // Poll for space event updates
         self.poll_space_updates(ctx.ndb);

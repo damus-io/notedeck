@@ -1,7 +1,7 @@
 use crate::error::{Error, FilterError};
 use crate::note::NoteRef;
+use enostr::OutboxSubId;
 use nostrdb::{Filter, FilterBuilder, Note, Subscription};
-use std::collections::HashMap;
 use tracing::{debug, warn};
 
 /// A unified subscription has a local and remote component. The remote subid
@@ -9,93 +9,7 @@ use tracing::{debug, warn};
 #[derive(Debug, Clone)]
 pub struct UnifiedSubscription {
     pub local: Subscription,
-    pub remote: String,
-}
-
-/// Each relay can have a different filter state. For example, some
-/// relays may have the contact list, some may not. Let's capture all of
-/// these states so that some relays don't stop the states of other
-/// relays.
-#[derive(Debug)]
-pub struct FilterStates {
-    pub initial_state: FilterState,
-    pub states: HashMap<String, FilterState>,
-}
-
-impl FilterStates {
-    pub fn get_mut(&mut self, relay: &str) -> &FilterState {
-        // if our initial state is ready, then just use that
-        if let FilterState::Ready(_) = self.initial_state {
-            &self.initial_state
-        } else {
-            // otherwise we look at relay states
-            if !self.states.contains_key(relay) {
-                self.states
-                    .insert(relay.to_string(), self.initial_state.clone());
-            }
-            self.states.get(relay).unwrap()
-        }
-    }
-
-    pub fn get_any_gotremote(&self) -> Option<GotRemoteResult> {
-        for (k, v) in self.states.iter() {
-            if let FilterState::GotRemote(item_type) = v {
-                return match item_type {
-                    GotRemoteType::Normal(subscription) => Some(GotRemoteResult::Normal {
-                        relay_id: k.to_owned(),
-                        sub_id: *subscription,
-                    }),
-                    GotRemoteType::Contact => Some(GotRemoteResult::Contact {
-                        relay_id: k.to_owned(),
-                    }),
-                    GotRemoteType::PeopleList => Some(GotRemoteResult::PeopleList {
-                        relay_id: k.to_owned(),
-                    }),
-                };
-            }
-        }
-
-        None
-    }
-
-    pub fn get_any_ready(&self) -> Option<&HybridFilter> {
-        if let FilterState::Ready(fs) = &self.initial_state {
-            Some(fs)
-        } else {
-            for (_k, v) in self.states.iter() {
-                if let FilterState::Ready(ref fs) = v {
-                    return Some(fs);
-                }
-            }
-
-            None
-        }
-    }
-
-    pub fn new(initial_state: FilterState) -> Self {
-        Self {
-            initial_state,
-            states: HashMap::new(),
-        }
-    }
-
-    pub fn set_relay_state(&mut self, relay: String, state: FilterState) {
-        if self.states.contains_key(&relay) {
-            let current_state = self.states.get(&relay).unwrap();
-            debug!(
-                "set_relay_state: {:?} -> {:?} on {}",
-                current_state, state, &relay,
-            );
-        }
-        self.states.insert(relay, state);
-    }
-
-    /// For contacts, since that sub is managed elsewhere
-    pub fn set_all_states(&mut self, state: FilterState) {
-        for cur_state in self.states.values_mut() {
-            *cur_state = state.clone();
-        }
-    }
+    pub remote: OutboxSubId, // abstracted ID to a remote subscription
 }
 
 /// We may need to fetch some data from relays before our filter is ready.
@@ -103,37 +17,10 @@ impl FilterStates {
 #[derive(Debug, Clone)]
 pub enum FilterState {
     NeedsRemote,
-    FetchingRemote(FetchingRemoteType),
-    GotRemote(GotRemoteType),
+    FetchingRemote,
+    GotRemote,
     Ready(HybridFilter),
     Broken(FilterError),
-}
-
-pub enum GotRemoteResult {
-    Normal {
-        relay_id: String,
-        sub_id: Subscription,
-    },
-    Contact {
-        relay_id: String,
-    },
-    PeopleList {
-        relay_id: String,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub enum FetchingRemoteType {
-    Normal(UnifiedSubscription),
-    Contact,
-    PeopleList,
-}
-
-#[derive(Debug, Clone)]
-pub enum GotRemoteType {
-    Normal(Subscription),
-    Contact,
-    PeopleList,
 }
 
 impl FilterState {
@@ -161,22 +48,6 @@ impl FilterState {
     /// filter.
     pub fn needs_remote() -> Self {
         Self::NeedsRemote
-    }
-
-    /// We got the remote data. Local data should be available to build
-    /// the filter for the [`FilterState::Ready`] state
-    pub fn got_remote(local_sub: Subscription) -> Self {
-        Self::GotRemote(GotRemoteType::Normal(local_sub))
-    }
-
-    /// We have sent off a remote subscription to get data needed for the
-    /// filter. The string is the subscription id
-    pub fn fetching_remote(sub_id: String, local_sub: Subscription) -> Self {
-        let unified_sub = UnifiedSubscription {
-            local: local_sub,
-            remote: sub_id,
-        };
-        Self::FetchingRemote(FetchingRemoteType::Normal(unified_sub))
     }
 }
 

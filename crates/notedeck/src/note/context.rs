@@ -1,8 +1,8 @@
-use enostr::{ClientMessage, NoteId, Pubkey, RelayPool};
+use enostr::{NoteId, Pubkey, RelayId};
 use nostrdb::{Ndb, Note, NoteKey, Transaction};
 use tracing::error;
 
-use crate::Accounts;
+use crate::{Accounts, RelayType, RemoteApi};
 
 /// When broadcasting notes, this determines whether to broadcast
 /// over the local network via multicast, or globally
@@ -53,22 +53,18 @@ impl NoteContextSelection {
         ui: &mut egui::Ui,
         note: &Note<'_>,
         ndb: &Ndb,
-        pool: &mut RelayPool,
+        remote: &mut RemoteApi,
         txn: &Transaction,
         accounts: &Accounts,
     ) {
         match self {
             NoteContextSelection::Broadcast(context) => {
                 tracing::info!("Broadcasting note {}", hex::encode(note.id()));
-                match context {
-                    BroadcastContext::LocalNetwork => {
-                        pool.send_to(&ClientMessage::event(note).unwrap(), "multicast");
-                    }
-
-                    BroadcastContext::Everywhere => {
-                        pool.send(&ClientMessage::event(note).unwrap());
-                    }
-                }
+                let relays = match context {
+                    BroadcastContext::LocalNetwork => RelayType::Explicit(vec![RelayId::Multicast]),
+                    BroadcastContext::Everywhere => RelayType::AccountsWrite,
+                };
+                remote.publisher(accounts).publish_note(note, relays);
             }
             NoteContextSelection::CopyText => {
                 ui.ctx().copy_text(note.content().to_string());
@@ -106,9 +102,23 @@ impl NoteContextSelection {
                 };
                 let muted = accounts.mute();
                 if muted.is_pk_muted(target.bytes()) {
-                    super::publish::send_unmute_event(ndb, txn, pool, kp, &muted, &target);
+                    super::publish::send_unmute_event(
+                        ndb,
+                        txn,
+                        &mut remote.publisher(accounts),
+                        kp,
+                        &muted,
+                        &target,
+                    );
                 } else {
-                    super::publish::send_mute_event(ndb, txn, pool, kp, &muted, &target);
+                    super::publish::send_mute_event(
+                        ndb,
+                        txn,
+                        &mut remote.publisher(accounts),
+                        kp,
+                        &muted,
+                        &target,
+                    );
                 }
             }
             NoteContextSelection::ReportUser => {}

@@ -105,6 +105,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             let reversed = false;
             // poll for new notes and insert them into our existing notes
             if let Err(e) = profile_timeline.poll_notes_into_view(
+                self.note_context.accounts.selected_account_pubkey(),
                 self.note_context.ndb,
                 &txn,
                 self.note_context.unknown_ids,

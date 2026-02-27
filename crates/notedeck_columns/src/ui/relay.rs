@@ -1,22 +1,29 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::ui::{Preview, PreviewConfig};
 use egui::{Align, Button, CornerRadius, Frame, Id, Layout, Margin, Rgba, RichText, Ui, Vec2};
-use enostr::{RelayPool, RelayStatus};
-use notedeck::{tr, DragResponse, Localization, NotedeckTextStyle, RelayAction};
+use enostr::{NormRelayUrl, RelayStatus};
+use notedeck::{
+    tr, DragResponse, Localization, NotedeckTextStyle, RelayAction, RelayInspectApi, RelaySpec,
+};
 use notedeck_ui::app_images;
 use notedeck_ui::{colors::PINK, padding};
 use tracing::debug;
 
 use super::widgets::styled_button;
 
-pub struct RelayView<'a> {
-    pool: &'a RelayPool,
+pub struct RelayView<'r, 'a> {
+    relay_inspect: RelayInspectApi<'r, 'a>,
+    advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
     id_string_map: &'a mut HashMap<Id, String>,
     i18n: &'a mut Localization,
 }
 
-impl RelayView<'_> {
+struct RelayRow {
+    relay_url: String,
+    status: RelayStatus,
+}
+
+impl RelayView<'_, '_> {
     pub fn ui(&mut self, ui: &mut egui::Ui) -> DragResponse<RelayAction> {
         let scroll_out = Frame::new()
             .inner_margin(Margin::symmetric(10, 0))
@@ -60,14 +67,16 @@ impl RelayView<'_> {
     }
 }
 
-impl<'a> RelayView<'a> {
+impl<'r, 'a> RelayView<'r, 'a> {
     pub fn new(
-        pool: &'a RelayPool,
+        relay_inspect: RelayInspectApi<'r, 'a>,
+        advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
         id_string_map: &'a mut HashMap<Id, String>,
         i18n: &'a mut Localization,
     ) -> Self {
         RelayView {
-            pool,
+            relay_inspect,
+            advertised_relays,
             id_string_map,
             i18n,
         }
@@ -77,55 +86,165 @@ impl<'a> RelayView<'a> {
         egui::CentralPanel::default().show(ui.ctx(), |ui| self.ui(ui));
     }
 
-    /// Show the current relays and return a relay the user selected to delete
+    /// Show the selected account's advertised relays and
+    /// any other currently-connected outbox relays.
     fn show_relays(&mut self, ui: &mut Ui) -> Option<String> {
+        let relay_infos = self.relay_inspect.relay_infos();
+        let status_by_url: HashMap<String, RelayStatus> = relay_infos
+            .iter()
+            .map(|relay_info| (relay_info.relay_url.to_string(), relay_info.status))
+            .collect();
+
+        let advertised_urls: HashSet<String> = self
+            .advertised_relays
+            .iter()
+            .map(|relay| relay.url.to_string())
+            .collect();
+
+        let mut advertised = Vec::new();
+
+        for relay in self.advertised_relays {
+            let url = relay.url.to_string();
+            let status = status_by_url
+                .get(&url)
+                .copied()
+                .unwrap_or(RelayStatus::Disconnected);
+
+            advertised.push(RelayRow {
+                relay_url: url,
+                status,
+            });
+        }
+
+        let mut outbox_other = Vec::new();
+        for relay_info in relay_infos {
+            let url = relay_info.relay_url.to_string();
+            if advertised_urls.contains(&url) {
+                continue;
+            }
+            outbox_other.push(RelayRow {
+                relay_url: url,
+                status: relay_info.status,
+            });
+        }
+
         let mut relay_to_remove = None;
-        for (index, relay_info) in get_relay_infos(self.pool).iter().enumerate() {
-            ui.add_space(8.0);
-            ui.vertical_centered_justified(|ui| {
-                relay_frame(ui).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            Frame::new()
-                                // This frame is needed to add margin because the label will be added to the outer frame first and centered vertically before the connection status is added so the vertical centering isn't accurate.
-                                // TODO: remove this hack and actually center the url & status at the same time
-                                .inner_margin(Margin::symmetric(0, 4))
-                                .show(ui, |ui| {
-                                    egui::ScrollArea::horizontal()
-                                        .id_salt(index)
-                                        .max_width(
-                                            ui.max_rect().width()
-                                                - get_right_side_width(relay_info.status),
-                                        ) // TODO: refactor to dynamically check the size of the 'right to left' portion and set the max width to be the screen width minus padding minus 'right to left' width
-                                        .show(ui, |ui| {
-                                            ui.label(
-                                                RichText::new(relay_info.relay_url)
-                                                    .text_style(
-                                                        NotedeckTextStyle::Monospace.text_style(),
-                                                    )
-                                                    .color(
-                                                        ui.style()
-                                                            .visuals
-                                                            .noninteractive()
-                                                            .fg_stroke
-                                                            .color,
-                                                    ),
-                                            );
-                                        });
-                                });
-                        });
+        let advertised_label = tr!(
+            self.i18n,
+            "Advertised",
+            "Section header for advertised relays"
+        );
+        let outbox_other_label = tr!(
+            self.i18n,
+            "Other",
+            "Section header for non-advertised connected relays"
+        );
 
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
-                                relay_to_remove = Some(relay_info.relay_url.to_string());
-                            };
+        relay_to_remove = relay_to_remove.or_else(|| {
+            self.show_relay_section(ui, &advertised_label, &advertised, true, "relay-advertised")
+        });
+        relay_to_remove = relay_to_remove.or_else(|| {
+            self.show_relay_section(
+                ui,
+                &outbox_other_label,
+                &outbox_other,
+                false,
+                "relay-outbox-other",
+            )
+        });
 
-                            show_connection_status(ui, self.i18n, relay_info.status);
-                        });
+        relay_to_remove
+    }
+
+    fn show_relay_section(
+        &mut self,
+        ui: &mut Ui,
+        title: &str,
+        rows: &[RelayRow],
+        allow_delete: bool,
+        id_prefix: &'static str,
+    ) -> Option<String> {
+        let mut relay_to_remove = None;
+
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(title)
+                .text_style(NotedeckTextStyle::Body.text_style())
+                .strong(),
+        );
+        ui.add_space(4.0);
+
+        if rows.is_empty() {
+            ui.label(
+                RichText::new(tr!(self.i18n, "None", "Empty relay section placeholder"))
+                    .text_style(NotedeckTextStyle::Body.text_style())
+                    .weak(),
+            );
+            return None;
+        }
+
+        for (index, relay_row) in rows.iter().enumerate() {
+            relay_to_remove = relay_to_remove
+                .or_else(|| self.show_relay_row(ui, relay_row, allow_delete, (id_prefix, index)));
+        }
+
+        relay_to_remove
+    }
+
+    fn show_relay_row(
+        &mut self,
+        ui: &mut Ui,
+        relay_row: &RelayRow,
+        allow_delete: bool,
+        id_salt: impl std::hash::Hash,
+    ) -> Option<String> {
+        let mut relay_to_remove = None;
+
+        ui.add_space(8.0);
+        ui.vertical_centered_justified(|ui| {
+            relay_frame(ui).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        Frame::new()
+                            // This frame is needed to add margin because the label will be added to the outer frame first and centered vertically before the connection status is added so the vertical centering isn't accurate.
+                            // TODO: remove this hack and actually center the url & status at the same time
+                            .inner_margin(Margin::symmetric(0, 4))
+                            .show(ui, |ui| {
+                                egui::ScrollArea::horizontal()
+                                    .id_salt(id_salt)
+                                    .max_width(
+                                        ui.max_rect().width()
+                                            - get_right_side_width(relay_row.status),
+                                    ) // TODO: refactor to dynamically check the size of the 'right to left' portion and set the max width to be the screen width minus padding minus 'right to left' width
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new(&relay_row.relay_url)
+                                                .text_style(
+                                                    NotedeckTextStyle::Monospace.text_style(),
+                                                )
+                                                .color(
+                                                    ui.style()
+                                                        .visuals
+                                                        .noninteractive()
+                                                        .fg_stroke
+                                                        .color,
+                                                ),
+                                        );
+                                    });
+                            });
+                    });
+
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if allow_delete && ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
+                            relay_to_remove = Some(relay_row.relay_url.clone());
+                        }
+
+                        show_connection_status(ui, self.i18n, relay_row.status);
                     });
                 });
             });
-        }
+        });
+
         relay_to_remove
     }
 
@@ -160,7 +279,7 @@ impl<'a> RelayView<'a> {
                 .id_string_map
                 .entry(id)
                 .or_insert_with(|| Self::RELAY_PREFILL.to_string());
-            let is_enabled = self.pool.is_valid_url(text_buffer);
+            let is_enabled = NormRelayUrl::new(text_buffer).is_ok();
             let text_edit = egui::TextEdit::singleline(text_buffer)
                 .hint_text(
                     RichText::new(tr!(
@@ -268,57 +387,5 @@ fn get_connection_icon(status: RelayStatus) -> egui::Image<'static> {
         RelayStatus::Connected => app_images::connected_image(),
         RelayStatus::Connecting => app_images::connecting_image(),
         RelayStatus::Disconnected => app_images::disconnected_image(),
-    }
-}
-
-struct RelayInfo<'a> {
-    pub relay_url: &'a str,
-    pub status: RelayStatus,
-}
-
-fn get_relay_infos(pool: &RelayPool) -> Vec<RelayInfo<'_>> {
-    pool.relays
-        .iter()
-        .map(|relay| RelayInfo {
-            relay_url: relay.url(),
-            status: relay.status(),
-        })
-        .collect()
-}
-
-// PREVIEWS
-
-mod preview {
-    use super::*;
-    use crate::test_data::sample_pool;
-    use notedeck::{App, AppContext, AppResponse};
-
-    pub struct RelayViewPreview {
-        pool: RelayPool,
-    }
-
-    impl RelayViewPreview {
-        fn new() -> Self {
-            RelayViewPreview {
-                pool: sample_pool(),
-            }
-        }
-    }
-
-    impl App for RelayViewPreview {
-        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-            self.pool.try_recv();
-            let mut id_string_map = HashMap::new();
-            RelayView::new(app.pool, &mut id_string_map, app.i18n).ui(ui);
-            AppResponse::none()
-        }
-    }
-
-    impl Preview for RelayView<'_> {
-        type Prev = RelayViewPreview;
-
-        fn preview(_cfg: PreviewConfig) -> Self::Prev {
-            RelayViewPreview::new()
-        }
     }
 }

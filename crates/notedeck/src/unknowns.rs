@@ -1,7 +1,7 @@
 use crate::{
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
-    Result,
+    OneshotApi, Result,
 };
 
 use enostr::{Filter, NoteId, Pubkey};
@@ -164,6 +164,7 @@ impl UnknownIds {
         }
     }
 
+    #[profiling::function]
     pub fn update_from_note(
         txn: &Transaction,
         ndb: &Ndb,
@@ -384,14 +385,14 @@ fn get_unknown_ids_filter(ids: &[&UnknownId]) -> Option<Vec<Filter>> {
     Some(filters)
 }
 
-pub fn unknown_id_send(unknown_ids: &mut UnknownIds, pool: &mut enostr::RelayPool) {
+pub fn unknown_id_send(unknown_ids: &mut UnknownIds, oneshot: &mut OneshotApi<'_, '_>) {
     tracing::debug!("unknown_id_send called on: {:?}", &unknown_ids);
     let filter = unknown_ids.filter().expect("filter");
     tracing::debug!(
         "Getting {} unknown ids from relays",
         unknown_ids.ids_iter().len()
     );
-    let msg = enostr::ClientMessage::req("unknownids".to_string(), filter);
+
+    oneshot.oneshot(filter);
     unknown_ids.clear();
-    pool.send(&msg);
 }

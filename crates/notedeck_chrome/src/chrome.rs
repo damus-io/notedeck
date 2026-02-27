@@ -13,6 +13,7 @@ use egui_extras::{Size, StripBuilder};
 use egui_nav::RouteResponse;
 use egui_nav::{NavAction, NavDrawer};
 use nostrdb::{ProfileRecord, Transaction};
+use notedeck::enostr::OutboxSession;
 use notedeck::fonts::get_font_size;
 use notedeck::name::get_display_name;
 use notedeck::ui::is_compiled_as_mobile;
@@ -151,15 +152,16 @@ impl Chrome {
         cc: &CreationContext,
         app_args: &[String],
         notedeck: &mut Notedeck,
+        outbox_session: OutboxSession,
     ) -> Result<Self, Error> {
         stop_debug_mode(notedeck.options());
 
-        let context = &mut notedeck.app_context();
+        let notedeck_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx, Some(outbox_session));
         let dave = Dave::new(
             cc.wgpu_render_state.as_ref(),
-            context.ndb.clone(),
+            notedeck_ref.app_ctx.ndb.clone(),
             cc.egui_ctx.clone(),
-            context.path,
+            notedeck_ref.app_ctx.path,
         );
         #[cfg(feature = "wasm")]
         let wasm_dir = context
@@ -169,8 +171,10 @@ impl Chrome {
         let mut chrome = Chrome::default();
 
         if !app_args.iter().any(|arg| arg == "--no-columns-app") {
-            let columns = Damus::new(context, app_args);
-            notedeck.check_args(columns.unrecognized_args())?;
+            let columns = Damus::new(&mut notedeck_ref.app_ctx, app_args);
+            notedeck_ref
+                .internals
+                .check_args(columns.unrecognized_args())?;
             chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         }
 
@@ -570,7 +574,7 @@ fn chrome_handle_app_action(
                 &mut columns.timeline_cache,
                 &mut columns.threads,
                 ctx.note_cache,
-                ctx.pool,
+                &mut ctx.remote,
                 &txn,
                 ctx.unknown_ids,
                 ctx.accounts,
@@ -627,7 +631,7 @@ fn columns_route_to_profile(
         &mut columns.timeline_cache,
         &mut columns.threads,
         ctx.note_cache,
-        ctx.pool,
+        &mut ctx.remote,
         &txn,
         ctx.unknown_ids,
         ctx.accounts,

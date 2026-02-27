@@ -12,8 +12,10 @@ use crate::{
     route::Route,
 };
 
-use enostr::{RelayPool, RelayStatus};
-use notedeck::{tr, Accounts, Localization, MediaJobSender, NotedeckTextStyle, UserAccount};
+use enostr::RelayStatus;
+use notedeck::{
+    tr, Accounts, Localization, MediaJobSender, NotedeckTextStyle, RelayInspectApi, UserAccount,
+};
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
     app_images, colors, ProfilePic, View,
@@ -24,7 +26,7 @@ use super::configure_deck::deck_icon;
 pub static SIDE_PANEL_WIDTH: f32 = 68.0;
 static ICON_WIDTH: f32 = 40.0;
 
-pub struct DesktopSidePanel<'a> {
+pub struct DesktopSidePanel<'r, 'a> {
     selected_account: &'a UserAccount,
     decks_cache: &'a DecksCache,
     i18n: &'a mut Localization,
@@ -32,10 +34,10 @@ pub struct DesktopSidePanel<'a> {
     img_cache: &'a mut notedeck::Images,
     jobs: &'a MediaJobSender,
     current_route: Option<&'a Route>,
-    pool: &'a RelayPool,
+    relay_inspect: RelayInspectApi<'r, 'a>,
 }
 
-impl View for DesktopSidePanel<'_> {
+impl View for DesktopSidePanel<'_, '_> {
     fn ui(&mut self, ui: &mut egui::Ui) {
         self.show(ui);
     }
@@ -70,7 +72,7 @@ impl SidePanelResponse {
     }
 }
 
-impl<'a> DesktopSidePanel<'a> {
+impl<'r, 'a> DesktopSidePanel<'r, 'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         selected_account: &'a UserAccount,
@@ -80,7 +82,7 @@ impl<'a> DesktopSidePanel<'a> {
         img_cache: &'a mut notedeck::Images,
         jobs: &'a MediaJobSender,
         current_route: Option<&'a Route>,
-        pool: &'a RelayPool,
+        relay_inspect: RelayInspectApi<'r, 'a>,
     ) -> Self {
         Self {
             selected_account,
@@ -90,7 +92,7 @@ impl<'a> DesktopSidePanel<'a> {
             img_cache,
             jobs,
             current_route,
-            pool,
+            relay_inspect,
         }
     }
 
@@ -201,7 +203,7 @@ impl<'a> DesktopSidePanel<'a> {
             // Connectivity indicator
             let connectivity_resp = ui
                 .with_layout(Layout::top_down(egui::Align::Center), |ui| {
-                    connectivity_indicator(ui, self.pool, self.current_route)
+                    connectivity_indicator(ui, &self.relay_inspect, self.current_route)
                 })
                 .inner;
 
@@ -808,15 +810,15 @@ fn home_button() -> impl Widget {
 }
 fn connectivity_indicator(
     ui: &mut egui::Ui,
-    pool: &RelayPool,
+    relay_inspect: &RelayInspectApi<'_, '_>,
     _current_route: Option<&Route>,
 ) -> egui::Response {
-    let connected_count = pool
-        .relays
+    let relay_infos = relay_inspect.relay_infos();
+    let connected_count = relay_infos
         .iter()
-        .filter(|r| matches!(r.status(), RelayStatus::Connected))
+        .filter(|info| matches!(info.status, RelayStatus::Connected))
         .count();
-    let total_count = pool.relays.len();
+    let total_count = relay_infos.len();
 
     // Calculate connectivity ratio (0.0 to 1.0)
     let ratio = if total_count > 0 {

@@ -100,9 +100,10 @@ fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
                 &popped,
                 &mut app.timeline_cache,
                 &mut app.threads,
+                &mut app.onboarding,
                 &mut app.view_state,
                 ctx.ndb,
-                ctx.pool,
+                &mut ctx.remote.scoped_subs(ctx.accounts),
                 ReturnType::Click,
                 col_index,
             );

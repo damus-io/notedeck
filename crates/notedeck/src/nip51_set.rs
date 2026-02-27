@@ -1,9 +1,8 @@
-use enostr::{Pubkey, RelayPool};
+use enostr::{OutboxSubId, Pubkey, RelayUrlPkgs};
 use indexmap::IndexMap;
-use nostrdb::{Filter, Ndb, Note, Transaction};
-use uuid::Uuid;
+use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 
-use crate::{UnifiedSubscription, UnknownIds};
+use crate::{Accounts, Outbox, UnifiedSubscription, UnknownIds};
 
 /// Keeps track of most recent NIP-51 sets
 #[derive(Debug)]
@@ -15,44 +14,50 @@ pub struct Nip51SetCache {
 type PackId = String;
 
 impl Nip51SetCache {
-    pub fn new(
-        pool: &mut RelayPool,
+    pub fn new_accounts_read(
+        pool: &mut Outbox<'_>,
+        accounts: &Accounts,
         ndb: &Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         nip51_set_filter: Vec<Filter>,
     ) -> Option<Self> {
-        let subid = Uuid::new_v4().to_string();
-        let mut cached_notes = IndexMap::default();
-
-        let notes: Option<Vec<Note>> = if let Ok(results) = ndb.query(txn, &nip51_set_filter, 500) {
-            Some(results.into_iter().map(|r| r.note).collect())
-        } else {
-            None
-        };
-
-        if let Some(notes) = notes {
-            add(notes, &mut cached_notes, ndb, txn, unknown_ids);
-        }
-
-        let sub = match ndb.subscribe(&nip51_set_filter) {
-            Ok(sub) => sub,
-            Err(e) => {
-                tracing::error!("Could not ndb subscribe: {e}");
-                return None;
-            }
-        };
-        pool.subscribe(subid.clone(), nip51_set_filter);
+        let (cached_notes, local) =
+            load_cached_notes_and_local_sub(ndb, txn, unknown_ids, &nip51_set_filter)?;
+        let remote = pool.subscribe(
+            nip51_set_filter.clone(),
+            RelayUrlPkgs::new(accounts.selected_account_read_relays()),
+        );
 
         Some(Self {
-            sub: UnifiedSubscription {
-                local: sub,
-                remote: subid,
-            },
+            sub: UnifiedSubscription { local, remote },
             cached_notes,
         })
     }
 
+    pub fn new_local(
+        ndb: &Ndb,
+        txn: &Transaction,
+        unknown_ids: &mut UnknownIds,
+        nip51_set_filter: Vec<Filter>,
+    ) -> Option<Self> {
+        let (cached_notes, local) =
+            load_cached_notes_and_local_sub(ndb, txn, unknown_ids, &nip51_set_filter)?;
+
+        // Local-only constructor used when remote relay management is handled elsewhere.
+        let remote = OutboxSubId(0);
+
+        Some(Self {
+            sub: UnifiedSubscription { local, remote },
+            cached_notes,
+        })
+    }
+
+    pub fn local_sub(&self) -> Subscription {
+        self.sub.local
+    }
+
+    #[profiling::function]
     pub fn poll_for_notes(&mut self, ndb: &Ndb, unknown_ids: &mut UnknownIds) {
         let new_notes = ndb.poll_for_notes(self.sub.local, 5);
 
@@ -86,6 +91,36 @@ impl Nip51SetCache {
     }
 }
 
+fn load_cached_notes_and_local_sub(
+    ndb: &Ndb,
+    txn: &Transaction,
+    unknown_ids: &mut UnknownIds,
+    nip51_set_filter: &[Filter],
+) -> Option<(IndexMap<PackId, Nip51Set>, Subscription)> {
+    let mut cached_notes = IndexMap::default();
+
+    let notes: Option<Vec<Note>> = if let Ok(results) = ndb.query(txn, nip51_set_filter, 500) {
+        Some(results.into_iter().map(|r| r.note).collect())
+    } else {
+        None
+    };
+
+    if let Some(notes) = notes {
+        add(notes, &mut cached_notes, ndb, txn, unknown_ids);
+    }
+
+    let local = match ndb.subscribe(nip51_set_filter) {
+        Ok(sub) => sub,
+        Err(e) => {
+            tracing::error!("Could not ndb subscribe: {e}");
+            return None;
+        }
+    };
+
+    Some((cached_notes, local))
+}
+
+#[profiling::function]
 fn add(
     notes: Vec<Note>,
     cache: &mut IndexMap<PackId, Nip51Set>,

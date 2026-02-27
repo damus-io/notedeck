@@ -3,9 +3,9 @@ use crate::{
     route::{ColumnsRouter, Route, SingletonRouter},
     timeline::{Timeline, TimelineCache, TimelineKind},
 };
-use enostr::RelayPool;
+use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
-use notedeck::NoteCache;
+use notedeck::{NoteCache, ScopedSubApi};
 use std::iter::Iterator;
 use tracing::warn;
 
@@ -101,18 +101,20 @@ impl Columns {
         SelectionResult::NewSelection(selected_index)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn add_new_timeline_column(
         &mut self,
         timeline_cache: &mut TimelineCache,
         txn: &Transaction,
         ndb: &Ndb,
         note_cache: &mut NoteCache,
-        pool: &mut RelayPool,
+        scoped_subs: &mut ScopedSubApi<'_, '_>,
         kind: &TimelineKind,
+        account_pk: Pubkey,
     ) -> Option<TimelineOpenResult> {
         self.columns
             .push(Column::new(vec![Route::timeline(kind.to_owned())]));
-        timeline_cache.open(ndb, note_cache, txn, pool, kind, false)
+        timeline_cache.open(ndb, note_cache, txn, scoped_subs, kind, account_pk, false)
     }
 
     pub fn new_column_picker(&mut self) {
@@ -124,15 +126,15 @@ impl Columns {
     pub fn insert_intermediary_routes(
         &mut self,
         timeline_cache: &mut TimelineCache,
+        account_pk: Pubkey,
         intermediary_routes: Vec<IntermediaryRoute>,
     ) {
         let routes = intermediary_routes
             .into_iter()
             .map(|r| match r {
-                IntermediaryRoute::Timeline(mut timeline) => {
+                IntermediaryRoute::Timeline(timeline) => {
                     let route = Route::timeline(timeline.kind.clone());
-                    timeline.subscription.increment();
-                    timeline_cache.insert(timeline.kind.clone(), *timeline);
+                    timeline_cache.insert(timeline.kind.clone(), account_pk, *timeline);
                     route
                 }
                 IntermediaryRoute::Route(route) => route,

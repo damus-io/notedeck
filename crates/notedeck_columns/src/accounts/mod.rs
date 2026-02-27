@@ -7,9 +7,9 @@ use notedeck_ui::nip51_set::Nip51SetUiCache;
 pub use crate::accounts::route::AccountsResponse;
 use crate::app::get_active_columns_mut;
 use crate::decks::DecksCache;
-use crate::onboarding::Onboarding;
+use crate::onboarding::{Onboarding, OnboardingEffect};
 use crate::profile::{send_default_dms_relay_list, send_new_contact_list};
-use crate::subscriptions::Subscriptions;
+use crate::scoped_sub_owner_keys::onboarding_owner_key;
 use crate::ui::onboarding::{FollowPackOnboardingView, FollowPacksResponse, OnboardingResponse};
 use crate::{
     login_manager::AcquireKeyState,
@@ -152,7 +152,6 @@ pub fn process_accounts_view_response(
 pub fn process_login_view_response(
     app_ctx: &mut AppContext,
     decks: &mut DecksCache,
-    subs: &mut Subscriptions,
     onboarding: &mut Onboarding,
     col: usize,
     response: AccountLoginResponse,
@@ -168,14 +167,13 @@ pub fn process_login_view_response(
         }
         AccountLoginResponse::CreatingNew => {
             cur_router.route_to(Route::Accounts(AccountsRoute::Onboarding));
-
-            onboarding.process(app_ctx.pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
+            process_onboarding_step(app_ctx, onboarding, col);
 
             None
         }
         AccountLoginResponse::Onboarding(onboarding_response) => match onboarding_response {
             FollowPacksResponse::NoFollowPacks => {
-                onboarding.process(app_ctx.pool, app_ctx.ndb, subs, app_ctx.unknown_ids);
+                process_onboarding_step(app_ctx, onboarding, col);
                 None
             }
             FollowPacksResponse::UserSelectedPacks(nip51_sets_ui_state) => {
@@ -183,10 +181,20 @@ pub fn process_login_view_response(
 
                 let kp = FullKeypair::generate();
 
-                send_new_contact_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool, pks_to_follow);
-                send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, app_ctx.pool);
+                {
+                    let mut publisher = app_ctx.remote.publisher(app_ctx.accounts);
+                    send_new_contact_list(
+                        kp.to_filled(),
+                        app_ctx.ndb,
+                        &mut publisher,
+                        pks_to_follow,
+                    );
+                    send_default_dms_relay_list(kp.to_filled(), app_ctx.ndb, &mut publisher);
+                }
                 cur_router.go_back();
-                onboarding.end_onboarding(app_ctx.pool, app_ctx.ndb);
+                onboarding.end_onboarding(app_ctx.ndb);
+                let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+                let _ = scoped_subs.drop_owner(onboarding_owner_key(col));
 
                 app_ctx.accounts.add_account(kp.to_keypair())
             }
@@ -207,6 +215,19 @@ pub fn process_login_view_response(
             accounts_action: None,
             unk_id_action: SingleUnkIdAction::NoAction,
         }
+    }
+}
+
+fn process_onboarding_step(app_ctx: &mut AppContext, onboarding: &mut Onboarding, col: usize) {
+    let owner = onboarding_owner_key(col);
+    let effect = {
+        let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+        onboarding.process(&mut scoped_subs, owner, app_ctx.ndb, app_ctx.unknown_ids)
+    };
+
+    if let Some(OnboardingEffect::Oneshot(filters)) = effect {
+        let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
+        oneshot.oneshot(filters);
     }
 }
 
@@ -235,7 +256,6 @@ impl AccountsRouteResponse {
                 let action = process_login_view_response(
                     app_ctx,
                     &mut app.decks_cache,
-                    &mut app.subscriptions,
                     &mut app.onboarding,
                     col,
                     response,

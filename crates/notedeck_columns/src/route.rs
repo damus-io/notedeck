@@ -1,14 +1,16 @@
 use egui_nav::{Percent, ReturnType};
-use enostr::{NoteId, Pubkey, RelayPool};
+use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
 use notedeck::{
     tr, Localization, NoteZapTargetOwned, ReplacementType, ReportTarget, RootNoteIdBuf, Router,
-    WalletType,
+    ScopedSubApi, WalletType,
 };
 use std::ops::Range;
 
 use crate::{
     accounts::AccountsRoute,
+    onboarding::Onboarding,
+    scoped_sub_owner_keys::onboarding_owner_key,
     timeline::{kind::ColumnTitle, thread::Threads, ThreadSelection, TimelineCache, TimelineKind},
     ui::add_column::{AddAlgoRoute, AddColumnRoute},
     view_state::ViewState,
@@ -797,23 +799,28 @@ pub fn cleanup_popped_route(
     route: &Route,
     timeline_cache: &mut TimelineCache,
     threads: &mut Threads,
+    onboarding: &mut Onboarding,
     view_state: &mut ViewState,
     ndb: &mut Ndb,
-    pool: &mut RelayPool,
+    scoped_subs: &mut ScopedSubApi,
     return_type: ReturnType,
     col_index: usize,
 ) {
     match route {
         Route::Timeline(kind) => {
-            if let Err(err) = timeline_cache.pop(kind, ndb, pool) {
+            if let Err(err) = timeline_cache.pop(kind, ndb, scoped_subs) {
                 tracing::error!("popping timeline had an error: {err} for {:?}", kind);
             }
         }
         Route::Thread(selection) => {
-            threads.close(ndb, pool, selection, return_type, col_index);
+            threads.close(ndb, scoped_subs, selection, return_type, col_index);
         }
         Route::EditProfile(pk) => {
             view_state.pubkey_to_profile_state.remove(pk);
+        }
+        Route::Accounts(AccountsRoute::Onboarding) => {
+            onboarding.end_onboarding(ndb);
+            let _ = scoped_subs.drop_owner(onboarding_owner_key(col_index));
         }
         _ => {}
     }

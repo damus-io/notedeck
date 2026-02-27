@@ -2,20 +2,21 @@ use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
 use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
+use crate::scoped_sub_state::ScopedSubsState;
 use crate::unknowns::unknown_id_send;
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
-use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RelayDebugView, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, RemoteApi, UnknownIds,
 };
+use crate::{EguiWakeup, NotedeckOptions};
 use crate::{Error, JobCache};
 use crate::{JobPool, MediaJobs};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
-use enostr::{PoolEventBuf, PoolRelay, RelayEvent, RelayMessage, RelayPool};
+use enostr::{OutboxPool, OutboxSession, OutboxSessionHandler};
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -65,7 +66,8 @@ pub struct Notedeck {
     ndb: Ndb,
     img_cache: Images,
     unknown_ids: UnknownIds,
-    pool: RelayPool,
+    pool: OutboxPool,
+    scoped_sub_state: ScopedSubsState,
     note_cache: NoteCache,
     accounts: Accounts,
     global_wallet: GlobalWallet,
@@ -96,15 +98,14 @@ fn main_panel(style: &egui::Style) -> egui::CentralPanel {
     })
 }
 
-fn render_notedeck(notedeck: &mut Notedeck, ctx: &egui::Context) {
+#[profiling::function]
+fn render_notedeck(
+    app: Rc<RefCell<dyn App + 'static>>,
+    app_ctx: &mut AppContext,
+    ctx: &egui::Context,
+) {
     main_panel(&ctx.style()).show(ctx, |ui| {
-        // render app
-        let Some(app) = &notedeck.app else {
-            return;
-        };
-
-        let app = app.clone();
-        app.borrow_mut().update(&mut notedeck.app_context(), ui);
+        app.borrow_mut().update(app_ctx, ui);
 
         // Move the screen up when we have a virtual keyboard
         // NOTE: actually, we only want to do this if the keyboard is covering the focused element?
@@ -121,27 +122,52 @@ fn render_notedeck(notedeck: &mut Notedeck, ctx: &egui::Context) {
 }
 
 impl eframe::App for Notedeck {
+    #[profiling::function]
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         profiling::finish_frame!();
         self.frame_history
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
 
-        self.media_jobs.run_received(&mut self.job_pool, |id| {
-            crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
-        });
-        self.media_jobs.deliver_all_completed(|completed| {
-            crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
-        });
+        {
+            profiling::scope!("media jobs");
+            self.media_jobs.run_received(&mut self.job_pool, |id| {
+                crate::run_media_job_pre_action(id, &mut self.img_cache.textures);
+            });
+            self.media_jobs.deliver_all_completed(|completed| {
+                crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
+            });
+        }
 
         self.nip05_cache.poll();
+        let Some(app) = &self.app else {
+            return;
+        };
+        let app = app.clone();
+        let mut app_ctx = self.app_context(ctx);
 
         // handle account updates
-        self.accounts.update(&mut self.ndb, &mut self.pool, ctx);
+        app_ctx.accounts.update(app_ctx.ndb, &mut app_ctx.remote);
 
-        self.zaps
-            .process(&mut self.accounts, &mut self.global_wallet, &self.ndb);
+        app_ctx
+            .zaps
+            .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
 
-        render_notedeck(self, ctx);
+        app_ctx.remote.process_events(ctx, app_ctx.ndb);
+
+        {
+            profiling::scope!("unknown id");
+            if app_ctx.unknown_ids.ready_to_send() {
+                let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
+                unknown_id_send(app_ctx.unknown_ids, &mut oneshot);
+            }
+        }
+
+        render_notedeck(app, &mut app_ctx, ctx);
+
+        {
+            profiling::scope!("outbox ingestion");
+            drop(app_ctx);
+        }
 
         self.settings.update_batch(|settings| {
             settings.zoom_factor = ctx.zoom_factor();
@@ -153,16 +179,6 @@ impl eframe::App for Notedeck {
             };
         });
         self.app_size.try_save_app_size(ctx);
-
-        if self.args.options.contains(NotedeckOptions::RelayDebug) {
-            if self.pool.debug.is_none() {
-                self.pool.use_debug();
-            }
-
-            if let Some(debug) = &mut self.pool.debug {
-                RelayDebugView::window(ctx, debug);
-            }
-        }
 
         #[cfg(feature = "puffin")]
         puffin_egui::profiler_window(ctx);
@@ -186,7 +202,7 @@ impl Notedeck {
         self.android_app = Some(context);
     }
 
-    pub fn new<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
+    pub fn init<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> NotedeckCtx {
         #[cfg(feature = "puffin")]
         setup_puffin();
 
@@ -236,19 +252,13 @@ impl Notedeck {
             None
         };
 
-        // AccountManager will setup the pool on first update
-        let mut pool = RelayPool::new();
-        {
-            let ctx = ctx.clone();
-            if let Err(err) = pool.add_multicast_relay(move || ctx.request_repaint()) {
-                error!("error setting up multicast relay: {err}");
-            }
-        }
-
         let mut unknown_ids = UnknownIds::default();
         try_swap_compacted_db(&dbpath_str);
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
+        let mut scoped_sub_state = ScopedSubsState::default();
+        let mut pool = OutboxPool::default();
+        let outbox_session = OutboxSessionHandler::new(&mut pool, EguiWakeup::new(ctx.clone()));
 
         let mut accounts = Accounts::new(
             keystore,
@@ -256,8 +266,6 @@ impl Notedeck {
             FALLBACK_PUBKEY(),
             &mut ndb,
             &txn,
-            &mut pool,
-            ctx,
             &mut unknown_ids,
         );
 
@@ -276,9 +284,13 @@ impl Notedeck {
             }
         }
 
-        if let Some(first) = parsed_args.keys.first() {
-            accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut pool, ctx);
-        }
+        let outbox_session = if let Some(first) = parsed_args.keys.first() {
+            let mut remote = RemoteApi::new(outbox_session, &mut scoped_sub_state);
+            accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut remote);
+            remote.export_session()
+        } else {
+            outbox_session.export()
+        };
 
         let img_cache = Images::new(img_cache_dir);
         let note_cache = NoteCache::default();
@@ -315,11 +327,12 @@ impl Notedeck {
         let (send_new_jobs, receive_new_jobs) = std::sync::mpsc::channel();
         let media_job_cache = JobCache::new(receive_new_jobs, send_new_jobs);
 
-        Self {
+        let notedeck = Self {
             ndb,
             img_cache,
             unknown_ids,
             pool,
+            scoped_sub_state,
             note_cache,
             accounts,
             global_wallet,
@@ -338,6 +351,11 @@ impl Notedeck {
             i18n,
             #[cfg(target_os = "android")]
             android_app: None,
+        };
+
+        NotedeckCtx {
+            notedeck,
+            outbox_session,
         }
     }
 
@@ -354,22 +372,6 @@ impl Notedeck {
         );
     }
 
-    /// ensure we recognized all the arguments
-    pub fn check_args(&self, other_app_args: &BTreeSet<String>) -> Result<(), Error> {
-        let completely_unrecognized: Vec<String> = self
-            .unrecognized_args()
-            .intersection(other_app_args)
-            .cloned()
-            .collect();
-        if !completely_unrecognized.is_empty() {
-            let err = format!("Unrecognized arguments: {completely_unrecognized:?}");
-            tracing::error!("{}", &err);
-            return Err(Error::Generic(err));
-        }
-
-        Ok(())
-    }
-
     #[inline]
     pub fn options(&self) -> NotedeckOptions {
         self.args.options
@@ -384,27 +386,46 @@ impl Notedeck {
         self
     }
 
-    pub fn app_context(&mut self) -> AppContext<'_> {
-        AppContext {
-            ndb: &mut self.ndb,
-            img_cache: &mut self.img_cache,
-            unknown_ids: &mut self.unknown_ids,
-            pool: &mut self.pool,
-            note_cache: &mut self.note_cache,
-            accounts: &mut self.accounts,
-            global_wallet: &mut self.global_wallet,
-            path: &self.path,
-            args: &self.args,
-            settings: &mut self.settings,
-            clipboard: &mut self.clipboard,
-            zaps: &mut self.zaps,
-            frame_history: &mut self.frame_history,
-            job_pool: &mut self.job_pool,
-            media_jobs: &mut self.media_jobs,
-            nip05_cache: &mut self.nip05_cache,
-            i18n: &mut self.i18n,
-            #[cfg(target_os = "android")]
-            android: self.android_app.as_ref().unwrap().clone(),
+    pub fn app_context(&mut self, ui_ctx: &egui::Context) -> AppContext<'_> {
+        self.notedeck_ref(ui_ctx, None).app_ctx
+    }
+
+    pub fn notedeck_ref<'a>(
+        &'a mut self,
+        ui_ctx: &egui::Context,
+        session: Option<OutboxSession>,
+    ) -> NotedeckRef<'a> {
+        let outbox = if let Some(session) = session {
+            OutboxSessionHandler::import(&mut self.pool, session, EguiWakeup::new(ui_ctx.clone()))
+        } else {
+            OutboxSessionHandler::new(&mut self.pool, EguiWakeup::new(ui_ctx.clone()))
+        };
+
+        NotedeckRef {
+            app_ctx: AppContext {
+                ndb: &mut self.ndb,
+                img_cache: &mut self.img_cache,
+                unknown_ids: &mut self.unknown_ids,
+                remote: RemoteApi::new(outbox, &mut self.scoped_sub_state),
+                note_cache: &mut self.note_cache,
+                accounts: &mut self.accounts,
+                global_wallet: &mut self.global_wallet,
+                path: &self.path,
+                args: &self.args,
+                settings: &mut self.settings,
+                clipboard: &mut self.clipboard,
+                zaps: &mut self.zaps,
+                frame_history: &mut self.frame_history,
+                job_pool: &mut self.job_pool,
+                media_jobs: &mut self.media_jobs,
+                nip05_cache: &mut self.nip05_cache,
+                i18n: &mut self.i18n,
+                #[cfg(target_os = "android")]
+                android: self.android_app.as_ref().unwrap().clone(),
+            },
+            internals: NotedeckInternals {
+                unrecognized_args: &self.unrecognized_args,
+            },
         }
     }
 
@@ -457,95 +478,30 @@ pub fn install_crypto() {
     }
 }
 
-#[profiling::function]
-pub fn try_process_events_core(
-    app_ctx: &mut AppContext<'_>,
-    ctx: &egui::Context,
-    mut receive: impl FnMut(&mut AppContext, PoolEventBuf),
-) {
-    let ctx2 = ctx.clone();
-    let wakeup = move || {
-        ctx2.request_repaint();
-    };
-
-    app_ctx.pool.keepalive_ping(wakeup);
-
-    // NOTE: we don't use the while let loop due to borrow issues
-    #[allow(clippy::while_let_loop)]
-    loop {
-        let ev = if let Some(ev) = app_ctx.pool.try_recv() {
-            ev.into_owned()
-        } else {
-            break;
-        };
-
-        match (&ev.event).into() {
-            RelayEvent::Opened => {
-                tracing::trace!("Opened relay {}", ev.relay);
-                app_ctx
-                    .accounts
-                    .send_initial_filters(app_ctx.pool, &ev.relay);
-            }
-            RelayEvent::Closed => tracing::warn!("{} connection closed", &ev.relay),
-            RelayEvent::Other(msg) => {
-                tracing::trace!("relay {} sent other event {:?}", ev.relay, &msg)
-            }
-            RelayEvent::Error(error) => error!("relay {} had error: {error:?}", &ev.relay),
-            RelayEvent::Message(msg) => {
-                process_message_core(app_ctx, &ev.relay, &msg);
-            }
-        }
-
-        receive(app_ctx, ev);
-    }
-
-    if app_ctx.unknown_ids.ready_to_send() {
-        unknown_id_send(app_ctx.unknown_ids, app_ctx.pool);
-    }
+pub struct NotedeckRef<'a> {
+    pub app_ctx: AppContext<'a>,
+    pub internals: NotedeckInternals<'a>,
 }
 
-#[profiling::function]
-fn process_message_core(ctx: &mut AppContext<'_>, relay: &str, msg: &RelayMessage) {
-    match msg {
-        RelayMessage::Event(_subid, ev) => {
-            let relay = if let Some(relay) = ctx.pool.relays.iter().find(|r| r.url() == relay) {
-                relay
-            } else {
-                error!("couldn't find relay {} for note processing!?", relay);
-                return;
-            };
+pub struct NotedeckInternals<'a> {
+    pub unrecognized_args: &'a BTreeSet<String>,
+}
 
-            match relay {
-                PoolRelay::Websocket(_) => {
-                    //info!("processing event {}", event);
-                    tracing::trace!("processing event {ev}");
-                    if let Err(err) = ctx.ndb.process_event_with(
-                        ev,
-                        nostrdb::IngestMetadata::new()
-                            .client(false)
-                            .relay(relay.url()),
-                    ) {
-                        error!("error processing event {ev}: {err}");
-                    }
-                }
-                PoolRelay::Multicast(_) => {
-                    // multicast events are client events
-                    if let Err(err) = ctx.ndb.process_event_with(
-                        ev,
-                        nostrdb::IngestMetadata::new()
-                            .client(true)
-                            .relay(relay.url()),
-                    ) {
-                        error!("error processing multicast event {ev}: {err}");
-                    }
-                }
-            }
+impl<'a> NotedeckInternals<'a> {
+    /// ensure we recognized all the arguments
+    pub fn check_args(&self, other_app_args: &BTreeSet<String>) -> Result<(), Error> {
+        let completely_unrecognized: Vec<String> = self
+            .unrecognized_args
+            .intersection(other_app_args)
+            .cloned()
+            .collect();
+        if !completely_unrecognized.is_empty() {
+            let err = format!("Unrecognized arguments: {completely_unrecognized:?}");
+            tracing::error!("{}", &err);
+            return Err(Error::Generic(err));
         }
-        RelayMessage::Notice(msg) => tracing::warn!("Notice from {}: {}", relay, msg),
-        RelayMessage::OK(cr) => info!("OK {:?}", cr),
-        RelayMessage::Eose(id) => {
-            tracing::trace!("Relay {} received eose: {id}", relay)
-        }
+
+        Ok(())
     }
 }
 
@@ -595,4 +551,9 @@ fn try_swap_compacted_db(dbpath: &str) {
     let _ = std::fs::remove_file(&db_old);
     let _ = std::fs::remove_dir_all(&compact_path);
     info!("compact swap: success! {old_size} -> {compact_size} bytes");
+}
+
+pub struct NotedeckCtx {
+    pub notedeck: Notedeck,
+    pub outbox_session: OutboxSession,
 }
