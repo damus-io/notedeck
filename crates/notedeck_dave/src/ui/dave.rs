@@ -8,6 +8,7 @@ use crate::{
     backend::BackendType,
     config::{AiMode, DaveSettings},
     file_update::FileUpdate,
+    focus_queue::FocusPriority,
     git_status::GitStatusCache,
     messages::{
         AskUserQuestionInput, AssistantMessage, CompactionInfo, ExecutedTool, Message,
@@ -76,6 +77,8 @@ pub struct DaveUi<'a> {
     permission_mode: PermissionMode,
     /// When the last AI response token was received
     last_activity: Option<std::time::Instant>,
+    /// Focus queue info for mobile NEXT badge: (position, total, priority)
+    focus_queue_info: Option<(usize, usize, FocusPriority)>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -165,6 +168,8 @@ pub enum DaveAction {
     ToggleAutoSteal,
     /// Trigger manual context compaction
     Compact,
+    /// Navigate to the next focus queue item (mobile)
+    FocusQueueNext,
 }
 
 impl<'a> DaveUi<'a> {
@@ -200,6 +205,7 @@ impl<'a> DaveUi<'a> {
             backend_type: BackendType::Remote,
             permission_mode: PermissionMode::Default,
             last_activity: None,
+            focus_queue_info: None,
         }
     }
 
@@ -287,6 +293,11 @@ impl<'a> DaveUi<'a> {
 
     pub fn status_dot_color(mut self, color: Option<egui::Color32>) -> Self {
         self.status_dot_color = color;
+        self
+    }
+
+    pub fn focus_queue_info(mut self, info: Option<(usize, usize, FocusPriority)>) -> Self {
+        self.focus_queue_info = info;
         self
     }
 
@@ -396,6 +407,7 @@ impl<'a> DaveUi<'a> {
                                                 is_agentic,
                                                 permission_mode,
                                                 auto_steal_focus,
+                                                self.focus_queue_info,
                                                 self.usage,
                                                 self.context_window,
                                                 self.last_activity,
@@ -1465,6 +1477,7 @@ fn status_bar_ui(
     is_agentic: bool,
     permission_mode: PermissionMode,
     auto_steal_focus: bool,
+    focus_queue_info: Option<(usize, usize, FocusPriority)>,
     usage: Option<&crate::messages::UsageInfo>,
     context_window: u64,
     last_activity: Option<std::time::Instant>,
@@ -1485,7 +1498,12 @@ fn status_bar_ui(
                     // Right-aligned section: usage bar, badges, then refresh
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let badge_action = if is_agentic {
-                            toggle_badges_ui(ui, permission_mode, auto_steal_focus)
+                            toggle_badges_ui(
+                                ui,
+                                permission_mode,
+                                auto_steal_focus,
+                                focus_queue_info,
+                            )
                         } else {
                             None
                         };
@@ -1505,7 +1523,12 @@ fn status_bar_ui(
                 } else if is_agentic {
                     // No git status (remote session) - just show badges and usage
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let badge_action = toggle_badges_ui(ui, permission_mode, auto_steal_focus);
+                        let badge_action = toggle_badges_ui(
+                            ui,
+                            permission_mode,
+                            auto_steal_focus,
+                            focus_queue_info,
+                        );
                         if let Some(instant) = last_activity {
                             ui.label(
                                 egui::RichText::new(format_relative_time(instant))
@@ -1609,9 +1632,33 @@ fn toggle_badges_ui(
     ui: &mut egui::Ui,
     permission_mode: PermissionMode,
     auto_steal_focus: bool,
+    focus_queue_info: Option<(usize, usize, FocusPriority)>,
 ) -> Option<DaveAction> {
     let ctrl_held = ui.input(|i| i.modifiers.ctrl);
+    let is_narrow = notedeck::ui::is_narrow(ui.ctx());
     let mut action = None;
+
+    // NEXT badge for focus queue navigation (narrow/mobile only, rendered first = rightmost)
+    if is_narrow {
+        if let Some((_pos, _total, priority)) = focus_queue_info {
+            let variant = match priority {
+                FocusPriority::NeedsInput => super::badge::BadgeVariant::Warning,
+                FocusPriority::Error => super::badge::BadgeVariant::Destructive,
+                FocusPriority::Done => super::badge::BadgeVariant::Info,
+            };
+            let mut next_badge = super::badge::StatusBadge::new("\u{25b6}").variant(variant);
+            if ctrl_held {
+                next_badge = next_badge.keybind("N");
+            }
+            if next_badge
+                .show(ui)
+                .on_hover_text("Next in focus queue (Ctrl+N)")
+                .clicked()
+            {
+                action = Some(DaveAction::FocusQueueNext);
+            }
+        }
+    }
 
     // AUTO badge (rendered first in right-to-left, so it appears rightmost)
     let mut auto_badge = super::badge::StatusBadge::new("AUTO").variant(if auto_steal_focus {

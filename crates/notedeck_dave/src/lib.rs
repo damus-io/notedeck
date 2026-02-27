@@ -2333,6 +2333,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.handle_new_chat();
                 None
             }
+            UiActionResult::FocusQueueNext => {
+                crate::update::focus_queue_next(
+                    &mut self.session_manager,
+                    &mut self.focus_queue,
+                    &mut self.scene,
+                    self.show_scene,
+                );
+                None
+            }
             UiActionResult::Compact => {
                 if let Some(session) = self.session_manager.get_active() {
                     let session_id = format!("dave-session-{}", session.id);

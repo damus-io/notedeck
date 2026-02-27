@@ -559,6 +559,7 @@ pub fn narrow_ui(
         (DaveResponse::default(), session_action)
     } else if let Some(session) = session_manager.get_active_mut() {
         let dot_color = focus_queue.current().map(|e| e.priority.color());
+        let fq_info = focus_queue.ui_info();
         let response = build_dave_ui(
             session,
             model_config,
@@ -566,6 +567,7 @@ pub fn narrow_ui(
             auto_steal_focus,
         )
         .status_dot_color(dot_color)
+        .focus_queue_info(fq_info)
         .ui(app_ctx, ui);
         (response, None)
     } else {
@@ -826,6 +828,8 @@ pub enum UiActionResult {
     Compact,
     /// Permission mode command needs relay publishing (observer → host).
     PublishModeCommand(update::ModeCommandPublish),
+    /// Navigate to next focus queue item (mobile)
+    FocusQueueNext,
 }
 
 /// Handle a UI action from DaveUi.
@@ -906,6 +910,7 @@ pub fn handle_ui_action(
             }
         }
         DaveAction::ToggleAutoSteal => UiActionResult::ToggleAutoSteal,
+        DaveAction::FocusQueueNext => UiActionResult::FocusQueueNext,
         DaveAction::ExitPlanMode {
             request_id,
             approved,
