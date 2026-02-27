@@ -735,7 +735,7 @@ pub fn build_permission_response_event(
 /// with same (kind, pubkey, d-tag).
 #[allow(clippy::too_many_arguments)]
 pub fn build_session_state_event(
-    claude_session_id: &str,
+    event_session_id: &str,
     title: &str,
     custom_title: Option<&str>,
     cwd: &str,
@@ -745,12 +745,13 @@ pub fn build_session_state_event(
     home_dir: &str,
     backend: &str,
     permission_mode: &str,
+    cli_session_id: Option<&str>,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     let mut builder = init_note_builder(AI_SESSION_STATE_KIND, "", Some(now_secs()));
 
     // Session identity (makes this a parameterized replaceable event)
-    builder = builder.start_tag().tag_str("d").tag_str(claude_session_id);
+    builder = builder.start_tag().tag_str("d").tag_str(event_session_id);
 
     // Session metadata as tags
     builder = builder.start_tag().tag_str("title").tag_str(title);
@@ -769,6 +770,14 @@ pub fn build_session_state_event(
         .start_tag()
         .tag_str("permission-mode")
         .tag_str(permission_mode);
+
+    // Real Claude CLI session ID for backend --resume.
+    // Empty string means the backend hasn't started yet.
+    // Absent (old events) means the d-tag itself is the CLI ID.
+    builder = builder
+        .start_tag()
+        .tag_str("cli_session")
+        .tag_str(cli_session_id.unwrap_or(""));
 
     // Discoverability
     builder = builder.start_tag().tag_str("t").tag_str("ai-session-state");
@@ -1346,6 +1355,7 @@ mod tests {
             "/home/testuser",
             "claude",
             "plan",
+            None,
             &sk,
         )
         .unwrap();

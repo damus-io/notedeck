@@ -239,6 +239,10 @@ pub struct AgenticSessionData {
     /// For Bash: stores binary names (first word of command).
     /// For other tools: stores the tool name.
     pub runtime_allows: HashSet<String>,
+    /// Stable Nostr event identity for this session (d-tag for kind-31988
+    /// and kind-1988 events).  Generated at creation, never changes.
+    /// Separate from the Claude CLI session ID used for `--resume`.
+    pub event_id: String,
 }
 
 impl AgenticSessionData {
@@ -274,6 +278,7 @@ impl AgenticSessionData {
             compact_and_proceed: CompactAndProceedState::Idle,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
+            event_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
@@ -313,10 +318,19 @@ impl AgenticSessionData {
         Some(key)
     }
 
-    /// Get the session ID to use for live kind-1988 events.
+    /// Stable Nostr event identity (d-tag for kind-1988 / kind-31988).
     ///
-    /// Prefers claude_session_id from SessionInfo, falls back to resume_session_id.
-    pub fn event_session_id(&self) -> Option<&str> {
+    /// This is always available — every session gets a UUID at creation.
+    /// It is independent of the Claude CLI session ID.
+    pub fn event_session_id(&self) -> &str {
+        &self.event_id
+    }
+
+    /// Get the CLI session ID for backend `--resume`.
+    ///
+    /// Returns the real Claude CLI session ID.  `None` means the backend
+    /// hasn't started yet (no session to resume).
+    pub fn cli_resume_id(&self) -> Option<&str> {
         self.session_info
             .as_ref()
             .and_then(|i| i.claude_session_id.as_deref())
@@ -481,7 +495,7 @@ impl ChatSession {
             task_handle: None,
             dispatch_state: DispatchState::Idle,
             cached_status: AgentStatus::Idle,
-            state_dirty: false,
+            state_dirty: true,
             focus_requested: false,
             ai_mode,
             agentic,
@@ -512,7 +526,9 @@ impl ChatSession {
     ) -> Self {
         let mut session = Self::new(id, cwd, ai_mode, backend_type);
         if let Some(ref mut agentic) = session.agentic {
-            agentic.resume_session_id = Some(resume_session_id);
+            if !resume_session_id.is_empty() {
+                agentic.resume_session_id = Some(resume_session_id);
+            }
         }
         session.details.title = title;
         session

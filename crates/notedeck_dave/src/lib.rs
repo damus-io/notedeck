@@ -290,7 +290,7 @@ fn ingest_live_event(
     tool_name: Option<&str>,
 ) -> Option<session_events::BuiltEvent> {
     let agentic = session.agentic.as_mut()?;
-    let session_id = agentic.event_session_id().map(|s| s.to_string())?;
+    let session_id = agentic.event_session_id().to_string();
     let cwd = agentic.cwd.to_str();
 
     match session_events::build_live_event(
@@ -1289,19 +1289,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             };
 
-            let Some(claude_sid) = agentic.event_session_id() else {
-                continue;
-            };
-            let claude_sid = claude_sid.to_string();
-
+            let event_sid = agentic.event_session_id().to_string();
             let cwd = agentic.cwd.to_string_lossy();
             let status = session.status().as_str();
             let indicator = session.indicator.as_ref().map(|i| i.as_str());
             let perm_mode = crate::session::permission_mode_to_str(agentic.permission_mode);
+            let cli_sid = agentic.cli_resume_id().map(|s| s.to_string());
 
             queue_built_event(
                 session_events::build_session_state_event(
-                    &claude_sid,
+                    &event_sid,
                     &session.details.title,
                     session.details.custom_title.as_deref(),
                     &cwd,
@@ -1311,9 +1308,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &session.details.home_dir,
                     session.backend_type.as_str(),
                     perm_mode,
+                    cli_sid.as_deref(),
                     &sk,
                 ),
-                &format!("publishing session state: {} -> {}", claude_sid, status),
+                &format!("publishing session state: {} -> {}", event_sid, status),
                 ctx.ndb,
                 &sk,
                 &mut self.pending_relay_events,
@@ -1347,6 +1345,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &info.home_dir,
                     info.backend.as_str(),
                     "default",
+                    None,
                     &sk,
                 ),
                 &format!(
@@ -1384,10 +1383,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             Some(a) => a,
             None => return,
         };
-        let session_id = match agentic.event_session_id() {
-            Some(id) => id.to_string(),
-            None => return,
-        };
+        let session_id = agentic.event_session_id().to_string();
 
         for resp in pending {
             let request_note_id = match agentic.permissions.request_note_ids.get(&resp.perm_id) {
@@ -1471,9 +1467,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .and_then(BackendType::from_tag_str)
                 .unwrap_or(BackendType::Claude);
             let cwd = std::path::PathBuf::from(&state.cwd);
+
+            // The d-tag is the event_id (Nostr identity). The cli_session
+            // tag holds the real CLI session ID for --resume. If there's
+            // no cli_session tag, this is a legacy event where d-tag was
+            // the CLI session ID.
+            let resume_id = match state.cli_session_id {
+                Some(ref cli) if !cli.is_empty() => cli.clone(),
+                Some(_) => {
+                    // Empty cli_session — backend never started, nothing to resume
+                    String::new()
+                }
+                None => {
+                    // Legacy: d-tag IS the CLI session ID
+                    state.claude_session_id.clone()
+                }
+            };
+
             let dave_sid = self.session_manager.new_resumed_session(
                 cwd,
-                state.claude_session_id.clone(),
+                resume_id,
                 state.title.clone(),
                 AiMode::Agentic,
                 backend,
@@ -1517,6 +1530,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
 
                 if let Some(agentic) = &mut session.agentic {
+                    // Restore the event_id from the d-tag so published
+                    // state events keep using the same Nostr identity.
+                    agentic.event_id = state.claude_session_id.clone();
+
+                    // If cli_session was empty the backend never ran —
+                    // clear resume_session_id so we don't try --resume
+                    // with the event UUID.
+                    if state.cli_session_id.as_ref().is_some_and(|s| s.is_empty()) {
+                        agentic.resume_session_id = None;
+                    }
+
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
@@ -1572,11 +1596,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let mut existing_ids: std::collections::HashSet<String> = self
             .session_manager
             .iter()
-            .filter_map(|s| {
-                s.agentic
-                    .as_ref()
-                    .and_then(|a| a.event_session_id().map(|id| id.to_string()))
-            })
+            .filter_map(|s| s.agentic.as_ref().map(|a| a.event_session_id().to_string()))
             .collect();
 
         for key in note_keys {
@@ -1603,7 +1623,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .iter()
                         .filter(|s| {
                             s.agentic.as_ref().is_some_and(|a| {
-                                a.event_session_id() == Some(claude_sid) && ts > a.remote_status_ts
+                                a.event_session_id() == claude_sid && ts > a.remote_status_ts
                             })
                         })
                         .map(|s| s.id)
@@ -1639,8 +1659,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 for session in self.session_manager.iter_mut() {
                     let is_remote = session.is_remote();
                     if let Some(agentic) = &mut session.agentic {
-                        if agentic.event_session_id() == Some(claude_sid)
-                            && ts > agentic.remote_status_ts
+                        if agentic.event_session_id() == claude_sid && ts > agentic.remote_status_ts
                         {
                             agentic.remote_status_ts = ts;
                             // custom_title syncs for both local and remote
@@ -1705,9 +1724,17 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .and_then(BackendType::from_tag_str)
                 .unwrap_or(BackendType::Claude);
             let cwd = std::path::PathBuf::from(&state.cwd);
+
+            // Same event_id / cli_session logic as restore_sessions_from_ndb
+            let resume_id = match state.cli_session_id {
+                Some(ref cli) if !cli.is_empty() => cli.clone(),
+                Some(_) => String::new(),       // backend never started
+                None => claude_sid.to_string(), // legacy
+            };
+
             let dave_sid = self.session_manager.new_resumed_session(
                 cwd,
-                claude_sid.to_string(),
+                resume_id,
                 state.title.clone(),
                 AiMode::Agentic,
                 backend,
@@ -1739,6 +1766,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
 
                 if let Some(agentic) = &mut session.agentic {
+                    // Restore the event_id from the d-tag
+                    agentic.event_id = claude_sid.to_string();
+
+                    // If cli_session was empty the backend never ran —
+                    // clear resume_session_id so we don't try --resume
+                    // with the event UUID.
+                    if state.cli_session_id.as_ref().is_some_and(|s| s.is_empty()) {
+                        agentic.resume_session_id = None;
+                    }
+
                     if let (Some(root), Some(last)) = (loaded.root_note_id, loaded.last_note_id) {
                         agentic.live_threading.seed(root, last, loaded.event_count);
                     }
@@ -1825,7 +1862,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
 
             self.processed_commands.insert(command_id.to_string());
-            self.create_session_with_cwd(PathBuf::from(cwd), backend);
+            update::create_session_with_cwd(
+                &mut self.session_manager,
+                &mut self.directory_picker,
+                &mut self.scene,
+                self.show_scene,
+                self.ai_mode,
+                PathBuf::from(cwd),
+                &self.hostname,
+                backend,
+            );
         }
     }
 
@@ -2029,15 +2075,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // Capture session info before deletion so we can publish a "deleted" state event
         if let Some(session) = self.session_manager.get(id) {
             if let Some(agentic) = &session.agentic {
-                if let Some(claude_sid) = agentic.event_session_id() {
-                    self.pending_deletions.push(DeletedSessionInfo {
-                        claude_session_id: claude_sid.to_string(),
-                        title: session.details.title.clone(),
-                        cwd: agentic.cwd.to_string_lossy().to_string(),
-                        home_dir: session.details.home_dir.clone(),
-                        backend: session.backend_type,
-                    });
-                }
+                self.pending_deletions.push(DeletedSessionInfo {
+                    claude_session_id: agentic.event_session_id().to_string(),
+                    title: session.details.title.clone(),
+                    cwd: agentic.cwd.to_string_lossy().to_string(),
+                    home_dir: session.details.home_dir.clone(),
+                    backend: session.backend_type,
+                });
             }
         }
 
@@ -2377,7 +2421,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let resume_session_id = session
             .agentic
             .as_ref()
-            .and_then(|a| a.resume_session_id.clone());
+            .and_then(|a| a.cli_resume_id().map(|s| s.to_string()));
         let backend_type = session.backend_type;
         let tools = self.tools.clone();
         let model_name = if backend_type == self.model_config.backend {
@@ -2890,7 +2934,7 @@ impl notedeck::App for Dave {
 ///
 /// Subscribes to kind-1988 events tagged with the session's claude ID so we
 /// receive messages from remote clients (phone) even before the local backend starts.
-fn setup_conversation_subscription(
+pub(crate) fn setup_conversation_subscription(
     agentic: &mut session::AgenticSessionData,
     claude_session_id: &str,
     ndb: &nostrdb::Ndb,
@@ -3011,7 +3055,7 @@ fn handle_permission_request(
         let event_session_id = session
             .agentic
             .as_ref()
-            .and_then(|a| a.event_session_id().map(|s| s.to_string()));
+            .map(|a| a.event_session_id().to_string());
 
         if let Some(sid) = event_session_id {
             match session_events::build_permission_request_event(
@@ -3091,17 +3135,16 @@ fn handle_remote_permission_request(
         );
         agentic.permissions.responded.insert(perm_id);
         if let Some(sk) = secret_key {
-            if let Some(sid) = agentic.event_session_id().map(|s| s.to_string()) {
-                if let Ok(evt) = session_events::build_permission_response_event(
-                    &perm_id,
-                    note.id(),
-                    true,
-                    None,
-                    &sid,
-                    sk,
-                ) {
-                    events_to_publish.push(evt);
-                }
+            let sid = agentic.event_session_id();
+            if let Ok(evt) = session_events::build_permission_response_event(
+                &perm_id,
+                note.id(),
+                true,
+                None,
+                sid,
+                sk,
+            ) {
+                events_to_publish.push(evt);
             }
         }
         chat.push(Message::PermissionRequest(

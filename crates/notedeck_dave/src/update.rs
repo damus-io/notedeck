@@ -141,7 +141,7 @@ pub fn cycle_permission_mode(
 
     let result = if is_remote {
         // Remote session: return info for caller to publish command event
-        let event_sid = agentic.event_session_id()?.to_string();
+        let event_sid = agentic.event_session_id().to_string();
         Some(ModeCommandPublish {
             session_id: event_sid,
             mode: mode_str,

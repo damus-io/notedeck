@@ -256,6 +256,10 @@ pub struct SessionState {
     pub backend: Option<String>,
     pub permission_mode: Option<String>,
     pub created_at: u64,
+    /// Real CLI session ID when the d-tag is a provisional UUID.
+    /// Present only for sessions created via spawn commands.
+    /// Empty string means the backend hasn't started yet.
+    pub cli_session_id: Option<String>,
 }
 
 impl SessionState {
@@ -281,6 +285,7 @@ impl SessionState {
             backend: get_tag_value(note, "backend").map(|s| s.to_string()),
             permission_mode: get_tag_value(note, "permission-mode").map(|s| s.to_string()),
             created_at: note.created_at(),
+            cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
         })
     }
 }
