@@ -2656,9 +2656,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         // fetch any missing kind-1080 events via standard REQ.
         if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
             let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
+            let since = notedeck::unix_time_secs() - (7 * 86400);
             let filter = nostrdb::Filter::new()
                 .kinds([enostr::pns::PNS_KIND as u64])
                 .authors([pns_keys.keypair.pubkey.bytes()])
+                .since(since)
                 .build();
             let result = self.neg_sync.process(
                 neg_events,
