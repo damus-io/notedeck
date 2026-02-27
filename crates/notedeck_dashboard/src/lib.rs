@@ -223,7 +223,7 @@ impl Default for Dashboard {
         Self {
             initialized: false,
 
-            period: Period::Weekly,
+            period: Period::Monthly,
 
             cmd_tx: None,
             msg_rx: None,
