@@ -2372,12 +2372,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             UiActionResult::Compact => {
                 if let Some(session) = self.session_manager.get_active() {
                     let session_id = format!("dave-session-{}", session.id);
+                    tracing::info!("Compact requested for session {}", session_id);
                     if let Some(rx) = get_backend(&self.backends, bt)
-                        .compact_session(session_id, ui.ctx().clone())
+                        .compact_session(session_id.clone(), ui.ctx().clone())
                     {
+                        tracing::info!("Compact dispatched for session {}", session_id);
                         if let Some(session) = self.session_manager.get_active_mut() {
                             session.incoming_tokens = Some(rx);
                         }
+                    } else {
+                        tracing::warn!("Compact failed: no backend session for {}", session_id);
                     }
                 }
                 None
