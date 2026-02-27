@@ -740,6 +740,7 @@ pub fn build_session_state_event(
     custom_title: Option<&str>,
     cwd: &str,
     status: &str,
+    indicator: Option<&str>,
     hostname: &str,
     home_dir: &str,
     backend: &str,
@@ -758,6 +759,9 @@ pub fn build_session_state_event(
     }
     builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
     builder = builder.start_tag().tag_str("status").tag_str(status);
+    if let Some(ind) = indicator {
+        builder = builder.start_tag().tag_str("indicator").tag_str(ind);
+    }
     builder = builder.start_tag().tag_str("hostname").tag_str(hostname);
     builder = builder.start_tag().tag_str("home_dir").tag_str(home_dir);
     builder = builder.start_tag().tag_str("backend").tag_str(backend);
@@ -1337,6 +1341,7 @@ mod tests {
             Some("My Custom Title"),
             "/tmp/project",
             "working",
+            Some("needs_input"),
             "my-laptop",
             "/home/testuser",
             "claude",

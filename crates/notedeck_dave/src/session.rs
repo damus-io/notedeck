@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::agent_status::AgentStatus;
 use crate::backend::BackendType;
 use crate::config::AiMode;
+use crate::focus_queue::FocusPriority;
 use crate::git_status::GitStatusCache;
 use crate::messages::{
     AnswerSummary, CompactionInfo, ExecutedTool, PermissionResponse, PermissionResponseType,
@@ -447,6 +448,9 @@ pub struct ChatSession {
     pub backend_type: BackendType,
     /// When the last AI response token was received (for "5m ago" display)
     pub last_activity: Option<Instant>,
+    /// Focus indicator dot state (persisted in kind-31988 note).
+    /// Set on status transitions, cleared when user dismisses it.
+    pub indicator: Option<FocusPriority>,
 }
 
 impl Drop for ChatSession {
@@ -493,6 +497,7 @@ impl ChatSession {
             },
             backend_type,
             last_activity: None,
+            indicator: None,
         }
     }
 
@@ -632,10 +637,18 @@ impl ChatSession {
 
     /// Update the cached status based on current session state.
     /// Sets `state_dirty` when the status actually changes.
+    /// Also sets the focus indicator when transitioning to a notable state.
     pub fn update_status(&mut self) {
         let new_status = self.derive_status();
         if new_status != self.cached_status {
             self.cached_status = new_status;
+            if let Some(priority) = FocusPriority::from_status(new_status) {
+                // Set indicator when entering a notable state
+                self.indicator = Some(priority);
+            } else if self.indicator.is_some() {
+                // Clear stale indicator when agent resumes work
+                self.indicator = None;
+            }
             self.state_dirty = true;
         }
     }

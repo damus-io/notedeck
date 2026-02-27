@@ -970,6 +970,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::DismissDone(id) => {
                     self.focus_queue.dequeue_done(id);
+                    if let Some(session) = self.session_manager.get_mut(id) {
+                        if session.indicator == Some(focus_queue::FocusPriority::Done) {
+                            session.indicator = None;
+                            session.state_dirty = true;
+                        }
+                    }
                 }
             }
         }
@@ -1010,6 +1016,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::DismissDone(id) => {
                     self.focus_queue.dequeue_done(id);
+                    if let Some(session) = self.session_manager.get_mut(id) {
+                        if session.indicator == Some(focus_queue::FocusPriority::Done) {
+                            session.indicator = None;
+                            session.state_dirty = true;
+                        }
+                    }
                 }
             }
         }
@@ -1277,6 +1289,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             let cwd = agentic.cwd.to_string_lossy();
             let status = session.status().as_str();
+            let indicator = session.indicator.as_ref().map(|i| i.as_str());
             let perm_mode = crate::session::permission_mode_to_str(agentic.permission_mode);
 
             queue_built_event(
@@ -1286,6 +1299,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.details.custom_title.as_deref(),
                     &cwd,
                     status,
+                    indicator,
                     &self.hostname,
                     &session.details.home_dir,
                     session.backend_type.as_str(),
@@ -1321,6 +1335,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     None,
                     &info.cwd,
                     "deleted",
+                    None, // no indicator for deleted sessions
                     &self.hostname,
                     &info.home_dir,
                     info.backend.as_str(),
@@ -1483,6 +1498,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 session.details.custom_title = state.custom_title.clone();
 
+                // Restore focus indicator from state event
+                session.indicator = state
+                    .indicator
+                    .as_deref()
+                    .and_then(focus_queue::FocusPriority::from_indicator_str);
+
                 // Use home_dir from the event for remote abbreviation
                 if !state.home_dir.is_empty() {
                     session.details.home_dir = state.home_dir.clone();
@@ -1626,10 +1647,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             if is_remote && !new_hostname.is_empty() {
                                 session.details.hostname = new_hostname.to_string();
                             }
-                            // Status and permission mode only update for remote
-                            // sessions (local sessions derive from the process)
+                            // Status, indicator, and permission mode only update
+                            // for remote sessions (local sessions derive from
+                            // the process)
                             if is_remote {
                                 agentic.remote_status = new_status;
+                                session.indicator =
+                                    session_events::get_tag_value(&note, "indicator")
+                                        .and_then(focus_queue::FocusPriority::from_indicator_str);
                                 if let Some(pm) =
                                     session_events::get_tag_value(&note, "permission-mode")
                                 {
@@ -1687,6 +1712,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 session.details.hostname = state.hostname.clone();
                 session.details.custom_title = state.custom_title.clone();
+                session.indicator = state
+                    .indicator
+                    .as_deref()
+                    .and_then(focus_queue::FocusPriority::from_indicator_str);
                 if !state.home_dir.is_empty() {
                     session.details.home_dir = state.home_dir.clone();
                 }
@@ -2785,9 +2814,9 @@ impl notedeck::App for Dave {
         // Publish "deleted" state events for recently deleted sessions
         self.publish_pending_deletions(ctx);
 
-        // Update focus queue based on status changes
-        let status_iter = self.session_manager.iter().map(|s| (s.id, s.status()));
-        let new_needs_input = self.focus_queue.update_from_statuses(status_iter);
+        // Update focus queue from persisted indicator field
+        let indicator_iter = self.session_manager.iter().map(|s| (s.id, s.indicator));
+        let new_needs_input = self.focus_queue.update_from_indicators(indicator_iter);
 
         // Vibrate on Android whenever a session transitions to NeedsInput
         if new_needs_input {

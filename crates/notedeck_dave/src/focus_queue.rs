@@ -26,6 +26,23 @@ impl FocusPriority {
             Self::Done => egui::Color32::from_rgb(70, 130, 220),
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NeedsInput => "needs_input",
+            Self::Error => "error",
+            Self::Done => "done",
+        }
+    }
+
+    pub fn from_indicator_str(s: &str) -> Option<Self> {
+        match s {
+            "needs_input" => Some(Self::NeedsInput),
+            "error" => Some(Self::Error),
+            "done" => Some(Self::Done),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +54,7 @@ pub struct QueueEntry {
 pub struct FocusQueue {
     entries: Vec<QueueEntry>, // kept sorted: NeedsInput -> Error -> Done
     cursor: Option<usize>,    // index into entries
-    previous_statuses: HashMap<SessionId, AgentStatus>,
+    previous_indicators: HashMap<SessionId, Option<FocusPriority>>,
 }
 
 impl Default for FocusQueue {
@@ -51,7 +68,7 @@ impl FocusQueue {
         Self {
             entries: Vec::new(),
             cursor: None,
-            previous_statuses: HashMap::new(),
+            previous_indicators: HashMap::new(),
         }
     }
 
@@ -284,17 +301,17 @@ impl FocusQueue {
         Some((self.current_position()?, self.len(), entry.priority))
     }
 
-    /// Update focus queue based on current session statuses.
+    /// Update focus queue based on session indicator fields.
     /// Returns true if any session transitioned to NeedsInput.
-    pub fn update_from_statuses(
+    pub fn update_from_indicators(
         &mut self,
-        sessions: impl Iterator<Item = (SessionId, AgentStatus)>,
+        sessions: impl Iterator<Item = (SessionId, Option<FocusPriority>)>,
     ) -> bool {
         let mut has_new_needs_input = false;
-        for (session_id, status) in sessions {
-            let prev = self.previous_statuses.get(&session_id).copied();
-            if prev != Some(status) {
-                if let Some(priority) = FocusPriority::from_status(status) {
+        for (session_id, indicator) in sessions {
+            let prev = self.previous_indicators.get(&session_id).copied();
+            if prev != Some(indicator) {
+                if let Some(priority) = indicator {
                     self.enqueue(session_id, priority);
                     if priority == FocusPriority::NeedsInput {
                         has_new_needs_input = true;
@@ -303,7 +320,7 @@ impl FocusQueue {
                     self.dequeue(session_id);
                 }
             }
-            self.previous_statuses.insert(session_id, status);
+            self.previous_indicators.insert(session_id, indicator);
         }
         has_new_needs_input
     }
@@ -317,7 +334,7 @@ impl FocusQueue {
 
     pub fn remove_session(&mut self, session_id: SessionId) {
         self.dequeue(session_id);
-        self.previous_statuses.remove(&session_id);
+        self.previous_indicators.remove(&session_id);
     }
 }
 
@@ -543,26 +560,25 @@ mod tests {
     }
 
     #[test]
-    fn test_update_from_statuses() {
+    fn test_update_from_indicators() {
         let mut queue = FocusQueue::new();
 
-        // Initial statuses - order matters for cursor position
-        // First item added gets cursor, subsequent inserts shift it
-        let statuses = vec![
-            (session(1), AgentStatus::Done),
-            (session(2), AgentStatus::NeedsInput),
-            (session(3), AgentStatus::Working), // Should not be added (Idle/Working excluded)
+        // Initial indicators - order matters for cursor position
+        let indicators = vec![
+            (session(1), Some(FocusPriority::Done)),
+            (session(2), Some(FocusPriority::NeedsInput)),
+            (session(3), None), // No indicator = no dot
         ];
-        queue.update_from_statuses(statuses.into_iter());
+        queue.update_from_indicators(indicators.into_iter());
 
         assert_eq!(queue.len(), 2);
         // Verify NeedsInput is first in priority order
         assert_eq!(queue.entries[0].session_id, session(2));
         assert_eq!(queue.entries[0].priority, FocusPriority::NeedsInput);
 
-        // Update: session 2 becomes Idle (should be removed from queue)
-        let statuses = vec![(session(2), AgentStatus::Idle)];
-        queue.update_from_statuses(statuses.into_iter());
+        // Update: session 2 indicator cleared (should be removed from queue)
+        let indicators = vec![(session(2), None)];
+        queue.update_from_indicators(indicators.into_iter());
 
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.current().unwrap().session_id, session(1));
