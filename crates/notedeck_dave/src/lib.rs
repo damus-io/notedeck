@@ -2203,6 +2203,33 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         update::has_pending_question(&self.session_manager)
     }
 
+    /// Check and dispatch keybindings. Called from render() so that
+    /// key consumption only happens when Dave is the active app.
+    fn process_keybindings(&mut self, egui_ctx: &egui::Context) {
+        let has_pending_permission = self.first_pending_permission().is_some();
+        let has_pending_question = self.has_pending_question();
+        let in_tentative_state = self
+            .session_manager
+            .get_active()
+            .and_then(|s| s.agentic.as_ref())
+            .map(|a| a.permission_message_state != crate::session::PermissionMessageState::None)
+            .unwrap_or(false);
+        let active_ai_mode = self
+            .session_manager
+            .get_active()
+            .map(|s| s.ai_mode)
+            .unwrap_or(self.ai_mode);
+        if let Some(key_action) = check_keybindings(
+            egui_ctx,
+            has_pending_permission,
+            has_pending_question,
+            in_tentative_state,
+            active_ai_mode,
+        ) {
+            self.handle_key_action(key_action, egui_ctx);
+        }
+    }
+
     /// Handle a keybinding action
     fn handle_key_action(&mut self, key_action: KeyAction, egui_ctx: &egui::Context) {
         let bt = self
@@ -2789,30 +2816,6 @@ impl notedeck::App for Dave {
         self.process_archive_conversion(ctx);
         self.poll_pending_message_load(ctx.ndb);
 
-        // Handle global keybindings (when no text input has focus)
-        let has_pending_permission = self.first_pending_permission().is_some();
-        let has_pending_question = self.has_pending_question();
-        let in_tentative_state = self
-            .session_manager
-            .get_active()
-            .and_then(|s| s.agentic.as_ref())
-            .map(|a| a.permission_message_state != crate::session::PermissionMessageState::None)
-            .unwrap_or(false);
-        let active_ai_mode = self
-            .session_manager
-            .get_active()
-            .map(|s| s.ai_mode)
-            .unwrap_or(self.ai_mode);
-        if let Some(key_action) = check_keybindings(
-            egui_ctx,
-            has_pending_permission,
-            has_pending_question,
-            in_tentative_state,
-            active_ai_mode,
-        ) {
-            self.handle_key_action(key_action, egui_ctx);
-        }
-
         // Check if interrupt confirmation has timed out
         self.check_interrupt_timeout();
 
@@ -2941,6 +2944,8 @@ impl notedeck::App for Dave {
     }
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        self.process_keybindings(ui.ctx());
+
         let mut app_action: Option<AppAction> = None;
 
         if let Some(action) = self.ui(ctx, ui).action {
