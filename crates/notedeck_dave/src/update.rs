@@ -518,6 +518,7 @@ pub fn cycle_prev_agent(
 // =============================================================================
 
 /// Navigate to the next item in the focus queue.
+/// Done items are automatically dismissed after switching to them.
 pub fn focus_queue_next(
     session_manager: &mut SessionManager,
     focus_queue: &mut FocusQueue,
@@ -526,10 +527,12 @@ pub fn focus_queue_next(
 ) {
     if let Some(session_id) = focus_queue.next() {
         switch_and_focus_session(session_manager, scene, show_scene, session_id);
+        dismiss_done(session_manager, focus_queue, session_id);
     }
 }
 
 /// Navigate to the previous item in the focus queue.
+/// Done items are automatically dismissed after switching to them.
 pub fn focus_queue_prev(
     session_manager: &mut SessionManager,
     focus_queue: &mut FocusQueue,
@@ -538,6 +541,24 @@ pub fn focus_queue_prev(
 ) {
     if let Some(session_id) = focus_queue.prev() {
         switch_and_focus_session(session_manager, scene, show_scene, session_id);
+        dismiss_done(session_manager, focus_queue, session_id);
+    }
+}
+
+/// Dismiss a Done session from the focus queue and clear its indicator.
+fn dismiss_done(
+    session_manager: &mut SessionManager,
+    focus_queue: &mut FocusQueue,
+    session_id: SessionId,
+) {
+    if focus_queue.get_session_priority(session_id) == Some(FocusPriority::Done) {
+        focus_queue.dequeue_done(session_id);
+        if let Some(session) = session_manager.get_mut(session_id) {
+            if session.indicator == Some(FocusPriority::Done) {
+                session.indicator = None;
+                session.state_dirty = true;
+            }
+        }
     }
 }
 

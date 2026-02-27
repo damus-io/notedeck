@@ -1323,9 +1323,12 @@ impl<'a> DaveUi<'a> {
                         notedeck_ui::context_menu::PasteBehavior::Append,
                     );
 
-                    // Request focus if flagged (e.g., after spawning a new agent or entering tentative state)
+                    // Request focus if flagged (e.g., after spawning a new agent or entering tentative state).
+                    // Skip on mobile to avoid popping up the virtual keyboard on every session switch.
                     if *self.focus_requested {
-                        r.request_focus();
+                        if !notedeck::ui::is_compiled_as_mobile() {
+                            r.request_focus();
+                        }
                         *self.focus_requested = false;
                     }
 
