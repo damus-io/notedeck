@@ -745,14 +745,7 @@ impl NostrverseApp {
                 self.state.dirty = true;
             }
             NostrverseAction::RemoveObject(id) => {
-                self.state.objects.retain(|o| o.id != id);
-                if self.state.selected_object.as_ref() == Some(&id) {
-                    self.state.selected_object = None;
-                    if let Some(renderer) = &self.renderer {
-                        renderer.renderer.lock().unwrap().set_selected(None);
-                    }
-                }
-                self.state.dirty = true;
+                remove_object(&id, &mut self.state, self.renderer.as_ref());
             }
             NostrverseAction::RotateObject { id, rotation } => {
                 if let Some(obj) = self.state.get_object_mut(&id) {
@@ -785,6 +778,33 @@ impl NostrverseApp {
             }
         }
     }
+}
+
+/// Remove an object from both the state and the renderer scene graph.
+fn remove_object(
+    id: &str,
+    state: &mut NostrverseState,
+    renderer: Option<&renderbud::egui::EguiRenderer>,
+) {
+    if let Some(renderer) = renderer {
+        let mut r = renderer.renderer.lock().unwrap();
+        if let Some(scene_id) = state
+            .objects
+            .iter()
+            .find(|o| o.id == id)
+            .and_then(|o| o.scene_object_id)
+        {
+            r.remove_object(scene_id);
+        }
+        if state.selected_object.as_deref() == Some(id) {
+            r.set_selected(None);
+        }
+    }
+    state.objects.retain(|o| o.id != id);
+    if state.selected_object.as_deref() == Some(id) {
+        state.selected_object = None;
+    }
+    state.dirty = true;
 }
 
 /// Sync room objects to the renderbud scene graph.
