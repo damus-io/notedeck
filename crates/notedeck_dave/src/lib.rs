@@ -149,8 +149,9 @@ pub struct Dave {
     interrupt_pending_since: Option<Instant>,
     /// Focus queue for agents needing attention
     focus_queue: FocusQueue,
-    /// Auto-steal focus mode: automatically cycle through focus queue items
-    auto_steal_focus: bool,
+    /// Auto-steal focus state: Disabled, Idle (enabled, nothing pending),
+    /// or Pending (enabled, waiting to fire / retrying).
+    auto_steal: focus_queue::AutoStealState,
     /// The session ID to return to after processing all NeedsInput items
     home_session: Option<SessionId>,
     /// Directory picker for selecting working directory when creating sessions
@@ -492,7 +493,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             show_scene: false, // Default to list view
             interrupt_pending_since: None,
             focus_queue: FocusQueue::new(),
-            auto_steal_focus: false,
+            auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
             directory_picker,
             session_picker: SessionPicker::new(),
@@ -916,7 +917,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &mut self.focus_queue,
             &self.model_config,
             is_interrupt_pending,
-            self.auto_steal_focus,
+            self.auto_steal.is_enabled(),
             app_ctx,
             ui,
         );
@@ -953,7 +954,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.focus_queue,
             &self.model_config,
             is_interrupt_pending,
-            self.auto_steal_focus,
+            self.auto_steal.is_enabled(),
             app_ctx,
             ui,
         );
@@ -998,7 +999,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.focus_queue,
             &self.model_config,
             is_interrupt_pending,
-            self.auto_steal_focus,
+            self.auto_steal.is_enabled(),
             self.show_session_list,
             app_ctx,
             ui,
@@ -2213,7 +2214,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &mut self.focus_queue,
             get_backend(&self.backends, bt),
             self.show_scene,
-            self.auto_steal_focus,
+            self.auto_steal.is_enabled(),
             &mut self.home_session,
             egui_ctx,
         ) {
@@ -2233,7 +2234,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.delete_session(id);
             }
             KeyActionResult::SetAutoSteal(new_state) => {
-                self.auto_steal_focus = new_state;
+                self.auto_steal = if new_state {
+                    focus_queue::AutoStealState::Pending
+                } else {
+                    focus_queue::AutoStealState::Disabled
+                };
             }
             KeyActionResult::PublishPermissionResponse(publish) => {
                 self.pending_perm_responses.push(publish);
@@ -2311,10 +2316,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &mut self.session_manager,
                     &mut self.scene,
                     self.show_scene,
-                    self.auto_steal_focus,
+                    self.auto_steal.is_enabled(),
                     &mut self.home_session,
                 );
-                self.auto_steal_focus = new_state;
+                self.auto_steal = if new_state {
+                    focus_queue::AutoStealState::Pending
+                } else {
+                    focus_queue::AutoStealState::Disabled
+                };
                 None
             }
             UiActionResult::NewChat => {
@@ -2876,27 +2885,36 @@ impl notedeck::App for Dave {
             notedeck::platform::try_vibrate();
         }
 
-        // Only auto-steal on queue transitions, not every frame.
-        // This lets the user manually switch sessions between transitions.
-        if queue_update.changed {
-            // Suppress auto-steal while the user is typing (non-empty input)
+        // Transition to Pending on queue changes so auto-steal retries
+        // across frames if temporarily suppressed (e.g. user is typing).
+        if queue_update.changed && self.auto_steal.is_enabled() {
+            self.auto_steal = focus_queue::AutoStealState::Pending;
+        }
+
+        // Run auto-steal when pending.  Transitions back to Idle once
+        // the steal logic executes (even if no switch was needed).
+        // Stays Pending while the user is typing so it retries next frame.
+        if self.auto_steal == focus_queue::AutoStealState::Pending {
             let user_is_typing = self
                 .session_manager
                 .get_active()
                 .is_some_and(|s| !s.input.is_empty());
 
-            let stole_focus = update::process_auto_steal_focus(
-                &mut self.session_manager,
-                &mut self.focus_queue,
-                &mut self.scene,
-                self.show_scene,
-                self.auto_steal_focus && !user_is_typing,
-                &mut self.home_session,
-            );
+            if !user_is_typing {
+                let stole_focus = update::process_auto_steal_focus(
+                    &mut self.session_manager,
+                    &mut self.focus_queue,
+                    &mut self.scene,
+                    self.show_scene,
+                    true,
+                    &mut self.home_session,
+                );
 
-            // Raise the OS window when auto-steal switches to a NeedsInput session
-            if stole_focus {
-                activate_app(egui_ctx);
+                if stole_focus {
+                    activate_app(egui_ctx);
+                }
+
+                self.auto_steal = focus_queue::AutoStealState::Idle;
             }
         }
 

@@ -50,6 +50,26 @@ pub struct FocusQueueUpdate {
     pub changed: bool,
 }
 
+/// Auto-steal focus state machine.
+///
+/// - `Disabled`: auto-steal is off, user controls focus manually.
+/// - `Idle`: auto-steal is on but no pending work.
+/// - `Pending`: auto-steal is on and a focus-queue transition was
+///   detected that hasn't been acted on yet (retries across frames
+///   if temporarily suppressed, e.g. user is typing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoStealState {
+    Disabled,
+    Idle,
+    Pending,
+}
+
+impl AutoStealState {
+    pub fn is_enabled(self) -> bool {
+        matches!(self, Self::Idle | Self::Pending)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueEntry {
     pub session_id: SessionId,
