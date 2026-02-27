@@ -9,10 +9,17 @@ use notedeck::{
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
-    AnimationHelper, NoteOptions,
+    AnimationHelper, NoteOptions, NoteView,
 };
 
+use nostrdb::Transaction;
+
 use crate::{nav::RouterAction, ui::account_login_view::eye_button, Damus, Route};
+
+const PREVIEW_NOTE_ID: [u8; 32] = [
+    0xcb, 0x65, 0x83, 0xa1, 0x12, 0x7f, 0xae, 0xe6, 0x7b, 0xc8, 0x55, 0x5f, 0x4e, 0x5f, 0x52, 0x54,
+    0xad, 0x6a, 0x77, 0x8d, 0x52, 0x91, 0x65, 0x98, 0x6c, 0xc2, 0x9d, 0x31, 0xe6, 0xac, 0x6b, 0x90,
+];
 
 const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 3.0;
@@ -176,6 +183,7 @@ impl<'a> SettingsView<'a> {
             "Appearance",
             "Label for appearance settings section",
         );
+        let txn = Transaction::new(self.note_context.ndb).unwrap();
         settings_group(ui, title, |ui| {
             let current_zoom = ui.ctx().zoom_factor();
 
@@ -297,6 +305,17 @@ impl<'a> SettingsView<'a> {
                     action = Some(SettingsAction::SetTheme(ThemePreference::Dark));
                 }
             });
+
+            if let Ok(preview_note) = self.note_context.ndb.get_note_by_id(&txn, &PREVIEW_NOTE_ID) {
+                notedeck_ui::padding(8.0, ui, |ui| {
+                    ui.set_max_width(ui.available_width());
+
+                    NoteView::new(self.note_context, &preview_note, NoteOptions::default())
+                        .actionbar(false)
+                        .options_button(false)
+                        .show(ui);
+                });
+            }
         });
 
         action
