@@ -594,6 +594,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             cwd,
             &self.hostname,
             self.model_config.backend,
+            None,
         );
 
         if let Some(session) = self.session_manager.get_mut(id) {
@@ -1090,6 +1091,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             cwd,
             &self.hostname,
             backend_type,
+            None,
         );
     }
 
@@ -1872,6 +1874,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 PathBuf::from(cwd),
                 &self.hostname,
                 backend,
+                Some(ctx.ndb),
             );
         }
     }
@@ -2978,6 +2981,31 @@ pub(crate) fn setup_conversation_subscription(
     }
 }
 
+/// Subscribe for kind-1988 conversation action events (permission responses,
+/// mode commands) for the given session d-tag.
+pub(crate) fn setup_conversation_action_subscription(
+    agentic: &mut session::AgenticSessionData,
+    event_id: &str,
+    ndb: &nostrdb::Ndb,
+) {
+    if agentic.conversation_action_sub.is_some() {
+        return;
+    }
+    let filter = nostrdb::Filter::new()
+        .kinds([session_events::AI_CONVERSATION_KIND as u64])
+        .tags([event_id], 'd')
+        .build();
+    match ndb.subscribe(&[filter]) {
+        Ok(sub) => {
+            agentic.conversation_action_sub = Some(sub);
+            tracing::info!("subscribed for conversation actions (session {})", event_id,);
+        }
+        Err(e) => {
+            tracing::warn!("failed to subscribe for conversation actions: {:?}", e);
+        }
+    }
+}
+
 /// Check if a session state represents a remote session.
 ///
 /// A session is remote if its hostname differs from the local hostname,
@@ -3351,26 +3379,12 @@ fn handle_query_complete(session: &mut session::ChatSession, info: messages::Usa
 /// when we first learn the claude session ID.
 fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo, ndb: &nostrdb::Ndb) {
     if let Some(agentic) = &mut session.agentic {
-        if let Some(ref csid) = info.claude_session_id {
-            // Subscribe for kind-1988 events (permission responses, commands)
-            if agentic.conversation_action_sub.is_none() {
-                let filter = nostrdb::Filter::new()
-                    .kinds([session_events::AI_CONVERSATION_KIND as u64])
-                    .tags([csid.as_str()], 'd')
-                    .build();
-                match ndb.subscribe(&[filter]) {
-                    Ok(sub) => {
-                        tracing::info!("subscribed for conversation actions (session {})", csid);
-                        agentic.conversation_action_sub = Some(sub);
-                    }
-                    Err(e) => {
-                        tracing::warn!("failed to subscribe for conversation actions: {:?}", e);
-                    }
-                }
-            }
+        // Use the stable event_id (not the CLI session ID) for subscriptions,
+        // since all live events are tagged with event_id as the d-tag.
+        let event_id = agentic.event_session_id().to_string();
+        setup_conversation_action_subscription(agentic, &event_id, ndb);
+        setup_conversation_subscription(agentic, &event_id, ndb);
 
-            setup_conversation_subscription(agentic, csid, ndb);
-        }
         agentic.session_info = Some(info);
     }
     // Persist initial session state now that we know the claude_session_id

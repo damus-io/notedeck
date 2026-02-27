@@ -925,6 +925,7 @@ pub fn create_session_with_cwd(
     cwd: PathBuf,
     hostname: &str,
     backend_type: BackendType,
+    ndb: Option<&nostrdb::Ndb>,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
@@ -937,6 +938,14 @@ pub fn create_session_with_cwd(
             if let Some(agentic) = &session.agentic {
                 scene.focus_on(agentic.scene_position);
             }
+        }
+
+        // Set up ndb subscriptions so remote clients can send messages
+        // to this session (e.g. to kickstart the backend remotely).
+        if let (Some(ndb), Some(agentic)) = (ndb, &mut session.agentic) {
+            let event_id = agentic.event_session_id().to_string();
+            crate::setup_conversation_subscription(agentic, &event_id, ndb);
+            crate::setup_conversation_action_subscription(agentic, &event_id, ndb);
         }
     }
     session_manager.rebuild_host_groups();
@@ -996,6 +1005,7 @@ pub fn clone_active_agent(
         cwd,
         hostname,
         backend_type,
+        None,
     ))
 }
 
