@@ -632,21 +632,17 @@ fn chrome_toolbar(
     use notedeck_ui::icons::{home_button, notifications_button, search_button};
 
     let rect = ui.available_rect_before_wrap();
+    let bg = if ui.visuals().dark_mode {
+        Color32::BLACK
+    } else {
+        notedeck_ui::colors::ALMOST_WHITE
+    };
+    ui.painter().rect_filled(rect, 0.0, bg);
     ui.painter().hline(
         rect.x_range(),
         rect.top(),
         ui.visuals().widgets.noninteractive.bg_stroke,
     );
-
-    if !ui.visuals().dark_mode {
-        ui.painter().rect(
-            rect,
-            0,
-            notedeck_ui::colors::ALMOST_WHITE,
-            egui::Stroke::new(0.0, Color32::TRANSPARENT),
-            egui::StrokeKind::Inside,
-        );
-    }
 
     let has_chat = cfg!(feature = "messages");
     let mut next_index = 0;
@@ -664,13 +660,12 @@ fn chrome_toolbar(
     let notif_index = next_index;
     let tab_count = notif_index + 1;
 
-    let actual_height = ui.available_height();
     let rs = Tabs::new(tab_count)
         .selected(0)
         .hover_bg(TabColor::none())
         .selected_fg(TabColor::none())
         .selected_bg(TabColor::none())
-        .height(actual_height)
+        .height(TOOLBAR_HEIGHT)
         .layout(Layout::centered_and_justified(egui::Direction::TopDown))
         .show(ui, |ui, state| {
             let index = state.index();
