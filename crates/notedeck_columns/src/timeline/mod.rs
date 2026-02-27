@@ -673,24 +673,19 @@ pub fn merge_sorted_vecs<T: Ord + Copy>(vec1: &[T], vec2: &[T]) -> (Vec<T>, Merg
 ///
 /// We do this by maintaining this sub_id in the filter state, even when
 /// in the ready state. See: [`FilterReady`]
-#[allow(clippy::too_many_arguments)]
 pub fn setup_new_timeline(
     timeline: &mut Timeline,
     ndb: &Ndb,
     txn: &Transaction,
     scoped_subs: &mut ScopedSubApi<'_, '_>,
-    note_cache: &mut NoteCache,
     since_optimize: bool,
     accounts: &Accounts,
-    unknown_ids: &mut UnknownIds,
 ) {
     let account_pk = *accounts.selected_account_pubkey();
 
     // if we're ready, setup local subs
     if is_timeline_ready(ndb, scoped_subs, timeline, accounts) {
-        if let Err(err) =
-            setup_timeline_nostrdb_sub(ndb, txn, note_cache, timeline, unknown_ids, account_pk)
-        {
+        if let Err(err) = setup_initial_timeline(ndb, timeline, account_pk) {
             error!("setup_new_timeline: {err}");
         }
     }
@@ -812,60 +807,20 @@ pub fn fetch_people_list(ndb: &Ndb, txn: &Transaction, timeline: &mut Timeline) 
     timeline.filter = FilterState::GotRemote;
 }
 
+/// Set up the local NDB subscription for a timeline without running
+/// blocking queries. The actual note loading is handled by the async
+/// timeline loader.
 #[profiling::function]
-fn setup_initial_timeline(
-    ndb: &Ndb,
-    txn: &Transaction,
-    timeline: &mut Timeline,
-    note_cache: &mut NoteCache,
-    unknown_ids: &mut UnknownIds,
-    account_pk: Pubkey,
-) -> Result<()> {
+fn setup_initial_timeline(ndb: &Ndb, timeline: &mut Timeline, account_pk: Pubkey) -> Result<()> {
     let FilterState::Ready(filters) = &timeline.filter else {
         return Err(Error::App(notedeck::Error::empty_contact_list()));
     };
 
-    // some timelines are one-shot and a refreshed, like last_per_pubkey algo feed
+    // some timelines are one-shot and refreshed, like last_per_pubkey algo feed
     if timeline.kind.should_subscribe_locally() {
         timeline
             .subscription
             .try_add_local(account_pk, ndb, filters);
-    }
-
-    debug!(
-        "querying nostrdb sub {:?} {:?}",
-        timeline.subscription, timeline.filter
-    );
-
-    let notes = {
-        let mut notes = Vec::new();
-
-        for package in filters.local().packages {
-            let mut lim = 0i32;
-            for filter in package.filters {
-                lim += filter.limit().unwrap_or(1) as i32;
-            }
-
-            debug!("setup_initial_timeline: limit for local filter is {}", lim);
-
-            let cur_notes: Vec<NoteRef> = ndb
-                .query(txn, package.filters, lim)?
-                .into_iter()
-                .map(NoteRef::from_query_result)
-                .collect();
-            tracing::debug!(
-                "Found {} notes for kind: {:?}",
-                cur_notes.len(),
-                package.kind
-            );
-            notes.extend(&cur_notes);
-        }
-
-        notes
-    };
-
-    if let Some(pks) = timeline.insert_new(txn, ndb, note_cache, &notes) {
-        pks.process(ndb, txn, unknown_ids);
     }
 
     Ok(())
@@ -874,9 +829,7 @@ fn setup_initial_timeline(
 #[profiling::function]
 pub fn setup_initial_nostrdb_subs(
     ndb: &Ndb,
-    note_cache: &mut NoteCache,
     timeline_cache: &mut TimelineCache,
-    unknown_ids: &mut UnknownIds,
     account_pk: Pubkey,
 ) -> Result<()> {
     for (_kind, timeline) in timeline_cache {
@@ -884,26 +837,10 @@ pub fn setup_initial_nostrdb_subs(
             continue;
         }
 
-        let txn = Transaction::new(ndb).expect("txn");
-        if let Err(err) =
-            setup_timeline_nostrdb_sub(ndb, &txn, note_cache, timeline, unknown_ids, account_pk)
-        {
+        if let Err(err) = setup_initial_timeline(ndb, timeline, account_pk) {
             error!("setup_initial_nostrdb_subs: {err}");
         }
     }
-
-    Ok(())
-}
-
-fn setup_timeline_nostrdb_sub(
-    ndb: &Ndb,
-    txn: &Transaction,
-    note_cache: &mut NoteCache,
-    timeline: &mut Timeline,
-    unknown_ids: &mut UnknownIds,
-    account_pk: Pubkey,
-) -> Result<()> {
-    setup_initial_timeline(ndb, txn, timeline, note_cache, unknown_ids, account_pk)?;
 
     Ok(())
 }

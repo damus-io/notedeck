@@ -917,10 +917,8 @@ fn attach_timeline_column(
         ctx.ndb,
         &txn,
         &mut scoped_subs,
-        ctx.note_cache,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,
-        ctx.unknown_ids,
     );
 
     let route_kind = timeline.kind.clone();
@@ -1141,10 +1139,8 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         ctx.ndb,
         &txn,
         &mut scoped_subs,
-        ctx.note_cache,
         app.options.contains(AppOptions::SinceOptimize),
         ctx.accounts,
-        ctx.unknown_ids,
     );
 
     app.columns_mut(ctx.i18n, ctx.accounts)

@@ -373,9 +373,7 @@ pub(crate) fn setup_selected_account_timeline_subs(
 ) {
     if let Err(err) = timeline::setup_initial_nostrdb_subs(
         app_ctx.ndb,
-        app_ctx.note_cache,
         timeline_cache,
-        app_ctx.unknown_ids,
         *app_ctx.accounts.selected_account_pubkey(),
     ) {
         warn!("update_damus init: {err}");
