@@ -563,11 +563,20 @@ impl NostrverseApp {
         }
 
         // Expire stale remote users (throttled to every ~10s)
-        let removed = self
+        let expired = self
             .presence_expiry
             .maybe_expire(&mut self.state.users, now);
-        if removed > 0 {
-            tracing::info!("Expired {} stale users", removed);
+        if !expired.is_empty() {
+            tracing::info!("Expired {} stale users", expired.len());
+            // Clean up scene objects so avatars don't linger in the 3D scene
+            if let Some(renderer) = &self.renderer {
+                let mut r = renderer.renderer.lock().unwrap();
+                for user in &expired {
+                    if let Some(scene_id) = user.scene_object_id {
+                        r.remove_object(scene_id);
+                    }
+                }
+            }
         }
     }
 

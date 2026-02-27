@@ -222,15 +222,23 @@ impl PresenceExpiry {
         Self { last_check: 0.0 }
     }
 
-    /// Maybe expire stale users. Returns the number removed (0 if check was skipped).
-    pub fn maybe_expire(&mut self, users: &mut Vec<RoomUser>, now: f64) -> usize {
+    /// Maybe expire stale users. Returns removed users so callers can clean up
+    /// their scene objects. Empty if the check was throttled.
+    pub fn maybe_expire(&mut self, users: &mut Vec<RoomUser>, now: f64) -> Vec<RoomUser> {
         if now - self.last_check < EXPIRY_CHECK_INTERVAL {
-            return 0;
+            return Vec::new();
         }
         self.last_check = now;
-        let before = users.len();
-        users.retain(|u| u.is_self || (now - u.last_seen) < STALE_TIMEOUT);
-        before - users.len()
+        let mut expired = Vec::new();
+        let mut i = 0;
+        while i < users.len() {
+            if !users[i].is_self && (now - users[i].last_seen) >= STALE_TIMEOUT {
+                expired.push(users.swap_remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        expired
     }
 }
 
@@ -266,18 +274,19 @@ mod tests {
         let mut expiry = PresenceExpiry::new();
 
         // First call at t=5 — too soon (< 10s from init at 0.0), skipped
-        assert_eq!(expiry.maybe_expire(&mut users, 5.0), 0);
+        assert!(expiry.maybe_expire(&mut users, 5.0).is_empty());
         assert_eq!(users.len(), 3); // no one removed
 
         // At t=100 — enough time, bob is stale
-        let removed = expiry.maybe_expire(&mut users, 100.0);
-        assert_eq!(removed, 1);
+        let expired = expiry.maybe_expire(&mut users, 100.0);
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].display_name, "bob");
         assert_eq!(users.len(), 2);
         assert!(users.iter().any(|u| u.is_self));
         assert!(users.iter().any(|u| u.display_name == "alice"));
 
         // Immediately again at t=101 — throttled, skipped
-        assert_eq!(expiry.maybe_expire(&mut users, 101.0), 0);
+        assert!(expiry.maybe_expire(&mut users, 101.0).is_empty());
     }
 
     #[test]
