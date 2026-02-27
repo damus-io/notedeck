@@ -10,7 +10,7 @@ tags: fake
 	rusty-tags vi
 
 jni: fake
-	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --profile release
+	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --features messages --profile release
 
 jni-check: fake
 	cargo ndk --target arm64-v8a check
