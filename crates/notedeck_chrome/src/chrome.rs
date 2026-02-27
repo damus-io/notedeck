@@ -456,7 +456,7 @@ impl Chrome {
         };
 
         let is_narrow = notedeck::ui::is_narrow(ui.ctx());
-        let toolbar_height = if is_narrow {
+        let toolbar_height = if is_narrow && ctx.settings.welcome_completed() {
             toolbar_visibility_height(skb_anim.skb_rect, ui)
         } else {
             0.0
@@ -581,7 +581,7 @@ enum ChromeToolbarAction {
 fn toolbar_visibility_height(skb_rect: Option<Rect>, ui: &mut Ui) -> f32 {
     let toolbar_visible_id = egui::Id::new("chrome_toolbar_visible");
 
-    let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+    let scroll_delta = scroll_delta(ui.ctx());
     let velocity_threshold = 1.0;
 
     if scroll_delta > velocity_threshold {
@@ -606,6 +606,20 @@ fn toolbar_visibility_height(skb_rect: Option<Rect>, ui: &mut Ui) -> f32 {
     } else {
         0.0
     }
+}
+
+/// Detect vertical scroll intent from mouse wheel, trackpad, or touch drag.
+fn scroll_delta(ctx: &egui::Context) -> f32 {
+    ctx.input(|i| {
+        let sd = i.smooth_scroll_delta.y;
+        if sd.abs() > 0.5 {
+            return sd;
+        }
+        if i.pointer.is_decidedly_dragging() {
+            return i.pointer.velocity().y;
+        }
+        0.0
+    })
 }
 
 /// Render the Chrome mobile toolbar (Home, Chat, Search, Notifications).
@@ -650,12 +664,13 @@ fn chrome_toolbar(
     let notif_index = next_index;
     let tab_count = notif_index + 1;
 
+    let actual_height = ui.available_height();
     let rs = Tabs::new(tab_count)
         .selected(0)
         .hover_bg(TabColor::none())
         .selected_fg(TabColor::none())
         .selected_bg(TabColor::none())
-        .height(TOOLBAR_HEIGHT)
+        .height(actual_height)
         .layout(Layout::centered_and_justified(egui::Direction::TopDown))
         .show(ui, |ui, state| {
             let index = state.index();
