@@ -341,9 +341,8 @@ mod preview {
     }
 
     impl App for ConfigureDeckPreview {
-        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             ConfigureDeckView::new(&mut self.state, ctx.i18n).ui(ui);
-
             AppResponse::none()
         }
     }

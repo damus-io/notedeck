@@ -28,9 +28,7 @@ impl Default for Notebook {
 }
 
 impl notedeck::App for Notebook {
-    fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        //let app_action: Option<AppAction> = None;
-
+    fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         if !self.loaded {
             self.scene_rect = ui.available_rect_before_wrap();
             self.loaded = true;

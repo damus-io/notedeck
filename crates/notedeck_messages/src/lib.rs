@@ -55,13 +55,12 @@ impl Default for MessagesApp {
 
 impl App for MessagesApp {
     #[profiling::function]
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         let Some(cache) = self.messages.get_current_mut(ctx.accounts) else {
-            login_nsec_prompt(ui, ctx.i18n);
-            return AppResponse::none();
+            return;
         };
 
-        self.loader.start(ui.ctx().clone(), ctx.ndb.clone());
+        self.loader.start(egui_ctx.clone(), ctx.ndb.clone());
 
         's: {
             let Some(secret) = &ctx.accounts.get_selected_account().key.secret_key else {
@@ -93,7 +92,7 @@ impl App for MessagesApp {
 
         match cache.state {
             ConversationListState::Initializing => {
-                initialize(ctx, cache, is_narrow(ui.ctx()), &self.loader);
+                initialize(ctx, cache, is_narrow(egui_ctx), &self.loader);
             }
             ConversationListState::Loading { subscription } => {
                 if let Some(sub) = subscription {
@@ -113,8 +112,16 @@ impl App for MessagesApp {
             cache,
             &self.loader,
             &mut self.inflight_messages,
-            is_narrow(ui.ctx()),
+            is_narrow(egui_ctx),
         );
+    }
+
+    #[profiling::function]
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        let Some(cache) = self.messages.get_current_mut(ctx.accounts) else {
+            login_nsec_prompt(ui, ctx.i18n);
+            return AppResponse::none();
+        };
 
         let selected_pubkey = ctx.accounts.selected_account_pubkey();
 

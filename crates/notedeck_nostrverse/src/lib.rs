@@ -645,23 +645,15 @@ impl NostrverseApp {
 }
 
 impl notedeck::App for NostrverseApp {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        // Initialize on first frame
+    fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
         self.initialize(ctx);
-
-        // Poll for space event updates
         self.poll_space_updates(ctx.ndb);
-
-        // Poll for completed model downloads
         self.poll_model_downloads();
-
-        // Presence: publish, poll, expire
         self.tick_presence(ctx);
-
-        // Sync state to 3D scene
         self.sync_scene();
+    }
 
-        // Get available size before layout
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let available = ui.available_size();
         let panel_width = 240.0;
 

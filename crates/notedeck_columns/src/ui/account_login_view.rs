@@ -180,9 +180,8 @@ mod preview {
     }
 
     impl App for AccountLoginPreview {
-        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             AccountLoginView::new(&mut self.manager, ctx.clipboard, ctx.i18n).ui(ui);
-
             AppResponse::none()
         }
     }

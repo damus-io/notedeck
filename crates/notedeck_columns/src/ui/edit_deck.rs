@@ -75,7 +75,7 @@ mod preview {
     }
 
     impl App for EditDeckPreview {
-        fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             EditDeckView::new(&mut self.state, ctx.i18n).ui(ui);
             AppResponse::none()
         }

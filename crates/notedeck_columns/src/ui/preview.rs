@@ -22,8 +22,8 @@ impl PreviewApp {
 }
 
 impl notedeck::App for PreviewApp {
-    fn update(&mut self, app_ctx: &mut notedeck::AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        self.view.update(app_ctx, ui);
+    fn render(&mut self, app_ctx: &mut notedeck::AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        self.view.render(app_ctx, ui);
         AppResponse::none()
     }
 }

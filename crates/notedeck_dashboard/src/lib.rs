@@ -244,17 +244,18 @@ impl Default for Dashboard {
 }
 
 impl notedeck::App for Dashboard {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         if !self.initialized {
             self.initialized = true;
-            self.init(ui.ctx().clone(), ctx);
+            self.init(egui_ctx.clone(), ctx);
         }
 
         self.process_worker_msgs();
         self.schedule_refresh();
+    }
 
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         self.show(ui, ctx);
-
         AppResponse::none()
     }
 }

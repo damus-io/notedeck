@@ -1025,14 +1025,12 @@ fn timelines_view(
 
 impl notedeck::App for Damus {
     #[profiling::function]
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        /*
-        self.app
-            .frame_history
-            .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
-        */
+    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        update_damus(self, ctx, egui_ctx);
+    }
 
-        update_damus(self, ctx, ui.ctx());
+    #[profiling::function]
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         render_damus(self, ctx, ui)
     }
 }

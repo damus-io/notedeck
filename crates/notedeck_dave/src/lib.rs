@@ -2156,7 +2156,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Handle a keybinding action
-    fn handle_key_action(&mut self, key_action: KeyAction, ui: &egui::Ui) {
+    fn handle_key_action(&mut self, key_action: KeyAction, egui_ctx: &egui::Context) {
         let bt = self
             .session_manager
             .get_active()
@@ -2171,13 +2171,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.show_scene,
             self.auto_steal_focus,
             &mut self.home_session,
-            ui.ctx(),
+            egui_ctx,
         ) {
             KeyActionResult::ToggleView => {
                 self.show_scene = !self.show_scene;
             }
             KeyActionResult::HandleInterrupt => {
-                self.handle_interrupt_request(ui.ctx());
+                self.handle_interrupt_request(egui_ctx);
             }
             KeyActionResult::CloneAgent => {
                 self.clone_active_agent();
@@ -2523,11 +2523,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///
     /// Collects negentropy protocol events from the relay, re-subscribes on
     /// reconnect, and drives multi-round sync to fetch missing PNS events.
-    fn process_negentropy_sync(&mut self, ctx: &mut AppContext<'_>, ui: &egui::Ui) {
+    fn process_negentropy_sync(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         let pns_sub_id = self.pns_relay_sub.clone();
         let pns_relay = self.pns_relay_url.clone();
         let mut neg_events: Vec<enostr::negentropy::NegEvent> = Vec::new();
-        try_process_events_core(ctx, &mut self.pool, ui.ctx(), |app_ctx, pool, ev| {
+        try_process_events_core(ctx, &mut self.pool, egui_ctx, |app_ctx, pool, ev| {
             if ev.relay == pns_relay {
                 if let enostr::RelayEvent::Opened = (&ev.event).into() {
                     neg_events.push(enostr::negentropy::NegEvent::RelayOpened);
@@ -2608,7 +2608,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ///
     /// Restores sessions from ndb, triggers initial negentropy sync,
     /// and sets up relay subscriptions.
-    fn initialize_once(&mut self, ctx: &mut AppContext<'_>, ui: &egui::Ui) {
+    fn initialize_once(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
         self.sessions_restored = true;
 
         self.restore_sessions_from_ndb(ctx);
@@ -2624,7 +2624,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
 
             // Ensure the PNS relay is in the pool
-            let egui_ctx = ui.ctx().clone();
+            let egui_ctx = egui_ctx.clone();
             let wakeup = move || egui_ctx.request_repaint();
             if let Err(e) = self.pool.add_url(self.pns_relay_url.clone(), wakeup) {
                 tracing::warn!("failed to add PNS relay {}: {:?}", self.pns_relay_url, e);
@@ -2674,10 +2674,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 }
 
 impl notedeck::App for Dave {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        let mut app_action: Option<AppAction> = None;
-
-        self.process_negentropy_sync(ctx, ui);
+    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        self.process_negentropy_sync(ctx, egui_ctx);
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
@@ -2686,13 +2684,13 @@ impl notedeck::App for Dave {
         let pending = std::mem::take(&mut self.pending_summaries);
         for note_id in pending {
             if let Some(sid) = self.build_summary_session(ctx.ndb, &note_id) {
-                self.send_user_message_for(sid, ctx, ui.ctx());
+                self.send_user_message_for(sid, ctx, egui_ctx);
             }
         }
 
         // One-time initialization on first update
         if !self.sessions_restored {
-            self.initialize_once(ctx, ui);
+            self.initialize_once(ctx, egui_ctx);
         }
 
         // Poll for external editor completion
@@ -2719,7 +2717,7 @@ impl notedeck::App for Dave {
                 .get(sid)
                 .is_some_and(|s| s.should_dispatch_remote_message());
             if should_dispatch {
-                self.send_user_message_for(sid, ctx, ui.ctx());
+                self.send_user_message_for(sid, ctx, egui_ctx);
             }
         }
 
@@ -2741,13 +2739,13 @@ impl notedeck::App for Dave {
             .map(|s| s.ai_mode)
             .unwrap_or(self.ai_mode);
         if let Some(key_action) = check_keybindings(
-            ui.ctx(),
+            egui_ctx,
             has_pending_permission,
             has_pending_question,
             in_tentative_state,
             active_ai_mode,
         ) {
-            self.handle_key_action(key_action, ui);
+            self.handle_key_action(key_action, egui_ctx);
         }
 
         // Check if interrupt confirmation has timed out
@@ -2801,7 +2799,7 @@ impl notedeck::App for Dave {
             get_backend(&self.backends, bt).set_permission_mode(
                 backend_sid,
                 mode,
-                ui.ctx().clone(),
+                egui_ctx.clone(),
             );
         }
 
@@ -2854,14 +2852,7 @@ impl notedeck::App for Dave {
 
             // Raise the OS window when auto-steal switches to a NeedsInput session
             if stole_focus {
-                activate_app(ui.ctx());
-            }
-        }
-
-        // Render UI and handle actions
-        if let Some(action) = self.ui(ctx, ui).action {
-            if let Some(returned_action) = self.handle_ui_action(action, ctx, ui) {
-                app_action = Some(returned_action);
+                activate_app(egui_ctx);
             }
         }
 
@@ -2871,7 +2862,17 @@ impl notedeck::App for Dave {
                 "Session {}: dispatching queued message via send_user_message_for",
                 session_id
             );
-            self.send_user_message_for(session_id, ctx, ui.ctx());
+            self.send_user_message_for(session_id, ctx, egui_ctx);
+        }
+    }
+
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        let mut app_action: Option<AppAction> = None;
+
+        if let Some(action) = self.ui(ctx, ui).action {
+            if let Some(returned_action) = self.handle_ui_action(action, ctx, ui) {
+                app_action = Some(returned_action);
+            }
         }
 
         AppResponse::action(app_action)

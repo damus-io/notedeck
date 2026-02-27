@@ -340,7 +340,7 @@ impl Chrome {
                     .inner
             }
             ChromeRoute::App => {
-                let resp = self.apps[self.active as usize].update(app_ctx, ui);
+                let resp = self.apps[self.active as usize].render(app_ctx, ui);
 
                 if let Some(action) = resp.action {
                     chrome_handle_app_action(self, app_ctx, action, ui);
@@ -428,7 +428,15 @@ impl Chrome {
 }
 
 impl notedeck::App for Chrome {
-    fn update(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> AppResponse {
+    fn update(&mut self, ctx: &mut notedeck::AppContext, egui_ctx: &egui::Context) {
+        // Update ALL apps every frame so background processing
+        // (relay pools, subscriptions, etc.) stays alive
+        for app in &mut self.apps {
+            app.update(ctx, egui_ctx);
+        }
+    }
+
+    fn render(&mut self, ctx: &mut notedeck::AppContext, ui: &mut egui::Ui) -> AppResponse {
         #[cfg(feature = "tracy")]
         {
             ui.ctx().request_repaint();
@@ -438,7 +446,6 @@ impl notedeck::App for Chrome {
             action.process(ctx, self, ui);
             self.nav.close();
         }
-        // TODO: unify this constant with the columns side panel width. ui crate?
         AppResponse::none()
     }
 }

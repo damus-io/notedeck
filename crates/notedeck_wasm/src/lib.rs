@@ -98,7 +98,7 @@ impl WasmApp {
 }
 
 impl notedeck::App for WasmApp {
-    fn update(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+    fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let cmds = self.run_wasm_frame(ui.available_size());
         let new_events = commands::render_commands(&cmds, ui);
         self.env.as_mut(&mut self.store).button_events = new_events;

@@ -42,27 +42,52 @@ pub enum NotedeckApp {
 
 impl notedeck::App for NotedeckApp {
     #[profiling::function]
-    fn update(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> AppResponse {
+    fn update(&mut self, ctx: &mut AppContext, egui_ctx: &egui::Context) {
         match self {
-            NotedeckApp::Dave(dave) => dave.update(ctx, ui),
-            NotedeckApp::Columns(columns) => columns.update(ctx, ui),
+            NotedeckApp::Dave(dave) => dave.update(ctx, egui_ctx),
+            NotedeckApp::Columns(columns) => columns.update(ctx, egui_ctx),
 
             #[cfg(feature = "notebook")]
-            NotedeckApp::Notebook(notebook) => notebook.update(ctx, ui),
+            NotedeckApp::Notebook(notebook) => notebook.update(ctx, egui_ctx),
 
             #[cfg(feature = "clndash")]
-            NotedeckApp::ClnDash(clndash) => clndash.update(ctx, ui),
+            NotedeckApp::ClnDash(clndash) => clndash.update(ctx, egui_ctx),
 
             #[cfg(feature = "messages")]
-            NotedeckApp::Messages(dms) => dms.update(ctx, ui),
+            NotedeckApp::Messages(dms) => dms.update(ctx, egui_ctx),
 
             #[cfg(feature = "dashboard")]
-            NotedeckApp::Dashboard(db) => db.update(ctx, ui),
+            NotedeckApp::Dashboard(db) => db.update(ctx, egui_ctx),
 
             #[cfg(feature = "nostrverse")]
-            NotedeckApp::Nostrverse(nostrverse) => nostrverse.update(ctx, ui),
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.update(ctx, egui_ctx),
 
-            NotedeckApp::Other(_name, other) => other.update(ctx, ui),
+            NotedeckApp::Other(_name, other) => other.update(ctx, egui_ctx),
+        }
+    }
+
+    #[profiling::function]
+    fn render(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> AppResponse {
+        match self {
+            NotedeckApp::Dave(dave) => dave.render(ctx, ui),
+            NotedeckApp::Columns(columns) => columns.render(ctx, ui),
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => notebook.render(ctx, ui),
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => clndash.render(ctx, ui),
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => dms.render(ctx, ui),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.render(ctx, ui),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.render(ctx, ui),
+
+            NotedeckApp::Other(_name, other) => other.render(ctx, ui),
         }
     }
 }

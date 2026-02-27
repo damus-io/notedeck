@@ -34,7 +34,11 @@ pub enum AppAction {
 }
 
 pub trait App {
-    fn update(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
+    /// Background processing — called every frame for ALL apps.
+    fn update(&mut self, _ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {}
+
+    /// UI rendering — called only for the active/visible app.
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
 }
 
 #[derive(Default)]
@@ -104,20 +108,9 @@ fn render_notedeck(
     app_ctx: &mut AppContext,
     ctx: &egui::Context,
 ) {
+    app.borrow_mut().update(app_ctx, ctx);
     main_panel(&ctx.style()).show(ctx, |ui| {
-        app.borrow_mut().update(app_ctx, ui);
-
-        // Move the screen up when we have a virtual keyboard
-        // NOTE: actually, we only want to do this if the keyboard is covering the focused element?
-        /*
-        let keyboard_height = crate::platform::virtual_keyboard_height() as f32;
-        if keyboard_height > 0.0 {
-            ui.ctx().transform_layer_shapes(
-                ui.layer_id(),
-                egui::emath::TSTransform::from_translation(egui::Vec2::new(0.0, -(keyboard_height/2.0))),
-            );
-        }
-        */
+        app.borrow_mut().render(app_ctx, ui);
     });
 }
 

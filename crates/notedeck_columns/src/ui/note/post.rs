@@ -891,7 +891,7 @@ mod preview {
     }
 
     impl App for PostPreview {
-        fn update(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        fn render(&mut self, app: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
             let txn = Transaction::new(app.ndb).expect("txn");
             let mut note_context = NoteContext {
                 ndb: app.ndb,
