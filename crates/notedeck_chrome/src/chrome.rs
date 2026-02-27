@@ -164,7 +164,8 @@ impl Chrome {
             notedeck_ref.app_ctx.path,
         );
         #[cfg(feature = "wasm")]
-        let wasm_dir = context
+        let wasm_dir = notedeck_ref
+            .app_ctx
             .path
             .path(notedeck::DataPathType::Cache)
             .join("wasm_apps");
