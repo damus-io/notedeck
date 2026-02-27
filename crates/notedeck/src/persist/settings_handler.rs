@@ -15,10 +15,6 @@ const DEFAULT_ZOOM_FACTOR: f32 = 1.0;
 const DEFAULT_SHOW_SOURCE_CLIENT: &str = "hide";
 const DEFAULT_SHOW_REPLIES_NEWEST_FIRST: bool = false;
 const DEFAULT_TOS_VERSION: &str = "1.0";
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 13.0;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub const DEFAULT_NOTE_BODY_FONT_SIZE: f32 = 16.0;
 pub const DEFAULT_MAX_HASHTAGS_PER_NOTE: usize = 3;
 
 fn deserialize_theme(serialized_theme: &str) -> Option<ThemePreference> {
@@ -37,7 +33,6 @@ pub struct Settings {
     pub zoom_factor: f32,
     pub show_source_client: String,
     pub show_replies_newest_first: bool,
-    pub note_body_font_size: f32,
     #[serde(default = "default_animate_nav_transitions")]
     pub animate_nav_transitions: bool,
     pub max_hashtags_per_note: usize,
@@ -69,7 +64,6 @@ impl Default for Settings {
             zoom_factor: DEFAULT_ZOOM_FACTOR,
             show_source_client: DEFAULT_SHOW_SOURCE_CLIENT.to_string(),
             show_replies_newest_first: DEFAULT_SHOW_REPLIES_NEWEST_FIRST,
-            note_body_font_size: DEFAULT_NOTE_BODY_FONT_SIZE,
             animate_nav_transitions: default_animate_nav_transitions(),
             max_hashtags_per_note: DEFAULT_MAX_HASHTAGS_PER_NOTE,
             welcome_completed: false,
@@ -216,11 +210,6 @@ impl SettingsHandler {
         self.try_save_settings();
     }
 
-    pub fn set_note_body_font_size(&mut self, value: f32) {
-        self.get_settings_mut().note_body_font_size = value;
-        self.try_save_settings();
-    }
-
     pub fn set_animate_nav_transitions(&mut self, value: bool) {
         self.get_settings_mut().animate_nav_transitions = value;
         self.try_save_settings();
@@ -283,13 +272,6 @@ impl SettingsHandler {
 
     pub fn is_loaded(&self) -> bool {
         self.current_settings.is_some()
-    }
-
-    pub fn note_body_font_size(&self) -> f32 {
-        self.current_settings
-            .as_ref()
-            .map(|s| s.note_body_font_size)
-            .unwrap_or(DEFAULT_NOTE_BODY_FONT_SIZE)
     }
 
     pub fn max_hashtags_per_note(&self) -> usize {

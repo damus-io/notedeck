@@ -356,13 +356,7 @@ impl Notedeck {
     pub fn setup(&self, ctx: &egui::Context) {
         // Initialize global i18n context
         //crate::i18n::init_global_i18n(i18n.clone());
-        crate::setup::setup_egui_context(
-            ctx,
-            self.args.options,
-            self.theme(),
-            self.note_body_font_size(),
-            self.zoom_factor(),
-        );
+        crate::setup::setup_egui_context(ctx, self.args.options, self.theme(), self.zoom_factor());
     }
 
     #[inline]
@@ -432,10 +426,6 @@ impl Notedeck {
 
     pub fn theme(&self) -> ThemePreference {
         self.settings.theme()
-    }
-
-    pub fn note_body_font_size(&self) -> f32 {
-        self.settings.note_body_font_size()
     }
 
     pub fn zoom_factor(&self) -> f32 {

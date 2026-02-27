@@ -736,7 +736,6 @@ fn render_nav_body(
             SettingsView::new(
                 ctx.settings.get_settings_mut(),
                 &mut note_context,
-                &mut app.note_options,
                 &db_path,
                 &mut app.view_state.compact,
             )

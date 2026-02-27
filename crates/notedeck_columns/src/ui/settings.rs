@@ -1,22 +1,18 @@
 use egui::{
-    vec2, Button, Color32, ComboBox, CornerRadius, FontId, Frame, Layout, Margin, RichText,
-    ScrollArea, TextEdit, ThemePreference,
+    vec2, Button, Color32, ComboBox, CornerRadius, Frame, Layout, Margin, RichText, ScrollArea,
+    TextEdit, ThemePreference,
 };
 use egui_extras::{Size, StripBuilder};
-use enostr::NoteId;
-use nostrdb::Transaction;
 use notedeck::{
     tr, ui::richtext_small, DragResponse, LanguageIdentifier, NoteContext, NotedeckTextStyle,
-    Settings, DEFAULT_MAX_HASHTAGS_PER_NOTE, DEFAULT_NOTE_BODY_FONT_SIZE,
+    Settings, DEFAULT_MAX_HASHTAGS_PER_NOTE,
 };
 use notedeck_ui::{
     app_images::{copy_to_clipboard_dark_image, copy_to_clipboard_image},
-    AnimationHelper, NoteOptions, NoteView,
+    AnimationHelper, NoteOptions,
 };
 
 use crate::{nav::RouterAction, ui::account_login_view::eye_button, Damus, Route};
-
-const PREVIEW_NOTE_ID: &str = "note1edjc8ggj07hwv77g2405uh6j2jkk5aud22gktxrvc2wnre4vdwgqzlv2gw";
 
 const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 3.0;
@@ -28,7 +24,6 @@ pub enum SettingsAction {
     SetTheme(ThemePreference),
     SetLocale(LanguageIdentifier),
     SetRepliestNewestFirst(bool),
-    SetNoteBodyFontSize(f32),
     SetAnimateNavTransitions(bool),
     SetMaxHashtagsPerNote(usize),
     OpenRelays,
@@ -74,17 +69,6 @@ impl SettingsAction {
             Self::ClearCacheFolder => {
                 let _ = app_ctx.img_cache.clear_folder_contents();
             }
-            Self::SetNoteBodyFontSize(size) => {
-                let mut style = (*egui_ctx.style()).clone();
-                style.text_styles.insert(
-                    NotedeckTextStyle::NoteBody.text_style(),
-                    FontId::proportional(size),
-                );
-                egui_ctx.set_style(style);
-
-                app_ctx.settings.set_note_body_font_size(size);
-            }
-
             Self::SetAnimateNavTransitions(value) => {
                 app_ctx.settings.set_animate_nav_transitions(value);
             }
@@ -134,7 +118,6 @@ impl SettingsAction {
 pub struct SettingsView<'a> {
     settings: &'a mut Settings,
     note_context: &'a mut NoteContext<'a>,
-    note_options: &'a mut NoteOptions,
     db_path: &'a std::path::Path,
     compact: &'a mut notedeck::compact::CompactState,
 }
@@ -162,14 +145,12 @@ impl<'a> SettingsView<'a> {
     pub fn new(
         settings: &'a mut Settings,
         note_context: &'a mut NoteContext<'a>,
-        note_options: &'a mut NoteOptions,
         db_path: &'a std::path::Path,
         compact: &'a mut notedeck::compact::CompactState,
     ) -> Self {
         Self {
             settings,
             note_context,
-            note_options,
             db_path,
             compact,
         }
@@ -196,59 +177,6 @@ impl<'a> SettingsView<'a> {
             "Label for appearance settings section",
         );
         settings_group(ui, title, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(richtext_small(tr!(
-                    self.note_context.i18n,
-                    "Font size:",
-                    "Label for font size, Appearance settings section",
-                )));
-
-                if ui
-                    .add(
-                        egui::Slider::new(&mut self.settings.note_body_font_size, 8.0..=32.0)
-                            .text(""),
-                    )
-                    .changed()
-                {
-                    action = Some(SettingsAction::SetNoteBodyFontSize(
-                        self.settings.note_body_font_size,
-                    ));
-                };
-
-                if ui
-                    .button(richtext_small(tr!(
-                        self.note_context.i18n,
-                        "Reset",
-                        "Label for reset note body font size, Appearance settings section",
-                    )))
-                    .clicked()
-                {
-                    action = Some(SettingsAction::SetNoteBodyFontSize(
-                        DEFAULT_NOTE_BODY_FONT_SIZE,
-                    ));
-                }
-            });
-
-            let txn = Transaction::new(self.note_context.ndb).unwrap();
-
-            if let Some(note_id) = NoteId::from_bech(PREVIEW_NOTE_ID) {
-                if let Ok(preview_note) =
-                    self.note_context.ndb.get_note_by_id(&txn, note_id.bytes())
-                {
-                    notedeck_ui::padding(8.0, ui, |ui| {
-                        if notedeck::ui::is_narrow(ui.ctx()) {
-                            ui.set_max_width(ui.available_width());
-
-                            NoteView::new(self.note_context, &preview_note, *self.note_options)
-                                .actionbar(false)
-                                .options_button(false)
-                                .show(ui);
-                        }
-                    });
-                    ui.separator();
-                }
-            }
-
             let current_zoom = ui.ctx().zoom_factor();
 
             ui.horizontal_wrapped(|ui| {

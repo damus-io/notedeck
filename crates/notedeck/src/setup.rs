@@ -1,15 +1,12 @@
 use crate::fonts;
 use crate::theme;
 use crate::NotedeckOptions;
-use crate::NotedeckTextStyle;
-use egui::FontId;
 use egui::ThemePreference;
 
 pub fn setup_egui_context(
     ctx: &egui::Context,
     options: NotedeckOptions,
     theme: ThemePreference,
-    note_body_font_size: f32,
     zoom_factor: f32,
 ) {
     let is_mobile = options.contains(NotedeckOptions::Mobile) || crate::ui::is_compiled_as_mobile();
@@ -36,11 +33,4 @@ pub fn setup_egui_context(
     ctx.all_styles_mut(|style| crate::theme::add_custom_style(is_mobile, style));
 
     ctx.set_zoom_factor(zoom_factor);
-
-    let mut style = (*ctx.style()).clone();
-    style.text_styles.insert(
-        NotedeckTextStyle::NoteBody.text_style(),
-        FontId::proportional(note_body_font_size),
-    );
-    ctx.set_style(style);
 }
