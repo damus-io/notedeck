@@ -21,6 +21,8 @@ pub enum NostrverseAction {
     DuplicateObject(String),
     /// Object was rotated (id, new rotation)
     RotateObject { id: String, rotation: Quat },
+    /// Reset scene to the default demo space
+    ResetSpace,
 }
 
 /// Reference to a nostrverse space

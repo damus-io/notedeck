@@ -714,16 +714,21 @@ pub fn render_editing_panel(ui: &mut Ui, state: &mut NostrverseState) -> Option<
     ui.add_space(8.0);
     render_grid_snap_controls(ui, state);
 
-    // --- Save button ---
+    // --- Save / Reset buttons ---
     ui.add_space(12.0);
     ui.separator();
-    let save_label = if state.dirty { "Save *" } else { "Save" };
-    if ui
-        .add_enabled(state.dirty, egui::Button::new(save_label))
-        .clicked()
-    {
-        action = Some(NostrverseAction::SaveSpace);
-    }
+    ui.horizontal(|ui| {
+        let save_label = if state.dirty { "Save *" } else { "Save" };
+        if ui
+            .add_enabled(state.dirty, egui::Button::new(save_label))
+            .clicked()
+        {
+            action = Some(NostrverseAction::SaveSpace);
+        }
+        if ui.button("Reset").clicked() {
+            action = Some(NostrverseAction::ResetSpace);
+        }
+    });
 
     // --- Scene body ---
     render_scene_preview(ui, state);

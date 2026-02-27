@@ -97,8 +97,8 @@ const MAX_EXTRAPOLATION_DISTANCE: f32 = 10.0;
 const DEMO_SPACE: &str = r#"(space (name "Demo Space")
   (group
     (tilemap (width 10) (height 10)
-      (tileset "grass")
-      (data "0"))
+      (tileset "grass" "stone" "water" "sand" "dirt" "snow" "wood")
+      (data "0 0 0 0 0 0 0 0 0 0 0 1 1 1 0 0 4 4 4 0 0 1 1 1 0 0 4 4 4 0 0 0 0 0 0 0 0 0 0 0 3 3 3 0 0 0 0 5 5 5 3 3 3 0 0 0 0 5 5 5 0 0 0 0 2 2 0 0 0 0 0 0 0 0 2 2 0 0 0 0 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6"))
     (table (id obj1) (name "Ironwood Table")
            (model-url "/home/jb55/var/models/ironwood/ironwood.glb")
            (position 0 0 0))
@@ -758,6 +758,13 @@ impl NostrverseApp {
                 if let Some(obj) = self.state.get_object_mut(&id) {
                     obj.rotation = rotation;
                     self.state.dirty = true;
+                }
+            }
+            NostrverseAction::ResetSpace => {
+                if let Ok(space) = protoverse::parse(DEMO_SPACE) {
+                    self.apply_space(&space);
+                    self.save_space(ctx);
+                    self.state.dirty = false;
                 }
             }
             NostrverseAction::DuplicateObject(id) => {
