@@ -509,63 +509,7 @@ fn add_column_button() -> impl Widget {
 }
 
 pub fn search_button_impl(color: egui::Color32, line_width: f32, is_active: bool) -> impl Widget {
-    move |ui: &mut egui::Ui| -> egui::Response {
-        let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
-        let min_line_width_circle = line_width;
-        let min_line_width_handle = line_width;
-        let helper = AnimationHelper::new(ui, "search-button", vec2(max_size, max_size));
-
-        let painter = ui.painter_at(helper.get_animation_rect());
-
-        if is_active {
-            let circle_radius = max_size / 2.0;
-            painter.circle(
-                helper.get_animation_rect().center(),
-                circle_radius,
-                notedeck_ui::side_panel_active_bg(ui),
-                Stroke::NONE,
-            );
-        }
-
-        let cur_line_width_circle = helper.scale_1d_pos(min_line_width_circle);
-        let cur_line_width_handle = helper.scale_1d_pos(min_line_width_handle);
-        let min_outer_circle_radius = helper.scale_radius(15.0);
-        let cur_outer_circle_radius = helper.scale_1d_pos(min_outer_circle_radius);
-        let min_handle_length = 7.0;
-        let cur_handle_length = helper.scale_1d_pos(min_handle_length);
-
-        let circle_center = helper.scale_from_center(-2.0, -2.0);
-
-        let handle_vec = vec2(
-            std::f32::consts::FRAC_1_SQRT_2,
-            std::f32::consts::FRAC_1_SQRT_2,
-        );
-
-        let handle_pos_1 = circle_center + (handle_vec * (cur_outer_circle_radius - 3.0));
-        let handle_pos_2 =
-            circle_center + (handle_vec * (cur_outer_circle_radius + cur_handle_length));
-
-        let icon_color = if is_active {
-            ui.visuals().strong_text_color()
-        } else {
-            color
-        };
-        let circle_stroke = Stroke::new(cur_line_width_circle, icon_color);
-        let handle_stroke = Stroke::new(cur_line_width_handle, icon_color);
-
-        painter.line_segment([handle_pos_1, handle_pos_2], handle_stroke);
-        painter.circle(
-            circle_center,
-            min_outer_circle_radius,
-            ui.style().visuals.widgets.inactive.weak_bg_fill,
-            circle_stroke,
-        );
-
-        helper
-            .take_animation_response()
-            .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Open search")
-    }
+    notedeck_ui::icons::search_button(color, line_width, is_active)
 }
 
 pub fn search_button(current_route: Option<&Route>) -> impl Widget + '_ {

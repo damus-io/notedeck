@@ -294,6 +294,45 @@ impl Chrome {
         }
     }
 
+    #[cfg(feature = "messages")]
+    fn switch_to_messages(&mut self) {
+        for (i, app) in self.apps.iter().enumerate() {
+            if let NotedeckApp::Messages(_) = app {
+                self.active = i as i32;
+                if let Some(opened) = self.opened.get_mut(i) {
+                    *opened = true;
+                }
+            }
+        }
+    }
+
+    fn process_toolbar_action(&mut self, action: ChromeToolbarAction, ctx: &mut AppContext) {
+        match action {
+            ChromeToolbarAction::Home => {
+                self.switch_to_columns();
+                if let Some(columns) = self.get_columns_app() {
+                    columns.navigate_home(ctx);
+                }
+            }
+            #[cfg(feature = "messages")]
+            ChromeToolbarAction::Chat => {
+                self.switch_to_messages();
+            }
+            ChromeToolbarAction::Search => {
+                self.switch_to_columns();
+                if let Some(columns) = self.get_columns_app() {
+                    columns.navigate_search(ctx);
+                }
+            }
+            ChromeToolbarAction::Notifications => {
+                self.switch_to_columns();
+                if let Some(columns) = self.get_columns_app() {
+                    columns.navigate_notifications(ctx);
+                }
+            }
+        }
+    }
+
     pub fn set_active(&mut self, app: i32) {
         self.active = app;
         if let Some(opened) = self.opened.get_mut(app as usize) {
@@ -399,19 +438,43 @@ impl Chrome {
             0.0
         };
 
+        let is_mobile = notedeck::ui::is_narrow(ui.ctx());
+        let toolbar_height = if is_mobile {
+            toolbar_visibility_height(skb_anim.skb_rect, ui)
+        } else {
+            0.0
+        };
+
+        let unseen_notifications = if is_mobile {
+            self.get_columns_app()
+                .map(|c| c.has_unseen_notifications(ctx.accounts))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
         // if the soft keyboard is open, shrink the chrome contents
         let mut action: Option<ChromePanelAction> = None;
+        let mut toolbar_action: Option<ChromeToolbarAction> = None;
         // build a strip to carve out the soft keyboard inset
         let prev_spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing.y = 0.0;
         StripBuilder::new(ui)
             .size(Size::remainder())
+            .size(Size::exact(toolbar_height))
             .size(Size::exact(keyboard_height))
             .vertical(|mut strip| {
                 // the actual content, shifted up because of the soft keyboard
                 strip.cell(|ui| {
                     ui.spacing_mut().item_spacing = prev_spacing;
                     action = self.panel(ctx, ui, keyboard_height);
+                });
+
+                // mobile toolbar
+                strip.cell(|ui| {
+                    if toolbar_height > 0.0 {
+                        toolbar_action = chrome_toolbar(ui, unseen_notifications);
+                    }
                 });
 
                 // the filler space taken up by the soft keyboard
@@ -435,6 +498,10 @@ impl Chrome {
                 tracing::debug!("hovering virtual kb_height:{keyboard_height} kb_rect:{kb_rect}");
                 virtual_keyboard_ui(ui, kb_rect)
             }
+        }
+
+        if let Some(tb_action) = toolbar_action {
+            self.process_toolbar_action(tb_action, ctx);
         }
 
         action
@@ -475,6 +542,133 @@ impl notedeck::App for Chrome {
         // TODO: unify this constant with the columns side panel width. ui crate?
         AppResponse::none()
     }
+}
+
+const TOOLBAR_HEIGHT: f32 = 48.0;
+
+#[derive(Debug, Eq, PartialEq)]
+enum ChromeToolbarAction {
+    Home,
+    #[cfg(feature = "messages")]
+    Chat,
+    Search,
+    Notifications,
+}
+
+/// Compute the animated toolbar height, auto-hiding on scroll and
+/// when the soft keyboard is open.
+fn toolbar_visibility_height(skb_rect: Option<Rect>, ui: &mut Ui) -> f32 {
+    let toolbar_visible_id = egui::Id::new("chrome_toolbar_visible");
+
+    let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+    let velocity_threshold = 1.0;
+
+    if scroll_delta > velocity_threshold {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
+    } else if scroll_delta < -velocity_threshold {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(toolbar_visible_id, false));
+    }
+
+    let toolbar_visible = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(toolbar_visible_id))
+        .unwrap_or(true);
+
+    let toolbar_anim = ui
+        .ctx()
+        .animate_bool_responsive(toolbar_visible_id.with("anim"), toolbar_visible);
+
+    if skb_rect.is_none() {
+        TOOLBAR_HEIGHT * toolbar_anim
+    } else {
+        0.0
+    }
+}
+
+/// Render the Chrome mobile toolbar (Home, Chat, Search, Notifications).
+fn chrome_toolbar(ui: &mut Ui, unseen_notifications: bool) -> Option<ChromeToolbarAction> {
+    use egui_tabs::{TabColor, Tabs};
+    use notedeck_ui::icons::{home_button, notifications_button, search_button};
+
+    let rect = ui.available_rect_before_wrap();
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top(),
+        ui.visuals().widgets.noninteractive.bg_stroke,
+    );
+
+    if !ui.visuals().dark_mode {
+        ui.painter().rect(
+            rect,
+            0,
+            notedeck_ui::colors::ALMOST_WHITE,
+            egui::Stroke::new(0.0, Color32::TRANSPARENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    let has_chat = cfg!(feature = "messages");
+    let mut next_index = 0;
+    let home_index = next_index;
+    next_index += 1;
+    let chat_index = if has_chat {
+        let i = next_index;
+        next_index += 1;
+        Some(i)
+    } else {
+        None
+    };
+    let search_index = next_index;
+    next_index += 1;
+    let notif_index = next_index;
+    let tab_count = notif_index + 1;
+
+    let rs = Tabs::new(tab_count as i32)
+        .selected(0)
+        .hover_bg(TabColor::none())
+        .selected_fg(TabColor::none())
+        .selected_bg(TabColor::none())
+        .height(TOOLBAR_HEIGHT)
+        .layout(Layout::centered_and_justified(egui::Direction::TopDown))
+        .show(ui, |ui, state| {
+            let index = state.index();
+            let btn_size: f32 = 20.0;
+
+            if index == home_index {
+                if home_button(ui, btn_size).clicked() {
+                    return Some(ChromeToolbarAction::Home);
+                }
+            } else if Some(index) == chat_index {
+                #[cfg(feature = "messages")]
+                if notedeck_ui::icons::chat_button(ui, btn_size).clicked() {
+                    return Some(ChromeToolbarAction::Chat);
+                }
+            } else if index == search_index {
+                if ui
+                    .add(search_button(ui.visuals().text_color(), 2.0, false))
+                    .clicked()
+                {
+                    return Some(ChromeToolbarAction::Search);
+                }
+            } else if index == notif_index
+                && notifications_button(ui, btn_size, unseen_notifications).clicked()
+            {
+                return Some(ChromeToolbarAction::Notifications);
+            }
+
+            None
+        })
+        .inner();
+
+    for maybe_r in rs {
+        if maybe_r.inner.is_some() {
+            return maybe_r.inner;
+        }
+    }
+
+    None
 }
 
 fn milestone_name<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {

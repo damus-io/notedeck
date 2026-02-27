@@ -11,8 +11,7 @@ use crate::{
     support::Support,
     timeline::{self, kind::ListKind, thread::Threads, TimelineCache, TimelineKind},
     timeline_loader::{TimelineLoader, TimelineLoaderMsg},
-    toolbar::unseen_notification,
-    ui::{self, toolbar::toolbar, DesktopSidePanel, SidePanelAction},
+    ui::{self, DesktopSidePanel, SidePanelAction},
     view_state::ViewState,
     Result,
 };
@@ -609,12 +608,25 @@ impl Damus {
         &self.unrecognized_args
     }
 
-    pub fn toolbar_height() -> f32 {
-        48.0
+    /// Navigate to the Home (contact list) timeline.
+    pub fn navigate_home(&mut self, ctx: &mut AppContext) {
+        crate::toolbar::ToolbarAction::Home.process(self, ctx);
     }
 
-    pub fn initially_selected_toolbar_index() -> i32 {
-        0
+    /// Navigate to the Search view.
+    pub fn navigate_search(&mut self, ctx: &mut AppContext) {
+        crate::toolbar::ToolbarAction::Search.process(self, ctx);
+    }
+
+    /// Navigate to the Notifications timeline.
+    pub fn navigate_notifications(&mut self, ctx: &mut AppContext) {
+        crate::toolbar::ToolbarAction::Notifications.process(self, ctx);
+    }
+
+    /// Check if there are unseen notifications.
+    pub fn has_unseen_notifications(&mut self, accounts: &notedeck::Accounts) -> bool {
+        let active_col = self.columns(accounts).selected as usize;
+        crate::toolbar::unseen_notification(self, accounts, active_col)
     }
 }
 
@@ -649,127 +661,58 @@ fn circle_icon(ui: &mut egui::Ui, openness: f32, response: &egui::Response) {
 }
 */
 
-/// Logic that handles toolbar visibility
-fn toolbar_visibility_height(skb_rect: Option<egui::Rect>, ui: &mut egui::Ui) -> f32 {
-    // Auto-hide toolbar when scrolling down
-    let toolbar_visible_id = egui::Id::new("toolbar_visible");
-
-    // Detect scroll direction using egui input state
-    let scroll_delta = ui.ctx().input(|i| i.smooth_scroll_delta.y);
-    let velocity_threshold = 1.0;
-
-    // Update toolbar visibility based on scroll direction
-    if scroll_delta > velocity_threshold {
-        // Scrolling up (content moving down) - show toolbar
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(toolbar_visible_id, true));
-    } else if scroll_delta < -velocity_threshold {
-        // Scrolling down (content moving up) - hide toolbar
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(toolbar_visible_id, false));
-    }
-
-    let toolbar_visible = ui
-        .ctx()
-        .data(|d| d.get_temp::<bool>(toolbar_visible_id))
-        .unwrap_or(true); // Default to visible
-
-    let toolbar_anim = ui
-        .ctx()
-        .animate_bool_responsive(toolbar_visible_id.with("anim"), toolbar_visible);
-
-    if skb_rect.is_none() {
-        Damus::toolbar_height() * toolbar_anim
-    } else {
-        0.0
-    }
-}
-
 #[profiling::function]
 fn render_damus_mobile(
     app: &mut Damus,
     app_ctx: &mut AppContext<'_>,
     ui: &mut egui::Ui,
 ) -> AppResponse {
-    //let routes = app.timelines[0].routes.clone();
-
     let mut can_take_drag_from = Vec::new();
     let active_col = app.columns_mut(app_ctx.i18n, app_ctx.accounts).selected as usize;
     let mut app_action: Option<AppAction> = None;
-    // don't show toolbar if soft keyboard is open
-    let skb_rect = app_ctx.soft_keyboard_rect(
-        ui.ctx().screen_rect(),
-        notedeck::SoftKeyboardContext::platform(ui.ctx()),
-    );
 
-    let toolbar_height = toolbar_visibility_height(skb_rect, ui);
-    StripBuilder::new(ui)
-        .size(Size::remainder()) // top cell
-        .size(Size::exact(toolbar_height)) // bottom cell
-        .vertical(|mut strip| {
-            strip.cell(|ui| {
-                let rect = ui.available_rect_before_wrap();
-                if !app.columns(app_ctx.accounts).columns().is_empty() {
-                    let resp = nav::render_nav(
-                        active_col,
-                        ui.available_rect_before_wrap(),
-                        app,
-                        app_ctx,
-                        ui,
-                    );
+    let rect = ui.available_rect_before_wrap();
+    if !app.columns(app_ctx.accounts).columns().is_empty() {
+        let resp = nav::render_nav(
+            active_col,
+            ui.available_rect_before_wrap(),
+            app,
+            app_ctx,
+            ui,
+        );
 
-                    can_take_drag_from.extend(resp.can_take_drag_from());
+        can_take_drag_from.extend(resp.can_take_drag_from());
 
-                    let r = resp.process_render_nav_response(app, app_ctx, ui);
-                    if let Some(r) = r {
-                        match r {
-                            ProcessNavResult::SwitchOccurred => {
-                                if !app.options.contains(AppOptions::TmpColumns) {
-                                    storage::save_decks_cache(app_ctx.path, &app.decks_cache);
-                                }
-                            }
-
-                            ProcessNavResult::PfpClicked => {
-                                app_action = Some(AppAction::ToggleChrome);
-                            }
-
-                            ProcessNavResult::SwitchAccount(pubkey) => {
-                                // Add as pubkey-only account if not already present
-                                let kp = enostr::Keypair::only_pubkey(pubkey);
-                                let _ = app_ctx.accounts.add_account(kp);
-
-                                app_ctx.select_account(&pubkey);
-                                setup_selected_account_timeline_subs(
-                                    &mut app.timeline_cache,
-                                    app_ctx,
-                                );
-                            }
-
-                            ProcessNavResult::ExternalNoteAction(note_action) => {
-                                app_action = Some(AppAction::Note(note_action));
-                            }
-                        }
+        let r = resp.process_render_nav_response(app, app_ctx, ui);
+        if let Some(r) = r {
+            match r {
+                ProcessNavResult::SwitchOccurred => {
+                    if !app.options.contains(AppOptions::TmpColumns) {
+                        storage::save_decks_cache(app_ctx.path, &app.decks_cache);
                     }
                 }
 
-                hovering_post_button(ui, app, app_ctx, rect);
-            });
-
-            strip.cell(|ui| 'brk: {
-                if toolbar_height <= 0.0 {
-                    break 'brk;
+                ProcessNavResult::PfpClicked => {
+                    app_action = Some(AppAction::ToggleChrome);
                 }
 
-                let unseen_notif = unseen_notification(app, app_ctx.accounts, active_col);
+                ProcessNavResult::SwitchAccount(pubkey) => {
+                    // Add as pubkey-only account if not already present
+                    let kp = enostr::Keypair::only_pubkey(pubkey);
+                    let _ = app_ctx.accounts.add_account(kp);
 
-                if skb_rect.is_none() {
-                    let resp = toolbar(ui, unseen_notif);
-                    if let Some(action) = resp {
-                        action.process(app, app_ctx);
-                    }
+                    app_ctx.select_account(&pubkey);
+                    setup_selected_account_timeline_subs(&mut app.timeline_cache, app_ctx);
                 }
-            });
-        });
+
+                ProcessNavResult::ExternalNoteAction(note_action) => {
+                    app_action = Some(AppAction::Note(note_action));
+                }
+            }
+        }
+    }
+
+    hovering_post_button(ui, app, app_ctx, rect);
 
     AppResponse::action(app_action).drag(can_take_drag_from)
 }
