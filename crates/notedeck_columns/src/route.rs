@@ -5,6 +5,7 @@ use notedeck::{
     tr, Localization, NoteZapTargetOwned, ReplacementType, ReportTarget, RootNoteIdBuf, Router,
     ScopedSubApi, WalletType,
 };
+use std::collections::HashSet;
 use std::ops::Range;
 
 use crate::{
@@ -803,6 +804,8 @@ pub fn cleanup_popped_route(
     view_state: &mut ViewState,
     ndb: &mut Ndb,
     scoped_subs: &mut ScopedSubApi,
+    loaded_timeline_loads: &mut HashSet<TimelineKind>,
+    inflight_timeline_loads: &mut HashSet<TimelineKind>,
     return_type: ReturnType,
     col_index: usize,
 ) {
@@ -811,6 +814,10 @@ pub fn cleanup_popped_route(
             if let Err(err) = timeline_cache.pop(kind, ndb, scoped_subs) {
                 tracing::error!("popping timeline had an error: {err} for {:?}", kind);
             }
+            // Allow the async loader to re-populate this timeline if
+            // it is opened again later.
+            loaded_timeline_loads.remove(kind);
+            inflight_timeline_loads.remove(kind);
         }
         Route::Thread(selection) => {
             threads.close(ndb, scoped_subs, selection, return_type, col_index);

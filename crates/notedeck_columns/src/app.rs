@@ -54,9 +54,9 @@ pub struct Damus {
     /// Background loader for initial timeline scans.
     timeline_loader: TimelineLoader,
     /// Timelines currently loading initial notes.
-    inflight_timeline_loads: HashSet<TimelineKind>,
+    pub inflight_timeline_loads: HashSet<TimelineKind>,
     /// Timelines that have completed their initial load.
-    loaded_timeline_loads: HashSet<TimelineKind>,
+    pub loaded_timeline_loads: HashSet<TimelineKind>,
 
     //frame_history: crate::frame_history::FrameHistory,
 

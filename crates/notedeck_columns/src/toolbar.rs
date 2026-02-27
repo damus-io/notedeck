@@ -104,6 +104,8 @@ fn pop_to_root(app: &mut Damus, ctx: &mut AppContext, col_index: usize) {
                 &mut app.view_state,
                 ctx.ndb,
                 &mut ctx.remote.scoped_subs(ctx.accounts),
+                &mut app.loaded_timeline_loads,
+                &mut app.inflight_timeline_loads,
                 ReturnType::Click,
                 col_index,
             );

@@ -285,6 +285,8 @@ fn process_nav_resp(
                         &mut app.view_state,
                         ctx.ndb,
                         &mut ctx.remote.scoped_subs(ctx.accounts),
+                        &mut app.loaded_timeline_loads,
+                        &mut app.inflight_timeline_loads,
                         return_type,
                         col,
                     );
