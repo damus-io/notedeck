@@ -45,6 +45,11 @@ impl FocusPriority {
     }
 }
 
+pub struct FocusQueueUpdate {
+    pub new_needs_input: bool,
+    pub changed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueEntry {
     pub session_id: SessionId,
@@ -302,19 +307,20 @@ impl FocusQueue {
     }
 
     /// Update focus queue based on session indicator fields.
-    /// Returns true if any session transitioned to NeedsInput.
     pub fn update_from_indicators(
         &mut self,
         sessions: impl Iterator<Item = (SessionId, Option<FocusPriority>)>,
-    ) -> bool {
-        let mut has_new_needs_input = false;
+    ) -> FocusQueueUpdate {
+        let mut new_needs_input = false;
+        let mut changed = false;
         for (session_id, indicator) in sessions {
             let prev = self.previous_indicators.get(&session_id).copied();
             if prev != Some(indicator) {
+                changed = true;
                 if let Some(priority) = indicator {
                     self.enqueue(session_id, priority);
                     if priority == FocusPriority::NeedsInput {
-                        has_new_needs_input = true;
+                        new_needs_input = true;
                     }
                 } else {
                     self.dequeue(session_id);
@@ -322,7 +328,10 @@ impl FocusQueue {
             }
             self.previous_indicators.insert(session_id, indicator);
         }
-        has_new_needs_input
+        FocusQueueUpdate {
+            new_needs_input,
+            changed,
+        }
     }
 
     pub fn get_session_priority(&self, session_id: SessionId) -> Option<FocusPriority> {
@@ -569,17 +578,30 @@ mod tests {
             (session(2), Some(FocusPriority::NeedsInput)),
             (session(3), None), // No indicator = no dot
         ];
-        queue.update_from_indicators(indicators.into_iter());
+        let update = queue.update_from_indicators(indicators.into_iter());
 
+        assert!(update.changed);
+        assert!(update.new_needs_input);
         assert_eq!(queue.len(), 2);
         // Verify NeedsInput is first in priority order
         assert_eq!(queue.entries[0].session_id, session(2));
         assert_eq!(queue.entries[0].priority, FocusPriority::NeedsInput);
 
+        // No-op: same indicators again → no change
+        let indicators = vec![
+            (session(1), Some(FocusPriority::Done)),
+            (session(2), Some(FocusPriority::NeedsInput)),
+        ];
+        let update = queue.update_from_indicators(indicators.into_iter());
+        assert!(!update.changed);
+        assert!(!update.new_needs_input);
+
         // Update: session 2 indicator cleared (should be removed from queue)
         let indicators = vec![(session(2), None)];
-        queue.update_from_indicators(indicators.into_iter());
+        let update = queue.update_from_indicators(indicators.into_iter());
 
+        assert!(update.changed);
+        assert!(!update.new_needs_input);
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.current().unwrap().session_id, session(1));
     }

@@ -2816,32 +2816,35 @@ impl notedeck::App for Dave {
 
         // Update focus queue from persisted indicator field
         let indicator_iter = self.session_manager.iter().map(|s| (s.id, s.indicator));
-        let new_needs_input = self.focus_queue.update_from_indicators(indicator_iter);
+        let queue_update = self.focus_queue.update_from_indicators(indicator_iter);
 
         // Vibrate on Android whenever a session transitions to NeedsInput
-        if new_needs_input {
+        if queue_update.new_needs_input {
             notedeck::platform::try_vibrate();
         }
 
-        // Suppress auto-steal while the user is typing (non-empty input)
-        let user_is_typing = self
-            .session_manager
-            .get_active()
-            .is_some_and(|s| !s.input.is_empty());
+        // Only auto-steal on queue transitions, not every frame.
+        // This lets the user manually switch sessions between transitions.
+        if queue_update.changed {
+            // Suppress auto-steal while the user is typing (non-empty input)
+            let user_is_typing = self
+                .session_manager
+                .get_active()
+                .is_some_and(|s| !s.input.is_empty());
 
-        // Process auto-steal focus mode
-        let stole_focus = update::process_auto_steal_focus(
-            &mut self.session_manager,
-            &mut self.focus_queue,
-            &mut self.scene,
-            self.show_scene,
-            self.auto_steal_focus && !user_is_typing,
-            &mut self.home_session,
-        );
+            let stole_focus = update::process_auto_steal_focus(
+                &mut self.session_manager,
+                &mut self.focus_queue,
+                &mut self.scene,
+                self.show_scene,
+                self.auto_steal_focus && !user_is_typing,
+                &mut self.home_session,
+            );
 
-        // Raise the OS window when auto-steal switches to a NeedsInput session
-        if stole_focus {
-            activate_app(ui.ctx());
+            // Raise the OS window when auto-steal switches to a NeedsInput session
+            if stole_focus {
+                activate_app(ui.ctx());
+            }
         }
 
         // Render UI and handle actions
