@@ -231,6 +231,9 @@ pub struct RoomUser {
     pub is_self: bool,
     /// Monotonic timestamp (seconds) of last presence update
     pub last_seen: f64,
+    /// Nostr event created_at of the latest accepted presence event.
+    /// Used to ignore out-of-order replaceable events.
+    pub event_created_at: u64,
     /// Runtime: renderbud scene object handle for avatar
     pub scene_object_id: Option<ObjectId>,
     /// Runtime: loaded model handle for avatar
@@ -248,6 +251,7 @@ impl RoomUser {
             update_time: 0.0,
             is_self: false,
             last_seen: 0.0,
+            event_created_at: 0,
             scene_object_id: None,
             model_handle: None,
         }

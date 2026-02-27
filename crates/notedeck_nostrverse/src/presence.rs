@@ -189,20 +189,27 @@ pub fn poll_presence(
         }
 
         let velocity = nostr_events::parse_presence_velocity(note);
+        let created_at = note.created_at();
 
         // Update or insert user
         if let Some(user) = users.iter_mut().find(|u| u.pubkey == pubkey) {
+            // Skip stale events — replaceable events can arrive out of order
+            if created_at <= user.event_created_at {
+                continue;
+            }
             // Update authoritative state; preserve display_position for smooth lerp
             user.position = position;
             user.velocity = velocity;
             user.update_time = now;
             user.last_seen = now;
+            user.event_created_at = created_at;
         } else {
             let mut user = RoomUser::new(pubkey, "anon".to_string(), position);
             user.velocity = velocity;
             user.display_position = position; // snap on first appearance
             user.update_time = now;
             user.last_seen = now;
+            user.event_created_at = created_at;
             users.push(user);
         }
         changed = true;
