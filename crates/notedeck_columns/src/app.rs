@@ -628,6 +628,29 @@ impl Damus {
         let active_col = self.columns(accounts).selected as usize;
         crate::toolbar::unseen_notification(self, accounts, active_col)
     }
+
+    /// Returns which toolbar tab matches the current active route.
+    /// 0=Home, 1=Search, 2=Notifications, None=no match
+    pub fn active_toolbar_tab(&self, accounts: &notedeck::Accounts) -> Option<u8> {
+        use crate::timeline::kind::ListKind;
+        use crate::timeline::TimelineKind;
+
+        let cols = self.columns(accounts);
+        let active_col = cols.selected as usize;
+        let top = cols.column(active_col).router().top();
+        let pk = accounts.get_selected_account().keypair().pubkey;
+
+        match top {
+            Route::Timeline(TimelineKind::List(ListKind::Contact(contact_pk)))
+                if contact_pk == pk =>
+            {
+                Some(0)
+            }
+            Route::Search => Some(1),
+            Route::Timeline(TimelineKind::Notifications(notif_pk)) if notif_pk == pk => Some(2),
+            _ => None,
+        }
+    }
 }
 
 fn get_note_options(args: ColumnsArgs, settings_handler: &mut SettingsHandler) -> NoteOptions {

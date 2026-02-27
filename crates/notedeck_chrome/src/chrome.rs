@@ -333,6 +333,23 @@ impl Chrome {
         }
     }
 
+    /// Returns which ChromeToolbarAction is currently "active" based on
+    /// the active app and its route. Used to highlight the current tab.
+    fn active_toolbar_tab(&self, accounts: &notedeck::Accounts) -> Option<ChromeToolbarAction> {
+        let active_app = &self.apps[self.active as usize];
+        match active_app {
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(_) => Some(ChromeToolbarAction::Chat),
+            NotedeckApp::Columns(columns) => match columns.active_toolbar_tab(accounts) {
+                Some(0) => Some(ChromeToolbarAction::Home),
+                Some(1) => Some(ChromeToolbarAction::Search),
+                Some(2) => Some(ChromeToolbarAction::Notifications),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub fn set_active(&mut self, app: i32) {
         self.active = app;
         if let Some(opened) = self.opened.get_mut(app as usize) {
@@ -438,19 +455,22 @@ impl Chrome {
             0.0
         };
 
-        let is_mobile = notedeck::ui::is_narrow(ui.ctx());
-        let toolbar_height = if is_mobile {
+        let is_narrow = notedeck::ui::is_narrow(ui.ctx());
+        let toolbar_height = if is_narrow {
             toolbar_visibility_height(skb_anim.skb_rect, ui)
         } else {
             0.0
         };
 
-        let unseen_notifications = if is_mobile {
-            self.get_columns_app()
+        let (unseen_notifications, active_toolbar_tab) = if is_narrow {
+            let unseen = self
+                .get_columns_app()
                 .map(|c| c.has_unseen_notifications(ctx.accounts))
-                .unwrap_or(false)
+                .unwrap_or(false);
+            let active = self.active_toolbar_tab(ctx.accounts);
+            (unseen, active)
         } else {
-            false
+            (false, None)
         };
 
         // if the soft keyboard is open, shrink the chrome contents
@@ -473,7 +493,8 @@ impl Chrome {
                 // mobile toolbar
                 strip.cell(|ui| {
                     if toolbar_height > 0.0 {
-                        toolbar_action = chrome_toolbar(ui, unseen_notifications);
+                        toolbar_action =
+                            chrome_toolbar(ui, unseen_notifications, active_toolbar_tab);
                     }
                 });
 
@@ -588,7 +609,11 @@ fn toolbar_visibility_height(skb_rect: Option<Rect>, ui: &mut Ui) -> f32 {
 }
 
 /// Render the Chrome mobile toolbar (Home, Chat, Search, Notifications).
-fn chrome_toolbar(ui: &mut Ui, unseen_notifications: bool) -> Option<ChromeToolbarAction> {
+fn chrome_toolbar(
+    ui: &mut Ui,
+    unseen_notifications: bool,
+    active_tab: Option<ChromeToolbarAction>,
+) -> Option<ChromeToolbarAction> {
     use egui_tabs::{TabColor, Tabs};
     use notedeck_ui::icons::{home_button, notifications_button, search_button};
 
@@ -637,25 +662,31 @@ fn chrome_toolbar(ui: &mut Ui, unseen_notifications: bool) -> Option<ChromeToolb
             let btn_size: f32 = 20.0;
 
             if index == home_index {
-                if home_button(ui, btn_size).clicked() {
+                let active = active_tab == Some(ChromeToolbarAction::Home);
+                if home_button(ui, btn_size, active).clicked() {
                     return Some(ChromeToolbarAction::Home);
                 }
             } else if Some(index) == chat_index {
                 #[cfg(feature = "messages")]
-                if notedeck_ui::icons::chat_button(ui, btn_size).clicked() {
-                    return Some(ChromeToolbarAction::Chat);
+                {
+                    let active = active_tab == Some(ChromeToolbarAction::Chat);
+                    if notedeck_ui::icons::chat_button(ui, btn_size, active).clicked() {
+                        return Some(ChromeToolbarAction::Chat);
+                    }
                 }
             } else if index == search_index {
+                let active = active_tab == Some(ChromeToolbarAction::Search);
                 if ui
-                    .add(search_button(ui.visuals().text_color(), 2.0, false))
+                    .add(search_button(ui.visuals().text_color(), 2.0, active))
                     .clicked()
                 {
                     return Some(ChromeToolbarAction::Search);
                 }
-            } else if index == notif_index
-                && notifications_button(ui, btn_size, unseen_notifications).clicked()
-            {
-                return Some(ChromeToolbarAction::Notifications);
+            } else if index == notif_index {
+                let active = active_tab == Some(ChromeToolbarAction::Notifications);
+                if notifications_button(ui, btn_size, active, unseen_notifications).clicked() {
+                    return Some(ChromeToolbarAction::Notifications);
+                }
             }
 
             None
