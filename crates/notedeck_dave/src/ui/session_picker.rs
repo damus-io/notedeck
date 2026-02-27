@@ -118,7 +118,7 @@ impl SessionPicker {
 
         // Handle Escape key or Ctrl+B to go back
         // B key requires Ctrl to avoid intercepting TextEdit input
-        if ui.input(|i| i.key_pressed(egui::Key::Escape))
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
             || (ctrl_held && ui.input(|i| i.key_pressed(egui::Key::B)))
         {
             return Some(SessionPickerAction::BackToDirectoryPicker);

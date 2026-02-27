@@ -124,7 +124,7 @@ fn handle_egui_events(
                         columns.select_left();
                     }
                     */
-                    egui::Key::BrowserBack | egui::Key::Escape => {
+                    egui::Key::BrowserBack => {
                         columns.get_selected_router().go_back();
                     }
                     _ => {}
@@ -181,6 +181,13 @@ fn try_process_event(
             wants_keyboard_input,
         )
     });
+
+    // Handle Escape separately: only consume the key if there's a route to go back to,
+    // otherwise let Chrome handle it (e.g. to open the side menu)
+    let can_go_back = current_columns.get_selected_router().routes().len() > 1;
+    if can_go_back && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        current_columns.get_selected_router().go_back();
+    }
 
     let selected_account_pk = *app_ctx.accounts.selected_account_pubkey();
     for (kind, timeline) in &mut damus.timeline_cache {
@@ -427,7 +434,11 @@ fn fullscreen_media_viewer_ui(
         .fullscreen(true)
         .ui(img_cache, jobs, ui);
 
-    if resp.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if resp.clicked()
+        || ui
+            .ctx()
+            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
         fullscreen_media_close(state);
     }
 }

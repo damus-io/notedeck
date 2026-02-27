@@ -388,7 +388,11 @@ impl DirectoryPicker {
             });
 
         // Handle Escape key (only if cancellation is allowed)
-        if has_sessions && ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+        if has_sessions
+            && ui
+                .ctx()
+                .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
             action = Some(DirectoryPickerAction::Cancelled);
         }
 

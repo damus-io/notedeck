@@ -271,7 +271,10 @@ impl<'a, 'd> PostView<'a, 'd> {
             return None;
         }
 
-        if ui.ctx().input(|r| r.key_pressed(egui::Key::Escape)) {
+        if ui
+            .ctx()
+            .input_mut(|r| r.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
             self.draft.buffer.delete_mention(mention.index);
             return None;
         }

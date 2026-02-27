@@ -431,7 +431,7 @@ fn inline_rename_ui(
     if edit.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
         Some(RenameOutcome::Confirmed(buf.clone()))
     } else if edit.lost_focus() {
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             Some(RenameOutcome::Cancelled)
         } else {
             Some(RenameOutcome::Confirmed(buf.clone()))

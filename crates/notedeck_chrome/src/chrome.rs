@@ -463,6 +463,16 @@ impl notedeck::App for Chrome {
             action.process(ctx, self, ui);
             self.nav.close();
         }
+
+        // Toggle the side menu on Escape if no app consumed the key
+        if ui
+            .ctx()
+            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.toggle();
+        }
+
+        // TODO: unify this constant with the columns side panel width. ui crate?
         AppResponse::none()
     }
 }

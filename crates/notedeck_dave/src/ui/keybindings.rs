@@ -62,12 +62,15 @@ pub fn check_keybindings(
     let is_agentic = ai_mode == AiMode::Agentic;
 
     // Escape in tentative state cancels the tentative mode (agentic only)
-    if is_agentic && in_tentative_state && ctx.input(|i| i.key_pressed(Key::Escape)) {
+    if is_agentic
+        && in_tentative_state
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape))
+    {
         return Some(KeyAction::CancelTentative);
     }
 
     // Escape otherwise works to interrupt AI (even when text input has focus)
-    if ctx.input(|i| i.key_pressed(Key::Escape)) {
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Escape)) {
         return Some(KeyAction::Interrupt);
     }
 
