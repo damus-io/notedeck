@@ -625,7 +625,7 @@ fn chrome_toolbar(ui: &mut Ui, unseen_notifications: bool) -> Option<ChromeToolb
     let notif_index = next_index;
     let tab_count = notif_index + 1;
 
-    let rs = Tabs::new(tab_count as i32)
+    let rs = Tabs::new(tab_count)
         .selected(0)
         .hover_bg(TabColor::none())
         .selected_fg(TabColor::none())
