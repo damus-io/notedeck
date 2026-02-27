@@ -1113,7 +1113,13 @@ fn handle_create_people_list(app: &mut Damus, ctx: &mut AppContext<'_>, col: usi
         return;
     };
 
-    notedeck::send_people_list_event(ctx.ndb, ctx.legacy_pool, kp, &name, &members);
+    notedeck::send_people_list_event(
+        ctx.ndb,
+        &mut ctx.remote.publisher(ctx.accounts),
+        kp,
+        &name,
+        &members,
+    );
 
     // Reset the people_lists cache so it picks up the new list
     app.view_state.people_lists = None;

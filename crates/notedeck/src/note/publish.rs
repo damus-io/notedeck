@@ -231,7 +231,7 @@ pub fn send_mute_event(
 
 pub fn send_people_list_event(
     ndb: &Ndb,
-    pool: &mut RelayPool,
+    publisher: &mut PublishApi<'_, '_>,
     kp: FilledKeypair,
     name: &str,
     members: &[Pubkey],
@@ -251,7 +251,7 @@ pub fn send_people_list_event(
         builder = builder.start_tag().tag_str("p").tag_str(&pk.hex());
     }
 
-    send_note_builder(builder, ndb, pool, kp);
+    publish_note_builder(builder, ndb, publisher, kp);
 }
 
 pub fn send_report_event(
