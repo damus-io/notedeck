@@ -15,6 +15,7 @@ pub mod session_list;
 pub mod session_picker;
 mod settings;
 mod top_buttons;
+pub mod worktree_creator;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
 pub use dave::{DaveAction, DaveResponse, DaveUi};
@@ -26,6 +27,7 @@ pub use scene::{AgentScene, SceneAction, SceneResponse};
 pub use session_list::{SessionListAction, SessionListUi};
 pub use session_picker::{SessionPicker, SessionPickerAction};
 pub use settings::{DaveSettingsPanel, SettingsPanelAction};
+pub use worktree_creator::{WorktreeCreator, WorktreeCreatorAction};
 
 // =============================================================================
 // Standalone UI Functions
@@ -221,6 +223,15 @@ pub fn host_picker_overlay_ui(
         }
     }
     OverlayResult::None
+}
+
+/// Render the worktree creator overlay UI.
+pub fn worktree_creator_overlay_ui(
+    creator: &mut WorktreeCreator,
+    ui: &mut egui::Ui,
+    available_backends: &[BackendType],
+) -> Option<WorktreeCreatorAction> {
+    creator.overlay_ui(ui, available_backends)
 }
 
 /// Brand color for a backend type.

@@ -4769,6 +4769,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui_extras",
+ "egui_nav",
  "enostr",
  "futures",
  "gethostname 1.1.0",

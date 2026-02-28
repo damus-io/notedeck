@@ -20,6 +20,8 @@ pub enum SessionListAction {
     DismissDone(SessionId),
     Duplicate(SessionId),
     Reset(SessionId),
+    NewWorktree(SessionId),
+    DeleteWorktree(SessionId),
 }
 
 /// UI component for displaying the session list sidebar
@@ -235,6 +237,8 @@ impl<'a> SessionListUi<'a> {
 
         let ctrl_held = self.ctrl_held;
         let is_agentic = session.ai_mode == AiMode::Agentic;
+        let confirm_id = egui::Id::new("confirm_delete_worktree").with(session.id);
+
         response.context_menu(|ui| {
             ui.horizontal(|ui| {
                 if ui.button("Rename").clicked() {
@@ -276,7 +280,33 @@ impl<'a> SessionListUi<'a> {
                     keybind_hint(ui, "Del");
                 }
             });
+            let is_git_repo = session
+                .agentic
+                .as_ref()
+                .and_then(|a| a.git_status.current())
+                .map(|r| r.is_ok())
+                .unwrap_or(false);
+            if is_git_repo && ui.button("New worktree from this session").clicked() {
+                action = Some(SessionListAction::NewWorktree(session.id));
+                ui.close_menu();
+            }
+            let is_worktree = is_git_repo
+                && session
+                    .cwd()
+                    .map(|p| crate::worktree::is_linked_worktree(p))
+                    .unwrap_or(false);
+            if is_worktree {
+                if let Some(a) = delete_worktree_menu_item(ui, session.id, confirm_id) {
+                    action = Some(a);
+                }
+            }
         });
+
+        // Reset confirmation state when the menu is closed.
+        if !response.context_menu_opened() {
+            ui.ctx().data_mut(|d| d.insert_temp(confirm_id, false));
+        }
+
         action
     }
 
@@ -609,4 +639,38 @@ fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, home_dir: &str, pos: egui::Pos2, m
     let cwd_color = ui.visuals().weak_text_color();
     ui.painter()
         .text(pos, egui::Align2::LEFT_TOP, &text, cwd_font, cwd_color);
+}
+
+/// Renders the "Delete worktree" context-menu item with an inline confirmation step.
+///
+/// First click shows "Delete this worktree? / Cancel / Delete".
+/// Confirmation state is stored in egui temp storage keyed per session.
+fn delete_worktree_menu_item(
+    ui: &mut egui::Ui,
+    session_id: SessionId,
+    confirm_id: egui::Id,
+) -> Option<SessionListAction> {
+    let confirming: bool = ui.ctx().data(|d| d.get_temp(confirm_id).unwrap_or(false));
+
+    let mut action = None;
+
+    if confirming {
+        ui.separator();
+        ui.label("Delete this worktree?");
+        ui.horizontal(|ui| {
+            if ui.button("Cancel").clicked() {
+                ui.ctx().data_mut(|d| d.insert_temp(confirm_id, false));
+                ui.close_menu();
+            }
+            if ui.button("Delete").clicked() {
+                action = Some(SessionListAction::DeleteWorktree(session_id));
+                ui.ctx().data_mut(|d| d.insert_temp(confirm_id, false));
+                ui.close_menu();
+            }
+        });
+    } else if ui.button("Delete worktree").clicked() {
+        ui.ctx().data_mut(|d| d.insert_temp(confirm_id, true));
+    }
+
+    action
 }

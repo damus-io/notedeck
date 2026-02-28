@@ -24,6 +24,7 @@ mod tools;
 mod ui;
 mod update;
 mod vec3;
+pub mod worktree;
 
 use agent_status::AgentStatus;
 use backend::{
@@ -62,7 +63,8 @@ pub use ui::{
     check_keybindings, AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi,
     DirectoryPicker, DirectoryPickerAction, KeyAction, KeyActionResult, OverlayResult, SceneAction,
     SceneResponse, SceneViewAction, SendActionResult, SessionListAction, SessionListUi,
-    SessionPicker, SessionPickerAction, SettingsPanelAction, UiActionResult,
+    SessionPicker, SessionPickerAction, SettingsPanelAction, UiActionResult, WorktreeCreator,
+    WorktreeCreatorAction,
 };
 pub use vec3::Vec3;
 
@@ -108,7 +110,7 @@ struct PendingSpawnCommand {
 /// Represents which full-screen overlay (if any) is currently active.
 /// Data-carrying variants hold the state needed for that step in the
 /// session-creation flow, replacing scattered `pending_*` fields.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Default)]
 pub enum DaveOverlay {
     #[default]
     None,
@@ -123,6 +125,8 @@ pub enum DaveOverlay {
     BackendPicker {
         cwd: PathBuf,
     },
+    /// User requested a new worktree from an existing session.
+    WorktreeCreator(Box<ui::WorktreeCreator>),
 }
 
 pub struct Dave {
@@ -197,6 +201,7 @@ pub struct Dave {
     /// Sessions pending deletion state event publication.
     /// Populated in delete_session(), drained in the update loop where AppContext is available.
     pending_deletions: Vec<DeletedSessionInfo>,
+    pending_worktree_removals: Vec<PendingWorktreeRemoval>,
     /// Thread summaries pending processing. Queued by summarize_thread(),
     /// resolved in update() where AppContext (ndb) is available.
     pending_summaries: Vec<enostr::NoteId>,
@@ -217,6 +222,22 @@ pub struct Dave {
 use update::PermissionPublish;
 
 use crate::events::try_process_events_core;
+
+/// Async git worktree removal: spawns a background thread and polls the result.
+struct PendingWorktreeRemoval {
+    session_id: SessionId,
+    rx: std::sync::mpsc::Receiver<Result<(), String>>,
+}
+
+impl PendingWorktreeRemoval {
+    fn spawn(session_id: SessionId, cwd: std::path::PathBuf) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(worktree::remove_git_worktree(&cwd));
+        });
+        Self { session_id, rx }
+    }
+}
 
 /// Info captured from a session before deletion, for publishing a "deleted" state event.
 struct DeletedSessionInfo {
@@ -517,6 +538,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_perm_responses: Vec::new(),
             pending_mode_commands: Vec::new(),
             pending_deletions: Vec::new(),
+            pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
             hostname,
             pns_relay_url,
@@ -962,6 +984,37 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 return DaveResponse::default();
             }
+            DaveOverlay::WorktreeCreator(mut creator) => {
+                match ui::worktree_creator_overlay_ui(&mut creator, ui, &self.available_backends) {
+                    Some(ui::WorktreeCreatorAction::Created {
+                        worktree_path,
+                        branch,
+                        is_new_branch,
+                        backend_type,
+                    }) => {
+                        match worktree::create_git_worktree(
+                            &creator.from_cwd,
+                            &worktree_path,
+                            &branch,
+                            is_new_branch,
+                        ) {
+                            Ok(()) => {
+                                self.create_session_with_cwd(worktree_path, backend_type);
+                            }
+                            Err(msg) => {
+                                creator.error = Some(msg);
+                                self.active_overlay = DaveOverlay::WorktreeCreator(creator);
+                            }
+                        }
+                    }
+                    Some(ui::WorktreeCreatorAction::Cancelled) => { /* overlay closes */ }
+                    None => {
+                        self.active_overlay = DaveOverlay::WorktreeCreator(creator);
+                    }
+                }
+
+                return DaveResponse::default();
+            }
             DaveOverlay::None => {}
         }
 
@@ -1059,6 +1112,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     self.duplicate_session(id);
                     self.delete_session(id);
                 }
+                SessionListAction::NewWorktree(session_id) => {
+                    if let Some((cwd, backend_type)) = self
+                        .session_manager
+                        .get(session_id)
+                        .and_then(|s| s.cwd().cloned().map(|c| (c, s.backend_type)))
+                    {
+                        self.active_overlay = DaveOverlay::WorktreeCreator(Box::new(
+                            ui::WorktreeCreator::new(session_id, cwd, backend_type),
+                        ));
+                    }
+                }
+                SessionListAction::DeleteWorktree(session_id) => {
+                    if let Some(cwd) = self
+                        .session_manager
+                        .get(session_id)
+                        .and_then(|s| s.cwd().cloned())
+                    {
+                        self.pending_worktree_removals
+                            .push(PendingWorktreeRemoval::spawn(session_id, cwd));
+                    }
+                }
             }
         }
 
@@ -1113,6 +1187,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     self.duplicate_session(id);
                     self.delete_session(id);
                     self.show_session_list = false;
+                }
+                SessionListAction::NewWorktree(session_id) => {
+                    if let Some((cwd, backend_type)) = self
+                        .session_manager
+                        .get(session_id)
+                        .and_then(|s| s.cwd().cloned().map(|c| (c, s.backend_type)))
+                    {
+                        self.active_overlay = DaveOverlay::WorktreeCreator(Box::new(
+                            ui::WorktreeCreator::new(session_id, cwd, backend_type),
+                        ));
+                        self.show_session_list = false;
+                    }
+                }
+                SessionListAction::DeleteWorktree(session_id) => {
+                    if let Some(cwd) = self
+                        .session_manager
+                        .get(session_id)
+                        .and_then(|s| s.cwd().cloned())
+                    {
+                        self.pending_worktree_removals
+                            .push(PendingWorktreeRemoval::spawn(session_id, cwd));
+                    }
                 }
             }
         }
@@ -1406,6 +1502,32 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Publish "deleted" state events for sessions that were deleted.
     /// Called in the update loop where AppContext is available.
+    fn poll_pending_worktree_removal(&mut self) {
+        let mut completed = Vec::new();
+        self.pending_worktree_removals
+            .retain(|p| match p.rx.try_recv() {
+                Ok(r) => {
+                    completed.push((p.session_id, Ok(r)));
+                    false
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    completed.push((
+                        p.session_id,
+                        Err("worktree removal thread disconnected".to_string()),
+                    ));
+                    false
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            });
+
+        for (session_id, result) in completed {
+            match result {
+                Ok(Ok(())) => self.delete_session(session_id),
+                Ok(Err(msg)) | Err(msg) => tracing::error!("failed to remove worktree: {msg}"),
+            }
+        }
+    }
+
     fn publish_pending_deletions(&mut self, ctx: &mut AppContext<'_>) {
         if self.pending_deletions.is_empty() {
             return;
@@ -3063,6 +3185,9 @@ impl notedeck::App for Dave {
 
         // Publish kind-31988 state events for sessions whose status changed
         self.publish_dirty_session_states(ctx);
+
+        // Complete async worktree removal and delete session on success
+        self.poll_pending_worktree_removal();
 
         // Publish "deleted" state events for recently deleted sessions
         self.publish_pending_deletions(ctx);
