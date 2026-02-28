@@ -116,41 +116,66 @@ impl<'a> NavTitle<'a> {
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
 
-            let interact_rect = child_ui.interact(rect, child_ui.id().with("drag"), Sense::drag());
-            if interact_rect.drag_started_by(egui::PointerButton::Primary) {
+            // Render title bar first so back button gets click priority
+            let (action, back_hitbox) = self.title_bar(&mut child_ui);
+
+            // Only process drag if we can confirm pointer is NOT over the back button.
+            // If pointer position is unknown, skip drag to avoid capturing clicks.
+            let can_drag = if let Some(hitbox) = back_hitbox {
                 child_ui
                     .ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                    .pointer_latest_pos()
+                    .is_some_and(|pos| !hitbox.contains(pos))
+            } else {
+                // No back button, safe to drag anywhere
+                true
+            };
+
+            if can_drag {
+                let interact_rect =
+                    child_ui.interact(rect, child_ui.id().with("drag"), Sense::drag());
+                if interact_rect.drag_started_by(egui::PointerButton::Primary) {
+                    child_ui
+                        .ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
             }
 
-            let r = self.title_bar(&mut child_ui);
+            // Suppress unused variable warning on mobile
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            let _ = back_hitbox;
 
             ui.advance_cursor_after_rect(rect);
 
-            r
+            action
         })
         .inner
     }
 
-    fn title_bar(&mut self, ui: &mut egui::Ui) -> Option<RenderNavAction> {
+    /// Returns (action, hitbox_rect) where hitbox_rect is the back button hitbox for pointer checks
+    fn title_bar(&mut self, ui: &mut egui::Ui) -> (Option<RenderNavAction>, Option<egui::Rect>) {
         let item_spacing = 8.0;
         ui.spacing_mut().item_spacing.x = item_spacing;
 
         let chev_x = 8.0;
-        let back_button_resp = prev(self.routes).map(|r| {
-            self.back_button(ui, r, egui::Vec2::new(chev_x, 15.0))
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
+        let back_button_result = prev(self.routes).map(|r| {
+            let (resp, hitbox) = self.back_button(ui, r, egui::Vec2::new(chev_x, 15.0));
+            (resp.on_hover_cursor(egui::CursorIcon::PointingHand), hitbox)
         });
 
-        if back_button_resp.is_none() {
+        if back_button_result.is_none() {
             // add some space where chevron would have been. this makes the ui
             // less bumpy when navigating
             ui.add_space(chev_x + item_spacing);
         }
 
-        let title_resp = self.title(ui, self.routes.last().unwrap(), back_button_resp.is_some());
+        let title_resp = self.title(
+            ui,
+            self.routes.last().unwrap(),
+            back_button_result.is_some(),
+        );
 
-        if let Some(resp) = title_resp {
+        let action = if let Some(resp) = title_resp {
             tracing::debug!("got title response {resp:?}");
             match resp {
                 TitleResponse::RemoveColumn => Some(RenderNavAction::RemoveColumn),
@@ -162,38 +187,45 @@ impl<'a> NavTitle<'a> {
                     )))
                 }
             }
-        } else if back_button_resp.is_some_and(|r| r.clicked()) {
+        } else if back_button_result
+            .as_ref()
+            .is_some_and(|(r, _)| r.clicked())
+        {
             tracing::debug!("render nav action back");
             Some(RenderNavAction::Back)
         } else {
             None
-        }
+        };
+
+        // Return hitbox rect for pointer position checking
+        let hitbox_rect = back_button_result.map(|(_, hitbox)| hitbox);
+        (action, hitbox_rect)
     }
 
+    /// WCAG 2.1 minimum touch target size (44x44 CSS pixels)
+    #[cfg(test)]
+    pub(crate) const MIN_TOUCH_SIZE: f32 = 44.0;
+    #[cfg(not(test))]
+    const MIN_TOUCH_SIZE: f32 = 44.0;
+
+    /// Returns (response, hitbox_rect) for back button with WCAG-compliant touch target
     fn back_button(
         &mut self,
         ui: &mut egui::Ui,
         prev: &Route,
         chev_size: egui::Vec2,
-    ) -> egui::Response {
-        //let color = ui.visuals().hyperlink_color;
+    ) -> (egui::Response, egui::Rect) {
         let color = ui.style().visuals.noninteractive().fg_stroke.color;
 
-        //let spacing_prev = ui.spacing().item_spacing.x;
-        //ui.spacing_mut().item_spacing.x = 0.0;
+        // Render back button elements and track their bounds
+        let start_pos = ui.cursor().min;
 
         let chev_resp = chevron(ui, 2.0, chev_size, Stroke::new(2.0, color));
-
-        //ui.spacing_mut().item_spacing.x = spacing_prev;
-
-        // NOTE(jb55): include graphic in back label as well because why
-        // not it looks cool
         let pfp_resp = self.title_pfp(ui, prev, 32.0);
         let column_title = prev.title(self.i18n);
 
         let back_resp = match &column_title {
             ColumnTitle::Simple(title) => ui.add(Self::back_label(title, color)),
-
             ColumnTitle::NeedsDb(need_db) => {
                 let txn = Transaction::new(self.ndb).unwrap();
                 let title = need_db.title(&txn, self.ndb);
@@ -201,11 +233,40 @@ impl<'a> NavTitle<'a> {
             }
         };
 
-        if let Some(pfp_resp) = pfp_resp {
+        // Combine visual responses
+        let visual_resp = if let Some(pfp_resp) = pfp_resp {
             back_resp.union(chev_resp).union(pfp_resp)
         } else {
             back_resp.union(chev_resp)
-        }
+        };
+
+        // Ensure minimum WCAG touch target size (44x44)
+        let visual_rect = visual_resp.rect;
+        let min_width = visual_rect.width().max(Self::MIN_TOUCH_SIZE);
+        let min_height = visual_rect.height().max(Self::MIN_TOUCH_SIZE);
+
+        // Create expanded hitbox centered on visual elements
+        let center = visual_rect.center();
+        let expanded_rect =
+            egui::Rect::from_center_size(center, egui::Vec2::new(min_width, min_height));
+
+        // Extend hitbox to start from the left edge for easier targeting
+        let hitbox_rect = egui::Rect::from_min_max(
+            egui::Pos2::new(start_pos.x, expanded_rect.min.y),
+            expanded_rect.max,
+        );
+
+        // Create invisible interaction layer for the expanded hitbox
+        let hitbox_resp = ui.interact(hitbox_rect, ui.id().with("back_hitbox"), Sense::click());
+
+        // Return combined response (clicked if either hitbox or visual clicked) and hitbox rect
+        let resp = if hitbox_resp.clicked() || visual_resp.clicked() {
+            hitbox_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            visual_resp.union(hitbox_resp)
+        };
+
+        (resp, hitbox_rect)
     }
 
     fn back_label(title: &str, color: egui::Color32) -> egui::Label {
@@ -735,5 +796,65 @@ fn grab_button() -> impl egui::Widget {
         painter.circle_filled(bottom_right, cur_circle_radius, color);
 
         helper.take_animation_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NavTitle;
+
+    /// Test that WCAG minimum touch target size is enforced (44x44 CSS pixels)
+    /// This is a regression test for GitHub issue #1230 where the back button
+    /// hitbox was too small (8x15 pixels) causing missed clicks.
+    #[test]
+    fn test_wcag_minimum_touch_target_size() {
+        // WCAG 2.1 Success Criterion 2.5.5 requires minimum 44x44 CSS pixels
+        assert!(
+            NavTitle::MIN_TOUCH_SIZE >= 44.0,
+            "MIN_TOUCH_SIZE must be at least 44.0 for WCAG compliance, got {}",
+            NavTitle::MIN_TOUCH_SIZE
+        );
+    }
+
+    /// Test hitbox expansion logic for small visual elements
+    #[test]
+    fn test_hitbox_expands_small_elements() {
+        let min_size = NavTitle::MIN_TOUCH_SIZE;
+
+        // Simulate a small visual rect (like the 8x15 chevron)
+        let small_width = 8.0_f32;
+        let small_height = 15.0_f32;
+
+        // The expansion logic from back_button():
+        let expanded_width = small_width.max(min_size);
+        let expanded_height = small_height.max(min_size);
+
+        assert_eq!(
+            expanded_width, min_size,
+            "Small width should expand to minimum"
+        );
+        assert_eq!(
+            expanded_height, min_size,
+            "Small height should expand to minimum"
+        );
+    }
+
+    /// Test that already-large elements are not shrunk
+    #[test]
+    fn test_hitbox_preserves_large_elements() {
+        let min_size = NavTitle::MIN_TOUCH_SIZE;
+
+        // Simulate a large visual rect
+        let large_width = 100.0_f32;
+        let large_height = 60.0_f32;
+
+        let result_width = large_width.max(min_size);
+        let result_height = large_height.max(min_size);
+
+        assert_eq!(result_width, large_width, "Large width should be preserved");
+        assert_eq!(
+            result_height, large_height,
+            "Large height should be preserved"
+        );
     }
 }

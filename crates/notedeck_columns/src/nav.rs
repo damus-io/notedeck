@@ -231,15 +231,27 @@ fn process_popup_resp(
         process_result = process_render_nav_action(app, ctx, ui, col, nav_action);
     }
 
-    if let Some(NavAction::Returned(_)) = action.action {
-        let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
-        if let Some(after_action) = column.sheet_router.after_action.clone() {
-            column.router_mut().route_to(after_action);
+    if let Some(ref nav_action) = action.action {
+        match nav_action {
+            NavAction::Returned(_) => {
+                let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
+                if let Some(after_action) = column.sheet_router.after_action.clone() {
+                    column.router_mut().route_to(after_action);
+                }
+                column.sheet_router.clear();
+            }
+            NavAction::Navigating => {
+                let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
+                column.sheet_router.navigating = false;
+            }
+            NavAction::Returning(_) => {
+                // Request continuous repaints during the return animation so it
+                // completes without requiring additional input events (fixes
+                // sheet animations stalling on event-driven platforms)
+                ui.ctx().request_repaint();
+            }
+            _ => {}
         }
-        column.sheet_router.clear();
-    } else if let Some(NavAction::Navigating) = action.action {
-        let column = app.columns_mut(ctx.i18n, ctx.accounts).column_mut(col);
-        column.sheet_router.navigating = false;
     }
 
     process_result
@@ -327,7 +339,12 @@ fn process_nav_resp(
             }
 
             NavAction::Dragging => {}
-            NavAction::Returning(_) => {}
+            NavAction::Returning(_) => {
+                // Request continuous repaints during the return animation so it
+                // completes without requiring additional input events (fixes
+                // two-click-to-go-back on Linux event-driven rendering)
+                ui.ctx().request_repaint();
+            }
             NavAction::Resetting => {}
             NavAction::Navigating => {
                 // since we are navigating, we should set this column as
@@ -629,10 +646,24 @@ fn process_render_nav_action(
     if let Some(action) = router_action {
         let cols =
             get_active_columns_mut(ctx.i18n, ctx.accounts, &mut app.decks_cache).column_mut(col);
+
+        // Check returning state BEFORE processing to detect transitions
+        let was_returning = cols.router.returning() || cols.sheet_router.returning;
+
         let router = &mut cols.router;
         let sheet_router = &mut cols.sheet_router;
 
-        action.process_router_action(router, sheet_router)
+        let result = action.process_router_action(router, sheet_router);
+
+        // Request repaint when returning state transitions from false to true.
+        // This is critical for event-driven platforms (Android) where the first
+        // frame that sets returning=true won't emit NavAction::Returning yet.
+        let is_returning = router.returning() || sheet_router.returning;
+        if !was_returning && is_returning {
+            ui.ctx().request_repaint();
+        }
+
+        result
     } else {
         None
     }
