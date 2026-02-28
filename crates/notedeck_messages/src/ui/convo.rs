@@ -430,6 +430,10 @@ fn self_chat_bubble(
     let bubble_fill = ui.visuals().selection.bg_fill;
     let r = ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
         chat_bubble(ui, msg_type, true, bubble_fill, |ui| {
+            // Override selection highlight so it's visible against the
+            // bubble background (which is itself the default selection color)
+            ui.visuals_mut().selection.bg_fill = bubble_fill.linear_multiply(0.7);
+
             ui.with_layout(Layout::top_down(Align::Max), |ui| {
                 ui.add(
                     egui::Label::new(RichText::new(message).color(ui.visuals().text_color()))
