@@ -100,10 +100,10 @@ const DEMO_SPACE: &str = r#"(space (name "Demo Space")
       (tileset "grass" "stone" "water" "sand" "dirt" "snow" "wood")
       (data "0 0 0 0 0 0 0 0 0 0 0 1 1 1 0 0 4 4 4 0 0 1 1 1 0 0 4 4 4 0 0 0 0 0 0 0 0 0 0 0 3 3 3 0 0 0 0 5 5 5 3 3 3 0 0 0 0 5 5 5 0 0 0 0 2 2 0 0 0 0 0 0 0 0 2 2 0 0 0 0 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6"))
     (table (id obj1) (name "Ironwood Table")
-           (model-url "/home/jb55/var/models/ironwood/ironwood.glb")
+           (model-url "https://cdn.jb55.com/s/ironwood.glb")
            (position 0 0 0))
     (prop (id obj2) (name "Water Bottle")
-          (model-url "/home/jb55/var/models/WaterBottle.glb")
+          (model-url "https://cdn.jb55.com/s/WaterBottle.glb")
           (location top-of obj1))))"#;
 
 /// Event kinds for nostrverse
