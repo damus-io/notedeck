@@ -207,10 +207,6 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      # Build
-      - name: Build (Native Only)
-        run: cargo build --release
-
       # Create packages directory
       - name: Create packages directory
         run: mkdir packages
@@ -231,43 +227,11 @@ jobs:
           Write-Output "Building for target: $target"
           cargo build --release --target=$target
 
-      # Generate ISS Script
-      - name: Generate Inno Setup Script
-        shell: pwsh
-        run: |
-          $arch = "${{ matrix.arch }}"
-          $issContent = @"
-          [Setup]
-          AppName=Damus Notedeck
-          AppVersion=0.1
-          DefaultDirName={pf}\Notedeck
-          DefaultGroupName=Damus Notedeck
-          OutputDir=..\packages\$arch
-          OutputBaseFilename=DamusNotedeckInstaller
-          Compression=lzma
-          SolidCompression=yes
-
-          [Files]
-          Source: "..\target\$arch-pc-windows-msvc\release\notedeck.exe"; DestDir: "{app}"; Flags: ignoreversion
-
-          [Icons]
-          Name: "{group}\Damus Notedeck"; Filename: "{app}\notedeck.exe"
-
-          [Run]
-          Filename: "{app}\notedeck.exe"; Description: "Launch Damus Notedeck"; Flags: nowait postinstall skipifsilent
-          "@
-          Set-Content -Path "scripts/windows-installer-$arch.iss" -Value $issContent
-
       # Build Installer
       - name: Run Inno Setup Script
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "scripts\windows-installer-${{ matrix.arch }}.iss"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DBuildArch=${{ matrix.arch }} "scripts\windows-installer.iss"
 
-      # Move output
-      - name: Move Inno Script outputs to architecture-specific folder
-        run: |
-          New-Item -ItemType Directory -Force -Path packages\${{ matrix.arch }}
-          Move-Item -Path packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe -Destination packages\${{ matrix.arch }}\DamusNotedeckInstaller.exe
       # Upload the installer as an artifact
       - name: Upload Installer
         uses: actions/upload-artifact@v4
