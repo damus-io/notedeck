@@ -411,6 +411,7 @@ impl<'a> DaveUi<'a> {
                                                 self.usage,
                                                 self.context_window,
                                                 self.last_activity,
+                                                self.chat.len(),
                                                 ui,
                                             )
                                         })
@@ -1484,6 +1485,7 @@ fn status_bar_ui(
     usage: Option<&crate::messages::UsageInfo>,
     context_window: u64,
     last_activity: Option<std::time::Instant>,
+    message_count: usize,
     ui: &mut egui::Ui,
 ) -> Option<DaveAction> {
     let snapshot = git_status
@@ -1519,6 +1521,11 @@ fn status_bar_ui(
                                 );
                             }
                             usage_bar_ui(usage, context_window, ui);
+                            ui.label(
+                                egui::RichText::new(format!("{} msgs", message_count))
+                                    .size(10.0)
+                                    .color(ui.visuals().weak_text_color()),
+                            );
                         }
                         badge_action
                     })
@@ -1540,6 +1547,11 @@ fn status_bar_ui(
                             );
                         }
                         usage_bar_ui(usage, context_window, ui);
+                        ui.label(
+                            egui::RichText::new(format!("{} msgs", message_count))
+                                .size(10.0)
+                                .color(ui.visuals().weak_text_color()),
+                        );
                         badge_action
                     })
                     .inner
