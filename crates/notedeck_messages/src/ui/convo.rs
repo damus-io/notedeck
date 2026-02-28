@@ -9,7 +9,11 @@ use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
     name::get_display_name, tr, ui::is_narrow, Images, Localization, MediaJobSender, NostrName,
 };
-use notedeck_ui::{include_input, ProfilePic};
+use egui_winit::clipboard::Clipboard;
+use notedeck_ui::{
+    context_menu::{input_context, PasteBehavior},
+    ProfilePic,
+};
 
 use crate::{
     cache::{
@@ -28,6 +32,7 @@ pub struct ConversationUi<'a> {
     jobs: &'a MediaJobSender,
     img_cache: &'a mut Images,
     i18n: &'a mut Localization,
+    clipboard: &'a mut Clipboard,
 }
 
 impl<'a> ConversationUi<'a> {
@@ -38,6 +43,7 @@ impl<'a> ConversationUi<'a> {
         jobs: &'a MediaJobSender,
         img_cache: &'a mut Images,
         i18n: &'a mut Localization,
+        clipboard: &'a mut Clipboard,
     ) -> Self {
         Self {
             conversation,
@@ -46,6 +52,7 @@ impl<'a> ConversationUi<'a> {
             jobs,
             img_cache,
             i18n,
+            clipboard,
         }
     }
 
@@ -61,8 +68,13 @@ impl<'a> ConversationUi<'a> {
                 let base_height = 44.0; // padding + margin
                 let composer_height = base_height + (line_count as f32 * line_height);
                 ui.allocate_ui(vec2(ui.available_width(), composer_height), |ui| {
-                    let comp_resp =
-                        conversation_composer(ui, self.state, self.conversation.id, self.i18n);
+                    let comp_resp = conversation_composer(
+                        ui,
+                        self.state,
+                        self.conversation.id,
+                        self.i18n,
+                        self.clipboard,
+                    );
                     if action.is_none() {
                         action = comp_resp.action;
                     }
@@ -277,6 +289,7 @@ fn conversation_composer(
     state: &mut ConversationState,
     conversation_id: ConversationId,
     i18n: &mut Localization,
+    clipboard: &mut Clipboard,
 ) -> ComposerResponse {
     {
         let rect = ui.available_rect_before_wrap();
@@ -324,7 +337,13 @@ fn conversation_composer(
                         restore_widgets_corner_rad(ui, old);
                         send = text_resp.has_focus()
                             && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);
-                        include_input(ui, &text_resp);
+                        input_context(
+                            ui,
+                            &text_resp,
+                            clipboard,
+                            &mut state.composer,
+                            PasteBehavior::Append,
+                        );
                         composer_has_focus = text_resp.has_focus();
                     });
 
@@ -618,6 +637,7 @@ pub fn conversation_ui(
     img_cache: &mut Images,
     i18n: &mut Localization,
     selected_pubkey: &Pubkey,
+    clipboard: &mut Clipboard,
 ) -> Option<MessagesAction> {
     let Some(id) = cache.active else {
         title_label(
@@ -638,5 +658,6 @@ pub fn conversation_ui(
 
     let state = states.get_or_insert(id);
 
-    ConversationUi::new(conversation, state, ndb, jobs, img_cache, i18n).ui(ui, selected_pubkey)
+    ConversationUi::new(conversation, state, ndb, jobs, img_cache, i18n, clipboard)
+        .ui(ui, selected_pubkey)
 }

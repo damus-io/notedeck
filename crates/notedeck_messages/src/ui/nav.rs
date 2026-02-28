@@ -1,5 +1,6 @@
 use egui::{CornerRadius, CursorIcon, Frame, Margin, Sense, Stroke};
 use egui_nav::{NavResponse, RouteResponse};
+use egui_winit::clipboard::Clipboard;
 use enostr::Pubkey;
 use nostrdb::Ndb;
 use notedeck::{
@@ -33,6 +34,7 @@ pub fn render_nav(
     img_cache: &mut Images,
     contacts: &ContactState,
     i18n: &mut Localization,
+    clipboard: &mut Clipboard,
 ) -> NavResponse<Option<MessagesAction>> {
     ui.painter().rect(
         ui.available_rect_before_wrap(),
@@ -87,6 +89,7 @@ pub fn render_nav(
                     img_cache,
                     contacts,
                     i18n,
+                    clipboard,
                 )
             }
         })
@@ -104,6 +107,7 @@ fn render_nav_body(
     img_cache: &mut Images,
     contacts: &ContactState,
     i18n: &mut Localization,
+    clipboard: &mut Clipboard,
 ) -> RouteResponse<Option<MessagesAction>> {
     let response = match top {
         Route::ConvoList => {
@@ -154,6 +158,7 @@ fn render_nav_body(
             img_cache,
             i18n,
             selected_pubkey,
+            clipboard,
         ),
     };
 

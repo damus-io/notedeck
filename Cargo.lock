@@ -4798,6 +4798,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "egui",
+ "egui-winit",
  "egui_extras",
  "egui_nav",
  "egui_virtual_list",

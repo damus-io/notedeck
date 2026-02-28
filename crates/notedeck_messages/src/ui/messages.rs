@@ -1,5 +1,6 @@
 use egui::{Frame, Layout, Margin};
 use egui_extras::{Size, StripBuilder};
+use egui_winit::clipboard::Clipboard;
 use enostr::Pubkey;
 use nostrdb::Ndb;
 use notedeck::{
@@ -25,6 +26,7 @@ pub fn desktop_messages_ui(
     settings: &Settings,
     contacts: &ContactState,
     i18n: &mut Localization,
+    clipboard: &mut Clipboard,
 ) -> MessagesUiResponse {
     let mut nav_resp = None;
     let mut convo_resp = None;
@@ -46,6 +48,7 @@ pub fn desktop_messages_ui(
                     img_cache,
                     contacts,
                     i18n,
+                    clipboard,
                 ));
             });
 
@@ -82,6 +85,7 @@ pub fn desktop_messages_ui(
                                 img_cache,
                                 i18n,
                                 selected_pubkey,
+                                clipboard,
                             );
                         });
                     });
@@ -107,6 +111,7 @@ pub fn narrow_messages_ui(
     settings: &Settings,
     contacts: &ContactState,
     i18n: &mut Localization,
+    clipboard: &mut Clipboard,
 ) -> MessagesUiResponse {
     let nav = render_nav(
         ui,
@@ -120,6 +125,7 @@ pub fn narrow_messages_ui(
         img_cache,
         contacts,
         i18n,
+        clipboard,
     );
 
     MessagesUiResponse {
@@ -141,6 +147,7 @@ pub fn messages_ui(
     settings: &Settings,
     contacts: &ContactState,
     i18n: &mut Localization,
+    clipboard: &mut Clipboard,
 ) -> MessagesUiResponse {
     if is_narrow(ui.ctx()) {
         narrow_messages_ui(
@@ -155,6 +162,7 @@ pub fn messages_ui(
             settings,
             contacts,
             i18n,
+            clipboard,
         )
     } else {
         desktop_messages_ui(
@@ -169,6 +177,7 @@ pub fn messages_ui(
             settings,
             contacts,
             i18n,
+            clipboard,
         )
     }
 }

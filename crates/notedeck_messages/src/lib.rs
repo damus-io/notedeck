@@ -143,6 +143,7 @@ impl App for MessagesApp {
             ctx.settings.get_settings_mut(),
             contacts_state,
             ctx.i18n,
+            ctx.clipboard,
         );
         let action = process_messages_ui_response(
             resp,
