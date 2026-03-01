@@ -773,6 +773,7 @@ fn handle_codex_message(
                         output_tokens: usage.token_usage.total.output_tokens as u64,
                         num_turns: *turn_count,
                         cost_usd: None,
+                        ..Default::default()
                     };
                     let _ = response_tx.send(DaveApiResponse::QueryComplete(info));
                     ctx.request_repaint();

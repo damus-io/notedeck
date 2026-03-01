@@ -331,20 +331,23 @@ pub struct CompactionInfo {
     pub pre_tokens: u64,
 }
 
-/// Usage metrics from a completed query's Result message
+/// Usage metrics from a query's usage object (per-turn or cumulative)
 #[derive(Debug, Clone, Default)]
 pub struct UsageInfo {
     pub input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
+    pub cache_read_input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: Option<f64>,
     pub num_turns: u32,
 }
 
 impl UsageInfo {
-    /// Context window fill: only input tokens consume context space.
-    /// Output tokens are generated from the context, not part of it.
+    /// Total tokens occupying the context window for this request.
+    /// Includes uncached tokens, cache-creation tokens, and cache-read tokens —
+    /// all three contribute to context window consumption.
     pub fn context_tokens(&self) -> u64 {
-        self.input_tokens
+        self.input_tokens + self.cache_creation_input_tokens + self.cache_read_input_tokens
     }
 }
 
@@ -382,7 +385,9 @@ pub enum DaveApiResponse {
     CompactionStarted,
     /// Conversation compaction completed with token info
     CompactionComplete(CompactionInfo),
-    /// Query completed with usage metrics
+    /// Per-turn usage update from an AssistantMessage (accurate context window snapshot)
+    UsageUpdate(UsageInfo),
+    /// Query completed with usage metrics (cumulative totals, cost, and turn count)
     QueryComplete(UsageInfo),
 }
 

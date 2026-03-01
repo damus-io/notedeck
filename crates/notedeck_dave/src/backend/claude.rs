@@ -322,6 +322,25 @@ async fn session_actor(
                                 Some(Ok(message)) => {
                                     match message {
                                         ClaudeMessage::Assistant(assistant_msg) => {
+                                            // Emit a per-turn UsageUpdate so the context bar
+                                            // reflects the current context window state.
+                                            // input_tokens alone is wrong when caching is active —
+                                            // actual context = input + cache_creation + cache_read.
+                                            if let Some(usage) = &assistant_msg.message.usage {
+                                                let extract = |key: &str| {
+                                                    usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
+                                                };
+                                                let usage_info = crate::messages::UsageInfo {
+                                                    input_tokens: extract("input_tokens"),
+                                                    cache_creation_input_tokens: extract("cache_creation_input_tokens"),
+                                                    cache_read_input_tokens: extract("cache_read_input_tokens"),
+                                                    output_tokens: extract("output_tokens"),
+                                                    ..Default::default()
+                                                };
+                                                let _ = response_tx.send(DaveApiResponse::UsageUpdate(usage_info));
+                                                ctx.request_repaint();
+                                            }
+
                                             for block in &assistant_msg.message.content {
                                                 if let ContentBlock::ToolUse(ToolUseBlock { id, name, input }) = block {
                                                     pending_tools.insert(id.clone(), (name.clone(), input.clone()));
@@ -389,26 +408,27 @@ async fn session_actor(
                                                 result_msg.total_cost_usd,
                                                 result_msg.num_turns
                                             );
-                                            let (input_tokens, output_tokens) = result_msg
+                                            let usage_info = result_msg
                                                 .usage
                                                 .as_ref()
                                                 .map(|u| {
-                                                    let inp = u.get("input_tokens")
-                                                        .and_then(|v| v.as_u64())
-                                                        .unwrap_or(0);
-                                                    let out = u.get("output_tokens")
-                                                        .and_then(|v| v.as_u64())
-                                                        .unwrap_or(0);
-                                                    (inp, out)
+                                                    let extract = |key: &str| {
+                                                        u.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
+                                                    };
+                                                    crate::messages::UsageInfo {
+                                                        input_tokens: extract("input_tokens"),
+                                                        cache_creation_input_tokens: extract("cache_creation_input_tokens"),
+                                                        cache_read_input_tokens: extract("cache_read_input_tokens"),
+                                                        output_tokens: extract("output_tokens"),
+                                                        cost_usd: result_msg.total_cost_usd,
+                                                        num_turns: result_msg.num_turns,
+                                                    }
                                                 })
-                                                .unwrap_or((0, 0));
-
-                                            let usage_info = crate::messages::UsageInfo {
-                                                input_tokens,
-                                                output_tokens,
-                                                cost_usd: result_msg.total_cost_usd,
-                                                num_turns: result_msg.num_turns,
-                                            };
+                                                .unwrap_or_else(|| crate::messages::UsageInfo {
+                                                    cost_usd: result_msg.total_cost_usd,
+                                                    num_turns: result_msg.num_turns,
+                                                    ..Default::default()
+                                                });
                                             let _ = response_tx.send(DaveApiResponse::QueryComplete(usage_info));
 
                                             stream_done = true;

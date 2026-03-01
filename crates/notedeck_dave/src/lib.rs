@@ -760,6 +760,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::CompactionComplete(info) => {
                         handle_compaction_complete(session, session_id, info);
                     }
+                    DaveApiResponse::UsageUpdate(info) => {
+                        handle_usage_update(session, info);
+                    }
                     DaveApiResponse::QueryComplete(info) => {
                         handle_query_complete(session, info);
                     }
@@ -3489,11 +3492,22 @@ fn handle_compaction_complete(
     session.chat.push(Message::CompactionComplete(info));
 }
 
-/// Handle query completion (usage metrics) from the AI backend.
-fn handle_query_complete(session: &mut session::ChatSession, info: messages::UsageInfo) {
+/// Handle a per-turn usage update from an AssistantMessage.
+/// This gives the accurate current context window snapshot since it reflects
+/// a single API call's token counts (not the cumulative session total).
+fn handle_usage_update(session: &mut session::ChatSession, info: messages::UsageInfo) {
     if let Some(agentic) = &mut session.agentic {
         agentic.usage.input_tokens = info.input_tokens;
+        agentic.usage.cache_creation_input_tokens = info.cache_creation_input_tokens;
+        agentic.usage.cache_read_input_tokens = info.cache_read_input_tokens;
         agentic.usage.output_tokens = info.output_tokens;
+    }
+}
+
+/// Handle query completion (usage metrics) from the AI backend.
+/// Updates cost and turn count from the final Result message.
+fn handle_query_complete(session: &mut session::ChatSession, info: messages::UsageInfo) {
+    if let Some(agentic) = &mut session.agentic {
         agentic.usage.num_turns = info.num_turns;
         if let Some(cost) = info.cost_usd {
             agentic.usage.cost_usd = Some(cost);
