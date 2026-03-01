@@ -8,7 +8,7 @@ use crate::backend::BackendType;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{SessionId, SessionManager};
-use crate::ui::keybind_hint::paint_keybind_hint;
+use crate::ui::keybind_hint::{keybind_hint, paint_keybind_hint};
 
 /// Actions that can be triggered from the session list UI
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub enum SessionListAction {
     Rename(SessionId, String),
     DismissDone(SessionId),
     Duplicate(SessionId),
+    Reset(SessionId),
 }
 
 /// UI component for displaying the session list sidebar
@@ -232,6 +233,7 @@ impl<'a> SessionListUi<'a> {
             }
         }
 
+        let ctrl_held = self.ctrl_held;
         response.context_menu(|ui| {
             if ui.button("Rename").clicked() {
                 let rename_state = (session.id, session.details.display_title().to_string());
@@ -239,14 +241,28 @@ impl<'a> SessionListUi<'a> {
                     .data_mut(|d| d.insert_temp(rename_id, rename_state));
                 ui.close_menu();
             }
-            if ui.button("Duplicate").clicked() {
-                action = Some(SessionListAction::Duplicate(session.id));
+            ui.horizontal(|ui| {
+                if ui.button("Duplicate").clicked() {
+                    action = Some(SessionListAction::Duplicate(session.id));
+                    ui.close_menu();
+                }
+                if is_active && ctrl_held {
+                    keybind_hint(ui, "Ctrl+Shift+T");
+                }
+            });
+            if ui.button("Reset").clicked() {
+                action = Some(SessionListAction::Reset(session.id));
                 ui.close_menu();
             }
-            if ui.button("Delete").clicked() {
-                action = Some(SessionListAction::Delete(session.id));
-                ui.close_menu();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Delete").clicked() {
+                    action = Some(SessionListAction::Delete(session.id));
+                    ui.close_menu();
+                }
+                if ctrl_held {
+                    keybind_hint(ui, "Del");
+                }
+            });
         });
         action
     }

@@ -989,6 +989,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::Duplicate(id) => {
                     self.duplicate_session(id);
                 }
+                SessionListAction::Reset(id) => {
+                    self.duplicate_session(id);
+                    self.delete_session(id);
+                }
             }
         }
 
@@ -1037,6 +1041,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::Duplicate(id) => {
                     self.duplicate_session(id);
+                    self.show_session_list = false;
+                }
+                SessionListAction::Reset(id) => {
+                    self.duplicate_session(id);
+                    self.delete_session(id);
                     self.show_session_list = false;
                 }
             }
