@@ -1030,6 +1030,31 @@ pub fn clone_active_agent(
     ))
 }
 
+pub fn clone_session(
+    session_manager: &mut SessionManager,
+    directory_picker: &mut DirectoryPicker,
+    scene: &mut AgentScene,
+    show_scene: bool,
+    ai_mode: AiMode,
+    hostname: &str,
+    id: SessionId,
+) -> Option<SessionId> {
+    let session = session_manager.get(id)?;
+    let cwd = session.cwd().cloned()?;
+    let backend_type = session.backend_type;
+    Some(create_session_with_cwd(
+        session_manager,
+        directory_picker,
+        scene,
+        show_scene,
+        ai_mode,
+        cwd,
+        hostname,
+        backend_type,
+        None,
+    ))
+}
+
 /// Delete a session and clean up backend resources.
 pub fn delete_session(
     session_manager: &mut SessionManager,

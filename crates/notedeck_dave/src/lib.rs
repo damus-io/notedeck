@@ -986,6 +986,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                 }
+                SessionListAction::Duplicate(id) => {
+                    self.duplicate_session(id);
+                }
             }
         }
 
@@ -1031,6 +1034,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             session.state_dirty = true;
                         }
                     }
+                }
+                SessionListAction::Duplicate(id) => {
+                    self.duplicate_session(id);
+                    self.show_session_list = false;
                 }
             }
         }
@@ -1115,6 +1122,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.hostname,
             backend_type,
         )
+    }
+
+    /// Duplicate a session by ID, creating a new session with the same working directory
+    fn duplicate_session(&mut self, id: SessionId) {
+        update::clone_session(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+            &self.hostname,
+            id,
+        );
     }
 
     /// Clone the active agent, creating a new session with the same working directory

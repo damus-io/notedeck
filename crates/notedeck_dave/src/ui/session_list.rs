@@ -18,6 +18,7 @@ pub enum SessionListAction {
     Delete(SessionId),
     Rename(SessionId, String),
     DismissDone(SessionId),
+    Duplicate(SessionId),
 }
 
 /// UI component for displaying the session list sidebar
@@ -236,6 +237,10 @@ impl<'a> SessionListUi<'a> {
                 let rename_state = (session.id, session.details.display_title().to_string());
                 ui.ctx()
                     .data_mut(|d| d.insert_temp(rename_id, rename_state));
+                ui.close_menu();
+            }
+            if ui.button("Duplicate").clicked() {
+                action = Some(SessionListAction::Duplicate(session.id));
                 ui.close_menu();
             }
             if ui.button("Delete").clicked() {
