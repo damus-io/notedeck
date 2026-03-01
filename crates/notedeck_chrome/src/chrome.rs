@@ -248,6 +248,21 @@ impl Chrome {
         }
     }
 
+    /// Chrome-level keybindings — consumed before apps render,
+    /// so apps can never intercept them.
+    fn handle_chrome_keybindings(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F11)) {
+            self.toggle();
+        }
+    }
+
+    /// Fallback keybindings — only fire if no app consumed the key.
+    fn handle_fallback_keybindings(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.toggle();
+        }
+    }
+
     pub fn add_app(&mut self, app: NotedeckApp) {
         self.apps.push(app);
         self.opened.push(false);
@@ -547,18 +562,17 @@ impl notedeck::App for Chrome {
             ui.ctx().request_repaint();
         }
 
+        // Chrome-level keybindings — consumed before apps render,
+        // so apps can never intercept them.
+        self.handle_chrome_keybindings(ui.ctx());
+
         if let Some(action) = self.show(ctx, ui) {
             action.process(ctx, self, ui);
             self.nav.close();
         }
 
-        // Toggle the side menu on Escape if no app consumed the key
-        if ui
-            .ctx()
-            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-        {
-            self.toggle();
-        }
+        // Fallback keybindings — only fire if no app consumed the key.
+        self.handle_fallback_keybindings(ui.ctx());
 
         // TODO: unify this constant with the columns side panel width. ui crate?
         AppResponse::none()
