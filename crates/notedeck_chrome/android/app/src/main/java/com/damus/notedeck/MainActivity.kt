@@ -62,6 +62,13 @@ class MainActivity : GameActivity() {
      */
     private fun handleDeepLinkIntent(intent: Intent?) {
         val eventId = intent?.getStringExtra("event_id") ?: return
+
+        // Validate eventId is exactly 64 hex characters to prevent intent spoofing
+        if (!eventId.matches(Regex("^[0-9a-fA-F]{64}$"))) {
+            Log.w(TAG, "handleDeepLinkIntent: invalid eventId format, ignoring deep link")
+            return
+        }
+
         val eventKind = intent.getIntExtra("event_kind", 0)
         val authorPubkey = intent.getStringExtra("author_pubkey") ?: ""
         nativeOnDeepLink(eventId, eventKind, authorPubkey)
@@ -289,18 +296,18 @@ class MainActivity : GameActivity() {
     }
 
     /**
-     * Enable FCM push notifications for the given pubkey.
+     * Enable FCM push notifications for all accounts.
      *
      * Reads the locally cached FCM token (written by
-     * [NotedeckFirebaseMessagingService.onNewToken]) and registers the
-     * device with the notepush server on a background coroutine.
+     * [NotedeckFirebaseMessagingService.onNewToken]) and registers each
+     * account with the notepush server on a background coroutine.
      *
-     * @param pubkeyHex The user's Nostr public key in hex format.
+     * @param pubkeyHexesJson JSON array of Nostr public keys in hex format.
      * @return `true` if an FCM token was available and registration was initiated
      *         (does NOT mean server registration succeeded — that happens async,
      *         and rolls back to Disabled on failure), `false` if no token.
      */
-    fun enableFcmNotifications(pubkeyHex: String): Boolean {
+    fun enableFcmNotifications(pubkeyHexesJson: String): Boolean {
         val fcmToken = getSharedPreferences("notedeck_fcm", Context.MODE_PRIVATE)
             .getString("fcm_token", null)
 
@@ -309,24 +316,37 @@ class MainActivity : GameActivity() {
             return false
         }
 
-        // Store pubkey so disableFcmNotifications can unregister later
+        val pubkeyHexes: List<String> = try {
+            org.json.JSONArray(pubkeyHexesJson).let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }
+            }
+        } catch (e: Exception) {
+            // Backward compat: treat as single bare pubkey
+            listOf(pubkeyHexesJson)
+        }
+
+        // Store pubkeys so disableFcmNotifications can unregister later
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString("registered_pubkey", pubkeyHex)
+            .putString("registered_pubkeys", org.json.JSONArray(pubkeyHexes).toString())
             .apply()
 
         notificationScope.launch {
-            val success = notepushClient.registerDevice(pubkeyHex, fcmToken)
-            if (success) {
-                Log.d(TAG, "FCM registration succeeded for ${pubkeyHex.take(8)}")
-            } else {
-                Log.e(TAG, "FCM registration failed for ${pubkeyHex.take(8)}")
-                // Only roll back to Disabled if mode is still FCM for the same pubkey.
-                // The user may have switched modes while the request was in flight.
+            var allSucceeded = true
+            for (pubkeyHex in pubkeyHexes) {
+                val success = notepushClient.registerDevice(pubkeyHex, fcmToken)
+                if (success) {
+                    Log.d(TAG, "FCM registration succeeded for ${pubkeyHex.take(8)}")
+                } else {
+                    Log.e(TAG, "FCM registration failed for ${pubkeyHex.take(8)}")
+                    allSucceeded = false
+                }
+            }
+            if (!allSucceeded) {
+                // Roll back to Disabled if mode is still FCM.
                 val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 val currentMode = prefs.getInt(KEY_MODE, 2)
-                val currentPubkey = prefs.getString("registered_pubkey", null)
-                if (currentMode == 0 && currentPubkey == pubkeyHex) {
+                if (currentMode == 0) {
                     Log.e(TAG, "Resetting mode to Disabled after FCM registration failure")
                     setNotificationMode(2) // Disabled
                 }
@@ -339,50 +359,67 @@ class MainActivity : GameActivity() {
     /**
      * Disable FCM push notifications.
      *
-     * Unregisters from the notepush server (if a token and pubkey are
-     * available). The FCM token itself is retained so re-enabling
-     * doesn't require a new token from Firebase.
+     * Unregisters all accounts from the notepush server (if a token and
+     * pubkeys are available). The FCM token itself is retained so
+     * re-enabling doesn't require a new token from Firebase.
      */
     fun disableFcmNotifications() {
-        val prefs = getSharedPreferences("notedeck_fcm", Context.MODE_PRIVATE)
-        val fcmToken = prefs.getString("fcm_token", null)
-        val pubkeyHex = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString("registered_pubkey", null)
+        val fcmPrefs = getSharedPreferences("notedeck_fcm", Context.MODE_PRIVATE)
+        val fcmToken = fcmPrefs.getString("fcm_token", null)
+        val notifPrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        if (fcmToken != null && pubkeyHex != null) {
+        // Read registered pubkeys (new JSON array format), fallback to old single key
+        val pubkeyHexes: List<String> = try {
+            val json = notifPrefs.getString("registered_pubkeys", null)
+            if (json != null) {
+                org.json.JSONArray(json).let { arr ->
+                    (0 until arr.length()).map { arr.getString(it) }
+                }
+            } else {
+                // Backward compat: old single-pubkey key
+                val single = notifPrefs.getString("registered_pubkey", null)
+                if (single != null) listOf(single) else emptyList()
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        if (fcmToken != null && pubkeyHexes.isNotEmpty()) {
             notificationScope.launch {
-                val success = notepushClient.unregisterDevice(pubkeyHex, fcmToken)
-                if (success) {
-                    Log.d(TAG, "FCM unregistration succeeded")
-                } else {
-                    Log.e(TAG, "FCM unregistration failed")
+                for (pubkeyHex in pubkeyHexes) {
+                    val success = notepushClient.unregisterDevice(pubkeyHex, fcmToken)
+                    if (success) {
+                        Log.d(TAG, "FCM unregistration succeeded for ${pubkeyHex.take(8)}")
+                    } else {
+                        Log.e(TAG, "FCM unregistration failed for ${pubkeyHex.take(8)}")
+                    }
                 }
             }
         }
     }
 
     /**
-     * Store configuration for a future native (WebSocket) notification service.
+     * Store configuration for the native (WebSocket) notification service.
      *
-     * @param pubkeyHex The user's Nostr public key in hex format.
+     * @param pubkeyHexesJson JSON array of Nostr public keys in hex format.
      * @param relaysJson JSON-serialized array of relay URLs.
      */
-    fun enableNativeNotifications(pubkeyHex: String, relaysJson: String) {
+    fun enableNativeNotifications(pubkeyHexesJson: String, relaysJson: String) {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString("native_pubkey", pubkeyHex)
+            .putString("native_pubkeys", pubkeyHexesJson)
             .putString("native_relays", relaysJson)
             .apply()
 
         getSharedPreferences("notedeck_prefs", Context.MODE_PRIVATE)
             .edit()
             .putBoolean("notifications_enabled", true)
-            .putString("active_pubkey", pubkeyHex)
+            .putString("active_pubkeys", pubkeyHexesJson)
             .putString("relay_urls", relaysJson)
             .apply()
 
         NotificationsService.start(this)
-        Log.d(TAG, "Native notification config stored for ${pubkeyHex.take(8)}")
+        Log.d(TAG, "Native notification config stored for ${pubkeyHexesJson.take(40)}")
     }
 
     /**
@@ -392,12 +429,15 @@ class MainActivity : GameActivity() {
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .remove("native_pubkey")
+            .remove("native_pubkeys")
             .remove("native_relays")
             .apply()
 
         getSharedPreferences("notedeck_prefs", Context.MODE_PRIVATE)
             .edit()
             .putBoolean("notifications_enabled", false)
+            .remove("active_pubkey")
+            .remove("active_pubkeys")
             .apply()
 
         NotificationsService.stop(this)

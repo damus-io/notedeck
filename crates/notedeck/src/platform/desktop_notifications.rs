@@ -3,7 +3,8 @@
 //! Provides notification control functions that delegate to `NotificationManager`.
 
 use crate::notifications::NotificationManager;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::platform::NotificationMode;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tracing::info;
 
 /// Whether macOS notification permission has been granted.
@@ -11,21 +12,40 @@ use tracing::info;
 /// by the authorization callback in `macos.rs`.
 static PERMISSION_GRANTED: AtomicBool = AtomicBool::new(cfg!(target_os = "linux"));
 
+/// Tracks the current notification mode on desktop platforms.
+/// 0=FCM, 1=Native, 2=Disabled. Updated by enable/disable functions.
+/// On desktop, FCM and Native both map to the same backend, but we track
+/// the mode so the Settings UI can reflect the user's choice.
+static DESKTOP_MODE: AtomicU8 = AtomicU8::new(2); // Default: Disabled
+
+/// Get the current notification mode on desktop.
+pub fn get_notification_mode() -> NotificationMode {
+    NotificationMode::from_index(DESKTOP_MODE.load(Ordering::SeqCst) as usize)
+}
+
+/// Set the notification mode on desktop (updates the static tracker).
+pub fn set_notification_mode(mode: NotificationMode) {
+    DESKTOP_MODE.store(mode.to_index() as u8, Ordering::SeqCst);
+}
+
 /// Enable push notifications for the given pubkey.
 ///
 /// Delegates to `NotificationManager::start()`.
 pub fn enable_notifications(
     manager: &mut Option<NotificationManager>,
     pubkey_hex: &str,
+    mode: NotificationMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mgr = manager.get_or_insert_with(NotificationManager::new);
 
     mgr.start(&[pubkey_hex])
         .map_err(|e| Box::new(std::io::Error::other(e)) as Box<dyn std::error::Error>)?;
 
+    set_notification_mode(mode);
+
     info!(
         "Desktop notifications enabled for pubkey {}",
-        &pubkey_hex[..8.min(pubkey_hex.len())]
+        crate::notifications::safe_prefix(pubkey_hex, 8)
     );
     Ok(())
 }
@@ -36,6 +56,7 @@ pub fn disable_notifications(
 ) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(mgr) = manager.as_mut() {
         mgr.stop();
+        set_notification_mode(NotificationMode::Disabled);
         info!("Desktop notifications disabled");
     }
     Ok(())
@@ -80,9 +101,9 @@ pub fn is_notification_permission_pending() -> bool {
 }
 
 /// Get the result of the last permission request.
-/// On desktop, always returns true.
+/// On desktop, returns the actual permission state.
 pub fn get_notification_permission_result() -> bool {
-    true
+    PERMISSION_GRANTED.load(Ordering::SeqCst)
 }
 
 /// Re-query the OS for the current notification permission state.

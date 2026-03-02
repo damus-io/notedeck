@@ -27,9 +27,9 @@ class NotedeckFirebaseMessagingService : FirebaseMessagingService() {
 
     companion object {
         private const val TAG = "NotedeckFCM"
-        private const val CHANNEL_ID = "notedeck_notifications"
+        private const val CHANNEL_ID = "notedeck_notifications_v2"
         private const val CHANNEL_NAME = "Notedeck Notifications"
-        private val notificationIdCounter = AtomicInteger(0)
+        private val notificationIdCounter = AtomicInteger(100_000)
 
         // Must match NotificationMode enum in Rust (platform/mod.rs)
         const val MODE_FCM = 0
@@ -67,19 +67,37 @@ class NotedeckFirebaseMessagingService : FirebaseMessagingService() {
             Log.e(TAG, "Native library not available for token refresh", e)
         }
 
-        // Re-register with notepush if FCM mode is active.
+        // Re-register all accounts with notepush if FCM mode is active.
         // onNewToken runs on a Firebase worker thread so blocking is safe.
         val prefs = getSharedPreferences("notedeck_notifications", Context.MODE_PRIVATE)
         val mode = prefs.getInt("notification_mode", MODE_DISABLED)
-        val pubkey = prefs.getString("registered_pubkey", null)
-        if (mode == MODE_FCM && pubkey != null) {
-            val client = NotepushClient()
-            runBlocking(Dispatchers.IO) {
-                val success = client.registerDevice(pubkey, token)
-                if (success) {
-                    Log.d(TAG, "Re-registered with new FCM token for ${pubkey.take(8)}")
+        if (mode == MODE_FCM) {
+            // Read registered pubkeys (new JSON array format), fallback to old single key
+            val pubkeyHexes: List<String> = try {
+                val json = prefs.getString("registered_pubkeys", null)
+                if (json != null) {
+                    org.json.JSONArray(json).let { arr ->
+                        (0 until arr.length()).map { arr.getString(it) }
+                    }
                 } else {
-                    Log.e(TAG, "Failed to re-register with new FCM token")
+                    val single = prefs.getString("registered_pubkey", null)
+                    if (single != null) listOf(single) else emptyList()
+                }
+            } catch (e: Exception) {
+                emptyList()
+            }
+
+            if (pubkeyHexes.isNotEmpty()) {
+                val client = NotepushClient()
+                runBlocking(Dispatchers.IO) {
+                    for (pubkey in pubkeyHexes) {
+                        val success = client.registerDevice(pubkey, token)
+                        if (success) {
+                            Log.d(TAG, "Re-registered with new FCM token for ${pubkey.take(8)}")
+                        } else {
+                            Log.e(TAG, "Failed to re-register ${pubkey.take(8)} with new FCM token")
+                        }
+                    }
                 }
             }
         }
@@ -234,6 +252,10 @@ class NotedeckFirebaseMessagingService : FirebaseMessagingService() {
     private external fun nativeProcessNostrEvent(eventJson: String): NotificationResult?
 
     init {
-        System.loadLibrary("notedeck_chrome")
+        try {
+            System.loadLibrary("notedeck_chrome")
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e(TAG, "Failed to load native library", e)
+        }
     }
 }

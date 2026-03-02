@@ -5,7 +5,7 @@ use egui::{
 use egui_extras::{Size, StripBuilder};
 use notedeck::{
     platform::NotificationMode, tr, ui::richtext_small, DragResponse, LanguageIdentifier,
-    NoteContext, NotedeckTextStyle, Settings, DEFAULT_MAX_HASHTAGS_PER_NOTE,
+    Localization, NoteContext, NotedeckTextStyle, Settings, DEFAULT_MAX_HASHTAGS_PER_NOTE,
 };
 
 use notedeck_ui::{
@@ -121,29 +121,38 @@ impl SettingsAction {
                 app.view_state.compact.status = notedeck::compact::CompactStatus::Running(receiver);
             }
             Self::SetNotificationMode(mode) => {
-                let pubkey_hex = app_ctx.accounts.selected_account_pubkey().hex();
-                let relay_urls = app_ctx.accounts.get_selected_account_relay_urls();
-
-                // On Android, delegate to platform JNI
+                // On Android, delegate to platform JNI with ALL account pubkeys
                 #[cfg(target_os = "android")]
-                let result =
-                    notedeck::platform::set_notification_mode(mode, &pubkey_hex, &relay_urls);
+                let result = {
+                    let pubkey_hexes: Vec<String> = app_ctx
+                        .accounts
+                        .cache
+                        .accounts()
+                        .map(|a| a.key.pubkey.hex())
+                        .collect();
+                    let relay_urls = app_ctx.accounts.get_selected_account_relay_urls();
+                    notedeck::platform::set_notification_mode(mode, &pubkey_hexes, &relay_urls)
+                };
 
                 // On desktop, enable/disable via NotificationManager directly
                 #[cfg(not(target_os = "android"))]
                 let result: Result<(), Box<dyn std::error::Error>> = if mode.is_disabled() {
                     notedeck::platform::disable_notifications(app_ctx.notification_manager)
                 } else {
+                    let selected_pubkey_hex = app_ctx.accounts.selected_account_pubkey().hex();
                     notedeck::platform::enable_notifications(
                         app_ctx.notification_manager,
-                        &pubkey_hex,
+                        &selected_pubkey_hex,
+                        mode,
                     )
                 };
 
                 if let Err(e) = result {
                     tracing::error!("Failed to set notification mode: {}", e);
                 } else {
-                    app_ctx.settings.set_notifications_enabled(!mode.is_disabled());
+                    app_ctx
+                        .settings
+                        .set_notifications_enabled(!mode.is_disabled());
                 }
             }
             Self::RequestNotificationPermission => {

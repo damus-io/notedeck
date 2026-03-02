@@ -100,6 +100,10 @@ impl SwitchingAction {
 
                     setup_selected_account_timeline_subs(timeline_cache, ctx);
 
+                    // Re-trigger notifications for updated account list
+                    #[cfg(target_os = "android")]
+                    retrigger_notifications_if_active(ctx);
+
                     // pop nav after switch
                     get_active_columns_mut(ctx.i18n, ctx.accounts, decks_cache)
                         .column_mut(switch_action.source_column)
@@ -110,6 +114,10 @@ impl SwitchingAction {
                     if !ctx.remove_account(to_remove) {
                         break 's;
                     }
+
+                    // Re-trigger notifications for updated account list
+                    #[cfg(target_os = "android")]
+                    retrigger_notifications_if_active(ctx);
 
                     let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
                     decks_cache.remove(
@@ -1311,4 +1319,29 @@ pub fn render_nav(
         });
 
     RenderNavResponse::new(col, NotedeckNavResponse::Nav(Box::new(nav_response)))
+}
+
+/// Re-trigger notification mode with updated account list when accounts change.
+/// Only called on Android when notifications are already active.
+#[cfg(target_os = "android")]
+fn retrigger_notifications_if_active(ctx: &mut notedeck::AppContext<'_>) {
+    let mode = notedeck::platform::get_notification_mode();
+    if mode.is_disabled() {
+        return;
+    }
+
+    let pubkey_hexes: Vec<String> = ctx
+        .accounts
+        .cache
+        .accounts()
+        .map(|a| a.key.pubkey.hex())
+        .collect();
+    let relay_urls = ctx.accounts.get_selected_account_relay_urls();
+
+    if let Err(e) = notedeck::platform::set_notification_mode(mode, &pubkey_hexes, &relay_urls) {
+        tracing::error!(
+            "Failed to re-trigger notifications after account change: {}",
+            e
+        );
+    }
 }

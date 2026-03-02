@@ -99,6 +99,12 @@ struct JavaCallback {
     service_obj: jni::objects::GlobalRef,
 }
 
+// SAFETY: `JavaCallback` contains `jni::JavaVM` (thread-safe by JNI spec) and
+// `jni::objects::GlobalRef` (valid across threads per JNI spec §5.1.1).
+// `Send` is required because the callback is created on the JNI thread and used
+// by the worker thread. `Sync` is technically not exercised (access is serialized
+// by the `Mutex` around `java_callback`), but is required by the `Mutex<Option<>>`
+// container. All JNI calls attach the current thread before use.
 #[cfg(target_os = "android")]
 unsafe impl Send for JavaCallback {}
 #[cfg(target_os = "android")]
@@ -107,7 +113,8 @@ unsafe impl Sync for JavaCallback {}
 /// Thread-local state owned entirely by the worker thread (contains non-Send types)
 struct WorkerState {
     pool: RelayPool,
-    pubkey: Pubkey,
+    /// All monitored account pubkeys (multi-account support)
+    pubkeys: Vec<Pubkey>,
     processed_events: HashSet<String>,
     /// Queue tracking insertion order for bounded LRU eviction (oldest at front)
     processed_events_order: std::collections::VecDeque<String>,
@@ -118,7 +125,7 @@ struct WorkerState {
 }
 
 impl WorkerState {
-    fn new(pubkey: Pubkey, relay_urls: Vec<String>) -> Self {
+    fn new(pubkeys: Vec<Pubkey>, relay_urls: Vec<String>) -> Self {
         let mut pool = RelayPool::new();
 
         // Use provided relay URLs, or fall back to defaults if empty
@@ -143,7 +150,7 @@ impl WorkerState {
 
         Self {
             pool,
-            pubkey,
+            pubkeys,
             processed_events: HashSet::new(),
             processed_events_order: std::collections::VecDeque::new(),
             profile_cache: std::collections::HashMap::new(),
@@ -153,11 +160,19 @@ impl WorkerState {
     }
 }
 
-/// Start notification subscriptions for the given pubkey and relay URLs.
+/// Start notification subscriptions for the given pubkeys and relay URLs.
 /// If relay_urls is empty, falls back to DEFAULT_RELAYS.
 #[profiling::function]
-pub fn start_subscriptions(pubkey_hex: &str, relay_urls: &[String]) -> Result<(), String> {
-    let pubkey = Pubkey::from_hex(pubkey_hex).map_err(|e| format!("Invalid pubkey: {e}"))?;
+pub fn start_subscriptions(pubkey_hexes: &[String], relay_urls: &[String]) -> Result<(), String> {
+    if pubkey_hexes.is_empty() {
+        return Err("No pubkeys provided".to_string());
+    }
+
+    let pubkeys: Vec<Pubkey> = pubkey_hexes
+        .iter()
+        .map(|hex| Pubkey::from_hex(hex).map_err(|e| format!("Invalid pubkey {hex}: {e}")))
+        .collect::<Result<Vec<_>, _>>()?;
+
     let shared = get_shared_state();
     // Signal any existing worker to stop before creating a new generation.
     shared.running.store(false, Ordering::SeqCst);
@@ -186,7 +201,7 @@ pub fn start_subscriptions(pubkey_hex: &str, relay_urls: &[String]) -> Result<()
 
     // Spawn worker thread that owns all non-Send state
     let handle = thread::spawn(move || {
-        notification_worker(shared_clone, pubkey, relay_urls_owned, my_generation);
+        notification_worker(shared_clone, pubkeys, relay_urls_owned, my_generation);
     });
 
     // Store thread handle
@@ -195,8 +210,9 @@ pub fn start_subscriptions(pubkey_hex: &str, relay_urls: &[String]) -> Result<()
     }
 
     info!(
-        "Started notification subscriptions for {} (generation {})",
-        pubkey_hex, my_generation
+        "Started notification subscriptions for {} accounts (generation {})",
+        pubkey_hexes.len(),
+        my_generation
     );
     Ok(())
 }
@@ -218,17 +234,20 @@ pub fn get_connected_relay_count() -> i32 {
 #[profiling::function]
 fn notification_worker(
     shared: Arc<SharedState>,
-    pubkey: Pubkey,
+    pubkeys: Vec<Pubkey>,
     relay_urls: Vec<String>,
     my_generation: u64,
 ) {
-    info!("Notification worker thread started");
+    info!(
+        "Notification worker thread started for {} accounts",
+        pubkeys.len()
+    );
 
     // Create all state inside the worker thread
-    let mut state = WorkerState::new(pubkey.clone(), relay_urls);
+    let mut state = WorkerState::new(pubkeys, relay_urls);
 
     // Set up initial subscriptions
-    setup_subscriptions(&mut state.pool, &pubkey, state.last_seen_timestamp);
+    setup_subscriptions(&mut state.pool, &state.pubkeys, state.last_seen_timestamp);
 
     // Main event loop
     while shared.running.load(Ordering::SeqCst)
@@ -269,44 +288,49 @@ fn notification_worker(
 }
 
 /// Configure Nostr subscriptions for notifications, DMs, and relay lists.
-/// Sets up filters for mentions, reactions, reposts, zaps, and direct messages.
+/// Sets up filters for mentions, reactions, reposts, zaps, and direct messages
+/// across all monitored pubkeys.
 /// `since` is the unix timestamp to subscribe from (typically the last-seen event time).
 #[profiling::function]
-fn setup_subscriptions(pool: &mut RelayPool, pubkey: &Pubkey, since: u64) {
-    let pubkey_hex = pubkey.hex();
+fn setup_subscriptions(pool: &mut RelayPool, pubkeys: &[Pubkey], since: u64) {
+    let all_pubkey_bytes: Vec<&[u8; 32]> = pubkeys.iter().map(|pk| pk.bytes()).collect();
 
-    // Subscribe to mentions, replies, reactions, reposts, zaps
+    // Subscribe to mentions, replies, reactions, reposts, zaps for ALL accounts
     // kinds: 1 (text), 6 (repost), 7 (reaction), 9735 (zap receipt)
     let notification_filter = Filter::new()
         .kinds([1, 6, 7, 9735])
-        .pubkey([pubkey.bytes()])
+        .pubkey(all_pubkey_bytes.clone())
         .since(since)
         .build();
 
-    info!("Subscribing to notifications since timestamp {}", since);
+    info!(
+        "Subscribing to notifications for {} accounts since timestamp {}",
+        pubkeys.len(),
+        since
+    );
     pool.subscribe(SUB_NOTIFICATIONS.to_string(), vec![notification_filter]);
 
-    // Subscribe to DMs (kind 4 legacy, kind 1059 gift wrap)
+    // Subscribe to DMs (kind 4 legacy, kind 1059 gift wrap) for ALL accounts
     let dm_filter = Filter::new()
         .kinds([4, 1059])
-        .pubkey([pubkey.bytes()])
+        .pubkey(all_pubkey_bytes)
         .since(since)
         .build();
 
     pool.subscribe(SUB_DMS.to_string(), vec![dm_filter]);
 
-    // Subscribe to relay list updates (NIP-65)
+    // Subscribe to relay list updates (NIP-65) for ALL accounts
     let relay_list_filter = Filter::new()
         .kinds([10002, 10050])
-        .authors([pubkey.bytes()])
-        .limit(1)
+        .authors(pubkeys.iter().map(|pk| pk.bytes()).collect::<Vec<_>>())
+        .limit(pubkeys.len() as u64)
         .build();
 
     pool.subscribe(SUB_RELAY_LIST.to_string(), vec![relay_list_filter]);
 
     debug!(
-        "Set up notification subscriptions for pubkey {}",
-        safe_prefix(&pubkey_hex, 8)
+        "Set up notification subscriptions for {} accounts",
+        pubkeys.len()
     );
 }
 
@@ -320,7 +344,8 @@ fn handle_pool_event(state: &mut WorkerState, pool_event: enostr::PoolEventBuf) 
         WsEvent::Opened => {
             debug!("Connected to relay: {}", pool_event.relay);
             // Re-subscribe on reconnect using last-seen timestamp to avoid gaps
-            setup_subscriptions(&mut state.pool, &state.pubkey, state.last_seen_timestamp);
+            let pubkeys = state.pubkeys.clone();
+            setup_subscriptions(&mut state.pool, &pubkeys, state.last_seen_timestamp);
             notify_relay_status_changed();
         }
         WsEvent::Closed => {
@@ -395,6 +420,25 @@ fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str)
         return;
     }
 
+    // Self-notification suppression — matches desktop manager.rs:192-194
+    // Don't notify for events authored by one of our own accounts
+    let is_own_event = state.pubkeys.iter().any(|pk| pk.hex() == event.pubkey);
+    if is_own_event {
+        // Check if ALL p-tags point to our own accounts (pure self-mention)
+        let mentions_only_self = event
+            .p_tags
+            .iter()
+            .all(|p| state.pubkeys.iter().any(|pk| pk.hex() == *p));
+        if mentions_only_self {
+            debug!(
+                "Suppressing self-notification: kind={} id={}",
+                event.kind,
+                safe_prefix(&event.id, 8)
+            );
+            return;
+        }
+    }
+
     if !record_event_if_new(state, &event.id) {
         debug!("Skipping duplicate event id={}", safe_prefix(&event.id, 8));
         return;
@@ -439,10 +483,7 @@ fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str)
         author_name,
         picture_url.as_ref().map(|s| safe_prefix(s, 50))
     );
-    info!(
-        "Resolved content: {}",
-        safe_prefix(&resolved_content, 100)
-    );
+    info!("Resolved content: {}", safe_prefix(&resolved_content, 100));
 
     // Create event with resolved content for notification
     let resolved_event = ExtractedEvent {
@@ -482,11 +523,23 @@ fn handle_profile_event(state: &mut WorkerState, event: &ExtractedEvent) {
     state.requested_profiles.remove(&event.pubkey);
     state.profile_cache.insert(event.pubkey.clone(), profile);
 
-    // Prune cache if too large - also clear requested_profiles to allow re-requests
+    // Prune cache if too large — evict half to avoid full wipe
     if state.profile_cache.len() > 1000 {
-        state.profile_cache.clear();
-        state.requested_profiles.clear();
-        debug!("Pruned profile cache and requested set");
+        // Evict half to avoid full wipe — retain the most recent entries
+        let keys_to_remove: Vec<String> = state
+            .profile_cache
+            .keys()
+            .take(state.profile_cache.len() / 2)
+            .cloned()
+            .collect();
+        for key in &keys_to_remove {
+            state.profile_cache.remove(key);
+            state.requested_profiles.remove(key);
+        }
+        debug!(
+            "Pruned profile cache to {} entries",
+            state.profile_cache.len()
+        );
     }
 }
 
@@ -494,10 +547,7 @@ fn handle_profile_event(state: &mut WorkerState, event: &ExtractedEvent) {
 /// Prefers "display_name" over "name" for the name field.
 fn extract_profile_info(content: &str) -> CachedProfile {
     // Log first 200 chars of profile content for debugging
-    debug!(
-        "Parsing profile content: {}",
-        safe_prefix(content, 200)
-    );
+    debug!("Parsing profile content: {}", safe_prefix(content, 200));
 
     let value: serde_json::Value = match serde_json::from_str(content) {
         Ok(v) => v,
@@ -698,7 +748,14 @@ fn notify_nostr_event(
                 JValue::Object(&JObject::from(raw_json_jstring)),
             ],
         ) {
-            Ok(_) => info!("JNI onNostrEvent call succeeded"),
+            Ok(_) => {
+                if env.exception_check().unwrap_or(false) {
+                    env.exception_clear().ok();
+                    error!("JNI exception after onNostrEvent call");
+                    return;
+                }
+                info!("JNI onNostrEvent call succeeded");
+            }
             Err(e) => error!("JNI onNostrEvent call failed: {:?}", e),
         }
     }
@@ -763,15 +820,29 @@ fn notify_relay_status_changed() {
 pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nativeStartSubscriptions(
     mut env: JNIEnv,
     obj: JObject,
-    pubkey_hex: JString,
+    pubkey_hexes_json: JString,
     relay_urls_json: JString,
 ) {
     // Always refresh the callback reference on each start
     // This ensures we have a valid reference even after service restart
     update_jni_callback(&mut env, obj);
 
-    let pubkey: String = match env.get_string(&pubkey_hex) {
-        Ok(s) => s.into(),
+    let pubkey_hexes: Vec<String> = match env.get_string(&pubkey_hexes_json) {
+        Ok(s) => {
+            let json_str: String = s.into();
+            // Support both JSON array and bare string (backward compat)
+            match serde_json::from_str::<Vec<String>>(&json_str) {
+                Ok(arr) => arr,
+                Err(_) => {
+                    // Bare string — wrap as single-element array
+                    if json_str.is_empty() {
+                        error!("Empty pubkey string");
+                        return;
+                    }
+                    vec![json_str]
+                }
+            }
+        }
         Err(e) => {
             error!("Failed to get pubkey string: {}", e);
             return;
@@ -789,7 +860,7 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
         }
     };
 
-    if let Err(e) = start_subscriptions(&pubkey, &relay_urls) {
+    if let Err(e) = start_subscriptions(&pubkey_hexes, &relay_urls) {
         error!("Failed to start subscriptions: {}", e);
     }
 }

@@ -1,10 +1,11 @@
-use crate::platform::{file::emit_selected_file, NotificationMode, SelectedMedia};
+use crate::platform::{file::emit_selected_file, DeepLinkInfo, NotificationMode, SelectedMedia};
 use enostr::FullKeypair;
 use jni::{
     objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
     sys::jobject,
     JNIEnv,
 };
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -30,8 +31,10 @@ use tracing::{debug, error, info, warn};
 pub(crate) struct NotificationJniBridge {
     /// Current FCM token, updated by Java when Firebase generates/refreshes it.
     fcm_token: RwLock<Option<String>>,
-    /// Active account keypair for NIP-98 HTTP authentication signing.
-    signing_keypair: RwLock<Option<FullKeypair>>,
+    /// Keypairs for all logged-in accounts, keyed by pubkey hex.
+    /// Used for NIP-98 HTTP authentication signing (one per account for FCM).
+    /// `HashMap` is not `const`-constructible, so we wrap in `Option` with `None` init.
+    signing_keypairs: RwLock<Option<HashMap<String, FullKeypair>>>,
     /// Whether a notification permission request is in flight.
     permission_pending: AtomicBool,
     /// Result of the last permission request.
@@ -44,7 +47,7 @@ impl NotificationJniBridge {
     const fn new() -> Self {
         Self {
             fcm_token: RwLock::new(None),
-            signing_keypair: RwLock::new(None),
+            signing_keypairs: RwLock::new(None),
             permission_pending: AtomicBool::new(false),
             permission_granted: AtomicBool::new(false),
             deep_link: RwLock::new(None),
@@ -91,8 +94,20 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnFilePickedFailed(
     juri: JString,
     je: JString,
 ) {
-    let _uri: String = env.get_string(&juri).unwrap().into();
-    let _error: String = env.get_string(&je).unwrap().into();
+    let _uri: String = match env.get_string(&juri) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("Failed to get URI string from JNI: {}", e);
+            return;
+        }
+    };
+    let _error: String = match env.get_string(&je) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("Failed to get error string from JNI: {}", e);
+            return;
+        }
+    };
 }
 
 #[no_mangle]
@@ -200,26 +215,56 @@ pub fn get_fcm_token() -> Option<String> {
     }
 }
 
-/// Sets the active account's keypair for NIP-98 signing.
-/// Call this when the active account changes.
-pub fn set_signing_keypair(keypair: Option<FullKeypair>) {
-    match NOTIFICATION_BRIDGE.signing_keypair.write() {
+/// Stores keypairs for all logged-in accounts.
+/// Call this when accounts are added, removed, or on cold start.
+pub fn set_signing_keypairs(keypairs: Vec<FullKeypair>) {
+    match NOTIFICATION_BRIDGE.signing_keypairs.write() {
         Ok(mut guard) => {
-            *guard = keypair;
-            info!("Signing keypair updated for FCM registration");
+            let map: HashMap<String, FullKeypair> = keypairs
+                .into_iter()
+                .map(|kp| (kp.pubkey.hex(), kp))
+                .collect();
+            let count = map.len();
+            *guard = Some(map);
+            info!("Signing keypairs updated: {} accounts", count);
         }
         Err(e) => {
-            error!("Failed to update signing keypair: lock poisoned: {}", e);
+            error!("Failed to update signing keypairs: lock poisoned: {}", e);
         }
     }
 }
 
-/// Gets the current signing keypair, if available
-pub fn get_signing_keypair() -> Option<FullKeypair> {
-    match NOTIFICATION_BRIDGE.signing_keypair.read() {
-        Ok(guard) => guard.clone(),
+/// Clears all signing keypairs (e.g. when notifications are disabled).
+pub fn clear_signing_keypairs() {
+    match NOTIFICATION_BRIDGE.signing_keypairs.write() {
+        Ok(mut guard) => {
+            *guard = None;
+            info!("Signing keypairs cleared");
+        }
         Err(e) => {
-            error!("Failed to read signing keypair: lock poisoned: {}", e);
+            error!("Failed to clear signing keypairs: lock poisoned: {}", e);
+        }
+    }
+}
+
+/// Gets the signing keypair for a specific account by pubkey hex.
+pub fn get_signing_keypair_for(pubkey_hex: &str) -> Option<FullKeypair> {
+    match NOTIFICATION_BRIDGE.signing_keypairs.read() {
+        Ok(guard) => guard.as_ref().and_then(|map| map.get(pubkey_hex).cloned()),
+        Err(e) => {
+            error!("Failed to read signing keypairs: lock poisoned: {}", e);
+            None
+        }
+    }
+}
+
+/// Gets any available signing keypair (first in the map).
+/// Used as a fallback when the specific pubkey isn't known.
+pub fn get_signing_keypair() -> Option<FullKeypair> {
+    match NOTIFICATION_BRIDGE.signing_keypairs.read() {
+        Ok(guard) => guard.as_ref().and_then(|map| map.values().next().cloned()),
+        Err(e) => {
+            error!("Failed to read signing keypairs: lock poisoned: {}", e);
             None
         }
     }
@@ -401,16 +446,25 @@ fn create_notification_result(
     Ok(obj.into_raw())
 }
 
-/// Called by NotepushClient to sign a NIP-98 auth header
-/// Returns base64-encoded signed event, or null on error
+/// Called by NotepushClient to sign a NIP-98 auth header for a specific account.
+/// Returns base64-encoded signed event, or null on error.
 #[no_mangle]
 pub extern "C" fn Java_com_damus_notedeck_service_NotepushClient_nativeSignNip98Auth(
     mut env: JNIEnv,
     _class: JClass,
+    jpubkey_hex: JString,
     jurl: JString,
     jmethod: JString,
     jbody: JString,
 ) -> jobject {
+    let pubkey_hex: String = match env.get_string(&jpubkey_hex) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            error!("Failed to get pubkey string: {}", e);
+            return std::ptr::null_mut();
+        }
+    };
+
     let url: String = match env.get_string(&jurl) {
         Ok(s) => s.into(),
         Err(e) => {
@@ -439,14 +493,31 @@ pub extern "C" fn Java_com_damus_notedeck_service_NotepushClient_nativeSignNip98
         }
     };
 
-    debug!("Signing NIP-98 auth for {} {}", method, url);
+    debug!(
+        "Signing NIP-98 auth for {} {} (pubkey={})",
+        method,
+        url,
+        truncate_content(&pubkey_hex, 8)
+    );
 
-    // Get the signing keypair
-    let keypair = match get_signing_keypair() {
+    // Get the signing keypair for this specific account
+    let keypair = match get_signing_keypair_for(&pubkey_hex) {
         Some(kp) => kp,
         None => {
-            error!("No signing keypair available for NIP-98 auth");
-            return std::ptr::null_mut();
+            // Fallback to any available keypair
+            match get_signing_keypair() {
+                Some(kp) => {
+                    warn!(
+                        "No keypair for {}, using fallback",
+                        truncate_content(&pubkey_hex, 8)
+                    );
+                    kp
+                }
+                None => {
+                    error!("No signing keypair available for NIP-98 auth");
+                    return std::ptr::null_mut();
+                }
+            }
         }
     };
 
@@ -543,7 +614,7 @@ pub fn get_notification_mode() -> NotificationMode {
 ///
 /// # Arguments
 /// * `mode` - The new notification mode to set
-/// * `pubkey_hex` - The user's public key in hex format
+/// * `pubkey_hexes` - Hex pubkeys for ALL logged-in accounts
 /// * `relay_urls` - List of relay URLs for native mode
 ///
 /// # Errors
@@ -551,7 +622,7 @@ pub fn get_notification_mode() -> NotificationMode {
 #[profiling::function]
 pub fn set_notification_mode(
     mode: NotificationMode,
-    pubkey_hex: &str,
+    pubkey_hexes: &[String],
     relay_urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let current = get_notification_mode();
@@ -559,13 +630,13 @@ pub fn set_notification_mode(
     if current == mode {
         // Mode already persisted, but the service may not be running after
         // process death.  Re-trigger enable so services are (re)started and
-        // the registration pubkey stays in sync with the selected account.
+        // the registration pubkeys stay in sync with all accounts.
         match mode {
             NotificationMode::Native => {
-                enable_native_notifications(pubkey_hex, relay_urls)?;
+                enable_native_notifications(pubkey_hexes, relay_urls)?;
             }
             NotificationMode::Fcm => {
-                enable_fcm_notifications(pubkey_hex)?;
+                enable_fcm_notifications(pubkey_hexes)?;
             }
             NotificationMode::Disabled => {}
         }
@@ -582,13 +653,13 @@ pub fn set_notification_mode(
     // Enable new mode — if it fails, persist Disabled so state stays consistent
     match mode {
         NotificationMode::Fcm => {
-            if let Err(e) = enable_fcm_notifications(pubkey_hex) {
+            if let Err(e) = enable_fcm_notifications(pubkey_hexes) {
                 save_notification_mode_to_prefs(NotificationMode::Disabled)?;
                 return Err(e);
             }
         }
         NotificationMode::Native => {
-            if let Err(e) = enable_native_notifications(pubkey_hex, relay_urls) {
+            if let Err(e) = enable_native_notifications(pubkey_hexes, relay_urls) {
                 save_notification_mode_to_prefs(NotificationMode::Disabled)?;
                 return Err(e);
             }
@@ -633,19 +704,24 @@ fn save_notification_mode_to_prefs(
     Ok(())
 }
 
-/// Enable FCM (Firebase Cloud Messaging) notifications
-fn enable_fcm_notifications(pubkey_hex: &str) -> Result<(), Box<dyn std::error::Error>> {
+/// Enable FCM (Firebase Cloud Messaging) notifications for all accounts
+fn enable_fcm_notifications(pubkey_hexes: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if pubkey_hexes.is_empty() {
+        return Err("No pubkeys provided for FCM notifications".into());
+    }
+
     let vm = get_jvm();
     let mut env = vm.attach_current_thread()?;
     let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
 
-    let jpubkey = env.new_string(pubkey_hex)?;
+    let pubkeys_json = serde_json::to_string(pubkey_hexes)?;
+    let jpubkeys = env.new_string(&pubkeys_json)?;
 
     let result = env.call_method(
         context,
         "enableFcmNotifications",
         "(Ljava/lang/String;)Z",
-        &[jni::objects::JValue::Object(&jpubkey.into())],
+        &[jni::objects::JValue::Object(&jpubkeys.into())],
     )?;
 
     if !result.z()? {
@@ -653,8 +729,8 @@ fn enable_fcm_notifications(pubkey_hex: &str) -> Result<(), Box<dyn std::error::
     }
 
     info!(
-        "FCM notifications enabled for {}",
-        &pubkey_hex[..8.min(pubkey_hex.len())]
+        "FCM notifications enabled for {} accounts",
+        pubkey_hexes.len()
     );
     Ok(())
 }
@@ -667,15 +743,21 @@ fn disable_fcm_notifications() -> Result<(), Box<dyn std::error::Error>> {
 
     env.call_method(context, "disableFcmNotifications", "()V", &[])?;
 
+    // Clear signing keypairs so stale key material is not retained in memory
+    clear_signing_keypairs();
+
     info!("FCM notifications disabled");
     Ok(())
 }
 
-/// Enable native (direct relay) notifications
+/// Enable native (direct relay) notifications for all accounts
 fn enable_native_notifications(
-    pubkey_hex: &str,
+    pubkey_hexes: &[String],
     relay_urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if pubkey_hexes.is_empty() {
+        return Err("No pubkeys provided for native notifications".into());
+    }
     if relay_urls.is_empty() {
         warn!("Cannot enable native notifications: no relay URLs configured");
         return Err("No relay URLs configured".into());
@@ -685,7 +767,8 @@ fn enable_native_notifications(
     let mut env = vm.attach_current_thread()?;
     let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
 
-    let jpubkey = env.new_string(pubkey_hex)?;
+    let pubkeys_json = serde_json::to_string(pubkey_hexes)?;
+    let jpubkeys = env.new_string(&pubkeys_json)?;
     let relays_json = serde_json::to_string(relay_urls)?;
     let jrelays = env.new_string(&relays_json)?;
 
@@ -694,14 +777,14 @@ fn enable_native_notifications(
         "enableNativeNotifications",
         "(Ljava/lang/String;Ljava/lang/String;)V",
         &[
-            jni::objects::JValue::Object(&jpubkey.into()),
+            jni::objects::JValue::Object(&jpubkeys.into()),
             jni::objects::JValue::Object(&jrelays.into()),
         ],
     )?;
 
     info!(
-        "Native notifications enabled for {} with {} relays",
-        &pubkey_hex[..8.min(pubkey_hex.len())],
+        "Native notifications enabled for {} accounts with {} relays",
+        pubkey_hexes.len(),
         relay_urls.len()
     );
     Ok(())
@@ -714,6 +797,9 @@ fn disable_native_notifications() -> Result<(), Box<dyn std::error::Error>> {
     let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
 
     env.call_method(context, "disableNativeNotifications", "()V", &[])?;
+
+    // Clear signing keypairs so stale key material is not retained in memory
+    clear_signing_keypairs();
 
     info!("Native notifications disabled");
     Ok(())
@@ -799,14 +885,6 @@ pub fn is_notification_service_running() -> Result<bool, Box<dyn std::error::Err
 // =============================================================================
 // Deep Link Handling
 // =============================================================================
-
-/// Information about a deep link from a notification tap.
-#[derive(Debug, Clone)]
-pub struct DeepLinkInfo {
-    pub event_id: String,
-    pub event_kind: i32,
-    pub author_pubkey: Option<String>,
-}
 
 /// Called from Java when user taps a notification.
 #[no_mangle]

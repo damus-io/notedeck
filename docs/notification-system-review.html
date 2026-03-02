@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PR #1296 — Cross-Platform Push Notifications for Notedeck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Fira+Code:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ========== CSS Custom Properties ========== */
+    :root {
+      --font-body: 'DM Sans', system-ui, sans-serif;
+      --font-mono: 'Fira Code', 'SF Mono', Consolas, monospace;
+
+      /* Blueprint palette — deep slate + teal accents */
+      --bg: #f5f7fa;
+      --bg-pattern: rgba(0,0,0,0.025);
+      --surface: #ffffff;
+      --surface-elevated: #ffffff;
+      --surface2: #f0f2f5;
+      --border: rgba(0,0,0,0.08);
+      --border-bright: rgba(0,0,0,0.15);
+      --text: #1a1d23;
+      --text-bright: #0d0f12;
+      --text-dim: #6b7280;
+
+      --accent: #0e7490;
+      --accent-dim: rgba(14, 116, 144, 0.08);
+      --accent-bright: #0891b2;
+
+      --green: #059669;
+      --green-dim: rgba(5, 150, 105, 0.08);
+      --red: #dc2626;
+      --red-dim: rgba(220, 38, 38, 0.06);
+      --amber: #d97706;
+      --amber-dim: rgba(217, 119, 6, 0.08);
+      --blue: #2563eb;
+      --blue-dim: rgba(37, 99, 235, 0.08);
+      --orange: #ea580c;
+      --orange-dim: rgba(234, 88, 12, 0.08);
+
+      --node-a: #0e7490;
+      --node-a-dim: rgba(14, 116, 144, 0.1);
+      --node-b: #059669;
+      --node-b-dim: rgba(5, 150, 105, 0.1);
+      --node-c: #d97706;
+      --node-c-dim: rgba(217, 119, 6, 0.1);
+      --node-d: #7c3aed;
+      --node-d-dim: rgba(124, 58, 237, 0.1);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f1117;
+        --bg-pattern: rgba(255,255,255,0.015);
+        --surface: #181b23;
+        --surface-elevated: #1e2130;
+        --surface2: #242838;
+        --border: rgba(255,255,255,0.06);
+        --border-bright: rgba(255,255,255,0.12);
+        --text: #e2e5eb;
+        --text-bright: #f5f7fa;
+        --text-dim: #8b929e;
+
+        --accent: #22d3ee;
+        --accent-dim: rgba(34, 211, 238, 0.1);
+        --accent-bright: #67e8f9;
+
+        --green: #34d399;
+        --green-dim: rgba(52, 211, 153, 0.1);
+        --red: #f87171;
+        --red-dim: rgba(248, 113, 113, 0.08);
+        --amber: #fbbf24;
+        --amber-dim: rgba(251, 191, 36, 0.1);
+        --blue: #60a5fa;
+        --blue-dim: rgba(96, 165, 250, 0.1);
+        --orange: #fb923c;
+        --orange-dim: rgba(251, 146, 60, 0.1);
+
+        --node-a: #22d3ee;
+        --node-a-dim: rgba(34, 211, 238, 0.1);
+        --node-b: #34d399;
+        --node-b-dim: rgba(52, 211, 153, 0.1);
+        --node-c: #fbbf24;
+        --node-c-dim: rgba(251, 191, 36, 0.1);
+        --node-d: #a78bfa;
+        --node-d-dim: rgba(167, 139, 250, 0.1);
+      }
+    }
+
+    /* ========== Base Reset ========== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      background-image:
+        radial-gradient(circle, var(--bg-pattern) 1px, transparent 1px);
+      background-size: 20px 20px;
+      color: var(--text);
+      line-height: 1.5;
+      padding: 40px;
+      overflow-wrap: break-word;
+    }
+
+    a { color: var(--accent); text-decoration: underline; }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      background: var(--accent-dim);
+      color: var(--accent);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    /* ========== Layout ========== */
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 170px 1fr;
+      gap: 0 40px;
+    }
+    .main { min-width: 0; }
+
+    /* ========== TOC ========== */
+    .toc {
+      position: sticky;
+      top: 24px;
+      align-self: start;
+      padding: 14px 0;
+      grid-row: 1 / -1;
+      max-height: calc(100dvh - 48px);
+      overflow-y: auto;
+    }
+    .toc::-webkit-scrollbar { width: 3px; }
+    .toc::-webkit-scrollbar-thumb { background: var(--surface-elevated); border-radius: 2px; }
+
+    .toc-title {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--text-dim);
+      padding: 0 0 10px;
+      margin-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toc a {
+      display: block;
+      font-size: 11px;
+      color: var(--text-dim);
+      text-decoration: none;
+      padding: 4px 8px;
+      border-radius: 5px;
+      border-left: 2px solid transparent;
+      transition: all 0.15s;
+      line-height: 1.4;
+      margin-bottom: 1px;
+    }
+    .toc a:hover { color: var(--text); background: var(--surface2); }
+    .toc a.active { color: var(--text); border-left-color: var(--accent); }
+
+    @media (max-width: 1000px) {
+      .wrap { grid-template-columns: 1fr; padding-top: 0; }
+      body { padding: 16px; padding-top: 0; }
+      .toc {
+        position: sticky;
+        top: 0;
+        z-index: 200;
+        max-height: none;
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        background: var(--bg);
+        border-bottom: 1px solid var(--border);
+        padding: 10px 0;
+        margin: 0 -16px;
+        padding-left: 16px;
+        padding-right: 16px;
+        grid-row: auto;
+      }
+      .toc::-webkit-scrollbar { display: none; }
+      .toc-title { display: none; }
+      .toc a {
+        white-space: nowrap;
+        flex-shrink: 0;
+        border-left: none;
+        border-bottom: 2px solid transparent;
+        border-radius: 4px 4px 0 0;
+        padding: 6px 10px;
+        font-size: 10px;
+      }
+      .toc a.active {
+        border-left: none;
+        border-bottom-color: var(--accent);
+        background: var(--surface);
+      }
+      .main { padding-top: 20px; }
+      .sec-head { scroll-margin-top: 52px; }
+    }
+
+    /* ========== Section Headings ========== */
+    .sec-head {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--accent);
+      margin-top: 48px;
+      margin-bottom: 20px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .sec-head::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+
+    /* ========== Card System ========== */
+    .ve-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 24px;
+      position: relative;
+      animation: fadeUp 0.4s ease-out both;
+      animation-delay: calc(var(--i, 0) * 0.05s);
+    }
+    .ve-card--hero {
+      background: color-mix(in srgb, var(--surface) 92%, var(--accent) 8%);
+      box-shadow: 0 4px 20px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04);
+      border-color: color-mix(in srgb, var(--border) 50%, var(--accent) 50%);
+    }
+    .ve-card--elevated {
+      background: var(--surface-elevated);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .ve-card--recessed {
+      background: color-mix(in srgb, var(--bg) 70%, var(--surface) 30%);
+      box-shadow: inset 0 1px 3px rgba(0,0,0,0.04);
+    }
+    .ve-card__label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--accent);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .ve-card__label::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    /* Accent borders */
+    .ve-card--accent-green { border-left: 3px solid var(--green); }
+    .ve-card--accent-red { border-left: 3px solid var(--red); }
+    .ve-card--accent-amber { border-left: 3px solid var(--amber); }
+    .ve-card--accent-blue { border-left: 3px solid var(--blue); }
+    .ve-card--accent-teal { border-left: 3px solid var(--accent); }
+
+    /* ========== Animations ========== */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeScale {
+      from { opacity: 0; transform: scale(0.92); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    @property --count {
+      syntax: '<integer>';
+      initial-value: 0;
+      inherits: false;
+    }
+    @keyframes countUp {
+      to { --count: var(--target); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* ========== Hero Section ========== */
+    .hero-section {
+      padding: 48px 40px;
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--surface) 90%, var(--accent) 10%);
+      border: 1px solid color-mix(in srgb, var(--border) 40%, var(--accent) 60%);
+      margin-bottom: 32px;
+      animation: fadeUp 0.5s ease-out both;
+    }
+    .hero-section h1 {
+      font-size: clamp(28px, 3.5vw, 40px);
+      font-weight: 800;
+      line-height: 1.15;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+    .hero-section .pr-tag {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--accent);
+      margin-bottom: 16px;
+      display: inline-block;
+      background: var(--accent-dim);
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+    .hero-section .lead {
+      font-size: clamp(16px, 1.2vw, 20px);
+      line-height: 1.6;
+      color: var(--text);
+      max-width: 720px;
+    }
+    .hero-section .lead strong { color: var(--text-bright); }
+
+    /* ========== KPI Cards ========== */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 14px;
+      margin-bottom: 32px;
+    }
+    .kpi-card {
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      animation: fadeScale 0.35s ease-out both;
+      animation-delay: calc(var(--i, 0) * 0.06s);
+    }
+    .kpi-card__value {
+      font-size: 32px;
+      font-weight: 700;
+      letter-spacing: -1px;
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .kpi-card__value--green { color: var(--green); }
+    .kpi-card__value--red { color: var(--red); }
+    .kpi-card__value--amber { color: var(--amber); }
+    .kpi-card__value--accent { color: var(--accent); }
+    .kpi-card__label {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: var(--text-dim);
+      margin-top: 6px;
+    }
+    .kpi-card__value--animated {
+      counter-reset: val var(--count);
+      animation: countUp 1.2s ease-out forwards;
+    }
+    .kpi-card__value--animated::after { content: counter(val); }
+
+    /* ========== Badge ========== */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 5px;
+      white-space: nowrap;
+    }
+    .badge--green { background: var(--green-dim); color: var(--green); }
+    .badge--red { background: var(--red-dim); color: var(--red); }
+    .badge--amber { background: var(--amber-dim); color: var(--amber); }
+    .badge--blue { background: var(--blue-dim); color: var(--blue); }
+
+    /* ========== Comparison Panels ========== */
+    .diff-panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+    .diff-panels > * { min-width: 0; overflow-wrap: break-word; }
+    .diff-panel__header {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 10px 16px;
+    }
+    .diff-panel__header--before {
+      background: var(--red-dim);
+      color: var(--red);
+      border-bottom: 2px solid var(--red);
+    }
+    .diff-panel__header--after {
+      background: var(--green-dim);
+      color: var(--green);
+      border-bottom: 2px solid var(--green);
+    }
+    .diff-panel__body {
+      padding: 16px;
+      background: var(--surface);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .diff-panel__body ul { padding-left: 1.5em; margin: 6px 0; }
+    .diff-panel__body li { margin-bottom: 4px; }
+    @media (max-width: 768px) { .diff-panels { grid-template-columns: 1fr; } }
+
+    /* ========== Mermaid ========== */
+    .mermaid-wrap {
+      position: relative;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px 24px;
+      overflow: auto;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 400px;
+      margin-bottom: 20px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+      cursor: grab;
+    }
+    .mermaid-wrap.is-panning { cursor: grabbing; user-select: none; }
+    .mermaid-wrap::-webkit-scrollbar { width: 6px; height: 6px; }
+    .mermaid-wrap::-webkit-scrollbar-track { background: transparent; }
+    .mermaid-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    .mermaid-wrap .mermaid { zoom: 1.3; }
+
+    .zoom-controls {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      display: flex;
+      gap: 2px;
+      z-index: 10;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 2px;
+    }
+    .zoom-controls button {
+      width: 28px;
+      height: 28px;
+      border: none;
+      background: transparent;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-size: 14px;
+      cursor: pointer;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .zoom-controls button:hover { background: var(--border); color: var(--text); }
+
+    .mermaid .nodeLabel { color: var(--text) !important; }
+    .mermaid .edgeLabel { color: var(--text-dim) !important; background-color: var(--bg) !important; }
+    .mermaid .edgeLabel rect { fill: var(--bg) !important; }
+    .mermaid .node rect,
+    .mermaid .node circle,
+    .mermaid .node polygon { stroke-width: 1.5px; }
+    .mermaid .edge-pattern-solid { stroke-width: 1.5px; }
+    .mermaid .edgeLabel { font-family: var(--font-mono) !important; font-size: 12px !important; }
+    .mermaid .nodeLabel { font-family: var(--font-body) !important; font-size: 15px !important; }
+
+    /* ========== File Tree ========== */
+    .file-tree { font-family: var(--font-mono); font-size: 12px; line-height: 1.8; }
+    .file-tree .dir { color: var(--accent); font-weight: 600; }
+    .file-tree .file { color: var(--text); padding-left: 1.2em; position: relative; }
+    .file-tree .file::before { content: ''; position: absolute; left: 0; }
+    .file-tree .new { color: var(--green); }
+    .file-tree .mod { color: var(--amber); }
+    .file-tree .del { color: var(--red); text-decoration: line-through; }
+    .file-tree .lines { color: var(--text-dim); font-size: 10px; margin-left: 8px; }
+
+    /* ========== Review Cards ========== */
+    .review-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 22px;
+      margin-bottom: 14px;
+    }
+    .review-card h4 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .review-card p, .review-card li {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+    .review-card ul { padding-left: 1.5em; margin: 4px 0; }
+    .review-card li { margin-bottom: 3px; }
+    .review-card--good { border-left: 4px solid var(--green); }
+    .review-card--bad { border-left: 4px solid var(--red); }
+    .review-card--ugly { border-left: 4px solid var(--amber); }
+    .review-card--question { border-left: 4px solid var(--blue); }
+
+    /* ========== Decision Cards ========== */
+    .decision-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 22px;
+      margin-bottom: 14px;
+    }
+    .decision-card--high { border-left: 4px solid var(--green); }
+    .decision-card--medium { border-left: 4px solid var(--blue); }
+    .decision-card--low { border-left: 4px solid var(--amber); }
+    .decision-card dt {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      margin-top: 10px;
+    }
+    .decision-card dt:first-child { margin-top: 0; }
+    .decision-card dd {
+      font-size: 13px;
+      line-height: 1.6;
+      margin: 2px 0 0 0;
+    }
+
+    /* ========== Tables ========== */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .data-table thead { position: sticky; top: 0; z-index: 2; }
+    .data-table th {
+      background: var(--surface-elevated);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-dim);
+      text-align: left;
+      padding: 12px 16px;
+      border-bottom: 2px solid var(--border-bright);
+      white-space: nowrap;
+    }
+    .data-table td {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .data-table tbody tr:nth-child(even) { background: var(--accent-dim); }
+    .data-table tbody tr { transition: background 0.15s ease; }
+    .data-table tbody tr:hover { background: var(--border); }
+    .data-table tbody tr:last-child td { border-bottom: none; }
+    .data-table td.num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    /* ========== Collapsible ========== */
+    details.collapsible {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    details.collapsible summary {
+      padding: 14px 20px;
+      background: var(--surface);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text);
+      transition: background 0.15s ease;
+    }
+    details.collapsible summary:hover { background: var(--surface-elevated); }
+    details.collapsible summary::-webkit-details-marker { display: none; }
+    details.collapsible summary::before {
+      content: '\25B8';
+      font-size: 11px;
+      color: var(--text-dim);
+      transition: transform 0.15s ease;
+    }
+    details.collapsible[open] summary::before { transform: rotate(90deg); }
+    details.collapsible .collapsible__body {
+      padding: 16px 20px;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    /* ========== Grid helpers ========== */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+    .grid-2 > *, .grid-3 > * { min-width: 0; }
+    @media (max-width: 768px) {
+      .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    }
+
+    .mt-md { margin-top: 20px; }
+    .mb-md { margin-bottom: 20px; }
+    .mb-sm { margin-bottom: 10px; }
+
+    /* ========== Platform badges ========== */
+    .platform-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin: 16px 0;
+    }
+    .platform-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+    }
+    .platform-badge--android { border-color: var(--green); color: var(--green); background: var(--green-dim); }
+    .platform-badge--macos { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+    .platform-badge--linux { border-color: var(--amber); color: var(--amber); background: var(--amber-dim); }
+
+    /* ========== Housekeeping ========== */
+    .housekeeping {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <!-- Table of Contents -->
+  <nav class="toc" id="toc">
+    <div class="toc-title">Contents</div>
+    <a href="#s1">1. Summary</a>
+    <a href="#s2">2. KPI Dashboard</a>
+    <a href="#s3">3. Architecture</a>
+    <a href="#s4">4. Feature Comparison</a>
+    <a href="#s5">5. Data Flow</a>
+    <a href="#s6">6. File Map</a>
+    <a href="#s7">7. Test Coverage</a>
+    <a href="#s8">8. Code Review</a>
+    <a href="#s9">9. Decision Log</a>
+    <a href="#s10">10. Re-entry Context</a>
+  </nav>
+
+  <div class="main">
+
+    <!-- ========== 1. EXECUTIVE SUMMARY ========== -->
+    <div class="hero-section" id="s1">
+      <div class="pr-tag">damus-io/notedeck PR #1296 &middot; WIP</div>
+      <h1>Cross-Platform Push Notifications</h1>
+      <p class="lead">
+        Notedeck had <strong>zero notification support</strong> &mdash; users had to keep the app open and actively scroll to see new mentions, replies, or zaps.
+        This PR adds a complete notification pipeline covering <strong>three platforms</strong> (Android, macOS, Linux) with <strong>two Android delivery modes</strong> (Firebase Cloud Messaging for battery efficiency, and a native WebSocket fallback for users who refuse Google dependencies).
+        The core insight: <strong>decouple event extraction from delivery</strong>. A shared Rust pipeline parses relay messages, resolves profiles, and formats notifications, then hands off to platform-specific backends via a trait boundary. Android goes through JNI to Kotlin; desktop goes through <code>notify-rust</code> or <code>UNUserNotificationCenter</code>.
+      </p>
+      <div class="platform-row">
+        <span class="platform-badge platform-badge--android">Android FCM</span>
+        <span class="platform-badge platform-badge--android">Android Native</span>
+        <span class="platform-badge platform-badge--macos">macOS</span>
+        <span class="platform-badge platform-badge--linux">Linux</span>
+      </div>
+    </div>
+
+    <!-- ========== 2. KPI DASHBOARD ========== -->
+    <div class="sec-head" id="s2">2 &mdash; KPI Dashboard</div>
+
+    <div class="kpi-row">
+      <div class="kpi-card" style="--i:0">
+        <div class="kpi-card__value kpi-card__value--green kpi-card__value--animated" style="--target:7206"></div>
+        <div class="kpi-card__label">Lines Added</div>
+      </div>
+      <div class="kpi-card" style="--i:1">
+        <div class="kpi-card__value kpi-card__value--red kpi-card__value--animated" style="--target:551"></div>
+        <div class="kpi-card__label">Lines Removed</div>
+      </div>
+      <div class="kpi-card" style="--i:2">
+        <div class="kpi-card__value kpi-card__value--accent kpi-card__value--animated" style="--target:43"></div>
+        <div class="kpi-card__label">Files Changed</div>
+      </div>
+      <div class="kpi-card" style="--i:3">
+        <div class="kpi-card__value kpi-card__value--amber kpi-card__value--animated" style="--target:23"></div>
+        <div class="kpi-card__label">Commits</div>
+      </div>
+      <div class="kpi-card" style="--i:4">
+        <div class="kpi-card__value" style="color: var(--text)" data-count="20">~20</div>
+        <div class="kpi-card__label">New Files</div>
+      </div>
+      <div class="kpi-card" style="--i:5">
+        <div class="kpi-card__value" style="color: var(--text)">194</div>
+        <div class="kpi-card__label">Test Lines</div>
+      </div>
+    </div>
+
+    <div class="housekeeping">
+      <span class="badge badge--red">CHANGELOG not updated</span>
+      <span class="badge badge--amber">Docs may need update</span>
+      <span class="badge badge--blue">WIP status</span>
+    </div>
+
+    <!-- ========== 3. MODULE ARCHITECTURE ========== -->
+    <div class="sec-head" id="s3">3 &mdash; Module Architecture</div>
+
+    <div class="mermaid-wrap">
+      <div class="zoom-controls">
+        <button onclick="zoomDiagram(this, 1.2)" title="Zoom in">+</button>
+        <button onclick="zoomDiagram(this, 0.8)" title="Zoom out">&minus;</button>
+        <button onclick="resetZoom(this)" title="Reset zoom">&#8634;</button>
+      </div>
+      <pre class="mermaid">
+flowchart TD
+  subgraph EventLoop["Main Event Loop"]
+    RL["Relay Message"]
+    PRM["process_relay_message"]
+    EXT["extraction.rs"]
+    PRO["profiles.rs"]
+    FMT["manager.rs format"]
+  end
+
+  subgraph Worker["Worker Thread"]
+    CH["mpsc channel"]
+    DD["Dedup LRU"]
+    WRK["worker.rs"]
+  end
+
+  subgraph Desktop["Desktop Backends"]
+    LIN["DesktopBackend\nnotify-rust / libnotify"]
+    MAC["MacOSBackend\nUNUserNotificationCenter"]
+    IMG["image_cache.rs\nProfile pictures"]
+  end
+
+  subgraph Android["Android Path"]
+    JNI["JNI Bridge\nchrome/notifications.rs"]
+    FCM["FCM Mode\nFirebase via notepush"]
+    NAT["Native Mode\nForeground Service"]
+  end
+
+  subgraph Kotlin["Kotlin Services"]
+    MA["MainActivity.kt"]
+    NFS["NotedeckFirebaseMessagingService"]
+    NPC["NotepushClient"]
+    NS["NotificationsService"]
+    NH["NotificationHelper"]
+  end
+
+  subgraph Settings["Settings"]
+    UI["settings.rs UI"]
+    PER["SettingsHandler"]
+    PLAT["platform/mod.rs"]
+  end
+
+  RL --> PRM
+  PRM --> EXT
+  EXT --> PRO
+  PRO --> FMT
+  FMT --> CH
+  CH --> DD
+  DD --> WRK
+  WRK --> LIN
+  WRK --> MAC
+  MAC --> IMG
+
+  PRM -.-> JNI
+  JNI --> FCM
+  JNI --> NAT
+  FCM --> NFS
+  NFS --> NPC
+  NAT --> NS
+  NS --> NH
+  FCM --> NH
+
+  UI --> PER
+  UI --> PLAT
+  PLAT --> JNI
+  PLAT --> WRK
+      </pre>
+    </div>
+
+    <div class="grid-3 mt-md">
+      <div class="ve-card ve-card--accent-teal" style="--i:1">
+        <div class="ve-card__label" style="color: var(--accent)">Core Pipeline</div>
+        <p style="font-size: 13px; line-height: 1.6;">
+          <code>extraction.rs</code> parses JSON relay messages, <code>profiles.rs</code> resolves npub mentions, <code>manager.rs</code> formats localized title/body, then sends <code>NotificationData</code> over an mpsc channel to the worker thread.
+        </p>
+      </div>
+      <div class="ve-card ve-card--accent-green" style="--i:2">
+        <div class="ve-card__label" style="color: var(--green)">Android Dual Mode</div>
+        <p style="font-size: 13px; line-height: 1.6;">
+          <strong>FCM</strong>: Firebase messages routed through <code>notepush</code> server with NIP-98 auth. <strong>Native</strong>: Foreground service with direct WebSocket relay connections &mdash; no Google dependency.
+        </p>
+      </div>
+      <div class="ve-card ve-card--accent-amber" style="--i:3">
+        <div class="ve-card__label" style="color: var(--amber)">Desktop Backends</div>
+        <p style="font-size: 13px; line-height: 1.6;">
+          Linux uses <code>notify-rust</code> (libnotify). macOS uses <code>UNUserNotificationCenter</code> with objc2 bindings, supporting profile picture attachments via a dedicated image cache.
+        </p>
+      </div>
+    </div>
+
+    <!-- ========== 4. FEATURE COMPARISON ========== -->
+    <div class="sec-head" id="s4">4 &mdash; Feature Comparison</div>
+
+    <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px;">Notification System</h3>
+    <div class="diff-panels">
+      <div class="diff-panel__header diff-panel__header--before">Before</div>
+      <div class="diff-panel__header diff-panel__header--after">After</div>
+      <div class="diff-panel__body">
+        <ul>
+          <li>No notification support on any platform</li>
+          <li>Users must keep app open to see new activity</li>
+          <li>No background processing of relay events</li>
+          <li>No profile picture display for event senders</li>
+          <li>No notification settings in UI</li>
+        </ul>
+      </div>
+      <div class="diff-panel__body">
+        <ul>
+          <li>Full notification pipeline: mentions, replies, reactions, reposts, DMs, zaps</li>
+          <li>Background relay connections on Android (foreground service) and desktop (worker thread)</li>
+          <li>Profile-enriched notifications with localized titles/bodies</li>
+          <li>macOS profile picture attachments via <code>UNNotificationAttachment</code></li>
+          <li>Settings UI with FCM/Native/Disabled radio group and permission badges</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px;">Android Architecture</h3>
+    <div class="diff-panels">
+      <div class="diff-panel__header diff-panel__header--before">Before</div>
+      <div class="diff-panel__header diff-panel__header--after">After</div>
+      <div class="diff-panel__body">
+        <ul>
+          <li><code>MainActivity.java</code> &mdash; plain Java activity</li>
+          <li>No Firebase integration</li>
+          <li>No Kotlin code</li>
+          <li>No foreground service</li>
+          <li>minSdk unspecified for notification types</li>
+        </ul>
+      </div>
+      <div class="diff-panel__body">
+        <ul>
+          <li><code>MainActivity.kt</code> &mdash; Kotlin with coroutines, notification controls, deep linking</li>
+          <li>Firebase BOM 32.7, FCM messaging, NIP-98 auth via notepush</li>
+          <li>7 new Kotlin files (services, receivers, helpers)</li>
+          <li><code>NotificationsService</code> foreground service with wake lock, WebSocket relay pool</li>
+          <li>minSdk 26 for foreground service type support</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px;">Platform API</h3>
+    <div class="diff-panels">
+      <div class="diff-panel__header diff-panel__header--before">Before</div>
+      <div class="diff-panel__header diff-panel__header--after">After</div>
+      <div class="diff-panel__body">
+        <ul>
+          <li>No cross-platform notification API</li>
+          <li>No <code>NotificationMode</code> concept</li>
+          <li><code>platform/mod.rs</code> had no notification functions</li>
+        </ul>
+      </div>
+      <div class="diff-panel__body">
+        <ul>
+          <li><code>NotificationMode</code> enum: Fcm, Native, Disabled with index conversion for UI</li>
+          <li>Cross-platform API: <code>enable/disable_notifications</code>, <code>request_permission</code>, <code>get_service_status</code>, <code>check_deep_link</code></li>
+          <li>cfg-gated implementations: Android via JNI, desktop via <code>NotificationManager</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ========== 5. DATA FLOW ========== -->
+    <div class="sec-head" id="s5">5 &mdash; Notification Flow Diagrams</div>
+
+    <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px;">Desktop Notification Flow</h3>
+    <div class="mermaid-wrap" style="min-height: 350px;">
+      <div class="zoom-controls">
+        <button onclick="zoomDiagram(this, 1.2)" title="Zoom in">+</button>
+        <button onclick="zoomDiagram(this, 0.8)" title="Zoom out">&minus;</button>
+        <button onclick="resetZoom(this)" title="Reset zoom">&#8634;</button>
+      </div>
+      <pre class="mermaid">
+sequenceDiagram
+  participant R as Relay
+  participant EL as Event Loop
+  participant NM as NotificationManager
+  participant W as Worker Thread
+  participant B as Backend
+
+  R->>EL: RelayMessage Event
+  EL->>NM: process_relay_message
+  NM->>NM: Extract event, check kind + p-tags
+  NM->>NM: Lookup profile via nostrdb
+  NM->>NM: Format title and body
+  NM->>W: mpsc send NotificationData
+  W->>W: Dedup check via LRU
+  W->>B: display notification
+  Note over B: Linux: notify-rust
+  Note over B: macOS: UNUserNotificationCenter
+      </pre>
+    </div>
+
+    <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px;">Android FCM Flow</h3>
+    <div class="mermaid-wrap" style="min-height: 350px;">
+      <div class="zoom-controls">
+        <button onclick="zoomDiagram(this, 1.2)" title="Zoom in">+</button>
+        <button onclick="zoomDiagram(this, 0.8)" title="Zoom out">&minus;</button>
+        <button onclick="resetZoom(this)" title="Reset zoom">&#8634;</button>
+      </div>
+      <pre class="mermaid">
+sequenceDiagram
+  participant U as User
+  participant MA as MainActivity.kt
+  participant NPC as NotepushClient
+  participant NP as Notepush Server
+  participant FCM as Firebase
+  participant FMS as FirebaseMessagingService
+  participant JNI as Rust JNI Bridge
+  participant NH as NotificationHelper
+
+  U->>MA: Enable FCM mode
+  MA->>NPC: registerDevice with NIP-98 auth
+  NPC->>NP: POST register
+  NP-->>NPC: OK
+
+  Note over NP: Later, event arrives
+  NP->>FCM: Push notification
+  FCM->>FMS: onMessageReceived
+  FMS->>JNI: nativeProcessNostrEvent
+  JNI-->>FMS: Parsed event data
+  FMS->>NH: showNotification
+  NH->>U: System notification with deep link
+      </pre>
+    </div>
+
+    <!-- ========== 6. FILE MAP ========== -->
+    <div class="sec-head" id="s6">6 &mdash; File Map</div>
+
+    <details class="collapsible" open>
+      <summary>Rust &mdash; crates/notedeck/src/notifications/ (11 new files, 2,478 lines)</summary>
+      <div class="collapsible__body file-tree">
+        <div class="dir">notifications/</div>
+        <div class="file new">mod.rs <span class="lines">+247</span> &mdash; Service orchestration, worker lifecycle</div>
+        <div class="file new">manager.rs <span class="lines">+367</span> &mdash; Event filtering, profile lookup, title/body formatting</div>
+        <div class="file new">types.rs <span class="lines">+158</span> &mdash; Core data structures</div>
+        <div class="file new">extraction.rs <span class="lines">+235</span> &mdash; JSON relay message parsing</div>
+        <div class="file new">worker.rs <span class="lines">+162</span> &mdash; Background notification display thread</div>
+        <div class="file new">backend.rs <span class="lines">+98</span> &mdash; NotificationBackend trait</div>
+        <div class="file new">desktop.rs <span class="lines">+125</span> &mdash; Linux notify-rust backend</div>
+        <div class="file new">macos.rs <span class="lines">+488</span> &mdash; macOS UNUserNotificationCenter backend</div>
+        <div class="file new">image_cache.rs <span class="lines">+430</span> &mdash; Profile picture disk cache (macOS)</div>
+        <div class="file new">profiles.rs <span class="lines">+100</span> &mdash; npub decoding, mention resolution</div>
+        <div class="file new">bolt11.rs <span class="lines">+68</span> &mdash; Zap amount extraction</div>
+      </div>
+    </details>
+
+    <details class="collapsible">
+      <summary>Rust &mdash; Platform layer (3 files, 1,060 lines added)</summary>
+      <div class="collapsible__body file-tree">
+        <div class="dir">platform/</div>
+        <div class="file new">mod.rs <span class="lines">+238</span> &mdash; NotificationMode API stubs</div>
+        <div class="file new">desktop_notifications.rs <span class="lines">+74</span> &mdash; Desktop settings persistence</div>
+        <div class="file mod">android.rs <span class="lines">+748 / -4</span> &mdash; Android JNI notification bridge</div>
+      </div>
+    </details>
+
+    <details class="collapsible">
+      <summary>Rust &mdash; Chrome and other crates (modified, 1,058 lines)</summary>
+      <div class="collapsible__body file-tree">
+        <div class="dir">notedeck_chrome/</div>
+        <div class="file new">src/notifications.rs <span class="lines">+886</span> &mdash; Android JNI notification bridge</div>
+        <div class="file mod">src/chrome.rs <span class="lines">+73</span></div>
+        <div class="file mod">src/lib.rs <span class="lines">+3</span></div>
+        <div class="dir">notedeck_columns/</div>
+        <div class="file mod">src/app.rs <span class="lines">+69</span> &mdash; Lifecycle integration</div>
+        <div class="file mod">src/nav.rs <span class="lines">+9 / -7</span></div>
+        <div class="file mod">src/ui/settings.rs <span class="lines">+434 / -3</span> &mdash; Notification settings UI</div>
+        <div class="dir">notedeck/</div>
+        <div class="file mod">src/app.rs <span class="lines">+30 / -21</span> &mdash; Event loop integration</div>
+        <div class="file mod">src/context.rs <span class="lines">+7</span></div>
+        <div class="file mod">src/account/accounts.rs <span class="lines">+46</span></div>
+        <div class="file mod">src/zaps/zap.rs <span class="lines">+8</span> &mdash; Shared BOLT11 parser</div>
+      </div>
+    </details>
+
+    <details class="collapsible">
+      <summary>Kotlin &mdash; Android (7 new files, 1,821 lines)</summary>
+      <div class="collapsible__body file-tree">
+        <div class="dir">android/app/src/main/java/com/damus/notedeck/</div>
+        <div class="file new">MainActivity.kt <span class="lines">+468</span></div>
+        <div class="file del">MainActivity.java <span class="lines">-238</span></div>
+        <div class="dir">service/</div>
+        <div class="file new">NotificationsService.kt <span class="lines">+408</span> &mdash; Foreground WebSocket service</div>
+        <div class="file new">NotificationHelper.kt <span class="lines">+361</span> &mdash; Rich notification display</div>
+        <div class="file new">NotedeckFirebaseMessagingService.kt <span class="lines">+239</span> &mdash; FCM handler</div>
+        <div class="file new">NotepushClient.kt <span class="lines">+227</span> &mdash; HTTP client for notepush API</div>
+        <div class="file new">NotificationActionReceiver.kt <span class="lines">+64</span> &mdash; Action intents</div>
+        <div class="file new">BootReceiver.kt <span class="lines">+54</span> &mdash; Auto-start on boot</div>
+      </div>
+    </details>
+
+    <details class="collapsible">
+      <summary>Build &amp; Config (5 files)</summary>
+      <div class="collapsible__body file-tree">
+        <div class="file mod">Cargo.lock <span class="lines">+127 / -273</span></div>
+        <div class="file mod">Cargo.toml <span class="lines">+5</span></div>
+        <div class="file mod">crates/notedeck/Cargo.toml <span class="lines">+10</span></div>
+        <div class="file mod">crates/notedeck_chrome/Cargo.toml <span class="lines">+10</span></div>
+        <div class="file mod">android/app/build.gradle <span class="lines">+32 / -5</span></div>
+        <div class="file mod">android/build.gradle <span class="lines">+2</span></div>
+        <div class="file mod">AndroidManifest.xml <span class="lines">+62</span></div>
+        <div class="file new">res/values/strings.xml <span class="lines">+5</span></div>
+      </div>
+    </details>
+
+    <!-- ========== 7. TEST COVERAGE ========== -->
+    <div class="sec-head" id="s7">7 &mdash; Test Coverage</div>
+
+    <div class="diff-panels">
+      <div class="diff-panel__header diff-panel__header--before">Before</div>
+      <div class="diff-panel__header diff-panel__header--after">After</div>
+      <div class="diff-panel__body">
+        <ul>
+          <li>No notification-related tests</li>
+          <li>BOLT11 parsing tested elsewhere (zaps module)</li>
+        </ul>
+      </div>
+      <div class="diff-panel__body">
+        <ul>
+          <li><strong>194 lines</strong> of test code across 2 crates</li>
+          <li>BOLT11 parsing tests (unit tests for zap amount extraction)</li>
+          <li>Event extraction tests (relay message parsing, p-tag extraction)</li>
+          <li>Android JNI bridge tests (53 test lines)</li>
+          <li>Image cache tests (40 test lines)</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ve-card ve-card--accent-amber mb-md" style="--i:1">
+      <div class="ve-card__label" style="color: var(--amber)">Coverage Gaps</div>
+      <ul style="font-size: 13px; line-height: 1.8; padding-left: 1.5em;">
+        <li><code>manager.rs</code> (367 lines) &mdash; event filtering and title/body formatting has no tests</li>
+        <li><code>worker.rs</code> (162 lines) &mdash; dedup logic and worker loop untested</li>
+        <li><code>macos.rs</code> (488 lines) &mdash; no macOS backend tests (hard to unit test, but integration tests possible)</li>
+        <li><code>profiles.rs</code> (100 lines) &mdash; profile caching and mention resolution untested</li>
+        <li>Settings UI persistence &mdash; no tests for mode switch roundtrip</li>
+        <li>No integration tests for end-to-end notification flow</li>
+      </ul>
+    </div>
+
+    <!-- ========== 8. CODE REVIEW ========== -->
+    <div class="sec-head" id="s8">8 &mdash; Code Review</div>
+
+    <div class="review-card review-card--good">
+      <h4 style="color: var(--green);">Good</h4>
+      <ul>
+        <li><strong>Clean trait boundary.</strong> <code>NotificationBackend</code> trait in <code>backend.rs</code> cleanly abstracts platform differences. Adding a new platform (Windows, iOS) requires implementing one trait &mdash; no changes to the pipeline.</li>
+        <li><strong>Channel-based architecture.</strong> Using mpsc channel between the main event loop and worker thread is the right pattern &mdash; decouples hot path from potentially slow notification display.</li>
+        <li><strong>Bounded LRU dedup.</strong> <code>VecDeque</code> + <code>HashSet</code> bounded dedup prevents unbounded memory growth. Much better than the original <code>ConcurrentHashMap</code> approach flagged by CodeRabbit.</li>
+        <li><strong>BOLT11 code reuse.</strong> Shared <code>parse_bolt11_msats()</code> in <code>zaps/zap.rs</code> instead of duplicating the <code>lightning_invoice</code> dependency.</li>
+        <li><strong>Cfg-gated cleanly.</strong> Android and desktop paths are mutually exclusive via <code>#[cfg(target_os = "android")]</code>. No dead code on either platform.</li>
+        <li><strong>Thorough review response.</strong> All 11 items from kernelkind and 15+ from CodeRabbit were addressed with specific, documented fixes.</li>
+        <li><strong>Well-structured commits.</strong> 23 commits, each focused on a specific subsystem. Easy to review incrementally.</li>
+      </ul>
+    </div>
+
+    <div class="review-card review-card--bad">
+      <h4 style="color: var(--red);">Bad</h4>
+      <ul>
+        <li><strong>7,206 lines in a single PR.</strong> Even with good commit structure, this is extremely large for review. The Android and desktop paths could have been separate PRs.</li>
+        <li><strong>No CHANGELOG entry.</strong> A feature this significant needs a CHANGELOG entry.</li>
+        <li><strong>Limited test coverage.</strong> Only 194 test lines for 6,716 code lines (2.9% ratio). The notification formatting logic in <code>manager.rs</code> is untested &mdash; this is where localization bugs would hide.</li>
+        <li><strong>Firebase BOM 32.7 is dated.</strong> The PR deliberately defers upgrading to 34.x, but this creates tech debt from day one.</li>
+        <li><strong>Wake lock with 10-minute timeout.</strong> While fixed from the original unbounded acquire, 10 minutes is still aggressive for a notification service that should be event-driven.</li>
+      </ul>
+    </div>
+
+    <div class="review-card review-card--ugly">
+      <h4 style="color: var(--amber);">Ugly</h4>
+      <ul>
+        <li><strong>886-line <code>notifications.rs</code> in notedeck_chrome.</strong> This single file handles all Android JNI bridging. It will be painful to maintain as notification types or Android APIs evolve.</li>
+        <li><strong>image_cache.rs can't reuse MediaCache.</strong> The PR adds a 430-line image cache because the existing <code>MediaCache</code> re-encodes to WebP, but macOS needs original format files. This is a fair constraint, but it's a significant surface area to maintain in parallel.</li>
+        <li><strong>Unsafe Send/Sync on macOS delegate.</strong> The <code>MacOSBackend</code> contains unsafe <code>Send</code>/<code>Sync</code> implementations with comments explaining the safety invariants. While the reasoning appears sound, any future refactor could invalidate these invariants silently.</li>
+        <li><strong>Multiple concurrent state management patterns.</strong> <code>Arc&lt;AtomicBool&gt;</code> for stop signals, <code>RwLock&lt;Option&lt;WorkerHandle&gt;&gt;</code> for lifecycle, <code>Arc&lt;RwLock&lt;HashMap&gt;&gt;</code> in image cache, plus JNI global statics. Each is individually justified but together they create a complex concurrency landscape.</li>
+      </ul>
+    </div>
+
+    <div class="review-card review-card--question">
+      <h4 style="color: var(--blue);">Questions</h4>
+      <ul>
+        <li>Is the <code>notepush</code> server a damus.io hosted service? What happens if it goes down &mdash; do FCM notifications silently fail?</li>
+        <li>The NIP-98 auth signing happens on the client. Is the signing keypair the user's actual Nostr private key? What's the security model for exposing it to the JNI bridge?</li>
+        <li>Why is the <code>NotificationsService</code> foreground service using its own relay pool instead of sharing the app's existing relay connections?</li>
+        <li>What's the battery impact of the native WebSocket mode? Has it been profiled on different Android versions?</li>
+        <li>The <code>BootReceiver</code> auto-starts the notification service on boot. Is there a mechanism to prevent this from running if the user has uninstalled/disabled notifications?</li>
+      </ul>
+    </div>
+
+    <!-- ========== 9. DECISION LOG ========== -->
+    <div class="sec-head" id="s9">9 &mdash; Decision Log</div>
+
+    <div class="decision-card decision-card--high">
+      <dl>
+        <dt>Decision</dt>
+        <dd>Channel-based worker architecture instead of direct notification dispatch in the event loop</dd>
+        <dt>Rationale</dt>
+        <dd>Reviewer feedback (kernelkind #3) explicitly requested channel-based communication rather than storing the manager in app state. The mpsc pattern decouples event processing (hot path) from notification display (potentially slow, involves disk I/O for profile pictures on macOS).</dd>
+        <dt>Alternatives considered</dt>
+        <dd>Direct dispatch from event loop (rejected: blocks event processing). Storing NotificationManager in AppContext (rejected: reviewer feedback).</dd>
+        <dt>Confidence</dt>
+        <dd><span class="badge badge--green">High</span> sourced from PR description and review feedback</dd>
+      </dl>
+    </div>
+
+    <div class="decision-card decision-card--high">
+      <dl>
+        <dt>Decision</dt>
+        <dd>Dual Android notification modes (FCM + Native WebSocket) instead of FCM-only</dd>
+        <dt>Rationale</dt>
+        <dd>FCM requires Google Play Services, which some Nostr users intentionally avoid (de-Googled phones, GrapheneOS). The native mode provides a Google-free alternative via direct WebSocket relay connections in a foreground service.</dd>
+        <dt>Alternatives considered</dt>
+        <dd>FCM-only (rejected: excludes de-Googled users). UnifiedPush (not mentioned, could be future work).</dd>
+        <dt>Confidence</dt>
+        <dd><span class="badge badge--green">High</span> sourced from PR description</dd>
+      </dl>
+    </div>
+
+    <div class="decision-card decision-card--medium">
+      <dl>
+        <dt>Decision</dt>
+        <dd>Separate image cache instead of reusing existing MediaCache</dd>
+        <dt>Rationale</dt>
+        <dd>macOS <code>UNNotificationAttachment</code> requires local files in their original image format. MediaCache re-encodes everything to WebP, which the notification system can't use. Documented in <code>image_cache.rs:6-19</code>.</dd>
+        <dt>Alternatives considered</dt>
+        <dd>Extending MediaCache with a "preserve original" mode (rejected: would complicate MediaCache's interface for a single consumer).</dd>
+        <dt>Confidence</dt>
+        <dd><span class="badge badge--blue">Medium</span> inferred from code comment and review response</dd>
+      </dl>
+    </div>
+
+    <div class="decision-card decision-card--medium">
+      <dl>
+        <dt>Decision</dt>
+        <dd>Java-to-Kotlin conversion of MainActivity as a prerequisite</dd>
+        <dt>Rationale</dt>
+        <dd>FCM and notification services use Kotlin coroutines and suspend functions. Keeping MainActivity in Java would require awkward interop. The conversion is mechanical with no behavior changes.</dd>
+        <dt>Alternatives considered</dt>
+        <dd>Keeping Java and using callback-based APIs (rejected: more boilerplate, harder to maintain).</dd>
+        <dt>Confidence</dt>
+        <dd><span class="badge badge--blue">Medium</span> inferred from commit message (96ec45e5)</dd>
+      </dl>
+    </div>
+
+    <div class="decision-card decision-card--medium">
+      <dl>
+        <dt>Decision</dt>
+        <dd>Defer Firebase BOM 34.x and Kotlin plugin 2.x upgrades</dd>
+        <dt>Rationale</dt>
+        <dd>BOM 34.x requires KTX migration, and Kotlin 2.x is a major version bump. Both carry risk that's orthogonal to the notification feature. Marked as "too risky for this PR" in review response.</dd>
+        <dt>Alternatives considered</dt>
+        <dd>Upgrading in this PR (rejected: increases blast radius of an already large PR).</dd>
+        <dt>Confidence</dt>
+        <dd><span class="badge badge--blue">Medium</span> inferred from CodeRabbit review response</dd>
+      </dl>
+    </div>
+
+    <!-- ========== 10. RE-ENTRY CONTEXT ========== -->
+    <div class="sec-head" id="s10">10 &mdash; Re-entry Context</div>
+
+    <details class="collapsible" open>
+      <summary>Key Invariants</summary>
+      <div class="collapsible__body">
+        <ul style="line-height: 1.8;">
+          <li><code>set_signing_keypair()</code> must be called in <code>Accounts::new()</code> after <code>cache.select()</code> &mdash; otherwise NIP-98 auth fails on cold start (bug fix in this PR).</li>
+          <li>The mpsc channel between the main event loop and worker must not block &mdash; if the worker dies, the channel will fill and <code>process_relay_message</code> will start dropping notifications silently.</li>
+          <li>Android <code>NotificationsService</code> foreground service must display a persistent notification within 5 seconds of <code>startForeground</code> call or Android will kill it (OS constraint, not code constraint).</li>
+          <li>On macOS, the bundle ID must be set correctly for <code>UNUserNotificationCenter</code> to deliver notifications. Development builds with mismatched bundle IDs will silently drop all notifications.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="collapsible" open>
+      <summary>Non-obvious Coupling</summary>
+      <div class="collapsible__body">
+        <ul style="line-height: 1.8;">
+          <li><code>accounts.rs</code> propagates signing keypair changes to the JNI bridge &mdash; changing account switching logic requires updating notification re-registration.</li>
+          <li><code>try_process_events_core()</code> in <code>notedeck/src/app.rs</code> is the integration point &mdash; any change to relay message handling flow affects notification delivery.</li>
+          <li>The <code>SettingsHandler</code> persistence and <code>platform/mod.rs</code> API layer are coupled via <code>NotificationMode</code> &mdash; adding a new mode requires changes in both.</li>
+          <li>Android deep linking connects <code>NotificationHelper</code> intent creation to <code>MainActivity</code> intent parsing to <code>chrome/notifications.rs</code> JNI bridge to <code>notedeck_columns/nav.rs</code> navigation. Four files must agree on the deep link format.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="collapsible" open>
+      <summary>Gotchas</summary>
+      <div class="collapsible__body">
+        <ul style="line-height: 1.8;">
+          <li>The macOS image cache preserves original image format on disk. If a profile URL returns a format that macOS doesn't support for notification attachments, the notification will display without an image (no crash, but no picture).</li>
+          <li><code>onMessageReceived</code> gates on <code>notification_mode == FCM</code>. If the user disables FCM but the server hasn't been told yet, incoming FCM messages are silently dropped &mdash; correct behavior, but can confuse debugging.</li>
+          <li>The <code>VecDeque + HashSet</code> dedup in the worker has a fixed capacity. Under extremely high event volume, eviction could cause duplicate notifications for events that were evicted and then re-received.</li>
+          <li>Android <code>BootReceiver</code> checks <code>SharedPreferences</code> for the notification mode. If the app data is cleared but the receiver is still registered, it will attempt to start the service in the default (disabled) mode &mdash; effectively a no-op, but it still runs briefly.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="collapsible">
+      <summary>Don't Forget</summary>
+      <div class="collapsible__body">
+        <ul style="line-height: 1.8;">
+          <li>Add CHANGELOG entry before merging</li>
+          <li>Update README or docs with notification feature documentation</li>
+          <li>Remove WIP status from PR title when ready</li>
+          <li>Complete remaining test plan items: Android build testing, macOS notification delivery, Linux notification delivery</li>
+          <li>Consider adding integration tests for the notification pipeline before merging</li>
+          <li>Profile battery usage of native WebSocket mode on Android before recommending it as default</li>
+          <li>Firebase BOM 34.x and Kotlin 2.x upgrades as follow-up PR</li>
+        </ul>
+      </div>
+    </details>
+
+    <div style="margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim);">
+      Generated by <a href="https://github.com/nicobailon/visual-explainer" style="color: var(--text-dim);">visual-explainer</a> &middot; PR <a href="https://github.com/damus-io/notedeck/pull/1296">damus-io/notedeck#1296</a>
+    </div>
+
+  </div><!-- /main -->
+
+</div><!-- /wrap -->
+
+<!-- ========== SCRIPTS ========== -->
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    look: 'classic',
+    themeVariables: {
+      primaryColor: isDark ? '#1a3a3a' : '#ccfbf1',
+      primaryBorderColor: isDark ? '#14b8a6' : '#0d9488',
+      primaryTextColor: isDark ? '#e2e5eb' : '#1a1d23',
+      secondaryColor: isDark ? '#1e2130' : '#f0fdf4',
+      secondaryBorderColor: isDark ? '#059669' : '#16a34a',
+      secondaryTextColor: isDark ? '#e2e5eb' : '#1a1d23',
+      tertiaryColor: isDark ? '#27201a' : '#fef3c7',
+      tertiaryBorderColor: isDark ? '#d97706' : '#f59e0b',
+      tertiaryTextColor: isDark ? '#fef3c7' : '#27201a',
+      lineColor: isDark ? '#64748b' : '#94a3b8',
+      fontSize: '16px',
+      fontFamily: "'DM Sans', system-ui, sans-serif",
+      noteBkgColor: isDark ? '#1e2130' : '#fefce8',
+      noteTextColor: isDark ? '#e2e5eb' : '#1a1d23',
+      noteBorderColor: isDark ? '#fbbf24' : '#d97706',
+    }
+  });
+</script>
+
+<script>
+// Mermaid zoom controls
+var INITIAL_ZOOM = 1.3;
+
+function zoomDiagram(btn, factor) {
+  var wrap = btn.closest('.mermaid-wrap');
+  var target = wrap.querySelector('.mermaid');
+  var current = parseFloat(target.dataset.zoom || INITIAL_ZOOM);
+  var next = Math.min(Math.max(current * factor, 0.5), 5);
+  target.dataset.zoom = next;
+  target.style.zoom = next;
+}
+
+function resetZoom(btn) {
+  var wrap = btn.closest('.mermaid-wrap');
+  var target = wrap.querySelector('.mermaid');
+  target.dataset.zoom = INITIAL_ZOOM;
+  target.style.zoom = INITIAL_ZOOM;
+}
+
+document.querySelectorAll('.mermaid-wrap').forEach(function(wrap) {
+  wrap.addEventListener('wheel', function(e) {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    var target = wrap.querySelector('.mermaid');
+    var current = parseFloat(target.dataset.zoom || INITIAL_ZOOM);
+    var factor = e.deltaY < 0 ? 1.1 : 0.9;
+    var next = Math.min(Math.max(current * factor, 0.5), 5);
+    target.dataset.zoom = next;
+    target.style.zoom = next;
+  }, { passive: false });
+
+  var startX, startY, scrollL, scrollT;
+  wrap.addEventListener('mousedown', function(e) {
+    if (e.target.closest('.zoom-controls')) return;
+    wrap.classList.add('is-panning');
+    startX = e.clientX;
+    startY = e.clientY;
+    scrollL = wrap.scrollLeft;
+    scrollT = wrap.scrollTop;
+  });
+  window.addEventListener('mousemove', function(e) {
+    if (!wrap.classList.contains('is-panning')) return;
+    wrap.scrollLeft = scrollL - (e.clientX - startX);
+    wrap.scrollTop = scrollT - (e.clientY - startY);
+  });
+  window.addEventListener('mouseup', function() {
+    wrap.classList.remove('is-panning');
+  });
+});
+
+// Scroll spy for TOC
+(function() {
+  var toc = document.getElementById('toc');
+  var links = toc.querySelectorAll('a');
+  var sections = [];
+
+  links.forEach(function(link) {
+    var id = link.getAttribute('href').slice(1);
+    var el = document.getElementById(id);
+    if (el) sections.push({ id: id, el: el, link: link });
+  });
+
+  var observer = new IntersectionObserver(function(entries) {
+    entries.forEach(function(entry) {
+      if (entry.isIntersecting) {
+        links.forEach(function(l) { l.classList.remove('active'); });
+        var match = sections.find(function(s) { return s.el === entry.target; });
+        if (match) {
+          match.link.classList.add('active');
+          if (window.innerWidth <= 1000) {
+            match.link.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+          }
+        }
+      }
+    });
+  }, { rootMargin: '-10% 0px -80% 0px' });
+
+  sections.forEach(function(s) { observer.observe(s.el); });
+
+  links.forEach(function(link) {
+    link.addEventListener('click', function(e) {
+      e.preventDefault();
+      var id = link.getAttribute('href').slice(1);
+      var el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        history.replaceState(null, '', '#' + id);
+      }
+    });
+  });
+})();
+</script>
+
+</body>
+</html>

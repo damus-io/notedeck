@@ -270,23 +270,41 @@ class NotificationsService : Service() {
     }
 
     private fun startNostrSubscriptions() {
-        // Get pubkey and relay URLs from preferences
+        // Get pubkeys and relay URLs from preferences
         val prefs = getSharedPreferences("notedeck_prefs", Context.MODE_PRIVATE)
-        val pubkeyHex = prefs.getString("active_pubkey", null)
         val relayUrlsJson = prefs.getString("relay_urls", "[]") ?: "[]"
 
-        if (pubkeyHex.isNullOrEmpty()) {
-            Log.w(TAG, "No active pubkey configured, cannot start subscriptions")
-            return
-        }
+        // Read multi-pubkey format, with backward compat for old single-pubkey
+        val pubkeyHexesJson: String = prefs.getString("active_pubkeys", null)
+            ?: run {
+                // Backward compat: wrap old single active_pubkey as JSON array
+                val single = prefs.getString("active_pubkey", null)
+                if (single.isNullOrEmpty()) {
+                    Log.w(TAG, "No active pubkeys configured, cannot start subscriptions")
+                    return
+                }
+                org.json.JSONArray(listOf(single)).toString()
+            }
 
         // Run native subscriptions on IO thread to avoid ANR
         serviceScope?.launch(Dispatchers.IO) {
             try {
-                nativeStartSubscriptions(pubkeyHex, relayUrlsJson)
-                Log.i(TAG, "Started Nostr subscriptions for ${pubkeyHex.take(8)}… with ${relayUrlsJson.length} chars of relay config")
+                nativeStartSubscriptions(pubkeyHexesJson, relayUrlsJson)
+                Log.i(TAG, "Started Nostr subscriptions with ${pubkeyHexesJson.take(40)}… and ${relayUrlsJson.length} chars of relay config")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start native subscriptions", e)
+            }
+        }
+
+        // Periodically re-acquire the wake lock before its 10-minute timeout
+        scheduleWakeLockRenewal()
+    }
+
+    private fun scheduleWakeLockRenewal() {
+        serviceScope?.launch {
+            while (isRunning.get()) {
+                kotlinx.coroutines.delay(8 * 60 * 1000L) // 8 minutes (before 10min expiry)
+                reacquireWakeLock()
             }
         }
     }

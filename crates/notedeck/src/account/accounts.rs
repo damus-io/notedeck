@@ -21,7 +21,7 @@ use std::slice::from_ref;
 use std::sync::Arc;
 
 #[cfg(target_os = "android")]
-use crate::platform::android::set_signing_keypair;
+use crate::platform::android::set_signing_keypairs;
 
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
@@ -70,13 +70,17 @@ impl Accounts {
             if let Some(selected) = reader.get_selected_key().ok().flatten() {
                 cache.select(selected);
 
-                // Initialize signing keypair for NIP-98 auth on cold start.
+                // Initialize signing keypairs for NIP-98 auth on cold start.
                 // select_account() does this on explicit switches, but the
                 // initial restore from storage bypasses that path.
+                // Store ALL account keypairs so any account can sign for FCM.
                 #[cfg(target_os = "android")]
                 {
-                    let keypair = cache.selected().key.to_full().map(|f| f.to_full());
-                    set_signing_keypair(keypair);
+                    let keypairs: Vec<_> = cache
+                        .accounts()
+                        .filter_map(|a| a.key.to_full().map(|f| f.to_full()))
+                        .collect();
+                    set_signing_keypairs(keypairs);
                 }
             }
 
@@ -248,7 +252,7 @@ impl Accounts {
             .local
             .iter()
             .chain(relay_data.advertised.iter())
-            .map(|spec| spec.url.clone())
+            .map(|spec| spec.url.to_string())
             .collect();
 
         // If no relays configured, use bootstrap relays
@@ -257,9 +261,13 @@ impl Accounts {
                 .relay_defaults
                 .bootstrap_relays
                 .iter()
-                .map(|spec| spec.url.clone())
+                .map(|spec| spec.url.to_string())
                 .collect();
         }
+
+        // Deduplicate relay URLs (local and advertised may overlap)
+        urls.sort();
+        urls.dedup();
 
         urls
     }
@@ -305,11 +313,16 @@ impl Accounts {
             }
         }
 
-        // Update signing keypair for Android FCM/NIP-98 auth
+        // Update signing keypairs for Android FCM/NIP-98 auth.
+        // Store ALL account keypairs so any account can sign for FCM.
         #[cfg(target_os = "android")]
         {
-            let keypair = self.cache.selected().key.to_full().map(|f| f.to_full());
-            set_signing_keypair(keypair);
+            let keypairs: Vec<_> = self
+                .cache
+                .accounts()
+                .filter_map(|a| a.key.to_full().map(|f| f.to_full()))
+                .collect();
+            set_signing_keypairs(keypairs);
         }
 
         self.get_selected_account_mut().data.query(ndb, txn);

@@ -81,7 +81,7 @@ pub fn get_notification_mode() -> NotificationMode {
 
 #[cfg(not(target_os = "android"))]
 pub fn get_notification_mode() -> NotificationMode {
-    NotificationMode::Disabled
+    desktop_notifications::get_notification_mode()
 }
 
 /// Set the notification mode, handling mutual exclusivity.
@@ -90,16 +90,16 @@ pub fn get_notification_mode() -> NotificationMode {
 #[cfg(target_os = "android")]
 pub fn set_notification_mode(
     mode: NotificationMode,
-    pubkey_hex: &str,
+    pubkey_hexes: &[String],
     relay_urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    android::set_notification_mode(mode, pubkey_hex, relay_urls)
+    android::set_notification_mode(mode, pubkey_hexes, relay_urls)
 }
 
 #[cfg(not(target_os = "android"))]
 pub fn set_notification_mode(
     _mode: NotificationMode,
-    _pubkey_hex: &str,
+    _pubkey_hexes: &[String],
     _relay_urls: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
@@ -113,8 +113,9 @@ pub fn set_notification_mode(
 pub fn enable_notifications(
     manager: &mut Option<NotificationManager>,
     pubkey_hex: &str,
+    mode: NotificationMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    desktop_notifications::enable_notifications(manager, pubkey_hex)
+    desktop_notifications::enable_notifications(manager, pubkey_hex, mode)
 }
 
 /// Disable push notifications.
@@ -229,11 +230,7 @@ pub struct DeepLinkInfo {
 /// Check if there's a pending deep link and consume it.
 #[cfg(target_os = "android")]
 pub fn take_pending_deep_link() -> Option<DeepLinkInfo> {
-    android::take_pending_deep_link().map(|dl| DeepLinkInfo {
-        event_id: dl.event_id,
-        event_kind: dl.event_kind,
-        author_pubkey: dl.author_pubkey,
-    })
+    android::take_pending_deep_link()
 }
 
 #[cfg(not(target_os = "android"))]

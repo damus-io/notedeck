@@ -22,13 +22,12 @@ class NotepushClient(
     companion object {
         private const val TAG = "NotepushClient"
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        private val client = OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build()
     }
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
 
     /**
      * Builds a properly URL-encoded path for the notepush API.
@@ -62,7 +61,7 @@ class NotepushClient(
         return withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(pubkeyHex, fcmToken, backend = "fcm")
-                val authHeader = nativeSignNip98Auth(url, "PUT", null)
+                val authHeader = nativeSignNip98Auth(pubkeyHex, url, "PUT", null)
 
                 if (authHeader == null) {
                     Log.e(TAG, "Failed to sign NIP-98 auth")
@@ -101,7 +100,7 @@ class NotepushClient(
         return withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(pubkeyHex, fcmToken)
-                val authHeader = nativeSignNip98Auth(url, "DELETE", null)
+                val authHeader = nativeSignNip98Auth(pubkeyHex, url, "DELETE", null)
 
                 if (authHeader == null) {
                     Log.e(TAG, "Failed to sign NIP-98 auth")
@@ -140,7 +139,7 @@ class NotepushClient(
         return withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(pubkeyHex, fcmToken, suffix = "preferences")
-                val authHeader = nativeSignNip98Auth(url, "GET", null)
+                val authHeader = nativeSignNip98Auth(pubkeyHex, url, "GET", null)
 
                 if (authHeader == null) {
                     Log.e(TAG, "Failed to sign NIP-98 auth")
@@ -180,7 +179,7 @@ class NotepushClient(
         return withContext(Dispatchers.IO) {
             try {
                 val url = buildUrl(pubkeyHex, fcmToken, suffix = "preferences")
-                val authHeader = nativeSignNip98Auth(url, "PUT", preferencesJson)
+                val authHeader = nativeSignNip98Auth(pubkeyHex, url, "PUT", preferencesJson)
 
                 if (authHeader == null) {
                     Log.e(TAG, "Failed to sign NIP-98 auth")
@@ -212,16 +211,21 @@ class NotepushClient(
      * Signs a NIP-98 HTTP Auth event for API authentication.
      *
      * Implemented in Rust (android.rs). Creates a kind 27235 Nostr event
-     * signed with the active account's keypair.
+     * signed with the specified account's keypair.
      *
+     * @param pubkeyHex The public key of the account to sign with
      * @param url The full request URL (included in the 'u' tag)
      * @param method HTTP method: GET, POST, PUT, DELETE
      * @param body Request body for payload hash (optional, used in 'payload' tag)
      * @return Base64-encoded signed event JSON, or null if signing fails
      */
-    private external fun nativeSignNip98Auth(url: String, method: String, body: String?): String?
+    private external fun nativeSignNip98Auth(pubkeyHex: String, url: String, method: String, body: String?): String?
 
     init {
-        System.loadLibrary("notedeck_chrome")
+        try {
+            System.loadLibrary("notedeck_chrome")
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e(TAG, "Failed to load native library", e)
+        }
     }
 }
