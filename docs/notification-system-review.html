@@ -438,6 +438,19 @@
     .diff-panel__body li { margin-bottom: 4px; }
     @media (max-width: 768px) { .diff-panels { grid-template-columns: 1fr; } }
 
+    /* ========== Pipeline ========== */
+    .pipeline { display: flex; gap: 0; align-items: stretch; overflow-x: auto; padding-bottom: 4px; }
+    .pipeline-step { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 110px; flex-shrink: 0; text-align: center; }
+    .pipeline-step .step-num { font-family: var(--font-mono); font-size: 10px; font-weight: 600; margin-bottom: 4px; }
+    .pipeline-step .step-name { font-size: 12px; font-weight: 600; margin-bottom: 3px; }
+    .pipeline-step .step-detail { font-size: 10px; color: var(--text-dim); line-height: 1.4; }
+    .pipeline-step--teal { border-color: var(--accent-dim); } .pipeline-step--teal .step-num { color: var(--accent); }
+    .pipeline-step--gold { border-color: var(--amber-dim); } .pipeline-step--gold .step-num { color: var(--amber); }
+    .pipeline-step--green { border-color: var(--green-dim); } .pipeline-step--green .step-num { color: var(--green); }
+    .pipeline-step--red { border-color: var(--red-dim); } .pipeline-step--red .step-num { color: var(--red); }
+    .pipeline-step--blue { border-color: var(--blue-dim); } .pipeline-step--blue .step-num { color: var(--blue); }
+    .pipeline-arrow { display: flex; align-items: center; padding: 0 2px; color: var(--border-bright); font-size: 16px; flex-shrink: 0; }
+
     /* ========== Mermaid ========== */
     .mermaid-wrap {
       position: relative;
@@ -658,6 +671,8 @@
     .grid-2 > *, .grid-3 > * { min-width: 0; }
     @media (max-width: 768px) {
       .grid-2, .grid-3 { grid-template-columns: 1fr; }
+      .pipeline { flex-wrap: wrap; gap: 6px; }
+      .pipeline-arrow { display: none; }
     }
 
     .mt-md { margin-top: 20px; }
@@ -703,13 +718,19 @@
     <a href="#s1">1. Summary</a>
     <a href="#s2">2. KPI Dashboard</a>
     <a href="#s3">3. Architecture</a>
-    <a href="#s4">4. Feature Comparison</a>
-    <a href="#s5">5. Data Flow</a>
-    <a href="#s6">6. File Map</a>
-    <a href="#s7">7. Test Coverage</a>
-    <a href="#s8">8. Code Review</a>
-    <a href="#s9">9. Decision Log</a>
-    <a href="#s10">10. Re-entry Context</a>
+    <a href="#s4">4. Pipeline</a>
+    <a href="#s5">5. Multi-Account</a>
+    <a href="#s6">6. Feature Comparison</a>
+    <a href="#s7">7. Data Flow</a>
+    <a href="#s8">8. JNI Bridge</a>
+    <a href="#s9">9. Kotlin Services</a>
+    <a href="#s10">10. Desktop Manager</a>
+    <a href="#s11">11. Settings UI</a>
+    <a href="#s12">12. File Map</a>
+    <a href="#s13">13. Test Coverage</a>
+    <a href="#s14">14. Code Review</a>
+    <a href="#s15">15. Decision Log</a>
+    <a href="#s16">16. Re-entry Context</a>
   </nav>
 
   <div class="main">
@@ -721,7 +742,8 @@
       <p class="lead">
         Notedeck had <strong>zero notification support</strong> &mdash; users had to keep the app open and actively scroll to see new mentions, replies, or zaps.
         This PR adds a complete notification pipeline covering <strong>three platforms</strong> (Android, macOS, Linux) with <strong>two Android delivery modes</strong> (Firebase Cloud Messaging for battery efficiency, and a native WebSocket fallback for users who refuse Google dependencies).
-        The core insight: <strong>decouple event extraction from delivery</strong>. A shared Rust pipeline parses relay messages, resolves profiles, and formats notifications, then hands off to platform-specific backends via a trait boundary. Android goes through JNI to Kotlin; desktop goes through <code>notify-rust</code> or <code>UNUserNotificationCenter</code>.
+        The core insight: <strong>decouple event extraction from delivery</strong>. A shared Rust pipeline leverages <strong>nostrdb</strong> (LMDB-backed event store) &mdash; events are already ingested by the app's relay infrastructure, so the notification system simply subscribes and polls nostrdb for matching notes, resolves profiles via <code>ndb.get_profile_by_pubkey()</code>, and formats notifications, then hands off to platform-specific backends via a trait boundary. Android goes through JNI to Kotlin; desktop goes through <code>notify-rust</code> or <code>UNUserNotificationCenter</code>.
+        <strong>Multi-account support</strong> ensures all logged-in accounts receive notifications simultaneously with self-notification suppression.
       </p>
       <div class="platform-row">
         <span class="platform-badge platform-badge--android">Android FCM</span>
@@ -736,27 +758,27 @@
 
     <div class="kpi-row">
       <div class="kpi-card" style="--i:0">
-        <div class="kpi-card__value kpi-card__value--green kpi-card__value--animated" style="--target:7206"></div>
+        <div class="kpi-card__value kpi-card__value--green kpi-card__value--animated" style="--target:7593"></div>
         <div class="kpi-card__label">Lines Added</div>
       </div>
       <div class="kpi-card" style="--i:1">
-        <div class="kpi-card__value kpi-card__value--red kpi-card__value--animated" style="--target:551"></div>
+        <div class="kpi-card__value kpi-card__value--red kpi-card__value--animated" style="--target:335"></div>
         <div class="kpi-card__label">Lines Removed</div>
       </div>
       <div class="kpi-card" style="--i:2">
-        <div class="kpi-card__value kpi-card__value--accent kpi-card__value--animated" style="--target:43"></div>
+        <div class="kpi-card__value kpi-card__value--accent kpi-card__value--animated" style="--target:44"></div>
         <div class="kpi-card__label">Files Changed</div>
       </div>
       <div class="kpi-card" style="--i:3">
-        <div class="kpi-card__value kpi-card__value--amber kpi-card__value--animated" style="--target:23"></div>
+        <div class="kpi-card__value kpi-card__value--amber kpi-card__value--animated" style="--target:26"></div>
         <div class="kpi-card__label">Commits</div>
       </div>
       <div class="kpi-card" style="--i:4">
-        <div class="kpi-card__value" style="color: var(--text)" data-count="20">~20</div>
+        <div class="kpi-card__value" style="color: var(--text)" data-count="23">~23</div>
         <div class="kpi-card__label">New Files</div>
       </div>
       <div class="kpi-card" style="--i:5">
-        <div class="kpi-card__value" style="color: var(--text)">194</div>
+        <div class="kpi-card__value" style="color: var(--text)">194+</div>
         <div class="kpi-card__label">Test Lines</div>
       </div>
     </div>
@@ -778,16 +800,20 @@
       </div>
       <pre class="mermaid">
 flowchart TD
-  subgraph EventLoop["Main Event Loop"]
-    RL["Relay Message"]
-    PRM["process_relay_message"]
-    EXT["extraction.rs"]
-    PRO["profiles.rs"]
+  subgraph Ingest["Event Ingestion"]
+    RL["Relay Messages"]
+    RA["remote_api.rs"]
+    NDB["nostrdb LMDB"]
+  end
+
+  subgraph DesktopPoll["Desktop Poll Model"]
+    POLL["poll_notifications"]
+    NDBh["ndb_helpers.rs"]
     FMT["manager.rs format"]
+    CH["mpsc channel"]
   end
 
   subgraph Worker["Worker Thread"]
-    CH["mpsc channel"]
     DD["Dedup LRU"]
     WRK["worker.rs"]
   end
@@ -800,6 +826,7 @@ flowchart TD
 
   subgraph Android["Android Path"]
     JNI["JNI Bridge\nchrome/notifications.rs"]
+    ANDB["ndb ingest and poll"]
     FCM["FCM Mode\nFirebase via notepush"]
     NAT["Native Mode\nForeground Service"]
   end
@@ -818,10 +845,11 @@ flowchart TD
     PLAT["platform/mod.rs"]
   end
 
-  RL --> PRM
-  PRM --> EXT
-  EXT --> PRO
-  PRO --> FMT
+  RL --> RA
+  RA --> NDB
+  NDB --> POLL
+  POLL --> NDBh
+  NDBh --> FMT
   FMT --> CH
   CH --> DD
   DD --> WRK
@@ -829,14 +857,15 @@ flowchart TD
   WRK --> MAC
   MAC --> IMG
 
-  PRM -.-> JNI
   JNI --> FCM
   JNI --> NAT
+  NAT --> NS
+  NS --> ANDB
+  ANDB --> NDBh
+  ANDB -.-> NH
   FCM --> NFS
   NFS --> NPC
-  NAT --> NS
-  NS --> NH
-  FCM --> NH
+  NFS --> NH
 
   UI --> PER
   UI --> PLAT
@@ -847,9 +876,9 @@ flowchart TD
 
     <div class="grid-3 mt-md">
       <div class="ve-card ve-card--accent-teal" style="--i:1">
-        <div class="ve-card__label" style="color: var(--accent)">Core Pipeline</div>
+        <div class="ve-card__label" style="color: var(--accent)">Core Pipeline (nostrdb)</div>
         <p style="font-size: 13px; line-height: 1.6;">
-          <code>extraction.rs</code> parses JSON relay messages, <code>profiles.rs</code> resolves npub mentions, <code>manager.rs</code> formats localized title/body, then sends <code>NotificationData</code> over an mpsc channel to the worker thread.
+          Events are already ingested into nostrdb by the app's relay infrastructure. <code>poll_notifications()</code> polls the ndb subscription each frame, <code>ndb_helpers.rs</code> extracts p-tags, profiles, and zap amounts via the native <code>Note</code> API, <code>manager.rs</code> formats localized title/body, then sends <code>NotificationData</code> over an mpsc channel to the worker thread.
         </p>
       </div>
       <div class="ve-card ve-card--accent-green" style="--i:2">
@@ -866,8 +895,127 @@ flowchart TD
       </div>
     </div>
 
-    <!-- ========== 4. FEATURE COMPARISON ========== -->
-    <div class="sec-head" id="s4">4 &mdash; Feature Comparison</div>
+    <!-- ========== 4. NOTIFICATION PIPELINE ========== -->
+    <div class="sec-head" id="s4">4 &mdash; Notification Pipeline</div>
+
+    <div class="ve-card ve-card--hero mb-md" style="--i:1">
+      <div class="ve-card__label" style="color: var(--accent)">Event Processing Flow</div>
+      <div class="pipeline">
+        <div class="pipeline-step pipeline-step--teal">
+          <div class="step-num">1</div>
+          <div class="step-name">Ingest</div>
+          <div class="step-detail">remote_api &rarr;<br>nostrdb LMDB</div>
+        </div>
+        <div class="pipeline-arrow">&rarr;</div>
+        <div class="pipeline-step pipeline-step--blue">
+          <div class="step-num">2</div>
+          <div class="step-name">Poll</div>
+          <div class="step-detail">ndb subscription<br>max 50/frame</div>
+        </div>
+        <div class="pipeline-arrow">&rarr;</div>
+        <div class="pipeline-step pipeline-step--gold">
+          <div class="step-num">3</div>
+          <div class="step-name">Filter</div>
+          <div class="step-detail">Kind check +<br>p-tag match</div>
+        </div>
+        <div class="pipeline-arrow">&rarr;</div>
+        <div class="pipeline-step pipeline-step--red">
+          <div class="step-num">4</div>
+          <div class="step-name">Suppress</div>
+          <div class="step-detail">Self-notification<br>check</div>
+        </div>
+        <div class="pipeline-arrow">&rarr;</div>
+        <div class="pipeline-step pipeline-step--green">
+          <div class="step-num">5</div>
+          <div class="step-name">Resolve</div>
+          <div class="step-detail">ndb profile lookup<br>+ format title</div>
+        </div>
+        <div class="pipeline-arrow">&rarr;</div>
+        <div class="pipeline-step pipeline-step--teal">
+          <div class="step-num">6</div>
+          <div class="step-name">Dedup</div>
+          <div class="step-detail">HashSet check<br>10K LRU</div>
+        </div>
+        <div class="pipeline-arrow">&rarr;</div>
+        <div class="pipeline-step pipeline-step--blue">
+          <div class="step-num">7</div>
+          <div class="step-name">Display</div>
+          <div class="step-detail">Platform-native<br>notification</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="ve-card ve-card--accent-teal" style="--i:2">
+        <div class="ve-card__label" style="color: var(--accent)">Supported Event Kinds</div>
+        <ul style="font-size: 13px; line-height: 1.8; padding-left: 1.5em;">
+          <li><strong>Kind 1</strong> &mdash; Mentions: <code>"@name mentioned you"</code></li>
+          <li><strong>Kind 4 / 1059</strong> &mdash; DMs: content hidden, <code>"Tap to view"</code></li>
+          <li><strong>Kind 6</strong> &mdash; Reposts: shows original content preview</li>
+          <li><strong>Kind 7</strong> &mdash; Reactions: emoji or heart fallback</li>
+          <li><strong>Kind 9735</strong> &mdash; Zaps: BOLT11 amount extraction</li>
+          <li><strong>Kind 10002/10050</strong> &mdash; Relay list metadata (not displayed)</li>
+        </ul>
+      </div>
+      <div class="ve-card ve-card--accent-green" style="--i:3">
+        <div class="ve-card__label" style="color: var(--green)">Deduplication</div>
+        <ul style="font-size: 13px; line-height: 1.8; padding-left: 1.5em;">
+          <li><strong>Desktop</strong>: O(1) <code>HashSet&lt;String&gt;</code> + <code>VecDeque</code> for insertion-order tracking. 10,000 entry cap with FIFO eviction.</li>
+          <li><strong>Android</strong>: Double-layer. Kotlin <code>LinkedHashMap</code> (100 entries, max 1000) as secondary dedup after JNI callback, before UI display.</li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- ========== 5. MULTI-ACCOUNT SUPPORT ========== -->
+    <div class="sec-head" id="s5">5 &mdash; Multi-Account Support</div>
+
+    <div class="ve-card ve-card--hero mb-md" style="--i:1">
+      <div class="ve-card__label" style="color: var(--accent)">How It Works</div>
+      <div class="grid-2" style="margin-top: 12px;">
+        <div>
+          <h4 style="font-size: 13px; font-weight: 600; margin-bottom: 6px;">Subscription Filters</h4>
+          <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim);">
+            Single relay filter with <code>Filter::pubkey(all_pubkey_bytes)</code> monitors all logged-in accounts simultaneously. No per-account connections needed &mdash; one subscription covers everyone.
+          </p>
+        </div>
+        <div>
+          <h4 style="font-size: 13px; font-weight: 600; margin-bottom: 6px;">Keypair Storage</h4>
+          <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim);">
+            <code>signing_keypairs: HashMap&lt;String, FullKeypair&gt;</code> in <code>NOTIFICATION_BRIDGE</code>. Keyed by pubkey hex. Updated on cold start and account switch with ALL account keypairs.
+          </p>
+        </div>
+        <div>
+          <h4 style="font-size: 13px; font-weight: 600; margin-bottom: 6px;">Self-Suppression</h4>
+          <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim);">
+            If event author is one of our accounts AND all p-tags point to our own accounts, the notification is suppressed. Prevents self-mentions from triggering alerts. Matches desktop <code>manager.rs:192-194</code>.
+          </p>
+        </div>
+        <div>
+          <h4 style="font-size: 13px; font-weight: 600; margin-bottom: 6px;">Account Lifecycle</h4>
+          <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim);">
+            <code>retrigger_notifications_if_active()</code> called on <code>AccountsAction::Switch</code> and <code>AccountsAction::Remove</code>. Re-invokes <code>set_notification_mode()</code> with updated pubkey list.
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <div class="ve-card ve-card--accent-amber mb-md" style="--i:2">
+      <div class="ve-card__label" style="color: var(--amber)">SharedPreferences Migration (Android)</div>
+      <div class="table-wrap" style="border: none; margin-bottom: 0;">
+        <div class="table-scroll">
+          <table class="data-table">
+            <thead><tr><th>Old Key</th><th>New Key</th><th>Format</th><th>Fallback</th></tr></thead>
+            <tbody>
+              <tr><td><code>active_pubkey</code></td><td><code>active_pubkeys</code></td><td>JSON array of hex strings</td><td>Wrap old value as <code>["value"]</code></td></tr>
+              <tr><td><code>registered_pubkey</code></td><td><code>registered_pubkeys</code></td><td>JSON array of hex strings</td><td>Wrap old value as <code>["value"]</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ========== 6. FEATURE COMPARISON ========== -->
+    <div class="sec-head" id="s6">6 &mdash; Feature Comparison</div>
 
     <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px;">Notification System</h3>
     <div class="diff-panels">
@@ -880,15 +1028,17 @@ flowchart TD
           <li>No background processing of relay events</li>
           <li>No profile picture display for event senders</li>
           <li>No notification settings in UI</li>
+          <li>Single-account only</li>
         </ul>
       </div>
       <div class="diff-panel__body">
         <ul>
-          <li>Full notification pipeline: mentions, replies, reactions, reposts, DMs, zaps</li>
-          <li>Background relay connections on Android (foreground service) and desktop (worker thread)</li>
-          <li>Profile-enriched notifications with localized titles/bodies</li>
+          <li>Full notification pipeline via nostrdb: mentions, replies, reactions, reposts, DMs, zaps</li>
+          <li>Events ingested into nostrdb LMDB; notification system subscribes and polls &mdash; no redundant JSON parsing</li>
+          <li>Profile-enriched notifications via <code>ndb.get_profile_by_pubkey()</code> with localized titles/bodies</li>
           <li>macOS profile picture attachments via <code>UNNotificationAttachment</code></li>
           <li>Settings UI with FCM/Native/Disabled radio group and permission badges</li>
+          <li>Multi-account: all logged-in accounts get notifications with self-suppression</li>
         </ul>
       </div>
     </div>
@@ -933,12 +1083,13 @@ flowchart TD
           <li><code>NotificationMode</code> enum: Fcm, Native, Disabled with index conversion for UI</li>
           <li>Cross-platform API: <code>enable/disable_notifications</code>, <code>request_permission</code>, <code>get_service_status</code>, <code>check_deep_link</code></li>
           <li>cfg-gated implementations: Android via JNI, desktop via <code>NotificationManager</code></li>
+          <li>Multi-account: <code>set_notification_mode(mode, &amp;pubkey_hexes, &amp;relay_urls)</code></li>
         </ul>
       </div>
     </div>
 
-    <!-- ========== 5. DATA FLOW ========== -->
-    <div class="sec-head" id="s5">5 &mdash; Notification Flow Diagrams</div>
+    <!-- ========== 7. DATA FLOW ========== -->
+    <div class="sec-head" id="s7">7 &mdash; Notification Flow Diagrams</div>
 
     <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px;">Desktop Notification Flow</h3>
     <div class="mermaid-wrap" style="min-height: 350px;">
@@ -950,15 +1101,21 @@ flowchart TD
       <pre class="mermaid">
 sequenceDiagram
   participant R as Relay
-  participant EL as Event Loop
+  participant RA as remote_api
+  participant NDB as nostrdb (LMDB)
   participant NM as NotificationManager
   participant W as Worker Thread
   participant B as Backend
 
-  R->>EL: RelayMessage Event
-  EL->>NM: process_relay_message
-  NM->>NM: Extract event, check kind + p-tags
-  NM->>NM: Lookup profile via nostrdb
+  R->>RA: RelayMessage Event
+  RA->>NDB: ingest event
+  Note over NM: poll_notifications() called each frame
+  NM->>NDB: poll_for_notes(sub, 50)
+  NDB-->>NM: Note keys
+  NM->>NDB: get_note_by_key (Note API)
+  NM->>NM: Kind check + p-tag match via ndb_helpers
+  NM->>NM: Self-suppress check (all accounts)
+  NM->>NDB: get_profile_by_pubkey
   NM->>NM: Format title and body
   NM->>W: mpsc send NotificationData
   W->>W: Dedup check via LRU
@@ -987,7 +1144,8 @@ sequenceDiagram
   participant NH as NotificationHelper
 
   U->>MA: Enable FCM mode
-  MA->>NPC: registerDevice with NIP-98 auth
+  MA->>MA: Iterate all account pubkeys
+  MA->>NPC: registerDevice per account (NIP-98 auth)
   NPC->>NP: POST register
   NP-->>NPC: OK
 
@@ -1001,22 +1159,243 @@ sequenceDiagram
       </pre>
     </div>
 
-    <!-- ========== 6. FILE MAP ========== -->
-    <div class="sec-head" id="s6">6 &mdash; File Map</div>
+    <h3 style="font-size: 15px; font-weight: 600; margin-bottom: 12px;">Android Native WebSocket Flow</h3>
+    <div class="mermaid-wrap" style="min-height: 350px;">
+      <div class="zoom-controls">
+        <button onclick="zoomDiagram(this, 1.2)" title="Zoom in">+</button>
+        <button onclick="zoomDiagram(this, 0.8)" title="Zoom out">&minus;</button>
+        <button onclick="resetZoom(this)" title="Reset zoom">&#8634;</button>
+      </div>
+      <pre class="mermaid">
+sequenceDiagram
+  participant U as User
+  participant MA as MainActivity.kt
+  participant NS as NotificationsService
+  participant JNI as Rust JNI Bridge
+  participant RP as Relay Pool
+  participant NDB as nostrdb (LMDB)
+  participant NH as NotificationHelper
+
+  U->>MA: Enable Native mode
+  MA->>MA: Store active_pubkeys JSON
+  MA->>NS: Start foreground service
+  NS->>NS: Acquire wake lock
+  NS->>JNI: nativeStartSubscriptions(pubkeysJson, relaysJson)
+  JNI->>RP: Connect to relays
+  JNI->>RP: Subscribe with all pubkey filters
+  Note over JNI: Worker loop: drain &rarr; ingest &rarr; poll
+  RP-->>JNI: Relay message (raw JSON)
+  JNI->>NDB: process_event_with (ingest)
+  Note over JNI: Sleep 200ms for LMDB write
+  JNI->>NDB: poll_for_notes(sub, 50)
+  NDB-->>JNI: Note via Note API
+  JNI->>JNI: Self-suppress + ndb_helpers
+  JNI->>NDB: get_profile_by_pubkey
+  JNI-->>NS: onNostrEvent callback
+  NS->>NH: showNotification
+  NH->>U: System notification with deep link
+      </pre>
+    </div>
+
+    <!-- ========== 8. JNI BRIDGE ========== -->
+    <div class="sec-head" id="s8">8 &mdash; Android JNI Bridge</div>
+
+    <div class="ve-card ve-card--accent-amber mb-md" style="--i:1">
+      <div class="ve-card__label" style="color: var(--amber)">Why Globals Are Required</div>
+      <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim); margin-bottom: 14px;">
+        JNI <code>extern "C"</code> functions have fixed signatures determined by the Java Native Interface specification. They cannot receive Rust struct references as parameters. All shared state must be accessible via globals. The PR consolidates this into two minimal statics:
+      </p>
+      <div class="grid-2">
+        <div class="ve-card" style="background: var(--surface2);">
+          <h4 style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">NOTIFICATION_BRIDGE</h4>
+          <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 6px;"><code>notedeck/src/platform/android.rs</code></p>
+          <ul style="font-size: 12px; line-height: 1.8; padding-left: 1.5em;">
+            <li><code>fcm_token: RwLock&lt;Option&lt;String&gt;&gt;</code></li>
+            <li><code>signing_keypairs: RwLock&lt;Option&lt;HashMap&lt;String, FullKeypair&gt;&gt;&gt;</code></li>
+            <li><code>permission_pending: AtomicBool</code></li>
+            <li><code>permission_granted: AtomicBool</code></li>
+            <li><code>deep_link: RwLock&lt;Option&lt;DeepLinkInfo&gt;&gt;</code></li>
+          </ul>
+        </div>
+        <div class="ve-card" style="background: var(--surface2);">
+          <h4 style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">SHARED_STATE</h4>
+          <p style="font-size: 12px; color: var(--text-dim); margin-bottom: 6px;"><code>notedeck_chrome/src/notifications.rs</code></p>
+          <ul style="font-size: 12px; line-height: 1.8; padding-left: 1.5em;">
+            <li><code>running: AtomicBool</code></li>
+            <li><code>generation: AtomicU32</code></li>
+            <li><code>connected_count: AtomicI32</code></li>
+            <li><code>thread_handle: Mutex&lt;Option&lt;JoinHandle&gt;&gt;</code></li>
+            <li><code>java_callback: Mutex&lt;Option&lt;JavaCallback&gt;&gt;</code></li>
+            <li><code>ndb: RwLock&lt;Option&lt;Ndb&gt;&gt;</code> &mdash; nostrdb clone for worker thread</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap mb-md">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>JNI Function</th><th>Direction</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>nativeOnFcmTokenRefreshed</code></td><td>Java &rarr; Rust</td><td>Stores FCM token for notepush registration</td></tr>
+            <tr><td><code>nativeProcessNostrEvent</code></td><td>Java &rarr; Rust</td><td>Parses event JSON, creates notification data</td></tr>
+            <tr><td><code>nativeSignNip98Auth</code></td><td>Java &rarr; Rust</td><td>Signs NIP-98 HTTP auth. Accepts <code>pubkeyHex</code> for per-account keypair lookup.</td></tr>
+            <tr><td><code>nativeStartSubscriptions</code></td><td>Java &rarr; Rust</td><td>Spawns worker thread with relay pool. Parses pubkey JSON array.</td></tr>
+            <tr><td><code>onNostrEvent</code></td><td>Rust &rarr; Java</td><td>Delivers extracted event to Kotlin for notification display</td></tr>
+            <tr><td><code>onRelayStatusChanged</code></td><td>Rust &rarr; Java</td><td>Updates connected relay count in foreground service</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ========== 9. KOTLIN SERVICES ========== -->
+    <div class="sec-head" id="s9">9 &mdash; Kotlin Service Layer</div>
+
+    <div class="grid-3 mb-md">
+      <div class="ve-card" style="--i:1">
+        <div class="ve-card__label" style="color: var(--node-d)">MainActivity.kt</div>
+        <p style="font-size: 12px; line-height: 1.6; color: var(--text-dim);">
+          Entry point for notification mode switching. <code>enableFcmNotifications(json)</code> iterates pubkey array, calls <code>registerDevice()</code> per account. <code>enableNativeNotifications(json, relays)</code> stores pubkeys and starts foreground service. Handles deep-link intents.
+        </p>
+      </div>
+      <div class="ve-card" style="--i:2">
+        <div class="ve-card__label" style="color: var(--node-d)">NotificationsService.kt</div>
+        <p style="font-size: 12px; line-height: 1.6; color: var(--text-dim);">
+          Foreground service for Native mode. Wake lock (10-min timeout, 8-min renewal). Creates 4 notification channels. Reads <code>active_pubkeys</code> from SharedPreferences with backward compat fallback. Returns <code>START_STICKY</code>.
+        </p>
+      </div>
+      <div class="ve-card" style="--i:3">
+        <div class="ve-card__label" style="color: var(--node-d)">NotepushClient.kt</div>
+        <p style="font-size: 12px; line-height: 1.6; color: var(--text-dim);">
+          HTTP client for notepush API. <code>registerDevice(pubkey, token)</code> and <code>unregisterDevice(pubkey)</code> with NIP-98 auth. Passes <code>pubkeyHex</code> to <code>nativeSignNip98Auth()</code> for per-account keypair selection.
+        </p>
+      </div>
+      <div class="ve-card" style="--i:4">
+        <div class="ve-card__label" style="color: var(--node-d)">NotificationHelper.kt</div>
+        <p style="font-size: 12px; line-height: 1.6; color: var(--text-dim);">
+          Rich notification construction. Kind-specific titles and channels. Profile image <code>LruCache&lt;String, Bitmap&gt;</code> (100 entries). Robohash fallback. Deep-link <code>PendingIntent</code> with event metadata. Group summaries.
+        </p>
+      </div>
+      <div class="ve-card" style="--i:5">
+        <div class="ve-card__label" style="color: var(--node-d)">FCM Service</div>
+        <p style="font-size: 12px; line-height: 1.6; color: var(--text-dim);">
+          <code>NotedeckFirebaseMessagingService</code>. On token refresh: reads <code>registered_pubkeys</code> JSON array (fallback to <code>registered_pubkey</code>), iterates re-registration for each account.
+        </p>
+      </div>
+      <div class="ve-card" style="--i:6">
+        <div class="ve-card__label" style="color: var(--node-d)">BootReceiver.kt</div>
+        <p style="font-size: 12px; line-height: 1.6; color: var(--text-dim);">
+          Restarts notification service after device reboot. Checks both <code>active_pubkeys</code> (new) and <code>active_pubkey</code> (legacy) to determine if service should start.
+        </p>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Channel ID</th><th>Name</th><th>Importance</th><th>Event Kinds</th></tr></thead>
+          <tbody>
+            <tr><td><code>CHANNEL_NOTIFICATIONS</code></td><td>Notifications</td><td>HIGH (heads-up)</td><td>Kind 1, 6, 7</td></tr>
+            <tr><td><code>CHANNEL_DMS</code></td><td>Direct Messages</td><td>HIGH</td><td>Kind 4, 1059</td></tr>
+            <tr><td><code>CHANNEL_ZAPS</code></td><td>Zaps</td><td>DEFAULT</td><td>Kind 9735</td></tr>
+            <tr><td><code>CHANNEL_SERVICE</code></td><td>Background Service</td><td>LOW (no badge)</td><td>Foreground service status</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ========== 10. DESKTOP MANAGER ========== -->
+    <div class="sec-head" id="s10">10 &mdash; Desktop Notification Manager</div>
+
+    <div class="grid-2 mb-md">
+      <div class="ve-card ve-card--accent-teal" style="--i:1">
+        <div class="ve-card__label" style="color: var(--accent)">Manager (manager.rs)</div>
+        <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim); margin-bottom: 8px;">
+          Main integration point. <code>poll_notifications()</code> called once per frame from the app event loop. Creates an ndb subscription on <code>start()</code> for notification kinds.
+        </p>
+        <ul style="font-size: 12px; line-height: 1.8; padding-left: 1.5em;">
+          <li>Holds <code>ndb_sub: Option&lt;Subscription&gt;</code> + <code>monitored_pubkeys: Vec&lt;[u8; 32]&gt;</code></li>
+          <li>Polls <code>ndb.poll_for_notes(sub, 50)</code> each frame</li>
+          <li>Fetches Note via <code>ndb.get_note_by_key()</code></li>
+          <li>Finds target account via <code>ndb_helpers::find_target_ptag()</code></li>
+          <li>Self-suppression: drops if <code>note.pubkey()</code> matches our accounts</li>
+          <li>Profile lookup: <code>ndb_helpers::lookup_profile_ndb()</code></li>
+          <li>Zap amounts: <code>ndb_helpers::extract_zap_amount_from_note()</code></li>
+          <li>Formats localized title/body, sends <code>NotificationData</code> to worker via mpsc</li>
+        </ul>
+      </div>
+      <div class="ve-card ve-card--accent-green" style="--i:2">
+        <div class="ve-card__label" style="color: var(--green)">Worker Thread (worker.rs)</div>
+        <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim); margin-bottom: 8px;">
+          Background thread receiving pre-processed notification data.
+        </p>
+        <ul style="font-size: 12px; line-height: 1.8; padding-left: 1.5em;">
+          <li>Event loop with 1-second timeout on channel recv</li>
+          <li>Dedup check via <code>record_event_if_new()</code></li>
+          <li>Image caching on macOS (<code>NotificationImageCache</code>)</li>
+          <li>Delegates to <code>NotificationBackend::send_notification()</code></li>
+          <li>Checks <code>running</code> flag for graceful shutdown</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="ve-card ve-card--accent-amber" style="--i:3">
+        <div class="ve-card__label" style="color: var(--amber)">macOS: UNUserNotificationCenter</div>
+        <p style="font-size: 12px; line-height: 1.6; color: var(--text-dim);">
+          Dynamic ObjC delegate class created at runtime for <code>willPresentNotification</code>. Uses <code>OnceLock</code> for hot-reload safety &mdash; reuses existing class if already registered. Completion handler returns presentation options bitmask (ALERT|SOUND|BANNER|LIST). Permission via <code>requestAuthorizationWithOptions</code>. App Nap disabled via <code>OnceLock</code> guard.
+        </p>
+      </div>
+      <div class="ve-card ve-card--accent-blue" style="--i:4">
+        <div class="ve-card__label" style="color: var(--blue)">macOS: Image Attachments</div>
+        <p style="font-size: 12px; line-height: 1.6; color: var(--text-dim);">
+          <code>UNNotificationAttachment</code> moves the original file, so avatars are copied to temp first. Image cache uses SHA-256 hash of URL as filename. 7-day TTL, max 5MB per image, <strong>HTTPS-only validation</strong> (non-HTTPS URLs rejected with warning), 500 memory entries.
+        </p>
+      </div>
+    </div>
+
+    <!-- ========== 11. SETTINGS UI ========== -->
+    <div class="sec-head" id="s11">11 &mdash; Settings UI Integration</div>
+
+    <div class="grid-2 mb-md">
+      <div class="ve-card ve-card--accent-teal" style="--i:1">
+        <div class="ve-card__label" style="color: var(--accent)">Android Path</div>
+        <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim);">
+          Collects all account pubkeys inline: <code>accounts.cache.accounts().map(|a| a.key.pubkey.hex())</code>. Gets relay URLs from <code>get_selected_account_relay_urls()</code>. Calls <code>platform::set_notification_mode(mode, &amp;pubkey_hexes, &amp;relay_urls)</code>. Handles mutual exclusivity, JNI calls, and SharedPreferences persistence.
+        </p>
+      </div>
+      <div class="ve-card ve-card--accent-green" style="--i:2">
+        <div class="ve-card__label" style="color: var(--green)">Desktop Path</div>
+        <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim);">
+          Uses selected account pubkey. Calls <code>enable_notifications()</code> or <code>disable_notifications()</code> on the <code>NotificationManager</code>. Updates <code>settings.set_notifications_enabled()</code> for persistence.
+        </p>
+      </div>
+    </div>
+
+    <div class="ve-card ve-card--accent-amber mb-md" style="--i:3">
+      <div class="ve-card__label" style="color: var(--amber)">Auto-Enable on Startup</div>
+      <p style="font-size: 13px; line-height: 1.6; color: var(--text-dim);">
+        <code>Chrome::auto_enable_notifications()</code> called during <code>new_with_apps()</code> construction. On Android: reads persisted mode from SharedPreferences, collects all current account pubkeys, calls <code>set_notification_mode()</code> to restore services. Idempotent &mdash; safe to call on every launch. On desktop: checks <code>notifications_enabled</code> setting, creates <code>NotificationManager</code> if enabled.
+      </p>
+    </div>
+
+    <!-- ========== 12. FILE MAP ========== -->
+    <div class="sec-head" id="s12">12 &mdash; File Map</div>
 
     <details class="collapsible" open>
-      <summary>Rust &mdash; crates/notedeck/src/notifications/ (11 new files, 2,478 lines)</summary>
+      <summary>Rust &mdash; crates/notedeck/src/notifications/ (12 files, 2,638 lines)</summary>
       <div class="collapsible__body file-tree">
         <div class="dir">notifications/</div>
-        <div class="file new">mod.rs <span class="lines">+247</span> &mdash; Service orchestration, worker lifecycle</div>
-        <div class="file new">manager.rs <span class="lines">+367</span> &mdash; Event filtering, profile lookup, title/body formatting</div>
-        <div class="file new">types.rs <span class="lines">+158</span> &mdash; Core data structures</div>
-        <div class="file new">extraction.rs <span class="lines">+235</span> &mdash; JSON relay message parsing</div>
+        <div class="file new">mod.rs <span class="lines">+242</span> &mdash; Service orchestration, worker lifecycle</div>
+        <div class="file new">manager.rs <span class="lines">+414</span> &mdash; ndb subscription, poll_notifications(), title/body formatting</div>
+        <div class="file new">ndb_helpers.rs <span class="lines">+85</span> &mdash; nostrdb wrappers: p-tags, profiles, zap amounts</div>
+        <div class="file new">types.rs <span class="lines">+157</span> &mdash; Core data structures</div>
+        <div class="file new">extraction.rs <span class="lines">+239</span> &mdash; JSON relay message parsing (Android compat)</div>
         <div class="file new">worker.rs <span class="lines">+162</span> &mdash; Background notification display thread</div>
         <div class="file new">backend.rs <span class="lines">+98</span> &mdash; NotificationBackend trait</div>
-        <div class="file new">desktop.rs <span class="lines">+125</span> &mdash; Linux notify-rust backend</div>
-        <div class="file new">macos.rs <span class="lines">+488</span> &mdash; macOS UNUserNotificationCenter backend</div>
-        <div class="file new">image_cache.rs <span class="lines">+430</span> &mdash; Profile picture disk cache (macOS)</div>
+        <div class="file new">desktop.rs <span class="lines">+129</span> &mdash; Linux notify-rust backend</div>
+        <div class="file new">macos.rs <span class="lines">+514</span> &mdash; macOS UNUserNotificationCenter + OnceLock safety</div>
+        <div class="file new">image_cache.rs <span class="lines">+430</span> &mdash; Profile picture disk cache (HTTPS-only, macOS)</div>
         <div class="file new">profiles.rs <span class="lines">+100</span> &mdash; npub decoding, mention resolution</div>
         <div class="file new">bolt11.rs <span class="lines">+68</span> &mdash; Zap amount extraction</div>
       </div>
@@ -1028,7 +1407,7 @@ sequenceDiagram
         <div class="dir">platform/</div>
         <div class="file new">mod.rs <span class="lines">+238</span> &mdash; NotificationMode API stubs</div>
         <div class="file new">desktop_notifications.rs <span class="lines">+74</span> &mdash; Desktop settings persistence</div>
-        <div class="file mod">android.rs <span class="lines">+748 / -4</span> &mdash; Android JNI notification bridge</div>
+        <div class="file mod">android.rs <span class="lines">+748 / -4</span> &mdash; Android JNI notification bridge (multi-keypair)</div>
       </div>
     </details>
 
@@ -1081,8 +1460,8 @@ sequenceDiagram
       </div>
     </details>
 
-    <!-- ========== 7. TEST COVERAGE ========== -->
-    <div class="sec-head" id="s7">7 &mdash; Test Coverage</div>
+    <!-- ========== 13. TEST COVERAGE ========== -->
+    <div class="sec-head" id="s13">13 &mdash; Test Coverage</div>
 
     <div class="diff-panels">
       <div class="diff-panel__header diff-panel__header--before">Before</div>
@@ -1116,28 +1495,29 @@ sequenceDiagram
       </ul>
     </div>
 
-    <!-- ========== 8. CODE REVIEW ========== -->
-    <div class="sec-head" id="s8">8 &mdash; Code Review</div>
+    <!-- ========== 14. CODE REVIEW ========== -->
+    <div class="sec-head" id="s14">14 &mdash; Code Review</div>
 
     <div class="review-card review-card--good">
       <h4 style="color: var(--green);">Good</h4>
       <ul>
+        <li><strong>nostrdb integration.</strong> Events already ingested by the relay infrastructure &mdash; the notification system subscribes and polls instead of re-parsing JSON. Profile lookups via <code>ndb.get_profile_by_pubkey()</code> eliminate the old manual profile cache.</li>
         <li><strong>Clean trait boundary.</strong> <code>NotificationBackend</code> trait in <code>backend.rs</code> cleanly abstracts platform differences. Adding a new platform (Windows, iOS) requires implementing one trait &mdash; no changes to the pipeline.</li>
         <li><strong>Channel-based architecture.</strong> Using mpsc channel between the main event loop and worker thread is the right pattern &mdash; decouples hot path from potentially slow notification display.</li>
         <li><strong>Bounded LRU dedup.</strong> <code>VecDeque</code> + <code>HashSet</code> bounded dedup prevents unbounded memory growth. Much better than the original <code>ConcurrentHashMap</code> approach flagged by CodeRabbit.</li>
-        <li><strong>BOLT11 code reuse.</strong> Shared <code>parse_bolt11_msats()</code> in <code>zaps/zap.rs</code> instead of duplicating the <code>lightning_invoice</code> dependency.</li>
+        <li><strong>BOLT11 code reuse.</strong> Shared <code>parse_bolt11_msats()</code> via <code>ndb_helpers::extract_zap_amount_from_note()</code> delegates to existing <code>zaps/zap.rs</code> instead of duplicating the <code>lightning_invoice</code> dependency.</li>
         <li><strong>Cfg-gated cleanly.</strong> Android and desktop paths are mutually exclusive via <code>#[cfg(target_os = "android")]</code>. No dead code on either platform.</li>
-        <li><strong>Thorough review response.</strong> All 11 items from kernelkind and 15+ from CodeRabbit were addressed with specific, documented fixes.</li>
-        <li><strong>Well-structured commits.</strong> 23 commits, each focused on a specific subsystem. Easy to review incrementally.</li>
+        <li><strong>Multi-account done right.</strong> Single relay subscription covers all accounts. Self-notification suppression matches desktop logic. Account lifecycle hooks keep services in sync.</li>
+        <li><strong>Well-structured commits.</strong> 25 commits, each focused on a specific subsystem. Easy to review incrementally.</li>
       </ul>
     </div>
 
     <div class="review-card review-card--bad">
       <h4 style="color: var(--red);">Bad</h4>
       <ul>
-        <li><strong>7,206 lines in a single PR.</strong> Even with good commit structure, this is extremely large for review. The Android and desktop paths could have been separate PRs.</li>
+        <li><strong>8,343 lines in a single PR.</strong> Even with good commit structure, this is extremely large for review. The Android and desktop paths could have been separate PRs.</li>
         <li><strong>No CHANGELOG entry.</strong> A feature this significant needs a CHANGELOG entry.</li>
-        <li><strong>Limited test coverage.</strong> Only 194 test lines for 6,716 code lines (2.9% ratio). The notification formatting logic in <code>manager.rs</code> is untested &mdash; this is where localization bugs would hide.</li>
+        <li><strong>Limited test coverage.</strong> Only 194 test lines for 8,000+ code lines (~2.3% ratio). The notification formatting logic in <code>manager.rs</code> is untested &mdash; this is where localization bugs would hide.</li>
         <li><strong>Firebase BOM 32.7 is dated.</strong> The PR deliberately defers upgrading to 34.x, but this creates tech debt from day one.</li>
         <li><strong>Wake lock with 10-minute timeout.</strong> While fixed from the original unbounded acquire, 10 minutes is still aggressive for a notification service that should be event-driven.</li>
       </ul>
@@ -1148,7 +1528,7 @@ sequenceDiagram
       <ul>
         <li><strong>886-line <code>notifications.rs</code> in notedeck_chrome.</strong> This single file handles all Android JNI bridging. It will be painful to maintain as notification types or Android APIs evolve.</li>
         <li><strong>image_cache.rs can't reuse MediaCache.</strong> The PR adds a 430-line image cache because the existing <code>MediaCache</code> re-encodes to WebP, but macOS needs original format files. This is a fair constraint, but it's a significant surface area to maintain in parallel.</li>
-        <li><strong>Unsafe Send/Sync on macOS delegate.</strong> The <code>MacOSBackend</code> contains unsafe <code>Send</code>/<code>Sync</code> implementations with comments explaining the safety invariants. While the reasoning appears sound, any future refactor could invalidate these invariants silently.</li>
+        <li><strong>Unsafe Send/Sync on macOS delegate.</strong> The <code>MacOSBackend</code> contains unsafe <code>Send</code>/<code>Sync</code> implementations with comments explaining the safety invariants. Any future refactor could invalidate these invariants silently.</li>
         <li><strong>Multiple concurrent state management patterns.</strong> <code>Arc&lt;AtomicBool&gt;</code> for stop signals, <code>RwLock&lt;Option&lt;WorkerHandle&gt;&gt;</code> for lifecycle, <code>Arc&lt;RwLock&lt;HashMap&gt;&gt;</code> in image cache, plus JNI global statics. Each is individually justified but together they create a complex concurrency landscape.</li>
       </ul>
     </div>
@@ -1164,8 +1544,8 @@ sequenceDiagram
       </ul>
     </div>
 
-    <!-- ========== 9. DECISION LOG ========== -->
-    <div class="sec-head" id="s9">9 &mdash; Decision Log</div>
+    <!-- ========== 15. DECISION LOG ========== -->
+    <div class="sec-head" id="s15">15 &mdash; Decision Log</div>
 
     <div class="decision-card decision-card--high">
       <dl>
@@ -1190,6 +1570,32 @@ sequenceDiagram
         <dd>FCM-only (rejected: excludes de-Googled users). UnifiedPush (not mentioned, could be future work).</dd>
         <dt>Confidence</dt>
         <dd><span class="badge badge--green">High</span> sourced from PR description</dd>
+      </dl>
+    </div>
+
+    <div class="decision-card decision-card--high">
+      <dl>
+        <dt>Decision</dt>
+        <dd>Multi-account notifications via single relay subscription with all pubkeys</dd>
+        <dt>Rationale</dt>
+        <dd>Nostr relay filters natively accept arrays of pubkeys. A single <code>Filter::pubkey(all_pubkey_bytes)</code> monitors all accounts simultaneously without per-account connections. Self-notification suppression checks if the event author is one of our accounts and all p-tags point only to our accounts.</dd>
+        <dt>Alternatives considered</dt>
+        <dd>Per-account relay connections (rejected: wasteful, doesn't scale). Single-account only (rejected: desktop already handles multi-account).</dd>
+        <dt>Confidence</dt>
+        <dd><span class="badge badge--green">High</span> sourced from implementation</dd>
+      </dl>
+    </div>
+
+    <div class="decision-card decision-card--high">
+      <dl>
+        <dt>Decision</dt>
+        <dd>Replace serde_json parsing with nostrdb Note API for both desktop and Android notification processing</dd>
+        <dt>Rationale</dt>
+        <dd>Events are already ingested into nostrdb's LMDB store by the app's relay infrastructure (<code>remote_api.rs</code>). Re-parsing the same JSON in the notification system is redundant. The new approach creates an ndb subscription for notification kinds and polls it each frame (desktop) or in a drain-ingest-poll loop (Android). Profile lookups use <code>ndb.get_profile_by_pubkey()</code> instead of maintaining a separate profile cache. <code>ndb_helpers.rs</code> provides thin wrappers delegating to existing utilities (<code>get_p_tags</code>, <code>get_display_name</code>, <code>parse_bolt11_msats</code>).</dd>
+        <dt>Alternatives considered</dt>
+        <dd>Keeping JSON parsing (rejected: duplicates work already done by nostrdb ingestion). Using ndb only for profiles but keeping JSON for events (rejected: half-measure that still requires <code>serde_json</code>).</dd>
+        <dt>Confidence</dt>
+        <dd><span class="badge badge--green">High</span> implemented and tested</dd>
       </dl>
     </div>
 
@@ -1232,17 +1638,21 @@ sequenceDiagram
       </dl>
     </div>
 
-    <!-- ========== 10. RE-ENTRY CONTEXT ========== -->
-    <div class="sec-head" id="s10">10 &mdash; Re-entry Context</div>
+    <!-- ========== 16. RE-ENTRY CONTEXT ========== -->
+    <div class="sec-head" id="s16">16 &mdash; Re-entry Context</div>
 
     <details class="collapsible" open>
       <summary>Key Invariants</summary>
       <div class="collapsible__body">
         <ul style="line-height: 1.8;">
-          <li><code>set_signing_keypair()</code> must be called in <code>Accounts::new()</code> after <code>cache.select()</code> &mdash; otherwise NIP-98 auth fails on cold start (bug fix in this PR).</li>
-          <li>The mpsc channel between the main event loop and worker must not block &mdash; if the worker dies, the channel will fill and <code>process_relay_message</code> will start dropping notifications silently.</li>
+          <li><code>set_signing_keypairs()</code> must be called after accounts are loaded &mdash; otherwise NIP-98 auth fails on cold start. On Android, <code>select_account_internal()</code> populates all keypairs for all accounts.</li>
+          <li>On Android, <code>set_ndb()</code> must be called during <code>auto_enable_notifications()</code> &mdash; the worker thread needs an <code>Ndb</code> clone to ingest events and poll subscriptions.</li>
+          <li>Desktop <code>poll_notifications()</code> polls max 50 notes per frame &mdash; high-volume relays may queue more, but the subscription retains unread notes until the next poll cycle.</li>
+          <li>Android worker loop sleeps 200ms between ingest and poll to allow nostrdb LMDB writes to complete. Reducing this may cause missed events.</li>
+          <li>The mpsc channel between the main event loop and worker must not block &mdash; if the worker dies, the channel will fill and <code>poll_notifications</code> will start dropping notifications silently.</li>
           <li>Android <code>NotificationsService</code> foreground service must display a persistent notification within 5 seconds of <code>startForeground</code> call or Android will kill it (OS constraint, not code constraint).</li>
           <li>On macOS, the bundle ID must be set correctly for <code>UNUserNotificationCenter</code> to deliver notifications. Development builds with mismatched bundle IDs will silently drop all notifications.</li>
+          <li>When accounts are added/removed, <code>retrigger_notifications_if_active()</code> must be called to update relay subscriptions with the new pubkey set.</li>
         </ul>
       </div>
     </details>
@@ -1251,10 +1661,12 @@ sequenceDiagram
       <summary>Non-obvious Coupling</summary>
       <div class="collapsible__body">
         <ul style="line-height: 1.8;">
-          <li><code>accounts.rs</code> propagates signing keypair changes to the JNI bridge &mdash; changing account switching logic requires updating notification re-registration.</li>
-          <li><code>try_process_events_core()</code> in <code>notedeck/src/app.rs</code> is the integration point &mdash; any change to relay message handling flow affects notification delivery.</li>
+          <li><code>accounts.rs</code> propagates signing keypairs to the JNI bridge via <code>set_signing_keypairs()</code> &mdash; changing account switching logic requires updating notification re-registration.</li>
+          <li><code>try_process_events_core()</code> in <code>notedeck/src/app.rs</code> calls <code>poll_notifications()</code> each frame &mdash; depends on nostrdb having already ingested events from <code>remote_api.rs</code>.</li>
+          <li><code>ndb_helpers.rs</code> delegates to <code>crate::note::get_p_tags()</code>, <code>crate::name::get_display_name()</code>, and <code>crate::zaps::parse_bolt11_msats()</code> &mdash; changes to these shared utilities affect notification formatting.</li>
           <li>The <code>SettingsHandler</code> persistence and <code>platform/mod.rs</code> API layer are coupled via <code>NotificationMode</code> &mdash; adding a new mode requires changes in both.</li>
           <li>Android deep linking connects <code>NotificationHelper</code> intent creation to <code>MainActivity</code> intent parsing to <code>chrome/notifications.rs</code> JNI bridge to <code>notedeck_columns/nav.rs</code> navigation. Four files must agree on the deep link format.</li>
+          <li>SharedPreferences keys (<code>active_pubkeys</code>, <code>registered_pubkeys</code>) are shared between Kotlin code and Rust JNI &mdash; renaming or restructuring requires both sides to agree.</li>
         </ul>
       </div>
     </details>
@@ -1267,6 +1679,8 @@ sequenceDiagram
           <li><code>onMessageReceived</code> gates on <code>notification_mode == FCM</code>. If the user disables FCM but the server hasn't been told yet, incoming FCM messages are silently dropped &mdash; correct behavior, but can confuse debugging.</li>
           <li>The <code>VecDeque + HashSet</code> dedup in the worker has a fixed capacity. Under extremely high event volume, eviction could cause duplicate notifications for events that were evicted and then re-received.</li>
           <li>Android <code>BootReceiver</code> checks <code>SharedPreferences</code> for the notification mode. If the app data is cleared but the receiver is still registered, it will attempt to start the service in the default (disabled) mode &mdash; effectively a no-op, but it still runs briefly.</li>
+          <li><code>nativeStartSubscriptions</code> parses the first argument as JSON array with bare-string fallback &mdash; if the JSON format changes, both Kotlin and Rust must be updated in lockstep.</li>
+          <li>Android worker loop ingests raw relay JSON into nostrdb then polls for notes. The 200ms sleep between ingest and poll is calibrated to nostrdb's LMDB write latency &mdash; on slow storage (e.g. old eMMC), events may be missed if the sleep is reduced.</li>
         </ul>
       </div>
     </details>
@@ -1282,6 +1696,21 @@ sequenceDiagram
           <li>Consider adding integration tests for the notification pipeline before merging</li>
           <li>Profile battery usage of native WebSocket mode on Android before recommending it as default</li>
           <li>Firebase BOM 34.x and Kotlin 2.x upgrades as follow-up PR</li>
+          <li>Test multi-account scenarios: 2+ accounts with Native mode, FCM mode, account add/remove while notifications active</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="collapsible">
+      <summary>Thread Safety Design Notes</summary>
+      <div class="collapsible__body">
+        <ul style="line-height: 1.8;">
+          <li><strong>NOTIFICATION_BRIDGE</strong> uses <code>RwLock</code> (std::sync, not tokio) because accessed from JNI threads, not the render loop.</li>
+          <li><strong>JavaCallback</strong> is marked <code>unsafe impl Send + Sync</code> &mdash; <code>jni::JavaVM</code> is thread-safe per JNI spec, and <code>jni::objects::GlobalRef</code> is valid across threads per JNI &sect;5.1.1.</li>
+          <li><strong>Generation counter</strong> (AtomicU32) prevents old workers from processing events after restart &mdash; worker exits loop if its generation doesn't match the current value.</li>
+          <li><strong>Desktop PERMISSION_GRANTED / DESKTOP_MODE</strong> use <code>AtomicBool</code> / <code>AtomicU8</code> with <code>SeqCst</code> ordering for simplicity in single-writer scenarios.</li>
+          <li><strong>Ndb is Clone (Arc-backed)</strong> &mdash; <code>set_ndb()</code> stores a clone in <code>SharedState.ndb</code> for the Android worker thread. The clone shares the same LMDB environment, so writes from one clone are immediately visible to the other after the LMDB transaction commits.</li>
+          <li><strong>RelayPool is non-Send</strong> &mdash; created and owned entirely within the worker thread. Never crosses thread boundaries.</li>
         </ul>
       </div>
     </details>
@@ -1295,10 +1724,9 @@ sequenceDiagram
 </div><!-- /wrap -->
 
 <!-- ========== SCRIPTS ========== -->
-<script type="module">
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-
-  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  var isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
   mermaid.initialize({
     startOnLoad: true,
     theme: 'base',
