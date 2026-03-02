@@ -163,6 +163,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
         match cmd {
             SessionCommand::Query {
                 prompt,
+                images,
                 response_tx,
                 ctx,
             } => {
@@ -178,12 +179,30 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                     ctx.request_repaint();
                 }
 
+                // Write images to temp files. _temp_files holds NamedTempFile
+                // handles that auto-delete on drop — must stay alive until the
+                // turn completes so Codex can read them.
+                let (mut inputs, _temp_files) = match prepare_image_inputs(&images) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        tracing::error!("Image staging failed: {}", err);
+                        let _ = response_tx.send(DaveApiResponse::Failed(err));
+                        ctx.request_repaint();
+                        break;
+                    }
+                };
+                if !prompt.is_empty() {
+                    inputs.push(TurnInput::Text {
+                        text: prompt.clone(),
+                    });
+                }
+
                 // Send turn/start
                 turn_count += 1;
                 request_counter += 1;
                 let turn_req_id = request_counter;
                 if let Err(err) =
-                    send_turn_start(&mut writer, turn_req_id, &thread_id, &prompt, model).await
+                    send_turn_start(&mut writer, turn_req_id, &thread_id, inputs, model).await
                 {
                     tracing::error!("Session {} turn/start failed: {}", session_id, err);
                     let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
@@ -1158,12 +1177,50 @@ async fn send_thread_resume<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
     Ok(thread_id.to_string())
 }
 
+/// Prepare image attachments as named temp files for Codex `localImage` input.
+///
+/// Returns a `(Vec<TurnInput>, Vec<NamedTempFile>)` pair — the temp files
+/// must be kept alive for the duration of the turn so Codex can read them.
+/// They are deleted automatically when the `NamedTempFile` values are dropped.
+///
+/// Returns an error if any image fails to stage, so the caller can report
+/// the failure rather than silently sending an incomplete message.
+fn prepare_image_inputs(
+    images: &[crate::messages::ImageAttachment],
+) -> Result<(Vec<TurnInput>, Vec<tempfile::NamedTempFile>), String> {
+    let mut inputs = Vec::new();
+    let mut temp_files = Vec::new();
+
+    for img in images {
+        let ext = mime_guess::get_mime_extensions_str(&img.mime_type)
+            .and_then(|exts| exts.first().copied())
+            .unwrap_or("bin");
+        let suffix = format!(".{}", ext);
+        let mut tmp = tempfile::Builder::new()
+            .prefix("dave_img_")
+            .suffix(&suffix)
+            .tempfile()
+            .map_err(|e| format!("Failed to create temp file for image: {e}"))?;
+        {
+            use std::io::Write as _;
+            tmp.write_all(&img.bytes)
+                .map_err(|e| format!("Failed to write image to temp file: {e}"))?;
+        }
+        inputs.push(TurnInput::LocalImage {
+            path: tmp.path().to_string_lossy().into_owned(),
+        });
+        temp_files.push(tmp);
+    }
+
+    Ok((inputs, temp_files))
+}
+
 /// Send `turn/start`.
 async fn send_turn_start<W: AsyncWrite + Unpin>(
     writer: &mut tokio::io::BufWriter<W>,
     req_id: u64,
     thread_id: &str,
-    prompt: &str,
+    inputs: Vec<TurnInput>,
     model: Option<&str>,
 ) -> Result<(), String> {
     let req = RpcRequest {
@@ -1171,9 +1228,7 @@ async fn send_turn_start<W: AsyncWrite + Unpin>(
         method: "turn/start",
         params: TurnStartParams {
             thread_id: thread_id.to_string(),
-            input: vec![TurnInput::Text {
-                text: prompt.to_string(),
-            }],
+            input: inputs,
             model: model.map(|s| s.to_string()),
             effort: None,
         },
@@ -1328,7 +1383,7 @@ impl AiBackend for CodexBackend {
     ) {
         let (response_tx, response_rx) = mpsc::channel();
 
-        let prompt = shared::prepare_prompt(&messages, &resume_session_id);
+        let (prompt, images) = shared::prepare_prompt_and_images(&messages, &resume_session_id);
 
         tracing::debug!(
             "Codex request: session={}, resumed={}, prompt_len={}",
@@ -1366,6 +1421,7 @@ impl AiBackend for CodexBackend {
             if let Err(err) = command_tx
                 .send(SessionCommand::Query {
                     prompt,
+                    images,
                     response_tx,
                     ctx,
                 })
@@ -2333,6 +2389,7 @@ mod tests {
         command_tx
             .send(SessionCommand::Query {
                 prompt: prompt.to_string(),
+                images: vec![],
                 response_tx,
                 ctx: egui::Context::default(),
             })
@@ -2830,6 +2887,7 @@ mod tests {
         command_tx
             .send(SessionCommand::Query {
                 prompt: "hello".to_string(),
+                images: vec![],
                 response_tx,
                 ctx: egui::Context::default(),
             })
@@ -3290,6 +3348,7 @@ mod tests {
             command_tx_clone
                 .send(SessionCommand::Query {
                     prompt: "Say exactly: hello world".to_string(),
+                    images: vec![],
                     response_tx,
                     ctx: egui::Context::default(),
                 })

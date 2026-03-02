@@ -88,7 +88,8 @@ fn build_dave_ui<'a>(
     .backend_type(session.backend_type)
     .last_activity(session.last_activity)
     .run_configs(session_run_configs)
-    .running_config_ids(running_config_ids);
+    .running_config_ids(running_config_ids)
+    .pending_images(&mut session.pending_images);
 
     if let Some(agentic) = &mut session.agentic {
         let model = agentic

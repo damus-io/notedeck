@@ -23,6 +23,32 @@ use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 
+/// Build a list of `UserContentBlock`s from image attachments and optional prompt text.
+/// Images are placed first, then the text block (if non-empty).
+fn build_content_blocks(
+    images: &[crate::messages::ImageAttachment],
+    prompt: &str,
+) -> Vec<UserContentBlock> {
+    use base64::Engine as _;
+    let mut blocks: Vec<UserContentBlock> = images
+        .iter()
+        .filter_map(|img| {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&img.bytes);
+            match UserContentBlock::image_base64(&img.mime_type, &b64) {
+                Ok(block) => Some(block),
+                Err(err) => {
+                    tracing::warn!("Skipping invalid image attachment: {}", err);
+                    None
+                }
+            }
+        })
+        .collect();
+    if !prompt.is_empty() {
+        blocks.push(UserContentBlock::text(prompt));
+    }
+    blocks
+}
+
 /// Convert a ToolResultContent to a serde_json::Value for use with tool summary formatting
 fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_json::Value {
     match content {
@@ -181,11 +207,19 @@ async fn session_actor(
         match cmd {
             SessionCommand::Query {
                 prompt,
+                images,
                 response_tx,
                 ctx,
             } => {
-                // Send query using session_id for context
-                if let Err(err) = client.query_with_session(&prompt, &session_id).await {
+                let query_result = if images.is_empty() {
+                    client.query_with_session(&prompt, &session_id).await
+                } else {
+                    let blocks = build_content_blocks(&images, &prompt);
+                    client
+                        .query_with_content_and_session(blocks, &session_id)
+                        .await
+                };
+                if let Err(err) = query_result {
                     tracing::error!("Session {} query error: {}", session_id, err);
                     let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
                     continue;
@@ -218,11 +252,14 @@ async fn session_actor(
                                     // The session history is preserved by the CLI
                                     interrupt_ctx.request_repaint();
                                 }
-                                SessionCommand::Query { response_tx: new_tx, .. } => {
+                                SessionCommand::Query {
+                                    response_tx: new_tx,
+                                    ..
+                                } => {
                                     // A new query came in while we're still streaming - shouldn't happen
                                     // but handle gracefully by rejecting it
                                     let _ = new_tx.send(DaveApiResponse::Failed(
-                                        "Query already in progress".to_string()
+                                        "Query already in progress".to_string(),
                                     ));
                                 }
                                 SessionCommand::SetPermissionMode { mode, ctx: mode_ctx } => {
@@ -587,7 +624,7 @@ impl AiBackend for ClaudeBackend {
     ) {
         let (response_tx, response_rx) = mpsc::channel();
 
-        let prompt = shared::prepare_prompt(&messages, &resume_session_id);
+        let (prompt, images) = shared::prepare_prompt_and_images(&messages, &resume_session_id);
 
         tracing::debug!(
             "Sending request to Claude Code: session={}, resumed={}, prompt length: {}, preview: {:?}",
@@ -627,6 +664,7 @@ impl AiBackend for ClaudeBackend {
             if let Err(err) = command_tx
                 .send(SessionCommand::Query {
                     prompt,
+                    images,
                     response_tx,
                     ctx,
                 })
@@ -691,6 +729,7 @@ impl AiBackend for ClaudeBackend {
             if let Err(err) = command_tx
                 .send(SessionCommand::Query {
                     prompt: "/compact".to_string(),
+                    images: vec![],
                     response_tx,
                     ctx,
                 })

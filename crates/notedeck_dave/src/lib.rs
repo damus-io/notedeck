@@ -48,9 +48,9 @@ use std::time::Instant;
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use messages::{
-    AskUserQuestionInput, AssistantMessage, DaveApiResponse, ExecutedTool, Message,
-    PermissionResponse, PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo,
-    SubagentStatus,
+    AskUserQuestionInput, AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment,
+    Message, PermissionResponse, PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo,
+    SubagentStatus, UserMessage,
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -682,7 +682,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session.chat.push(Message::ToolCalls(vec![present]));
 
             session.chat.push(Message::User(
-                "Summarize this thread concisely.".to_string(),
+                "Summarize this thread concisely.".to_string().into(),
             ));
             session.update_title_from_last_message();
         }
@@ -2273,7 +2273,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if !is_remote {
                     if role == Some("user") {
                         tracing::info!("received remote user message for local session");
-                        session.chat.push(Message::User(content.to_string()));
+                        session.chat.push(Message::User(content.to_string().into()));
                         session.update_title_from_last_message();
                         remote_user_messages.push((session_id, content.to_string()));
                     }
@@ -2286,7 +2286,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
                 match role {
                     Some("user") => {
-                        session.chat.push(Message::User(content.to_string()));
+                        session.chat.push(Message::User(content.to_string().into()));
                     }
                     Some("assistant") => {
                         session.chat.push(Message::Assistant(
@@ -3035,7 +3035,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             }
 
-            session.chat.push(Message::User(user_text));
+            let images = std::mem::take(&mut session.pending_images);
+            session
+                .chat
+                .push(Message::User(UserMessage::new(user_text, images)));
             session.update_title_from_last_message();
 
             // Remote sessions: publish user message to relay but don't send to local backend

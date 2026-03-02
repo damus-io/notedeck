@@ -12,8 +12,8 @@ use crate::{
     focus_queue::FocusPriority,
     git_status::GitStatusCache,
     messages::{
-        AskUserQuestionInput, AssistantMessage, CompactionInfo, ExecutedTool, Message,
-        PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
+        AskUserQuestionInput, AssistantMessage, CompactionInfo, ExecutedTool, ImageAttachment,
+        Message, PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
         SubagentInfo, SubagentStatus,
     },
     session::{PermissionMessageState, SessionDetails, SessionId},
@@ -84,6 +84,8 @@ pub struct DaveUi<'a> {
     run_configs: &'a [crate::config::RunConfig],
     /// IDs of configs currently running for this session
     running_config_ids: Option<&'a std::collections::HashSet<String>>,
+    /// Pending image attachments staged for the next send
+    pending_images: Option<&'a mut Vec<ImageAttachment>>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -231,7 +233,13 @@ impl<'a> DaveUi<'a> {
             focus_queue_info: None,
             run_configs: &[],
             running_config_ids: None,
+            pending_images: None,
         }
+    }
+
+    pub fn pending_images(mut self, images: &'a mut Vec<ImageAttachment>) -> Self {
+        self.pending_images = Some(images);
+        self
     }
 
     pub fn last_activity(mut self, instant: Option<std::time::Instant>) -> Self {
@@ -1275,133 +1283,168 @@ impl<'a> DaveUi<'a> {
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let i18n = &mut *app_ctx.i18n;
-        // Constrain input height based on line count (min 1, max 8 lines)
+        // Text input row first — in the inherited bottom_up layout this sits at the bottom.
+        // Inner layout overrides (horizontal + right_to_left) keep the text row correct.
         let line_count = self.input.lines().count().max(1).clamp(1, 8);
         let line_height = 20.0;
         let base_height = 44.0;
         let input_height = base_height + (line_count as f32 * line_height);
-        ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
-                    let mut dave_response = DaveResponse::none();
+        let response = ui
+            .allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                        let mut dave_response = DaveResponse::none();
 
-                    // Always show Ask button (messages queue while working)
-                    if ui
-                        .add(
-                            egui::Button::new(tr!(
-                                i18n,
-                                "Ask",
-                                "Button to send message to Dave AI assistant"
-                            ))
-                            .min_size(egui::vec2(60.0, 44.0)),
-                        )
-                        .clicked()
-                    {
-                        dave_response = DaveResponse::send();
-                    }
-
-                    // Show Stop button alongside Ask for local working sessions
-                    if self.flags.contains(DaveUiFlags::IsWorking)
-                        && !self.flags.contains(DaveUiFlags::IsRemote)
-                    {
+                        // Always show Ask button (messages queue while working)
                         if ui
                             .add(
                                 egui::Button::new(tr!(
                                     i18n,
-                                    "Stop",
-                                    "Button to interrupt/stop the AI operation"
+                                    "Ask",
+                                    "Button to send message to Dave AI assistant"
                                 ))
                                 .min_size(egui::vec2(60.0, 44.0)),
                             )
                             .clicked()
                         {
-                            dave_response = DaveResponse::new(DaveAction::Interrupt);
+                            dave_response = DaveResponse::send();
                         }
 
-                        // Show "Press Esc again" indicator when interrupt is pending
-                        if self.flags.contains(DaveUiFlags::InterruptPending) {
-                            ui.label(
-                                egui::RichText::new("Press Esc again to stop")
-                                    .color(ui.visuals().warn_fg_color),
-                            );
-                        }
-                    }
-
-                    let r = egui::ScrollArea::vertical()
-                        .max_height(ui.available_height())
-                        .show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::multiline(self.input)
-                                    .desired_width(f32::INFINITY)
-                                    .return_key(KeyboardShortcut::new(
-                                        Modifiers {
-                                            shift: true,
-                                            ..Default::default()
-                                        },
-                                        Key::Enter,
+                        // Show Stop button alongside Ask for local working sessions
+                        if self.flags.contains(DaveUiFlags::IsWorking)
+                            && !self.flags.contains(DaveUiFlags::IsRemote)
+                        {
+                            if ui
+                                .add(
+                                    egui::Button::new(tr!(
+                                        i18n,
+                                        "Stop",
+                                        "Button to interrupt/stop the AI operation"
                                     ))
-                                    .hint_text(
-                                        egui::RichText::new(tr!(
-                                            i18n,
-                                            "Ask dave anything...",
-                                            "Placeholder text for Dave AI input field"
-                                        ))
-                                        .weak(),
-                                    )
-                                    .frame(false),
-                            )
-                        })
-                        .inner;
-                    notedeck_ui::context_menu::input_context(
-                        ui,
-                        &r,
-                        app_ctx.clipboard,
-                        self.input,
-                        notedeck_ui::context_menu::PasteBehavior::Append,
-                    );
+                                    .min_size(egui::vec2(60.0, 44.0)),
+                                )
+                                .clicked()
+                            {
+                                dave_response = DaveResponse::new(DaveAction::Interrupt);
+                            }
 
-                    // Request focus if flagged (e.g., after spawning a new agent or entering tentative state).
-                    // Skip on mobile to avoid popping up the virtual keyboard on every session switch.
-                    if *self.focus_requested {
-                        if !notedeck::ui::is_compiled_as_mobile() {
-                            r.request_focus();
+                            // Show "Press Esc again" indicator when interrupt is pending
+                            if self.flags.contains(DaveUiFlags::InterruptPending) {
+                                ui.label(
+                                    egui::RichText::new("Press Esc again to stop")
+                                        .color(ui.visuals().warn_fg_color),
+                                );
+                            }
                         }
-                        *self.focus_requested = false;
-                    }
 
-                    // Unfocus text input when there's a pending permission request
-                    // UNLESS we're in tentative state (user needs to type message)
-                    let in_tentative_state =
-                        self.permission_message_state != PermissionMessageState::None;
-                    if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
-                        r.surrender_focus();
-                    }
+                        let r = egui::ScrollArea::vertical()
+                            .max_height(ui.available_height())
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(self.input)
+                                        .id_source(("dave_input", self.session_id))
+                                        .desired_width(f32::INFINITY)
+                                        .return_key(KeyboardShortcut::new(
+                                            Modifiers {
+                                                shift: true,
+                                                ..Default::default()
+                                            },
+                                            Key::Enter,
+                                        ))
+                                        .hint_text(
+                                            egui::RichText::new(tr!(
+                                                i18n,
+                                                "Ask dave anything...",
+                                                "Placeholder text for Dave AI input field"
+                                            ))
+                                            .weak(),
+                                        )
+                                        .frame(false),
+                                )
+                            })
+                            .inner;
+                        dave_input_context(
+                            ui,
+                            &r,
+                            app_ctx.clipboard,
+                            self.input,
+                            self.pending_images.as_deref_mut(),
+                        );
 
-                    if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        DaveResponse::send()
-                    } else {
-                        dave_response
-                    }
+                        // Request focus if flagged (e.g., after spawning a new agent or entering tentative state).
+                        // Skip on mobile to avoid popping up the virtual keyboard on every session switch.
+                        if *self.focus_requested {
+                            if !notedeck::ui::is_compiled_as_mobile() {
+                                r.request_focus();
+                            }
+                            *self.focus_requested = false;
+                        }
+
+                        // Unfocus text input when there's a pending permission request
+                        // UNLESS we're in tentative state (user needs to type message)
+                        let in_tentative_state =
+                            self.permission_message_state != PermissionMessageState::None;
+                        if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
+                            r.surrender_focus();
+                        }
+
+                        if r.has_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
+                        {
+                            DaveResponse::send()
+                        } else {
+                            dave_response
+                        }
+                    })
+                    .inner
                 })
                 .inner
             })
-            .inner
-        })
-        .inner
+            .inner;
+
+        // Thumbnail strip second — in bottom_up this renders ABOVE the text row.
+        // allocate_ui_with_layout pre-positions the rect at the bottom_up cursor
+        // (unlike with_layout which takes the full available rect) and forces
+        // top_down so image_thumbnail_strip's internal widgets render correctly.
+        if let Some(pending) = &mut self.pending_images {
+            if !pending.is_empty() {
+                // Height must closely match content: in bottom_up, next_space
+                // reserves this much vertical room above the text row.
+                let strip_height = THUMBNAIL_SIZE + ui.spacing().item_spacing.y;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), strip_height),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        image_thumbnail_strip(pending, ui);
+                    },
+                );
+            }
+        }
+
+        response
     }
 
-    fn user_chat(&self, msg: &str, is_queued: bool, ui: &mut egui::Ui) {
+    fn user_chat(&self, msg: &crate::messages::UserMessage, is_queued: bool, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             let r = egui::Frame::new()
                 .inner_margin(10.0)
                 .corner_radius(10.0)
                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                 .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(msg)
-                            .wrap_mode(egui::TextWrapMode::Wrap)
-                            .selectable(true),
-                    );
+                    for img in &msg.images {
+                        ui.add(
+                            egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
+                                .max_size(egui::vec2(200.0, 200.0))
+                                .corner_radius(4.0),
+                        );
+                    }
+                    if !msg.text.is_empty() {
+                        ui.add(
+                            egui::Label::new(&msg.text)
+                                .wrap_mode(egui::TextWrapMode::Wrap)
+                                .selectable(true),
+                        );
+                    }
                     if is_queued {
                         ui.label(
                             egui::RichText::new("queued")
@@ -1412,7 +1455,7 @@ impl<'a> DaveUi<'a> {
                 });
             r.response.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
-                    ui.ctx().copy_text(msg.to_owned());
+                    ui.ctx().copy_text(msg.text.clone());
                     ui.close_menu();
                 }
             });
@@ -1433,6 +1476,130 @@ impl<'a> DaveUi<'a> {
                 ui.close_menu();
             }
         });
+    }
+}
+
+/// Paste text into the current input buffer using Dave's append behavior.
+fn append_clipboard_text(clipboard: &mut egui_winit::clipboard::Clipboard, input: &mut String) {
+    if let Some(text) = clipboard.get() {
+        input.push_str(&text);
+    }
+}
+
+/// Dave-specific input context menu that prefers image paste before text paste.
+fn dave_input_context(
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    clipboard: &mut egui_winit::clipboard::Clipboard,
+    input: &mut String,
+    pending_images: Option<&mut Vec<ImageAttachment>>,
+) {
+    response.context_menu(|ui| {
+        if ui.button("Paste").clicked() {
+            let pasted_image = pending_images.map(try_paste_image).unwrap_or(false);
+            if !pasted_image {
+                append_clipboard_text(clipboard, input);
+            }
+            ui.close_menu();
+        }
+
+        if ui.button("Copy").clicked() {
+            clipboard.set_text(input.to_owned());
+            ui.close_menu();
+        }
+
+        if ui.button("Cut").clicked() {
+            clipboard.set_text(input.to_owned());
+            input.clear();
+            ui.close_menu();
+        }
+    });
+
+    if response.middle_clicked() {
+        append_clipboard_text(clipboard, input);
+    }
+
+    notedeck_ui::include_input(ui, response);
+}
+
+/// Try to paste an image from the clipboard into `pending`.
+/// Returns `true` if an image was staged; `false` if the clipboard had no image.
+fn try_paste_image(pending: &mut Vec<ImageAttachment>) -> bool {
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::debug!("paste_image: clipboard open failed: {}", err);
+            return false;
+        }
+    };
+    let img_data = match clipboard.get_image() {
+        Ok(d) => d,
+        Err(err) => {
+            tracing::debug!("paste_image: no image in clipboard: {}", err);
+            return false;
+        }
+    };
+    let w = img_data.width as u32;
+    let h = img_data.height as u32;
+    tracing::debug!("paste_image: got {}x{} image from clipboard", w, h);
+    let Some(rgba) = image::RgbaImage::from_raw(w, h, img_data.bytes.into_owned()) else {
+        tracing::warn!("paste_image: RgbaImage::from_raw failed (bad dimensions?)");
+        return false;
+    };
+    let mut png_bytes = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut png_bytes);
+    if let Err(err) = rgba.write_to(&mut cursor, image::ImageFormat::Png) {
+        tracing::warn!("paste_image: PNG encode failed: {}", err);
+        return false;
+    }
+    tracing::debug!("paste_image: encoded {} PNG bytes", png_bytes.len());
+    pending.push(ImageAttachment::new(png_bytes, "image/png"));
+    true
+}
+
+const THUMBNAIL_SIZE: f32 = 100.0;
+
+/// Render a horizontal strip of image thumbnails with ✕ remove buttons.
+fn image_thumbnail_strip(pending: &mut Vec<ImageAttachment>, ui: &mut egui::Ui) {
+    if pending.is_empty() {
+        return;
+    }
+
+    let mut remove_idx = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, img) in pending.iter().enumerate() {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(THUMBNAIL_SIZE, THUMBNAIL_SIZE),
+                egui::Sense::hover(),
+            );
+            ui.put(
+                rect,
+                egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
+                    .fit_to_exact_size(egui::vec2(THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+                    .corner_radius(6.0),
+            );
+            // Small × button in the top-right corner
+            let btn_size = 18.0;
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - btn_size - 2.0, rect.top() + 2.0),
+                egui::vec2(btn_size, btn_size),
+            );
+            if ui
+                .put(
+                    btn_rect,
+                    egui::Button::new(egui::RichText::new("×").size(12.0).strong())
+                        .corner_radius(btn_size / 2.0)
+                        .min_size(egui::vec2(btn_size, btn_size)),
+                )
+                .clicked()
+            {
+                remove_idx = Some(i);
+            }
+        }
+    });
+    if let Some(idx) = remove_idx {
+        pending.remove(idx);
     }
 }
 

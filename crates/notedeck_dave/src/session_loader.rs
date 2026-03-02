@@ -165,7 +165,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         let role = get_tag_value(note, "role");
 
         let msg = match role {
-            Some("user") => Some(Message::User(content.to_string())),
+            Some("user") => Some(Message::User(content.to_string().into())),
             Some("assistant") | Some("tool_call") => Some(Message::Assistant(
                 AssistantMessage::from_text(content.to_string()),
             )),

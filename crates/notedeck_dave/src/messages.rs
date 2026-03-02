@@ -2,6 +2,74 @@ use crate::tools::{ToolCall, ToolResponse, ToolResponses};
 use async_openai::types::*;
 use md_stream::{MdElement, Partial, StreamParser};
 
+/// Raw image bytes with MIME type, attached to a user message.
+/// `id` is a stable hash used as the egui image cache key.
+/// Bytes are stored in an `Arc` so cloning for egui rendering is a refcount
+/// bump rather than a full heap copy.
+#[derive(Debug, Clone)]
+pub struct ImageAttachment {
+    pub id: u64,
+    pub bytes: std::sync::Arc<[u8]>,
+    pub mime_type: String,
+}
+
+impl ImageAttachment {
+    pub fn new(bytes: Vec<u8>, mime_type: impl Into<String>) -> Self {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut h = DefaultHasher::new();
+        bytes.hash(&mut h);
+        Self {
+            id: h.finish(),
+            bytes: bytes.into(),
+            mime_type: mime_type.into(),
+        }
+    }
+
+    /// Stable URI for egui_extras image loader — decoded once, cached by this key.
+    pub fn egui_uri(&self) -> String {
+        format!("bytes://img_attach_{}", self.id)
+    }
+}
+
+/// A user message: text plus optional image attachments.
+#[derive(Debug, Clone, Default)]
+pub struct UserMessage {
+    pub text: String,
+    pub images: Vec<ImageAttachment>,
+}
+
+impl UserMessage {
+    pub fn new(text: impl Into<String>, images: Vec<ImageAttachment>) -> Self {
+        Self {
+            text: text.into(),
+            images,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+}
+
+impl From<String> for UserMessage {
+    fn from(s: String) -> Self {
+        Self {
+            text: s,
+            images: vec![],
+        }
+    }
+}
+
+impl From<&str> for UserMessage {
+    fn from(s: &str) -> Self {
+        Self {
+            text: s.to_owned(),
+            images: vec![],
+        }
+    }
+}
+
 /// Pre-parsed markdown with source text for span resolution.
 #[derive(Debug, Clone)]
 pub struct ParsedMarkdown {
@@ -312,7 +380,7 @@ impl Default for AssistantMessage {
 pub enum Message {
     System(String),
     Error(String),
-    User(String),
+    User(UserMessage),
     Assistant(AssistantMessage),
     ToolCalls(Vec<ToolCall>),
     ToolResponse(ToolResponse),
@@ -403,7 +471,7 @@ impl Message {
             Message::User(msg) => Some(ChatCompletionRequestMessage::User(
                 ChatCompletionRequestUserMessage {
                     name: None,
-                    content: ChatCompletionRequestUserMessageContent::Text(msg.clone()),
+                    content: ChatCompletionRequestUserMessageContent::Text(msg.text.clone()),
                 },
             )),
 

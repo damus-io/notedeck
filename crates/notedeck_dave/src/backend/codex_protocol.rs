@@ -107,6 +107,8 @@ pub struct TurnStartParams {
 pub enum TurnInput {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "localImage")]
+    LocalImage { path: String },
 }
 
 /// `turn/interrupt` params
