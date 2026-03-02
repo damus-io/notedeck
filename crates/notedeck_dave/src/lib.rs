@@ -1133,9 +1133,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         )
     }
 
-    /// Duplicate a session by ID, creating a new session with the same working directory
+    /// Duplicate a session by ID, creating a new session with the same working directory.
+    /// For remote sessions, sends a spawn command to the remote host.
     fn duplicate_session(&mut self, id: SessionId) {
-        update::clone_session(
+        if let Some(spawn) = update::clone_session(
             &mut self.session_manager,
             &mut self.directory_picker,
             &mut self.scene,
@@ -1143,33 +1144,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.ai_mode,
             &self.hostname,
             id,
-        );
+        ) {
+            self.queue_spawn_command(&spawn.host, &spawn.cwd, spawn.backend);
+        }
     }
 
     /// Clone the active agent, creating a new session with the same working directory
     fn clone_active_agent(&mut self) {
-        let Some(active) = self.session_manager.get_active() else {
-            return;
-        };
-
-        // If the active session is remote, send a spawn command to its host
-        if active.is_remote() {
-            if let Some(cwd) = active.cwd().cloned() {
-                let host = active.details.hostname.clone();
-                let backend = active.backend_type;
-                self.queue_spawn_command(&host, &cwd, backend);
-                return;
-            }
+        if let Some(id) = self.session_manager.active_id() {
+            self.duplicate_session(id);
         }
-
-        update::clone_active_agent(
-            &mut self.session_manager,
-            &mut self.directory_picker,
-            &mut self.scene,
-            self.show_scene,
-            self.ai_mode,
-            &self.hostname,
-        );
     }
 
     /// Poll for IPC spawn-agent commands from external tools
