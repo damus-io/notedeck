@@ -56,7 +56,11 @@ pub fn extract_event(relay_message: &str) -> Option<ExtractedEvent> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let Some(kind) = obj.get("kind").and_then(|v| v.as_i64()).map(|k| k as i32) else {
+    let Some(kind) = obj
+        .get("kind")
+        .and_then(|v| v.as_i64())
+        .and_then(|k| i32::try_from(k).ok())
+    else {
         warn!("Event missing 'kind' field, dropping");
         return None;
     };
@@ -81,7 +85,7 @@ pub fn extract_event(relay_message: &str) -> Option<ExtractedEvent> {
         );
         return None;
     }
-    if hex::decode(&id).is_err() {
+    if !id.chars().all(|c| c.is_ascii_hexdigit()) {
         warn!(
             "Dropping event with non-hex id: {}",
             id.get(..16).unwrap_or(&id)
@@ -98,7 +102,7 @@ pub fn extract_event(relay_message: &str) -> Option<ExtractedEvent> {
         );
         return None;
     }
-    if hex::decode(&pubkey).is_err() {
+    if !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
         warn!(
             "Dropping event with non-hex pubkey: {}",
             pubkey.get(..16).unwrap_or(&pubkey)
@@ -158,7 +162,7 @@ pub fn extract_p_tags(event: &serde_json::Map<String, serde_json::Value>) -> Vec
             continue;
         };
         // Validate pubkey is 64-char hex
-        if pubkey.len() == 64 {
+        if pubkey.len() == 64 && pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
             p_tags.push(pubkey.to_string());
         }
     }

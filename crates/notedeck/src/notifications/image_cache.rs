@@ -229,9 +229,9 @@ impl NotificationImageCache {
             return Some(path);
         }
 
-        // Validate URL
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            warn!("Invalid image URL (not HTTP/HTTPS): {}", url);
+        // Validate URL — only allow HTTPS
+        if !url.starts_with("https://") {
+            warn!("Rejecting non-HTTPS image URL");
             return None;
         }
 
@@ -286,7 +286,7 @@ impl NotificationImageCache {
 
     /// Prune memory cache if it exceeds the maximum size.
     ///
-    /// Uses a simple strategy: clear half the entries when limit is reached.
+    /// Evicts an arbitrary half of entries (HashMap has no insertion order).
     fn prune_memory_cache_if_needed(&self, cache: &mut std::collections::HashMap<String, PathBuf>) {
         if cache.len() > MAX_MEMORY_CACHE_ENTRIES {
             // Simple pruning: remove oldest half
@@ -375,9 +375,9 @@ impl NotificationImageCache {
             return Some(path);
         }
 
-        // Validate URL
-        if !url.starts_with("http://") && !url.starts_with("https://") {
-            warn!("Invalid image URL (not HTTP/HTTPS): {}", url);
+        // Validate URL — only allow HTTPS
+        if !url.starts_with("https://") {
+            warn!("Rejecting non-HTTPS image URL");
             return None;
         }
 

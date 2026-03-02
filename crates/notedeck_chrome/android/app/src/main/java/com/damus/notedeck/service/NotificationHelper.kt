@@ -262,7 +262,12 @@ object NotificationHelper {
                 val connection = imageUrl.openConnection()
                 connection.connectTimeout = 5000
                 connection.readTimeout = 5000
-                val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
+                val inputStream = connection.getInputStream()
+                val bitmap = try {
+                    BitmapFactory.decodeStream(inputStream)
+                } finally {
+                    inputStream.close()
+                }
 
                 // Cache the result (thread-safe write via putIfAbsent)
                 if (bitmap != null) {
@@ -278,7 +283,12 @@ object NotificationHelper {
                         val connection = fallbackUrl.openConnection()
                         connection.connectTimeout = 5000
                         connection.readTimeout = 5000
-                        val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
+                        val fallbackInputStream = connection.getInputStream()
+                        val bitmap = try {
+                            BitmapFactory.decodeStream(fallbackInputStream)
+                        } finally {
+                            fallbackInputStream.close()
+                        }
                         if (bitmap != null) {
                             profileImageCache.put(pubkey, bitmap)
                         }

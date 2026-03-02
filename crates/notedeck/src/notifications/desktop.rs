@@ -99,29 +99,33 @@ impl NotificationBackend for DesktopBackend {
 /// We intentionally leak the token so App Nap stays disabled for the process.
 #[cfg(target_os = "macos")]
 pub fn disable_app_nap() {
-    use objc2::rc::Retained;
-    use objc2::runtime::AnyObject;
-    use objc2::{class, msg_send};
-    use objc2_foundation::NSString;
+    use std::sync::OnceLock;
+    static DISABLED: OnceLock<()> = OnceLock::new();
+    DISABLED.get_or_init(|| {
+        use objc2::rc::Retained;
+        use objc2::runtime::AnyObject;
+        use objc2::{class, msg_send};
+        use objc2_foundation::NSString;
 
-    unsafe {
-        // NSActivityUserInitiatedAllowingIdleSystemSleep = 0x00FFFFFFULL
-        // This prevents App Nap while allowing the system to sleep.
-        let options: u64 = 0x00FF_FFFF;
-        let reason = NSString::from_str("Maintaining relay connections for notifications");
+        unsafe {
+            // NSActivityUserInitiatedAllowingIdleSystemSleep = 0x00FFFFFFULL
+            // This prevents App Nap while allowing the system to sleep.
+            let options: u64 = 0x00FF_FFFF;
+            let reason = NSString::from_str("Maintaining relay connections for notifications");
 
-        let process_info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
-        let activity: Retained<AnyObject> = msg_send![
-            process_info,
-            beginActivityWithOptions: options,
-            reason: &*reason
-        ];
+            let process_info: *mut AnyObject = msg_send![class!(NSProcessInfo), processInfo];
+            let activity: Retained<AnyObject> = msg_send![
+                process_info,
+                beginActivityWithOptions: options,
+                reason: &*reason
+            ];
 
-        // Leak the activity token so App Nap stays disabled for the process lifetime
-        std::mem::forget(activity);
-    }
+            // Leak the activity token so App Nap stays disabled for the process lifetime
+            std::mem::forget(activity);
+        }
 
-    info!("App Nap disabled for notification worker via NSProcessInfo");
+        info!("App Nap disabled for notification worker via NSProcessInfo");
+    });
 }
 
 #[cfg(not(target_os = "macos"))]

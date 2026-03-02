@@ -4,6 +4,7 @@
 
 use crate::notifications::NotificationManager;
 use crate::platform::NotificationMode;
+use nostrdb::Ndb;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tracing::info;
 
@@ -33,12 +34,13 @@ pub fn set_notification_mode(mode: NotificationMode) {
 /// Delegates to `NotificationManager::start()`.
 pub fn enable_notifications(
     manager: &mut Option<NotificationManager>,
+    ndb: &Ndb,
     pubkey_hex: &str,
     mode: NotificationMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mgr = manager.get_or_insert_with(NotificationManager::new);
 
-    mgr.start(&[pubkey_hex])
+    mgr.start(ndb, &[pubkey_hex])
         .map_err(|e| Box::new(std::io::Error::other(e)) as Box<dyn std::error::Error>)?;
 
     set_notification_mode(mode);

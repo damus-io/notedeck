@@ -35,13 +35,12 @@
 //! - **Android**: Uses JNI backend (implemented in notedeck_chrome)
 
 mod backend;
-mod bolt11;
 mod desktop;
-mod extraction;
 pub mod image_cache;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
 mod manager;
+pub mod ndb_helpers;
 mod profiles;
 mod types;
 mod worker;
@@ -154,7 +153,9 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
         // Spawn worker thread
         let thread = thread::spawn(move || {
             let backend = backend_factory();
-            worker::notification_worker(running_clone, accounts, receiver, backend);
+            worker::notification_worker(running_clone.clone(), accounts, receiver, backend);
+            // Worker exited naturally (channel disconnected or error) — mark as not running
+            running_clone.store(false, Ordering::SeqCst);
         });
 
         *guard = Some(WorkerHandle {
@@ -238,6 +239,3 @@ pub fn start_desktop_notifications(
     service.start(PlatformBackend::new, pubkey_hexes)?;
     Ok(service)
 }
-
-/// Re-export extraction for use in tests
-pub use extraction::extract_event;

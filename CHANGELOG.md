@@ -1,3 +1,15 @@
+# Unreleased
+
+## Added
+- Cross-platform push notifications (alltheseas)
+  - Android: FCM and native WebSocket notification backends
+  - Desktop: macOS native notifications via UNUserNotificationCenter
+  - Desktop: Linux notifications via notify-rust with profile pictures
+  - Notification settings UI with Enabled/Disabled toggle
+  - macOS permission banner with deep link to System Settings
+  - Multi-account notification support
+  - Profile picture caching for notification avatars
+
 # Notedeck Beta - v0.4 - 2025-05-05
 
 # Added

@@ -262,6 +262,12 @@ impl Chrome {
 
         #[cfg(target_os = "android")]
         {
+            // Store ndb handle for the notification worker thread
+            {
+                let context = notedeck.app_context(ui_ctx);
+                crate::notifications::set_ndb(context.ndb);
+            }
+
             let persisted_mode = notedeck::platform::get_notification_mode();
             if persisted_mode.is_disabled() {
                 return;
@@ -317,6 +323,7 @@ impl Chrome {
                 let context = notedeck.app_context(ui_ctx);
                 notedeck::platform::enable_notifications(
                     context.notification_manager,
+                    context.ndb,
                     &pubkey_hex,
                     notedeck::platform::NotificationMode::Native,
                 )

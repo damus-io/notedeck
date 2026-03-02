@@ -4,12 +4,13 @@
 //! without using global statics. Designed to be owned by `Notedeck` and accessed
 //! via `AppContext`.
 
+use super::ndb_helpers;
 use super::types::ExtractedEvent;
 use super::{NotificationData, NotificationService, PlatformBackend};
 use crate::account::accounts::Accounts;
 use crate::i18n::Localization;
 use crate::tr;
-use nostrdb::{Ndb, Transaction};
+use nostrdb::{Filter, Ndb, Subscription, Transaction};
 use tracing::{debug, info, warn};
 
 // =============================================================================
@@ -45,25 +46,20 @@ unsafe impl Sync for MacOSDelegate {}
 
 /// Manages notification service lifecycle.
 ///
-/// This struct owns the notification service and provides methods to
-/// enable/disable notifications. The main event loop sends notification
-/// data via `send()` which forwards to the worker thread.
-///
-/// # Usage
-///
-/// ```ignore
-/// let mut manager = NotificationManager::new();
-/// manager.start(&["pubkey_hex"])?;
-///
-/// // From main event loop:
-/// manager.send(notification_data)?;
-///
-/// // Later:
-/// manager.stop();
-/// ```
+/// On desktop, subscribes to nostrdb for notification-relevant events and
+/// polls each frame. Events are already ingested by `remote_api.rs` — this
+/// just subscribes and polls for matching notes.
 pub struct NotificationManager {
-    /// The underlying notification service.
+    /// The underlying notification service (worker thread).
     service: Option<NotificationService<PlatformBackend>>,
+
+    /// Nostrdb subscription for notification-relevant events.
+    #[cfg(not(target_os = "android"))]
+    ndb_sub: Option<Subscription>,
+
+    /// 32-byte pubkeys of monitored accounts (for p-tag matching).
+    #[cfg(not(target_os = "android"))]
+    monitored_pubkeys: Vec<[u8; 32]>,
 
     /// macOS notification delegate (must be kept alive for foreground notifications).
     #[cfg(target_os = "macos")]
@@ -86,6 +82,10 @@ impl NotificationManager {
 
         Self {
             service: None,
+            #[cfg(not(target_os = "android"))]
+            ndb_sub: None,
+            #[cfg(not(target_os = "android"))]
+            monitored_pubkeys: Vec::new(),
             #[cfg(target_os = "macos")]
             macos_delegate,
         }
@@ -99,9 +99,13 @@ impl NotificationManager {
 
     /// Start the notification worker for the given accounts.
     ///
+    /// Creates a nostrdb subscription for notification-relevant events
+    /// (mentions, reactions, reposts, zaps, DMs) targeting the given pubkeys.
+    ///
     /// # Arguments
+    /// * `ndb` - Nostrdb handle (events are already ingested by remote_api)
     /// * `pubkey_hexes` - Hex-encoded pubkeys of accounts to monitor
-    pub fn start(&mut self, pubkey_hexes: &[impl AsRef<str>]) -> Result<(), String> {
+    pub fn start(&mut self, ndb: &Ndb, pubkey_hexes: &[impl AsRef<str>]) -> Result<(), String> {
         #[cfg(target_os = "macos")]
         if !self.macos_delegate.is_initialized() {
             warn!("macOS notifications started without main-thread initialization");
@@ -111,6 +115,42 @@ impl NotificationManager {
         if let Some(ref service) = self.service {
             if service.is_running() {
                 service.stop();
+            }
+        }
+
+        // Parse pubkeys to bytes for ndb filter and p-tag matching
+        #[cfg(not(target_os = "android"))]
+        {
+            self.monitored_pubkeys.clear();
+            for hex in pubkey_hexes {
+                let hex = hex.as_ref();
+                let bytes =
+                    hex::decode(hex).map_err(|e| format!("Invalid pubkey hex {hex}: {e}"))?;
+                let arr: [u8; 32] = bytes
+                    .try_into()
+                    .map_err(|_| format!("Pubkey {hex} is not 32 bytes"))?;
+                self.monitored_pubkeys.push(arr);
+            }
+
+            // Build nostrdb subscription for notification-relevant kinds
+            let pubkey_refs: Vec<&[u8; 32]> = self.monitored_pubkeys.iter().collect();
+
+            let notification_filter = Filter::new()
+                .kinds(super::types::NOTIFICATION_KINDS.iter().map(|&k| k as u64))
+                .pubkey(pubkey_refs)
+                .build();
+
+            match ndb.subscribe(&[notification_filter]) {
+                Ok(sub) => {
+                    self.ndb_sub = Some(sub);
+                    info!("NotificationManager: created ndb subscription");
+                }
+                Err(e) => {
+                    warn!(
+                        "NotificationManager: failed to create ndb subscription: {}",
+                        e
+                    );
+                }
             }
         }
 
@@ -140,6 +180,13 @@ impl NotificationManager {
             service.stop();
             info!("NotificationManager: stopped");
         }
+        self.service = None;
+
+        #[cfg(not(target_os = "android"))]
+        {
+            self.ndb_sub = None;
+            self.monitored_pubkeys.clear();
+        }
     }
 
     /// Check if notifications are currently running.
@@ -150,71 +197,98 @@ impl NotificationManager {
             .unwrap_or(false)
     }
 
-    /// Process a relay message and forward to the worker if relevant.
+    /// Poll nostrdb for new notification-relevant events and forward to the worker.
     ///
-    /// Extracts the event, checks kind and p-tag mentions, resolves the
-    /// author profile via nostrdb, formats a localized title/body, then
-    /// sends to the worker channel.
+    /// Called each frame from the main event loop. Events are already ingested
+    /// into nostrdb by `remote_api.rs` — this polls the subscription for
+    /// matching notes, builds NotificationData, and sends to the worker.
     #[cfg(not(target_os = "android"))]
     #[profiling::function]
-    pub fn process_relay_message(
-        &self,
-        relay_message: &str,
-        ndb: &Ndb,
-        accounts: &Accounts,
-        i18n: &mut Localization,
-    ) {
+    pub fn poll_notifications(&self, ndb: &Ndb, _accounts: &Accounts, i18n: &mut Localization) {
         if !self.is_running() {
             return;
         }
 
-        let Some(event) = super::extraction::extract_event(relay_message) else {
+        let Some(sub) = self.ndb_sub else {
             return;
         };
 
-        if !super::types::is_notification_kind(event.kind) {
+        let note_keys = ndb.poll_for_notes(sub, 50);
+        if note_keys.is_empty() {
             return;
         }
 
-        let monitored: Vec<String> = accounts
-            .cache
-            .accounts()
-            .map(|a| a.key.pubkey.hex())
-            .collect();
-
-        let target_pubkey_hex = event.p_tags.iter().find(|p| monitored.contains(p)).cloned();
-
-        let Some(target_pubkey_hex) = target_pubkey_hex else {
+        let Ok(txn) = Transaction::new(ndb) else {
             return;
         };
 
-        // Don't notify for our own events
-        if monitored.contains(&event.pubkey) {
-            return;
-        }
+        for nk in note_keys {
+            let Ok(note) = ndb.get_note_by_key(&txn, nk) else {
+                continue;
+            };
 
-        debug!(
-            "Notification-relevant event: kind={} id={} target={}",
-            event.kind,
-            &event.id[..8.min(event.id.len())],
-            &target_pubkey_hex[..8.min(target_pubkey_hex.len())]
-        );
+            let kind = note.kind() as i32;
 
-        let (author_name, author_picture_url) = lookup_profile(ndb, &event.pubkey);
+            // Find which monitored account this event targets
+            let Some(target_pubkey_hex) =
+                ndb_helpers::find_target_ptag(&note, &self.monitored_pubkeys)
+            else {
+                continue;
+            };
 
-        let title = format_title(&event, author_name.as_deref(), i18n);
-        let body = format_body(&event, i18n);
+            let author_hex = hex::encode(note.pubkey());
 
-        let notification_data = NotificationData {
-            event,
-            title,
-            body,
-            author_picture_url,
-            target_pubkey_hex,
-        };
+            // Self-notification suppression
+            if author_hex == target_pubkey_hex {
+                continue;
+            }
 
-        if let Err(e) = self.send(notification_data) {
-            debug!("Failed to send notification: {}", e);
+            let id_hex = hex::encode(note.id());
+
+            debug!(
+                "Notification-relevant event: kind={} id={} target={}",
+                kind,
+                &id_hex[..8.min(id_hex.len())],
+                &target_pubkey_hex[..8.min(target_pubkey_hex.len())]
+            );
+
+            // Build ExtractedEvent from Note API
+            let p_tags = ndb_helpers::extract_p_tags_from_note(&note);
+            let zap_amount_sats = if kind == 9735 {
+                ndb_helpers::extract_zap_amount_from_note(&note)
+            } else {
+                None
+            };
+
+            let event = ExtractedEvent {
+                id: id_hex,
+                kind,
+                pubkey: author_hex,
+                created_at: note.created_at(),
+                content: note.content().to_string(),
+                p_tags,
+                zap_amount_sats,
+                raw_json: String::new(),
+            };
+
+            // Profile lookup via nostrdb
+            let (author_name, author_picture_url) =
+                ndb_helpers::lookup_profile_ndb(ndb, &txn, note.pubkey());
+
+            let title = format_title(&event, author_name.as_deref(), i18n);
+            let body = format_body(&event, i18n);
+
+            let notification_data = NotificationData {
+                event,
+                title,
+                body,
+                author_picture_url,
+                target_pubkey_hex,
+            };
+
+            if let Err(e) = self.send(notification_data) {
+                debug!("Failed to send notification: {}", e);
+            }
         }
     }
 }
@@ -331,39 +405,4 @@ fn format_body(event: &ExtractedEvent, i18n: &mut Localization) -> String {
     } else {
         event.content.clone()
     }
-}
-
-/// Look up a profile's display name and picture URL from nostrdb.
-#[cfg(not(target_os = "android"))]
-fn lookup_profile(ndb: &Ndb, pubkey_hex: &str) -> (Option<String>, Option<String>) {
-    let Ok(pubkey_bytes) = hex::decode(pubkey_hex) else {
-        return (None, None);
-    };
-    if pubkey_bytes.len() != 32 {
-        return (None, None);
-    }
-
-    let Ok(txn) = Transaction::new(ndb) else {
-        return (None, None);
-    };
-
-    let Ok(pubkey_arr): Result<[u8; 32], _> = pubkey_bytes.try_into() else {
-        return (None, None);
-    };
-    let Ok(profile) = ndb.get_profile_by_pubkey(&txn, &pubkey_arr) else {
-        return (None, None);
-    };
-
-    let record = profile.record();
-    let name = record
-        .profile()
-        .and_then(|p| p.display_name().or_else(|| p.name()))
-        .map(|s| s.to_string());
-
-    let picture = record
-        .profile()
-        .and_then(|p| p.picture())
-        .map(|s| s.to_string());
-
-    (name, picture)
 }

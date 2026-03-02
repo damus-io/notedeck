@@ -152,6 +152,14 @@ impl eframe::App for Notedeck {
 
         app_ctx.remote.process_events(ctx, app_ctx.ndb);
 
+        #[cfg(not(target_os = "android"))]
+        {
+            profiling::scope!("notification poll");
+            if let Some(ref manager) = *app_ctx.notification_manager {
+                manager.poll_notifications(app_ctx.ndb, app_ctx.accounts, app_ctx.i18n);
+            }
+        }
+
         {
             profiling::scope!("unknown id");
             if app_ctx.unknown_ids.ready_to_send() {

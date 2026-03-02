@@ -8,6 +8,8 @@ pub mod file;
 
 #[cfg(not(target_os = "android"))]
 use crate::notifications::NotificationManager;
+#[cfg(not(target_os = "android"))]
+use nostrdb::Ndb;
 
 // =============================================================================
 // Notification Mode API (Android-only with stubs for other platforms)
@@ -112,10 +114,11 @@ pub fn set_notification_mode(
 #[cfg(not(target_os = "android"))]
 pub fn enable_notifications(
     manager: &mut Option<NotificationManager>,
+    ndb: &Ndb,
     pubkey_hex: &str,
     mode: NotificationMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    desktop_notifications::enable_notifications(manager, pubkey_hex, mode)
+    desktop_notifications::enable_notifications(manager, ndb, pubkey_hex, mode)
 }
 
 /// Disable push notifications.

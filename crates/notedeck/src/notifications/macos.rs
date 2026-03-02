@@ -165,8 +165,16 @@ fn get_or_create_delegate_class() -> &'static AnyClass {
 
     CLASS.get_or_init(|| {
         let superclass = class!(NSObject);
-        let mut builder = ClassBuilder::new(c"NotedeckNotificationDelegate", superclass)
-            .expect("Failed to create delegate class");
+        let mut builder = match ClassBuilder::new(c"NotedeckNotificationDelegate", superclass) {
+            Some(b) => b,
+            None => {
+                // Class already exists (e.g., hot-reload). Reuse the existing class.
+                warn!("Delegate class already registered in ObjC runtime — reusing existing");
+                let cls = AnyClass::get(c"NotedeckNotificationDelegate")
+                    .expect("Class should exist since ClassBuilder::new returned None");
+                return cls;
+            }
+        };
 
         // Add the willPresentNotification delegate method
         unsafe {
@@ -187,7 +195,19 @@ fn get_or_create_delegate_class() -> &'static AnyClass {
     })
 }
 
-/// Objective-C block layout for calling the completion handler
+/// Minimal Objective-C block layout for invoking completion handlers.
+///
+/// # Safety
+///
+/// This is a simplified block ABI that only includes fields needed to invoke
+/// the block's function pointer. The full ObjC block ABI includes additional
+/// fields (copy/dispose helpers, descriptor) but they are not needed for
+/// invocation-only use. This works because:
+/// 1. The `invoke` field is at a fixed offset in all block layouts
+/// 2. We only call the block, never copy/retain/release it
+/// 3. The block's lifetime is managed by the ObjC caller
+///
+/// TODO: Consider migrating to the `block2` crate for type safety.
 #[repr(C)]
 struct BlockLiteral {
     isa: *const std::ffi::c_void,

@@ -6,6 +6,7 @@
 //!
 //! Architecture: Uses a worker thread that owns all non-Send types (RelayPool, etc.)
 //! Communication happens via atomic flags and the worker thread handles all relay I/O.
+//! Events are ingested into nostrdb and polled via subscription for notification processing.
 
 #[cfg(target_os = "android")]
 use jni::objects::{JObject, JString, JValue};
@@ -15,13 +16,11 @@ use jni::sys::jint;
 use jni::JNIEnv;
 
 use enostr::{Pubkey, RelayPool, RelayStatus};
-use nostrdb::Filter;
-use notedeck::notifications::{
-    extract_event, safe_prefix, CachedProfile, ExtractedEvent, NOTIFICATION_KINDS,
-};
+use nostrdb::{Filter, IngestMetadata, Ndb, Subscription, Transaction};
+use notedeck::notifications::{ndb_helpers, safe_prefix, ExtractedEvent, NOTIFICATION_KINDS};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::thread;
 use tracing::{debug, error, info, warn};
 
@@ -41,7 +40,6 @@ const DEFAULT_RELAYS: &[&str] = &[
 const SUB_NOTIFICATIONS: &str = "notedeck_notifications";
 const SUB_DMS: &str = "notedeck_dms";
 const SUB_RELAY_LIST: &str = "notedeck_relay_list";
-const SUB_PROFILES: &str = "notedeck_profiles";
 
 /// Shared state for the notification worker thread.
 ///
@@ -57,6 +55,9 @@ struct SharedState {
     connected_count: AtomicI32,
     /// Handle to the worker thread.
     thread_handle: Mutex<Option<thread::JoinHandle<()>>>,
+    /// Nostrdb handle for event ingestion and profile lookups.
+    /// Set by `set_ndb()` before the worker is started.
+    ndb: RwLock<Option<Ndb>>,
     /// Callback interface for sending events back to Kotlin.
     /// Uses `Mutex<Option<>>` instead of `OnceLock` to allow refreshing
     /// on Android service restart.
@@ -71,6 +72,7 @@ impl Default for SharedState {
             generation: AtomicU64::new(0),
             connected_count: AtomicI32::new(0),
             thread_handle: Mutex::new(None),
+            ndb: RwLock::new(None),
             #[cfg(target_os = "android")]
             java_callback: Mutex::new(None),
         }
@@ -118,8 +120,6 @@ struct WorkerState {
     processed_events: HashSet<String>,
     /// Queue tracking insertion order for bounded LRU eviction (oldest at front)
     processed_events_order: std::collections::VecDeque<String>,
-    profile_cache: std::collections::HashMap<String, CachedProfile>,
-    requested_profiles: HashSet<String>,
     /// Last-seen event timestamp for reconnect resume (avoids missing events)
     last_seen_timestamp: u64,
 }
@@ -153,11 +153,23 @@ impl WorkerState {
             pubkeys,
             processed_events: HashSet::new(),
             processed_events_order: std::collections::VecDeque::new(),
-            profile_cache: std::collections::HashMap::new(),
-            requested_profiles: HashSet::new(),
             last_seen_timestamp: now,
         }
     }
+}
+
+/// Store a nostrdb handle for the worker thread to use.
+///
+/// Must be called before `start_subscriptions()` for the worker to have
+/// nostrdb access. The Ndb is `Clone` (backed by `Arc`), so this is cheap.
+///
+/// Called from the main app setup (e.g., `chrome.rs::auto_enable_notifications`).
+pub fn set_ndb(ndb: &Ndb) {
+    let shared = get_shared_state();
+    if let Ok(mut guard) = shared.ndb.write() {
+        *guard = Some(ndb.clone());
+        info!("Notification worker ndb handle stored");
+    };
 }
 
 /// Start notification subscriptions for the given pubkeys and relay URLs.
@@ -192,6 +204,13 @@ pub fn start_subscriptions(pubkey_hexes: &[String], relay_urls: &[String]) -> Re
         }
     }
 
+    // Read Ndb clone for the worker thread
+    let ndb_clone = shared.ndb.read().ok().and_then(|guard| guard.clone());
+
+    if ndb_clone.is_none() {
+        warn!("Ndb not set — worker will operate without nostrdb integration");
+    }
+
     // Set running flag before spawning thread
     shared.running.store(true, Ordering::SeqCst);
 
@@ -201,7 +220,13 @@ pub fn start_subscriptions(pubkey_hexes: &[String], relay_urls: &[String]) -> Re
 
     // Spawn worker thread that owns all non-Send state
     let handle = thread::spawn(move || {
-        notification_worker(shared_clone, pubkeys, relay_urls_owned, my_generation);
+        notification_worker(
+            shared_clone,
+            pubkeys,
+            relay_urls_owned,
+            my_generation,
+            ndb_clone,
+        );
     });
 
     // Store thread handle
@@ -231,23 +256,53 @@ pub fn get_connected_relay_count() -> i32 {
 }
 
 /// Worker thread that owns all non-Send state and handles relay I/O.
+///
+/// Events from relays are ingested into nostrdb, then polled via a
+/// subscription to build notifications using the Note API.
 #[profiling::function]
 fn notification_worker(
     shared: Arc<SharedState>,
     pubkeys: Vec<Pubkey>,
     relay_urls: Vec<String>,
     my_generation: u64,
+    ndb: Option<Ndb>,
 ) {
     info!(
-        "Notification worker thread started for {} accounts",
-        pubkeys.len()
+        "Notification worker thread started for {} accounts (ndb={})",
+        pubkeys.len(),
+        ndb.is_some()
     );
 
     // Create all state inside the worker thread
     let mut state = WorkerState::new(pubkeys, relay_urls);
 
-    // Set up initial subscriptions
+    // Set up relay-level subscriptions
     setup_subscriptions(&mut state.pool, &state.pubkeys, state.last_seen_timestamp);
+
+    // Set up nostrdb subscription for notification-relevant events
+    let ndb_sub = ndb.as_ref().and_then(|ndb| {
+        let pubkey_refs: Vec<&[u8; 32]> = state.pubkeys.iter().map(|pk| pk.bytes()).collect();
+
+        let notification_filter = Filter::new()
+            .kinds(NOTIFICATION_KINDS.iter().map(|&k| k as u64))
+            .pubkey(pubkey_refs.clone())
+            .build();
+
+        let dm_filter = Filter::new().kinds([4, 1059]).pubkey(pubkey_refs).build();
+
+        match ndb.subscribe(&[notification_filter, dm_filter]) {
+            Ok(sub) => {
+                info!("Created ndb subscription for notification worker");
+                Some(sub)
+            }
+            Err(e) => {
+                warn!("Failed to create ndb subscription: {}", e);
+                None
+            }
+        }
+    });
+
+    let pubkey_bytes: Vec<[u8; 32]> = state.pubkeys.iter().map(|pk| *pk.bytes()).collect();
 
     // Main event loop
     while shared.running.load(Ordering::SeqCst)
@@ -265,16 +320,59 @@ fn notification_worker(
             .count() as i32;
         shared.connected_count.store(connected, Ordering::SeqCst);
 
-        // Poll for events
-        match state.pool.try_recv() {
-            Some(pool_event) => {
-                let event = pool_event.into_owned();
-                handle_pool_event(&mut state, event);
+        // Step 1: Drain relay pool and ingest events into ndb
+        let mut ingested = 0;
+        loop {
+            match state.pool.try_recv() {
+                Some(pool_event) => {
+                    let event = pool_event.into_owned();
+                    // Handle connection events for re-subscription
+                    handle_pool_connection_event(&mut state, &event);
+
+                    // Ingest message into ndb if available
+                    if let Some(ref ndb) = ndb {
+                        if let Some(json) = extract_ws_message_text(&event) {
+                            let _ = ndb.process_event_with(json, IngestMetadata::new());
+                            ingested += 1;
+                        }
+                    }
+                }
+                None => break,
             }
-            None => {
-                // 1 second idle sleep balances battery life vs notification latency
-                thread::sleep(std::time::Duration::from_secs(1));
+        }
+
+        // Step 2: Wait for ndb ingestion (~150ms based on nostrdb tests)
+        if ingested > 0 {
+            thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        // Step 3: Poll for notification-relevant notes via ndb
+        if let (Some(ref ndb), Some(sub)) = (&ndb, ndb_sub) {
+            let note_keys = ndb.poll_for_notes(sub, 50);
+            if !note_keys.is_empty() {
+                if let Ok(txn) = Transaction::new(ndb) {
+                    for nk in note_keys {
+                        let Ok(note) = ndb.get_note_by_key(&txn, nk) else {
+                            continue;
+                        };
+                        process_ndb_notification(
+                            ndb,
+                            &txn,
+                            &note,
+                            &state.pubkeys,
+                            &pubkey_bytes,
+                            &mut state.processed_events,
+                            &mut state.processed_events_order,
+                            &mut state.last_seen_timestamp,
+                        );
+                    }
+                }
             }
+        }
+
+        // Step 4: Idle sleep if nothing happened
+        if ingested == 0 {
+            thread::sleep(std::time::Duration::from_secs(1));
         }
     }
 
@@ -282,9 +380,118 @@ fn notification_worker(
     state.pool.unsubscribe(SUB_NOTIFICATIONS.to_string());
     state.pool.unsubscribe(SUB_DMS.to_string());
     state.pool.unsubscribe(SUB_RELAY_LIST.to_string());
-    state.pool.unsubscribe(SUB_PROFILES.to_string());
 
     info!("Notification worker thread stopped");
+}
+
+/// Process a note from nostrdb into a notification.
+///
+/// Replaces the old `handle_event_message()` — uses Note API instead of
+/// serde_json parsing, and ndb profile lookups instead of manual cache.
+fn process_ndb_notification(
+    ndb: &Ndb,
+    txn: &Transaction,
+    note: &nostrdb::Note,
+    pubkeys: &[Pubkey],
+    pubkey_bytes: &[[u8; 32]],
+    processed_events: &mut HashSet<String>,
+    processed_events_order: &mut std::collections::VecDeque<String>,
+    last_seen_timestamp: &mut u64,
+) {
+    let kind = note.kind() as i32;
+    let id_hex = hex::encode(note.id());
+    let author_hex = hex::encode(note.pubkey());
+
+    // Only process notification-relevant kinds
+    if !NOTIFICATION_KINDS.contains(&kind) {
+        return;
+    }
+
+    // Self-notification suppression
+    let is_own_event = pubkeys.iter().any(|pk| pk.hex() == author_hex);
+    if is_own_event {
+        let p_tags = ndb_helpers::extract_p_tags_from_note(note);
+        let mentions_only_self = p_tags
+            .iter()
+            .all(|p| pubkeys.iter().any(|pk| pk.hex() == *p));
+        if mentions_only_self {
+            debug!(
+                "Suppressing self-notification: kind={} id={}",
+                kind,
+                safe_prefix(&id_hex, 8)
+            );
+            return;
+        }
+    }
+
+    // Dedup
+    if !record_event_if_new(processed_events, processed_events_order, &id_hex) {
+        debug!("Skipping duplicate event id={}", safe_prefix(&id_hex, 8));
+        return;
+    }
+
+    // Track latest event timestamp for reconnect resume
+    let created_at = note.created_at();
+    if created_at > *last_seen_timestamp {
+        *last_seen_timestamp = created_at;
+    }
+
+    info!(
+        "NEW EVENT: kind={} id={} from={}",
+        kind,
+        safe_prefix(&id_hex, 8),
+        safe_prefix(&author_hex, 8),
+    );
+
+    // Profile lookup via nostrdb (replaces manual cache + JSON parsing)
+    let (author_name, picture_url) = ndb_helpers::lookup_profile_ndb(ndb, txn, note.pubkey());
+
+    // Resolve @npub mentions using nostrdb profiles
+    #[cfg(target_os = "android")]
+    let resolved_content = {
+        let content = note.content();
+        let mentioned_pubkeys = extract_mentioned_pubkeys(content);
+        // Build a temporary profile cache from ndb for resolve_mentions
+        let mut profile_cache = std::collections::HashMap::new();
+        for pk_hex in &mentioned_pubkeys {
+            if let Ok(pk_bytes) = hex::decode(pk_hex) {
+                if let Ok(arr) = <[u8; 32]>::try_from(pk_bytes.as_slice()) {
+                    let (name, picture) = ndb_helpers::lookup_profile_ndb(ndb, txn, &arr);
+                    profile_cache.insert(
+                        pk_hex.clone(),
+                        notedeck::notifications::CachedProfile {
+                            name,
+                            picture_url: picture,
+                        },
+                    );
+                }
+            }
+        }
+        resolve_mentions(content, &profile_cache)
+    };
+    #[cfg(not(target_os = "android"))]
+    let resolved_content = note.content().to_string();
+
+    // Extract p-tags and zap amount via Note tag API
+    let p_tags = ndb_helpers::extract_p_tags_from_note(note);
+    let zap_amount_sats = if kind == 9735 {
+        ndb_helpers::extract_zap_amount_from_note(note)
+    } else {
+        None
+    };
+
+    let event = ExtractedEvent {
+        id: id_hex,
+        kind,
+        pubkey: author_hex,
+        created_at,
+        content: resolved_content,
+        p_tags,
+        zap_amount_sats,
+        raw_json: String::new(),
+    };
+
+    notify_nostr_event(&event, author_name.as_deref(), picture_url.as_deref());
 }
 
 /// Configure Nostr subscriptions for notifications, DMs, and relay lists.
@@ -334,16 +541,14 @@ fn setup_subscriptions(pool: &mut RelayPool, pubkeys: &[Pubkey], since: u64) {
     );
 }
 
-/// Handle a WebSocket event from the relay pool.
-/// Dispatches to appropriate handlers for connection state changes and messages.
-#[profiling::function]
-fn handle_pool_event(state: &mut WorkerState, pool_event: enostr::PoolEventBuf) {
-    use enostr::ewebsock::{WsEvent, WsMessage};
+/// Handle connection-related pool events (opened/closed/error).
+/// Dispatches re-subscription on reconnect.
+fn handle_pool_connection_event(state: &mut WorkerState, pool_event: &enostr::PoolEventBuf) {
+    use enostr::ewebsock::WsEvent;
 
     match pool_event.event {
         WsEvent::Opened => {
             debug!("Connected to relay: {}", pool_event.relay);
-            // Re-subscribe on reconnect using last-seen timestamp to avoid gaps
             let pubkeys = state.pubkeys.clone();
             setup_subscriptions(&mut state.pool, &pubkeys, state.last_seen_timestamp);
             notify_relay_status_changed();
@@ -356,280 +561,19 @@ fn handle_pool_event(state: &mut WorkerState, pool_event: enostr::PoolEventBuf) 
             error!("Relay error {}: {:?}", pool_event.relay, err);
             notify_relay_status_changed();
         }
-        WsEvent::Message(WsMessage::Text(ref text)) => {
-            handle_relay_message(state, text);
-        }
-        WsEvent::Message(_) => {}
+        _ => {}
     }
 }
 
-/// Process an incoming Nostr relay message.
-/// Handles EVENT messages by extracting event data, deduplicating, and notifying Kotlin.
-/// Also handles OK, NOTICE, and EOSE messages for logging.
-fn handle_relay_message(state: &mut WorkerState, message: &str) {
-    // Parse the relay message using enostr's parser
-    let relay_msg = match enostr::RelayMessage::from_json(message) {
-        Ok(msg) => msg,
-        Err(e) => {
-            // Not all messages are parseable (AUTH, COUNT, etc.)
-            debug!("Could not parse relay message: {}", e);
-            return;
-        }
-    };
-
-    match relay_msg {
-        enostr::RelayMessage::Event(sub_id, event_json) => {
-            handle_event_message(state, &sub_id, event_json);
-        }
-        enostr::RelayMessage::OK(_) => {
-            debug!("Event OK received");
-        }
-        enostr::RelayMessage::Notice(notice) => {
-            debug!("Relay notice: {}", notice);
-        }
-        enostr::RelayMessage::Eose(sub_id) => {
-            debug!("End of stored events for subscription: {}", sub_id);
-        }
+/// Extract the raw text from a WebSocket message for ndb ingestion.
+///
+/// The relay sends `["EVENT","sub",{...}]` — exactly what `process_event_with()` expects.
+fn extract_ws_message_text(pool_event: &enostr::PoolEventBuf) -> Option<&str> {
+    use enostr::ewebsock::{WsEvent, WsMessage};
+    match &pool_event.event {
+        WsEvent::Message(WsMessage::Text(text)) => Some(text.as_str()),
+        _ => None,
     }
-}
-
-/// Handle an EVENT message from a relay.
-/// Extracts event data, checks for duplicates, and notifies Kotlin if new.
-/// Also handles kind 0 (profile) events to cache author names.
-#[profiling::function]
-fn handle_event_message(state: &mut WorkerState, sub_id: &str, event_json: &str) {
-    let event = match extract_event(event_json) {
-        Some(e) => e,
-        None => {
-            debug!("Failed to extract event from JSON");
-            return;
-        }
-    };
-
-    // Handle kind 0 (profile metadata) events - extract and cache the name
-    if event.kind == 0 {
-        handle_profile_event(state, &event);
-        return;
-    }
-
-    if !NOTIFICATION_KINDS.contains(&event.kind) {
-        debug!(
-            "Ignoring event kind {} (not a notification kind)",
-            event.kind
-        );
-        return;
-    }
-
-    // Self-notification suppression — matches desktop manager.rs:192-194
-    // Don't notify for events authored by one of our own accounts
-    let is_own_event = state.pubkeys.iter().any(|pk| pk.hex() == event.pubkey);
-    if is_own_event {
-        // Check if ALL p-tags point to our own accounts (pure self-mention)
-        let mentions_only_self = event
-            .p_tags
-            .iter()
-            .all(|p| state.pubkeys.iter().any(|pk| pk.hex() == *p));
-        if mentions_only_self {
-            debug!(
-                "Suppressing self-notification: kind={} id={}",
-                event.kind,
-                safe_prefix(&event.id, 8)
-            );
-            return;
-        }
-    }
-
-    if !record_event_if_new(state, &event.id) {
-        debug!("Skipping duplicate event id={}", safe_prefix(&event.id, 8));
-        return;
-    }
-
-    // Track latest event timestamp for reconnect resume
-    if event.created_at > state.last_seen_timestamp {
-        state.last_seen_timestamp = event.created_at;
-    }
-
-    info!(
-        "NEW EVENT: kind={} id={} from={} sub={}",
-        event.kind,
-        safe_prefix(&event.id, 8),
-        safe_prefix(&event.pubkey, 8),
-        sub_id
-    );
-
-    // Look up author profile from cache; request if missing (will be cached for future events)
-    let profile = state.profile_cache.get(&event.pubkey).cloned();
-    if profile.is_none() {
-        request_profile_if_needed(state, &event.pubkey);
-    }
-
-    let author_name = profile.as_ref().and_then(|p| p.name.clone());
-    let picture_url = profile.as_ref().and_then(|p| p.picture_url.clone());
-
-    // Resolve @npub mentions using cached profiles (best-effort, no blocking)
-    #[cfg(target_os = "android")]
-    let resolved_content = {
-        let mentioned_pubkeys = extract_mentioned_pubkeys(&event.content);
-        for pubkey in &mentioned_pubkeys {
-            request_profile_if_needed(state, pubkey);
-        }
-        resolve_mentions(&event.content, &state.profile_cache)
-    };
-    #[cfg(not(target_os = "android"))]
-    let resolved_content = event.content.clone();
-
-    info!(
-        "Notifying with profile: name={:?}, picture={:?}",
-        author_name,
-        picture_url.as_ref().map(|s| safe_prefix(s, 50))
-    );
-    info!("Resolved content: {}", safe_prefix(&resolved_content, 100));
-
-    // Create event with resolved content for notification
-    let resolved_event = ExtractedEvent {
-        id: event.id.clone(),
-        kind: event.kind,
-        pubkey: event.pubkey.clone(),
-        created_at: event.created_at,
-        content: resolved_content,
-        p_tags: event.p_tags.clone(),
-        zap_amount_sats: event.zap_amount_sats,
-        raw_json: event.raw_json.clone(),
-    };
-
-    notify_nostr_event(
-        &resolved_event,
-        author_name.as_deref(),
-        picture_url.as_deref(),
-    );
-}
-
-/// Handle a kind 0 (profile metadata) event by extracting and caching profile info.
-fn handle_profile_event(state: &mut WorkerState, event: &ExtractedEvent) {
-    // Parse the content as JSON to extract name and picture
-    let profile = extract_profile_info(&event.content);
-    if profile.name.is_none() && profile.picture_url.is_none() {
-        return;
-    }
-
-    debug!(
-        "Cached profile for {}: name={:?}, picture={:?}",
-        safe_prefix(&event.pubkey, 8),
-        profile.name,
-        profile.picture_url.as_ref().map(|s| safe_prefix(s, 50))
-    );
-
-    // Remove from requested set since we now have the profile
-    state.requested_profiles.remove(&event.pubkey);
-    state.profile_cache.insert(event.pubkey.clone(), profile);
-
-    // Prune cache if too large — evict half to avoid full wipe
-    if state.profile_cache.len() > 1000 {
-        // Evict half to avoid full wipe — retain the most recent entries
-        let keys_to_remove: Vec<String> = state
-            .profile_cache
-            .keys()
-            .take(state.profile_cache.len() / 2)
-            .cloned()
-            .collect();
-        for key in &keys_to_remove {
-            state.profile_cache.remove(key);
-            state.requested_profiles.remove(key);
-        }
-        debug!(
-            "Pruned profile cache to {} entries",
-            state.profile_cache.len()
-        );
-    }
-}
-
-/// Extract profile info (name and picture URL) from profile content JSON.
-/// Prefers "display_name" over "name" for the name field.
-fn extract_profile_info(content: &str) -> CachedProfile {
-    // Log first 200 chars of profile content for debugging
-    debug!("Parsing profile content: {}", safe_prefix(content, 200));
-
-    let value: serde_json::Value = match serde_json::from_str(content) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("Failed to parse profile JSON: {}", e);
-            return CachedProfile::default();
-        }
-    };
-    let obj = match value.as_object() {
-        Some(o) => o,
-        None => {
-            warn!("Profile content is not a JSON object");
-            return CachedProfile::default();
-        }
-    };
-
-    // Log available keys
-    let keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
-    debug!("Profile has keys: {:?}", keys);
-
-    // Prefer display_name, fall back to name (handle empty strings properly)
-    let display_name_str = obj
-        .get("display_name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-    let name_str = obj
-        .get("name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-
-    debug!("display_name={:?}, name={:?}", display_name_str, name_str);
-
-    let name = display_name_str.or(name_str).map(|s| s.to_string());
-
-    // Get picture URL
-    let picture_url = obj
-        .get("picture")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty() && (s.starts_with("http://") || s.starts_with("https://")))
-        .map(|s| s.to_string());
-
-    CachedProfile { name, picture_url }
-}
-
-/// Request profile for the given pubkey if not already requested.
-/// Uses unique subscription IDs per pubkey to avoid overwriting previous requests.
-fn request_profile_if_needed(state: &mut WorkerState, pubkey: &str) {
-    // Don't request if already requested or cached
-    if state.requested_profiles.contains(pubkey) {
-        return;
-    }
-    if state.profile_cache.contains_key(pubkey) {
-        return;
-    }
-
-    // Limit pending requests to avoid too many open subscriptions
-    if state.requested_profiles.len() >= 50 {
-        debug!(
-            "Too many pending profile requests, skipping {}",
-            safe_prefix(pubkey, 8)
-        );
-        return;
-    }
-
-    state.requested_profiles.insert(pubkey.to_string());
-
-    // Parse pubkey and subscribe to profile
-    let pubkey_bytes = match Pubkey::from_hex(pubkey) {
-        Ok(pk) => pk,
-        Err(_) => return,
-    };
-
-    let profile_filter = Filter::new()
-        .kinds([0])
-        .authors([pubkey_bytes.bytes()])
-        .limit(1)
-        .build();
-
-    // Use unique subscription ID per pubkey to avoid overwriting previous requests
-    let sub_id = format!("{}_{}", SUB_PROFILES, safe_prefix(pubkey, 16));
-    state.pool.subscribe(sub_id, vec![profile_filter]);
-    debug!("Requested profile for {}", safe_prefix(pubkey, 8));
 }
 
 /// Maximum number of event IDs to track for deduplication.
@@ -637,21 +581,25 @@ const MAX_PROCESSED_EVENTS: usize = 10_000;
 
 /// Record an event ID if not already seen. Returns true if the event is new.
 /// Maintains a bounded dedup set with LRU eviction at `MAX_PROCESSED_EVENTS`.
-fn record_event_if_new(state: &mut WorkerState, event_id: &str) -> bool {
-    if state.processed_events.contains(event_id) {
+fn record_event_if_new(
+    processed_events: &mut HashSet<String>,
+    processed_events_order: &mut std::collections::VecDeque<String>,
+    event_id: &str,
+) -> bool {
+    if processed_events.contains(event_id) {
         return false;
     }
 
     let event_id_owned = event_id.to_string();
-    state.processed_events.insert(event_id_owned.clone());
-    state.processed_events_order.push_back(event_id_owned);
+    processed_events.insert(event_id_owned.clone());
+    processed_events_order.push_back(event_id_owned);
 
     // Evict oldest entries to maintain bounded memory usage
-    while state.processed_events.len() > MAX_PROCESSED_EVENTS {
-        if let Some(oldest) = state.processed_events_order.pop_front() {
-            state.processed_events.remove(&oldest);
+    while processed_events.len() > MAX_PROCESSED_EVENTS {
+        if let Some(oldest) = processed_events_order.pop_front() {
+            processed_events.remove(&oldest);
         } else {
-            state.processed_events.clear();
+            processed_events.clear();
             break;
         }
     }
@@ -674,7 +622,8 @@ fn notify_nostr_event(
 
     #[cfg(target_os = "android")]
     {
-        let callback_guard = match get_shared_state().java_callback.lock() {
+        let shared = get_shared_state();
+        let callback_guard = match shared.java_callback.lock() {
             Ok(guard) => guard,
             Err(e) => {
                 error!("Failed to lock java_callback: {}", e);
@@ -779,7 +728,8 @@ fn notify_relay_status_changed() {
 
     #[cfg(target_os = "android")]
     {
-        let callback_guard = match get_shared_state().java_callback.lock() {
+        let shared = get_shared_state();
+        let callback_guard = match shared.java_callback.lock() {
             Ok(guard) => guard,
             Err(e) => {
                 error!("Failed to lock java_callback: {}", e);
@@ -878,7 +828,8 @@ fn update_jni_callback(env: &mut JNIEnv, obj: JObject) {
         Ok(r) => r,
         Err(_) => return,
     };
-    let mut guard = match get_shared_state().java_callback.lock() {
+    let shared = get_shared_state();
+    let mut guard = match shared.java_callback.lock() {
         Ok(g) => g,
         Err(e) => {
             error!("Failed to lock java_callback for update: {}", e);
@@ -908,58 +859,4 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
     _obj: JObject,
 ) -> jint {
     get_connected_relay_count()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_event() {
-        // Note: enostr passes full relay message ["EVENT", "sub_id", {...}], not just event object
-        let relay_msg = r#"["EVENT","sub_id",{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"hello world"}]"#;
-        let event = extract_event(relay_msg);
-        assert!(event.is_some());
-        let event = event.unwrap();
-        assert_eq!(
-            event.id,
-            "abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234"
-        );
-        assert_eq!(
-            event.pubkey,
-            "def0123456789012345678901234567890123456789012345678901234567890"
-        );
-        assert_eq!(event.kind, 1);
-        assert_eq!(event.content, "hello world");
-        assert_eq!(event.zap_amount_sats, None);
-    }
-
-    #[test]
-    fn test_extract_event_with_braces_in_content() {
-        // This would break manual brace-matching but works with serde_json
-        let relay_msg = r#"["EVENT","sub_id",{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"json example: {\"foo\": \"bar\"}"}]"#;
-        let event = extract_event(relay_msg);
-        assert!(event.is_some());
-        let event = event.unwrap();
-        assert_eq!(event.content, r#"json example: {"foo": "bar"}"#);
-    }
-
-    #[test]
-    fn test_extract_event_empty_content() {
-        let relay_msg = r#"["EVENT","sub_id",{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":7,"content":""}]"#;
-        let event = extract_event(relay_msg);
-        assert!(event.is_some());
-        let event = event.unwrap();
-        assert_eq!(event.kind, 7);
-        assert_eq!(event.content, "");
-    }
-
-    #[test]
-    fn test_extract_event_direct_object() {
-        // Also handle direct event object format (fallback case)
-        let json = r#"{"id":"abcd1234567890abcd1234567890abcd1234567890abcd1234567890abcd1234","pubkey":"def0123456789012345678901234567890123456789012345678901234567890","kind":1,"content":"hello"}"#;
-        let event = extract_event(json);
-        assert!(event.is_some());
-        assert_eq!(event.unwrap().kind, 1);
-    }
 }

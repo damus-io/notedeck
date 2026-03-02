@@ -28,7 +28,7 @@ pub fn extract_zap_amount(event: &serde_json::Map<String, serde_json::Value>) ->
         let Some(bolt11) = tag_arr[1].as_str() else {
             continue;
         };
-        return parse_bolt11_msats(bolt11).map(|msats| (msats / 1000) as i64);
+        return parse_bolt11_msats(bolt11).map(|msats| ((msats + 999) / 1000) as i64);
     }
     None
 }

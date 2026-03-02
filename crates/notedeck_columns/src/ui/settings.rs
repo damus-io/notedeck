@@ -142,6 +142,7 @@ impl SettingsAction {
                     let selected_pubkey_hex = app_ctx.accounts.selected_account_pubkey().hex();
                     notedeck::platform::enable_notifications(
                         app_ctx.notification_manager,
+                        app_ctx.ndb,
                         &selected_pubkey_hex,
                         mode,
                     )
