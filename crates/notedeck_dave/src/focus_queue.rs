@@ -15,7 +15,7 @@ impl FocusPriority {
             AgentStatus::NeedsInput => Some(Self::NeedsInput),
             AgentStatus::Error => Some(Self::Error),
             AgentStatus::Done => Some(Self::Done),
-            AgentStatus::Idle | AgentStatus::Working => None,
+            AgentStatus::Idle | AgentStatus::Working | AgentStatus::Pending => None,
         }
     }
 

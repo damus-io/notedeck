@@ -83,6 +83,9 @@ fn normalize_relay_url(url: String) -> String {
     }
 }
 
+/// How long a pending placeholder session waits before being removed.
+const PENDING_SESSION_TIMEOUT_SECS: f64 = 15.0;
+
 /// Extract a 32-byte secret key from a keypair.
 fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
     keypair.secret_key.map(|sk| {
@@ -97,6 +100,9 @@ struct PendingSpawnCommand {
     target_host: String,
     cwd: PathBuf,
     backend: BackendType,
+    /// UUID that links this command to the placeholder session and the
+    /// kind-31988 response from the remote host.
+    spawn_id: String,
 }
 
 /// Represents which full-screen overlay (if any) is currently active.
@@ -1325,6 +1331,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.backend_type.as_str(),
                     perm_mode,
                     cli_sid.as_deref(),
+                    session.spawn_id.as_deref(),
                     &sk,
                 ),
                 &format!("publishing session state: {} -> {}", event_sid, status),
@@ -1362,6 +1369,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     info.backend.as_str(),
                     "default",
                     None,
+                    None, // no spawn_id for deletions
                     &sk,
                 ),
                 &format!(
@@ -1533,6 +1541,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 };
 
                 session.details.custom_title = state.custom_title.clone();
+                session.spawn_id = state.spawn_id.clone();
 
                 // Restore focus indicator from state event
                 session.indicator = state
@@ -1748,18 +1757,37 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 None => claude_sid.to_string(), // legacy
             };
 
-            let dave_sid = self.session_manager.new_resumed_session(
-                cwd,
-                resume_id,
-                state.title.clone(),
-                AiMode::Agentic,
-                backend,
-            );
+            // Check for a pending placeholder matching this session's spawn_id.
+            // If found, upgrade it in-place instead of creating a new session.
+            let pending_sid = state.spawn_id.as_ref().and_then(|incoming_id| {
+                self.session_manager
+                    .iter()
+                    .find(|s| {
+                        s.pending_created_at.is_some() && s.spawn_id.as_ref() == Some(incoming_id)
+                    })
+                    .map(|s| s.id)
+            });
+
+            let dave_sid = if let Some(sid) = pending_sid {
+                tracing::info!("upgrading pending placeholder to real session");
+                sid
+            } else {
+                self.session_manager.new_resumed_session(
+                    cwd,
+                    resume_id.clone(),
+                    state.title.clone(),
+                    AiMode::Agentic,
+                    backend,
+                )
+            };
 
             // Load any conversation history that arrived with it
             let loaded = session_loader::load_session_messages(ctx.ndb, &txn, claude_sid);
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
+                // Clear pending state (upgrades placeholder to real session)
+                session.pending_created_at = None;
+                session.details.title = state.title.clone();
                 session.details.hostname = state.hostname.clone();
                 session.details.custom_title = state.custom_title.clone();
                 session.indicator = state
@@ -1781,9 +1809,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     session.source = session::SessionSource::Remote;
                 }
 
+                // Initialize agentic data if absent (e.g. upgraded placeholder)
+                if session.agentic.is_none() {
+                    session.agentic = Some(session::AgenticSessionData::new(
+                        dave_sid,
+                        PathBuf::from(&state.cwd),
+                    ));
+                }
+
                 if let Some(agentic) = &mut session.agentic {
                     // Restore the event_id from the d-tag
                     agentic.event_id = claude_sid.to_string();
+
+                    if !resume_id.is_empty() {
+                        agentic.resume_session_id = Some(resume_id.clone());
+                    }
 
                     // If cli_session was empty the backend never ran —
                     // clear resume_session_id so we don't try --resume
@@ -1869,16 +1909,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let backend_str = session_events::get_tag_value(&note, "backend").unwrap_or("");
             let backend =
                 BackendType::from_tag_str(backend_str).unwrap_or(self.model_config.backend);
+            let spawn_id = session_events::get_tag_value(&note, "spawn_id").map(|s| s.to_string());
 
             tracing::info!(
-                "received spawn command {}: cwd={}, backend={:?}",
+                "received spawn command {}: cwd={}, backend={:?}, spawn_id={:?}",
                 command_id,
                 cwd,
-                backend
+                backend,
+                spawn_id,
             );
 
             self.processed_commands.insert(command_id.to_string());
-            update::create_session_with_cwd(
+            let sid = update::create_session_with_cwd(
                 &mut self.session_manager,
                 &mut self.directory_picker,
                 &mut self.scene,
@@ -1889,6 +1931,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 backend,
                 Some(ctx.ndb),
             );
+
+            // Store spawn_id so it's echoed in kind-31988 state events,
+            // letting the sender match this session to its placeholder.
+            if let Some(spawn_id) = spawn_id {
+                if let Some(session) = self.session_manager.get_mut(sid) {
+                    session.spawn_id = Some(spawn_id);
+                }
+            }
         }
     }
 
@@ -2154,13 +2204,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Queue a spawn command request. The event is built and published in
     /// update() where AppContext (and thus the secret key) is available.
+    /// Also creates a pending placeholder session so the user sees immediate feedback.
     fn queue_spawn_command(&mut self, target_host: &str, cwd: &Path, backend: BackendType) {
-        tracing::info!("queuing spawn command for {} at {:?}", target_host, cwd);
+        let spawn_id = uuid::Uuid::new_v4().to_string();
+        tracing::info!(
+            "queuing spawn command {} for {} at {:?}",
+            spawn_id,
+            target_host,
+            cwd
+        );
         self.pending_spawn_commands.push(PendingSpawnCommand {
             target_host: target_host.to_string(),
             cwd: cwd.to_path_buf(),
             backend,
+            spawn_id: spawn_id.clone(),
         });
+
+        // Create a lightweight pending placeholder for immediate UI feedback
+        self.session_manager.new_pending_placeholder(
+            cwd.to_path_buf(),
+            target_host.to_string(),
+            backend,
+            spawn_id,
+        );
+        self.active_overlay = DaveOverlay::None;
     }
 
     fn create_or_pick_backend(&mut self, cwd: PathBuf) {
@@ -2858,6 +2925,7 @@ impl notedeck::App for Dave {
                         &cmd.target_host,
                         &cmd.cwd.to_string_lossy(),
                         cmd.backend.as_str(),
+                        &cmd.spawn_id,
                         &sk,
                     ) {
                         Ok(evt) => self.pending_relay_events.push(evt),
@@ -2904,6 +2972,27 @@ impl notedeck::App for Dave {
             if let Some(agentic) = &mut session.agentic {
                 agentic.git_status.poll();
                 agentic.git_status.maybe_auto_refresh();
+            }
+        }
+
+        // Expire pending placeholder sessions that timed out
+        loop {
+            let expired = self.session_manager.iter().find_map(|s| {
+                s.pending_created_at
+                    .filter(|t| t.elapsed().as_secs_f64() > PENDING_SESSION_TIMEOUT_SECS)
+                    .map(|_| s.id)
+            });
+            if let Some(id) = expired {
+                tracing::warn!("pending session {} timed out, removing", id);
+                update::delete_session(
+                    &mut self.session_manager,
+                    &mut self.focus_queue,
+                    get_backend(&self.backends, BackendType::Remote),
+                    &mut self.directory_picker,
+                    id,
+                );
+            } else {
+                break;
             }
         }
 

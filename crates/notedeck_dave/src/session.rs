@@ -465,6 +465,14 @@ pub struct ChatSession {
     /// Focus indicator dot state (persisted in kind-31988 note).
     /// Set on status transitions, cleared when user dismisses it.
     pub indicator: Option<FocusPriority>,
+    /// When set, this session is a pending placeholder waiting for the remote
+    /// host to respond with a real kind-31988 session state event.
+    /// Cleared when matched to an incoming session event.
+    pub pending_created_at: Option<Instant>,
+    /// Spawn command UUID linking this session to the kind-31989 that created it.
+    /// Set on both the placeholder (sender) and the spawned session (receiver),
+    /// echoed in kind-31988 events so the sender can match the response.
+    pub spawn_id: Option<String>,
 }
 
 impl Drop for ChatSession {
@@ -512,6 +520,8 @@ impl ChatSession {
             backend_type,
             last_activity: None,
             indicator: None,
+            pending_created_at: None,
+            spawn_id: None,
         }
     }
 
@@ -532,6 +542,44 @@ impl ChatSession {
         }
         session.details.title = title;
         session
+    }
+
+    /// Create a lightweight pending placeholder for a remote spawn command.
+    /// Skips `AgenticSessionData` (no git status, no threading, no subscriptions)
+    /// since the placeholder only exists until the real session event arrives.
+    pub fn new_pending_placeholder(
+        id: SessionId,
+        cwd: PathBuf,
+        hostname: String,
+        backend_type: BackendType,
+        spawn_id: String,
+    ) -> Self {
+        ChatSession {
+            id,
+            chat: vec![],
+            input: String::new(),
+            incoming_tokens: None,
+            task_handle: None,
+            dispatch_state: DispatchState::Idle,
+            cached_status: AgentStatus::Pending,
+            state_dirty: false, // placeholder should not publish state events
+            focus_requested: false,
+            ai_mode: AiMode::Agentic,
+            agentic: None, // no agentic data — placeholder only
+            source: SessionSource::Remote,
+            details: SessionDetails {
+                title: "Connecting...".to_string(),
+                custom_title: None,
+                hostname,
+                cwd: Some(cwd),
+                home_dir: String::new(),
+            },
+            backend_type,
+            last_activity: None,
+            indicator: None,
+            pending_created_at: Some(Instant::now()),
+            spawn_id: Some(spawn_id),
+        }
     }
 
     // === Helper methods for accessing agentic data ===
@@ -671,6 +719,11 @@ impl ChatSession {
 
     /// Derive status from the current session state
     fn derive_status(&self) -> AgentStatus {
+        // Pending placeholder sessions always show Pending
+        if self.pending_created_at.is_some() {
+            return AgentStatus::Pending;
+        }
+
         // Remote sessions derive status from the kind-31988 state event,
         // but override to NeedsInput if there are unresponded permission requests.
         if self.is_remote() {
@@ -798,6 +851,27 @@ impl SessionManager {
             ChatSession::new_resumed(id, cwd, resume_session_id, title, ai_mode, backend_type);
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
+        self.active = Some(id);
+        self.rebuild_host_groups();
+
+        id
+    }
+
+    /// Create a lightweight pending placeholder session for a remote spawn.
+    pub fn new_pending_placeholder(
+        &mut self,
+        cwd: PathBuf,
+        hostname: String,
+        backend_type: BackendType,
+        spawn_id: String,
+    ) -> SessionId {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let session =
+            ChatSession::new_pending_placeholder(id, cwd, hostname, backend_type, spawn_id);
+        self.sessions.insert(id, session);
+        self.order.insert(0, id);
         self.active = Some(id);
         self.rebuild_host_groups();
 

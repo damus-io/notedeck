@@ -12,6 +12,8 @@ pub enum AgentStatus {
     Error,
     /// Agent completed its task successfully
     Done,
+    /// Session is a placeholder waiting for the remote host to respond
+    Pending,
 }
 
 impl AgentStatus {
@@ -23,6 +25,7 @@ impl AgentStatus {
             AgentStatus::NeedsInput => egui::Color32::from_rgb(255, 200, 0), // Yellow/amber
             AgentStatus::Error => egui::Color32::from_rgb(220, 60, 60),  // Red
             AgentStatus::Done => egui::Color32::from_rgb(70, 130, 220),  // Blue
+            AgentStatus::Pending => egui::Color32::from_rgb(100, 160, 180), // Muted cyan
         }
     }
 
@@ -34,6 +37,7 @@ impl AgentStatus {
             AgentStatus::NeedsInput => "Needs Input",
             AgentStatus::Error => "Error",
             AgentStatus::Done => "Done",
+            AgentStatus::Pending => "Pending",
         }
     }
 
@@ -45,6 +49,7 @@ impl AgentStatus {
             AgentStatus::NeedsInput => "needs_input",
             AgentStatus::Error => "error",
             AgentStatus::Done => "done",
+            AgentStatus::Pending => "pending",
         }
     }
 
@@ -56,6 +61,7 @@ impl AgentStatus {
             "needs_input" => Some(AgentStatus::NeedsInput),
             "error" => Some(AgentStatus::Error),
             "done" => Some(AgentStatus::Done),
+            "pending" => Some(AgentStatus::Pending),
             _ => None,
         }
     }

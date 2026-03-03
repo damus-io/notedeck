@@ -260,6 +260,8 @@ pub struct SessionState {
     /// Present only for sessions created via spawn commands.
     /// Empty string means the backend hasn't started yet.
     pub cli_session_id: Option<String>,
+    /// Spawn command UUID linking this session to the request that created it.
+    pub spawn_id: Option<String>,
 }
 
 impl SessionState {
@@ -286,6 +288,7 @@ impl SessionState {
             permission_mode: get_tag_value(note, "permission-mode").map(|s| s.to_string()),
             created_at: note.created_at(),
             cli_session_id: get_tag_value(note, "cli_session").map(|s| s.to_string()),
+            spawn_id: get_tag_value(note, "spawn_id").map(|s| s.to_string()),
         })
     }
 }
