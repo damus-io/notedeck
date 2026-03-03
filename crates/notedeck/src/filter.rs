@@ -230,11 +230,14 @@ impl ValidKind {
     }
 }
 
-/// Create a "last N notes per pubkey" query.
+/// Create a "last N notes per pubkey" query. When `max_filters` is
+/// Some, reservoir sampling is used to randomly select that many
+/// contacts. When None, all contacts are included.
 pub fn last_n_per_pubkey_from_tags(
     note: &Note,
     kind: u64,
     notes_per_pubkey: u64,
+    max_filters: Option<usize>,
 ) -> Result<Vec<Filter>, Error> {
     use rand::Rng;
 
@@ -242,7 +245,7 @@ pub fn last_n_per_pubkey_from_tags(
     let mut rng = rand::rng();
 
     // TODO: fix arbitrary MAX_FILTER limit in nostrdb
-    const LIMIT: usize = 15;
+    let limit = max_filters.unwrap_or(usize::MAX);
 
     for (i, tag) in note.tags().iter().enumerate() {
         if tag.count() < 2 {
@@ -265,12 +268,12 @@ pub fn last_n_per_pubkey_from_tags(
             filter.kinds([kind]).limit(notes_per_pubkey).build()
         };
 
-        // since we're limited due to a nostrdb bug, we reservoir sample to keep things interesting
-        if filters.len() < LIMIT {
+        // when limited, reservoir sample to keep things interesting
+        if filters.len() < limit {
             filters.push(mk_filter());
         } else {
             let j = rng.random_range(0..=i);
-            if j < LIMIT {
+            if j < limit {
                 filters[j] = mk_filter();
             }
         }

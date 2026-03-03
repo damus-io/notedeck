@@ -1,5 +1,5 @@
 use crate::{
-    filter::{self, HybridFilter, ValidKind},
+    filter::{self, HybridFilter, NdbQueryPackage, ValidKind},
     Error,
 };
 use nostrdb::{Filter, Note};
@@ -14,9 +14,13 @@ pub fn hybrid_last_per_pubkey_filter(
     note: &Note,
     notes_per_pk: u64,
 ) -> Result<HybridFilter, Error> {
-    let local = vec![filter::filter_from_tags(note, None, false)?
-        .into_query_package(ValidKind::One, filter::default_limit())];
-    let remote = filter::last_n_per_pubkey_from_tags(note, 1, notes_per_pk)?;
+    let kind = 1;
+    let local_filters = filter::last_n_per_pubkey_from_tags(note, kind, notes_per_pk, None)?;
+    let local = vec![NdbQueryPackage {
+        filters: local_filters,
+        kind: ValidKind::One,
+    }];
+    let remote = filter::last_n_per_pubkey_from_tags(note, kind, notes_per_pk, Some(15))?;
     Ok(HybridFilter::split(local, remote))
 }
 
