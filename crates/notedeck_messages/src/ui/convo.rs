@@ -4,12 +4,12 @@ use egui::{
     RichText, ScrollArea, TextEdit,
 };
 use egui_extras::{Size, StripBuilder};
+use egui_winit::clipboard::Clipboard;
 use enostr::Pubkey;
 use nostrdb::{Ndb, NoteKey, Transaction};
 use notedeck::{
     name::get_display_name, tr, ui::is_narrow, Images, Localization, MediaJobSender, NostrName,
 };
-use egui_winit::clipboard::Clipboard;
 use notedeck_ui::{
     context_menu::{input_context, PasteBehavior},
     ProfilePic,

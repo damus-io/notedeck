@@ -130,6 +130,9 @@ impl<'a> NavTitle<'a> {
                         ColumnsAction::Switch(from, to_index),
                     )))
                 }
+                TitleResponse::RefreshTimeline(kind) => {
+                    Some(RenderNavAction::RefreshTimeline(kind))
+                }
             }
         } else if back_button_resp.is_some_and(|r| r.clicked()) {
             tracing::debug!("render nav action back");
@@ -621,6 +624,7 @@ impl<'a> NavTitle<'a> {
             } else {
                 let mut move_col: Option<usize> = None;
                 let mut remove_col = false;
+                let mut refresh_kind: Option<TimelineKind> = None;
 
                 if self.should_show_move_button() {
                     move_col = self.move_button_section(ui);
@@ -629,12 +633,29 @@ impl<'a> NavTitle<'a> {
                     remove_col = self.delete_button_section(ui);
                 }
 
+                // Show refresh button for one-shot feeds (e.g. algo feeds)
+                if let Route::Timeline(kind) = top {
+                    if !kind.should_subscribe_locally() {
+                        let resp = ui
+                            .add(refresh_button())
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(tr!(
+                                self.i18n,
+                                "Refresh feed",
+                                "Tooltip for refreshing a one-shot feed"
+                            ));
+                        if resp.clicked() {
+                            refresh_kind = Some(kind.clone());
+                        }
+                    }
+                }
+
                 if let Some(col) = move_col {
                     Some(TitleResponse::MoveColumn(col))
                 } else if remove_col {
                     Some(TitleResponse::RemoveColumn)
                 } else {
-                    None
+                    refresh_kind.map(TitleResponse::RefreshTimeline)
                 }
             }
         })
@@ -669,10 +690,59 @@ enum TitleResponse {
     RemoveColumn,
     PfpClicked,
     MoveColumn(usize),
+    RefreshTimeline(TimelineKind),
 }
 
 fn prev<R>(xs: &[R]) -> Option<&R> {
     xs.get(xs.len().checked_sub(2)?)
+}
+
+fn refresh_button() -> impl egui::Widget {
+    |ui: &mut egui::Ui| -> egui::Response {
+        let max_size = egui::vec2(20.0, 20.0);
+        let helper = AnimationHelper::new(ui, "refresh-feed", max_size);
+        let rect = helper.get_animation_rect();
+        let painter = ui.painter_at(rect);
+        let center = rect.center();
+        let color = ui.style().visuals.noninteractive().fg_stroke.color;
+        let stroke = Stroke::new(helper.scale_1d_pos(1.5), color);
+        let radius = helper.scale_1d_pos(6.0);
+
+        // Draw a circular arc (~270 degrees)
+        let n_points = 20;
+        let start_angle = -std::f32::consts::FRAC_PI_2; // top
+        let sweep = std::f32::consts::PI * 1.5; // 270 degrees
+
+        let points: Vec<egui::Pos2> = (0..=n_points)
+            .map(|i| {
+                let t = i as f32 / n_points as f32;
+                let angle = start_angle + sweep * t;
+                center + egui::vec2(angle.cos(), angle.sin()) * radius
+            })
+            .collect();
+
+        painter.add(egui::Shape::line(points, stroke));
+
+        // Draw arrowhead at the end of the arc
+        let end_angle = start_angle + sweep;
+        let arrow_size = helper.scale_1d_pos(3.5);
+        let end_point = center + egui::vec2(end_angle.cos(), end_angle.sin()) * radius;
+
+        // Tangent direction at the end point (perpendicular to radius, clockwise)
+        let tangent = egui::vec2(-end_angle.sin(), end_angle.cos());
+        let normal = egui::vec2(end_angle.cos(), end_angle.sin());
+
+        let arrow_p1 = end_point - tangent * arrow_size + normal * arrow_size * 0.5;
+        let arrow_p2 = end_point - tangent * arrow_size - normal * arrow_size * 0.5;
+
+        painter.add(egui::Shape::convex_polygon(
+            vec![end_point, arrow_p1, arrow_p2],
+            color,
+            Stroke::NONE,
+        ));
+
+        helper.take_animation_response()
+    }
 }
 
 fn grab_button() -> impl egui::Widget {

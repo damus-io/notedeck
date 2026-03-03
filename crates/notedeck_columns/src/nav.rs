@@ -37,7 +37,7 @@ use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
-    NoteAction, NoteCache, NoteContext, RelayAction,
+    FilterState, NoteAction, NoteCache, NoteContext, RelayAction,
 };
 use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
 use tracing::error;
@@ -73,6 +73,7 @@ pub enum RenderNavAction {
     RepostAction(RepostAction),
     ShowFollowing(enostr::Pubkey),
     ShowFollowers(enostr::Pubkey),
+    RefreshTimeline(crate::timeline::TimelineKind),
 }
 
 pub enum SwitchingAction {
@@ -280,8 +281,6 @@ fn process_nav_resp(
                         &mut app.view_state,
                         ctx.ndb,
                         &mut ctx.remote.scoped_subs(ctx.accounts),
-                        &mut app.loaded_timeline_loads,
-                        &mut app.inflight_timeline_loads,
                         return_type,
                         col,
                     );
@@ -614,6 +613,31 @@ fn process_render_nav_action(
             crate::route::Route::FollowedBy(pubkey),
             RouterType::Stack,
         )),
+        RenderNavAction::RefreshTimeline(kind) => {
+            let txn = Transaction::new(ctx.ndb).expect("txn");
+
+            // Regenerate the filter (runs new reservoir sampling for algo feeds)
+            let new_filter = kind.filters(&txn, ctx.ndb);
+
+            if let Some(timeline) = app.timeline_cache.get_mut(&kind) {
+                // Clear existing notes
+                timeline.reset_views();
+                // Reset load state so the timeline loader picks it up
+                timeline.initial_load = crate::timeline::InitialLoadState::Pending;
+
+                // Apply the new filter and update the remote subscription
+                if let FilterState::Ready(ref filter) = new_filter {
+                    let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+                    crate::timeline::update_remote_timeline_subscription(
+                        timeline,
+                        filter.remote().to_vec(),
+                        &mut scoped_subs,
+                    );
+                }
+                timeline.filter = new_filter;
+            }
+            None
+        }
     };
 
     if let Some(action) = router_action {

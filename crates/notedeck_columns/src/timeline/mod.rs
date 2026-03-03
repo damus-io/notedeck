@@ -319,6 +319,20 @@ pub struct Timeline {
     /// the current filter. Used to detect when the contact list has
     /// changed (e.g., after follow/unfollow) so the filter can be rebuilt.
     pub contact_list_timestamp: Option<u64>,
+
+    /// Whether the initial async load has been completed for this timeline.
+    pub initial_load: InitialLoadState,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum InitialLoadState {
+    /// Not yet scheduled for loading.
+    #[default]
+    Pending,
+    /// Currently loading initial notes.
+    Loading,
+    /// Initial load is complete.
+    Complete,
 }
 
 impl Timeline {
@@ -396,6 +410,7 @@ impl Timeline {
             enable_front_insert,
             seen_latest_notes: false,
             contact_list_timestamp: None,
+            initial_load: InitialLoadState::Pending,
         }
     }
 
@@ -612,6 +627,7 @@ impl Timeline {
     pub fn invalidate(&mut self) {
         self.filter = FilterState::NeedsRemote;
         self.contact_list_timestamp = None;
+        self.initial_load = InitialLoadState::Pending;
     }
 }
 

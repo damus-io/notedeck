@@ -27,7 +27,7 @@ use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
     NoteOptions,
 };
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use tracing::{error, info, warn};
 
@@ -52,10 +52,6 @@ pub struct Damus {
     pub threads: Threads,
     /// Background loader for initial timeline scans.
     timeline_loader: TimelineLoader,
-    /// Timelines currently loading initial notes.
-    pub inflight_timeline_loads: HashSet<TimelineKind>,
-    /// Timelines that have completed their initial load.
-    pub loaded_timeline_loads: HashSet<TimelineKind>,
 
     //frame_history: crate::frame_history::FrameHistory,
 
@@ -215,8 +211,6 @@ fn try_process_event(
         if is_ready {
             schedule_timeline_load(
                 &damus.timeline_loader,
-                &mut damus.inflight_timeline_loads,
-                &damus.loaded_timeline_loads,
                 app_ctx.ndb,
                 kind,
                 timeline,
@@ -267,14 +261,12 @@ fn try_process_event(
 /// Schedule an initial timeline load if it is not already in-flight or complete.
 fn schedule_timeline_load(
     loader: &TimelineLoader,
-    inflight: &mut HashSet<TimelineKind>,
-    loaded: &HashSet<TimelineKind>,
     ndb: &nostrdb::Ndb,
     kind: &TimelineKind,
     timeline: &mut timeline::Timeline,
     account_pk: &Pubkey,
 ) {
-    if loaded.contains(kind) || inflight.contains(kind) {
+    if timeline.initial_load != timeline::InitialLoadState::Pending {
         return;
     }
 
@@ -289,7 +281,7 @@ fn schedule_timeline_load(
     }
 
     loader.load_timeline(kind.clone());
-    inflight.insert(kind.clone());
+    timeline.initial_load = timeline::InitialLoadState::Loading;
 }
 
 /// Drain timeline loader messages and apply them to the timeline cache.
@@ -316,12 +308,15 @@ fn handle_timeline_loader_messages(damus: &mut Damus, app_ctx: &mut AppContext<'
                 }
             }
             TimelineLoaderMsg::TimelineFinished { kind } => {
-                damus.inflight_timeline_loads.remove(&kind);
-                damus.loaded_timeline_loads.insert(kind);
+                if let Some(timeline) = damus.timeline_cache.get_mut(&kind) {
+                    timeline.initial_load = timeline::InitialLoadState::Complete;
+                }
             }
             TimelineLoaderMsg::Failed { kind, error } => {
                 warn!("timeline loader failed for {:?}: {}", kind, error);
-                damus.inflight_timeline_loads.remove(&kind);
+                if let Some(timeline) = damus.timeline_cache.get_mut(&kind) {
+                    timeline.initial_load = timeline::InitialLoadState::Pending;
+                }
             }
         }
     }
@@ -552,8 +547,6 @@ impl Damus {
             onboarding: Onboarding::default(),
             hovered_column: None,
             timeline_loader: TimelineLoader::default(),
-            inflight_timeline_loads: HashSet::new(),
-            loaded_timeline_loads: HashSet::new(),
         }
     }
 
@@ -597,8 +590,6 @@ impl Damus {
             onboarding: Onboarding::default(),
             hovered_column: None,
             timeline_loader: TimelineLoader::default(),
-            inflight_timeline_loads: HashSet::new(),
-            loaded_timeline_loads: HashSet::new(),
         }
     }
 
