@@ -234,6 +234,7 @@ impl<'a> SessionListUi<'a> {
         }
 
         let ctrl_held = self.ctrl_held;
+        let is_agentic = session.ai_mode == AiMode::Agentic;
         response.context_menu(|ui| {
             ui.horizontal(|ui| {
                 if ui.button("Rename").clicked() {
@@ -246,24 +247,26 @@ impl<'a> SessionListUi<'a> {
                     keybind_hint(ui, "⌃⇧R");
                 }
             });
-            ui.horizontal(|ui| {
-                if ui.button("Duplicate").clicked() {
-                    action = Some(SessionListAction::Duplicate(session.id));
-                    ui.close_menu();
-                }
-                if is_active && ctrl_held {
-                    keybind_hint(ui, "⌃⇧T");
-                }
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Clear").clicked() {
-                    action = Some(SessionListAction::Reset(session.id));
-                    ui.close_menu();
-                }
-                if is_active && ctrl_held {
-                    keybind_hint(ui, "⌃⇧C");
-                }
-            });
+            if is_agentic {
+                ui.horizontal(|ui| {
+                    if ui.button("Duplicate").clicked() {
+                        action = Some(SessionListAction::Duplicate(session.id));
+                        ui.close_menu();
+                    }
+                    if is_active && ctrl_held {
+                        keybind_hint(ui, "⌃⇧T");
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Clear").clicked() {
+                        action = Some(SessionListAction::Reset(session.id));
+                        ui.close_menu();
+                    }
+                    if is_active && ctrl_held {
+                        keybind_hint(ui, "⌃⇧C");
+                    }
+                });
+            }
             ui.horizontal(|ui| {
                 if ui.button("Delete").clicked() {
                     action = Some(SessionListAction::Delete(session.id));
@@ -352,13 +355,21 @@ impl<'a> SessionListUi<'a> {
         }
 
         // Show action hints on the active session when Ctrl is held
-        // ⇧R rename, ⇧C clear, ⇧T duplicate (all require Ctrl+Shift+key)
+        // Agentic: ⇧R rename, ⇧C clear, ⇧T duplicate (all require Ctrl+Shift+key)
+        // Chat: ⇧R rename only
         if is_active && self.ctrl_held {
             let hint_size = 16.0;
             let hint_width = 26.0;
             let gap = 3.0;
+            let is_agentic = session_ai_mode == AiMode::Agentic;
 
-            for hint_text in &["⇧T", "⇧C", "⇧R"] {
+            let hints: &[&str] = if is_agentic {
+                &["⇧T", "⇧C", "⇧R"]
+            } else {
+                &["⇧R"]
+            };
+
+            for hint_text in hints {
                 let center = rect.right_center() - egui::vec2(right_offset + hint_width / 2.0, 0.0);
                 KeybindHint::new(hint_text)
                     .size(hint_size)
