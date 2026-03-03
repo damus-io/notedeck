@@ -986,6 +986,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                 }
+                SessionListAction::Duplicate(id) => {
+                    self.duplicate_session(id);
+                }
+                SessionListAction::Reset(id) => {
+                    self.duplicate_session(id);
+                    self.delete_session(id);
+                }
             }
         }
 
@@ -1031,6 +1038,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             session.state_dirty = true;
                         }
                     }
+                }
+                SessionListAction::Duplicate(id) => {
+                    self.duplicate_session(id);
+                    self.show_session_list = false;
+                }
+                SessionListAction::Reset(id) => {
+                    self.duplicate_session(id);
+                    self.delete_session(id);
+                    self.show_session_list = false;
                 }
             }
         }
@@ -1117,30 +1133,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         )
     }
 
-    /// Clone the active agent, creating a new session with the same working directory
-    fn clone_active_agent(&mut self) {
-        let Some(active) = self.session_manager.get_active() else {
-            return;
-        };
-
-        // If the active session is remote, send a spawn command to its host
-        if active.is_remote() {
-            if let Some(cwd) = active.cwd().cloned() {
-                let host = active.details.hostname.clone();
-                let backend = active.backend_type;
-                self.queue_spawn_command(&host, &cwd, backend);
-                return;
-            }
-        }
-
-        update::clone_active_agent(
+    /// Duplicate a session by ID, creating a new session with the same working directory.
+    /// For remote sessions, sends a spawn command to the remote host.
+    fn duplicate_session(&mut self, id: SessionId) {
+        if let Some(spawn) = update::clone_session(
             &mut self.session_manager,
             &mut self.directory_picker,
             &mut self.scene,
             self.show_scene,
             self.ai_mode,
             &self.hostname,
-        );
+            id,
+        ) {
+            self.queue_spawn_command(&spawn.host, &spawn.cwd, spawn.backend);
+        }
+    }
+
+    /// Clone the active agent, creating a new session with the same working directory
+    fn clone_active_agent(&mut self) {
+        if let Some(id) = self.session_manager.active_id() {
+            self.duplicate_session(id);
+        }
     }
 
     /// Poll for IPC spawn-agent commands from external tools

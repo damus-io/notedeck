@@ -1006,18 +1006,38 @@ pub fn create_resumed_session_with_cwd(
 }
 
 /// Clone the active agent, creating a new session with the same working directory.
-pub fn clone_active_agent(
+/// Info needed to spawn a session on a remote host.
+pub struct RemoteSpawn {
+    pub host: String,
+    pub cwd: PathBuf,
+    pub backend: BackendType,
+}
+
+/// Clone a session by ID. For local sessions, creates the new session directly
+/// and returns `None`. For remote sessions, returns `Some(RemoteSpawn)` so the
+/// caller can dispatch it to the remote host.
+pub fn clone_session(
     session_manager: &mut SessionManager,
     directory_picker: &mut DirectoryPicker,
     scene: &mut AgentScene,
     show_scene: bool,
     ai_mode: AiMode,
     hostname: &str,
-) -> Option<SessionId> {
-    let active = session_manager.get_active()?;
-    let cwd = active.cwd().cloned()?;
-    let backend_type = active.backend_type;
-    Some(create_session_with_cwd(
+    id: SessionId,
+) -> Option<RemoteSpawn> {
+    let session = session_manager.get(id)?;
+    let cwd = session.cwd().cloned()?;
+    let backend_type = session.backend_type;
+
+    if session.is_remote() {
+        return Some(RemoteSpawn {
+            host: session.details.hostname.clone(),
+            cwd,
+            backend: backend_type,
+        });
+    }
+
+    create_session_with_cwd(
         session_manager,
         directory_picker,
         scene,
@@ -1027,7 +1047,8 @@ pub fn clone_active_agent(
         hostname,
         backend_type,
         None,
-    ))
+    );
+    None
 }
 
 /// Delete a session and clean up backend resources.

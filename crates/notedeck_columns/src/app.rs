@@ -347,15 +347,13 @@ fn update_damus(damus: &mut Damus, app_ctx: &mut AppContext<'_>, ctx: &egui::Con
             setup_selected_account_timeline_subs(&mut damus.timeline_cache, app_ctx);
 
             if !app_ctx.settings.welcome_completed() {
-                let split =
-                    egui_nav::Split::PercentFromTop(egui_nav::Percent::new(40).expect("40 <= 100"));
-                if let Some(col) = damus
-                    .decks_cache
-                    .selected_column_mut(app_ctx.i18n, app_ctx.accounts)
-                {
-                    col.sheet_router.route_to(Route::Welcome, split);
-                }
-            } else if is_compiled_as_mobile() && !app_ctx.settings.tos_accepted() {
+                damus
+                    .columns_mut(app_ctx.i18n, app_ctx.accounts)
+                    .get_selected_router()
+                    .route_to(Route::Welcome);
+            }
+
+            if is_compiled_as_mobile() && !app_ctx.settings.tos_accepted() {
                 damus
                     .columns_mut(app_ctx.i18n, app_ctx.accounts)
                     .get_selected_router()
