@@ -8,7 +8,7 @@ use crate::backend::BackendType;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{SessionId, SessionManager};
-use crate::ui::keybind_hint::{keybind_hint, paint_keybind_hint};
+use crate::ui::keybind_hint::{keybind_hint, paint_keybind_hint, KeybindHint};
 
 /// Actions that can be triggered from the session list UI
 #[derive(Debug, Clone)]
@@ -235,25 +235,35 @@ impl<'a> SessionListUi<'a> {
 
         let ctrl_held = self.ctrl_held;
         response.context_menu(|ui| {
-            if ui.button("Rename").clicked() {
-                let rename_state = (session.id, session.details.display_title().to_string());
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(rename_id, rename_state));
-                ui.close_menu();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Rename").clicked() {
+                    let rename_state = (session.id, session.details.display_title().to_string());
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp(rename_id, rename_state));
+                    ui.close_menu();
+                }
+                if is_active && ctrl_held {
+                    keybind_hint(ui, "⌃⇧R");
+                }
+            });
             ui.horizontal(|ui| {
                 if ui.button("Duplicate").clicked() {
                     action = Some(SessionListAction::Duplicate(session.id));
                     ui.close_menu();
                 }
                 if is_active && ctrl_held {
-                    keybind_hint(ui, "Ctrl+Shift+T");
+                    keybind_hint(ui, "⌃⇧T");
                 }
             });
-            if ui.button("Reset").clicked() {
-                action = Some(SessionListAction::Reset(session.id));
-                ui.close_menu();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Clear").clicked() {
+                    action = Some(SessionListAction::Reset(session.id));
+                    ui.close_menu();
+                }
+                if is_active && ctrl_held {
+                    keybind_hint(ui, "⌃⇧C");
+                }
+            });
             ui.horizontal(|ui| {
                 if ui.button("Delete").clicked() {
                     action = Some(SessionListAction::Delete(session.id));
@@ -291,10 +301,7 @@ impl<'a> SessionListUi<'a> {
         let item_height = if show_cwd { 48.0 } else { 32.0 };
         let desired_size = egui::vec2(ui.available_width(), item_height);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
-        let hover_text = format!("Ctrl+{} to switch", shortcut_hint.unwrap_or(0));
-        let response = response
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text_at_pointer(hover_text);
+        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
         // Paint background: active > hovered > transparent
         let fill = if is_active {
@@ -333,15 +340,32 @@ impl<'a> SessionListUi<'a> {
             text_start_x += icon_size + 4.0;
         }
 
-        // Draw shortcut hint at the far right
+        // Draw shortcut hints at the far right
         let mut right_offset = 8.0; // Start with normal right padding
 
         if let Some(num) = shortcut_hint {
-            let hint_text = format!("{}", num);
             let hint_size = 18.0;
+            let hint_text = format!("{}", num);
             let hint_center = rect.right_center() - egui::vec2(8.0 + hint_size / 2.0, 0.0);
             paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
-            right_offset = 8.0 + hint_size + 6.0; // padding + hint width + spacing
+            right_offset = 8.0 + hint_size + 6.0;
+        }
+
+        // Show action hints on the active session when Ctrl is held
+        // ⇧R rename, ⇧C clear, ⇧T duplicate (all require Ctrl+Shift+key)
+        if is_active && self.ctrl_held {
+            let hint_size = 16.0;
+            let hint_width = 26.0;
+            let gap = 3.0;
+
+            for hint_text in &["⇧T", "⇧C", "⇧R"] {
+                let center = rect.right_center() - egui::vec2(right_offset + hint_width / 2.0, 0.0);
+                KeybindHint::new(hint_text)
+                    .size(hint_size)
+                    .width(hint_width)
+                    .paint_at(ui, center);
+                right_offset += hint_width + gap;
+            }
         }
 
         // Draw focus queue indicator dot to the left of the shortcut hint

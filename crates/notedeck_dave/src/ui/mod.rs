@@ -583,6 +583,7 @@ pub enum KeyActionResult {
     CloneAgent,
     NewAgent,
     DeleteSession(SessionId),
+    ClearAgent,
     SetAutoSteal(bool),
     /// Permission response needs relay publishing.
     PublishPermissionResponse(update::PermissionPublish),
@@ -708,6 +709,17 @@ pub fn handle_key_action(
             } else {
                 KeyActionResult::None
             }
+        }
+        KeyAction::ClearAgent => KeyActionResult::ClearAgent,
+        KeyAction::RenameAgent => {
+            if let Some(id) = session_manager.active_id() {
+                if let Some(session) = session_manager.get(id) {
+                    let rename_id = egui::Id::new("session_rename_state");
+                    let rename_state = (id, session.details.display_title().to_string());
+                    ctx.data_mut(|d| d.insert_temp(rename_id, rename_state));
+                }
+            }
+            KeyActionResult::None
         }
         KeyAction::FocusQueueNext => {
             update::focus_queue_next(session_manager, focus_queue, scene, show_scene);

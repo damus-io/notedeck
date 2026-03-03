@@ -46,6 +46,10 @@ pub enum KeyAction {
     OpenExternalEditor,
     /// Clone the active agent with the same working directory (Ctrl+Shift+T)
     CloneAgent,
+    /// Clear the active agent (Ctrl+Shift+C)
+    ClearAgent,
+    /// Rename the active agent (Ctrl+Shift+R)
+    RenameAgent,
 }
 
 /// Check for keybinding actions.
@@ -109,6 +113,16 @@ pub fn check_keybindings(
     // Ctrl+Shift+T to clone the active agent (check before Ctrl+T) - agentic only
     if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::T)) {
         return Some(KeyAction::CloneAgent);
+    }
+
+    // Ctrl+Shift+C to clear the active agent - agentic only
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::C)) {
+        return Some(KeyAction::ClearAgent);
+    }
+
+    // Ctrl+Shift+R to rename the active agent
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::R)) {
+        return Some(KeyAction::RenameAgent);
     }
 
     // Ctrl+T to spawn a new agent/chat

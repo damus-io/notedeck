@@ -5,30 +5,43 @@ use egui::{Pos2, Rect, Response, Sense, Ui, Vec2};
 pub struct KeybindHint<'a> {
     text: &'a str,
     size: f32,
+    width: Option<f32>,
 }
 
 impl<'a> KeybindHint<'a> {
     /// Create a new keybinding hint with the given text
     pub fn new(text: &'a str) -> Self {
-        Self { text, size: 18.0 }
+        Self {
+            text,
+            size: 18.0,
+            width: None,
+        }
     }
 
-    /// Set the size of the hint box (default: 18.0)
+    /// Set the size (height) of the hint box (default: 18.0)
     pub fn size(mut self, size: f32) -> Self {
         self.size = size;
         self
     }
 
+    /// Override the width (default: same as size, i.e. square)
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
     /// Show the keybinding hint and return the response
     pub fn show(self, ui: &mut Ui) -> Response {
-        let (rect, response) = ui.allocate_exact_size(Vec2::splat(self.size), Sense::hover());
+        let w = self.width.unwrap_or(self.size);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(w, self.size), Sense::hover());
         self.paint(ui, rect);
         response
     }
 
     /// Paint the keybinding hint at a specific position (for use with painters)
     pub fn paint_at(self, ui: &Ui, center: Pos2) {
-        let rect = Rect::from_center_size(center, Vec2::splat(self.size));
+        let w = self.width.unwrap_or(self.size);
+        let rect = Rect::from_center_size(center, Vec2::new(w, self.size));
         self.paint(ui, rect);
     }
 

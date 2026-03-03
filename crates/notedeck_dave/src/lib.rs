@@ -2276,6 +2276,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             KeyActionResult::DeleteSession(id) => {
                 self.delete_session(id);
             }
+            KeyActionResult::ClearAgent => {
+                if let Some(id) = self.session_manager.active_id() {
+                    self.duplicate_session(id);
+                    self.delete_session(id);
+                }
+            }
             KeyActionResult::SetAutoSteal(new_state) => {
                 self.auto_steal = if new_state {
                     focus_queue::AutoStealState::Pending
