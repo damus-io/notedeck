@@ -363,18 +363,26 @@ impl<'a> SessionListUi<'a> {
             let gap = 3.0;
             let is_agentic = session_ai_mode == AiMode::Agentic;
 
-            let hints: &[&str] = if is_agentic {
-                &["⇧T", "⇧C", "⇧R"]
+            let hints: &[(&str, &str)] = if is_agentic {
+                &[("⇧T", "Duplicate"), ("⇧C", "Clear"), ("⇧R", "Rename")]
             } else {
-                &["⇧R"]
+                &[("⇧R", "Rename")]
             };
 
-            for hint_text in hints {
+            for (hint_text, tooltip) in hints {
                 let center = rect.right_center() - egui::vec2(right_offset + hint_width / 2.0, 0.0);
                 KeybindHint::new(hint_text)
                     .size(hint_size)
                     .width(hint_width)
                     .paint_at(ui, center);
+                let hint_rect =
+                    egui::Rect::from_center_size(center, egui::vec2(hint_width, hint_size));
+                ui.interact(
+                    hint_rect,
+                    ui.id().with(("keybind_tip", *hint_text)),
+                    Sense::hover(),
+                )
+                .on_hover_text(*tooltip);
                 right_offset += hint_width + gap;
             }
         }
