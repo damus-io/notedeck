@@ -5,7 +5,7 @@ use enostr::{Filter, NoteId, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::filter::{NdbQueryPackage, ValidKind};
 use notedeck::{
-    contacts::{contacts_filter, hybrid_contacts_filter},
+    contacts::{contacts_filter, hybrid_contacts_filter, hybrid_last_per_pubkey_filter},
     filter::{self, default_limit, default_remote_limit, HybridFilter},
     tr, FilterError, FilterState, Localization, NoteCache, RootIdError, RootNoteIdBuf,
 };
@@ -341,7 +341,7 @@ impl TimelineKind {
     /// Some feeds are not realtime, like certain algo feeds
     pub fn should_subscribe_locally(&self) -> bool {
         match self {
-            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_list_kind)) => false,
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_list_kind)) => true,
 
             TimelineKind::List(_list_kind) => true,
             TimelineKind::Notifications(_pk_src) => true,
@@ -351,6 +351,12 @@ impl TimelineKind {
             TimelineKind::Hashtag(_ht) => true,
             TimelineKind::Search(_q) => true,
         }
+    }
+
+    /// Whether this timeline should show a refresh button. Used for feeds
+    /// where the remote filter uses non-deterministic sampling.
+    pub fn needs_refresh_button(&self) -> bool {
+        matches!(self, TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_)))
     }
 
     // NOTE!!: if you just added a TimelineKind enum, make sure to update
@@ -811,9 +817,8 @@ fn last_per_pubkey_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> Fi
     if results.is_empty() {
         FilterState::needs_remote()
     } else {
-        let kind = 1;
         let notes_per_pk = 1;
-        match filter::last_n_per_pubkey_from_tags(&results[0].note, kind, notes_per_pk) {
+        match hybrid_last_per_pubkey_filter(&results[0].note, notes_per_pk) {
             Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
                 FilterState::needs_remote()
             }
@@ -821,7 +826,7 @@ fn last_per_pubkey_filter_state(txn: &Transaction, ndb: &Ndb, pk: &Pubkey) -> Fi
                 error!("Error getting contact filter state: {err}");
                 FilterState::Broken(FilterError::EmptyContactList)
             }
-            Ok(filter) => FilterState::ready(filter),
+            Ok(filter) => FilterState::ready_hybrid(filter),
         }
     }
 }
@@ -921,9 +926,8 @@ fn people_list_last_per_pubkey_filter_state(
     if results.is_empty() {
         FilterState::needs_remote()
     } else {
-        let kind = 1;
         let notes_per_pk = 1;
-        match filter::last_n_per_pubkey_from_tags(&results[0].note, kind, notes_per_pk) {
+        match hybrid_last_per_pubkey_filter(&results[0].note, notes_per_pk) {
             Err(notedeck::Error::Filter(FilterError::EmptyContactList)) => {
                 FilterState::needs_remote()
             }
@@ -931,7 +935,7 @@ fn people_list_last_per_pubkey_filter_state(
                 error!("Error getting people list filter state: {err}");
                 FilterState::Broken(FilterError::EmptyList)
             }
-            Ok(filter) => FilterState::ready(filter),
+            Ok(filter) => FilterState::ready_hybrid(filter),
         }
     }
 }

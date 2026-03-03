@@ -125,7 +125,6 @@ fn is_utf8_char_boundary(c: u8) -> bool {
     (c as i8) >= -0x40
 }
 
-
 pub fn setup_multicast_relay(
     wakeup: impl Fn() + Send + Sync + Clone + 'static,
 ) -> Result<MulticastRelay> {

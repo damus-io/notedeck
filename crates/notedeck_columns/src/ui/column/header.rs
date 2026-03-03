@@ -635,7 +635,7 @@ impl<'a> NavTitle<'a> {
 
                 // Show refresh button for one-shot feeds (e.g. algo feeds)
                 if let Route::Timeline(kind) = top {
-                    if !kind.should_subscribe_locally() {
+                    if kind.needs_refresh_button() {
                         let resp = ui
                             .add(refresh_button())
                             .on_hover_cursor(egui::CursorIcon::PointingHand)

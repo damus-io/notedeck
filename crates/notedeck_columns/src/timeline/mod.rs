@@ -11,7 +11,7 @@ use crate::{
 };
 
 use notedeck::{
-    contacts::hybrid_contacts_filter,
+    contacts::{hybrid_contacts_filter, hybrid_last_per_pubkey_filter},
     filter::{self},
     is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
     FilterState, Localization, NoteCache, NoteRef, RelaySelection, ScopedSubApi, ScopedSubIdentity,
@@ -350,13 +350,12 @@ impl Timeline {
     }
 
     pub fn last_per_pubkey(list: &Note, list_kind: &ListKind) -> Result<Self> {
-        let kind = 1;
         let notes_per_pk = 1;
-        let filter = filter::last_n_per_pubkey_from_tags(list, kind, notes_per_pk)?;
+        let filter = hybrid_last_per_pubkey_filter(list, notes_per_pk)?;
 
         Ok(Timeline::new(
             TimelineKind::last_per_pubkey(list_kind.clone()),
-            FilterState::ready(filter),
+            FilterState::ready_hybrid(filter),
             TimelineTab::only_notes_and_replies(),
         ))
     }
