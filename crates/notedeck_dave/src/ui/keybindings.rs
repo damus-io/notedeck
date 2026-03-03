@@ -115,8 +115,8 @@ pub fn check_keybindings(
         return Some(KeyAction::CloneAgent);
     }
 
-    // Ctrl+Shift+C to clear the active agent - agentic only
-    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::C)) {
+    // Ctrl+Shift+K to clear the active agent - agentic only
+    if is_agentic && ctx.input(|i| i.modifiers.matches_exact(ctrl_shift) && i.key_pressed(Key::K)) {
         return Some(KeyAction::ClearAgent);
     }
 

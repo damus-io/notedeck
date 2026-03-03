@@ -263,7 +263,7 @@ impl<'a> SessionListUi<'a> {
                         ui.close_menu();
                     }
                     if is_active && ctrl_held {
-                        keybind_hint(ui, "⌃⇧C");
+                        keybind_hint(ui, "⌃⇧K");
                     }
                 });
             }
@@ -355,7 +355,7 @@ impl<'a> SessionListUi<'a> {
         }
 
         // Show action hints on the active session when Ctrl is held
-        // Agentic: ⇧R rename, ⇧C clear, ⇧T duplicate (all require Ctrl+Shift+key)
+        // Agentic: ⇧R rename, ⇧K clear, ⇧T duplicate (all require Ctrl+Shift+key)
         // Chat: ⇧R rename only
         if is_active && self.ctrl_held {
             let hint_size = 16.0;
@@ -364,7 +364,7 @@ impl<'a> SessionListUi<'a> {
             let is_agentic = session_ai_mode == AiMode::Agentic;
 
             let hints: &[(&str, &str)] = if is_agentic {
-                &[("⇧T", "Duplicate"), ("⇧C", "Clear"), ("⇧R", "Rename")]
+                &[("⇧T", "Duplicate"), ("⇧K", "Clear"), ("⇧R", "Rename")]
             } else {
                 &[("⇧R", "Rename")]
             };
