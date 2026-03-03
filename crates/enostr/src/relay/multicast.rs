@@ -83,7 +83,6 @@ impl MulticastRelay {
         let json = msg.to_json();
         let len = json.len();
 
-        debug!("writing to multicast relay");
         let mut buf: Vec<u8> = Vec::with_capacity(4 + len);
 
         // Write the length of the message as 4 bytes (big-endian)
@@ -92,6 +91,10 @@ impl MulticastRelay {
         // Append the JSON message bytes
         buf.extend_from_slice(json.as_bytes());
 
+        let json_msg = msg.to_json();
+
+        let end = floor_char_boundary(&json_msg, 128);
+        debug!("writing to multicast relay: {}", &json_msg[..end]);
         self.socket.send_to(&buf, SocketAddr::V4(self.address))?;
         Ok(())
     }
@@ -100,6 +103,28 @@ impl MulticastRelay {
         self.status
     }
 }
+
+#[inline]
+pub fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        s.len()
+    } else {
+        let lower_bound = index.saturating_sub(3);
+        let new_index = s.as_bytes()[lower_bound..=index]
+            .iter()
+            .rposition(|b| is_utf8_char_boundary(*b));
+
+        // SAFETY: we know that the character boundary will be within four bytes
+        unsafe { lower_bound + new_index.unwrap_unchecked() }
+    }
+}
+
+#[inline]
+fn is_utf8_char_boundary(c: u8) -> bool {
+    // This is bit magic equivalent to: b < 128 || b >= 192
+    (c as i8) >= -0x40
+}
+
 
 pub fn setup_multicast_relay(
     wakeup: impl Fn() + Send + Sync + Clone + 'static,
