@@ -55,35 +55,63 @@ impl AiBackend for OpenAiBackend {
         let tool_list: Vec<_> = tools.values().map(|t| t.to_api()).collect();
 
         let handle = tokio::spawn(async move {
-            let mut token_stream = match client
-                .chat()
-                .create_stream(CreateChatCompletionRequest {
+            // Timeout for the initial API connection (creating the stream).
+            const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+            let mut token_stream = match tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                client.chat().create_stream(CreateChatCompletionRequest {
                     model,
                     stream: Some(true),
                     messages: api_messages,
                     tools: Some(tool_list),
                     user: Some(user_id),
                     ..Default::default()
-                })
-                .await
+                }),
+            )
+            .await
             {
-                Err(err) => {
+                Ok(Err(err)) => {
                     tracing::error!("openai chat error: {err}");
                     let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
                     return;
                 }
-
-                Ok(stream) => stream,
+                Err(_) => {
+                    tracing::error!(
+                        "openai stream creation timed out after {}s",
+                        CONNECT_TIMEOUT.as_secs()
+                    );
+                    let _ = tx.send(DaveApiResponse::Failed(
+                        "OpenAI API connection timed out".to_string(),
+                    ));
+                    return;
+                }
+                Ok(Ok(stream)) => stream,
             };
 
             let mut all_tool_calls: HashMap<u32, PartialToolCall> = HashMap::new();
 
-            while let Some(token) = token_stream.next().await {
-                let token = match token {
-                    Ok(token) => token,
-                    Err(err) => {
+            // Timeout for receiving each stream chunk — if no data arrives
+            // for this long, the API connection is considered stalled.
+            const CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+            loop {
+                let token = match tokio::time::timeout(CHUNK_TIMEOUT, token_stream.next()).await {
+                    Ok(Some(Ok(token))) => token,
+                    Ok(Some(Err(err))) => {
                         tracing::error!("failed to get token: {err}");
                         let _ = tx.send(DaveApiResponse::Failed(err.to_string()));
+                        return;
+                    }
+                    Ok(None) => break, // stream ended normally
+                    Err(_) => {
+                        tracing::error!(
+                            "openai stream stalled (no data for {}s)",
+                            CHUNK_TIMEOUT.as_secs()
+                        );
+                        let _ = tx.send(DaveApiResponse::Failed(
+                            "OpenAI stream timed out (no data received)".to_string(),
+                        ));
                         return;
                     }
                 };

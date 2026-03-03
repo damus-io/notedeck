@@ -1226,35 +1226,52 @@ async fn send_thread_compact<W: AsyncWrite + Unpin>(
 
 /// Read lines until we find a response matching the given request id.
 /// Non-matching messages (notifications) are logged and skipped.
+///
+/// Times out after 120 seconds to prevent hanging if the codex process
+/// stalls or sends messages with unexpected IDs indefinitely.
 async fn read_response_for_id<R: AsyncBufRead + Unpin>(
     reader: &mut tokio::io::Lines<R>,
     expected_id: u64,
 ) -> Result<RpcMessage, String> {
-    loop {
-        let line = reader
-            .next_line()
-            .await
-            .map_err(|e| format!("IO error: {}", e))?
-            .ok_or_else(|| "EOF while waiting for response".to_string())?;
+    const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-        let msg: RpcMessage = serde_json::from_str(&line).map_err(|e| {
-            format!(
-                "JSON parse error: {} in: {}",
-                e,
-                &line[..line.len().min(200)]
-            )
-        })?;
+    let read_fut = async {
+        loop {
+            let line = reader
+                .next_line()
+                .await
+                .map_err(|e| format!("IO error: {}", e))?
+                .ok_or_else(|| "EOF while waiting for response".to_string())?;
 
-        if msg.id == Some(expected_id) {
-            return Ok(msg);
+            let msg: RpcMessage = serde_json::from_str(&line).map_err(|e| {
+                format!(
+                    "JSON parse error: {} in: {}",
+                    e,
+                    &line[..line.len().min(200)]
+                )
+            })?;
+
+            if msg.id == Some(expected_id) {
+                return Ok(msg);
+            }
+
+            tracing::trace!(
+                "Skipping message during handshake (waiting for id={}): method={:?}",
+                expected_id,
+                msg.method
+            );
         }
+    };
 
-        tracing::trace!(
-            "Skipping message during handshake (waiting for id={}): method={:?}",
-            expected_id,
-            msg.method
-        );
-    }
+    tokio::time::timeout(READ_TIMEOUT, read_fut)
+        .await
+        .map_err(|_| {
+            format!(
+                "Timed out after {}s waiting for response id={}",
+                READ_TIMEOUT.as_secs(),
+                expected_id
+            )
+        })?
 }
 
 /// Drain pending commands, sending error to any Query commands.

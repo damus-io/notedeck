@@ -666,6 +666,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     break;
                 };
 
+                // Track when we last received any backend message (for stall detection)
+                session.last_backend_msg = Some(std::time::Instant::now());
+
                 // Determine the live event to publish for this response.
                 // Centralised here so every response type that needs relay
                 // propagation is handled in one place.
@@ -784,9 +787,63 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
                 _ => {
-                    // Channel still open, put receiver back
+                    // Channel still open — defense-in-depth stall detection.
+                    // The backends themselves have proper timeouts on their
+                    // async operations, so this should rarely fire. It exists
+                    // as a safety net in case a backend hangs in an unforeseen
+                    // way (e.g. a new code path without a timeout).
                     if let Some(session) = self.session_manager.get_mut(session_id) {
-                        session.incoming_tokens = Some(recvr);
+                        const STALL_TIMEOUT: std::time::Duration =
+                            std::time::Duration::from_secs(300);
+
+                        // Skip stall detection during compaction — the backend
+                        // can be legitimately silent for a long time while the
+                        // LLM provider compacts the context window.
+                        let is_compacting =
+                            session.agentic.as_ref().is_some_and(|a| a.is_compacting);
+
+                        let stalled = !is_compacting
+                            && session
+                                .last_backend_msg
+                                .is_some_and(|t| t.elapsed() > STALL_TIMEOUT);
+
+                        if stalled {
+                            let elapsed = session
+                                .last_backend_msg
+                                .map(|t| t.elapsed().as_secs())
+                                .unwrap_or(0);
+                            tracing::error!(
+                                "Session {}: backend stalled for {}s (safety net), aborting",
+                                session_id,
+                                elapsed
+                            );
+                            if let Some(handle) = session.task_handle.take() {
+                                handle.abort();
+                            }
+                            // Clean up the backend's session actor so the next
+                            // send_user_message_for() creates a fresh connection
+                            // instead of sending commands to a dead actor.
+                            let backend_type = session.backend_type;
+                            let backend_session_id = format!("dave-session-{}", session_id);
+                            get_backend(&self.backends, backend_type)
+                                .cleanup_session(backend_session_id);
+                            drop(recvr);
+                            handle_stream_end(
+                                session,
+                                session_id,
+                                &secret_key,
+                                app_ctx.ndb,
+                                &mut events_to_publish,
+                                &mut needs_send,
+                            );
+                            if !matches!(session.chat.last(), Some(Message::Error(_))) {
+                                session.chat.push(Message::Error(
+                                    "Backend timed out (no response for 5 minutes)".into(),
+                                ));
+                            }
+                        } else {
+                            session.incoming_tokens = Some(recvr);
+                        }
                     }
                 }
             }
@@ -2468,6 +2525,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         tracing::info!("Compact dispatched for session {}", session_id);
                         if let Some(session) = self.session_manager.get_active_mut() {
                             session.incoming_tokens = Some(rx);
+                            session.last_backend_msg = Some(std::time::Instant::now());
                         }
                     } else {
                         tracing::warn!("Compact failed: no backend session for {}", session_id);
@@ -2584,6 +2642,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             ctx,
         );
         session.incoming_tokens = Some(rx);
+        session.last_backend_msg = Some(std::time::Instant::now());
         session.task_handle = task_handle;
     }
 
@@ -3557,6 +3616,7 @@ fn handle_stream_end(
     }
 
     session.task_handle = None;
+    session.last_backend_msg = None;
 
     // If the backend returned nothing (dispatch_state never left
     // AwaitingResponse), show an error so the user isn't left staring
