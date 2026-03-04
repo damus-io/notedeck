@@ -277,6 +277,9 @@ impl<'a> AddColumnView<'a> {
         ui: &mut Ui,
         deck_author: Pubkey,
     ) -> Option<AddColumnResponse> {
+        let mut selected_option: Option<AddColumnResponse> = None;
+
+        // Contact list option
         let algo_option = ColumnOptionData {
             title: tr!(self.i18n, "Contact List", "Title for contact list column"),
             description: tr!(
@@ -291,9 +294,64 @@ impl<'a> AddColumnView<'a> {
         };
 
         let option = algo_option.option.clone();
-        self.column_option_ui(ui, algo_option)
-            .clicked()
-            .then(|| option.take_as_response(self.cur_account))
+        if self.column_option_ui(ui, algo_option).clicked() {
+            selected_option = Some(option.take_as_response(self.cur_account));
+        }
+
+        ui.add(Separator::default().spacing(0.0));
+
+        // People list options
+        if self.people_lists.is_none() {
+            let txn = Transaction::new(self.ndb).expect("txn");
+            let filter = Filter::new()
+                .authors([self.cur_account.key.pubkey.bytes()])
+                .kinds([30000])
+                .limit(50)
+                .build();
+            *self.people_lists =
+                notedeck::Nip51SetCache::new_local(self.ndb, &txn, self.unknown_ids, vec![filter]);
+        }
+
+        if let Some(cache) = self.people_lists.as_mut() {
+            cache.poll_for_notes(self.ndb, self.unknown_ids);
+        }
+
+        let list_options: Vec<ColumnOptionData> = self
+            .people_lists
+            .as_ref()
+            .map(|cache| {
+                cache
+                    .iter()
+                    .into_iter()
+                    .map(|set| {
+                        let title = set.title.as_deref().unwrap_or(&set.identifier).to_string();
+                        let description = format!("{} members", set.pks.len());
+                        let list_kind = ListKind::people_list(
+                            self.cur_account.key.pubkey,
+                            set.identifier.clone(),
+                        );
+                        ColumnOptionData {
+                            title,
+                            description,
+                            icon: app_images::home_image(),
+                            option: AddColumnOption::Algo(AlgoOption::LastPerPubkey(
+                                Decision::Decided(list_kind),
+                            )),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        for col_option in list_options {
+            let option = col_option.option.clone();
+            if self.column_option_ui(ui, col_option).clicked() {
+                selected_option = Some(option.take_as_response(self.cur_account));
+            }
+            ui.add(Separator::default().spacing(0.0));
+        }
+
+        selected_option
     }
 
     fn people_list_ui(&mut self, ui: &mut Ui) -> Option<AddColumnResponse> {
