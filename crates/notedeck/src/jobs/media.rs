@@ -3,6 +3,7 @@ use std::sync::mpsc::Sender;
 use egui::TextureHandle;
 
 use crate::jobs::JobCache;
+use crate::media::webp::WebpCacheEntry;
 use crate::{Animation, Error, TextureState, TexturesCache};
 
 use crate::jobs::types::{JobComplete, JobId, JobPackage};
@@ -15,12 +16,15 @@ pub enum MediaJobKind {
     Blurhash,
     StaticImg,
     AnimatedImg,
+    WebpImg,
 }
 
 pub enum MediaJobResult {
     StaticImg(Result<TextureHandle, Error>),
     Blurhash(Result<TextureHandle, Error>),
     Animation(Result<Animation, Error>),
+    /// Completed result for a `WebpImg` job — routes to `tex_cache.webp`.
+    WebpImg(Result<WebpCacheEntry, Error>),
 }
 
 #[profiling::function]
@@ -43,7 +47,6 @@ pub fn deliver_completed_media_job(
                 Ok(a) => TextureState::Loaded(a),
                 Err(e) => TextureState::Error(e),
             };
-
             tex_cache.animated.cache.insert(id, r);
         }
         MediaJobResult::Blurhash(texture_handle) => {
@@ -52,6 +55,13 @@ pub fn deliver_completed_media_job(
                 Err(e) => TextureState::Error(e),
             };
             tex_cache.blurred.cache.insert(id, r.into());
+        }
+        MediaJobResult::WebpImg(result) => {
+            let r = match result {
+                Ok(entry) => TextureState::Loaded(entry),
+                Err(e) => TextureState::Error(e),
+            };
+            tex_cache.webp.cache.insert(id, r);
         }
     }
     tracing::trace!("Delivered job for {id_c}");
@@ -75,6 +85,9 @@ pub fn run_media_job_pre_action(job_id: &JobId<MediaJobKind>, tex_cache: &mut Te
         }
         MediaJobKind::AnimatedImg => {
             tex_cache.animated.cache.insert(id, TextureState::Pending);
+        }
+        MediaJobKind::WebpImg => {
+            tex_cache.webp.cache.insert(id, TextureState::Pending);
         }
     }
 }

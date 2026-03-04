@@ -2,7 +2,6 @@ use std::{
     collections::{HashMap, VecDeque},
     io::Cursor,
     path::PathBuf,
-    time::{Instant, SystemTime},
 };
 
 use crate::GifState;
@@ -12,21 +11,16 @@ use crate::{
         MediaJobSender, NoOutputRun, RunType,
     },
     media::{
+        animated::{process_animation_frame, AnimationBuilder, ProcessedAnimatedFrame},
         images::{buffer_to_color_image, process_image},
-        load_texture_checked,
     },
-    Error, ImageFrame, ImageType, MediaCache, TextureFrame, TextureState,
+    Error, ImageFrame, ImageType, MediaCache, TextureState,
 };
 use crate::{media::AnimationMode, Animation};
-use egui::{ColorImage, TextureHandle};
+use egui::ColorImage;
 use image::{codecs::gif::GifDecoder, AnimationDecoder, DynamicImage, Frame};
-use std::time::Duration;
 
-pub(crate) struct ProcessedGifFrame<'a> {
-    pub texture: &'a TextureHandle,
-    pub maybe_new_state: Option<GifState>,
-    pub repaint_at: Option<SystemTime>,
-}
+pub(crate) type ProcessedGifFrame<'a> = ProcessedAnimatedFrame<'a>;
 
 /// Process a gif state frame, and optionally present a new
 /// state and when to repaint it
@@ -35,78 +29,7 @@ pub(crate) fn process_gif_frame<'a>(
     frame_state: Option<&GifState>,
     animation_mode: AnimationMode,
 ) -> ProcessedGifFrame<'a> {
-    let now = Instant::now();
-
-    let Some(prev_state) = frame_state else {
-        return ProcessedGifFrame {
-            texture: &animation.first_frame.texture,
-            maybe_new_state: Some(GifState {
-                last_frame_rendered: now,
-                last_frame_duration: animation.first_frame.delay,
-                next_frame_time: None,
-                last_frame_index: 0,
-            }),
-            repaint_at: None,
-        };
-    };
-
-    let should_advance = animation_mode.can_animate()
-        && (now - prev_state.last_frame_rendered >= prev_state.last_frame_duration);
-
-    if !should_advance {
-        let (texture, maybe_new_state) = match animation.get_frame(prev_state.last_frame_index) {
-            Some(frame) => (&frame.texture, None),
-            None => (&animation.first_frame.texture, None),
-        };
-
-        return ProcessedGifFrame {
-            texture,
-            maybe_new_state,
-            repaint_at: prev_state.next_frame_time,
-        };
-    }
-
-    let maybe_new_index = if prev_state.last_frame_index < animation.num_frames() - 1 {
-        prev_state.last_frame_index + 1
-    } else {
-        0
-    };
-
-    let Some(frame) = animation.get_frame(maybe_new_index) else {
-        let (texture, maybe_new_state) = match animation.get_frame(prev_state.last_frame_index) {
-            Some(frame) => (&frame.texture, None),
-            None => (&animation.first_frame.texture, None),
-        };
-
-        return ProcessedGifFrame {
-            texture,
-            maybe_new_state,
-            repaint_at: prev_state.next_frame_time,
-        };
-    };
-
-    let next_frame_time = match animation_mode {
-        AnimationMode::Continuous { fps } => match fps {
-            Some(fps) => {
-                let max_delay_ms = Duration::from_millis((1000.0 / fps) as u64);
-                SystemTime::now().checked_add(frame.delay.max(max_delay_ms))
-            }
-            None => SystemTime::now().checked_add(frame.delay),
-        },
-
-        AnimationMode::NoAnimation | AnimationMode::Reactive => None,
-    };
-
-    ProcessedGifFrame {
-        texture: &frame.texture,
-        maybe_new_state: Some(GifState {
-            last_frame_rendered: now,
-            last_frame_duration: frame.delay,
-            next_frame_time,
-            last_frame_index: maybe_new_index,
-        }),
-        repaint_at: next_frame_time,
-    }
+    process_animation_frame(animation, frame_state, animation_mode, true)
 }
 
 pub struct AnimatedImgTexCache {
@@ -258,9 +181,7 @@ fn generate_anim_pkg(
         .map_err(|e| crate::Error::Generic(e.to_string()))?;
 
     let mut imgs = Vec::new();
-    let mut other_frames = Vec::new();
-
-    let mut first_frame = None;
+    let mut animation_builder = AnimationBuilder::new();
     for (i, frame) in frames.into_iter().enumerate() {
         let delay = frame.delay();
         let img = generate_color_img_frame(frame, process_to_egui);
@@ -269,26 +190,11 @@ fn generate_anim_pkg(
             image: img.clone(),
         });
 
-        let tex_frame = generate_animation_frame(&ctx, &url, i, delay.into(), img);
-
-        if first_frame.is_none() {
-            first_frame = Some(tex_frame);
-        } else {
-            other_frames.push(tex_frame);
-        }
+        animation_builder.push_frame(&ctx, &url, i, delay.into(), img);
     }
 
-    let Some(first_frame) = first_frame else {
-        return Err(crate::Error::Generic(
-            "first frame not found for gif".to_owned(),
-        ));
-    };
-
     Ok(AnimationPackage {
-        anim: Animation {
-            first_frame,
-            other_frames,
-        },
+        anim: animation_builder.finish("first frame not found for gif")?,
         img_frames: imgs,
     })
 }
@@ -304,17 +210,4 @@ fn generate_color_img_frame(
 ) -> ColorImage {
     let img = DynamicImage::ImageRgba8(frame.into_buffer());
     process_to_egui(img)
-}
-
-fn generate_animation_frame(
-    ctx: &egui::Context,
-    url: &str,
-    index: usize,
-    delay: Duration,
-    color_img: ColorImage,
-) -> TextureFrame {
-    TextureFrame {
-        delay,
-        texture: load_texture_checked(ctx, format!("{url}{index}"), color_img, Default::default()),
-    }
 }
