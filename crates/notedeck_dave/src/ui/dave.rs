@@ -1296,26 +1296,31 @@ impl<'a> DaveUi<'a> {
                         }
                     }
 
-                    let r = ui.add(
-                        egui::TextEdit::multiline(self.input)
-                            .desired_width(f32::INFINITY)
-                            .return_key(KeyboardShortcut::new(
-                                Modifiers {
-                                    shift: true,
-                                    ..Default::default()
-                                },
-                                Key::Enter,
-                            ))
-                            .hint_text(
-                                egui::RichText::new(tr!(
-                                    i18n,
-                                    "Ask dave anything...",
-                                    "Placeholder text for Dave AI input field"
-                                ))
-                                .weak(),
+                    let r = egui::ScrollArea::vertical()
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(self.input)
+                                    .desired_width(f32::INFINITY)
+                                    .return_key(KeyboardShortcut::new(
+                                        Modifiers {
+                                            shift: true,
+                                            ..Default::default()
+                                        },
+                                        Key::Enter,
+                                    ))
+                                    .hint_text(
+                                        egui::RichText::new(tr!(
+                                            i18n,
+                                            "Ask dave anything...",
+                                            "Placeholder text for Dave AI input field"
+                                        ))
+                                        .weak(),
+                                    )
+                                    .frame(false),
                             )
-                            .frame(false),
-                    );
+                        })
+                        .inner;
                     notedeck_ui::context_menu::input_context(
                         ui,
                         &r,
