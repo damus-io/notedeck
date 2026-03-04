@@ -4,7 +4,7 @@ use crate::Error;
 use std::borrow::Borrow;
 use std::fmt;
 use std::ops::Deref;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Eq, PartialEq, Clone, Copy, Hash, Ord, PartialOrd)]
 pub struct Pubkey([u8; 32]);
@@ -13,6 +13,13 @@ pub struct Pubkey([u8; 32]);
 pub struct PubkeyRef<'a>(&'a [u8; 32]);
 
 static HRP_NPUB: bech32::Hrp = bech32::Hrp::parse_unchecked("npub");
+
+/// A parsed NIP-19 nprofile, containing the public key and any relay hints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedNprofile {
+    pub pubkey: Pubkey,
+    pub relays: Vec<String>,
+}
 
 impl Borrow<[u8; 32]> for PubkeyRef<'_> {
     fn borrow(&self) -> &[u8; 32] {
@@ -125,6 +132,101 @@ impl Pubkey {
         let nip19_profile = Nip19Profile::from_bech32(bech).ok()?;
         Some(Pubkey::new(nip19_profile.public_key.to_bytes()))
     }
+
+    /// Parse an nprofile bech32 string, extracting both the pubkey and relay hints.
+    ///
+    /// Tries the `nostr` crate first, then falls back to manual TLV parsing
+    /// for robustness against non-standard encodings.
+    pub fn try_from_nprofile_string(s: &str) -> Result<ParsedNprofile, Error> {
+        use nostr::nips::nip19::{FromBech32, Nip19Profile};
+
+        if let Ok(profile) = Nip19Profile::from_bech32(s) {
+            let pubkey = Pubkey::new(profile.public_key.to_bytes());
+            let relays = profile.relays.into_iter().map(|u| u.to_string()).collect();
+            return Ok(ParsedNprofile { pubkey, relays });
+        }
+
+        Self::try_from_nprofile_manual(s)
+    }
+
+    /// Manual TLV parsing fallback for nprofile bech32 strings.
+    ///
+    /// NIP-19 TLV format:
+    /// - Type 0x00 (32 bytes): pubkey (required)
+    /// - Type 0x01 (variable): relay URL (optional, repeatable)
+    fn try_from_nprofile_manual(s: &str) -> Result<ParsedNprofile, Error> {
+        let (hrp, data) = bech32::decode(s).map_err(|_| Error::InvalidBech32)?;
+        if hrp.to_string() != "nprofile" {
+            return Err(Error::InvalidBech32);
+        }
+
+        let mut pubkey: Option<Pubkey> = None;
+        let mut relays: Vec<String> = Vec::new();
+        let mut pos = 0;
+
+        while pos < data.len() {
+            if pos + 2 > data.len() {
+                break;
+            }
+            let typ = data[pos];
+            let len = data[pos + 1] as usize;
+            pos += 2;
+
+            if pos + len > data.len() {
+                warn!("nprofile TLV: truncated value at pos {pos}");
+                break;
+            }
+
+            let value = &data[pos..pos + len];
+            pos += len;
+
+            match typ {
+                0x00 => {
+                    if len != 32 {
+                        return Err(Error::InvalidByteSize);
+                    }
+                    let bytes: [u8; 32] = value.try_into().map_err(|_| Error::InvalidByteSize)?;
+                    pubkey = Some(Pubkey::new(bytes));
+                }
+                0x01 => {
+                    if let Ok(url) = std::str::from_utf8(value) {
+                        let lower = url.to_lowercase();
+                        if lower.starts_with("ws://") || lower.starts_with("wss://") {
+                            relays.push(url.to_string());
+                        }
+                    }
+                }
+                _ => {
+                    // skip unknown TLV types
+                }
+            }
+        }
+
+        let pubkey = pubkey.ok_or(Error::InvalidPublicKey)?;
+        Ok(ParsedNprofile { pubkey, relays })
+    }
+
+    /// Parse a string as hex, npub, or nprofile, returning the pubkey and any relay hints.
+    ///
+    /// Tries hex first, then npub bech32, then nprofile bech32.
+    /// For hex and npub inputs, the relay list will be empty.
+    pub fn parse_with_relays(s: &str) -> Result<ParsedNprofile, Error> {
+        if let Ok(pk) = Pubkey::from_hex(s) {
+            return Ok(ParsedNprofile {
+                pubkey: pk,
+                relays: vec![],
+            });
+        }
+
+        if let Ok(pk) = Pubkey::try_from_bech32_string(s, false) {
+            return Ok(ParsedNprofile {
+                pubkey: pk,
+                relays: vec![],
+            });
+        }
+
+        Pubkey::try_from_nprofile_string(s)
+    }
 }
 
 impl fmt::Display for Pubkey {
@@ -177,5 +279,99 @@ impl<'de> Deserialize<'de> for Pubkey {
 impl hashbrown::Equivalent<Pubkey> for &[u8; 32] {
     fn equivalent(&self, key: &Pubkey) -> bool {
         self.as_slice() == key.bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // npub/nprofile for jb55:
+    // pubkey hex: 32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245
+    const JB55_HEX: &str = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245";
+
+    #[test]
+    fn parse_with_relays_hex() {
+        let result = Pubkey::parse_with_relays(JB55_HEX).unwrap();
+        assert_eq!(result.pubkey.hex(), JB55_HEX);
+        assert!(result.relays.is_empty());
+    }
+
+    #[test]
+    fn parse_with_relays_npub() {
+        let pk = Pubkey::from_hex(JB55_HEX).unwrap();
+        let npub = pk.npub().unwrap();
+        let result = Pubkey::parse_with_relays(&npub).unwrap();
+        assert_eq!(result.pubkey.hex(), JB55_HEX);
+        assert!(result.relays.is_empty());
+    }
+
+    #[test]
+    fn parse_nprofile_with_relay() {
+        use nostr::nips::nip19::{Nip19Profile, ToBech32};
+        use nostr::PublicKey;
+
+        let pk = PublicKey::from_slice(&hex::decode(JB55_HEX).unwrap()).unwrap();
+        let profile = Nip19Profile::new(pk, ["wss://relay.damus.io".to_string()]).unwrap();
+        let bech = profile.to_bech32().unwrap();
+
+        let result = Pubkey::try_from_nprofile_string(&bech).unwrap();
+        assert_eq!(result.pubkey.hex(), JB55_HEX);
+        assert_eq!(result.relays.len(), 1);
+        assert!(result.relays[0].contains("relay.damus.io"));
+    }
+
+    #[test]
+    fn parse_nprofile_multiple_relays() {
+        use nostr::nips::nip19::{Nip19Profile, ToBech32};
+        use nostr::PublicKey;
+
+        let pk = PublicKey::from_slice(&hex::decode(JB55_HEX).unwrap()).unwrap();
+        let profile = Nip19Profile::new(
+            pk,
+            [
+                "wss://relay.damus.io".to_string(),
+                "wss://nos.lol".to_string(),
+            ],
+        )
+        .unwrap();
+        let bech = profile.to_bech32().unwrap();
+
+        let result = Pubkey::try_from_nprofile_string(&bech).unwrap();
+        assert_eq!(result.pubkey.hex(), JB55_HEX);
+        assert_eq!(result.relays.len(), 2);
+    }
+
+    #[test]
+    fn parse_nprofile_no_relays() {
+        use nostr::nips::nip19::{Nip19Profile, ToBech32};
+        use nostr::PublicKey;
+
+        let pk = PublicKey::from_slice(&hex::decode(JB55_HEX).unwrap()).unwrap();
+        let profile = Nip19Profile::new(pk, Vec::<String>::new()).unwrap();
+        let bech = profile.to_bech32().unwrap();
+
+        let result = Pubkey::try_from_nprofile_string(&bech).unwrap();
+        assert_eq!(result.pubkey.hex(), JB55_HEX);
+        assert!(result.relays.is_empty());
+    }
+
+    #[test]
+    fn parse_with_relays_nprofile() {
+        use nostr::nips::nip19::{Nip19Profile, ToBech32};
+        use nostr::PublicKey;
+
+        let pk = PublicKey::from_slice(&hex::decode(JB55_HEX).unwrap()).unwrap();
+        let profile = Nip19Profile::new(pk, ["wss://relay.damus.io".to_string()]).unwrap();
+        let bech = profile.to_bech32().unwrap();
+
+        let result = Pubkey::parse_with_relays(&bech).unwrap();
+        assert_eq!(result.pubkey.hex(), JB55_HEX);
+        assert_eq!(result.relays.len(), 1);
+    }
+
+    #[test]
+    fn parse_with_relays_invalid() {
+        assert!(Pubkey::parse_with_relays("garbage").is_err());
     }
 }
