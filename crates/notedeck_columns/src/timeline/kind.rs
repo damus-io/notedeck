@@ -341,7 +341,7 @@ impl TimelineKind {
     /// Some feeds are not realtime, like certain algo feeds
     pub fn should_subscribe_locally(&self) -> bool {
         match self {
-            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_list_kind)) => true,
+            TimelineKind::Algo(AlgoTimeline::LastPerPubkey(_list_kind)) => false,
 
             TimelineKind::List(_list_kind) => true,
             TimelineKind::Notifications(_pk_src) => true,
