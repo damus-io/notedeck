@@ -18,6 +18,7 @@ egui = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true }
 image = { workspace = true }
+webp = { workspace = true }
 base32 = { workspace = true }
 poll-promise = { workspace = true }
 tracing = { workspace = true }
