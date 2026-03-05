@@ -1,6 +1,6 @@
 use enostr::Pubkey;
 use nostrdb::Note;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -51,6 +51,7 @@ struct Bucket {
     pub total: u64,
     pub kinds: rustc_hash::FxHashMap<u64, u32>,
     pub clients: rustc_hash::FxHashMap<String, u32>,
+    pub client_pubkeys: rustc_hash::FxHashMap<String, FxHashSet<Pubkey>>,
     pub kind1_authors: rustc_hash::FxHashMap<Pubkey, u32>,
 }
 
@@ -84,7 +85,13 @@ impl Bucket {
         }
 
         if let Some(client) = note_client_tag(note) {
-            *self.clients.entry(client.to_string()).or_default() += 1;
+            let client_str = client.to_string();
+            *self.clients.entry(client_str.clone()).or_default() += 1;
+            let pk = Pubkey::new(*note.pubkey());
+            self.client_pubkeys
+                .entry(client_str)
+                .or_default()
+                .insert(pk);
         } else {
             // TODO(jb55): client fingerprinting ?
         }

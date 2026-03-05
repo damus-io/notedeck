@@ -312,11 +312,15 @@ fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
 }
 
 fn client_series(cache: &RollingCache, client: &str) -> Vec<f32> {
-    // left=oldest, right=newest like your series_bars_for_kind does
+    // left=oldest, right=newest — unique pubkeys per bucket
     let n = cache.buckets.len();
     let mut out = Vec::with_capacity(n);
     for i in (0..n).rev() {
-        let v = *cache.buckets[i].clients.get(client).unwrap_or(&0) as f32;
+        let v = cache.buckets[i]
+            .client_pubkeys
+            .get(client)
+            .map(|s| s.len() as f32)
+            .unwrap_or(0.0);
         out.push(v);
     }
     out
@@ -347,12 +351,12 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     let spark_w = (ui.available_width() - 140.0).max(80.0);
     let spark_h = 18.0;
 
-    for (row_i, (client, total)) in top.iter().enumerate() {
+    for (row_i, cs) in top.iter().enumerate() {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(client).small());
+            ui.label(RichText::new(&cs.name).small());
             ui.add_space(6.0);
 
-            let series = client_series(cache, client);
+            let series = client_series(cache, &cs.name);
 
             let resp = crate::sparkline::sparkline(
                 ui,
@@ -362,14 +366,20 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
                 crate::sparkline::SparkStyle::default(),
             );
 
-            // tooltip: last bucket + total
             if resp.hovered() {
                 let last = series.last().copied().unwrap_or(0.0);
-                resp.on_hover_text(format!("total: {total}\nlatest bucket: {:.0}", last));
+                resp.on_hover_text(format!(
+                    "{} users / {} events\nlatest bucket: {:.0}",
+                    cs.unique_pubkeys, cs.events, last
+                ));
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(RichText::new(total.to_string()).small().strong());
+                ui.label(
+                    RichText::new(format!("{} / {}", cs.unique_pubkeys, cs.events))
+                        .small()
+                        .strong(),
+                );
             });
         });
         ui.add_space(4.0);
@@ -386,7 +396,7 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
 
 fn stacked_clients_over_time(
     cache: &RollingCache,
-    top: &[(String, u64)],
+    top: &[ClientStats],
 ) -> Vec<Vec<(egui::Color32, f32)>> {
     let n = cache.buckets.len();
     let mut out = Vec::with_capacity(n);
@@ -394,8 +404,8 @@ fn stacked_clients_over_time(
     // oldest -> newest
     for i in (0..n).rev() {
         let mut segs = Vec::with_capacity(top.len());
-        for (idx, (name, _)) in top.iter().enumerate() {
-            let v = *cache.buckets[i].clients.get(name).unwrap_or(&0) as f32;
+        for (idx, cs) in top.iter().enumerate() {
+            let v = *cache.buckets[i].clients.get(&cs.name).unwrap_or(&0) as f32;
             segs.push((palette(idx), v));
         }
         out.push(segs);
@@ -426,9 +436,9 @@ pub fn clients_stack_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
         // legend
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            for (i, (name, _)) in top.iter().enumerate() {
+            for (i, cs) in top.iter().enumerate() {
                 ui.label(RichText::new("■").color(palette(i)));
-                ui.label(RichText::new(name).small());
+                ui.label(RichText::new(&cs.name).small());
                 ui.add_space(10.0);
             }
         });
@@ -438,20 +448,47 @@ pub fn clients_stack_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     }
 }
 
-fn top_clients_over(cache: &RollingCache, limit: usize) -> Vec<(String, u64)> {
-    let mut agg: FxHashMap<String, u64> = FxHashMap::default();
+struct ClientStats {
+    pub name: String,
+    pub events: u64,
+    pub unique_pubkeys: usize,
+}
+
+fn top_clients_over(cache: &RollingCache, limit: usize) -> Vec<ClientStats> {
+    let mut event_agg: FxHashMap<String, u64> = FxHashMap::default();
+    let mut pubkey_agg: FxHashMap<String, rustc_hash::FxHashSet<enostr::Pubkey>> =
+        FxHashMap::default();
 
     for b in &cache.buckets {
         for (client, count) in &b.clients {
-            *agg.entry(client.clone()).or_default() += *count as u64;
+            *event_agg.entry(client.clone()).or_default() += *count as u64;
+        }
+        for (client, pubkeys) in &b.client_pubkeys {
+            pubkey_agg
+                .entry(client.clone())
+                .or_default()
+                .extend(pubkeys);
         }
     }
 
-    let mut out: Vec<(String, u64)> = agg.into_iter().collect();
+    let mut out: Vec<ClientStats> = event_agg
+        .into_iter()
+        .map(|(name, events)| {
+            let unique_pubkeys = pubkey_agg.get(&name).map(|s| s.len()).unwrap_or(0);
+            ClientStats {
+                name,
+                events,
+                unique_pubkeys,
+            }
+        })
+        .collect();
 
-    // sort desc by count; tie-break by name for stability
-    out.sort_by(|(a_name, a_cnt), (b_name, b_cnt)| {
-        b_cnt.cmp(a_cnt).then_with(|| a_name.cmp(b_name))
+    // sort desc by unique pubkeys; tie-break by events then name
+    out.sort_by(|a, b| {
+        b.unique_pubkeys
+            .cmp(&a.unique_pubkeys)
+            .then_with(|| b.events.cmp(&a.events))
+            .then_with(|| a.name.cmp(&b.name))
     });
 
     out.truncate(limit);
