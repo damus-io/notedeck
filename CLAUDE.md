@@ -12,3 +12,10 @@ be identified and closed automatically
 - **Assignee**: Assign issues to the person doing the work. Use "me" for self-assignment.
 - **Active project**: Current quarterly project is "1Q26 Notedeck". Assign issues to relevant milestones when applicable.
 - **Teams**: `notedeck` (DECK) for app issues, `nostrdb` (NDB) for database issues.
+
+## Committing
+
+Before committing, you must format and fix clippy issues:
+
+    cargo fmt --all && cargo clippy
+
