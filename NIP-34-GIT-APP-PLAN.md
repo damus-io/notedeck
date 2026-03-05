@@ -486,10 +486,79 @@ Follow the livestream app's pattern (`STREAMING_RELAYS` in `notedeck_livestream/
 
 A `notedeck-git` CLI following `gh`/`glab` patterns and [clig.dev](https://clig.dev) guidelines. Shares the `notedeck_git` domain crate (parsing, validation, status resolution). Separate binary in `crates/notedeck_git_cli/`.
 
-Command pattern: `notedeck-git <noun> <verb> [flags]` (repo, issue, patch, pr).
+Command pattern: `notedeck-git <noun> <verb> [flags]`
 
-**Human-first (clig.dev):** Human-readable default output, `--help` with examples, TTY color detection, spinners for relay queries, errors rewritten for humans.
+### Command mapping: `gh` → `notedeck-git` → NIP-34
 
-**Agent-first ([agent CLI design](https://justin.poehnelt.com/posts/rewrite-your-cli-for-ai-agents/)):** `--json` for both input and output (not just output — accept full structured payloads via `--params`), `schema` subcommand for machine-readable introspection (parameter types, required fields), `--dry-run` for mutations, NDJSON streaming for large result sets (respects context window limits). This makes the CLI native to AI agent workflows — Daniel's second user story.
+| `gh` command | `notedeck-git` equivalent | NIP-34 basis | Notes |
+|-------------|--------------------------|-------------|-------|
+| `gh repo list` | `repo list` | kind 30617 query | List repos from subscribed relays |
+| `gh repo view` | `repo view <naddr>` | kind 30617 + 30618 | Show metadata, clone URLs, maintainers, refs |
+| `gh repo clone` | `repo clone <naddr>` | `clone` tag on 30617 | Resolves clone URL from announcement, runs `git clone` |
+| — | `repo add <naddr>` | kind 30617 | Subscribe to a repo (no `gh` equivalent — decentralized discovery) |
+| `gh issue list` | `issue list` | kind 1621 + 1630-1633 | Filter by `--state open/closed` |
+| `gh issue view` | `issue view <id>` | kind 1621 + 1111 | Show issue body (Markdown) + threaded comments |
+| `gh issue create` | `issue create` | publish kind 1621 | `--title`, `--body`, `--label` flags (v2 — write path) |
+| `gh issue close` | `issue close <id>` | publish kind 1632 | Publishes status event (v2) |
+| `gh issue reopen` | `issue reopen <id>` | publish kind 1630 | Publishes status event (v2) |
+| `gh issue comment` | `issue comment <id>` | publish kind 1111 | NIP-22 comment (v2) |
+| `gh pr list` | `pr list` | kind 1618 + 1630-1633 | Filter by `--state open/applied/closed/draft` |
+| `gh pr view` | `pr view <id>` | kind 1618/1619 + 1111 | Show PR description, tip, clone URL, comments |
+| `gh pr checkout` | `pr checkout <id>` | `clone` + `c` tags on 1618 | `git fetch <url> refs/nostr/<event-id>` + checkout |
+| `gh pr diff` | `pr diff <id>` | kind 1618 | Fetch ref and run `git diff` locally |
+| `gh pr create` | `pr create` | publish kind 1618 | Push to `refs/nostr/<id>`, publish event (v2) |
+| `gh pr close` | `pr close <id>` | publish kind 1632 | Publishes status event (v2) |
+| `gh pr merge` | — | — | No server-side merge. Maintainer merges locally, publishes kind 1631 (Applied) |
+| `gh pr review` | — | — | No approve/request-changes semantics in NIP-34. Use comments. |
+| — | `patch list` | kind 1617 + 1630-1633 | No `gh` equivalent — email-style patches |
+| — | `patch view <id>` | kind 1617 + 1111 | Show diff + comments |
+| — | `patch apply <id>` | kind 1617 content | Pipe `git format-patch` content to `git am` |
+| — | `patch send` | publish kind 1617 | `git format-patch` → publish (v2) |
+| `gh search issues` | `search --type issue <query>` | client-side filter | No server-side search — filter locally by tag values |
+| `gh search prs` | `search --type pr <query>` | client-side filter | Same |
+| `gh status` | `status` | cross-repo query | Your authored/mentioned issues, patches, PRs across repos |
+| `gh api` | `api <filter-json>` | raw nostr REQ | Send raw filters to relays, return events as JSON |
+| `gh label list` | `label list` | `t` tags on 1621/1617/1618 | Read-only — labels are tags on events, not separate entities |
+| `gh auth` | `auth login/logout/status` | nsec/bunker | Nostr key management |
+| `gh browse` | `browse` | `web` tag on 30617 | Open repo's web URL in browser |
 
-Details to be specced when MVP GUI is functional.
+### What NIP-34 doesn't support (no `gh` equivalent possible)
+
+| `gh` feature | Why it's absent | Workaround / future |
+|-------------|----------------|---------------------|
+| `gh pr merge` | No server-side merge. Git servers are "dumb data relays." | Maintainer merges locally, publishes kind 1631 (Applied) status |
+| `gh pr review --approve` | No approval/request-changes workflow | Use comments (kind 1111). Could be a NIP extension. |
+| `gh pr checks` / `gh run` | No CI/CD integration | Future: independent CI services via nostr webhooks (fiatjaf's vision) |
+| `gh release` | No release kind in NIP-34 | Kind 30063 exists separately (not NIP-34) |
+| `gh project` | No project boards | Not in scope for nostr git |
+| `gh repo create` | Repos aren't "created" — they're announced | `repo init` publishes kind 30617 announcement for existing git repo |
+| `gh repo fork` | No fork graph. Repos are independent. | Publish your own 30617 with `t=personal-fork` tag |
+| `gh repo delete` | Addressable events can be updated but not truly deleted | Publish updated 30617 removing content, or stop announcing |
+| `gh secret` / `gh variable` | No server-side config | N/A |
+| `gh codespace` | No cloud dev environments | N/A |
+| `gh wiki` | No wiki kind | N/A |
+| Code browsing (`gh repo view --files`) | No file tree kind in NIP-34 | Use `clone` tag to clone locally |
+| Assignees, milestones | No structured metadata beyond `t` tags | Could be NIP extension |
+| PR branch protection rules | No server-enforced rules | Maintainer trust model via pubkey authority |
+
+### Design principles
+
+**Human-first ([clig.dev](https://clig.dev)):** Human-readable default output, `--help` with examples, TTY color detection, spinners for relay queries, errors rewritten for humans.
+
+**Agent-first ([agent CLI design](https://justin.poehnelt.com/posts/rewrite-your-cli-for-ai-agents/)):** `--json` for both input and output (accept full structured payloads via `--params`), `schema` subcommand for machine-readable introspection (parameter types, required fields), `--dry-run` for mutations, NDJSON streaming for large result sets. This makes the CLI native to AI agent workflows — Daniel's second user story.
+
+### Common flags (consistent across all commands, following `gh` conventions)
+
+```
+-R, --repo <naddr>       target a specific repo (default: from .git/config or prompt)
+-r, --relay <url>        override relay (repeatable)
+--json [<fields>]        structured JSON output (optionally specific fields)
+-q, --jq <expr>          filter JSON output with jq
+-s, --state <str>        open/applied/closed/draft/all (default: open)
+-l, --label <str>        filter by label (t tag)
+-L, --limit <n>          max results (default: 30)
+-w, --web                open in browser (uses web tag from 30617)
+--no-color               disable color (also respects NO_COLOR env)
+--dry-run                validate without publishing (v2 write commands)
+--params <json>          accept structured input (agent-friendly)
+```
