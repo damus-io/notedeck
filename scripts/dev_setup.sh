@@ -11,9 +11,10 @@ fi
 
 # Copy the pre-commit hook script
 cp -p "$HOOK_SCRIPTS_DIR/pre_commit_hook.sh" "$GIT_HOOKS_DIR/pre-commit"
-
-# Make the hook script executable
 chmod +x "$GIT_HOOKS_DIR/pre-commit"
 
-echo "Pre-commit hook has been set up successfully."
+# Copy the commit-msg hook script
+cp -p "$HOOK_SCRIPTS_DIR/commit_msg_hook.sh" "$GIT_HOOKS_DIR/commit-msg"
+chmod +x "$GIT_HOOKS_DIR/commit-msg"
 
+echo "Git hooks have been set up successfully."
