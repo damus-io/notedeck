@@ -124,6 +124,22 @@ Follow-based discovery (repos from people you follow) is a nice-to-have.
 
 ## App Behavior — Views
 
+### What the GUI deliberately omits (NIP-34 limitations)
+
+These are GitHub/GitLab features users might expect but that NIP-34 doesn't support. The GUI should not fake these with half-measures — better to omit cleanly than confuse users.
+
+| Missing feature | Why | What we show instead |
+|----------------|-----|---------------------|
+| Merge button | No server-side merge. Git servers are dumb relays. | Status badge updates when maintainer publishes kind 1631 (Applied) |
+| Approve / Request changes | No review workflow semantics | Comments only (kind 1111). All comments are equal. |
+| CI/CD checks | No CI integration in NIP-34 | Nothing. No checks tab. |
+| Code browser / file tree | No file tree kind | Clone URLs on Info tab. User clones locally. |
+| Assignees | No assignment concept | Not shown. Author is the only attributed identity. |
+| Milestones / Projects | No structured project management | Not shown |
+| Fork graph | Repos are independent. No parent/child relationship. | `t=personal-fork` tag shown as a badge if present |
+| Server-side search | No relay-side search for NIP-34 events | Client-side filtering by tag values |
+| Labels CRUD | Labels are `t` tags on events — immutable after publish | Display labels read-only. No create/edit/delete. |
+
 ### Navigation
 
 **Routes** (stack-based via `Router<GitRoute>`):
