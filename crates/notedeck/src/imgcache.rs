@@ -31,6 +31,7 @@ pub struct TexturesCache {
     pub static_image: StaticImgTexCache,
     pub blurred: BlurCache,
     pub animated: AnimatedImgTexCache,
+    pub webp: crate::media::webp::WebpTexCache,
 }
 
 impl TexturesCache {
@@ -43,6 +44,9 @@ impl TexturesCache {
             animated: AnimatedImgTexCache::new(
                 base_dir.join(MediaCache::rel_dir(MediaCacheType::Gif)),
             ),
+            webp: crate::media::webp::WebpTexCache::new(
+                base_dir.join(MediaCache::rel_dir(MediaCacheType::Webp)),
+            ),
         }
     }
 }
@@ -51,6 +55,12 @@ pub enum TextureState<T> {
     Pending,
     Error(crate::Error),
     Loaded(T),
+}
+
+impl<T> TextureState<T> {
+    pub fn is_loaded(&self) -> bool {
+        matches!(self, TextureState::Loaded(_))
+    }
 }
 
 impl<T> std::fmt::Debug for TextureState<T> {
@@ -102,6 +112,7 @@ pub struct MediaCache {
 pub enum MediaCacheType {
     Image,
     Gif,
+    Webp,
 }
 
 impl MediaCache {
@@ -136,7 +147,20 @@ impl MediaCache {
         match cache_type {
             MediaCacheType::Image => "img",
             MediaCacheType::Gif => "gif",
+            MediaCacheType::Webp => "webp",
         }
+    }
+
+    /// Writes raw bytes directly to the cache file for a given URL.
+    ///
+    /// Use this when the original network bytes are already in the desired
+    /// format (e.g. WebP), avoiding unnecessary re-encoding.
+    pub fn write_bytes(cache_dir: &path::Path, url: &str, data: &[u8]) -> Result<()> {
+        let file_path = cache_dir.join(Self::key(url));
+        if let Some(p) = file_path.parent() {
+            create_dir_all(p)?;
+        }
+        Ok(std::fs::write(file_path, data)?)
     }
 
     pub fn write(cache_dir: &path::Path, url: &str, data: ColorImage) -> Result<()> {
@@ -272,11 +296,13 @@ pub struct Images {
     pub base_path: path::PathBuf,
     pub static_imgs: MediaCache,
     pub gifs: MediaCache,
+    pub webps: MediaCache,
     pub textures: TexturesCache,
     pub urls: UrlMimes,
     /// cached imeta data
     pub metadata: HashMap<String, ImageMetadata>,
     pub gif_states: GifStateMap,
+    pub webp_states: WebpStateMap,
 }
 
 impl Images {
@@ -286,8 +312,10 @@ impl Images {
             base_path: path.clone(),
             static_imgs: MediaCache::new(&path, MediaCacheType::Image),
             gifs: MediaCache::new(&path, MediaCacheType::Gif),
+            webps: MediaCache::new(&path, MediaCacheType::Webp),
             urls: UrlMimes::new(UrlCache::new(path.join(UrlCache::rel_dir()))),
             gif_states: Default::default(),
+            webp_states: Default::default(),
             metadata: Default::default(),
             textures: TexturesCache::new(path.clone()),
         }
@@ -295,7 +323,8 @@ impl Images {
 
     pub fn migrate_v0(&self) -> Result<()> {
         self.static_imgs.migrate_v0()?;
-        self.gifs.migrate_v0()
+        self.gifs.migrate_v0()?;
+        self.webps.migrate_v0()
     }
 
     pub fn get_renderable_media(&mut self, url: &str) -> Option<RenderableMedia> {
@@ -334,7 +363,9 @@ impl Images {
         let mut loader = NoLoadingLatestTex::new(
             &self.textures.static_image,
             &self.textures.animated,
+            &self.textures.webp,
             &mut self.gif_states,
+            &mut self.webp_states,
         );
         loader.latest(jobs, ui.ctx(), url, cache_type, img_type, animation_mode)
     }
@@ -343,6 +374,7 @@ impl Images {
         match cache_type {
             MediaCacheType::Image => &self.static_imgs,
             MediaCacheType::Gif => &self.gifs,
+            MediaCacheType::Webp => &self.webps,
         }
     }
 
@@ -350,6 +382,7 @@ impl Images {
         match cache_type {
             MediaCacheType::Image => &mut self.static_imgs,
             MediaCacheType::Gif => &mut self.gifs,
+            MediaCacheType::Webp => &mut self.webps,
         }
     }
 
@@ -368,7 +401,9 @@ impl Images {
         self.urls.cache.clear();
         self.static_imgs.clear();
         self.gifs.clear();
+        self.webps.clear();
         self.gif_states.clear();
+        self.webp_states.clear();
 
         Ok(())
     }
@@ -378,7 +413,9 @@ impl Images {
             NoLoadingLatestTex::new(
                 &self.textures.static_image,
                 &self.textures.animated,
+                &self.textures.webp,
                 &mut self.gif_states,
+                &mut self.webp_states,
             ),
             &self.textures.blurred,
         )
@@ -392,7 +429,9 @@ impl Images {
         NoLoadingLatestTex::new(
             &self.textures.static_image,
             &self.textures.animated,
+            &self.textures.webp,
             &mut self.gif_states,
+            &mut self.webp_states,
         )
     }
 
@@ -400,18 +439,16 @@ impl Images {
         match media_type {
             MediaCacheType::Image => self.textures.static_image.contains(url),
             MediaCacheType::Gif => self.textures.animated.contains(url),
+            MediaCacheType::Webp => self.textures.webp.contains(url),
         }
     }
 }
 
 pub type GifStateMap = HashMap<String, GifState>;
+pub type GifState = crate::media::animated::AnimatedFrameState;
 
-pub struct GifState {
-    pub last_frame_rendered: Instant,
-    pub last_frame_duration: Duration,
-    pub next_frame_time: Option<SystemTime>,
-    pub last_frame_index: usize,
-}
+pub type WebpStateMap = HashMap<String, WebpState>;
+pub type WebpState = crate::media::animated::AnimatedFrameState;
 
 pub struct LatestTexture {
     pub texture: TextureHandle,
