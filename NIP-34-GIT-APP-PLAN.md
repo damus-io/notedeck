@@ -2,346 +2,494 @@
 
 ## What We're Building
 
-A nostr-native git collaboration app for Notedeck, implementing NIP-34. Users will browse repositories, issues, patches, and pull requests — all decentralized over Nostr relays. The UX will feel familiar to GitHub/GitLab users while being fully decentralized.
+A nostr-native git collaboration app for Notedeck implementing NIP-34. Browse repositories, issues, patches, and pull requests — decentralized over Nostr relays. The UX follows GitHub/GitLab patterns. Git collaboration is a solved problem; we're decentralizing the transport.
 
-**MVP (v1):** Read-only. Browse and display repos, issues, patches, PRs, comments, and status.
-**v2:** Write path — post comments (kind 1111), open issues, set status events.
+**MVP:** Read-only. Browse repos, issues, patches, PRs, comments, status.
+**Post-MVP:** Write path (comments, issues, status). CLI tool.
+
+## Prior Art
+
+Existing NIP-34 implementations we should study and learn from:
+
+| Project | Type | Notes |
+|---------|------|-------|
+| [gitworkshop.dev](https://gitworkshop.dev/) | Web (Svelte) | Primary web client. QueryCentre hub, isomorphic-git for diffs in-browser |
+| [ngit-cli](https://codeberg.org/DanConwayDev/ngit-cli) | CLI (Rust) | v2.0.1, 850+ commits. `nostr://` remote, `git-remote-nostr` helper |
+| [Gitplaza](https://codeberg.org/dluvian/gitplaza) | Desktop (Rust/Iced) | Closest to what we're building. 5 views: repo, patch, issue, profile, inbox |
+| [gitstr](https://github.com/fiatjaf/gitstr) | CLI (Go) | Minimal. fiatjaf uses it for nak/go-nostr |
+
+**Key relay:** `relay.ngit.dev` — public ngit-relay (GRASP protocol reference impl). Most NIP-34 activity concentrates here. Repos specify their relays in the `relays` tag of kind 30617.
+
+**Lessons from prior art:**
+- Gitplaza reads patch descriptions from the `description` tag, not letter content
+- `nostr://` URL format (`nostr://<npub-or-nip05>/<repo-id>`) is the emerging standard for clone URIs
+- ngit is dogfooded (developed using itself) — proves the workflow works
+- Patch vs PR model tension exists — NIP-34 supports both, clients must handle both
+- Discovery depends on relay connectivity — no central index
+
+## Open Question
+
+**AsyncLoader pattern:** jb55 said "we have a new AsyncLoader pattern" in review. No type named `AsyncLoader` exists anywhere — not in notedeck, nostrdb, or nostrdb-rs (checked all branches, stashes, PRs). nostrdb-rs has `SubscriptionStream` (`future.rs`) which wraps `poll_for_notes()` into a `futures::Stream`, and `wait_for_notes()` which uses it — but jb55 explicitly said the plan's use of `wait_for_notes` was "incorrect" and referenced AsyncLoader as something different. He also said "we should standardize this into nostrdb-rs somehow", confirming it's aspirational. **Need to clarify with jb55 what he envisions.** Until then, use `poll_for_notes()` + app-level state enum (the established pattern in messages app, contacts, timelines) and adapt when it materializes.
+
+---
 
 ## Decisions
 
-- **Validation policy:** Strict drop. Only display spec-compliant events. Dropped events are logged at `tracing::trace!` level with reason and counted via puffin profiler, enabling developer observability without user-facing noise.
-- **Authority cache:** Use nostrdb as cache for maintainer lists and resolved state. Subscribe to kind 30617 updates so the cache auto-refreshes when maintainer lists change.
-- **Relay abstraction:** Build a thin `GitRelayBackend` trait abstracting relay operations. Implement for `RelayPool` immediately (current codebase). Add `OutboxPool` implementation when PR [#1288](https://github.com/damus-io/notedeck/pull/1288) lands. No hard dependency on outbox.
-- **Android/mobile:** Notedeck compiles to Android (Damus Android). All views must support narrow/mobile screen layouts. This is a cross-cutting requirement, not a bolt-on.
-- **NIP-22 P/p tags:** Follow NIP-22 "when available" semantics (`nips/22.md:16`). In NIP-34 comment scopes (issues, patches, PRs), root and parent authors are always nostr events with known pubkeys, so `P`/`p` tags are effectively always required. Strict drop applies: reject kind 1111 events missing `P`/`p` when the referenced root/parent is a nostr event.
+- **Validation:** Strict drop. Only display spec-compliant events. Log drops at `tracing::trace!`.
+- **Relay access:** Use `ctx.remote` (RemoteApi / ScopedSubApi) — the new standard after outbox merge (#1303). No custom relay abstraction.
+- **Async work:** `poll_for_notes()` for subscriptions in the frame loop. `JobCache`/`JobPool` for heavy CPU/IO.
+- **Relay discovery:** Hardcode `relay.ngit.dev` as default git relay (like livestream app hardcodes streaming relays). Once a repo is loaded, use its `relays` tag for scoped subscriptions.
+- **Mobile:** All views must support `is_narrow()`. Cross-cutting, not bolt-on.
+- **No `FilterBuilder::custom()`:** Leaks memory (`filter.rs:427 FIXME`). All NIP validation in app code post-query.
 
-## Nostrdb Integration Strategy
+---
 
-The git app should leverage [nostrdb-rs](https://github.com/damus-io/nostrdb-rs) as the primary data layer rather than building parallel caches. Key capabilities to use:
+## The Hard Parts
 
-### Direct d-tag queries for addressable events
-nostrdb's `FilterBuilder::tags(values, tag_char)` supports filtering by any tag character including `'d'`. This means repo lookups by coordinate are efficient single queries, not full scans:
+These are the technically risky areas that need design attention, not just bullet points.
+
+### 1. Diff Rendering
+
+Patches (kind 1617) contain `git format-patch` output — unified diff text. Rendering this well in egui is the single hardest UI problem in the app.
+
+**Parsing:** Use the [`patch`](https://docs.rs/patch/latest/patch/) crate (Rust, zero-copy, `nom`-based). It parses unified diffs into `Patch` → `Hunk` → `Line::Add/Remove/Context` — maps directly to rendering. Gitplaza uses [`unidiff`](https://docs.rs/unidiff/latest/unidiff/) (also viable, heavier API).
+
+**Rendering:** Use `LayoutJob` + `TextFormat` with per-line `background` colors. This exact pattern already exists in `PostBuffer::to_layout_job()` (`notedeck_columns/src/post.rs:399`) for coloring mentions. Monospace font (Inconsolata) already configured via `NotedeckTextStyle::Monospace`.
+
 ```rust
-// Efficient: query repo by coordinate directly in nostrdb
-Filter::new()
-    .kinds([30617])
-    .authors([pubkey])
-    .tags(["repo-identifier"], 'd')
-    .limit(1)
-    .build()
+// Per-line coloring via LayoutJob (existing notedeck pattern)
+for line in patch.hunks.iter().flat_map(|h| &h.lines) {
+    let (bg, fg) = match line {
+        Line::Add(_)     => (GREEN_BG, GREEN_FG),
+        Line::Remove(_)  => (RED_BG, RED_FG),
+        Line::Context(_) => (TRANSPARENT, GREY),
+    };
+    job.append(&format!("{line}\n"), 0.0, TextFormat {
+        font_id: FontId::monospace(13.0),
+        color: fg, background: bg, ..Default::default()
+    });
+}
 ```
 
-### Repo-scoped queries use full NIP-33 coordinates for a-tags
-NIP-34 events (issues, patches, PRs) reference their parent repo via `a` tags using the full coordinate format `30617:<pubkey>:<repo-id>` (see `nips/34.md:124`, `nips/34.md:179`). Queries must match this:
+**MVP scope:** Colored lines only (green additions, red deletions, grey context). File headers as collapsible sections. Horizontal scroll for long lines.
+
+**NOT MVP:** No split (side-by-side) view. No inline commenting. No syntax highlighting within diff lines (would require enabling `egui_extras` `syntect` feature — significant binary size increase).
+
+### 2. Subscription Fan-out
+
+When viewing a repo, we need events from multiple kinds. Using `ScopedSubApi`:
+
 ```rust
-// Correct: full coordinate in a-tag query
-let repo_coordinate = format!("30617:{}:{}", hex::encode(pubkey), repo_id);
-Filter::new()
-    .kinds([1621])
-    .tags([repo_coordinate.as_str()], 'a')
-    .build()
+// One owner per repo view instance
+let owner = SubOwnerKey::builder("git-repo-view").with(repo_coord).finish();
+
+// Subscribe to repo-scoped events in a single filter group where possible
+let filters = vec![
+    // Repo announcement + state
+    Filter::new().kinds([30617, 30618]).authors([pubkey]).tags([d_tag], 'd').build(),
+    // Issues, patches, PRs for this repo
+    Filter::new().kinds([1621, 1617, 1618]).tags([repo_a_tag], 'a').build(),
+    // Status events (optional a-tag for relay filter efficiency per NIP-34)
+    Filter::new().kinds([1630, 1631, 1632, 1633]).tags([repo_a_tag], 'a').build(),
+];
+
+ctx.remote.scoped_subs(ctx.accounts).ensure_sub(
+    ScopedSubIdentity::account(owner, sub_key),
+    SubConfig {
+        relays: RelaySelection::Explicit(repo_relays),  // from 30617 relays tag
+        filters,
+        use_transparent: false,
+    },
+);
+
+// Comments loaded lazily when viewing a specific issue/patch/PR
+// (separate sub with same owner, torn down on navigate-back)
 ```
 
-### Functional query combinators
-nostrdb provides `fold`, `try_fold`, `find_map`, `any`, `all` — these short-circuit and avoid materializing full result sets:
-- **`find_map`** — find latest repo state by `created_at` without loading all versions
-- **`try_fold`** — aggregate status events with early exit on authority match
-- **`fold`** — build patch series ordering in a single pass
-- **`count`** — efficient counts for UI stats (issue count, PR count per repo) without materializing
+**Lifecycle:** `ensure_sub` on view open, `drop_owner` on view close. Shared subs ref-counted by the runtime.
 
-### App-level validation (not custom filters)
-~~`FilterBuilder::custom(closure)` pushes validation into the query itself.~~ **Do not use `custom()` for validation.** nostrdb-rs `filter.rs:427` has `FIXME: THIS LEAKS!` — custom filter closures leak memory. Since filters are rebuilt during navigation and subscription refresh, this would cause unbounded memory growth. Instead:
-- Query with standard kind/tag/author filters at the nostrdb level
-- Validate NIP-22/NIP-34 compliance in app code after query results are returned
-- Log and count dropped events at `tracing::trace!` level
+**Comment counts:** Don't query per-item on list views. Either:
+- Show comment counts only on detail views (simplest)
+- Or batch-query kind 1111 for all visible items and count client-side
 
-### Async subscription via `wait_for_notes`
-`ndb.wait_for_notes(sub, max)` is async — better than manual poll loops for non-blocking updates. Use with `JobPool` or tokio for frame-safe waiting.
+### 3. First-Run / Repo Discovery
 
-### Subscription lifecycle
-Subscriptions are held in struct fields across frames and polled each frame — this is the standard notedeck pattern (see `notedeck_columns/src/timeline/mod.rs:251`). Do NOT recreate subscriptions each frame. Use `FilterStates` for lifecycle management.
+Users need a way to find repos. Two approaches for MVP:
+- **Default relay:** Pre-configure `relay.ngit.dev` (like livestream app hardcodes streaming relays) and query `kinds([30617])` for a browsable list
+- **Manual add:** Paste a `naddr` or `nostr://` URI to subscribe to a specific repo
 
-### Repo discovery via tag queries (not full-text search)
-Repo announcements (kind 30617) have empty content — metadata lives in tags (`name`, `description`, `d`, `clone`, `web`, etc.). `ndb.search()` indexes content/profiles, not tags, so it won't find repos. Discovery must use:
-- `kinds([30617])` to list all repos
-- Tag-based filtering (`tags([value], 't')` for hashtags) for narrowing
-- App-level name/description matching from parsed tag values for search UI
+Follow-based discovery (repos from people you follow) is a nice-to-have.
 
-### What nostrdb does NOT handle
-- **Replaceable event dedup**: nostrdb stores all versions; app must select newest by `created_at` per coordinate. Use `find_map` with timestamp comparison rather than loading all then sorting.
-- **Authority validation**: nostrdb has no concept of maintainer permissions. Status resolver must query maintainer list from 30617 then validate in app code post-query.
-- **NIP-specific semantics**: All NIP-22/NIP-34 tag structure validation is app-level (not pushed into `custom()` due to leak).
+---
 
-### Integration pattern per commit
+## App Behavior — Views
 
-| Commit | nostrdb API used |
-|--------|------------------|
-| Parsing | `note.tags()` zero-copy iteration, `tag.get_str()`, `tag.get_id()` |
-| Addressable coordinator | `tags(['d-value'], 'd')` + `find_map` for newest-by-timestamp |
-| Status resolver | `kinds([1630, 1631, 1632, 1633])` + app-level authority check post-query + `fold` for latest-by-timestamp |
-| Revision threading | `tags([root_id], 'e')` + `fold` to build ordered series |
-| Subscriptions | `subscribe(&filters)`, `wait_for_notes` (async), `poll_for_notes`; held in struct fields across frames |
-| Repo list | `kinds([30617])` + app-level name/tag search |
-| Issue lists | `kinds([1621])` + `tags(["30617:<pubkey>:<repo-id>"], 'a')` + app-level `fold` count (post-validation) for badges |
-| Patch lists | `kinds([1617])` + `tags(["30617:<pubkey>:<repo-id>"], 'a')` + app-level `fold` count (post-validation) for badges |
-| PR lists | `kinds([1618])` + `tags(["30617:<pubkey>:<repo-id>"], 'a')` + app-level `fold` count (post-validation) for badges |
-| NIP-22 comments | `kinds([1111])` + app-level tag structure validation post-query |
+### Navigation
 
-## Reference Architecture
+**Routes** (stack-based via `Router<GitRoute>`):
+```
+RepoList                          — browse/search repos
+RepoDetail(RepoCoord)             — repo overview with tabs
+IssueDetail(RepoCoord, NoteId)    — single issue + comments
+PatchDetail(RepoCoord, NoteId)    — single patch/series + diff + comments
+PrDetail(RepoCoord, NoteId)       — single PR + comments
+```
 
-Built following the **Dave app** pattern:
-- New crate `notedeck_git` in `crates/`
-- Implements `notedeck::App` trait (single `update()` method)
-- Registered in Chrome's `NotedeckApp` enum, feature-gated
-- State managed in structs (no globals), passed by reference
-- Non-blocking UI: `Promise`, `JobPool`, channels for async work
+Issue/patch/PR lists are tabs within `RepoDetail`, not separate routes.
 
-## NIP-34 Event Kinds Covered
+**Desktop:** Left sidebar with repo list (persistent). Main area shows selected repo's tab content. Click an item in a tab list to push a detail route.
 
-| Kind | Purpose |
-|------|---------|
-| 30617 | Repository announcements (addressable, keyed by `d` tag) |
-| 30618 | Repository state — branches/tags (addressable, keyed by `d` tag) |
-| 1617 | Patches (<60kb, `git format-patch` output) |
-| 1618 | Pull requests (>60kb, pushed to `refs/nostr/[event-id]`) |
-| 1619 | PR updates (tip commit changes, NIP-22 threading via `E`/`P` tags) |
-| 1621 | Issues (bug reports, features, questions) |
-| 1630-1633 | Status: Open / Applied / Closed / Draft |
-| 1111 | NIP-22 threaded comments (plaintext, strict tag structure) |
-| 10317 | User grasp list (git hosting prefs) |
+**Mobile:** Full-screen stack. RepoList → RepoDetail (with tabs) → Item detail. Back button to pop.
 
-## Commit Sequence (dependency order)
+### Repository List
 
-Each commit is **logically distinct** and **standalone** (removable without breaking others).
+```
+┌──────────────────────────────────────────────┐
+│ [Search repos...]                   [+ Add]  │
+├──────────────────────────────────────────────┤
+│ 👤 jb55 / notedeck                           │
+│ The best nostr client                        │
+│ Updated 1d ago                               │
+├──────────────────────────────────────────────┤
+│ 👤 fiatjaf / nak                             │
+│ the nostr army knife                         │
+│ Updated 3d ago                               │
+└──────────────────────────────────────────────┘
+```
 
-### Phase 1: Foundation
+- Maintainer avatar (`ProfilePic`) + repo name (from `name` tag on 30617)
+- Description (from `description` tag)
+- Last updated timestamp
+- Search: client-side filter by name/description tag values (not `ndb.search()`)
+- Sort: most recently updated first
 
-1. **Scaffold notedeck_git crate**
-   - Empty compilable crate, workspace member, feature gate
-   - Cargo.toml with dependencies, lib.rs with module declarations
+### Repository Detail (with tabs)
 
-2. **Define NIP-34 event type structs**
-   - Pure data types for all event kinds, docstrings, no parsing logic
-   - Blocked by: scaffold
+```
+┌──────────────────────────────────────────────┐
+│ ← Back                                       │
+│ 👤 jb55 / notedeck                           │
+│ The best nostr client                        │
+│                                              │
+│ [Issues 12] [Patches 3] [PRs 1] [Info]       │
+├──────────────────────────────────────────────┤
+│                                              │
+│ (tab content — e.g. issue list below)        │
+│                                              │
+│ ● Fix crash on Android startup               │
+│   opened 2h ago by alice                     │
+│                                              │
+│ ● Add dark mode support                      │
+│   opened 1d ago by bob                       │
+│                                              │
+│ ○ Improve relay handling                      │
+│   closed 3d ago by charlie                   │
+│                                              │
+└──────────────────────────────────────────────┘
+```
 
-3. **Implement NIP-34 event parsing from nostrdb**
-   - `TryFrom`/parse functions, tag extraction, guard clauses (nevernesting)
-   - Strict drop: reject events with missing or malformed required tags; log at `tracing::trace!` with reason
-   - `a`-tag values are full NIP-33 coordinates: `30617:<pubkey>:<repo-id>`
-   - Before implementing, evaluate whether nostrdb upgrades simplify tag access
-   - Blocked by: types
+**Tabs:**
+- **Issues** (default) — kind 1621 list with Open/Closed filter
+- **Patches** — kind 1617 list with Open/Applied/Closed/Draft filter
+- **PRs** — kind 1618 list with same status filters
+- **Info** — clone URLs, web URL, relays, maintainer list, branch/tag state (30618)
 
-4. **Implement GitApp struct with App trait**
-   - Main struct, `Router<GitRoute>`, `update()` dispatch
-   - State in struct fields — no globals, no thread-locals
-   - Blocked by: scaffold
+**List items show:** status icon, title, author, timestamp. Labels from `t` tags shown as colored badges when present.
 
-### Phase 2: Domain Logic + Validation
+**Status icons:**
 
-5. **Addressable event coordinator for repos (30617/30618)**
-   - Deduplicate by `(kind, pubkey, d-tag)` coordinate, select newest by `created_at`
-   - Without this, UI shows duplicate/stale repos
-   - Kind 30618 with empty refs = "stop tracking state", not missing data
-   - Check if nostrdb handles addressable replacement natively before building custom
-   - Blocked by: parsing
+| Kind | Icon | Color | Label |
+|------|------|-------|-------|
+| 1630 | `●` | Green | Open |
+| 1631 | `✓` | Blue | Applied |
+| 1632 | `○` | Grey | Closed |
+| 1633 | `◌` | Yellow | Draft |
 
-6. **Status resolver with maintainer authority engine**
-   - Resolve canonical status from kinds 1630-1633 for **patches, PRs, and issues** (`nips/34.md:194`)
-   - Latest event by `created_at` wins
-   - Valid status authors: the issue/patch/PR author OR any repo maintainer from kind 30617 (`nips/34.md:226`)
-   - Revision behavior: status can reference multiple revised patches
-   - Authority check is app-level post-query (not `custom()` filter — see leak note)
-   - Standalone resolver struct — not embedded in UI code
-   - Strict drop: reject status from unauthorized pubkeys; log dropped at trace level
-   - Blocked by: addressable coordinator, parsing
+Status resolved by authority engine: only the item's author or a repo maintainer can set status.
 
-7. **Patch/PR revision threading and tip resolution model**
-   - Patch series: `t=root` marks the series root patch; `t=root-revision` marks the first patch of a **revision** (`nips/34.md:92`, `nips/34.md:95`) — these are distinct concepts
-   - Patches in a series use NIP-10 reply tags for ordering
-   - PR updates via kind 1619 change the tip commit
-   - Resolve canonical tip/root per series/PR — prevents drift and double-counting
-   - Implement `PatchSeries` and `PrThread` domain types
-   - Strict drop for malformed threading (missing required tags)
-   - Blocked by: parsing
+### Issue Detail
 
-8. **Parser and validator tests** (land BEFORE any UI work)
-   - Unit tests for every NIP-34 type parse (valid, malformed, edge cases)
-   - NIP-22 kind 1111 tag structure validation: one root ref tag from `{A, E, I}` + `K` tag required; one parent ref tag from `{a, e, i}` + `k` tag required; `P`/`p` tags required in NIP-34 context (root/parent are always nostr events with known authors)
-   - `a`-tag coordinate format tests (must be `30617:<pubkey>:<repo-id>`)
-   - Addressable event dedup tests (coordinate-keyed selection, empty-refs stop-tracking case)
-   - Status resolver tests (authority checking for issues + patches + PRs, timestamp ordering, revision behavior)
-   - Patch series tests: `t=root` vs `t=root-revision` distinction, revision ordering
-   - `cargo fmt && cargo clippy && cargo test` — no fudging CI
-   - Blocked by: parsing, addressable coordinator, status resolver, revision threading
+```
+┌──────────────────────────────────────────────┐
+│ ← Issues                                     │
+│ Fix crash on Android startup                 │
+│ ● Open · opened 2h ago by alice              │
+├──────────────────────────────────────────────┤
+│ 👤 alice · 2h ago                            │
+│ The app crashes on launch when the relay     │
+│ list is empty.                               │
+│                                              │
+│ 👤 bob · 1h ago                              │
+│ I can reproduce. Null pointer in relay init. │
+│                                              │
+│   └─ 👤 alice · 45m ago                      │
+│      Thanks, pushing a fix.                  │
+└──────────────────────────────────────────────┘
+```
 
-### Phase 3: Plumbing
+- Issue body (Markdown — NIP-34 spec says issues SHOULD use Markdown) as first "comment"
+- Threaded NIP-22 comments (kind 1111) with indentation for replies
+- Comments are plaintext only (NIP-22 spec — distinct from issue body which is Markdown)
+- v1: read-only. v2: comment composer (kind 1111, NOT kind-1/NIP-10)
 
-9. **GitRelayBackend trait + RelayPool implementation**
-   - Define `GitRelayBackend` trait abstracting: subscribe, send filter, receive events
-   - Implement for current `RelayPool` (works today with existing codebase)
-   - Design so `OutboxPool` impl can be added when PR #1288 lands — no schedule risk
-   - Blocked by: parsing, app struct
+### Patch Detail
 
-10. **Nostr subscription management for git events**
-    - Use FilterStates pattern for subscription lifecycle
-    - Subscribe to repo announcements, then repo-specific events when viewing a repo
-    - Subscriptions held in struct fields across frames, polled each frame (standard notedeck pattern)
-    - Use `GitRelayBackend` for relay communication
-    - Blocked by: relay backend, parsing, app struct
+```
+┌──────────────────────────────────────────────┐
+│ ← Patches                                    │
+│ Refactor relay connection pool               │
+│ ● Open · by alice · 4h ago · v2              │
+├──────────────────────────────────────────────┤
+│ [Description] [Diff] [Comments]              │
+├──────────────────────────────────────────────┤
+│                                              │
+│  src/relay.rs                                │
+│  @@ -42,7 +42,9 @@ impl RelayPool {          │
+│     fn connect(&mut self) {                  │
+│  -      self.socket = connect_raw();         │
+│  +      let config = Config::default();      │
+│  +      self.socket = connect_with(config);  │
+│     }                                        │
+│                                              │
+└──────────────────────────────────────────────┘
+```
 
-11. **Register GitApp in Chrome app router**
-    - Add `NotedeckApp::Git` variant at `notedeck_chrome/src/app.rs`
-    - Match arm in `App` trait delegation
-    - `Chrome::new_with_apps()` initialization
-    - Sidebar label/icon match arms — `Other` currently panics at `chrome.rs:857`; must add explicit arm at `chrome.rs:789`
-    - Feature gate in workspace Cargo.toml
-    - Blocked by: app struct
+- Sub-tabs: Description (commit message), Diff (see "Diff Rendering" above), Comments
+- Series display: if multi-patch (`t=root`), show ordered list of patches in series
+- Revision selector if multiple revisions exist (`t=root-revision`)
+- Mobile: horizontal scroll for diff lines
 
-12. **Git app navigation: icon, sidebar, back-nav**
-    - App icon asset for Chrome app switcher (next to Dave icon)
-    - In-app back/home navigation
-    - Sidebar layout if applicable (repo list sidebar, detail main area)
-    - Blocked by: chrome integration
+### PR Detail
 
-13. **GitHub/GitLab-familiar UX design**
-    - Tab layout (Code/Issues/Patches/PRs), information architecture
-    - Familiar to GitHub/GitLab users, adapted for decentralized nostr model
-    - No server-side merge buttons — status events instead
-    - Blocked by: app struct
+Same layout as issue detail, plus:
+- Branch labels (source → target) from `branch-name`/`merge-base` tags
+- Clone URL(s) from required `clone` tag(s) + fetch command for `refs/nostr/<event-id>`
+- Tip commit from required `c` tag
+- Update timeline from kind 1619 events (each updates `c` tag with new tip)
+- No merge button — status events only (kind 1631 = Applied)
 
-14. **Responsive mobile/narrow UI layout**
-    - Notedeck compiles to Android (Damus Android) — all views must work on narrow screens
-    - Follow Dave app's dual-layout pattern: `desktop_ui()` with sidebar + main area, `narrow_ui()` with toggle between views
-    - Every view commit must include both desktop and narrow variants
-    - Respect `include_input()`/`input_rect()` for soft keyboard visibility on mobile
-    - Cross-cutting: this defines the layout scaffolding that all Phase 4 views build on
-    - Blocked by: UX design
+---
 
-15. **NIP-34 content rendering (non-kind-1 adaptation)**
-    - `render_note_preview` hard-fails non-kind-1 (`notedeck_ui/src/note/contents.rs:79`) — cannot reuse as-is
-    - Kind 1111 comments: plaintext only (NIP-22 spec), no markdown rendering
-    - Kind 1621 issues: structured content with subject header
-    - Kind 1617 patches: `git format-patch` output with diff syntax highlighting
-    - Kind 1618 PRs: description text plus structured metadata
-    - Evaluate: extend `NoteContents` vs. build `GitContentRenderer`
-    - Reuse `ProfilePic`, `padding()`, `hline()` from notedeck_ui
-    - Blocked by: UX design, types
+## NIP-34 Event Kinds and Required Tags
 
-### Phase 4: Views
+| Kind | Purpose | Required tags | Content |
+|------|---------|---------------|---------|
+| 30617 | Repository announcement | `d` | — (metadata in tags: `name`, `description`, `clone`, `web`, `relays`, `maintainers`) |
+| 30618 | Repository state | `d` | — (refs in tags: `refs/heads/<name>`, `refs/tags/<name>`, `HEAD`) |
+| 1617 | Patches | `a` (repo coord), `p` (repo owner) | `git format-patch` output (<60kb) |
+| 1618 | Pull requests | `a`, `c` (tip commit), `clone` (1+), `subject` | PR description (Markdown) |
+| 1619 | PR updates | `a`, `E` (PR event), `P` (PR author), `c`, `clone` | — |
+| 1621 | Issues | `a`, `p` (repo owner) | Markdown. Optional `subject`, `t` (labels) |
+| 1630 | Status: Open | `e` (item id, "root"), `p` (root author) | — |
+| 1631 | Status: Applied | `e`, `p` | Optional: `merge-commit`, `applied-as-commits` |
+| 1632 | Status: Closed | `e`, `p` | — |
+| 1633 | Status: Draft | `e`, `p` | — |
+| 1111 | NIP-22 comments | Root ref (`A`/`E`/`I` + `K`), parent ref (`a`/`e`/`i` + `k`), `P`/`p` | Plaintext only |
 
-All views must include both desktop and narrow/mobile layouts per commit 14.
+**Relay routing:** Patches, PRs, and issues SHOULD be sent to the relays in the repo's 30617 `relays` tag.
 
-16. **Repository list view**
-    - Browse/discover repos, `ProfilePic` for maintainer avatars
-    - Uses addressable coordinator for dedup — no stale/duplicate repos
-    - Discovery via `kinds([30617])` + app-level tag-value search (not `ndb.search()`)
-    - Desktop: sidebar repo list + detail pane; Mobile: full-screen list, tap to navigate
-    - Blocked by: subscriptions, chrome integration, UX design, parser tests, addressable coordinator, mobile layout
+**Status authority:** Most recent status event (by `created_at`) from either the item author or a repo maintainer is valid.
 
-17. **Repository detail view**
-    - Full metadata, branch/tag state (kind 30618), tabbed sections for Issues/Patches/PRs
-    - Empty-refs handling: display "state tracking paused" not "no branches"
-    - Issue/PR/Patch counts via `ndb.fold()` with app-level validation for tab badges (raw `count()` would include malformed events)
-    - Mobile: stacked tabs, scrollable metadata
-    - Blocked by: repo list
+---
 
-18. **Issue list and detail views**
-    - Kind 1621, status indicators from resolver engine (issues included in authority model), labels
-    - Query via `tags(["30617:<pubkey>:<repo-id>"], 'a')` for repo-scoped issues
-    - Detail view with structured subject+body rendering via content renderer
-    - Mobile: full-width issue cards, detail as pushed view
-    - Blocked by: repo detail, status resolver, content renderer
+## Implementation Plan — Vertical Slices
 
-19. **Patch list and detail views**
-    - Kind 1617, diff rendering via content renderer
-    - Series threading via `PatchSeries` domain model (`t=root` for series root, `t=root-revision` for revision start)
-    - Show revision history, current vs. previous revisions
-    - Status from resolver engine (open/applied/closed/draft)
-    - Mobile: horizontal-scroll diff, collapsible patch series
-    - Blocked by: repo detail, revision threading, status resolver, content renderer
+Each slice delivers a working feature end-to-end. You can demo after each slice.
 
-20. **Pull request list and detail views**
-    - Kind 1618/1619, labels, branch info, clone URL
-    - Tip resolution via `PrThread` domain model — no double-counting updates
-    - Status from resolver engine
-    - Mobile: stacked PR metadata, scrollable conversation
-    - Blocked by: repo detail, revision threading, status resolver, content renderer
+### Slice 1: See a Repo (commits 1-4)
 
-### Phase 5: Social + Polish
+Goal: Launch the git app, see a list of repos, tap one to see its metadata.
 
-21. **NIP-22 threaded comments (kind 1111)**
-    - Display threaded comments on issues, patches, and PRs
-    - **NIP-22 compliance (validated in app code post-query, not via `custom()`):**
-      - Content is plaintext only (`nips/22.md:11`) — no markdown rendering
-      - One root ref tag from `{A, E, I}` required + `K` tag required (`nips/22.md:25`)
-      - One parent ref tag from `{a, e, i}` required + `k` tag required (`nips/22.md:33`)
-      - `P`/`p` tags: required in NIP-34 context — root/parent are always nostr events with known authors (`nips/22.md:16`)
-      - Strict drop with trace logging: reject events missing required root/parent ref, K/k, or P/p tags
-    - **Must NOT** route through existing note-reply compose path (`notedeck_columns/src/post.rs:87`) which emits kind-1/NIP-10 replies
-    - v1: read-only display; v2: dedicated kind 1111 composer
-    - Mobile: full-width comment thread, indented replies
-    - Blocked by: issues, patches, PRs views
+**1. Scaffold `notedeck_git` crate**
+- Workspace member, feature gate, Cargo.toml, lib.rs
+- `GitApp` struct implementing `notedeck::App` trait
+- `Router<GitRoute>` with `RepoList` and `RepoDetail` routes
+- Register as `NotedeckApp::Git` in chrome (explicit sidebar match arm)
 
-22. **Puffin profiling instrumentation**
-    - `profiling::function` on performance-sensitive functions: event parsing, subscription management, list rendering, detail rendering
-    - Include drop counters for strict-drop validation (events rejected by parser, status resolver, NIP-22 validator)
-    - Verify puffin feature gate works with new crate
-    - Test with `cargo run --release --features puffin`
-    - Blocked by: subscriptions
+**2. Parse kind 30617 (repo announcements)**
+- `RepoAnnouncement` struct: name, description, clone URLs, web URL, relays, maintainers, d-tag
+- Parse from nostrdb `Note` via tag iteration
+- Addressable dedup: select newest by `created_at` per `(kind, pubkey, d-tag)` coordinate
+- Unit tests for parse + dedup (valid, malformed, multiple versions)
 
-23. **Integration tests**
-    - End-to-end subscription filter tests, UI smoke tests
-    - Verify strict drop works in full pipeline (events logged, not rendered)
-    - Verify `a`-tag coordinate queries return correct repo-scoped results
-    - `cargo fmt && cargo clippy && cargo test`
-    - Blocked by: repo list view (ensures full stack is testable)
+**3. Subscribe to repos and render list**
+- Use `ctx.remote.scoped_subs()` to subscribe to `kinds([30617])` on default relay
+- Poll with `ndb.poll_for_notes()` each frame
+- Render repo cards: avatar, name, description, timestamp
+- Client-side search filter
+- Both desktop (sidebar list) and mobile (full-screen list) layouts
+
+**4. Repo detail — Info tab**
+- Push `RepoDetail` route on card click
+- Show clone URLs, web URL, relays, maintainer list
+- Parse kind 30618 for branch/tag state (if available)
+- Handle empty refs: show "State tracking paused"
+
+### Slice 2: Issues (commits 5-7)
+
+Goal: See issues for a repo, read an issue with comments.
+
+**5. Parse kind 1621 (issues) + status resolver**
+- `Issue` struct: subject (from `subject` tag), body (content — Markdown), author, labels (from `t` tags), required `a` tag (repo coord) + `p` tag (repo owner)
+- Status resolver: query kinds 1630-1633 by `e` tag (item id, marked "root") + `p` tag (root author), check authority (item author or maintainer), latest `created_at` wins
+- Unit tests for status resolution (authorized, unauthorized, ordering)
+
+**6. Issue list tab**
+- Add Issues tab to repo detail (subscribe to `kinds([1621])` scoped by repo `a`-tag)
+- Open/Closed filter tabs with counts
+- Status icons, title, author, timestamp, labels
+
+**7. Issue detail + NIP-22 comments**
+- Push `IssueDetail` route on row click
+- Render issue body + threaded kind 1111 comments
+- NIP-22 validation: require root ref tag (`A`/`E`/`I` + `K`), parent ref tag (`a`/`e`/`i` + `k`), `P`/`p` tags in NIP-34 context
+- Lazy-load comments (separate sub scoped to this issue, same owner key)
+- Comment threading by parent tag → indentation
+
+### Slice 3: Patches (commits 8-10)
+
+Goal: See patches for a repo, view a diff.
+
+**8. Parse kind 1617 (patches) + revision threading**
+- `Patch` struct: content (`git format-patch` output), subject, author
+- `PatchSeries`: `t=root` marks series root, `t=root-revision` marks revision start — distinct concepts
+- NIP-10 reply tags for ordering patches within a series
+- Unit tests for series ordering and revision detection
+
+**9. Diff parser + renderer**
+- Parse unified diff format: file headers, `@@` hunks, `+`/`-`/` ` lines
+- `DiffView` widget: monospace text with colored spans, collapsible file sections
+- Horizontal scroll for long lines
+- Fallback: raw monospace text if parsing fails
+
+**10. Patch list tab + detail view**
+- Add Patches tab with status filter (Open/Applied/Closed/Draft)
+- Patch detail: Description / Diff / Comments sub-tabs
+- Series display (ordered list, collapsible)
+- Revision selector for multi-revision patches
+
+### Slice 4: Pull Requests (commits 11-12)
+
+Goal: See PRs, view PR details with update timeline.
+
+**11. Parse kind 1618/1619 (PRs + updates)**
+- `PullRequest` struct: subject (required), description (content, Markdown), clone URLs (required, 1+), tip commit `c` (required), branch-name, merge-base
+- `PrThread`: kind 1619 updates change the tip commit (`c` tag) and require `E` (PR event) + `P` (PR author)
+- Resolve canonical tip per PR (latest 1619 by `created_at`)
+
+**12. PR list tab + detail view**
+- Add PRs tab with status filter
+- PR detail: branch labels, clone/fetch command, update timeline, comments
+- Reuse comment threading from slice 2
+
+### Slice 5: Polish (commits 13-14)
+
+**13. Puffin profiling + integration tests**
+- Instrument parsing, subscription management, list rendering
+- Drop counters for strict-drop validation
+- End-to-end tests: subscribe → parse → render
+
+**14. Labels, sort options, UX refinements**
+- Label rendering (colored badges from `t` tags) on issue/patch/PR lists
+- Sort options: newest, recently updated
+- Loading states (check `sub_eose_status` for spinner vs content)
+
+---
+
+## Nostrdb Integration
+
+**Queries:**
+```rust
+// Repo by coordinate
+Filter::new().kinds([30617]).authors([pubkey]).tags([d_tag], 'd').limit(1).build()
+
+// Repo-scoped items (issues, patches, PRs)
+let coord = format!("30617:{}:{}", hex::encode(pubkey), repo_id);
+Filter::new().kinds([1621]).tags([coord.as_str()], 'a').build()
+
+// Status events (reference item by e-tag, optionally scoped by a-tag for efficiency)
+Filter::new().kinds([1630, 1631, 1632, 1633]).tags([item_id], 'e').build()
+
+// Comments on an item
+Filter::new().kinds([1111]).tags([item_id], 'E').build()
+```
+
+**Combinators:** `find_map` for latest-by-timestamp addressable dedup. `fold` for building patch series ordering. App-level validation post-query (never `custom()`).
+
+**Subscription pattern:** `ndb.subscribe()` + `poll_for_notes()` each frame. Subscriptions held in struct fields, never recreated per frame.
+
+---
+
+## Relay Integration (post-outbox merge)
+
+Use `ctx.remote` (RemoteApi) exclusively. No custom relay abstraction needed.
+
+```rust
+// Declare a scoped subscription
+let owner = SubOwnerKey::builder("git-repo").with(repo_coord).finish();
+let key = SubKey::builder("repo-events").with(repo_coord).finish();
+
+ctx.remote.scoped_subs(ctx.accounts).ensure_sub(
+    ScopedSubIdentity::account(owner, key),
+    SubConfig {
+        relays: RelaySelection::Explicit(repo_relays),  // from 30617 relays tag
+        filters,
+        use_transparent: false,
+    },
+);
+
+// On view close
+ctx.remote.scoped_subs(ctx.accounts).drop_owner(owner);
+```
+
+For repo discovery (before we know a repo's relays), use `RelaySelection::Explicit` with default git relays:
+
+```rust
+const GIT_RELAYS: &[&str] = &["wss://relay.ngit.dev"];
+```
+
+Follow the livestream app's pattern (`STREAMING_RELAYS` in `notedeck_livestream/src/subscription.rs`).
+
+---
 
 ## Known Pitfalls
 
-| # | Severity | Pitfall | Mitigation |
-|---|----------|---------|------------|
-| 1 | Critical | Kind 1111 has strict NIP-22 tag structure — one root ref from `{A,E,I}` + `K` + `P`, one parent ref from `{a,e,i}` + `k` + `p` (P/p required in NIP-34 context); reusing kind-1/NIP-10 reply flow breaks interop | Dedicated validator (app-level, not `custom()`), dedicated composer (v2), never route through `post.rs` |
-| 2 | High | Status events can be spoofed — authority depends on maintainer list from 30617 and event author identity | Standalone resolver checks pubkey against maintainer list + issue/patch/PR author (all three, not just patches/PRs) |
-| 3 | High | 30617/30618 are addressable/replaceable — without coordinate-keyed dedup, UI shows stale/duplicate repos | Addressable event coordinator with `(kind, pubkey, d-tag)` keying |
-| 4 | High | Patch series and PR revision threading is complex — `t=root` (series root) vs `t=root-revision` (revision start) are distinct | Dedicated `PatchSeries`/`PrThread` domain model with correct tag interpretation |
-| 5 | High | `a`-tag queries must use full NIP-33 coordinate format `30617:<pubkey>:<repo-id>`, not bare repo ID | Explicit coordinate construction in all repo-scoped queries |
-| 6 | High | `FilterBuilder::custom()` leaks memory (`nostrdb-rs filter.rs:427 FIXME: THIS LEAKS!`) | All validation in app code post-query; never use `custom()` in hot paths |
-| 7 | Medium | Chrome sidebar panics on unhandled app variants (`chrome.rs:857`) | Explicit match arm for Git app in sidebar rendering |
-| 8 | Medium | `render_note_preview` hard-fails non-kind-1 (`contents.rs:79`) | Git-specific content renderer or extended `NoteContents` |
-| 9 | Medium | Outbox PR #1288 may slip; current codebase uses `RelayPool` | `GitRelayBackend` trait abstracts relay ops; `RelayPool` impl now, `OutboxPool` impl later |
-| 10 | Medium | `ndb.search()` indexes content/profiles, not tags; repo announcements have empty content | Repo discovery via `kinds([30617])` + app-level tag-value matching |
-| 11 | Low | Silent strict drop makes interop debugging difficult | Log dropped events at `tracing::trace!` with reason; count in puffin profiler |
+| Pitfall | Mitigation |
+|---------|------------|
+| Kind 1111 has strict NIP-22 tag structure; reusing kind-1/NIP-10 reply flow breaks interop | Dedicated validator, never route through `post.rs` |
+| Status events can be spoofed | Authority check: only item author or repo maintainer |
+| 30617/30618 are addressable — without dedup, UI shows stale/duplicate repos | Dedup by `(kind, pubkey, d-tag)`, newest `created_at` wins |
+| `t=root` (series root) vs `t=root-revision` (revision start) are distinct concepts | Dedicated `PatchSeries` domain model |
+| `a`-tag queries need full NIP-33 coordinate `30617:<pubkey>:<repo-id>` | Explicit coordinate construction |
+| `FilterBuilder::custom()` leaks memory | All validation in app code post-query |
+| `ndb.search()` indexes content/profiles, not tags | Repo discovery via `kinds([30617])` + app-level tag matching |
+| No code browsing — NIP-34 has no file tree kind | Default to Issues tab, not a "Code" tab |
 
-## Coding Standards Applied
+## Components to Reuse
 
-All work follows the documented notedeck requirements:
-- Logically distinct, standalone commits — each removable without impact
-- Nevernesting (early returns/guard clauses)
-- No globals, no Mutexes (`Rc<RefCell<>>`, `Promise`, `JobPool`)
-- Never block the render loop
-- Docstring coverage on all new code
-- `cargo fmt && cargo clippy && cargo test` before every commit
-- Reuse existing notedeck_ui components before creating new
-- No vendored code
-- Puffin-instrumented performance-sensitive paths
-- Simplicity: small, human-reviewable commits
-- Cherry-pick to preserve authorship when incorporating external work
-- Rebase fixes into original commits within same PR
-
-## Notedeck Components to Reuse
-
-| Component | Location | Use Case |
-|-----------|----------|----------|
+| Component | Location | Use |
+|-----------|----------|-----|
 | `AppContext` / `AppResponse` | `notedeck/src/app.rs` | Framework integration |
-| `Router<R>` | `notedeck/src/route.rs` | Stack-based navigation with animations |
-| `FilterStates` / `UnifiedSubscription` | `notedeck/src/filter.rs` | Relay subscription lifecycle (held across frames) |
-| `JobPool` / `JobCache` | `notedeck/src/jobs/` | Async work offloading (non-blocking) |
-| `ProfilePic` / `ProfilePreview` | `notedeck_ui/` | Author/maintainer display |
-| `padding()`, `hline()`, `search_input_box()` | `notedeck_ui/` | UI layout helpers |
-| `AnimationHelper` | `notedeck_ui/src/anim.rs` | Hover/expand interactions |
-| `TextureState<T>` | `notedeck/src/imgcache.rs` | Async loading pattern (Pending/Error/Loaded) |
+| `Router<R>` | `notedeck/src/route.rs` | Navigation |
+| `RemoteApi` / `ScopedSubApi` | `notedeck/src/remote_api.rs` | Relay subscriptions |
+| `JobPool` / `JobCache` | `notedeck/src/jobs/` | Async work |
+| `ProfilePic` | `notedeck_ui/` | Avatars |
+| `padding()`, `hline()` | `notedeck_ui/` | Layout |
 
 **Cannot reuse as-is:**
-- `NoteView` / `NoteContents` — hard-fails on non-kind-1 events; needs adaptation or replacement for NIP-34 kinds
-- `post.rs` reply compose — emits kind-1/NIP-10, not kind-1111/NIP-22; must not use for git comments
-- `ndb.search()` — indexes content/profiles, not tags; cannot discover repos by name
+- `NoteView` / `NoteContents` — hard-fails on non-kind-1
+- `post.rs` — emits kind-1/NIP-10, not kind-1111/NIP-22
+
+---
+
+## CLI Tool (post-MVP, separate plan)
+
+A `notedeck-git` CLI following `gh`/`glab` patterns and [clig.dev](https://clig.dev) guidelines. Shares the `notedeck_git` domain crate (parsing, validation, status resolution). Separate binary in `crates/notedeck_git_cli/`.
+
+Command pattern: `notedeck-git <noun> <verb> [flags]` (repo, issue, patch, pr).
+
+**Human-first (clig.dev):** Human-readable default output, `--help` with examples, TTY color detection, spinners for relay queries, errors rewritten for humans.
+
+**Agent-first ([agent CLI design](https://justin.poehnelt.com/posts/rewrite-your-cli-for-ai-agents/)):** `--json` for both input and output (not just output — accept full structured payloads via `--params`), `schema` subcommand for machine-readable introspection (parameter types, required fields), `--dry-run` for mutations, NDJSON streaming for large result sets (respects context window limits). This makes the CLI native to AI agent workflows — Daniel's second user story.
+
+Details to be specced when MVP GUI is functional.
