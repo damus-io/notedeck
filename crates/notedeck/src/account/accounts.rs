@@ -247,6 +247,9 @@ impl Accounts {
         if !self.cache.select(*pk_to_select) {
             return;
         }
+        if let Some(filled) = self.selected_filled() {
+            ndb.add_key(&filled.secret_key.secret_bytes());
+        }
 
         self.select_account_internal(pk_to_select, old_pk, ndb, txn, remote);
     }
