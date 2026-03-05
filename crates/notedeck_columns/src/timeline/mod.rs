@@ -52,11 +52,11 @@ fn timeline_remote_sub_key(kind: &TimelineKind) -> SubKey {
         .finish()
 }
 
-fn timeline_remote_sub_config(remote_filters: Vec<Filter>) -> SubConfig {
+fn timeline_remote_sub_config(remote_filters: Vec<Filter>, use_transparent: bool) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: remote_filters,
-        use_transparent: false,
+        use_transparent,
     }
 }
 
@@ -68,7 +68,10 @@ pub(crate) fn ensure_remote_timeline_subscription(
 ) {
     let owner = timeline_remote_owner_key(account_pk, &timeline.kind);
     let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
-    let config = timeline_remote_sub_config(remote_filters);
+    let config = timeline_remote_sub_config(
+        remote_filters,
+        matches!(&timeline.kind, TimelineKind::Notifications(_)),
+    );
     let _ = scoped_subs.ensure_sub(identity, config);
     timeline.subscription.mark_remote_seeded(account_pk);
 }
@@ -80,7 +83,10 @@ pub(crate) fn update_remote_timeline_subscription(
 ) {
     let owner = timeline_remote_owner_key(scoped_subs.selected_account_pubkey(), &timeline.kind);
     let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
-    let config = timeline_remote_sub_config(remote_filters);
+    let config = timeline_remote_sub_config(
+        remote_filters,
+        matches!(&timeline.kind, TimelineKind::Notifications(_)),
+    );
     let _ = scoped_subs.set_sub(identity, config);
     timeline
         .subscription
