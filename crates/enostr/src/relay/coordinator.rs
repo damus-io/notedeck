@@ -4,6 +4,7 @@ use hashbrown::{HashMap, HashSet};
 use crate::{
     relay::{
         compaction::{CompactionData, CompactionRelay, CompactionSession},
+        nip11::Nip11FetchLifecycle,
         transparent::{revocate_transparent_subs, TransparentData, TransparentRelay},
         BroadcastCache, BroadcastRelay, NormRelayUrl, OutboxSubId, OutboxSubscriptions,
         RawEventData, RelayCoordinatorLimits, RelayImplType, RelayLimitations, RelayReqId,
@@ -22,6 +23,7 @@ pub struct CoordinationData {
     transparent_data: TransparentData, // for outbox subs that prefer to be transparent
     broadcast_cache: BroadcastCache,
     eose_queue: Vec<RelayReqId>,
+    pub(crate) nip11: Nip11FetchLifecycle,
 }
 
 impl CoordinationData {
@@ -46,6 +48,26 @@ impl CoordinationData {
             coordination: Default::default(),
             broadcast_cache: Default::default(),
             eose_queue: Vec::new(),
+            nip11: Nip11FetchLifecycle::default(),
+        }
+    }
+
+    /// Current effective relay limits being enforced by this coordinator.
+    pub fn current_limits(&self) -> RelayLimitations {
+        RelayLimitations {
+            maximum_subs: self.limits.sub_guardian.total_passes(),
+            max_json_bytes: self.limits.max_json_bytes,
+        }
+    }
+
+    /// Apply new effective relay limits to the coordinator.
+    pub fn set_limits(&mut self, subs: &OutboxSubscriptions, limits: RelayLimitations) {
+        let json_limit_shrunk = limits.max_json_bytes < self.limits.max_json_bytes;
+        self.limits.max_json_bytes = limits.max_json_bytes;
+        self.set_max_size(subs, limits.maximum_subs);
+
+        if json_limit_shrunk {
+            self.repack_compaction_for_new_json_limit(subs);
         }
     }
 
@@ -91,6 +113,39 @@ impl CoordinationData {
             )
             .revocate_all(compacts_revocations);
         }
+    }
+
+    fn repack_compaction_for_new_json_limit(&mut self, subs: &OutboxSubscriptions) {
+        let active = self.compaction_data.request_ids();
+        if active.is_empty() {
+            return;
+        }
+
+        let mut clear_session = CompactionSession::default();
+        for id in &active {
+            clear_session.unsub(*id);
+        }
+        CompactionRelay::new(
+            self.websocket.as_mut(),
+            &mut self.compaction_data,
+            self.limits.max_json_bytes,
+            &mut self.limits.sub_guardian,
+            subs,
+        )
+        .ingest_session(clear_session);
+
+        let mut rebuild_session = CompactionSession::default();
+        for id in active {
+            rebuild_session.sub(id);
+        }
+        CompactionRelay::new(
+            self.websocket.as_mut(),
+            &mut self.compaction_data,
+            self.limits.max_json_bytes,
+            &mut self.limits.sub_guardian,
+            subs,
+        )
+        .ingest_session(rebuild_session);
     }
 
     #[profiling::function]

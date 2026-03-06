@@ -6,6 +6,7 @@ mod identity;
 mod limits;
 pub mod message;
 mod multicast;
+mod nip11;
 mod outbox;
 pub mod pool;
 mod queue;
@@ -22,6 +23,7 @@ pub use limits::{
     RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,
 };
 pub use multicast::{MulticastRelay, MulticastRelayCache};
+pub use nip11::{Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw};
 use nostrdb::Filter;
 pub use outbox::{OutboxPool, OutboxSession, OutboxSessionHandler};
 pub use queue::QueuedTasks;

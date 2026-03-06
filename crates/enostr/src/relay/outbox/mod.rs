@@ -10,9 +10,9 @@ use crate::{
         backoff,
         coordinator::{CoordinationData, CoordinationSession, EoseIds},
         websocket::WebsocketRelay,
-        ModifyTask, MulticastRelayCache, NormRelayUrl, OutboxSubId, OutboxSubscriptions,
-        OutboxTask, RawEventData, RelayId, RelayLimitations, RelayReqStatus, RelayStatus,
-        RelayType,
+        ModifyTask, MulticastRelayCache, Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw,
+        NormRelayUrl, OutboxSubId, OutboxSubscriptions, OutboxTask, RawEventData, RelayId,
+        RelayLimitations, RelayReqStatus, RelayStatus, RelayType,
     },
     EventClientMessage, Wakeup, WebsocketConn,
 };
@@ -25,6 +25,7 @@ pub use session::OutboxSession;
 
 const KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30 * 60); // 30 minutes
+const NIP11_REFRESH_AFTER_SUCCESS: Duration = Duration::from_secs(60 * 60);
 
 /// OutboxPool owns the active relay coordinators and applies staged subscription
 /// mutations to them each frame.
@@ -307,6 +308,89 @@ impl OutboxPool {
         }
     }
 
+    /// Drain relays that are ready for a NIP-11 fetch request.
+    pub fn take_nip11_fetch_requests(
+        &mut self,
+        max: usize,
+        now: SystemTime,
+    ) -> Vec<Nip11FetchRequest> {
+        let mut requests = Vec::new();
+        if max == 0 {
+            return requests;
+        }
+
+        for (relay_url, relay) in &mut self.relays {
+            if requests.len() >= max {
+                break;
+            }
+
+            if !relay.nip11.ready_to_fetch(now) {
+                continue;
+            }
+
+            let attempt = relay.nip11.mark_dispatched();
+            tracing::debug!("nip11: fetching {relay_url}");
+            requests.push(Nip11FetchRequest {
+                relay: relay_url.clone(),
+                attempt,
+                requested_at: now,
+            });
+        }
+
+        requests
+    }
+
+    /// Convert raw NIP-11 limitations and apply relevant values for one relay.
+    pub fn apply_nip11_limits(
+        &mut self,
+        relay: &NormRelayUrl,
+        raw: Nip11LimitationsRaw,
+        fetched_at: SystemTime,
+    ) -> Nip11ApplyOutcome {
+        let Some(coord) = self.relays.get_mut(relay) else {
+            return Nip11ApplyOutcome::RelayUnknown;
+        };
+
+        let current = coord.current_limits();
+        let derived = derive_relay_limitations_from_raw(&raw, current);
+        coord
+            .nip11
+            .mark_success(fetched_at, NIP11_REFRESH_AFTER_SUCCESS);
+
+        if derived == current {
+            tracing::debug!("nip11: {relay} limits unchanged");
+            return Nip11ApplyOutcome::Unchanged;
+        }
+
+        coord.set_limits(&self.subs, derived);
+        tracing::info!(
+            "nip11: {relay} limits updated — max_subs: {} -> {}, max_json_bytes: {} -> {}",
+            current.maximum_subs,
+            derived.maximum_subs,
+            current.max_json_bytes,
+            derived.max_json_bytes,
+        );
+        Nip11ApplyOutcome::Applied
+    }
+
+    /// Record a failed NIP-11 fetch so the relay can be retried later.
+    pub fn record_nip11_failure(
+        &mut self,
+        relay: &NormRelayUrl,
+        error: String,
+        failed_at: SystemTime,
+    ) {
+        let Some(coord) = self.relays.get_mut(relay) else {
+            return;
+        };
+
+        let attempt = coord.nip11.attempt();
+        let jitter_seed = backoff::jitter_seed(relay, attempt);
+        let retry_after = backoff::next_duration(attempt, jitter_seed, MAX_RECONNECT_DELAY);
+        tracing::warn!("nip11: {relay} fetch failed: {error} (retry in {retry_after:?})");
+        coord.nip11.mark_failure(failed_at, error, retry_after);
+    }
+
     fn ensure_relay<W>(&mut self, relay_id: &NormRelayUrl, wakeup: &W) -> &mut CoordinationData
     where
         W: Wakeup,
@@ -518,6 +602,31 @@ where
     )
 }
 
+fn derive_relay_limitations_from_raw(
+    raw: &Nip11LimitationsRaw,
+    fallback: RelayLimitations,
+) -> RelayLimitations {
+    let mut out = fallback;
+
+    if let Some(maximum_subs) = raw.max_subscriptions.and_then(valid_positive_usize) {
+        out.maximum_subs = maximum_subs;
+    }
+
+    if let Some(max_json_bytes) = raw.max_message_length.and_then(valid_positive_usize) {
+        out.max_json_bytes = max_json_bytes;
+    }
+
+    out
+}
+
+fn valid_positive_usize(value: i64) -> Option<usize> {
+    if value <= 0 {
+        return None;
+    }
+
+    usize::try_from(value).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use hashbrown::HashSet;
@@ -542,6 +651,40 @@ mod tests {
         assert_ne!(id1, id2);
         assert_ne!(id2, id3);
         assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn derive_relay_limitations_uses_positive_raw_values() {
+        let fallback = RelayLimitations {
+            maximum_subs: 10,
+            max_json_bytes: 200_000,
+        };
+        let raw = Nip11LimitationsRaw {
+            max_subscriptions: Some(300),
+            max_message_length: Some(131_072),
+            ..Default::default()
+        };
+
+        let derived = derive_relay_limitations_from_raw(&raw, fallback);
+        assert_eq!(derived.maximum_subs, 300);
+        assert_eq!(derived.max_json_bytes, 131_072);
+    }
+
+    #[test]
+    fn derive_relay_limitations_ignores_invalid_values() {
+        let fallback = RelayLimitations {
+            maximum_subs: 10,
+            max_json_bytes: 200_000,
+        };
+        let raw = Nip11LimitationsRaw {
+            max_subscriptions: Some(0),
+            max_message_length: Some(-1),
+            ..Default::default()
+        };
+
+        let derived = derive_relay_limitations_from_raw(&raw, fallback);
+        assert_eq!(derived.maximum_subs, fallback.maximum_subs);
+        assert_eq!(derived.max_json_bytes, fallback.max_json_bytes);
     }
 
     // ==================== OutboxPool tests ====================
