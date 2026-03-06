@@ -89,6 +89,9 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    updater: crate::updater::Updater,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -160,6 +163,27 @@ impl eframe::App for Notedeck {
         {
             profiling::scope!("outbox ingestion");
             drop(app_ctx);
+        }
+
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        {
+            self.updater.poll();
+            if let Some(version) = self.updater.update_ready() {
+                let version = version.to_string();
+                egui::TopBottomPanel::bottom("update_bar").show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Notedeck {version} is available"));
+                        if ui.button("Restart to update").clicked() {
+                            if let Err(e) = self.updater.apply_and_restart() {
+                                error!("failed to apply update: {e}");
+                            }
+                        }
+                        if ui.button("Later").clicked() {
+                            self.updater.dismiss();
+                        }
+                    });
+                });
+            }
         }
 
         self.settings.update_batch(|settings| {
@@ -342,6 +366,8 @@ impl Notedeck {
             media_jobs: media_job_cache,
             nip05_cache: Nip05Cache::new(),
             i18n,
+            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+            updater: crate::updater::Updater::new(&path, ctx),
             #[cfg(target_os = "android")]
             android_app: None,
         };

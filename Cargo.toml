@@ -123,6 +123,11 @@ android-activity = { git = "https://github.com/damus-io/android-activity", rev =
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "vendored"] }
 android-keyring = "0.2.0"
 rfd = "0.15"
+semver = "1"
+self-replace = "1"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.small]
 inherits = 'release'

@@ -60,6 +60,11 @@ http-body-util = { workspace = true }
 # rustls and hyper-rustls are specified in platform-specific sections below
 # (Windows uses ring, others use aws-lc-rs)
 keyring = { workspace = true }
+semver = { workspace = true }
+self-replace = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
