@@ -8,7 +8,7 @@
 /// 4. Fetch and parse NAME_UPDATE from the latest transaction
 /// 5. Check name expiry via `blockchain.headers.subscribe`
 use sha2::{Digest, Sha256};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::Duration;
@@ -205,9 +205,9 @@ fn compute_scripthash(name: &str) -> String {
     hex::encode(reversed)
 }
 
-/// Perform a JSON-RPC call over a TLS stream and return the result.
+/// Perform a JSON-RPC call over a buffered TLS stream and return the result.
 fn rpc_call(
-    stream: &mut rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+    reader: &mut BufReader<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>,
     method: &str,
     params: &serde_json::Value,
     id: u64,
@@ -221,25 +221,12 @@ fn rpc_call(
 
     let mut request_str = serde_json::to_string(&request)?;
     request_str.push('\n');
-    stream.write_all(request_str.as_bytes())?;
-    stream.flush()?;
+    reader.get_mut().write_all(request_str.as_bytes())?;
+    reader.get_mut().flush()?;
 
-    // Read response line by line (JSON-RPC uses newline-delimited messages)
+    // Read response line (JSON-RPC uses newline-delimited messages)
     let mut response_line = String::new();
-    let mut buf = [0u8; 1];
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) => break,
-            Ok(_) => {
-                let ch = buf[0] as char;
-                response_line.push(ch);
-                if ch == '\n' {
-                    break;
-                }
-            }
-            Err(e) => return Err(ElectrumxError::Io(e)),
-        }
-    }
+    reader.read_line(&mut response_line)?;
 
     let response: serde_json::Value = serde_json::from_str(&response_line)?;
 
@@ -526,7 +513,8 @@ fn name_show_single(
     server: &ElectrumxServer,
     name: &str,
 ) -> Result<NameShowResult, ElectrumxError> {
-    let mut stream = connect_tls(server)?;
+    let stream = connect_tls(server)?;
+    let mut reader = BufReader::new(stream);
     let mut rpc_id: u64 = 1;
 
     // Step 1: Compute scripthash
@@ -534,7 +522,7 @@ fn name_show_single(
 
     // Step 2: Get transaction history
     let history = rpc_call(
-        &mut stream,
+        &mut reader,
         "blockchain.scripthash.get_history",
         &serde_json::json!([scripthash]),
         rpc_id,
@@ -565,7 +553,7 @@ fn name_show_single(
 
     // Step 3: Fetch the raw transaction
     let raw_tx = rpc_call(
-        &mut stream,
+        &mut reader,
         "blockchain.transaction.get",
         &serde_json::json!([tx_hash]),
         rpc_id,
@@ -582,7 +570,7 @@ fn name_show_single(
 
     // Step 5: Check expiry via current block height
     let headers_result = rpc_call(
-        &mut stream,
+        &mut reader,
         "blockchain.headers.subscribe",
         &serde_json::json!([]),
         rpc_id,

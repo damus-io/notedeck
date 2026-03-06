@@ -49,7 +49,11 @@ impl NamecoinIdentifier {
                 let user = &input[..at_pos];
                 let domain = &input[at_pos + 1..];
                 let domain_name = domain.strip_suffix(".bit")?;
-                if !user.is_empty() && !domain_name.is_empty() && is_valid_name(domain_name) {
+                if !user.is_empty()
+                    && is_valid_local_part(user)
+                    && !domain_name.is_empty()
+                    && is_valid_name(domain_name)
+                {
                     return Some(Self {
                         name: format!("d/{domain_name}"),
                         local_part: user.to_string(),
@@ -81,10 +85,19 @@ impl NamecoinIdentifier {
     }
 }
 
-/// Check if a name component is valid (alphanumeric, hyphens, underscores).
+/// Check if a name component is valid (alphanumeric, hyphens, underscores, dots).
 fn is_valid_name(name: &str) -> bool {
     !name.is_empty()
         && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+}
+
+/// Check if a local part (user portion of `user@domain.bit`) is valid.
+/// Allows alphanumeric characters, hyphens, underscores, and dots.
+fn is_valid_local_part(local: &str) -> bool {
+    !local.is_empty()
+        && local
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
@@ -140,6 +153,18 @@ mod tests {
         assert!(NamecoinIdentifier::parse("id/").is_none());
         assert!(NamecoinIdentifier::parse(".bit").is_none());
         assert!(NamecoinIdentifier::parse("@.bit").is_none());
+    }
+
+    #[test]
+    fn test_invalid_local_part() {
+        // Local part with spaces or special characters should be rejected
+        assert!(NamecoinIdentifier::parse("bad user@testls.bit").is_none());
+        assert!(NamecoinIdentifier::parse("bad!user@testls.bit").is_none());
+        assert!(NamecoinIdentifier::parse("user name@testls.bit").is_none());
+        // Valid local parts should still work
+        assert!(NamecoinIdentifier::parse("valid-user@testls.bit").is_some());
+        assert!(NamecoinIdentifier::parse("user_name@testls.bit").is_some());
+        assert!(NamecoinIdentifier::parse("user.name@testls.bit").is_some());
     }
 
     #[test]

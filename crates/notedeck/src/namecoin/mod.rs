@@ -48,8 +48,6 @@ struct ResolveCompletion {
     cache_key: String,
     /// The resolved pubkey, or an error describing what went wrong.
     result: Result<Pubkey, NamecoinResolveError>,
-    /// The identifier that was resolved.
-    identifier: NamecoinIdentifier,
 }
 
 /// Service for resolving Namecoin identifiers to Nostr pubkeys.
@@ -120,8 +118,7 @@ impl NamecoinResolver {
         self.pending.insert(cache_key.clone());
         let tx = self.tx.clone();
         let servers = self.servers.clone();
-        let id = identifier.clone();
-        let id_for_completion = identifier;
+        let id = identifier;
 
         tokio::spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
@@ -133,7 +130,6 @@ impl NamecoinResolver {
             let _ = tx.send(ResolveCompletion {
                 cache_key,
                 result,
-                identifier: id_for_completion,
             });
         });
 
@@ -257,6 +253,10 @@ fn pubkey_from_json_value(val: &serde_json::Value) -> Option<Pubkey> {
     val.as_str().and_then(pubkey_from_hex)
 }
 
+/// Shared default servers instance, initialized once.
+static DEFAULT_SERVERS: once_cell::sync::Lazy<Vec<ElectrumxServer>> =
+    once_cell::sync::Lazy::new(default_servers);
+
 /// Validate a NIP-05 `.bit` domain against the Namecoin blockchain.
 ///
 /// Returns `true` if the pubkey matches the on-chain record.
@@ -265,8 +265,7 @@ pub fn validate_nip05_bit(pubkey: &Pubkey, nip05: &str) -> bool {
         return false;
     };
 
-    let servers = default_servers();
-    let result = resolve_identifier(&servers, &identifier);
+    let result = resolve_identifier(&DEFAULT_SERVERS, &identifier);
 
     match result {
         Ok(resolved_pk) => resolved_pk == *pubkey,

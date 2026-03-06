@@ -2,7 +2,7 @@
 ///
 /// Caches resolved pubkeys to avoid repeated ElectrumX queries.
 /// Entries expire after 1 hour.
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use enostr::Pubkey;
@@ -27,8 +27,8 @@ impl CacheEntry {
 
 pub struct NamecoinLookupCache {
     entries: HashMap<String, CacheEntry>,
-    /// Insertion order for LRU eviction
-    insertion_order: Vec<String>,
+    /// Insertion order for LRU eviction (front = oldest)
+    insertion_order: VecDeque<String>,
 }
 
 impl Default for NamecoinLookupCache {
@@ -41,7 +41,7 @@ impl NamecoinLookupCache {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
-            insertion_order: Vec::new(),
+            insertion_order: VecDeque::new(),
         }
     }
 
@@ -51,11 +51,20 @@ impl NamecoinLookupCache {
     }
 
     /// Insert or update a cache entry.
+    ///
+    /// Automatically evicts expired entries and the oldest entry when at
+    /// capacity. Uses `VecDeque` for O(1) front eviction.
     pub fn insert(&mut self, key: String, result: Result<Pubkey, NamecoinResolveError>) {
-        // Evict if at capacity
-        while self.entries.len() >= MAX_CACHE_SIZE && !self.insertion_order.is_empty() {
-            let oldest = self.insertion_order.remove(0);
-            self.entries.remove(&oldest);
+        // Evict expired entries first to reclaim space
+        self.evict_expired();
+
+        // Evict oldest if still at capacity
+        while self.entries.len() >= MAX_CACHE_SIZE {
+            if let Some(oldest) = self.insertion_order.pop_front() {
+                self.entries.remove(&oldest);
+            } else {
+                break;
+            }
         }
 
         // Remove old entry from insertion order if updating
@@ -74,10 +83,14 @@ impl NamecoinLookupCache {
                 inserted_at: Instant::now(),
             },
         );
-        self.insertion_order.push(key);
+        self.insertion_order.push_back(key);
     }
 
-    /// Remove expired entries.
+    /// Remove expired entries from both `entries` and `insertion_order`.
+    ///
+    /// Called automatically by [`insert`](Self::insert). Callers may also
+    /// invoke this directly or schedule it in a background task to bound
+    /// memory usage between insertions.
     pub fn evict_expired(&mut self) {
         self.entries.retain(|_, entry| !entry.is_expired());
         self.insertion_order
