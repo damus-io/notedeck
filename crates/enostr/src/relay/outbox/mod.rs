@@ -687,6 +687,97 @@ mod tests {
         assert_eq!(derived.max_json_bytes, fallback.max_json_bytes);
     }
 
+    /// Ensures NIP-11 fetch requests respect in-flight and retry timing lifecycle gates.
+    #[test]
+    fn take_nip11_fetch_requests_respects_lifecycle_and_retry_schedule() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-nip11-gating.example.com").unwrap();
+        let _ = pool.ensure_relay(&relay, &wakeup);
+
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let requests = pool.take_nip11_fetch_requests(1, now);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].relay, relay);
+        assert_eq!(requests[0].attempt, 1);
+
+        let immediate = pool.take_nip11_fetch_requests(1, now);
+        assert!(
+            immediate.is_empty(),
+            "in-flight relay should not be re-dispatched immediately"
+        );
+
+        pool.record_nip11_failure(&relay, "boom".to_owned(), now);
+
+        // attempt 1 base = 10s; should not be ready before base delay
+        let base = backoff::base_delay(1, MAX_RECONNECT_DELAY);
+        let before_retry = now
+            .checked_add(base - Duration::from_secs(1))
+            .expect("retry check timestamp");
+        let not_ready = pool.take_nip11_fetch_requests(1, before_retry);
+        assert!(
+            not_ready.is_empty(),
+            "relay should remain blocked until retry deadline"
+        );
+
+        // should be ready after base + max jitter (25%)
+        let after_jitter = now.checked_add(base + base / 4).expect("retry timestamp");
+        let retry_ready = pool.take_nip11_fetch_requests(1, after_jitter);
+        assert_eq!(retry_ready.len(), 1);
+        assert_eq!(retry_ready[0].relay, relay);
+        assert_eq!(retry_ready[0].attempt, 2);
+    }
+
+    /// Ensures applying NIP-11 limits reports all outcomes and refresh scheduling is enforced.
+    #[test]
+    fn apply_nip11_limits_reports_outcomes_and_updates_state() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let known = NormRelayUrl::new("wss://relay-nip11-known.example.com").unwrap();
+        let unknown = NormRelayUrl::new("wss://relay-nip11-unknown.example.com").unwrap();
+        let _ = pool.ensure_relay(&known, &wakeup);
+
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+
+        let unknown_outcome =
+            pool.apply_nip11_limits(&unknown, Nip11LimitationsRaw::default(), now);
+        assert_eq!(unknown_outcome, Nip11ApplyOutcome::RelayUnknown);
+
+        let unchanged_outcome =
+            pool.apply_nip11_limits(&known, Nip11LimitationsRaw::default(), now);
+        assert_eq!(unchanged_outcome, Nip11ApplyOutcome::Unchanged);
+
+        let immediate = pool.take_nip11_fetch_requests(1, now);
+        assert!(
+            immediate.is_empty(),
+            "successful apply should defer next fetch until refresh interval"
+        );
+
+        let refresh_ready_at = now
+            .checked_add(NIP11_REFRESH_AFTER_SUCCESS)
+            .expect("refresh timestamp");
+        let refresh_ready = pool.take_nip11_fetch_requests(1, refresh_ready_at);
+        assert_eq!(refresh_ready.len(), 1);
+        assert_eq!(refresh_ready[0].relay, known);
+        assert_eq!(refresh_ready[0].attempt, 1);
+
+        let applied_relay = NormRelayUrl::new("wss://relay-nip11-applied.example.com").unwrap();
+        let _ = pool.ensure_relay(&applied_relay, &wakeup);
+        let applied_raw = Nip11LimitationsRaw {
+            max_subscriptions: Some(777),
+            ..Default::default()
+        };
+        let applied_outcome = pool.apply_nip11_limits(&applied_relay, applied_raw, now);
+        assert_eq!(applied_outcome, Nip11ApplyOutcome::Applied);
+
+        let limits = pool
+            .relays
+            .get(&applied_relay)
+            .expect("relay present")
+            .current_limits();
+        assert_eq!(limits.maximum_subs, 777);
+    }
+
     // ==================== OutboxPool tests ====================
 
     /// Default pool has no relays or subscriptions.

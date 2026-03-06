@@ -110,3 +110,44 @@ impl Nip11FetchLifecycle {
         self.attempt
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nip11_lifecycle_defaults_to_pending() {
+        let lifecycle = Nip11FetchLifecycle::default();
+        assert!(lifecycle.pending);
+        assert!(!lifecycle.in_flight);
+        assert_eq!(lifecycle.attempt, 0);
+    }
+
+    #[test]
+    fn nip11_lifecycle_dispatch_and_success() {
+        let mut lifecycle = Nip11FetchLifecycle::default();
+        assert!(lifecycle.ready_to_fetch(SystemTime::now()));
+        assert_eq!(lifecycle.mark_dispatched(), 1);
+        assert!(lifecycle.in_flight);
+        assert!(!lifecycle.pending);
+
+        let now = SystemTime::now();
+        lifecycle.mark_success(now, Duration::from_secs(60));
+        assert!(!lifecycle.in_flight);
+        assert!(!lifecycle.pending);
+        assert_eq!(lifecycle.attempt, 0);
+        assert!(lifecycle.last_success.is_some());
+        assert!(lifecycle.last_error.is_none());
+    }
+
+    #[test]
+    fn nip11_lifecycle_failure_sets_pending() {
+        let mut lifecycle = Nip11FetchLifecycle::default();
+        let _ = lifecycle.mark_dispatched();
+        let now = SystemTime::now();
+        lifecycle.mark_failure(now, "boom".to_owned(), Duration::from_secs(10));
+        assert!(!lifecycle.in_flight);
+        assert!(lifecycle.pending);
+        assert_eq!(lifecycle.last_error.as_deref(), Some("boom"));
+    }
+}
