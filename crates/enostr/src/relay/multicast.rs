@@ -204,6 +204,8 @@ impl MulticastRelayCache {
         if multicast.should_rejoin() {
             if let Err(e) = multicast.rejoin() {
                 tracing::error!("multicast: rejoin error: {e}");
+            } else {
+                self.cache.flush_backoff = None;
             }
         }
 
