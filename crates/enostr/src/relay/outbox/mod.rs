@@ -1,18 +1,18 @@
 use hashbrown::{hash_map::RawEntryMut, HashMap, HashSet};
 use nostrdb::{Filter, Note};
 use std::{
-    collections::{hash_map::DefaultHasher, BTreeMap},
-    hash::{Hash, Hasher},
+    collections::BTreeMap,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     relay::{
+        backoff,
         coordinator::{CoordinationData, CoordinationSession, EoseIds},
         websocket::WebsocketRelay,
-        ModifyTask, MulticastRelayCache, NormRelayUrl, OutboxSubId, OutboxSubscriptions,
-        OutboxTask, RawEventData, RelayId, RelayLimitations, RelayReqStatus, RelayStatus,
-        RelayType,
+        ModifyTask, MulticastRelayCache, Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw,
+        NormRelayUrl, OutboxSubId, OutboxSubscriptions, OutboxTask, RawEventData, RelayId,
+        RelayLimitations, RelayReqStatus, RelayStatus, RelayType,
     },
     EventClientMessage, Wakeup, WebsocketConn,
 };
@@ -25,42 +25,7 @@ pub use session::OutboxSession;
 
 const KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30 * 60); // 30 minutes
-
-/// Computes the deterministic base delay for a given attempt number.
-/// Formula: `5s * 2^attempt`, capped at [`MAX_RECONNECT_DELAY`].
-fn base_reconnect_delay(attempt: u32) -> Duration {
-    let secs = 5u64.checked_shl(attempt).unwrap_or(u64::MAX);
-    Duration::from_secs(secs).min(MAX_RECONNECT_DELAY)
-}
-
-fn reconnect_jitter_seed(relay_url: &nostr::RelayUrl, attempt: u32) -> u64 {
-    let now_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let mut hasher = DefaultHasher::new();
-    relay_url.hash(&mut hasher);
-    attempt.hash(&mut hasher);
-    now_nanos.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// Returns the reconnect delay for the given attempt count.
-///
-/// Uses the exponential base delay as the primary component and adds up to 25%
-/// additive jitter (via relay/time mixed seed) to spread out simultaneous
-/// reconnects without undermining the exponential delay itself.
-fn next_reconnect_duration(attempt: u32, jitter_seed: u64) -> Duration {
-    let base = base_reconnect_delay(attempt);
-    let jitter_ceiling = base / 4;
-    let jitter = if jitter_ceiling.is_zero() {
-        Duration::ZERO
-    } else {
-        let jitter_ceiling_nanos = jitter_ceiling.as_nanos() as u64;
-        Duration::from_nanos(jitter_seed % jitter_ceiling_nanos)
-    };
-    (base + jitter).min(MAX_RECONNECT_DELAY)
-}
+const NIP11_REFRESH_AFTER_SUCCESS: Duration = Duration::from_secs(60 * 60);
 
 /// OutboxPool owns the active relay coordinators and applies staged subscription
 /// mutations to them each frame.
@@ -310,9 +275,12 @@ impl OutboxPool {
                         websocket.last_connect_attempt = now;
                         websocket.reconnect_attempt = websocket.reconnect_attempt.saturating_add(1);
                         let jitter_seed =
-                            reconnect_jitter_seed(&websocket.conn.url, websocket.reconnect_attempt);
-                        let next_duration =
-                            next_reconnect_duration(websocket.reconnect_attempt, jitter_seed);
+                            backoff::jitter_seed(&websocket.conn.url, websocket.reconnect_attempt);
+                        let next_duration = backoff::next_duration(
+                            websocket.reconnect_attempt,
+                            jitter_seed,
+                            MAX_RECONNECT_DELAY,
+                        );
                         tracing::debug!(
                             "reconnect attempt {}, backing off for {:?}",
                             websocket.reconnect_attempt,
@@ -338,6 +306,89 @@ impl OutboxPool {
                 RelayStatus::Connecting => {}
             }
         }
+    }
+
+    /// Drain relays that are ready for a NIP-11 fetch request.
+    pub fn take_nip11_fetch_requests(
+        &mut self,
+        max: usize,
+        now: SystemTime,
+    ) -> Vec<Nip11FetchRequest> {
+        let mut requests = Vec::new();
+        if max == 0 {
+            return requests;
+        }
+
+        for (relay_url, relay) in &mut self.relays {
+            if requests.len() >= max {
+                break;
+            }
+
+            if !relay.nip11.ready_to_fetch(now) {
+                continue;
+            }
+
+            let attempt = relay.nip11.mark_dispatched();
+            tracing::debug!("nip11: fetching {relay_url}");
+            requests.push(Nip11FetchRequest {
+                relay: relay_url.clone(),
+                attempt,
+                requested_at: now,
+            });
+        }
+
+        requests
+    }
+
+    /// Convert raw NIP-11 limitations and apply relevant values for one relay.
+    pub fn apply_nip11_limits(
+        &mut self,
+        relay: &NormRelayUrl,
+        raw: Nip11LimitationsRaw,
+        fetched_at: SystemTime,
+    ) -> Nip11ApplyOutcome {
+        let Some(coord) = self.relays.get_mut(relay) else {
+            return Nip11ApplyOutcome::RelayUnknown;
+        };
+
+        let current = coord.current_limits();
+        let derived = derive_relay_limitations_from_raw(&raw, current);
+        coord
+            .nip11
+            .mark_success(fetched_at, NIP11_REFRESH_AFTER_SUCCESS);
+
+        if derived == current {
+            tracing::debug!("nip11: {relay} limits unchanged");
+            return Nip11ApplyOutcome::Unchanged;
+        }
+
+        coord.set_limits(&self.subs, derived);
+        tracing::info!(
+            "nip11: {relay} limits updated — max_subs: {} -> {}, max_json_bytes: {} -> {}",
+            current.maximum_subs,
+            derived.maximum_subs,
+            current.max_json_bytes,
+            derived.max_json_bytes,
+        );
+        Nip11ApplyOutcome::Applied
+    }
+
+    /// Record a failed NIP-11 fetch so the relay can be retried later.
+    pub fn record_nip11_failure(
+        &mut self,
+        relay: &NormRelayUrl,
+        error: String,
+        failed_at: SystemTime,
+    ) {
+        let Some(coord) = self.relays.get_mut(relay) else {
+            return;
+        };
+
+        let attempt = coord.nip11.attempt();
+        let jitter_seed = backoff::jitter_seed(relay, attempt);
+        let retry_after = backoff::next_duration(attempt, jitter_seed, MAX_RECONNECT_DELAY);
+        tracing::warn!("nip11: {relay} fetch failed: {error} (retry in {retry_after:?})");
+        coord.nip11.mark_failure(failed_at, error, retry_after);
     }
 
     fn ensure_relay<W>(&mut self, relay_id: &NormRelayUrl, wakeup: &W) -> &mut CoordinationData
@@ -551,6 +602,31 @@ where
     )
 }
 
+fn derive_relay_limitations_from_raw(
+    raw: &Nip11LimitationsRaw,
+    fallback: RelayLimitations,
+) -> RelayLimitations {
+    let mut out = fallback;
+
+    if let Some(maximum_subs) = raw.max_subscriptions.and_then(valid_positive_usize) {
+        out.maximum_subs = maximum_subs;
+    }
+
+    if let Some(max_json_bytes) = raw.max_message_length.and_then(valid_positive_usize) {
+        out.max_json_bytes = max_json_bytes;
+    }
+
+    out
+}
+
+fn valid_positive_usize(value: i64) -> Option<usize> {
+    if value <= 0 {
+        return None;
+    }
+
+    usize::try_from(value).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use hashbrown::HashSet;
@@ -575,6 +651,131 @@ mod tests {
         assert_ne!(id1, id2);
         assert_ne!(id2, id3);
         assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn derive_relay_limitations_uses_positive_raw_values() {
+        let fallback = RelayLimitations {
+            maximum_subs: 10,
+            max_json_bytes: 200_000,
+        };
+        let raw = Nip11LimitationsRaw {
+            max_subscriptions: Some(300),
+            max_message_length: Some(131_072),
+            ..Default::default()
+        };
+
+        let derived = derive_relay_limitations_from_raw(&raw, fallback);
+        assert_eq!(derived.maximum_subs, 300);
+        assert_eq!(derived.max_json_bytes, 131_072);
+    }
+
+    #[test]
+    fn derive_relay_limitations_ignores_invalid_values() {
+        let fallback = RelayLimitations {
+            maximum_subs: 10,
+            max_json_bytes: 200_000,
+        };
+        let raw = Nip11LimitationsRaw {
+            max_subscriptions: Some(0),
+            max_message_length: Some(-1),
+            ..Default::default()
+        };
+
+        let derived = derive_relay_limitations_from_raw(&raw, fallback);
+        assert_eq!(derived.maximum_subs, fallback.maximum_subs);
+        assert_eq!(derived.max_json_bytes, fallback.max_json_bytes);
+    }
+
+    /// Ensures NIP-11 fetch requests respect in-flight and retry timing lifecycle gates.
+    #[test]
+    fn take_nip11_fetch_requests_respects_lifecycle_and_retry_schedule() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-nip11-gating.example.com").unwrap();
+        let _ = pool.ensure_relay(&relay, &wakeup);
+
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let requests = pool.take_nip11_fetch_requests(1, now);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].relay, relay);
+        assert_eq!(requests[0].attempt, 1);
+
+        let immediate = pool.take_nip11_fetch_requests(1, now);
+        assert!(
+            immediate.is_empty(),
+            "in-flight relay should not be re-dispatched immediately"
+        );
+
+        pool.record_nip11_failure(&relay, "boom".to_owned(), now);
+
+        // attempt 1 base = 10s; should not be ready before base delay
+        let base = backoff::base_delay(1, MAX_RECONNECT_DELAY);
+        let before_retry = now
+            .checked_add(base - Duration::from_secs(1))
+            .expect("retry check timestamp");
+        let not_ready = pool.take_nip11_fetch_requests(1, before_retry);
+        assert!(
+            not_ready.is_empty(),
+            "relay should remain blocked until retry deadline"
+        );
+
+        // should be ready after base + max jitter (25%)
+        let after_jitter = now.checked_add(base + base / 4).expect("retry timestamp");
+        let retry_ready = pool.take_nip11_fetch_requests(1, after_jitter);
+        assert_eq!(retry_ready.len(), 1);
+        assert_eq!(retry_ready[0].relay, relay);
+        assert_eq!(retry_ready[0].attempt, 2);
+    }
+
+    /// Ensures applying NIP-11 limits reports all outcomes and refresh scheduling is enforced.
+    #[test]
+    fn apply_nip11_limits_reports_outcomes_and_updates_state() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let known = NormRelayUrl::new("wss://relay-nip11-known.example.com").unwrap();
+        let unknown = NormRelayUrl::new("wss://relay-nip11-unknown.example.com").unwrap();
+        let _ = pool.ensure_relay(&known, &wakeup);
+
+        let now = UNIX_EPOCH + Duration::from_secs(1_700_000_100);
+
+        let unknown_outcome =
+            pool.apply_nip11_limits(&unknown, Nip11LimitationsRaw::default(), now);
+        assert_eq!(unknown_outcome, Nip11ApplyOutcome::RelayUnknown);
+
+        let unchanged_outcome =
+            pool.apply_nip11_limits(&known, Nip11LimitationsRaw::default(), now);
+        assert_eq!(unchanged_outcome, Nip11ApplyOutcome::Unchanged);
+
+        let immediate = pool.take_nip11_fetch_requests(1, now);
+        assert!(
+            immediate.is_empty(),
+            "successful apply should defer next fetch until refresh interval"
+        );
+
+        let refresh_ready_at = now
+            .checked_add(NIP11_REFRESH_AFTER_SUCCESS)
+            .expect("refresh timestamp");
+        let refresh_ready = pool.take_nip11_fetch_requests(1, refresh_ready_at);
+        assert_eq!(refresh_ready.len(), 1);
+        assert_eq!(refresh_ready[0].relay, known);
+        assert_eq!(refresh_ready[0].attempt, 1);
+
+        let applied_relay = NormRelayUrl::new("wss://relay-nip11-applied.example.com").unwrap();
+        let _ = pool.ensure_relay(&applied_relay, &wakeup);
+        let applied_raw = Nip11LimitationsRaw {
+            max_subscriptions: Some(777),
+            ..Default::default()
+        };
+        let applied_outcome = pool.apply_nip11_limits(&applied_relay, applied_raw, now);
+        assert_eq!(applied_outcome, Nip11ApplyOutcome::Applied);
+
+        let limits = pool
+            .relays
+            .get(&applied_relay)
+            .expect("relay present")
+            .current_limits();
+        assert_eq!(limits.maximum_subs, 777);
     }
 
     // ==================== OutboxPool tests ====================
@@ -662,43 +863,6 @@ mod tests {
             .and_then(|session| session.tasks.get(&new_sub_id))
             .expect("expected a task for relay relay_b");
         assert!(matches!(new_task, CoordinationTask::CompactionSub));
-    }
-
-    /// Base delay doubles on each attempt until it reaches the configured cap.
-    #[test]
-    fn reconnect_base_delay_doubles_with_cap() {
-        assert_eq!(base_reconnect_delay(0), Duration::from_secs(5));
-        assert_eq!(base_reconnect_delay(1), Duration::from_secs(10));
-        assert_eq!(base_reconnect_delay(2), Duration::from_secs(20));
-        assert_eq!(base_reconnect_delay(3), Duration::from_secs(40));
-        assert_eq!(base_reconnect_delay(4), Duration::from_secs(80));
-        assert_eq!(base_reconnect_delay(5), Duration::from_secs(160));
-        assert_eq!(base_reconnect_delay(6), Duration::from_secs(320));
-        assert_eq!(base_reconnect_delay(7), Duration::from_secs(640));
-        assert_eq!(base_reconnect_delay(8), Duration::from_secs(1280));
-        assert_eq!(base_reconnect_delay(9), MAX_RECONNECT_DELAY);
-        // Saturates at cap for any large attempt count.
-        assert_eq!(base_reconnect_delay(100), MAX_RECONNECT_DELAY);
-    }
-
-    /// Jittered delay is always >= the base and never exceeds base * 1.25 or the cap.
-    #[test]
-    fn reconnect_jitter_within_bounds() {
-        for attempt in [0u32, 1, 3, 8, 9, 50, 100] {
-            let base = base_reconnect_delay(attempt);
-            let max_with_jitter = (base + (base / 4)).min(MAX_RECONNECT_DELAY);
-            for sample in 0u64..20 {
-                let jittered = next_reconnect_duration(attempt, 0xBAD5EED ^ sample);
-                assert!(
-                    jittered >= base,
-                    "jittered {jittered:?} < base {base:?} at attempt {attempt}"
-                );
-                assert!(
-                    jittered <= max_with_jitter,
-                    "jittered {jittered:?} exceeds max-with-jitter {max_with_jitter:?} at attempt {attempt}"
-                );
-            }
-        }
     }
 
     /// Oneshot requests route to compaction mode by default.

@@ -2,6 +2,7 @@ use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
 use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
+use crate::relay_limits::{enqueue_nip11_fetch, RelayLimitJobs};
 use crate::scoped_sub_state::ScopedSubsState;
 use crate::unknowns::unknown_id_send;
 use crate::wallet::GlobalWallet;
@@ -22,6 +23,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
+use std::time::SystemTime;
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
@@ -86,6 +88,7 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     media_jobs: MediaJobs,
+    relay_limit_jobs: RelayLimitJobs,
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
@@ -129,6 +132,15 @@ impl eframe::App for Notedeck {
             self.media_jobs.deliver_all_completed(|completed| {
                 crate::deliver_completed_media_job(completed, &mut self.img_cache.textures)
             });
+        }
+
+        {
+            profiling::scope!("relay limit jobs");
+            tick_relay_limit_jobs(
+                &mut self.pool,
+                &mut self.relay_limit_jobs,
+                &mut self.job_pool,
+            );
         }
 
         self.nip05_cache.poll();
@@ -319,6 +331,8 @@ impl Notedeck {
 
         let (send_new_jobs, receive_new_jobs) = std::sync::mpsc::channel();
         let media_job_cache = JobCache::new(receive_new_jobs, send_new_jobs);
+        let (send_new_relay_jobs, receive_new_relay_jobs) = std::sync::mpsc::channel();
+        let relay_limit_jobs = JobCache::new(receive_new_relay_jobs, send_new_relay_jobs);
 
         let notedeck = Self {
             ndb,
@@ -340,6 +354,7 @@ impl Notedeck {
             zaps,
             job_pool,
             media_jobs: media_job_cache,
+            relay_limit_jobs,
             nip05_cache: Nip05Cache::new(),
             i18n,
             #[cfg(target_os = "android")]
@@ -534,6 +549,32 @@ fn try_swap_compacted_db(dbpath: &str) {
     let _ = std::fs::remove_file(&db_old);
     let _ = std::fs::remove_dir_all(&compact_path);
     info!("compact swap: success! {old_size} -> {compact_size} bytes");
+}
+
+#[profiling::function]
+fn tick_relay_limit_jobs(
+    pool: &mut OutboxPool,
+    relay_limit_jobs: &mut RelayLimitJobs,
+    job_pool: &mut JobPool,
+) {
+    let now = SystemTime::now();
+    for request in pool.take_nip11_fetch_requests(16, now) {
+        enqueue_nip11_fetch(relay_limit_jobs.sender(), request);
+    }
+
+    relay_limit_jobs.run_received(job_pool, |_| {});
+    relay_limit_jobs.deliver_all_completed(|completed| {
+        let response = completed.response;
+        let now = SystemTime::now();
+        match response.result {
+            Ok(raw) => {
+                let _ = pool.apply_nip11_limits(&response.relay, raw, now);
+            }
+            Err(error) => {
+                pool.record_nip11_failure(&response.relay, error.to_string(), now);
+            }
+        }
+    });
 }
 
 pub struct NotedeckCtx {

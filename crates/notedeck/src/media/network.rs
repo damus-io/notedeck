@@ -13,6 +13,18 @@ use url::Url;
 const MAX_BODY_BYTES: usize = 20 * 1024 * 1024;
 
 pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
+    http_req_with_accept(url, None).await
+}
+
+/// Perform an HTTP GET and set an explicit `Accept` header.
+pub async fn http_req_accept(url: &str, accept: &str) -> Result<HyperHttpResponse, HyperHttpError> {
+    http_req_with_accept(url, Some(accept)).await
+}
+
+async fn http_req_with_accept(
+    url: &str,
+    accept: Option<&str>,
+) -> Result<HyperHttpResponse, HyperHttpError> {
     let mut current_uri: Uri = url.parse().map_err(|_| HyperHttpError::Uri)?;
 
     let https = {
@@ -38,9 +50,13 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
         let authority = current_uri.authority().ok_or(HyperHttpError::Host)?.clone();
 
         // Fetch the url...
-        let req = Request::builder()
+        let mut req_builder = Request::builder()
             .uri(current_uri.clone())
-            .header(hyper::header::HOST, authority.as_str())
+            .header(hyper::header::HOST, authority.as_str());
+        if let Some(accept) = accept {
+            req_builder = req_builder.header(hyper::header::ACCEPT, accept);
+        }
+        let req = req_builder
             .body(Empty::<Bytes>::new())
             .map_err(|e| HyperHttpError::Hyper(Box::new(e)))?;
 
@@ -83,6 +99,7 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
         .get(hyper::header::CONTENT_TYPE)
         .and_then(|t| t.to_str().ok())
         .map(|s| s.to_string());
+    let status_code = res.status().as_u16();
 
     let content_length = res
         .headers()
@@ -113,6 +130,7 @@ pub async fn http_req(url: &str) -> Result<HyperHttpResponse, HyperHttpError> {
     }
 
     Ok(HyperHttpResponse {
+        status_code,
         content_type,
         bytes,
     })
@@ -131,6 +149,7 @@ pub enum HyperHttpError {
 
 #[derive(Debug)]
 pub struct HyperHttpResponse {
+    pub status_code: u16,
     pub content_type: Option<String>,
     pub bytes: Vec<u8>,
 }

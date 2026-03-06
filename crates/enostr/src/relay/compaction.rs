@@ -45,6 +45,11 @@ impl CompactionData {
         self.req_status(id) == Some(RelayReqStatus::Eose)
     }
 
+    /// Outbox subscription IDs currently placed in compaction requests.
+    pub fn request_ids(&self) -> Vec<OutboxSubId> {
+        self.request_to_sid.keys().copied().collect()
+    }
+
     /// Returns the OutboxSubIds associated with the given relay subscription ID.
     pub fn ids(&self, sid: &RelayReqId) -> Option<&HashSet<OutboxSubId>> {
         self.relay_subs.get(sid).map(|d| &d.requests.requests)

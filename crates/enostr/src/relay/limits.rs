@@ -1,4 +1,5 @@
 /// Limitations imposed by the relay
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RelayLimitations {
     // corresponds to NIP-11 `max_subscriptions`
     pub maximum_subs: usize,
