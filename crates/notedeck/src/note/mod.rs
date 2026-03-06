@@ -10,6 +10,7 @@ pub use publish::{
 };
 
 use crate::jobs::MediaJobSender;
+use crate::namecoin::NamecoinResolver;
 use crate::nip05::Nip05Cache;
 use crate::Accounts;
 use crate::GlobalWallet;
@@ -35,6 +36,7 @@ pub struct NoteContext<'d> {
     pub jobs: &'d MediaJobSender,
     pub unknown_ids: &'d mut UnknownIds,
     pub nip05_cache: &'d mut Nip05Cache,
+    pub namecoin_resolver: &'d mut NamecoinResolver,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
 }
 

@@ -37,6 +37,31 @@ pub enum FocusState {
     RequestedFocus,
 }
 
+/// Current state of a Namecoin resolution in the search bar.
+#[derive(Debug, Clone)]
+pub enum NamecoinSearchState {
+    /// No Namecoin resolution in progress.
+    Idle,
+    /// A resolution is in progress for the given query.
+    Resolving(String),
+    /// Resolution completed successfully with a pubkey.
+    Resolved {
+        query: String,
+        pubkey: Pubkey,
+    },
+    /// Resolution failed.
+    Failed {
+        query: String,
+        error: notedeck::namecoin::NamecoinResolveError,
+    },
+}
+
+impl Default for NamecoinSearchState {
+    fn default() -> Self {
+        Self::Idle
+    }
+}
+
 /// Search query state that exists between frames
 #[derive(Debug)]
 pub struct SearchQueryState {
@@ -67,6 +92,9 @@ pub struct SearchQueryState {
 
     /// The query string that produced `mention_results`
     pub last_mention_query: String,
+
+    /// State of Namecoin blockchain resolution for the current query
+    pub namecoin_state: NamecoinSearchState,
 }
 
 impl Default for SearchQueryState {
@@ -87,6 +115,7 @@ impl SearchQueryState {
             recent_searches: Vec::new(),
             mention_results: Vec::new(),
             last_mention_query: String::new(),
+            namecoin_state: NamecoinSearchState::default(),
         }
     }
 

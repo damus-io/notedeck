@@ -87,6 +87,21 @@ impl Nip05Cache {
 }
 
 async fn validate_nip05(pubkey: &Pubkey, nip05: &str) -> Nip05Status {
+    // Route .bit domains and Namecoin identifiers to blockchain resolution
+    if crate::namecoin::identifier::NamecoinIdentifier::is_namecoin_identifier(nip05) {
+        let pk = *pubkey;
+        let nip05_owned = nip05.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            crate::namecoin::validate_nip05_bit(&pk, &nip05_owned)
+        })
+        .await;
+
+        return match result {
+            Ok(true) => Nip05Status::Valid,
+            _ => Nip05Status::Invalid,
+        };
+    }
+
     let Some((user, domain)) = parse_nip05(nip05) else {
         return Nip05Status::Invalid;
     };

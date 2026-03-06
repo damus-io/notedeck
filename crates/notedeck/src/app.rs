@@ -87,6 +87,7 @@ pub struct Notedeck {
     job_pool: JobPool,
     media_jobs: MediaJobs,
     nip05_cache: Nip05Cache,
+    namecoin_resolver: crate::namecoin::NamecoinResolver,
     i18n: Localization,
 
     #[cfg(target_os = "android")]
@@ -132,6 +133,7 @@ impl eframe::App for Notedeck {
         }
 
         self.nip05_cache.poll();
+        self.namecoin_resolver.poll();
         let Some(app) = &self.app else {
             return;
         };
@@ -341,6 +343,7 @@ impl Notedeck {
             job_pool,
             media_jobs: media_job_cache,
             nip05_cache: Nip05Cache::new(),
+            namecoin_resolver: crate::namecoin::NamecoinResolver::new(),
             i18n,
             #[cfg(target_os = "android")]
             android_app: None,
@@ -406,6 +409,7 @@ impl Notedeck {
                 job_pool: &mut self.job_pool,
                 media_jobs: &mut self.media_jobs,
                 nip05_cache: &mut self.nip05_cache,
+                namecoin_resolver: &mut self.namecoin_resolver,
                 i18n: &mut self.i18n,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
@@ -453,10 +457,17 @@ pub fn install_crypto() {
         let _ = provider.install_default();
     }
 
-    // On non-Windows platforms, use aws-lc-rs for optimal performance
-    #[cfg(not(windows))]
+    // On non-Windows, non-Android platforms, use aws-lc-rs for optimal performance
+    #[cfg(not(any(windows, target_os = "android")))]
     {
         let provider = rustls::crypto::aws_lc_rs::default_provider();
+        let _ = provider.install_default();
+    }
+
+    // On Android, use ring (avoids cmake cross-compilation issues with aws-lc-rs)
+    #[cfg(target_os = "android")]
+    {
+        let provider = rustls::crypto::ring::default_provider();
         let _ = provider.install_default();
     }
 }

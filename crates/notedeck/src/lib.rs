@@ -20,6 +20,7 @@ pub mod media;
 mod muted;
 pub mod name;
 pub mod nav;
+pub mod namecoin;
 pub mod nip05;
 mod nip51_set;
 pub mod note;

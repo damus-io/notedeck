@@ -24,7 +24,7 @@ use tracing::{error, info, warn};
 
 mod state;
 
-pub use state::{FocusState, RecentSearchItem, SearchQueryState, SearchState};
+pub use state::{FocusState, NamecoinSearchState, RecentSearchItem, SearchQueryState, SearchState};
 
 use super::mentions_picker::{MentionPickerResponse, MentionPickerView};
 
@@ -72,6 +72,9 @@ impl<'a, 'd> SearchView<'a, 'd> {
 
         search_resp.process_search_response(self.query);
 
+        // Trigger Namecoin resolution if the query looks like a Namecoin identifier
+        self.update_namecoin_resolution();
+
         let keyboard_resp = handle_keyboard_navigation(
             ui,
             &mut self.query.selected_index,
@@ -100,8 +103,16 @@ impl<'a, 'd> SearchView<'a, 'd> {
                     .into_iter()
                     .map(|r| r.pk.to_vec())
                     .collect();
-                    if let Some(action) = self.show_search_suggestions(ui, keyboard_resp) {
+
+                    // Show Namecoin resolved profile at the top if available
+                    if let Some(action) = self.show_namecoin_result(ui) {
                         search_action = Some(action);
+                    }
+
+                    if search_action.is_none() {
+                        if let Some(action) = self.show_search_suggestions(ui, keyboard_resp) {
+                            search_action = Some(action);
+                        }
                     }
                 } else if self.query.string.starts_with('@') {
                     self.handle_mention_search(ui, &mut search_action);
@@ -151,6 +162,141 @@ impl<'a, 'd> SearchView<'a, 'd> {
         }
 
         body_resp
+    }
+
+    /// Update Namecoin resolution state based on the current search query.
+    fn update_namecoin_resolution(&mut self) {
+        use notedeck::namecoin::{NamecoinResolver, NamecoinResolveStatus};
+        use state::NamecoinSearchState;
+
+        let query = &self.query.string;
+
+        if !NamecoinResolver::is_namecoin_identifier(query) {
+            self.query.namecoin_state = NamecoinSearchState::Idle;
+            return;
+        }
+
+        fn apply_result(query: &str, result: Result<notedeck::namecoin::NamecoinResolveResult, notedeck::namecoin::NamecoinResolveError>) -> NamecoinSearchState {
+            match result {
+                Ok(r) => NamecoinSearchState::Resolved {
+                    query: query.to_string(),
+                    pubkey: r.pubkey,
+                },
+                Err(e) => NamecoinSearchState::Failed {
+                    query: query.to_string(),
+                    error: e,
+                },
+            }
+        }
+
+        // Check if we're already resolving this exact query
+        match &self.query.namecoin_state {
+            NamecoinSearchState::Resolving(q) if q == query => {
+                // Already in flight for this query - check for completion
+                match self.note_context.namecoin_resolver.resolve(query) {
+                    NamecoinResolveStatus::Resolving => {} // still waiting
+                    NamecoinResolveStatus::Resolved(result) => {
+                        self.query.namecoin_state = apply_result(query, result);
+                    }
+                }
+            }
+            NamecoinSearchState::Resolved { query: q, .. } if q == query => {}
+            NamecoinSearchState::Failed { query: q, .. } if q == query => {}
+            _ => {
+                // New query or different query - start resolution
+                match self.note_context.namecoin_resolver.resolve(query) {
+                    NamecoinResolveStatus::Resolving => {
+                        self.query.namecoin_state =
+                            NamecoinSearchState::Resolving(query.to_string());
+                    }
+                    NamecoinResolveStatus::Resolved(result) => {
+                        self.query.namecoin_state = apply_result(query, result);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Show the Namecoin-resolved profile in the search suggestions.
+    fn show_namecoin_result(&mut self, ui: &mut egui::Ui) -> Option<SearchAction> {
+        use state::NamecoinSearchState;
+
+        match &self.query.namecoin_state {
+            NamecoinSearchState::Resolving(_) => {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new("Resolving via Namecoin blockchain...")
+                            .weak()
+                            .italics(),
+                    );
+                });
+                None
+            }
+            NamecoinSearchState::Resolved {
+                pubkey,
+                ..
+            } => {
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Namecoin blockchain result:")
+                        .weak()
+                        .size(12.0),
+                );
+                ui.add_space(4.0);
+
+                let pk = *pubkey;
+                let profile = self
+                    .note_context
+                    .ndb
+                    .get_profile_by_pubkey(self.txn, pk.bytes())
+                    .ok();
+
+                let options = ProfileRowOptions::new().selected(false).contact_badge(
+                    self.note_context
+                        .accounts
+                        .get_selected_account()
+                        .data
+                        .contacts
+                        .is_following(pk.bytes())
+                        == IsFollowing::Yes,
+                );
+
+                let resp = ui.add(profile_row_widget(
+                    profile.as_ref(),
+                    self.note_context.img_cache,
+                    self.note_context.jobs,
+                    self.note_context.i18n,
+                    options,
+                ));
+
+                if resp.clicked() {
+                    return Some(SearchAction::NavigateToProfile(pk));
+                }
+
+                None
+            }
+            NamecoinSearchState::Failed { error, .. } => {
+                ui.add_space(8.0);
+                let msg = match error {
+                    notedeck::namecoin::NamecoinResolveError::NameNotFound => {
+                        "Namecoin: name not found on the blockchain"
+                    }
+                    notedeck::namecoin::NamecoinResolveError::ServersUnreachable(_) => {
+                        "Namecoin: ElectrumX servers unreachable"
+                    }
+                };
+                ui.label(
+                    RichText::new(msg)
+                        .weak()
+                        .italics()
+                        .size(12.0),
+                );
+                None
+            }
+            _ => None,
+        }
     }
 
     fn handle_mention_search(
@@ -602,6 +748,7 @@ pub enum SearchType {
     NoteId(NoteId),
     Profile(Pubkey),
     Hashtag(String),
+    Namecoin(String),
 }
 
 impl SearchType {
@@ -620,6 +767,8 @@ impl SearchType {
             if let Some(hashtag) = query.get(1..) {
                 return SearchType::Hashtag(hashtag.to_string());
             }
+        } else if notedeck::namecoin::NamecoinResolver::is_namecoin_identifier(query) {
+            return SearchType::Namecoin(query.to_string());
         }
 
         SearchType::String
@@ -637,6 +786,11 @@ impl SearchType {
             SearchType::NoteId(noteid) => search_note(noteid, ndb, txn).map(|n| vec![n]),
             SearchType::Profile(pk) => search_pk(pk, ndb, txn, max_results),
             SearchType::Hashtag(hashtag) => search_hashtag(hashtag, ndb, txn, max_results),
+            SearchType::Namecoin(_) => {
+                // Namecoin identifiers are resolved via ElectrumX, not local search.
+                // The resolution happens in the search UI via NamecoinResolver.
+                None
+            }
         }
     }
 }

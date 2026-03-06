@@ -51,6 +51,7 @@ pub fn note_hover_ui(
             jobs: ctx.media_jobs.sender(),
             unknown_ids: ctx.unknown_ids,
             nip05_cache: ctx.nip05_cache,
+            namecoin_resolver: ctx.namecoin_resolver,
             clipboard: ctx.clipboard,
             i18n: ctx.i18n,
             global_wallet: ctx.global_wallet,

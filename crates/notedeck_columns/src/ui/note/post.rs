@@ -906,6 +906,7 @@ mod preview {
                 jobs: app.media_jobs.sender(),
                 unknown_ids: app.unknown_ids,
                 nip05_cache: app.nip05_cache,
+                namecoin_resolver: app.namecoin_resolver,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
             };
