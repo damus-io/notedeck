@@ -1,7 +1,7 @@
 use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 /// Computes the deterministic base delay for a given attempt number.
@@ -38,6 +38,37 @@ pub(crate) fn next_duration(attempt: u32, jitter_seed: u64, max: Duration) -> Du
         Duration::from_nanos(jitter_seed % jitter_ceiling_nanos)
     };
     (base + jitter).min(max)
+}
+
+pub struct FlushBackoff {
+    attempt: u32,
+    last_attempt: Instant,
+    retry_after: Duration,
+    max: Duration,
+}
+
+impl FlushBackoff {
+    pub fn new(max: Duration) -> Self {
+        let seed = jitter_seed(&"multicast_flush", 0);
+        let retry_after = next_duration(0, seed, max);
+        Self {
+            attempt: 0,
+            last_attempt: Instant::now(),
+            retry_after,
+            max,
+        }
+    }
+
+    pub fn is_elapsed(&self) -> bool {
+        self.last_attempt.elapsed() >= self.retry_after
+    }
+
+    pub fn escalate(&mut self) {
+        self.attempt += 1;
+        let seed = jitter_seed(&"multicast_flush", self.attempt);
+        self.retry_after = next_duration(self.attempt, seed, self.max);
+        self.last_attempt = Instant::now();
+    }
 }
 
 #[cfg(test)]
@@ -81,5 +112,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    const FLUSH_MAX: Duration = Duration::from_secs(60);
+
+    #[test]
+    fn flush_backoff_blocks_immediate_retry() {
+        let backoff = FlushBackoff::new(FLUSH_MAX);
+        assert!(!backoff.is_elapsed());
+    }
+
+    #[test]
+    fn flush_backoff_escalate_increases_delay() {
+        let mut backoff = FlushBackoff::new(FLUSH_MAX);
+        let first = backoff.retry_after;
+        backoff.escalate();
+        let second = backoff.retry_after;
+        assert!(second > first, "{second:?} should be > {first:?}");
+    }
+
+    #[test]
+    fn flush_backoff_caps_at_max() {
+        let mut backoff = FlushBackoff::new(FLUSH_MAX);
+        for _ in 0..20 {
+            backoff.escalate();
+        }
+        assert!(
+            backoff.retry_after <= FLUSH_MAX,
+            "{:?} exceeds cap {FLUSH_MAX:?}",
+            backoff.retry_after,
+        );
     }
 }
