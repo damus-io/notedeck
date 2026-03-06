@@ -608,14 +608,30 @@ impl ChatSession {
         self.source == SessionSource::Remote
     }
 
-    /// Check if session has pending permission requests
+    /// Check if session has pending permission requests that genuinely
+    /// need user input (i.e. would NOT be auto-accepted by the runtime
+    /// allowlist).
     pub fn has_pending_permissions(&self) -> bool {
         if self.is_remote() {
-            // Remote: check for unresponded PermissionRequest messages in chat
-            let responded = self.agentic.as_ref().map(|a| &a.permissions.responded);
+            // Remote: check for unresponded PermissionRequest messages in chat,
+            // but skip any that the runtime allowlist would auto-accept.
+            let agentic = self.agentic.as_ref();
+            let responded = agentic.map(|a| &a.permissions.responded);
             return self.chat.iter().any(|msg| {
                 if let Message::PermissionRequest(req) = msg {
-                    req.response.is_none() && responded.is_none_or(|ids| !ids.contains(&req.id))
+                    if req.response.is_some() {
+                        return false;
+                    }
+                    if responded.is_some_and(|ids| ids.contains(&req.id)) {
+                        return false;
+                    }
+                    // Skip if runtime allowlist would auto-accept
+                    if agentic
+                        .is_some_and(|a| a.should_runtime_allow(&req.tool_name, &req.tool_input))
+                    {
+                        return false;
+                    }
+                    true
                 } else {
                     false
                 }
@@ -625,6 +641,54 @@ impl ChatSession {
         self.agentic
             .as_ref()
             .is_some_and(|a| a.permissions.has_pending())
+    }
+
+    /// Auto-resolve any pending local permissions that now match the
+    /// runtime allowlist (e.g. after the user clicked "Allow Always"
+    /// and the allowlist was updated).  Returns the number resolved.
+    pub fn auto_resolve_runtime_allowed(&mut self) -> usize {
+        let Some(agentic) = &self.agentic else {
+            return 0;
+        };
+        if agentic.permissions.pending.is_empty() {
+            return 0;
+        }
+
+        // Collect IDs of pending permissions whose tool matches the allowlist
+        let to_resolve: Vec<uuid::Uuid> = self
+            .chat
+            .iter()
+            .filter_map(|msg| {
+                if let Message::PermissionRequest(req) = msg {
+                    if req.response.is_none()
+                        && agentic.permissions.pending.contains_key(&req.id)
+                        && agentic.should_runtime_allow(&req.tool_name, &req.tool_input)
+                    {
+                        return Some(req.id);
+                    }
+                }
+                None
+            })
+            .collect();
+
+        if to_resolve.is_empty() {
+            return 0;
+        }
+
+        // Resolve each: send Allow on the oneshot and mark in chat
+        let agentic = self.agentic.as_mut().unwrap();
+        for id in &to_resolve {
+            agentic.permissions.resolve(
+                &mut self.chat,
+                *id,
+                crate::messages::PermissionResponseType::Allowed,
+                None,
+                false,
+                Some(crate::messages::PermissionResponse::Allow { message: None }),
+            );
+        }
+
+        to_resolve.len()
     }
 
     /// Check if session is in plan mode
@@ -968,9 +1032,13 @@ impl SessionManager {
         self.sessions.values_mut()
     }
 
-    /// Update status for all sessions
+    /// Update status for all sessions.
+    ///
+    /// First drains any pending permissions that now match the runtime
+    /// allowlist (e.g. after "Allow Always"), then derives status.
     pub fn update_all_statuses(&mut self) {
         for session in self.sessions.values_mut() {
+            session.auto_resolve_runtime_allowed();
             session.update_status();
         }
     }

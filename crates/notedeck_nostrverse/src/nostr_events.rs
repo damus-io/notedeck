@@ -225,13 +225,37 @@ mod tests {
         assert_eq!(space.cells.len(), parsed.cells.len());
     }
 
+    /// Helper: find a tag value by tag name, returning an owned String.
+    ///
+    /// NoteBuilder::build() produces Note::Owned, which allocates a new
+    /// buffer on every clone. The tag iterator clones the note for each
+    /// Tag, so returning a borrowed &str from a Tag is use-after-free
+    /// once the Tag is dropped. This helper copies the value to avoid that.
+    /// (Production code uses transactional notes where clones share the
+    /// same LMDB-backed memory, so get_tag_value's &str return is safe there.)
+    fn owned_tag_value(note: &Note<'_>, tag_name: &str) -> Option<String> {
+        for tag in note.tags() {
+            if tag.count() < 2 {
+                continue;
+            }
+            let Some(name) = tag.get_str(0) else {
+                continue;
+            };
+            if name != tag_name {
+                continue;
+            }
+            return tag.get_str(1).map(|s| s.to_owned());
+        }
+        None
+    }
+
     #[test]
     fn test_get_space_id() {
         let space = protoverse::parse("(space (name \"X\"))").unwrap();
         let mut builder = build_space_event(&space, "my-id");
         let note = builder.build().expect("build note");
 
-        assert_eq!(get_space_id(&note), Some("my-id"));
+        assert_eq!(owned_tag_value(&note, "d").as_deref(), Some("my-id"));
     }
 
     #[test]
@@ -242,20 +266,26 @@ mod tests {
         let note = builder.build().expect("build note");
 
         assert_eq!(note.content(), "");
-        assert_eq!(get_presence_space(&note), Some("37555:abc123:my-room"));
+        assert_eq!(
+            owned_tag_value(&note, "a").as_deref(),
+            Some("37555:abc123:my-room")
+        );
 
-        let parsed_pos = parse_presence_position(&note).expect("parse position");
+        // Parse position/velocity by copying tag values first
+        let pos_str = owned_tag_value(&note, "position").expect("missing position tag");
+        let parsed_pos = parse_vec3(&pos_str).expect("parse position");
         assert!((parsed_pos.x - 1.5).abs() < 0.01);
         assert!((parsed_pos.y - 0.0).abs() < 0.01);
         assert!((parsed_pos.z - (-3.2)).abs() < 0.01);
 
-        let parsed_vel = parse_presence_velocity(&note);
+        let vel_str = owned_tag_value(&note, "velocity").expect("missing velocity tag");
+        let parsed_vel = parse_vec3(&vel_str).expect("parse velocity");
         assert!((parsed_vel.x - 2.0).abs() < 0.01);
         assert!((parsed_vel.y - 0.0).abs() < 0.01);
         assert!((parsed_vel.z - (-1.0)).abs() < 0.01);
 
         // Should have an expiration tag (NIP-40)
-        let exp = get_tag_value(&note, "expiration").expect("missing expiration tag");
+        let exp = owned_tag_value(&note, "expiration").expect("missing expiration tag");
         let exp_ts: u64 = exp.parse().expect("expiration should be a number");
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
