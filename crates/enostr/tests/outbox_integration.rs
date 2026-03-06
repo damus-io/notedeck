@@ -477,25 +477,28 @@ async fn unreachable_relay_reports_disconnected_status() {
         session.subscribe(trivial_filter(), url_pkgs)
     };
 
-    let got_eose = pump_pool_until(&mut pool, 10, Duration::from_millis(10), |pool| {
-        pool.has_eose(&id)
+    // Pump until the relay transitions to Disconnected. Windows TCP
+    // connect-to-refused-port can take ~1 s vs near-instant on
+    // Linux/macOS, so we poll for the target status directly instead
+    // of waiting a fixed duration.
+    let became_disconnected = pump_pool_until(&mut pool, 50, Duration::from_millis(100), |pool| {
+        pool.websocket_statuses()
+            .into_iter()
+            .any(|(url, s)| *url == unreachable && s == RelayStatus::Disconnected)
     })
     .await;
     assert!(
-        !got_eose,
+        became_disconnected,
+        "unreachable relay should report Disconnected"
+    );
+
+    assert!(
+        !pool.has_eose(&id),
         "unreachable relay should never yield an EOSE signal"
     );
 
     // Should survive keepalive pings even when no websocket is available.
     pool.keepalive_ping(|| {});
-
-    let statuses = pool.websocket_statuses();
-    let status = statuses
-        .into_iter()
-        .find(|(relay_url, _)| *relay_url == &unreachable)
-        .map(|(_, status)| status)
-        .expect("missing unreachable relay status");
-    assert_eq!(status, RelayStatus::Disconnected);
 }
 
 // ==================== Oneshot Subscription Removal After EOSE ====================
