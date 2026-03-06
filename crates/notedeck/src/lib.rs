@@ -31,6 +31,7 @@ pub mod platform;
 pub mod profile;
 mod publish;
 pub mod relay_debug;
+mod relay_limits;
 pub mod relayspec;
 mod remote_api;
 mod result;
