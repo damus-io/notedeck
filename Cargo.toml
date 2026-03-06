@@ -123,10 +123,15 @@ android-activity = { git = "https://github.com/damus-io/android-activity", rev =
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "vendored"] }
 android-keyring = "0.2.0"
 rfd = "0.15"
-egui_kittest = { version = "0.31.1" }
+egui_kittest = "0.31.1"
 pollster = "0.4"
-wgpu = { version = "24.0.0", default-features = false }
 arboard = { git = "https://github.com/jb55/arboard", rev = "05755435fc8cf910449a8388bb8926a92b2db51e" }
+flate2 = "1"
+self-replace = "1"
+semver = "1"
+tar = "0.4"
+wgpu = { version = "24.0.0", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.small]
 inherits = 'release'

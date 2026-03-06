@@ -273,6 +273,9 @@ name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+dependencies = [
+ "derive_arbitrary",
+]
 
 [[package]]
 name = "arboard"
@@ -1431,7 +1434,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
 dependencies = [
  "lazy_static",
- "windows-sys 0.48.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1897,6 +1900,17 @@ checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "powerfmt",
  "serde_core",
+]
+
+[[package]]
+name = "derive_arbitrary"
+version = "1.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -4170,7 +4184,7 @@ dependencies = [
  "tar",
  "ureq 3.2.0",
  "vcpkg",
- "zip",
+ "zip 7.2.0",
 ]
 
 [[package]]
@@ -4824,6 +4838,7 @@ dependencies = [
  "egui_extras",
  "ehttp",
  "enostr",
+ "flate2",
  "fluent",
  "fluent-langneg",
  "fluent-resmgr",
@@ -4854,11 +4869,14 @@ dependencies = [
  "ring",
  "rustls",
  "secp256k1 0.30.0",
+ "self-replace",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "strum",
  "strum_macros",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokenator",
@@ -4867,6 +4885,7 @@ dependencies = [
  "unic-langid",
  "url",
  "uuid",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -7158,6 +7177,17 @@ checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "self-replace"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03ec815b5eab420ab893f63393878d89c90fdd94c0bcc44c07abb8ad95552fb7"
+dependencies = [
+ "fastrand",
+ "tempfile",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -10210,6 +10240,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zip"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fabe6324e908f85a1c52063ce7aa26b68dcb7eb6dbc83a2d148403c9bc3eba50"
+dependencies = [
+ "arbitrary",
+ "crc32fast",
+ "crossbeam-utils",
+ "displaydoc",
+ "flate2",
+ "indexmap 2.13.0",
+ "memchr",
+ "thiserror 2.0.18",
+ "zopfli",
 ]
 
 [[package]]
