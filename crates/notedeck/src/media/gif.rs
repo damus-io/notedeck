@@ -13,8 +13,8 @@ use crate::{
     },
     media::{
         images::{
-            normalize_image_type_for_request, process_image, TextureRequestKey,
-            TextureRequestVariant,
+            buffer_to_color_image, normalize_image_type_for_request, process_image,
+            should_persist_full_content, TextureRequestKey, TextureRequestVariant,
         },
         load_texture_checked,
     },
@@ -231,7 +231,7 @@ fn from_disk_job_run(
     };
     JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(
         generate_anim_pkg(ctx.clone(), request_key, gif_bytes, move |img| {
-            process_image(img_type, img)
+            process_disk_gif_frame(img_type, img)
         })
         .map(|f| f.anim),
     )))
@@ -255,27 +255,53 @@ async fn from_net_run(
 
     JobOutput::Next(JobRun::Sync(Box::new(move || {
         tracing::trace!("Starting animated img from net job for {url}");
-        let animation = match generate_anim_pkg(ctx.clone(), request_key, res.bytes, move |img| {
-            process_image(imgtype, img)
-        }) {
-            Ok(a) => a,
-            Err(e) => {
-                return JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(Err(
-                    e,
-                ))));
-            }
-        };
+        let (display_anim, disk_frames) =
+            match build_display_and_disk_animation(ctx, request_key, res.bytes, imgtype) {
+                Ok(output) => output,
+                Err(e) => {
+                    return JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(
+                        Err(e),
+                    )));
+                }
+            };
+
         JobOutput::Complete(
-            CompleteResponse::new(MediaJobResult::Animation(Ok(animation.anim))).run_no_output(
+            CompleteResponse::new(MediaJobResult::Animation(Ok(display_anim))).run_no_output(
                 NoOutputRun::Sync(Box::new(move || {
                     tracing::trace!("writing animated texture to file for {url}");
-                    if let Err(e) = MediaCache::write_gif(&path, &url, animation.img_frames) {
+                    if let Err(e) = MediaCache::write_gif(&path, &url, disk_frames) {
                         tracing::error!("Could not write gif to disk: {e}");
                     }
                 })),
             ),
         )
     })))
+}
+
+/// Builds the animation returned to UI and the frame set persisted to disk.
+fn build_display_and_disk_animation(
+    ctx: egui::Context,
+    request_key: TextureRequestKey,
+    gif_bytes: Vec<u8>,
+    imgtype: ImageType,
+) -> Result<(Animation, Vec<ImageFrame>), Error> {
+    let display_pkg = generate_anim_pkg(ctx, request_key, gif_bytes.clone(), move |img| {
+        process_image(imgtype, img)
+    })?;
+    let AnimationPackage {
+        anim: display_anim,
+        img_frames: display_frames,
+    } = display_pkg;
+
+    let disk_frames = if should_persist_full_content(imgtype) {
+        generate_disk_frames(gif_bytes, move |img| {
+            process_image(ImageType::Content(None), img)
+        })?
+    } else {
+        display_frames
+    };
+
+    Ok((display_anim, disk_frames))
 }
 
 fn generate_anim_pkg(
@@ -324,6 +350,24 @@ fn generate_anim_pkg(
 struct AnimationPackage {
     anim: Animation,
     img_frames: Vec<ImageFrame>,
+}
+
+/// Decode GIF bytes into processed frames intended for disk persistence only.
+///
+/// This path intentionally avoids creating egui textures, unlike
+/// [`generate_anim_pkg`], because these frames are only written to disk.
+fn generate_disk_frames(
+    gif_bytes: Vec<u8>,
+    process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
+) -> Result<Vec<ImageFrame>, Error> {
+    let processed_frames = collect_processed_gif_frames(gif_bytes, process_to_egui)?;
+    Ok(processed_frames
+        .into_iter()
+        .map(|processed| ImageFrame {
+            delay: processed.delay,
+            image: processed.image,
+        })
+        .collect())
 }
 
 /// Decodes GIF bytes into ordered image frames while preserving timing metadata.
@@ -382,5 +426,51 @@ fn generate_animation_frame(
             color_img,
             Default::default(),
         ),
+    }
+}
+
+/// Applies request resizing only when the cached frame exceeds the requested bounds.
+///
+/// This mirrors static image disk behavior and avoids quality loss from upscaling
+/// already-downscaled cached GIF content.
+fn process_disk_gif_frame(img_type: ImageType, image: DynamicImage) -> ColorImage {
+    let width = image.width();
+    let height = image.height();
+    if gif_needs_resize(img_type, width, height) {
+        process_image(img_type, image)
+    } else {
+        buffer_to_color_image(image.as_flat_samples_u8(), width, height)
+    }
+}
+
+fn gif_needs_resize(img_type: ImageType, width: u32, height: u32) -> bool {
+    match img_type {
+        ImageType::Profile(size) => width > size || height > size,
+        ImageType::Content(Some(dimensions)) => width > dimensions.x || height > dimensions.y,
+        ImageType::Content(None) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gif_needs_resize;
+    use crate::{ImageType, PixelDimensions};
+
+    #[test]
+    fn gif_resize_guard_does_not_upscale_content_hint_requests() {
+        assert!(!gif_needs_resize(
+            ImageType::Content(Some(PixelDimensions { x: 1200, y: 900 })),
+            800,
+            600
+        ));
+    }
+
+    #[test]
+    fn gif_resize_guard_downscales_only_when_source_exceeds_hint() {
+        assert!(gif_needs_resize(
+            ImageType::Content(Some(PixelDimensions { x: 800, y: 600 })),
+            1200,
+            900
+        ));
     }
 }

@@ -15,7 +15,7 @@ use crate::{
     media::{
         images::{
             buffer_to_color_image, normalize_image_type_for_request, parse_img_response,
-            process_image, TextureRequestKey, TextureRequestVariant,
+            process_image, should_persist_full_content, TextureRequestKey, TextureRequestVariant,
         },
         load_texture_checked,
         network::http_req,
@@ -128,6 +128,23 @@ impl StaticImgTexCache {
     }
 }
 
+/// Builds display output and disk output for a static image request.
+fn parse_display_and_disk_images(
+    content_type: Option<&str>,
+    bytes: &[u8],
+    imgtype: ImageType,
+) -> Result<(egui::ColorImage, egui::ColorImage), crate::Error> {
+    let display_img = parse_img_response(content_type, bytes, imgtype)?;
+
+    let disk_img = if should_persist_full_content(imgtype) {
+        parse_img_response(content_type, bytes, ImageType::Content(None))?
+    } else {
+        display_img.clone()
+    };
+
+    Ok((display_img, disk_img))
+}
+
 /// Loads a cached static image, resizing only when the stored image exceeds the requested [`ImageType`].
 pub fn fetch_static_img_from_disk(
     ctx: egui::Context,
@@ -138,23 +155,21 @@ pub fn fetch_static_img_from_disk(
 ) -> Result<egui::TextureHandle, crate::Error> {
     tracing::trace!("Starting job static img from disk for {url}");
     let data = std::fs::read(path)?;
-    let image_buffer = image::load_from_memory(&data).map_err(crate::Error::Image);
-
-    let image_buffer = match image_buffer {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::error!("could not load img buffer");
-            return Err(e);
+    let img = match image::load_from_memory(&data).map_err(crate::Error::Image) {
+        Ok(image_buffer) => {
+            let width = image_buffer.width();
+            let height = image_buffer.height();
+            if needs_resize(img_type, width, height) {
+                process_image(img_type, image_buffer)
+            } else {
+                buffer_to_color_image(image_buffer.as_flat_samples_u8(), width, height)
+            }
         }
-    };
-
-    let width = image_buffer.width();
-    let height = image_buffer.height();
-
-    let img = if needs_resize(img_type, width, height) {
-        process_image(img_type, image_buffer)
-    } else {
-        buffer_to_color_image(image_buffer.as_flat_samples_u8(), width, height)
+        Err(image_err) => {
+            tracing::debug!("raw cache decode failed, trying svg fallback: {image_err}");
+            // SVGs are cached as source bytes and rasterized per-request.
+            parse_img_response(Some("image/svg+xml"), &data, img_type)?
+        }
     };
 
     Ok(load_texture_checked(
@@ -184,31 +199,31 @@ async fn fetch_static_img_from_net(
 
     tracing::trace!("static img from net: parsing http request from {url}");
     JobOutput::Next(JobRun::Sync(Box::new(move || {
-        let img = match parse_img_response(res, imgtype) {
-            Ok(i) => i,
-            Err(e) => {
-                return JobOutput::Complete(CompleteResponse::new(MediaJobResult::StaticImg(Err(
-                    e,
-                ))))
-            }
-        };
+        let (display_img, disk_img) =
+            match parse_display_and_disk_images(res.content_type.as_deref(), &res.bytes, imgtype) {
+                Ok(imgs) => imgs,
+                Err(e) => {
+                    return JobOutput::Complete(CompleteResponse::new(MediaJobResult::StaticImg(
+                        Err(e),
+                    )));
+                }
+            };
 
-        let texture_handle = load_texture_checked(
+        let display_texture_handle = load_texture_checked(
             &ctx,
             request_key.to_job_id(),
-            img.clone(),
+            display_img,
             Default::default(),
         );
 
         JobOutput::Complete(
-            CompleteResponse::new(MediaJobResult::StaticImg(Ok(texture_handle))).run_no_output(
-                NoOutputRun::Sync(Box::new(move || {
+            CompleteResponse::new(MediaJobResult::StaticImg(Ok(display_texture_handle)))
+                .run_no_output(NoOutputRun::Sync(Box::new(move || {
                     tracing::trace!("static img from net: Saving output from {url}");
-                    if let Err(e) = MediaCache::write(&path, &url, img) {
+                    if let Err(e) = MediaCache::write(&path, &url, disk_img) {
                         tracing::error!("{e}");
                     }
-                })),
-            ),
+                }))),
         )
     })))
 }

@@ -1,4 +1,3 @@
-use crate::media::network::HyperHttpResponse;
 use crate::PixelDimensions;
 use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
 use image::imageops::FilterType;
@@ -175,10 +174,11 @@ pub fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> Color
 
 #[profiling::function]
 pub fn parse_img_response(
-    response: HyperHttpResponse,
+    content_type: Option<&str>,
+    bytes: &[u8],
     imgtyp: ImageType,
 ) -> Result<ColorImage, crate::Error> {
-    let content_type = response.content_type.unwrap_or_default();
+    let content_type = content_type.unwrap_or_default();
     let imgtyp = normalize_image_type_for_request(imgtyp);
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
@@ -189,13 +189,12 @@ pub fn parse_img_response(
     if content_type.starts_with("image/svg") {
         profiling::scope!("load_svg");
 
-        let mut color_image =
-            egui_extras::image::load_svg_bytes_with_size(&response.bytes, Some(size_hint))?;
+        let mut color_image = egui_extras::image::load_svg_bytes_with_size(bytes, Some(size_hint))?;
         round_image(&mut color_image);
         Ok(color_image)
     } else if content_type.starts_with("image/") {
         profiling::scope!("load_from_memory");
-        let dyn_image = image::load_from_memory(&response.bytes)?;
+        let dyn_image = image::load_from_memory(bytes)?;
         Ok(process_image(imgtyp, dyn_image))
     } else {
         Err(format!("Expected image, found content-type {content_type:?}").into())
@@ -270,6 +269,11 @@ impl TextureRequestKey {
         };
         format!("{}{REQUEST_KEY_DELIMITER}{suffix}", self.url)
     }
+}
+
+/// Hint-sized content should still persist full-resolution data to disk.
+pub fn should_persist_full_content(img_type: ImageType) -> bool {
+    matches!(img_type, ImageType::Content(Some(_)))
 }
 
 /// Controls type-specific handling
