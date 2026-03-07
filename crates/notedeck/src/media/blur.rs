@@ -18,7 +18,7 @@ pub struct ImageMetadata {
     pub dimensions: Option<PixelDimensions>, // width and height in pixels
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
 pub struct PixelDimensions {
     pub x: u32,
     pub y: u32,
@@ -29,6 +29,17 @@ impl PixelDimensions {
         PointDimensions {
             x: (self.x as f32) / ppp,
             y: (self.y as f32) / ppp,
+        }
+    }
+
+    /// Rounds each axis up to the nearest multiple of `step`.
+    pub fn snap(self, step: u32) -> Self {
+        if step == 0 {
+            return self;
+        }
+        Self {
+            x: self.x.div_ceil(step) * step,
+            y: self.y.div_ceil(step) * step,
         }
     }
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     io::Cursor,
     path::PathBuf,
     time::{Instant, SystemTime},
@@ -12,13 +12,17 @@ use crate::{
         MediaJobSender, NoOutputRun, RunType,
     },
     media::{
-        images::{buffer_to_color_image, process_image},
+        images::{
+            normalize_image_type_for_request, process_image, TextureRequestKey,
+            TextureRequestVariant,
+        },
         load_texture_checked,
     },
     Error, ImageFrame, ImageType, MediaCache, TextureFrame, TextureState,
 };
 use crate::{media::AnimationMode, Animation};
 use egui::{ColorImage, TextureHandle};
+use hashbrown::HashMap;
 use image::{codecs::gif::GifDecoder, AnimationDecoder, DynamicImage, Frame};
 use std::time::Duration;
 
@@ -110,7 +114,7 @@ pub(crate) fn process_gif_frame<'a>(
 }
 
 pub struct AnimatedImgTexCache {
-    pub(crate) cache: HashMap<String, TextureState<Animation>>,
+    pub(crate) cache: HashMap<String, HashMap<TextureRequestVariant, TextureState<Animation>>>,
     animated_img_cache_path: PathBuf,
 }
 
@@ -122,12 +126,22 @@ impl AnimatedImgTexCache {
         }
     }
 
+    /// Returns true when any size variant for the URL is already in texture memory.
     pub fn contains(&self, url: &str) -> bool {
         self.cache.contains_key(url)
     }
 
-    pub fn get(&self, url: &str) -> Option<&TextureState<Animation>> {
-        self.cache.get(url)
+    pub(crate) fn set_pending(&mut self, request_key: TextureRequestKey) {
+        self.set_state(request_key, TextureState::Pending);
+    }
+
+    pub(crate) fn set_state(
+        &mut self,
+        request_key: TextureRequestKey,
+        state: TextureState<Animation>,
+    ) {
+        let TextureRequestKey { url, variant } = request_key;
+        self.cache.entry(url).or_default().insert(variant, state);
     }
 
     pub fn request(
@@ -147,20 +161,31 @@ impl AnimatedImgTexCache {
         url: &str,
         imgtype: ImageType,
     ) -> &TextureState<Animation> {
-        if let Some(res) = self.cache.get(url) {
+        let imgtype = normalize_image_type_for_request(imgtype);
+        let request_variant = TextureRequestKey::variant_for_image_type(imgtype);
+        if let Some(res) = self
+            .cache
+            .get(url)
+            .and_then(|variants| variants.get(&request_variant))
+        {
             return res;
         };
+        let request_key = TextureRequestKey::from_variant(url, request_variant);
+        let request_id = request_key.to_job_id();
 
         let key = MediaCache::key(url);
         let path = self.animated_img_cache_path.join(key);
         let ctx = ctx.clone();
         let url = url.to_owned();
+        let request_key = request_key.clone();
         if path.exists() {
             if let Err(e) = jobs.send(JobPackage::new(
-                url.to_owned(),
-                MediaJobKind::AnimatedImg,
+                request_id.clone(),
+                MediaJobKind::AnimatedImg {
+                    request_key: request_key.clone(),
+                },
                 RunType::Output(JobRun::Sync(Box::new(move || {
-                    from_disk_job_run(ctx, url, path)
+                    from_disk_job_run(ctx, url, request_key, path, imgtype)
                 }))),
             )) {
                 tracing::error!("{e}");
@@ -168,10 +193,16 @@ impl AnimatedImgTexCache {
         } else {
             let anim_path = self.animated_img_cache_path.clone();
             if let Err(e) = jobs.send(JobPackage::new(
-                url.to_owned(),
-                MediaJobKind::AnimatedImg,
+                request_id.clone(),
+                MediaJobKind::AnimatedImg {
+                    request_key: request_key.clone(),
+                },
                 RunType::Output(JobRun::Async(Box::pin(from_net_run(
-                    ctx, url, anim_path, imgtype,
+                    ctx,
+                    url,
+                    request_key,
+                    anim_path,
+                    imgtype,
                 )))),
             )) {
                 tracing::error!("{e}");
@@ -182,7 +213,13 @@ impl AnimatedImgTexCache {
     }
 }
 
-fn from_disk_job_run(ctx: egui::Context, url: String, path: PathBuf) -> JobOutput<MediaJobResult> {
+fn from_disk_job_run(
+    ctx: egui::Context,
+    url: String,
+    request_key: TextureRequestKey,
+    path: PathBuf,
+    img_type: ImageType,
+) -> JobOutput<MediaJobResult> {
     tracing::trace!("Starting animated from disk job for {url}");
     let gif_bytes = match std::fs::read(path.clone()) {
         Ok(b) => b,
@@ -193,8 +230,8 @@ fn from_disk_job_run(ctx: egui::Context, url: String, path: PathBuf) -> JobOutpu
         }
     };
     JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(
-        generate_anim_pkg(ctx.clone(), url.to_owned(), gif_bytes, |img| {
-            buffer_to_color_image(img.as_flat_samples_u8(), img.width(), img.height())
+        generate_anim_pkg(ctx.clone(), request_key, gif_bytes, move |img| {
+            process_image(img_type, img)
         })
         .map(|f| f.anim),
     )))
@@ -203,6 +240,7 @@ fn from_disk_job_run(ctx: egui::Context, url: String, path: PathBuf) -> JobOutpu
 async fn from_net_run(
     ctx: egui::Context,
     url: String,
+    request_key: TextureRequestKey,
     path: PathBuf,
     imgtype: ImageType,
 ) -> JobOutput<MediaJobResult> {
@@ -217,17 +255,16 @@ async fn from_net_run(
 
     JobOutput::Next(JobRun::Sync(Box::new(move || {
         tracing::trace!("Starting animated img from net job for {url}");
-        let animation =
-            match generate_anim_pkg(ctx.clone(), url.to_owned(), res.bytes, move |img| {
-                process_image(imgtype, img)
-            }) {
-                Ok(a) => a,
-                Err(e) => {
-                    return JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(
-                        Err(e),
-                    )));
-                }
-            };
+        let animation = match generate_anim_pkg(ctx.clone(), request_key, res.bytes, move |img| {
+            process_image(imgtype, img)
+        }) {
+            Ok(a) => a,
+            Err(e) => {
+                return JobOutput::Complete(CompleteResponse::new(MediaJobResult::Animation(Err(
+                    e,
+                ))));
+            }
+        };
         JobOutput::Complete(
             CompleteResponse::new(MediaJobResult::Animation(Ok(animation.anim))).run_no_output(
                 NoOutputRun::Sync(Box::new(move || {
@@ -243,7 +280,7 @@ async fn from_net_run(
 
 fn generate_anim_pkg(
     ctx: egui::Context,
-    url: String,
+    request_key: TextureRequestKey,
     gif_bytes: Vec<u8>,
     process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
 ) -> Result<AnimationPackage, Error> {
@@ -260,7 +297,7 @@ fn generate_anim_pkg(
             image: img.clone(),
         });
 
-        let tex_frame = generate_animation_frame(&ctx, &url, i, delay, img);
+        let tex_frame = generate_animation_frame(&ctx, &request_key, i, delay, img);
 
         if first_frame.is_none() {
             first_frame = Some(tex_frame);
@@ -322,7 +359,6 @@ fn collect_processed_gif_frames(
 
     Ok(processed_frames)
 }
-
 fn generate_color_img_frame(
     frame: image::Frame,
     process_to_egui: impl Fn(DynamicImage) -> ColorImage + Send + Copy + 'static,
@@ -333,13 +369,18 @@ fn generate_color_img_frame(
 
 fn generate_animation_frame(
     ctx: &egui::Context,
-    url: &str,
+    texture_key: &TextureRequestKey,
     index: usize,
     delay: Duration,
     color_img: ColorImage,
 ) -> TextureFrame {
     TextureFrame {
         delay,
-        texture: load_texture_checked(ctx, format!("{url}{index}"), color_img, Default::default()),
+        texture: load_texture_checked(
+            ctx,
+            format!("{}:{index}", texture_key.to_job_id()),
+            color_img,
+            Default::default(),
+        ),
     }
 }

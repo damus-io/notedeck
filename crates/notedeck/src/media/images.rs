@@ -179,6 +179,7 @@ pub fn parse_img_response(
     imgtyp: ImageType,
 ) -> Result<ColorImage, crate::Error> {
     let content_type = response.content_type.unwrap_or_default();
+    let imgtyp = normalize_image_type_for_request(imgtyp);
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
         ImageType::Content(Some(pixels)) => SizeHint::Size(pixels.x, pixels.y),
@@ -215,11 +216,86 @@ pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>, crate::Error> {
     std::fs::read(path).map_err(|e| crate::Error::Generic(e.to_string()))
 }
 
+/// Normalizes image request hints so decode/resize logic matches cache key bucketing.
+pub fn normalize_image_type_for_request(img_type: ImageType) -> ImageType {
+    match img_type {
+        ImageType::Content(Some(pixels)) => ImageType::Content(Some(pixels.snap(128))),
+        other => other,
+    }
+}
+
+/// Prefix delimiter used in request keys so one URL can have multiple cached texture variants.
+const REQUEST_KEY_DELIMITER: &str = "::";
+
+/// A strongly typed texture request identity used by in-memory texture caches.
+///
+/// The string form is only used at the jobs boundary (`JobPackage` IDs).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TextureRequestKey {
+    pub url: String,
+    pub variant: TextureRequestVariant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextureRequestVariant {
+    Full,
+    Hint(PixelDimensions),
+    Profile(u32),
+}
+
+impl TextureRequestKey {
+    /// Build the request variant from the requested image type.
+    pub fn variant_for_image_type(img_type: ImageType) -> TextureRequestVariant {
+        match normalize_image_type_for_request(img_type) {
+            ImageType::Profile(size) => TextureRequestVariant::Profile(size),
+            ImageType::Content(Some(pixels)) => TextureRequestVariant::Hint(pixels),
+            ImageType::Content(None) => TextureRequestVariant::Full,
+        }
+    }
+
+    /// Build a typed request key from a URL and request variant.
+    pub fn from_variant(url: &str, variant: TextureRequestVariant) -> Self {
+        Self {
+            url: url.to_owned(),
+            variant,
+        }
+    }
+
+    /// Encode this typed key into a stable jobs-compatible string ID.
+    pub fn to_job_id(&self) -> String {
+        let suffix = match self.variant {
+            TextureRequestVariant::Profile(size) => format!("profile-{size}"),
+            TextureRequestVariant::Hint(pixels) => format!("hint-{}x{}", pixels.x, pixels.y),
+            TextureRequestVariant::Full => "full".to_owned(),
+        };
+        format!("{}{REQUEST_KEY_DELIMITER}{suffix}", self.url)
+    }
+}
+
 /// Controls type-specific handling
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageType {
     /// Profile Image (size)
     Profile(u32),
     /// Content Image with optional size hint
     Content(Option<PixelDimensions>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_image_type_for_request, ImageType};
+    use crate::PixelDimensions;
+
+    #[test]
+    fn normalize_image_type_snaps_content_hints() {
+        let normalized =
+            normalize_image_type_for_request(ImageType::Content(Some(PixelDimensions {
+                x: 750,
+                y: 490,
+            })));
+        assert_eq!(
+            normalized,
+            ImageType::Content(Some(PixelDimensions { x: 768, y: 512 }))
+        );
+    }
 }
