@@ -274,7 +274,12 @@ impl Accounts {
 
         remote.on_account_switched(old_pk, *pk_to_select, self);
 
-        self.ensure_selected_account_remote_subs(remote);
+        selected_account_request_subs(
+            &mut remote.scoped_subs(self),
+            self.get_selected_account(),
+            ndb,
+            txn,
+        );
     }
 
     pub fn mutefun(&self) -> Box<MuteFun> {
@@ -307,7 +312,14 @@ impl Accounts {
             .poll_for_updates(ndb, &self.ndb_subs);
 
         if !self.scoped_remote_initialized {
-            self.ensure_selected_account_remote_subs(remote);
+            let txn = Transaction::new(ndb).expect("txn");
+            selected_account_request_subs(
+                &mut remote.scoped_subs(self),
+                self.get_selected_account(),
+                ndb,
+                &txn,
+            );
+            self.scoped_remote_initialized = true;
             return;
         }
 
@@ -357,17 +369,8 @@ impl Accounts {
         )
     }
 
-    fn ensure_selected_account_remote_subs(&mut self, remote: &mut RemoteApi<'_>) {
-        {
-            let mut scoped_subs = remote.scoped_subs(&*self);
-            ensure_selected_account_remote_subs_api(&mut scoped_subs, self);
-        }
-        self.scoped_remote_initialized = true;
-    }
-
     fn retarget_selected_account_read_relays(&mut self, remote: &mut RemoteApi<'_>) {
         remote.retarget_selected_account_read_relays(self);
-        self.scoped_remote_initialized = true;
     }
 }
 
@@ -462,28 +465,64 @@ pub struct AddAccountResponse {
     pub unk_id_action: SingleUnkIdAction,
 }
 
-fn giftwrap_filter(pk: &Pubkey) -> Filter {
-    // TODO: since optimize
-    nostrdb::Filter::new()
+fn giftwrap_filter(pk: &Pubkey, since: Option<u64>) -> Filter {
+    let mut filter = nostrdb::Filter::new()
         .kinds([1059])
         .pubkeys([pk.bytes()])
-        .build()
+        .limit(500);
+
+    if let Some(since) = since {
+        filter = filter.since(since);
+    }
+
+    filter.build()
 }
 
 fn account_remote_owner_key() -> SubOwnerKey {
     SubOwnerKey::new("core/accounts/remote-subs")
 }
 
-fn ensure_selected_account_remote_subs_api(
+fn selected_account_request_subs(
     scoped_subs: &mut ScopedSubApi<'_, '_>,
-    accounts: &Accounts,
+    selected_account: &UserAccount,
+    ndb: &Ndb,
+    txn: &Transaction,
 ) {
+    let data = &selected_account.data;
     let owner = account_remote_owner_key();
     for kind in account_remote_sub_kinds() {
         let key = account_remote_sub_key(kind);
         let identity = ScopedSubIdentity::account(owner, key);
-        let config = selected_account_remote_config(accounts, kind);
-        let _ = scoped_subs.ensure_sub(identity, config);
+        match kind {
+            AccountRemoteSubKind::RelayList => {
+                let _ = scoped_subs.ensure_sub(
+                    identity,
+                    make_account_remote_config(vec![data.relay.filter.clone()], false),
+                );
+            }
+            AccountRemoteSubKind::MuteList => {
+                let _ = scoped_subs.ensure_sub(
+                    identity,
+                    make_account_remote_config(vec![data.muted.filter.clone()], false),
+                );
+            }
+            AccountRemoteSubKind::ContactsList => {
+                let _ = scoped_subs.ensure_sub(
+                    identity,
+                    make_account_remote_config(vec![data.contacts.filter.clone()], true),
+                );
+            }
+            AccountRemoteSubKind::Giftwrap => {
+                let pk = &selected_account.key.pubkey;
+                let since_gapped =
+                    giftwrap_filter_since(ndb, txn, pk).map(|s| s.saturating_sub(60));
+                // every time this is called, update the filter with the updated since
+                scoped_subs.set_sub(
+                    identity,
+                    make_account_remote_config(vec![giftwrap_filter(pk, since_gapped)], true),
+                );
+            }
+        };
     }
 }
 
@@ -528,23 +567,10 @@ fn make_account_remote_config(filters: Vec<Filter>, use_transparent: bool) -> Su
     }
 }
 
-fn selected_account_remote_config(accounts: &Accounts, kind: AccountRemoteSubKind) -> SubConfig {
-    let selected = accounts.get_selected_account_data();
-    match kind {
-        AccountRemoteSubKind::RelayList => {
-            make_account_remote_config(vec![selected.relay.filter.clone()], false)
-        }
-        AccountRemoteSubKind::MuteList => {
-            make_account_remote_config(vec![selected.muted.filter.clone()], false)
-        }
-        AccountRemoteSubKind::ContactsList => {
-            make_account_remote_config(vec![selected.contacts.filter.clone()], true)
-        }
-        AccountRemoteSubKind::Giftwrap => make_account_remote_config(
-            vec![giftwrap_filter(accounts.selected_account_pubkey())],
-            false,
-        ),
-    }
+fn giftwrap_filter_since(ndb: &Ndb, txn: &Transaction, pk: &Pubkey) -> Option<u64> {
+    let res = ndb.query(txn, &[giftwrap_filter(pk, None)], 1).ok()?;
+    let first = res.first()?;
+    Some(first.note.created_at())
 }
 
 struct AccountNdbSubs {
