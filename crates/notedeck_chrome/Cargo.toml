@@ -75,6 +75,7 @@ enostr = { workspace = true }
 ewebsock = { workspace = true }
 bech32 = { workspace = true }
 hex = { workspace = true }
+crossbeam-channel = { workspace = true }
 
 # Fix debug mode crash on macOS: objc2-foundation 0.2.2 has incorrect type
 # encoding for NSFastEnumeration. The relax-sign-encoding feature allows

@@ -67,7 +67,7 @@ use enostr::Pubkey;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use tracing::info;
 
@@ -85,9 +85,12 @@ struct WorkerHandle {
 ///
 /// Events are sent to the worker via a channel from the main event loop.
 /// The worker just displays them - no relay connections or profile fetching.
+///
+/// No locks: `start()` and `stop()` take `&mut self` (callers always have
+/// exclusive access), while `send()` and `is_running()` only read fields.
 pub struct NotificationService<B: NotificationBackend + 'static> {
     /// Worker thread handle
-    worker: RwLock<Option<WorkerHandle>>,
+    worker: Option<WorkerHandle>,
     /// Marker for the backend type
     _phantom: PhantomData<fn() -> B>,
 }
@@ -96,7 +99,7 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
     /// Create a new notification service.
     pub fn new() -> Self {
         Self {
-            worker: RwLock::new(None),
+            worker: None,
             _phantom: PhantomData,
         }
     }
@@ -109,7 +112,7 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
     /// * `backend_factory` - Factory function to create the backend
     /// * `pubkey_hexes` - Hex-encoded pubkeys of accounts to monitor
     pub fn start(
-        &self,
+        &mut self,
         backend_factory: impl FnOnce() -> B + Send + 'static,
         pubkey_hexes: &[impl AsRef<str>],
     ) -> Result<(), String> {
@@ -127,13 +130,8 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
             return Err("No valid pubkeys provided".to_string());
         }
 
-        let mut guard = self
-            .worker
-            .write()
-            .map_err(|e| format!("Lock error: {e}"))?;
-
         // Stop any previous worker — signal and detach to avoid blocking the caller
-        if let Some(mut old_handle) = guard.take() {
+        if let Some(mut old_handle) = self.worker.take() {
             old_handle.running.store(false, Ordering::SeqCst);
             // Drop the sender so the worker's receiver wakes up immediately
             drop(old_handle.sender);
@@ -158,7 +156,7 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
             running_clone.store(false, Ordering::SeqCst);
         });
 
-        *guard = Some(WorkerHandle {
+        self.worker = Some(WorkerHandle {
             running,
             thread: Some(thread),
             sender,
@@ -172,8 +170,7 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
     ///
     /// Call this from the main event loop when a notification-relevant event is received.
     pub fn send(&self, data: NotificationData) -> Result<(), String> {
-        let guard = self.worker.read().map_err(|e| format!("Lock error: {e}"))?;
-        if let Some(ref handle) = *guard {
+        if let Some(ref handle) = self.worker {
             handle
                 .sender
                 .send(data)
@@ -188,16 +185,8 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
     ///
     /// Signals the worker to stop and detaches the thread to avoid blocking
     /// the caller (which may be the render loop or Drop).
-    pub fn stop(&self) {
-        let handle = {
-            if let Ok(mut guard) = self.worker.write() {
-                guard.take()
-            } else {
-                return;
-            }
-        };
-
-        if let Some(handle) = handle {
+    pub fn stop(&mut self) {
+        if let Some(handle) = self.worker.take() {
             handle.running.store(false, Ordering::SeqCst);
             // Drop the sender to unblock the worker's recv() immediately
             drop(handle.sender);
@@ -211,9 +200,8 @@ impl<B: NotificationBackend + 'static> NotificationService<B> {
     /// Check if the notification worker is running.
     pub fn is_running(&self) -> bool {
         self.worker
-            .read()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|h| h.running.load(Ordering::SeqCst)))
+            .as_ref()
+            .map(|h| h.running.load(Ordering::SeqCst))
             .unwrap_or(false)
     }
 }
@@ -235,7 +223,7 @@ impl<B: NotificationBackend + 'static> Drop for NotificationService<B> {
 pub fn start_desktop_notifications(
     pubkey_hexes: &[impl AsRef<str>],
 ) -> Result<NotificationService<PlatformBackend>, String> {
-    let service = NotificationService::new();
+    let mut service = NotificationService::new();
     service.start(PlatformBackend::new, pubkey_hexes)?;
     Ok(service)
 }

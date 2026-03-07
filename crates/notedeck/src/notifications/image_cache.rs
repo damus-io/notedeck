@@ -45,10 +45,9 @@
 //! ```
 
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Maximum size for cached images (5MB).
@@ -63,13 +62,17 @@ const MAX_MEMORY_CACHE_ENTRIES: usize = 500;
 /// Image cache for notification profile pictures.
 ///
 /// Manages downloading, caching, and retrieving profile images for use
-/// in native notification APIs. Thread-safe via internal locking.
+/// in native notification APIs.
+///
+/// Uses `RefCell` for the in-memory cache because the backing Tokio runtime
+/// is `new_current_thread()` — all access happens on a single thread.
 pub struct NotificationImageCache {
     /// Directory where cached images are stored.
     cache_dir: PathBuf,
     /// In-memory cache of URL hash -> cached file path.
     /// Avoids repeated filesystem checks for recently accessed images.
-    memory_cache: Arc<RwLock<std::collections::HashMap<String, PathBuf>>>,
+    /// `RefCell` is safe here: the owning Tokio runtime is single-threaded.
+    memory_cache: RefCell<std::collections::HashMap<String, PathBuf>>,
     /// Reusable Tokio runtime for blocking downloads.
     /// Stored to avoid creating a new runtime for each image fetch.
     runtime: tokio::runtime::Runtime,
@@ -105,7 +108,7 @@ impl NotificationImageCache {
 
         Some(Self {
             cache_dir,
-            memory_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            memory_cache: RefCell::new(std::collections::HashMap::new()),
             runtime,
         })
     }
@@ -201,9 +204,9 @@ impl NotificationImageCache {
     /// Check memory cache for a URL.
     ///
     /// This is a fast path that avoids filesystem access for recently used images.
-    pub async fn get_from_memory_cache(&self, url: &str) -> Option<PathBuf> {
+    pub fn get_from_memory_cache(&self, url: &str) -> Option<PathBuf> {
         let hash = Self::url_to_filename(url);
-        let cache = self.memory_cache.read().await;
+        let cache = self.memory_cache.borrow();
         cache.get(&hash).cloned()
     }
 
@@ -223,7 +226,7 @@ impl NotificationImageCache {
         if let Some(path) = self.get_cached_path(url) {
             // Update memory cache
             let hash = Self::url_to_filename(url);
-            let mut cache = self.memory_cache.write().await;
+            let mut cache = self.memory_cache.borrow_mut();
             cache.insert(hash, path.clone());
             self.prune_memory_cache_if_needed(&mut cache);
             return Some(path);
@@ -277,7 +280,7 @@ impl NotificationImageCache {
 
         // Update memory cache
         let hash = Self::url_to_filename(url);
-        let mut cache = self.memory_cache.write().await;
+        let mut cache = self.memory_cache.borrow_mut();
         cache.insert(hash, cache_path.clone());
         self.prune_memory_cache_if_needed(&mut cache);
 
@@ -332,10 +335,9 @@ impl NotificationImageCache {
 
         // Synchronize memory cache: remove entries pointing to deleted files
         if !removed_paths.is_empty() {
-            self.runtime.block_on(async {
-                let mut cache = self.memory_cache.write().await;
-                cache.retain(|_key, cached_path| !removed_paths.contains(cached_path));
-            });
+            self.memory_cache
+                .borrow_mut()
+                .retain(|_key, cached_path| !removed_paths.contains(cached_path));
 
             info!(
                 "Cleaned up {} old notification image cache entries",

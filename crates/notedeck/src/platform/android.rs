@@ -1,10 +1,12 @@
 use crate::platform::{file::emit_selected_file, DeepLinkInfo, NotificationMode, SelectedMedia};
+use crossbeam_channel::{Receiver, Sender};
 use enostr::FullKeypair;
 use jni::{
     objects::{JByteArray, JClass, JObject, JObjectArray, JString, JValue},
     sys::jobject,
     JNIEnv,
 };
+use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::RwLock;
@@ -39,8 +41,6 @@ pub(crate) struct NotificationJniBridge {
     permission_pending: AtomicBool,
     /// Result of the last permission request.
     permission_granted: AtomicBool,
-    /// Pending deep link from notification tap (consumed on read).
-    deep_link: RwLock<Option<DeepLinkInfo>>,
 }
 
 impl NotificationJniBridge {
@@ -50,13 +50,34 @@ impl NotificationJniBridge {
             signing_keypairs: RwLock::new(None),
             permission_pending: AtomicBool::new(false),
             permission_granted: AtomicBool::new(false),
-            deep_link: RwLock::new(None),
         }
     }
 }
 
 /// Single access point for all notification JNI state.
 static NOTIFICATION_BRIDGE: NotificationJniBridge = NotificationJniBridge::new();
+
+// =============================================================================
+// Deep Link Channel
+// =============================================================================
+//
+// Uses a crossbeam channel instead of `RwLock<Option<DeepLinkInfo>>` for
+// lock-free send/receive with natural "take" semantics. Follows the same
+// pattern as `SELECTED_MEDIA_CHANNEL` in `platform/file.rs`.
+
+struct DeepLinkChannel {
+    sender: Sender<DeepLinkInfo>,
+    receiver: Receiver<DeepLinkInfo>,
+}
+
+impl Default for DeepLinkChannel {
+    fn default() -> Self {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        Self { sender, receiver }
+    }
+}
+
+static DEEP_LINK_CHANNEL: Lazy<DeepLinkChannel> = Lazy::new(DeepLinkChannel::default);
 
 /// Get the Android JVM from the NDK context.
 pub fn get_jvm() -> jni::JavaVM {
@@ -931,28 +952,20 @@ pub extern "C" fn Java_com_damus_notedeck_MainActivity_nativeOnDeepLink(
         author_pubkey,
     };
 
-    if let Ok(mut pending) = NOTIFICATION_BRIDGE.deep_link.write() {
-        *pending = Some(deep_link);
-    } else {
-        error!("Failed to acquire deep link write lock");
-    }
+    let _ = DEEP_LINK_CHANNEL.sender.send(deep_link);
 }
 
 /// Check if there's a pending deep link and consume it.
+/// Drains the channel and returns the most recent deep link.
 pub fn take_pending_deep_link() -> Option<DeepLinkInfo> {
-    NOTIFICATION_BRIDGE
-        .deep_link
-        .try_write()
-        .ok()
-        .and_then(|mut pending| pending.take())
+    let mut last = None;
+    while let Ok(dl) = DEEP_LINK_CHANNEL.receiver.try_recv() {
+        last = Some(dl);
+    }
+    last
 }
 
 /// Check if there's a pending deep link without consuming it.
 pub fn has_pending_deep_link() -> bool {
-    NOTIFICATION_BRIDGE
-        .deep_link
-        .try_read()
-        .ok()
-        .map(|pending| pending.is_some())
-        .unwrap_or(false)
+    !DEEP_LINK_CHANNEL.receiver.is_empty()
 }

@@ -4678,6 +4678,7 @@ dependencies = [
  "android-keyring",
  "bech32",
  "bitflags 2.9.1",
+ "crossbeam-channel",
  "eframe",
  "egui",
  "egui-winit",

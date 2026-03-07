@@ -112,7 +112,7 @@ impl NotificationManager {
         }
 
         // Stop existing service if running
-        if let Some(ref service) = self.service {
+        if let Some(ref mut service) = self.service {
             if service.is_running() {
                 service.stop();
             }
@@ -154,7 +154,7 @@ impl NotificationManager {
             }
         }
 
-        let service = NotificationService::new();
+        let mut service = NotificationService::new();
         service.start(PlatformBackend::new, pubkey_hexes)?;
         self.service = Some(service);
 
@@ -176,7 +176,7 @@ impl NotificationManager {
 
     /// Stop the notification worker.
     pub fn stop(&mut self) {
-        if let Some(ref service) = self.service {
+        if let Some(ref mut service) = self.service {
             service.stop();
             info!("NotificationManager: stopped");
         }

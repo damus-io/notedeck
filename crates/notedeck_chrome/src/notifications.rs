@@ -4,8 +4,9 @@
 //! system. It manages relay connections and event subscriptions for the
 //! Android foreground service.
 //!
-//! Architecture: Uses a worker thread that owns all non-Send types (RelayPool, etc.)
-//! Communication happens via atomic flags and the worker thread handles all relay I/O.
+//! Architecture: The worker thread is an autonomous actor that owns all its data
+//! (RelayPool, Ndb, callback, pubkeys). JNI code sends commands via a crossbeam
+//! channel. Only `CONNECTED_COUNT` is shared (worker writes, JNI reads).
 //! Events are ingested into nostrdb and polled via subscription for notification processing.
 
 #[cfg(target_os = "android")]
@@ -15,12 +16,13 @@ use jni::sys::jint;
 #[cfg(target_os = "android")]
 use jni::JNIEnv;
 
+use crossbeam_channel::{self, Receiver};
 use enostr::{Pubkey, RelayPool, RelayStatus};
-use nostrdb::{Filter, IngestMetadata, Ndb, Subscription, Transaction};
+use nostrdb::{Filter, IngestMetadata, Ndb, Transaction};
 use notedeck::notifications::{ndb_helpers, safe_prefix, ExtractedEvent, NOTIFICATION_KINDS};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use tracing::{debug, error, info, warn};
 
@@ -41,59 +43,38 @@ const SUB_NOTIFICATIONS: &str = "notedeck_notifications";
 const SUB_DMS: &str = "notedeck_dms";
 const SUB_RELAY_LIST: &str = "notedeck_relay_list";
 
-/// Shared state for the notification worker thread.
-///
-/// Uses `OnceLock` for single initialization and `Arc` for shared ownership.
-/// The `Mutex` fields are only accessed during worker start/stop and JNI
-/// callbacks — never from the UI thread — so they cannot cause frame stalls.
-struct SharedState {
-    /// Flag to signal worker thread to stop.
-    running: AtomicBool,
-    /// Monotonic generation counter used to invalidate old workers on restart.
-    generation: AtomicU64,
-    /// Current count of connected relays (updated by worker thread).
-    connected_count: AtomicI32,
-    /// Handle to the worker thread.
-    thread_handle: Mutex<Option<thread::JoinHandle<()>>>,
-    /// Nostrdb handle for event ingestion and profile lookups.
-    /// Set by `set_ndb()` before the worker is started.
-    ndb: RwLock<Option<Ndb>>,
-    /// Callback interface for sending events back to Kotlin.
-    /// Uses `Mutex<Option<>>` instead of `OnceLock` to allow refreshing
-    /// on Android service restart.
+/// Commands sent to the notification worker via channel.
+enum WorkerCommand {
+    Stop,
+}
+
+/// Lightweight handle for controlling the worker from JNI/Rust code.
+/// Dropping this handle disconnects the channel, causing the worker to exit.
+struct WorkerHandle {
+    cmd_tx: crossbeam_channel::Sender<WorkerCommand>,
+}
+
+/// Platform-specific notification sender, owned by the worker thread.
+/// Wraps the JNI callback on Android; empty struct on other platforms.
+struct EventNotifier {
     #[cfg(target_os = "android")]
-    java_callback: Mutex<Option<JavaCallback>>,
+    callback: JavaCallback,
 }
 
-impl Default for SharedState {
-    fn default() -> Self {
-        Self {
-            running: AtomicBool::new(false),
-            generation: AtomicU64::new(0),
-            connected_count: AtomicI32::new(0),
-            thread_handle: Mutex::new(None),
-            ndb: RwLock::new(None),
-            #[cfg(target_os = "android")]
-            java_callback: Mutex::new(None),
-        }
-    }
-}
+/// Nostrdb handle, set once before the worker is started.
+static NDB_HANDLE: OnceLock<Ndb> = OnceLock::new();
 
-/// Global shared state singleton.
+/// Current count of connected relays (written by worker, read by JNI).
+static CONNECTED_COUNT: AtomicI32 = AtomicI32::new(0);
+
+/// Handle to the currently running worker. Only locked briefly by JNI functions
+/// to swap the handle — the worker thread never touches it.
 ///
 /// **Why global?** JNI `extern "C"` functions have fixed signatures — they cannot
 /// receive custom Rust state as parameters. This is an unavoidable constraint of
-/// the Java Native Interface. The state is consolidated into a single `Arc<SharedState>`
-/// to minimize global surface area. See also `NOTIFICATION_BRIDGE` in `platform/android.rs`
+/// the Java Native Interface. See also `NOTIFICATION_BRIDGE` in `platform/android.rs`
 /// for the same JNI-constrained pattern.
-static SHARED_STATE: OnceLock<Arc<SharedState>> = OnceLock::new();
-
-/// Returns the shared state, initializing on first access.
-fn get_shared_state() -> Arc<SharedState> {
-    SHARED_STATE
-        .get_or_init(|| Arc::new(SharedState::default()))
-        .clone()
-}
+static WORKER_HANDLE: Mutex<Option<WorkerHandle>> = Mutex::new(None);
 
 #[cfg(target_os = "android")]
 struct JavaCallback {
@@ -103,10 +84,9 @@ struct JavaCallback {
 
 // SAFETY: `JavaCallback` contains `jni::JavaVM` (thread-safe by JNI spec) and
 // `jni::objects::GlobalRef` (valid across threads per JNI spec §5.1.1).
-// `Send` is required because the callback is created on the JNI thread and used
-// by the worker thread. `Sync` is technically not exercised (access is serialized
-// by the `Mutex` around `java_callback`), but is required by the `Mutex<Option<>>`
-// container. All JNI calls attach the current thread before use.
+// `Send` is required because the callback is created on the JNI thread and
+// moved to the worker thread inside `EventNotifier`.
+// All JNI calls attach the current thread before use.
 #[cfg(target_os = "android")]
 unsafe impl Send for JavaCallback {}
 #[cfg(target_os = "android")]
@@ -158,6 +138,133 @@ impl WorkerState {
     }
 }
 
+impl EventNotifier {
+    /// Notify about a new Nostr event with structured data.
+    /// On Android, calls the JNI callback. On other platforms, logs at debug level.
+    fn notify_nostr_event(
+        &self,
+        event: &ExtractedEvent,
+        author_name: Option<&str>,
+        picture_url: Option<&str>,
+    ) {
+        info!(
+            "notify_nostr_event called: kind={}, id={}",
+            event.kind,
+            safe_prefix(&event.id, 8)
+        );
+
+        #[cfg(target_os = "android")]
+        {
+            let mut env = match self.callback.jvm.attach_current_thread() {
+                Ok(e) => e,
+                Err(e) => {
+                    error!("Failed to attach JNI thread: {:?}", e);
+                    return;
+                }
+            };
+
+            info!("JNI thread attached, calling onNostrEvent");
+
+            let event_id_jstring = match env.new_string(&event.id) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let author_pubkey_jstring = match env.new_string(&event.pubkey) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let content_jstring = match env.new_string(&event.content) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let author_name_jstring = match author_name {
+                Some(name) => match env.new_string(name) {
+                    Ok(s) => JObject::from(s),
+                    Err(_) => JObject::null(),
+                },
+                None => JObject::null(),
+            };
+            let picture_url_jstring = match picture_url {
+                Some(url) => match env.new_string(url) {
+                    Ok(s) => JObject::from(s),
+                    Err(_) => JObject::null(),
+                },
+                None => JObject::null(),
+            };
+            let raw_json_jstring = match env.new_string(&event.raw_json) {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+
+            let zap_amount = event.zap_amount_sats.unwrap_or(-1);
+
+            match env.call_method(
+                &self.callback.service_obj,
+                "onNostrEvent",
+                "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;)V",
+                &[
+                    JValue::Object(&JObject::from(event_id_jstring)),
+                    JValue::Int(event.kind),
+                    JValue::Object(&JObject::from(author_pubkey_jstring)),
+                    JValue::Object(&JObject::from(content_jstring)),
+                    JValue::Object(&author_name_jstring),
+                    JValue::Object(&picture_url_jstring),
+                    JValue::Long(zap_amount),
+                    JValue::Object(&JObject::from(raw_json_jstring)),
+                ],
+            ) {
+                Ok(_) => {
+                    if env.exception_check().unwrap_or(false) {
+                        env.exception_clear().ok();
+                        error!("JNI exception after onNostrEvent call");
+                        return;
+                    }
+                    info!("JNI onNostrEvent call succeeded");
+                }
+                Err(e) => error!("JNI onNostrEvent call failed: {:?}", e),
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let _ = author_name;
+            let _ = picture_url;
+            debug!(
+                "Nostr event (non-Android): kind={}, author={}, zap_sats={:?}",
+                event.kind,
+                safe_prefix(&event.pubkey, 8),
+                event.zap_amount_sats
+            );
+        }
+    }
+
+    /// Notify about relay connection status change.
+    /// On Android, calls the JNI callback. On other platforms, logs at debug level.
+    fn notify_relay_status_changed(&self) {
+        let connected_count = get_connected_relay_count();
+
+        #[cfg(target_os = "android")]
+        {
+            let mut env = match self.callback.jvm.attach_current_thread() {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+
+            let _ = env.call_method(
+                &self.callback.service_obj,
+                "onRelayStatusChanged",
+                "(I)V",
+                &[JValue::Int(connected_count)],
+            );
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            debug!("Relay status changed: {} connected", connected_count);
+        }
+    }
+}
+
 /// Store a nostrdb handle for the worker thread to use.
 ///
 /// Must be called before `start_subscriptions()` for the worker to have
@@ -165,17 +272,20 @@ impl WorkerState {
 ///
 /// Called from the main app setup (e.g., `chrome.rs::auto_enable_notifications`).
 pub fn set_ndb(ndb: &Ndb) {
-    let shared = get_shared_state();
-    if let Ok(mut guard) = shared.ndb.write() {
-        *guard = Some(ndb.clone());
-        info!("Notification worker ndb handle stored");
-    };
+    match NDB_HANDLE.set(ndb.clone()) {
+        Ok(()) => info!("Notification worker ndb handle stored"),
+        Err(_) => debug!("Notification worker ndb handle already set, ignoring"),
+    }
 }
 
 /// Start notification subscriptions for the given pubkeys and relay URLs.
 /// If relay_urls is empty, falls back to DEFAULT_RELAYS.
 #[profiling::function]
-pub fn start_subscriptions(pubkey_hexes: &[String], relay_urls: &[String]) -> Result<(), String> {
+pub fn start_subscriptions(
+    pubkey_hexes: &[String],
+    relay_urls: &[String],
+    notifier: EventNotifier,
+) -> Result<(), String> {
     if pubkey_hexes.is_empty() {
         return Err("No pubkeys provided".to_string());
     }
@@ -185,59 +295,41 @@ pub fn start_subscriptions(pubkey_hexes: &[String], relay_urls: &[String]) -> Re
         .map(|hex| Pubkey::from_hex(hex).map_err(|e| format!("Invalid pubkey {hex}: {e}")))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let shared = get_shared_state();
-    // Signal any existing worker to stop before creating a new generation.
-    shared.running.store(false, Ordering::SeqCst);
-    let my_generation = shared.generation.fetch_add(1, Ordering::SeqCst) + 1;
-
-    // Signal any previous thread to stop (don't wait - it will exit on its own)
-    // This avoids blocking on join() which can cause ANR
-    {
-        let mut handle_guard = shared
-            .thread_handle
-            .lock()
-            .map_err(|e| format!("Lock error: {e}"))?;
-        if handle_guard.is_some() {
-            info!("Previous worker thread exists, will be replaced");
-            // Don't join - just drop the handle, the thread will exit when it checks running flag
-            let _ = handle_guard.take();
+    // Kill any existing worker by dropping the old handle (disconnects channel)
+    if let Ok(mut guard) = WORKER_HANDLE.lock() {
+        if let Some(old_handle) = guard.take() {
+            let _ = old_handle.cmd_tx.send(WorkerCommand::Stop);
+            // Dropping old_handle.cmd_tx disconnects the channel
         }
     }
 
     // Read Ndb clone for the worker thread
-    let ndb_clone = shared.ndb.read().ok().and_then(|guard| guard.clone());
+    let ndb_clone = NDB_HANDLE.get().cloned();
 
     if ndb_clone.is_none() {
         warn!("Ndb not set — worker will operate without nostrdb integration");
     }
 
-    // Set running flag before spawning thread
-    shared.running.store(true, Ordering::SeqCst);
+    // Create channel for worker commands
+    let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
 
     // Clone data needed by worker thread
     let relay_urls_owned = relay_urls.to_vec();
-    let shared_clone = shared.clone();
+    let account_count = pubkey_hexes.len();
 
-    // Spawn worker thread that owns all non-Send state
-    let handle = thread::spawn(move || {
-        notification_worker(
-            shared_clone,
-            pubkeys,
-            relay_urls_owned,
-            my_generation,
-            ndb_clone,
-        );
+    // Spawn worker thread that owns all state
+    let _detached = thread::spawn(move || {
+        notification_worker(cmd_rx, pubkeys, relay_urls_owned, ndb_clone, notifier);
     });
 
-    // Store thread handle
-    if let Ok(mut handle_guard) = shared.thread_handle.lock() {
-        *handle_guard = Some(handle);
+    // Store new handle
+    if let Ok(mut guard) = WORKER_HANDLE.lock() {
+        *guard = Some(WorkerHandle { cmd_tx });
     }
 
     info!(
-        "Started notification subscriptions for {} accounts (generation {})",
-        pubkey_hexes.len(),
-        my_generation
+        "Started notification subscriptions for {} accounts",
+        account_count,
     );
     Ok(())
 }
@@ -245,27 +337,34 @@ pub fn start_subscriptions(pubkey_hexes: &[String], relay_urls: &[String]) -> Re
 /// Stop notification subscriptions and signal the worker thread to exit.
 #[profiling::function]
 pub fn stop_subscriptions() {
-    let shared = get_shared_state();
-    shared.running.store(false, Ordering::SeqCst);
+    if let Ok(mut guard) = WORKER_HANDLE.lock() {
+        if let Some(handle) = guard.take() {
+            let _ = handle.cmd_tx.send(WorkerCommand::Stop);
+            // Dropping handle.cmd_tx disconnects the channel, ensuring worker exits
+        }
+    }
+    CONNECTED_COUNT.store(0, Ordering::SeqCst);
     info!("Signaled notification subscriptions to stop");
 }
 
 /// Get the number of currently connected relays.
 pub fn get_connected_relay_count() -> i32 {
-    get_shared_state().connected_count.load(Ordering::SeqCst)
+    CONNECTED_COUNT.load(Ordering::SeqCst)
 }
 
-/// Worker thread that owns all non-Send state and handles relay I/O.
+/// Worker thread that owns all state and handles relay I/O.
 ///
+/// Runs as an autonomous actor: receives commands via `cmd_rx`, owns all data.
+/// Exits when it receives `WorkerCommand::Stop` or the channel disconnects.
 /// Events from relays are ingested into nostrdb, then polled via a
 /// subscription to build notifications using the Note API.
 #[profiling::function]
 fn notification_worker(
-    shared: Arc<SharedState>,
+    cmd_rx: Receiver<WorkerCommand>,
     pubkeys: Vec<Pubkey>,
     relay_urls: Vec<String>,
-    my_generation: u64,
     ndb: Option<Ndb>,
+    notifier: EventNotifier,
 ) {
     info!(
         "Notification worker thread started for {} accounts (ndb={})",
@@ -304,10 +403,21 @@ fn notification_worker(
 
     let pubkey_bytes: Vec<[u8; 32]> = state.pubkeys.iter().map(|pk| *pk.bytes()).collect();
 
-    // Main event loop
-    while shared.running.load(Ordering::SeqCst)
-        && shared.generation.load(Ordering::SeqCst) == my_generation
-    {
+    // Main event loop — exits on Stop command or channel disconnect
+    loop {
+        // Check for commands (non-blocking)
+        match cmd_rx.try_recv() {
+            Ok(WorkerCommand::Stop) => {
+                info!("Worker received Stop command");
+                break;
+            }
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                info!("Worker command channel disconnected");
+                break;
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => {} // No command, continue
+        }
+
         // Send keepalive pings
         state.pool.keepalive_ping(|| {});
 
@@ -318,7 +428,7 @@ fn notification_worker(
             .iter()
             .filter(|r| matches!(r.status(), RelayStatus::Connected))
             .count() as i32;
-        shared.connected_count.store(connected, Ordering::SeqCst);
+        CONNECTED_COUNT.store(connected, Ordering::SeqCst);
 
         // Step 1: Drain relay pool and ingest events into ndb
         let mut ingested = 0;
@@ -327,7 +437,7 @@ fn notification_worker(
                 Some(pool_event) => {
                     let event = pool_event.into_owned();
                     // Handle connection events for re-subscription
-                    handle_pool_connection_event(&mut state, &event);
+                    handle_pool_connection_event(&mut state, &event, &notifier);
 
                     // Ingest message into ndb if available
                     if let Some(ref ndb) = ndb {
@@ -364,19 +474,31 @@ fn notification_worker(
                             &mut state.processed_events,
                             &mut state.processed_events_order,
                             &mut state.last_seen_timestamp,
+                            &notifier,
                         );
                     }
                 }
             }
         }
 
-        // Step 4: Idle sleep if nothing happened
+        // Step 4: Responsive idle — wait up to 1s but wake on command
         if ingested == 0 {
-            thread::sleep(std::time::Duration::from_secs(1));
+            match cmd_rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                Ok(WorkerCommand::Stop) => {
+                    info!("Worker received Stop command during idle");
+                    break;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    info!("Worker command channel disconnected during idle");
+                    break;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {} // Normal timeout
+            }
         }
     }
 
-    // Cleanup subscriptions
+    // Cleanup
+    CONNECTED_COUNT.store(0, Ordering::SeqCst);
     state.pool.unsubscribe(SUB_NOTIFICATIONS.to_string());
     state.pool.unsubscribe(SUB_DMS.to_string());
     state.pool.unsubscribe(SUB_RELAY_LIST.to_string());
@@ -397,6 +519,7 @@ fn process_ndb_notification(
     processed_events: &mut HashSet<String>,
     processed_events_order: &mut std::collections::VecDeque<String>,
     last_seen_timestamp: &mut u64,
+    notifier: &EventNotifier,
 ) {
     let kind = note.kind() as i32;
     let id_hex = hex::encode(note.id());
@@ -491,7 +614,7 @@ fn process_ndb_notification(
         raw_json: String::new(),
     };
 
-    notify_nostr_event(&event, author_name.as_deref(), picture_url.as_deref());
+    notifier.notify_nostr_event(&event, author_name.as_deref(), picture_url.as_deref());
 }
 
 /// Configure Nostr subscriptions for notifications, DMs, and relay lists.
@@ -543,7 +666,11 @@ fn setup_subscriptions(pool: &mut RelayPool, pubkeys: &[Pubkey], since: u64) {
 
 /// Handle connection-related pool events (opened/closed/error).
 /// Dispatches re-subscription on reconnect.
-fn handle_pool_connection_event(state: &mut WorkerState, pool_event: &enostr::PoolEventBuf) {
+fn handle_pool_connection_event(
+    state: &mut WorkerState,
+    pool_event: &enostr::PoolEventBuf,
+    notifier: &EventNotifier,
+) {
     use enostr::ewebsock::WsEvent;
 
     match pool_event.event {
@@ -551,15 +678,15 @@ fn handle_pool_connection_event(state: &mut WorkerState, pool_event: &enostr::Po
             debug!("Connected to relay: {}", pool_event.relay);
             let pubkeys = state.pubkeys.clone();
             setup_subscriptions(&mut state.pool, &pubkeys, state.last_seen_timestamp);
-            notify_relay_status_changed();
+            notifier.notify_relay_status_changed();
         }
         WsEvent::Closed => {
             debug!("Disconnected from relay: {}", pool_event.relay);
-            notify_relay_status_changed();
+            notifier.notify_relay_status_changed();
         }
         WsEvent::Error(ref err) => {
             error!("Relay error {}: {:?}", pool_event.relay, err);
-            notify_relay_status_changed();
+            notifier.notify_relay_status_changed();
         }
         _ => {}
     }
@@ -607,160 +734,6 @@ fn record_event_if_new(
     true
 }
 
-/// Notify Kotlin about a new Nostr event with structured data
-/// This passes individual fields instead of raw JSON, eliminating JSON parsing in Kotlin
-fn notify_nostr_event(
-    event: &ExtractedEvent,
-    author_name: Option<&str>,
-    picture_url: Option<&str>,
-) {
-    info!(
-        "notify_nostr_event called: kind={}, id={}",
-        event.kind,
-        safe_prefix(&event.id, 8)
-    );
-
-    #[cfg(target_os = "android")]
-    {
-        let shared = get_shared_state();
-        let callback_guard = match shared.java_callback.lock() {
-            Ok(guard) => guard,
-            Err(e) => {
-                error!("Failed to lock java_callback: {}", e);
-                return;
-            }
-        };
-
-        let callback = match *callback_guard {
-            Some(ref cb) => cb,
-            None => {
-                warn!("java_callback is None - JNI callback not set up");
-                return;
-            }
-        };
-
-        let mut env = match callback.jvm.attach_current_thread() {
-            Ok(e) => e,
-            Err(e) => {
-                error!("Failed to attach JNI thread: {:?}", e);
-                return;
-            }
-        };
-
-        info!("JNI thread attached, calling onNostrEvent");
-
-        let event_id_jstring = match env.new_string(&event.id) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let author_pubkey_jstring = match env.new_string(&event.pubkey) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let content_jstring = match env.new_string(&event.content) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        let author_name_jstring = match author_name {
-            Some(name) => match env.new_string(name) {
-                Ok(s) => JObject::from(s),
-                Err(_) => JObject::null(),
-            },
-            None => JObject::null(),
-        };
-        let picture_url_jstring = match picture_url {
-            Some(url) => match env.new_string(url) {
-                Ok(s) => JObject::from(s),
-                Err(_) => JObject::null(),
-            },
-            None => JObject::null(),
-        };
-        let raw_json_jstring = match env.new_string(&event.raw_json) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-
-        let zap_amount = event.zap_amount_sats.unwrap_or(-1);
-
-        match env.call_method(
-            &callback.service_obj,
-            "onNostrEvent",
-            "(Ljava/lang/String;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;JLjava/lang/String;)V",
-            &[
-                JValue::Object(&JObject::from(event_id_jstring)),
-                JValue::Int(event.kind),
-                JValue::Object(&JObject::from(author_pubkey_jstring)),
-                JValue::Object(&JObject::from(content_jstring)),
-                JValue::Object(&author_name_jstring),
-                JValue::Object(&picture_url_jstring),
-                JValue::Long(zap_amount),
-                JValue::Object(&JObject::from(raw_json_jstring)),
-            ],
-        ) {
-            Ok(_) => {
-                if env.exception_check().unwrap_or(false) {
-                    env.exception_clear().ok();
-                    error!("JNI exception after onNostrEvent call");
-                    return;
-                }
-                info!("JNI onNostrEvent call succeeded");
-            }
-            Err(e) => error!("JNI onNostrEvent call failed: {:?}", e),
-        }
-    }
-
-    #[cfg(not(target_os = "android"))]
-    {
-        let _ = author_name;
-        let _ = picture_url;
-        debug!(
-            "Nostr event (non-Android): kind={}, author={}, zap_sats={:?}",
-            event.kind,
-            safe_prefix(&event.pubkey, 8),
-            event.zap_amount_sats
-        );
-    }
-}
-
-/// Notify Kotlin about relay connection status change
-fn notify_relay_status_changed() {
-    let connected_count = get_connected_relay_count();
-
-    #[cfg(target_os = "android")]
-    {
-        let shared = get_shared_state();
-        let callback_guard = match shared.java_callback.lock() {
-            Ok(guard) => guard,
-            Err(e) => {
-                error!("Failed to lock java_callback: {}", e);
-                return;
-            }
-        };
-
-        let callback = match *callback_guard {
-            Some(ref cb) => cb,
-            None => return,
-        };
-
-        let mut env = match callback.jvm.attach_current_thread() {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        let _ = env.call_method(
-            &callback.service_obj,
-            "onRelayStatusChanged",
-            "(I)V",
-            &[JValue::Int(connected_count)],
-        );
-    }
-
-    #[cfg(not(target_os = "android"))]
-    {
-        debug!("Relay status changed: {} connected", connected_count);
-    }
-}
-
 // =============================================================================
 // JNI exports for Android
 // =============================================================================
@@ -773,9 +746,27 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
     pubkey_hexes_json: JString,
     relay_urls_json: JString,
 ) {
-    // Always refresh the callback reference on each start
-    // This ensures we have a valid reference even after service restart
-    update_jni_callback(&mut env, obj);
+    // Create callback directly — passed to the worker at spawn time
+    let jvm = match env.get_java_vm() {
+        Ok(jvm) => jvm,
+        Err(e) => {
+            error!("Failed to get JavaVM: {:?}", e);
+            return;
+        }
+    };
+    let global_ref = match env.new_global_ref(obj) {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Failed to create global ref: {:?}", e);
+            return;
+        }
+    };
+    let notifier = EventNotifier {
+        callback: JavaCallback {
+            jvm,
+            service_obj: global_ref,
+        },
+    };
 
     let pubkey_hexes: Vec<String> = match env.get_string(&pubkey_hexes_json) {
         Ok(s) => {
@@ -810,37 +801,9 @@ pub extern "system" fn Java_com_damus_notedeck_service_NotificationsService_nati
         }
     };
 
-    if let Err(e) = start_subscriptions(&pubkey_hexes, &relay_urls) {
+    if let Err(e) = start_subscriptions(&pubkey_hexes, &relay_urls, notifier) {
         error!("Failed to start subscriptions: {}", e);
     }
-}
-
-/// Update the global JNI callback reference.
-/// Called on each service start to ensure we have a valid reference even after restart.
-/// Stores a global reference to the service object for later JNI calls.
-#[cfg(target_os = "android")]
-fn update_jni_callback(env: &mut JNIEnv, obj: JObject) {
-    let jvm = match env.get_java_vm() {
-        Ok(jvm) => jvm,
-        Err(_) => return,
-    };
-    let global_ref = match env.new_global_ref(obj) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    let shared = get_shared_state();
-    let mut guard = match shared.java_callback.lock() {
-        Ok(g) => g,
-        Err(e) => {
-            error!("Failed to lock java_callback for update: {}", e);
-            return;
-        }
-    };
-    *guard = Some(JavaCallback {
-        jvm,
-        service_obj: global_ref,
-    });
-    info!("JNI callback reference updated");
 }
 
 #[cfg(target_os = "android")]
