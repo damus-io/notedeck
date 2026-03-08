@@ -92,6 +92,11 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
+    /// Desktop notification manager (macOS/Linux only).
+    /// Owns the notification service lifecycle.
+    #[cfg(not(target_os = "android"))]
+    notification_manager: Option<crate::notifications::NotificationManager>,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -158,6 +163,14 @@ impl eframe::App for Notedeck {
             .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
 
         app_ctx.remote.process_events(ctx, app_ctx.ndb);
+
+        #[cfg(not(target_os = "android"))]
+        {
+            profiling::scope!("notification poll");
+            if let Some(ref manager) = *app_ctx.notification_manager {
+                manager.poll_notifications(app_ctx.ndb, app_ctx.accounts, app_ctx.i18n);
+            }
+        }
 
         {
             profiling::scope!("unknown id");
@@ -357,6 +370,8 @@ impl Notedeck {
             relay_limit_jobs,
             nip05_cache: Nip05Cache::new(),
             i18n,
+            #[cfg(not(target_os = "android"))]
+            notification_manager: None,
             #[cfg(target_os = "android")]
             android_app: None,
         };
@@ -422,6 +437,8 @@ impl Notedeck {
                 media_jobs: &mut self.media_jobs,
                 nip05_cache: &mut self.nip05_cache,
                 i18n: &mut self.i18n,
+                #[cfg(not(target_os = "android"))]
+                notification_manager: &mut self.notification_manager,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },
@@ -452,27 +469,14 @@ impl Notedeck {
     }
 }
 
-/// Installs the default TLS crypto provider for rustls.
+/// Install the rustls crypto provider for TLS support.
 ///
-/// This function selects the crypto provider based on the target platform:
-/// - **Windows**: Uses `ring` because `aws-lc-rs` requires cmake and NASM,
-///   which adds significant friction for Windows developers.
-/// - **Other platforms**: Uses `aws-lc-rs` for optimal performance.
-///
-/// Must be called once at application startup before any TLS operations.
+/// Uses the ring crypto backend. Logs an error if installation fails,
+/// which can happen if a provider was already installed.
 pub fn install_crypto() {
-    // On Windows, use ring (fewer build requirements than aws-lc-rs which needs cmake/NASM)
-    #[cfg(windows)]
-    {
-        let provider = rustls::crypto::ring::default_provider();
-        let _ = provider.install_default();
-    }
-
-    // On non-Windows platforms, use aws-lc-rs for optimal performance
-    #[cfg(not(windows))]
-    {
-        let provider = rustls::crypto::aws_lc_rs::default_provider();
-        let _ = provider.install_default();
+    let provider = rustls::crypto::ring::default_provider();
+    if let Err(e) = provider.install_default() {
+        tracing::error!("Failed to install rustls crypto provider: {:?}", e);
     }
 }
 

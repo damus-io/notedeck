@@ -160,27 +160,34 @@ impl Chrome {
     ) -> Result<Self, Error> {
         stop_debug_mode(notedeck.options());
 
-        let notedeck_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx, Some(outbox_session));
-        let dave = Dave::new(
-            cc.wgpu_render_state.as_ref(),
-            notedeck_ref.app_ctx.ndb.clone(),
-            cc.egui_ctx.clone(),
-            notedeck_ref.app_ctx.path,
-        );
-        #[cfg(feature = "wasm")]
-        let wasm_dir = notedeck_ref
-            .app_ctx
-            .path
-            .path(notedeck::DataPathType::Cache)
-            .join("wasm_apps");
         let mut chrome = Chrome::default();
+        let dave;
+        #[cfg(feature = "wasm")]
+        let wasm_dir;
+        {
+            let notedeck_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx, Some(outbox_session));
+            dave = Dave::new(
+                cc.wgpu_render_state.as_ref(),
+                notedeck_ref.app_ctx.ndb.clone(),
+                cc.egui_ctx.clone(),
+                notedeck_ref.app_ctx.path,
+            );
+            #[cfg(feature = "wasm")]
+            {
+                wasm_dir = notedeck_ref
+                    .app_ctx
+                    .path
+                    .path(notedeck::DataPathType::Cache)
+                    .join("wasm_apps");
+            }
 
-        if !app_args.iter().any(|arg| arg == "--no-columns-app") {
-            let columns = Damus::new(&mut notedeck_ref.app_ctx, app_args);
-            notedeck_ref
-                .internals
-                .check_args(columns.unrecognized_args())?;
-            chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+            if !app_args.iter().any(|arg| arg == "--no-columns-app") {
+                let columns = Damus::new(&mut notedeck_ref.app_ctx, app_args);
+                notedeck_ref
+                    .internals
+                    .check_args(columns.unrecognized_args())?;
+                chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
+            }
         }
 
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
@@ -237,7 +244,95 @@ impl Chrome {
 
         chrome.set_active(0);
 
+        // Auto-enable notifications if the setting was persisted from a previous session
+        Self::auto_enable_notifications(notedeck, &cc.egui_ctx);
+
         Ok(chrome)
+    }
+
+    /// Auto-enable notifications if the persisted setting indicates they were enabled.
+    ///
+    /// This is called during app startup to restore the notification service
+    /// after the app is relaunched.
+    fn auto_enable_notifications(notedeck: &mut Notedeck, ui_ctx: &egui::Context) {
+        // Only auto-enable on platforms that support notifications
+        if !notedeck::platform::supports_notifications() {
+            return;
+        }
+
+        #[cfg(target_os = "android")]
+        {
+            // Store ndb handle for the notification worker thread
+            {
+                let context = notedeck.app_context(ui_ctx);
+                crate::notifications::set_ndb(context.ndb);
+            }
+
+            let persisted_mode = notedeck::platform::get_notification_mode();
+            if persisted_mode.is_disabled() {
+                return;
+            }
+
+            let (pubkey_hexes, relay_urls) = {
+                let context = notedeck.app_context(ui_ctx);
+                let hexes: Vec<String> = context
+                    .accounts
+                    .cache
+                    .accounts()
+                    .map(|a| a.key.pubkey.hex())
+                    .collect();
+                let relays = context.accounts.get_selected_account_relay_urls();
+                (hexes, relays)
+            };
+
+            tracing::info!(
+                "Auto-restoring notification mode {:?} for {} accounts",
+                persisted_mode,
+                pubkey_hexes.len()
+            );
+
+            if let Err(e) = notedeck::platform::set_notification_mode(
+                persisted_mode,
+                &pubkey_hexes,
+                &relay_urls,
+            ) {
+                tracing::error!("Failed to auto-restore notifications: {}", e);
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            let (notifications_enabled, pubkey_hex) = {
+                let context = notedeck.app_context(ui_ctx);
+                (
+                    context.settings.notifications_enabled(),
+                    context.accounts.selected_account_pubkey().hex(),
+                )
+            };
+
+            if !notifications_enabled {
+                return;
+            }
+
+            tracing::info!(
+                "Auto-enabling notifications for pubkey {} (persisted setting)",
+                notedeck::notifications::safe_prefix(&pubkey_hex, 8)
+            );
+
+            let result = {
+                let context = notedeck.app_context(ui_ctx);
+                notedeck::platform::enable_notifications(
+                    context.notification_manager,
+                    context.ndb,
+                    &pubkey_hex,
+                    notedeck::platform::NotificationMode::Native,
+                )
+            };
+            if let Err(e) = result {
+                tracing::error!("Failed to auto-enable notifications: {}", e);
+                // Don't clear the setting - user can try again manually
+            }
+        }
     }
 
     pub fn toggle(&mut self) {

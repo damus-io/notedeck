@@ -20,6 +20,9 @@ use std::slice::from_ref;
 // TODO: remove this
 use std::sync::Arc;
 
+#[cfg(target_os = "android")]
+use crate::platform::android::set_signing_keypairs;
+
 /// The interface for managing the user's accounts.
 /// Represents all user-facing operations related to account management.
 pub struct Accounts {
@@ -66,6 +69,19 @@ impl Accounts {
             }
             if let Some(selected) = reader.get_selected_key().ok().flatten() {
                 cache.select(selected);
+
+                // Initialize signing keypairs for NIP-98 auth on cold start.
+                // select_account() does this on explicit switches, but the
+                // initial restore from storage bypasses that path.
+                // Store ALL account keypairs so any account can sign for FCM.
+                #[cfg(target_os = "android")]
+                {
+                    let keypairs: Vec<_> = cache
+                        .accounts()
+                        .filter_map(|a| a.key.to_full().map(|f| f.to_full()))
+                        .collect();
+                    set_signing_keypairs(keypairs);
+                }
             }
 
             storage_writer = Some(writer);
@@ -225,6 +241,37 @@ impl Accounts {
         &self.cache.selected().data
     }
 
+    /// Get the relay URLs configured for the selected account.
+    /// Returns both local and advertised (NIP-65) relays, or bootstrap relays if none configured.
+    pub fn get_selected_account_relay_urls(&self) -> Vec<String> {
+        let account_data = self.get_selected_account_data();
+        let relay_data = &account_data.relay;
+
+        // Collect all configured relays (local + advertised)
+        let mut urls: Vec<String> = relay_data
+            .local
+            .iter()
+            .chain(relay_data.advertised.iter())
+            .map(|spec| spec.url.to_string())
+            .collect();
+
+        // If no relays configured, use bootstrap relays
+        if urls.is_empty() {
+            urls = self
+                .relay_defaults
+                .bootstrap_relays
+                .iter()
+                .map(|spec| spec.url.to_string())
+                .collect();
+        }
+
+        // Deduplicate relay URLs (local and advertised may overlap)
+        urls.sort();
+        urls.dedup();
+
+        urls
+    }
+
     pub(crate) fn select_account(
         &mut self,
         pk_to_select: &Pubkey,
@@ -267,6 +314,18 @@ impl Accounts {
             if let Err(e) = key_store.select_key(Some(*pk_to_select)) {
                 tracing::error!("Could not select key {:?}: {e}", pk_to_select);
             }
+        }
+
+        // Update signing keypairs for Android FCM/NIP-98 auth.
+        // Store ALL account keypairs so any account can sign for FCM.
+        #[cfg(target_os = "android")]
+        {
+            let keypairs: Vec<_> = self
+                .cache
+                .accounts()
+                .filter_map(|a| a.key.to_full().map(|f| f.to_full()))
+                .collect();
+            set_signing_keypairs(keypairs);
         }
 
         self.get_selected_account_mut().data.query(ndb, txn);
