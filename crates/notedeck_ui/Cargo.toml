@@ -21,3 +21,7 @@ image = { workspace = true }
 bitflags = { workspace = true }
 enostr = { workspace = true }
 hashbrown = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true }
+eframe = { workspace = true, features = ["accesskit"] }
