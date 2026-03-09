@@ -287,11 +287,17 @@ async fn session_actor(
                                             &session_id
                                         ).await {
                                             tracing::error!("Failed to inject user message: {}", err);
+                                            PermissionResult::Deny(PermissionResultDeny {
+                                                message: "The user approved this tool with a condition, but the condition could not be delivered. Deny to prevent unconditional execution. Ask the user to try again.".to_string(),
+                                                interrupt: false,
+                                            })
+                                        } else {
+                                            PermissionResult::Allow(PermissionResultAllow::default())
                                         }
                                     } else {
                                         tracing::debug!("User allowed tool: {}", tool_name);
+                                        PermissionResult::Allow(PermissionResultAllow::default())
                                     }
-                                    PermissionResult::Allow(PermissionResultAllow::default())
                                 }
                                 Ok(PermissionResponse::Deny { reason }) => {
                                     tracing::debug!("User denied tool {}: {}", tool_name, reason);
