@@ -2236,6 +2236,170 @@ mod tests {
         }
     }
 
+    // ---- remote session tests ----
+
+    fn test_remote_session() -> ChatSession {
+        let mut session = ChatSession::new(
+            99,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+        session
+    }
+
+    #[test]
+    fn remote_session_source() {
+        let session = test_remote_session();
+        assert!(session.is_remote());
+        assert_eq!(session.source, SessionSource::Remote);
+    }
+
+    #[test]
+    fn local_session_is_not_remote() {
+        let session = test_session();
+        assert!(!session.is_remote());
+    }
+
+    #[test]
+    fn remote_dispatch_idle_with_user_message() {
+        let mut session = test_remote_session();
+        session.chat.push(Message::User("hello".into()));
+        assert!(session.should_dispatch_remote_message());
+    }
+
+    #[test]
+    fn remote_no_dispatch_without_user_message() {
+        let session = test_remote_session();
+        assert!(!session.should_dispatch_remote_message());
+    }
+
+    #[test]
+    fn remote_no_dispatch_while_streaming() {
+        let mut session = test_remote_session();
+        session.chat.push(Message::User("hello".into()));
+        let _tx = make_streaming(&mut session);
+        session.chat.push(Message::User("another".into()));
+        assert!(!session.should_dispatch_remote_message());
+    }
+
+    // ---- subagent lifecycle tests ----
+
+    fn make_subagent(task_id: &str, desc: &str) -> crate::messages::SubagentInfo {
+        crate::messages::SubagentInfo {
+            task_id: task_id.to_string(),
+            description: desc.to_string(),
+            subagent_type: "Explore".to_string(),
+            status: crate::messages::SubagentStatus::Running,
+            output: String::new(),
+            max_output_size: 1000,
+            tool_results: vec![],
+        }
+    }
+
+    #[test]
+    fn subagent_output_updates() {
+        let mut session = test_session();
+        let subagent = make_subagent("task-1", "exploring");
+        let task_id = subagent.task_id.clone();
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert(task_id.clone(), idx);
+        }
+
+        session.update_subagent_output(&task_id, "first ");
+        session.update_subagent_output(&task_id, "second");
+
+        if let Some(Message::Subagent(s)) = session.chat.get(idx) {
+            assert_eq!(s.output, "first second");
+            assert_eq!(s.status, crate::messages::SubagentStatus::Running);
+        } else {
+            panic!("expected Subagent message at index {}", idx);
+        }
+    }
+
+    #[test]
+    fn subagent_completion() {
+        let mut session = test_session();
+        let subagent = make_subagent("task-1", "exploring");
+        let task_id = subagent.task_id.clone();
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert(task_id.clone(), idx);
+        }
+
+        session.update_subagent_output(&task_id, "partial output");
+        session.complete_subagent(&task_id, "final result");
+
+        if let Some(Message::Subagent(s)) = session.chat.get(idx) {
+            assert_eq!(s.status, crate::messages::SubagentStatus::Completed);
+            assert_eq!(s.output, "final result");
+        } else {
+            panic!("expected Subagent message at index {}", idx);
+        }
+    }
+
+    #[test]
+    fn subagent_output_truncation() {
+        let mut session = test_session();
+        let mut subagent = make_subagent("task-1", "exploring");
+        subagent.max_output_size = 20;
+        let task_id = subagent.task_id.clone();
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert(task_id.clone(), idx);
+        }
+
+        // Push output that exceeds max_output_size
+        session
+            .update_subagent_output(&task_id, "a long output that is way too big for the buffer");
+
+        if let Some(Message::Subagent(s)) = session.chat.get(idx) {
+            assert!(
+                s.output.len() <= 20,
+                "output should be truncated to max_output_size, got len {}",
+                s.output.len()
+            );
+        } else {
+            panic!("expected Subagent message");
+        }
+    }
+
+    /// Truncation must not panic on multi-byte UTF-8 characters.
+    /// Before the fix, slicing at arbitrary byte offsets would panic
+    /// with "byte index X is not a char boundary".
+    #[test]
+    fn subagent_output_truncation_utf8_emoji() {
+        let mut session = test_session();
+        let mut subagent = make_subagent("task-emoji", "exploring");
+        subagent.max_output_size = 7;
+        let task_id = subagent.task_id.clone();
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert(task_id.clone(), idx);
+        }
+
+        // "OK🌍" = 6 bytes (O=1, K=1, 🌍=4)
+        session.update_subagent_output(&task_id, "OK🌍");
+        // "More🎉test" = 11 bytes
+        // Total: 17 bytes, max: 7, keep_from: 10
+        // Byte 10 is mid-emoji — must not panic
+        session.update_subagent_output(&task_id, "More🎉test");
+
+        if let Some(Message::Subagent(s)) = session.chat.get(idx) {
+            assert!(s.output.len() <= 7, "got len {}", s.output.len());
+            // Verify the result is valid UTF-8 (it is, since it's a String)
+            assert!(s.output.is_ascii() || !s.output.is_empty());
+        } else {
+            panic!("expected Subagent message");
+        }
+    }
+
     #[test]
     fn test_friendly_model_name_unknown() {
         for model in BackendType::OpenAI.available_models() {
@@ -2251,5 +2415,186 @@ mod tests {
             friendly_model_name("some-unknown-model"),
             "some-unknown-model"
         );
+    }
+
+    #[test]
+    fn subagent_output_truncation_utf8_cjk() {
+        let mut session = test_session();
+        let mut subagent = make_subagent("task-cjk", "exploring");
+        subagent.max_output_size = 8;
+        let task_id = subagent.task_id.clone();
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert(task_id.clone(), idx);
+        }
+
+        // "你好" = 6 bytes (3 per CJK char)
+        session.update_subagent_output(&task_id, "你好");
+        // "世界" = 6 bytes
+        // Total: 12 bytes, max: 8, keep_from: 4 — mid-char boundary
+        session.update_subagent_output(&task_id, "世界");
+
+        if let Some(Message::Subagent(s)) = session.chat.get(idx) {
+            assert!(s.output.len() <= 8, "got len {}", s.output.len());
+        } else {
+            panic!("expected Subagent message");
+        }
+    }
+
+    #[test]
+    fn fold_tool_result_into_subagent() {
+        let mut session = test_session();
+        let subagent = make_subagent("task-1", "exploring");
+        let task_id = subagent.task_id.clone();
+        let idx = session.chat.len();
+        session.chat.push(Message::Subagent(subagent));
+        if let Some(ref mut agentic) = session.agentic {
+            agentic.subagent_indices.insert(task_id.clone(), idx);
+        }
+
+        let result = crate::messages::ExecutedTool {
+            tool_name: "Read".to_string(),
+            summary: "42 lines".to_string(),
+            parent_task_id: Some("task-1".to_string()),
+            file_update: None,
+        };
+
+        // Should be folded (returns None)
+        let folded = session.fold_tool_result(result);
+        assert!(
+            folded.is_none(),
+            "result with matching parent should be folded"
+        );
+
+        // Verify it was added to the subagent's tool_results
+        if let Some(Message::Subagent(s)) = session.chat.get(idx) {
+            assert_eq!(s.tool_results.len(), 1);
+            assert_eq!(s.tool_results[0].tool_name, "Read");
+        } else {
+            panic!("expected Subagent message");
+        }
+    }
+
+    #[test]
+    fn fold_tool_result_no_parent() {
+        let mut session = test_session();
+        let result = crate::messages::ExecutedTool {
+            tool_name: "Bash".to_string(),
+            summary: "exit 0".to_string(),
+            parent_task_id: None,
+            file_update: None,
+        };
+
+        // Should NOT be folded (returns Some)
+        let not_folded = session.fold_tool_result(result);
+        assert!(
+            not_folded.is_some(),
+            "result without parent should not be folded"
+        );
+    }
+
+    // ---- edge case: silent failures ----
+
+    #[test]
+    fn subagent_output_nonexistent_task_no_panic() {
+        let mut session = test_session();
+        // Should silently do nothing — no matching task_id in indices
+        session.update_subagent_output("nonexistent-id", "output");
+        assert!(session.chat.is_empty());
+    }
+
+    #[test]
+    fn complete_subagent_nonexistent_task_no_panic() {
+        let mut session = test_session();
+        session.complete_subagent("nonexistent-id", "result");
+        assert!(session.chat.is_empty());
+    }
+
+    #[test]
+    fn fold_tool_result_nonexistent_parent_returns_result() {
+        let mut session = test_session();
+        let result = crate::messages::ExecutedTool {
+            tool_name: "Read".to_string(),
+            summary: "42 lines".to_string(),
+            parent_task_id: Some("nonexistent-task".to_string()),
+            file_update: None,
+        };
+        // Parent doesn't exist — should return the result unfolded
+        let not_folded = session.fold_tool_result(result);
+        assert!(
+            not_folded.is_some(),
+            "result with nonexistent parent should not be folded"
+        );
+    }
+
+    #[test]
+    fn session_manager_touch_nonexistent_no_panic() {
+        let mut mgr = SessionManager::new();
+        let id = mgr.new_session(PathBuf::from("/tmp"), AiMode::Chat, BackendType::OpenAI);
+        // Touch a non-existent ID — should be a silent no-op
+        mgr.touch(999);
+        // Original session should be unaffected and still first
+        let ordered = mgr.sessions_ordered();
+        assert_eq!(ordered.len(), 1);
+        assert_eq!(ordered[0].id, id);
+    }
+
+    #[test]
+    fn session_manager_delete_active_clears_active() {
+        let mut mgr = SessionManager::new();
+        let id = mgr.new_session(PathBuf::from("/tmp"), AiMode::Chat, BackendType::OpenAI);
+        // id should be active after creation
+        assert_eq!(mgr.active_id(), Some(id));
+        mgr.delete_session(id);
+        // After deleting the only (active) session, both active and get should be gone
+        assert!(mgr.active_id().is_none());
+        assert!(mgr.get(id).is_none());
+        assert!(mgr.is_empty());
+    }
+
+    // ---- session manager tests ----
+
+    #[test]
+    fn session_manager_create_and_get() {
+        let mut mgr = SessionManager::new();
+        let id = mgr.new_session(PathBuf::from("/tmp"), AiMode::Agentic, BackendType::Claude);
+        let session = mgr.get(id).expect("session should exist after creation");
+        assert_eq!(session.id, id);
+        assert_eq!(session.ai_mode, AiMode::Agentic);
+        assert!(mgr.get_mut(id).is_some());
+        assert_eq!(mgr.active_id(), Some(id));
+    }
+
+    #[test]
+    fn session_manager_delete() {
+        let mut mgr = SessionManager::new();
+        let id1 = mgr.new_session(PathBuf::from("/tmp"), AiMode::Chat, BackendType::OpenAI);
+        let id2 = mgr.new_session(PathBuf::from("/tmp"), AiMode::Chat, BackendType::OpenAI);
+        assert_eq!(mgr.len(), 2);
+        mgr.delete_session(id1);
+        assert!(mgr.get(id1).is_none());
+        assert!(mgr.get(id2).is_some());
+        assert_eq!(mgr.len(), 1);
+    }
+
+    #[test]
+    fn session_manager_ordering() {
+        let mut mgr = SessionManager::new();
+        let id1 = mgr.new_session(PathBuf::from("/tmp"), AiMode::Chat, BackendType::OpenAI);
+        let _id2 = mgr.new_session(PathBuf::from("/tmp"), AiMode::Chat, BackendType::OpenAI);
+        let id3 = mgr.new_session(PathBuf::from("/tmp"), AiMode::Chat, BackendType::OpenAI);
+
+        // Most recent (first in order) should be last created
+        let ordered = mgr.sessions_ordered();
+        assert_eq!(ordered[0].id, id3);
+
+        // Touch id1 to make it most recent
+        mgr.touch(id1);
+        let ordered = mgr.sessions_ordered();
+        assert_eq!(ordered[0].id, id1);
+
+        // Verify all three are still present
+        assert_eq!(ordered.len(), 3);
     }
 }

@@ -672,3 +672,31 @@ se, you can query for kind 0 profiles with the search argument.",
 pub fn dave_tools() -> Vec<Tool> {
     vec![query_tool(), present_tool()]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: tool descriptions with defaults had a double closing paren
+    /// e.g. "(Default: 50))" instead of "(Default: 50)".
+    #[test]
+    fn tool_description_default_no_double_paren() {
+        for tool in dave_tools() {
+            let func_obj = tool.to_function_object();
+            let params = func_obj.parameters.unwrap();
+            let props = params.get("properties").unwrap().as_object().unwrap();
+            for (arg_name, arg_schema) in props {
+                let desc = arg_schema
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                assert!(
+                    !desc.contains("))"),
+                    "Arg '{}' has double closing paren in description: {:?}",
+                    arg_name,
+                    desc
+                );
+            }
+        }
+    }
+}

@@ -157,3 +157,71 @@ pub fn truncate_output(output: &str, max_size: usize) -> String {
         format!("...\n{}", &output[adjusted_start..])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ---- Bug fix: format_bash_summary panicked on multi-byte UTF-8 at byte 37 ----
+
+    #[test]
+    fn bash_summary_truncates_multibyte_command_without_panic() {
+        // "🔥" is 4 bytes. Place emojis so byte 37 falls mid-character.
+        // 9 emojis = 36 bytes, then "ab" = 38 bytes total, then more chars to exceed 40.
+        let cmd = "🔥🔥🔥🔥🔥🔥🔥🔥🔥abcdefgh"; // 36 + 8 = 44 bytes
+        assert!(cmd.len() > 40);
+        // Before the fix, &cmd[..37] would panic because byte 37 is inside "a"... wait
+        // Actually 9 emojis = 36 bytes, byte 37 is 'a', which is fine.
+        // Better test: 9 emojis + "a" = 37 bytes, byte 37 is start of next char.
+        // Let's use a string where byte 37 is mid-emoji:
+        // 8 emojis = 32 bytes, "12345" = 5 bytes = 37 bytes, then emoji at byte 37
+        // That's fine too. We need byte 37 to be inside a multi-byte char.
+        // 9 emojis = 36 bytes, then a 4-byte emoji starts at 36.
+        // byte 37 is the 2nd byte of that emoji - NOT a char boundary.
+        let cmd2 = "🔥🔥🔥🔥🔥🔥🔥🔥🔥🔥padding"; // 40 + 7 = 47 bytes
+        assert!(cmd2.len() > 40);
+        // byte 37 is inside the 10th emoji (bytes 36-39)
+        assert!(!cmd2.is_char_boundary(37));
+
+        let input = json!({"command": cmd2});
+        let response = json!(null);
+        // This would panic before the fix
+        let summary = format_bash_summary(&input, &response);
+        assert!(summary.contains("..."));
+        assert!(summary.starts_with('`'));
+    }
+
+    // ---- Bug fix: truncate_output panicked on multi-byte UTF-8 ----
+
+    #[test]
+    fn truncate_output_multibyte_without_panic() {
+        // Create a string where the truncation point falls mid-emoji
+        let output = "line1\n🔥🔥🔥🔥🔥end\n"; // "line1\n" = 6 bytes, 5 emojis = 20 bytes, "end\n" = 4 bytes = 30 total
+        let max_size = 25; // start = 30 - 25 = 5, which is valid (before \n)
+        let result = truncate_output(output, max_size);
+        assert!(result.starts_with("...\n"));
+
+        // Now test where truncation point hits mid-emoji
+        let output2 = "ab🔥🔥🔥🔥🔥🔥🔥🔥end\n"; // "ab" = 2, 8 emojis = 32, "end\n" = 4 = 38 total
+        let max_size2 = 35; // start = 38 - 35 = 3, byte 3 is inside first emoji (bytes 2-5)
+        assert!(!output2.is_char_boundary(3));
+        // This would panic before the fix
+        let result2 = truncate_output(output2, max_size2);
+        assert!(result2.starts_with("...\n"));
+    }
+
+    #[test]
+    fn truncate_output_fits_returns_unchanged() {
+        assert_eq!(truncate_output("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_output_ascii_truncates_at_newline() {
+        let output = "line1\nline2\nline3\n";
+        // start = 18-12 = 6 = the '\n' after "line1"
+        // find('\n') in "line2\nline3\n" finds at offset 5, so adjusted_start = 6+5+1 = 12
+        let result = truncate_output(output, 12);
+        assert_eq!(result, "...\nline3\n");
+    }
+}

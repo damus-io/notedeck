@@ -228,3 +228,321 @@ pub fn prepare_prompt(messages: &[Message], resume_session_id: &Option<String>) 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages::{AssistantMessage, CompactionInfo};
+
+    // ---- messages_to_prompt ----
+
+    #[test]
+    fn messages_to_prompt_empty() {
+        assert_eq!(messages_to_prompt(&[]), "");
+    }
+
+    #[test]
+    fn messages_to_prompt_system_first() {
+        let msgs = vec![Message::System("You are helpful.".into())];
+        assert_eq!(messages_to_prompt(&msgs), "You are helpful.\n\n");
+    }
+
+    #[test]
+    fn messages_to_prompt_conversation() {
+        let msgs = vec![
+            Message::User("hello".into()),
+            Message::Assistant(AssistantMessage::from_text("hi there".into())),
+            Message::User("thanks".into()),
+        ];
+        let prompt = messages_to_prompt(&msgs);
+        assert_eq!(
+            prompt,
+            "Human: hello\n\nAssistant: hi there\n\nHuman: thanks\n\n"
+        );
+    }
+
+    #[test]
+    fn messages_to_prompt_system_plus_conversation() {
+        let msgs = vec![Message::System("system".into()), Message::User("hi".into())];
+        let prompt = messages_to_prompt(&msgs);
+        assert_eq!(prompt, "system\n\nHuman: hi\n\n");
+    }
+
+    #[test]
+    fn messages_to_prompt_skips_non_conversation_types() {
+        let msgs = vec![
+            Message::User("hello".into()),
+            Message::Error("oops".into()),
+            Message::CompactionComplete(CompactionInfo { pre_tokens: 100 }),
+            Message::User("world".into()),
+        ];
+        let prompt = messages_to_prompt(&msgs);
+        assert_eq!(prompt, "Human: hello\n\nHuman: world\n\n");
+    }
+
+    // ---- get_pending_user_messages ----
+
+    #[test]
+    fn get_pending_empty() {
+        assert_eq!(get_pending_user_messages(&[]), "");
+    }
+
+    #[test]
+    fn get_pending_trailing_users() {
+        let msgs = vec![
+            Message::Assistant(AssistantMessage::from_text("ok".into())),
+            Message::User("first".into()),
+            Message::User("second".into()),
+        ];
+        assert_eq!(get_pending_user_messages(&msgs), "first\nsecond");
+    }
+
+    #[test]
+    fn get_pending_stops_at_nonuser() {
+        let msgs = vec![
+            Message::User("old".into()),
+            Message::Assistant(AssistantMessage::from_text("reply".into())),
+            Message::User("new".into()),
+        ];
+        assert_eq!(get_pending_user_messages(&msgs), "new");
+    }
+
+    #[test]
+    fn get_pending_no_trailing_users() {
+        let msgs = vec![
+            Message::User("hello".into()),
+            Message::Assistant(AssistantMessage::from_text("hi".into())),
+        ];
+        assert_eq!(get_pending_user_messages(&msgs), "");
+    }
+
+    // ---- prepare_prompt ----
+
+    #[test]
+    fn prepare_prompt_resumed_returns_pending_only() {
+        let msgs = vec![
+            Message::System("sys".into()),
+            Message::User("old".into()),
+            Message::Assistant(AssistantMessage::from_text("reply".into())),
+            Message::User("new".into()),
+        ];
+        let resume_id = Some("session-123".into());
+        assert_eq!(prepare_prompt(&msgs, &resume_id), "new");
+    }
+
+    #[test]
+    fn prepare_prompt_first_message_returns_full() {
+        let msgs = vec![Message::System("sys".into()), Message::User("hello".into())];
+        let prompt = prepare_prompt(&msgs, &None);
+        assert_eq!(prompt, "sys\n\nHuman: hello\n\n");
+    }
+
+    #[test]
+    fn prepare_prompt_subsequent_returns_pending_only() {
+        let msgs = vec![
+            Message::User("first".into()),
+            Message::Assistant(AssistantMessage::from_text("reply".into())),
+            Message::User("second".into()),
+        ];
+        let prompt = prepare_prompt(&msgs, &None);
+        assert_eq!(prompt, "second");
+    }
+
+    // ---- forward_permission_to_ui ----
+
+    #[test]
+    fn forward_permission_delivers() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let input = serde_json::json!({"command": "ls"});
+        let result = forward_permission_to_ui("Bash", input.clone(), &tx, &ctx);
+        assert!(result.is_some());
+
+        let resp = rx.try_recv().unwrap();
+        match resp {
+            DaveApiResponse::PermissionRequest(pending) => {
+                assert_eq!(pending.request.tool_name, "Bash");
+                assert_eq!(pending.request.tool_input, input);
+                assert!(pending.request.response.is_none());
+                assert!(pending.request.cached_plan.is_none());
+                assert!(pending.request.answer_summary.is_none());
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
+    }
+
+    #[test]
+    fn forward_permission_exit_plan_caches() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let input = serde_json::json!({"plan": "# My Plan\n\nDo stuff"});
+        let result = forward_permission_to_ui("ExitPlanMode", input, &tx, &ctx);
+        assert!(result.is_some());
+
+        let resp = rx.try_recv().unwrap();
+        match resp {
+            DaveApiResponse::PermissionRequest(pending) => {
+                assert_eq!(pending.request.tool_name, "ExitPlanMode");
+                let plan = pending
+                    .request
+                    .cached_plan
+                    .expect("ExitPlanMode should cache plan");
+                assert!(plan.source.contains("My Plan"));
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
+    }
+
+    #[test]
+    fn forward_permission_closed_channel_returns_none() {
+        let (tx, rx) = mpsc::channel::<DaveApiResponse>();
+        drop(rx);
+        let ctx = egui::Context::default();
+        let result = forward_permission_to_ui("Bash", serde_json::json!({}), &tx, &ctx);
+        assert!(result.is_none());
+    }
+
+    // ---- send_tool_result ----
+
+    #[test]
+    fn send_tool_result_with_parent() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let stack = vec!["task-1".to_string()];
+        send_tool_result(
+            "Read",
+            &serde_json::json!({"file_path": "/tmp/test"}),
+            &serde_json::json!({"content": "hello"}),
+            None,
+            &stack,
+            &tx,
+            &ctx,
+        );
+
+        let resp = rx.try_recv().unwrap();
+        match resp {
+            DaveApiResponse::ToolResult(tool) => {
+                assert_eq!(tool.tool_name, "Read");
+                assert_eq!(tool.parent_task_id, Some("task-1".to_string()));
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn send_tool_result_without_parent() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        send_tool_result(
+            "Bash",
+            &serde_json::json!({"command": "ls"}),
+            &serde_json::json!({"output": "file.txt"}),
+            None,
+            &[],
+            &tx,
+            &ctx,
+        );
+
+        let resp = rx.try_recv().unwrap();
+        match resp {
+            DaveApiResponse::ToolResult(tool) => {
+                assert_eq!(tool.tool_name, "Bash");
+                assert!(tool.parent_task_id.is_none());
+                assert!(tool.file_update.is_none());
+                // Summary should be non-empty (format_tool_summary produces something)
+                assert!(!tool.summary.is_empty(), "summary should not be empty");
+            }
+            _ => panic!("expected ToolResult"),
+        }
+    }
+
+    // ---- edge cases ----
+
+    #[test]
+    fn messages_to_prompt_multiple_systems_takes_first_only() {
+        let msgs = vec![
+            Message::System("First system".into()),
+            Message::System("Second system".into()),
+            Message::User("hello".into()),
+        ];
+        let prompt = messages_to_prompt(&msgs);
+        assert!(prompt.contains("First system"));
+        assert!(!prompt.contains("Second system"));
+    }
+
+    #[test]
+    fn get_pending_all_users() {
+        let msgs = vec![
+            Message::User("a".into()),
+            Message::User("b".into()),
+            Message::User("c".into()),
+        ];
+        assert_eq!(get_pending_user_messages(&msgs), "a\nb\nc");
+    }
+
+    #[test]
+    fn prepare_prompt_no_messages_returns_empty() {
+        assert_eq!(prepare_prompt(&[], &None), "");
+    }
+
+    #[test]
+    fn prepare_prompt_system_only_no_user_returns_empty() {
+        // When there's no User message, prepare_prompt returns empty
+        // because is_first_message = (0 == 1) = false, so it falls
+        // through to get_pending_user_messages which finds no trailing users.
+        // This is correct: prepare_prompt is only called when dispatching
+        // a user message, so this state shouldn't occur in practice.
+        let msgs = vec![Message::System("sys".into())];
+        let prompt = prepare_prompt(&msgs, &None);
+        assert_eq!(prompt, "");
+    }
+
+    #[test]
+    fn prepare_prompt_resumed_no_user_returns_empty() {
+        let msgs = vec![
+            Message::System("sys".into()),
+            Message::Assistant(AssistantMessage::from_text("reply".into())),
+        ];
+        let resume_id = Some("session-123".into());
+        assert_eq!(prepare_prompt(&msgs, &resume_id), "");
+    }
+
+    #[test]
+    fn forward_permission_exit_plan_non_string_plan_gives_none() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        // "plan" key is a number, not a string
+        let input = serde_json::json!({"plan": 123});
+        let result = forward_permission_to_ui("ExitPlanMode", input, &tx, &ctx);
+        assert!(result.is_some());
+
+        let resp = rx.try_recv().unwrap();
+        match resp {
+            DaveApiResponse::PermissionRequest(pending) => {
+                // Non-string "plan" should gracefully result in None
+                assert!(pending.request.cached_plan.is_none());
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
+    }
+
+    // ---- complete_subagent ----
+
+    #[test]
+    fn complete_subagent_removes_from_stack() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut stack = vec!["task-a".to_string(), "task-b".to_string()];
+        complete_subagent("task-a", "done", &mut stack, &tx, &ctx);
+
+        assert_eq!(stack, vec!["task-b".to_string()]);
+        let resp = rx.try_recv().unwrap();
+        match resp {
+            DaveApiResponse::SubagentCompleted { task_id, result } => {
+                assert_eq!(task_id, "task-a");
+                assert_eq!(result, "done");
+            }
+            _ => panic!("expected SubagentCompleted"),
+        }
+    }
+}

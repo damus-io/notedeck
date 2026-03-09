@@ -244,3 +244,167 @@ pub mod non_unix {
 
 #[cfg(not(unix))]
 pub use non_unix::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spawn_request_roundtrip() {
+        let req = SpawnRequest {
+            request_type: "spawn_agent".to_string(),
+            cwd: PathBuf::from("/home/user/project"),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: SpawnRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.request_type, "spawn_agent");
+        assert_eq!(parsed.cwd, PathBuf::from("/home/user/project"));
+    }
+
+    #[test]
+    fn spawn_request_type_field_renamed() {
+        // Verify the "type" field rename works in JSON
+        let json = r#"{"type":"spawn_agent","cwd":"/tmp"}"#;
+        let req: SpawnRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.request_type, "spawn_agent");
+    }
+
+    #[test]
+    fn spawn_response_ok() {
+        let resp = SpawnResponse::ok(42);
+        assert_eq!(resp.status, "ok");
+        assert_eq!(resp.session_id, Some(42));
+        assert!(resp.message.is_none());
+    }
+
+    #[test]
+    fn spawn_response_error() {
+        let resp = SpawnResponse::error("something went wrong");
+        assert_eq!(resp.status, "error");
+        assert!(resp.session_id.is_none());
+        assert_eq!(resp.message.as_deref(), Some("something went wrong"));
+    }
+
+    #[test]
+    fn spawn_response_ok_serialization() {
+        let resp = SpawnResponse::ok(7);
+        let json = serde_json::to_string(&resp).unwrap();
+        // session_id should be present, message should be absent (skip_serializing_if)
+        assert!(json.contains("\"session_id\":7"));
+        assert!(!json.contains("message"));
+    }
+
+    #[test]
+    fn spawn_response_error_serialization() {
+        let resp = SpawnResponse::error("bad");
+        let json = serde_json::to_string(&resp).unwrap();
+        // message should be present, session_id should be absent
+        assert!(json.contains("\"message\":\"bad\""));
+        assert!(!json.contains("session_id"));
+    }
+
+    #[test]
+    fn socket_path_ends_with_spawn_sock() {
+        let path = socket_path();
+        assert!(
+            path.ends_with("notedeck/spawn.sock"),
+            "socket path should end with notedeck/spawn.sock, got: {}",
+            path.display()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handle_connection_valid_spawn() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+
+        // Write a valid spawn request
+        let req = SpawnRequest {
+            request_type: "spawn_agent".to_string(),
+            cwd: PathBuf::from("/tmp"),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        writeln!(client, "{}", json).unwrap();
+        // Shutdown write side so BufReader sees EOF after the line
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let result = handle_connection(&mut server);
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert_eq!(result.unwrap(), PathBuf::from("/tmp"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handle_connection_invalid_type() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+
+        let json = r#"{"type":"unknown_command","cwd":"/tmp"}"#;
+        writeln!(client, "{}", json).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let result = handle_connection(&mut server);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unknown request type"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handle_connection_invalid_json() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+
+        writeln!(client, "not valid json at all").unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let result = handle_connection(&mut server);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid JSON"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handle_connection_nonexistent_path() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+
+        let json = r#"{"type":"spawn_agent","cwd":"/nonexistent/path/that/does/not/exist"}"#;
+        writeln!(client, "{}", json).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let result = handle_connection(&mut server);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handle_connection_path_is_file_not_directory() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let file_path = temp.path().to_string_lossy().to_string();
+
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        let json = format!(r#"{{"type":"spawn_agent","cwd":"{}"}}"#, file_path);
+        writeln!(client, "{}", json).unwrap();
+        client.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let result = handle_connection(&mut server);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("not a directory"),
+            "should reject file path as cwd"
+        );
+    }
+}
