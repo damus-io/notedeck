@@ -62,26 +62,19 @@ fn context_menu_harness(padding: MenuPadding) -> Harness<'static> {
     })
 }
 
-fn try_snapshot(harness: &mut Harness<'_>, name: &str) {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        harness.snapshot(name);
-    }));
-    if let Err(e) = result {
-        let msg = e
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .or_else(|| e.downcast_ref::<&str>().copied())
-            .unwrap_or("unknown panic");
-        if msg.contains("NoSuitableAdapterFound") || msg.contains("No adapter found") {
-            eprintln!("Skipping snapshot '{name}': no GPU adapter available");
-        } else {
-            std::panic::resume_unwind(e);
+macro_rules! skip_on_ci {
+    () => {
+        if std::env::var("CI").is_ok() {
+            eprintln!("Skipping snapshot test on CI: no GPU adapter available");
+            return;
         }
-    }
+    };
 }
 
 #[test]
 fn test_context_menu_snapshot() {
+    skip_on_ci!();
+
     let mut harness = context_menu_harness(MenuPadding::default());
 
     let btn = harness.get_by_label("...");
@@ -89,11 +82,13 @@ fn test_context_menu_snapshot() {
     harness.run();
     harness.run();
 
-    try_snapshot(&mut harness, "context_menu");
+    harness.snapshot("context_menu");
 }
 
 #[test]
 fn test_context_menu_thin_snapshot() {
+    skip_on_ci!();
+
     // egui defaults for comparison: button_padding (4, 1), item_spacing.y = 3
     let thin = MenuPadding {
         button_padding: egui::vec2(4.0, 1.0),
@@ -106,5 +101,5 @@ fn test_context_menu_thin_snapshot() {
     harness.run();
     harness.run();
 
-    try_snapshot(&mut harness, "context_menu_thin");
+    harness.snapshot("context_menu_thin");
 }
