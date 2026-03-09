@@ -1251,7 +1251,7 @@ impl<'a> DaveUi<'a> {
         let input_height = base_height + (line_count as f32 * line_height);
         ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
             ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let mut dave_response = DaveResponse::none();
 
                     // Always show Ask button (messages queue while working)
