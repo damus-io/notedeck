@@ -2,6 +2,7 @@ use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
 use notedeck_ui::context_menu::{stationary_arbitrary_menu_button_padding, MenuPadding};
+use notedeck_ui::icons;
 use notedeck_ui::widgets::search_input_box;
 
 /// Check if a wgpu adapter is available for snapshot rendering.
@@ -112,4 +113,138 @@ fn test_context_menu_thin_snapshot() {
     harness.run();
 
     harness.snapshot("context_menu_thin");
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar icon snapshots — painter-drawn, no external assets needed
+// ---------------------------------------------------------------------------
+
+fn icon_harness(f: impl Fn(&mut egui::Ui) + 'static) -> Harness<'static> {
+    Harness::builder()
+        .with_size(egui::Vec2::new(64.0, 64.0))
+        .wgpu()
+        .build_ui(f)
+}
+
+#[test]
+fn snapshot_home_inactive() {
+    let mut h = icon_harness(|ui| {
+        icons::home_button(ui, 24.0, false);
+    });
+    h.run();
+    h.snapshot("home_inactive");
+}
+
+#[test]
+fn snapshot_home_active() {
+    let mut h = icon_harness(|ui| {
+        icons::home_button(ui, 24.0, true);
+    });
+    h.run();
+    h.snapshot("home_active");
+}
+
+#[test]
+fn snapshot_chat_inactive() {
+    let mut h = icon_harness(|ui| {
+        icons::chat_button(ui, 24.0, false);
+    });
+    h.run();
+    h.snapshot("chat_inactive");
+}
+
+#[test]
+fn snapshot_chat_active() {
+    let mut h = icon_harness(|ui| {
+        icons::chat_button(ui, 24.0, true);
+    });
+    h.run();
+    h.snapshot("chat_active");
+}
+
+#[test]
+fn snapshot_notifications_inactive() {
+    let mut h = icon_harness(|ui| {
+        icons::notifications_button(ui, 24.0, false, false);
+    });
+    h.run();
+    h.snapshot("notifications_inactive");
+}
+
+#[test]
+fn snapshot_notifications_active() {
+    let mut h = icon_harness(|ui| {
+        icons::notifications_button(ui, 24.0, true, false);
+    });
+    h.run();
+    h.snapshot("notifications_active");
+}
+
+#[test]
+fn snapshot_notifications_unseen() {
+    let mut h = icon_harness(|ui| {
+        icons::notifications_button(ui, 24.0, false, true);
+    });
+    h.run();
+    h.snapshot("notifications_unseen");
+}
+
+#[test]
+fn snapshot_search_button_inactive() {
+    let mut h = icon_harness(|ui| {
+        ui.add(icons::search_button(
+            egui::Color32::WHITE,
+            1.5,
+            false,
+        ));
+    });
+    h.run();
+    h.snapshot("search_button_inactive");
+}
+
+#[test]
+fn snapshot_search_button_active() {
+    let mut h = icon_harness(|ui| {
+        ui.add(icons::search_button(
+            egui::Color32::WHITE,
+            1.5,
+            true,
+        ));
+    });
+    h.run();
+    h.snapshot("search_button_active");
+}
+
+// ---------------------------------------------------------------------------
+// Composite widget snapshots
+// ---------------------------------------------------------------------------
+
+#[test]
+fn snapshot_search_input() {
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(300.0, 50.0))
+        .wgpu()
+        .build_ui(|ui| {
+            let mut query = String::new();
+            ui.add(search_input_box(&mut query, "Search..."));
+        });
+    harness.run();
+    harness.snapshot("search_input");
+}
+
+#[test]
+fn snapshot_toolbar_row() {
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(300.0, 64.0))
+        .wgpu()
+        .build_ui(|ui| {
+            ui.horizontal(|ui| {
+                icons::home_button(ui, 24.0, true);
+                ui.add(icons::search_button(egui::Color32::WHITE, 1.5, false));
+                icons::chat_button(ui, 24.0, false);
+                icons::notifications_button(ui, 24.0, false, true);
+            });
+        });
+    harness.run();
+    harness.snapshot("toolbar_row");
 }
