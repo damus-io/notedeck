@@ -19,7 +19,7 @@ impl AiBackend for RemoteOnlyBackend {
         &self,
         _messages: Vec<crate::Message>,
         _tools: Arc<HashMap<String, Tool>>,
-        _model: String,
+        _model: Option<String>,
         _user_id: String,
         _session_id: String,
         _cwd: Option<PathBuf>,

@@ -43,6 +43,8 @@ objc2-app-kit = { version = "0.3.1", features = ["NSApplication", "NSResponder",
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }
+egui_kittest = { workspace = true }
+eframe = { workspace = true, features = ["accesskit"] }
 
 [[bin]]
 name = "notedeck-spawn"

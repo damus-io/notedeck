@@ -31,7 +31,7 @@ impl AiBackend for OpenAiBackend {
         &self,
         messages: Vec<Message>,
         tools: Arc<HashMap<String, Tool>>,
-        model: String,
+        model: Option<String>,
         user_id: String,
         _session_id: String,
         _cwd: Option<PathBuf>,
@@ -58,7 +58,7 @@ impl AiBackend for OpenAiBackend {
             let mut token_stream = match client
                 .chat()
                 .create_stream(CreateChatCompletionRequest {
-                    model,
+                    model: model.unwrap_or_else(|| "gpt-4.1-mini".to_string()),
                     stream: Some(true),
                     messages: api_messages,
                     tools: Some(tool_list),

@@ -1,7 +1,7 @@
 mod agent_status;
 mod auto_accept;
 mod avatar;
-mod backend;
+pub mod backend;
 pub mod config;
 pub mod events;
 pub mod file_update;
@@ -21,13 +21,13 @@ pub mod session_jsonl;
 pub mod session_loader;
 pub mod session_reconstructor;
 mod tools;
-mod ui;
+pub mod ui;
 mod update;
 mod vec3;
 
 use agent_status::AgentStatus;
 use backend::{
-    AiBackend, BackendType, ClaudeBackend, CodexBackend, OpenAiBackend, RemoteOnlyBackend,
+    AiBackend, BackendType, ClaudeBackend, CodexBackend, Model, OpenAiBackend, RemoteOnlyBackend,
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
@@ -119,7 +119,7 @@ pub enum DaveOverlay {
     SessionPicker {
         backend: BackendType,
         /// Model chosen in backend picker (threaded to session creation).
-        model: Option<String>,
+        model: Model,
     },
     /// Directory chosen; waiting for user to pick a backend and model.
     BackendPicker {
@@ -605,7 +605,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.hostname,
             self.model_config.backend,
             None,
-            None,
+            Model::Default,
         );
 
         if let Some(session) = self.session_manager.get_mut(id) {
@@ -907,8 +907,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &mut selected_models,
                     ui,
                 ) {
-                    tracing::info!("backend selected: {:?}, model: {}", bt, model);
-                    self.create_or_resume_session(cwd, bt, Some(model));
+                    tracing::info!("backend selected: {:?}, model: {:?}", bt, model);
+                    self.create_or_resume_session(cwd, bt, model);
                 } else {
                     self.active_overlay = DaveOverlay::BackendPicker {
                         cwd,
@@ -1080,7 +1080,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             AiMode::Chat => {
                 // In chat mode, create a session directly without the directory picker
                 let cwd = std::env::current_dir().unwrap_or_default();
-                self.create_session_with_cwd(cwd, self.model_config.backend, None);
+                self.create_session_with_cwd(cwd, self.model_config.backend, Model::Default);
             }
             AiMode::Agentic => {
                 // If remote hosts are known, show host picker first
@@ -1118,12 +1118,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Create a new session with the given cwd (called after directory picker selection)
-    fn create_session_with_cwd(
-        &mut self,
-        cwd: PathBuf,
-        backend_type: BackendType,
-        model: Option<String>,
-    ) {
+    fn create_session_with_cwd(&mut self, cwd: PathBuf, backend_type: BackendType, model: Model) {
         update::create_session_with_cwd(
             &mut self.session_manager,
             &mut self.directory_picker,
@@ -1951,7 +1946,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 &self.hostname,
                 backend,
                 Some(ctx.ndb),
-                None,
+                Model::Default,
             );
 
             // Store spawn_id so it's echoed in kind-31988 state events,
@@ -2260,10 +2255,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
         if let Some(bt) = self.single_agentic_backend() {
             tracing::info!("single backend detected, skipping picker: {:?}", bt);
-            self.create_or_resume_session(cwd, bt, None);
+            self.create_or_resume_session(cwd, bt, Model::Default);
         } else if self.available_backends.is_empty() {
             // No agentic backends — fall back to configured backend
-            self.create_or_resume_session(cwd, self.model_config.backend, None);
+            self.create_or_resume_session(cwd, self.model_config.backend, Model::Default);
         } else {
             tracing::info!(
                 "multiple backends available, showing backend picker: {:?}",
@@ -2278,12 +2273,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// After a backend is determined, either create a session directly or
     /// show the session picker if there are resumable sessions for this backend.
-    fn create_or_resume_session(
-        &mut self,
-        cwd: PathBuf,
-        backend_type: BackendType,
-        model: Option<String>,
-    ) {
+    fn create_or_resume_session(&mut self, cwd: PathBuf, backend_type: BackendType, model: Model) {
         // Only Claude has discoverable resumable sessions (from ~/.claude/)
         if backend_type == BackendType::Claude {
             let resumable = discover_sessions(&cwd);
@@ -2593,13 +2583,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .and_then(|a| a.cli_resume_id().map(|s| s.to_string()));
         let backend_type = session.backend_type;
         let tools = self.tools.clone();
-        let model_name = session.details.model.clone().unwrap_or_else(|| {
-            if backend_type == self.model_config.backend {
-                self.model_config.model().to_owned()
-            } else {
-                backend_type.default_model().to_owned()
-            }
-        });
+        let model_name = session.details.resolve_model();
         let ctx = ctx.clone();
 
         // Use backend to stream request
@@ -3539,7 +3523,9 @@ fn handle_query_complete(session: &mut session::ChatSession, info: messages::Usa
 /// Sets up ndb subscriptions for permission responses and conversation events
 /// when we first learn the claude session ID.
 fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo, ndb: &nostrdb::Ndb) {
-    // Propagate model to SessionDetails so the header can display it
+    // Propagate model to SessionDetails so the header can display it.
+    // This reflects the model the backend is actually using, which may
+    // differ from what was requested (e.g. fallback).
     if info.model.is_some() {
         session.details.model.clone_from(&info.model);
     }

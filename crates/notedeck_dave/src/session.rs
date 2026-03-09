@@ -77,6 +77,14 @@ impl SessionDetails {
     pub fn display_model(&self) -> Option<&str> {
         self.model.as_deref().map(friendly_model_name)
     }
+
+    /// Resolve the model to use for an API request.
+    ///
+    /// Returns the user-selected model if set, otherwise `None` to let
+    /// the backend use its own default.
+    pub fn resolve_model(&self) -> Option<String> {
+        self.model.clone()
+    }
 }
 
 /// Table mapping model ID prefixes to human-friendly display names.
@@ -1344,6 +1352,7 @@ impl ChatSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::BackendType;
     use crate::config::AiMode;
     use crate::messages::AssistantMessage;
     use std::sync::mpsc;
@@ -2211,6 +2220,36 @@ mod tests {
             queued_texts,
             vec!["new queued"],
             "only the message after the batch should be queued"
+        );
+    }
+
+    #[test]
+    fn test_friendly_model_name_known_models() {
+        for model in BackendType::Claude.available_models() {
+            if let Some(id) = model.to_model_id() {
+                let friendly = friendly_model_name(id);
+                assert_ne!(
+                    friendly, id,
+                    "Claude model {id:?} should have a friendly display name"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_friendly_model_name_unknown() {
+        for model in BackendType::OpenAI.available_models() {
+            if let Some(id) = model.to_model_id() {
+                assert_eq!(
+                    friendly_model_name(id),
+                    id,
+                    "OpenAI model should pass through as-is"
+                );
+            }
+        }
+        assert_eq!(
+            friendly_model_name("some-unknown-model"),
+            "some-unknown-model"
         );
     }
 }

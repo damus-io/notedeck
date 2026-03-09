@@ -32,7 +32,7 @@ pub use settings::{DaveSettingsPanel, SettingsPanelAction};
 // =============================================================================
 
 use crate::agent_status::AgentStatus;
-use crate::backend::BackendType;
+use crate::backend::{BackendType, Model};
 use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
@@ -246,17 +246,116 @@ pub fn backend_icon(bt: BackendType) -> egui::Image<'static> {
     img.tint(backend_color(bt))
 }
 
+/// Resolve the model index to a Model variant.
+/// Index 0 = Default, 1+ = specific model from available_models.
+fn resolve_picker_model(bt: BackendType, model_idx: usize) -> Model {
+    if model_idx == 0 {
+        Model::Default
+    } else {
+        bt.available_models()
+            .into_iter()
+            .nth(model_idx - 1)
+            .unwrap_or(Model::Default)
+    }
+}
+
+/// Render a single backend row in the picker: icon, name, model dropdown, start button.
+/// Returns `Some(model)` if the user clicked Start for this backend.
+fn backend_picker_row(
+    bt: BackendType,
+    idx: usize,
+    max_width: f32,
+    selected_models: &mut std::collections::HashMap<BackendType, usize>,
+    ui: &mut egui::Ui,
+) -> Option<Model> {
+    let models = bt.available_models();
+    // Index 0 = "Default", 1..=N = specific overrides
+    let model_idx = selected_models.get(&bt).copied().unwrap_or(0);
+    let selected_model = resolve_picker_model(bt, model_idx);
+    let display_name = selected_model.display_name();
+
+    // Backend row: icon + name + model dropdown + GO button
+    let desired = egui::vec2(max_width, 52.0);
+    let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+
+    // Background
+    let fill = ui.visuals().widgets.inactive.weak_bg_fill;
+    ui.painter().rect_filled(rect, 8.0, fill);
+
+    // Icon
+    let icon_size = 20.0;
+    let icon_x = rect.left() + 12.0;
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(icon_x + icon_size / 2.0, rect.center().y - 6.0),
+        egui::vec2(icon_size, icon_size),
+    );
+    backend_icon(bt).paint_at(ui, icon_rect);
+
+    // Backend name + keyboard shortcut
+    let label = format!("[{}] {}", idx + 1, bt.display_name());
+    ui.painter().text(
+        egui::pos2(icon_x + icon_size + 10.0, rect.center().y - 6.0),
+        egui::Align2::LEFT_CENTER,
+        &label,
+        egui::FontId::proportional(15.0),
+        ui.visuals().text_color(),
+    );
+
+    // Model selector + Start button on the second line
+    let controls_rect = egui::Rect::from_min_size(
+        egui::pos2(icon_x + icon_size + 10.0, rect.center().y + 4.0),
+        egui::vec2(max_width - icon_size - 34.0, 20.0),
+    );
+
+    let mut result = None;
+
+    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
+        ui.horizontal(|ui| {
+            // Model dropdown: index 0 = "Default", then each override model
+            if !models.is_empty() {
+                let combo_id = ui.id().with("model").with(idx);
+                egui::ComboBox::from_id_salt(combo_id)
+                    .selected_text(egui::RichText::new(display_name).size(11.0))
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        // "Default" entry
+                        if ui.selectable_label(model_idx == 0, "Default").clicked() {
+                            selected_models.insert(bt, 0);
+                        }
+                        // Specific model overrides
+                        for (mi, m) in models.iter().enumerate() {
+                            if ui
+                                .selectable_label(model_idx == mi + 1, m.display_name())
+                                .clicked()
+                            {
+                                selected_models.insert(bt, mi + 1);
+                            }
+                        }
+                    });
+            }
+
+            // Start button
+            if ui
+                .add(egui::Button::new(egui::RichText::new("Start").size(12.0)).corner_radius(4.0))
+                .clicked()
+            {
+                result = Some(resolve_picker_model(bt, model_idx));
+            }
+        });
+    });
+
+    ui.add_space(6.0);
+
+    result
+}
+
 /// Render the backend picker overlay UI.
-/// Returns Some((BackendType, model_name)) when the user has selected a backend.
+/// Returns `Some((BackendType, Model))` when the user has selected a backend.
 pub fn backend_picker_overlay_ui(
     available_backends: &[BackendType],
     selected_models: &mut std::collections::HashMap<BackendType, usize>,
     ui: &mut egui::Ui,
-) -> Option<(BackendType, String)> {
-    use crate::session::friendly_model_name;
-
-    let mut selected = None;
-
+) -> Option<(BackendType, Model)> {
     // Handle keyboard shortcuts: 1-9 for quick selection
     for (idx, &bt) in available_backends.iter().enumerate().take(9) {
         let key = match idx {
@@ -269,13 +368,12 @@ pub fn backend_picker_overlay_ui(
         };
         if ui.input(|i| i.key_pressed(key)) {
             let model_idx = selected_models.get(&bt).copied().unwrap_or(0);
-            let default = bt.default_model();
-            let model = bt.available_models().get(model_idx).unwrap_or(&default);
-            return Some((bt, model.to_string()));
+            return Some((bt, resolve_picker_model(bt, model_idx)));
         }
     }
 
     let is_narrow = notedeck::ui::is_narrow(ui.ctx());
+    let mut selected = None;
 
     egui::Frame::new()
         .fill(ui.visuals().panel_fill)
@@ -297,84 +395,11 @@ pub fn backend_picker_overlay_ui(
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
                     for (idx, &bt) in available_backends.iter().enumerate() {
-                        let models = bt.available_models();
-                        let model_idx = selected_models.get(&bt).copied().unwrap_or(0);
-                        let default = bt.default_model();
-                        let current_model = models.get(model_idx).unwrap_or(&default);
-
-                        // Backend row: icon + name + model dropdown + GO button
-                        let desired = egui::vec2(max_width, 52.0);
-                        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
-
-                        // Background
-                        let fill = ui.visuals().widgets.inactive.weak_bg_fill;
-                        ui.painter().rect_filled(rect, 8.0, fill);
-
-                        // Icon
-                        let icon_size = 20.0;
-                        let icon_x = rect.left() + 12.0;
-                        let icon_rect = egui::Rect::from_center_size(
-                            egui::pos2(icon_x + icon_size / 2.0, rect.center().y - 6.0),
-                            egui::vec2(icon_size, icon_size),
-                        );
-                        backend_icon(bt).paint_at(ui, icon_rect);
-
-                        // Backend name + keyboard shortcut
-                        let label = format!("[{}] {}", idx + 1, bt.display_name());
-                        ui.painter().text(
-                            egui::pos2(icon_x + icon_size + 10.0, rect.center().y - 6.0),
-                            egui::Align2::LEFT_CENTER,
-                            &label,
-                            egui::FontId::proportional(15.0),
-                            ui.visuals().text_color(),
-                        );
-
-                        // Model selector + Start button on the second line
-                        let controls_rect = egui::Rect::from_min_size(
-                            egui::pos2(icon_x + icon_size + 10.0, rect.center().y + 4.0),
-                            egui::vec2(max_width - icon_size - 34.0, 20.0),
-                        );
-
-                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
-                            ui.horizontal(|ui| {
-                                // Model dropdown
-                                if !models.is_empty() {
-                                    let combo_id = ui.id().with("model").with(idx);
-                                    egui::ComboBox::from_id_salt(combo_id)
-                                        .selected_text(
-                                            egui::RichText::new(friendly_model_name(current_model))
-                                                .size(11.0),
-                                        )
-                                        .width(160.0)
-                                        .show_ui(ui, |ui| {
-                                            for (mi, &m) in models.iter().enumerate() {
-                                                if ui
-                                                    .selectable_label(
-                                                        mi == model_idx,
-                                                        friendly_model_name(m),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    selected_models.insert(bt, mi);
-                                                }
-                                            }
-                                        });
-                                }
-
-                                // Start button
-                                if ui
-                                    .add(
-                                        egui::Button::new(egui::RichText::new("Start").size(12.0))
-                                            .corner_radius(4.0),
-                                    )
-                                    .clicked()
-                                {
-                                    selected = Some((bt, current_model.to_string()));
-                                }
-                            });
-                        });
-
-                        ui.add_space(6.0);
+                        if let Some(model) =
+                            backend_picker_row(bt, idx, max_width, selected_models, ui)
+                        {
+                            selected = Some((bt, model));
+                        }
                     }
                 },
             );

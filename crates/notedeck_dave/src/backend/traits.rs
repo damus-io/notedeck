@@ -6,6 +6,65 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 
+/// AI model selection.
+///
+/// Variants represent model families (always the latest version).
+/// `Default` lets the backend CLI pick its own default.
+/// `Custom` is an escape hatch for arbitrary model ID strings.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Model {
+    /// Let the backend use its own default model.
+    Default,
+    /// Latest Claude Opus
+    Opus,
+    /// Latest Claude Sonnet
+    Sonnet,
+    /// Latest Claude Haiku
+    Haiku,
+    /// Arbitrary model ID string (for OpenAI, Codex, or future models)
+    Custom(String),
+}
+
+impl Model {
+    /// Human-friendly display name for the picker UI.
+    pub fn display_name(&self) -> &str {
+        match self {
+            Model::Default => "Default",
+            Model::Opus => "Opus",
+            Model::Sonnet => "Sonnet",
+            Model::Haiku => "Haiku",
+            Model::Custom(id) => id,
+        }
+    }
+
+    /// Resolve to a concrete model ID string for the backend.
+    /// Returns `None` for `Default` (let CLI pick).
+    pub fn to_model_id(&self) -> Option<&str> {
+        match self {
+            Model::Default => None,
+            Model::Opus => Some("claude-opus-4-6-20250514"),
+            Model::Sonnet => Some("claude-sonnet-4-6-20250514"),
+            Model::Haiku => Some("claude-haiku-4-5-20251001"),
+            Model::Custom(id) => Some(id),
+        }
+    }
+
+    /// Parse a raw model ID string into a Model variant.
+    /// Recognizes known Claude model prefixes; everything else
+    /// becomes `Custom`.
+    pub fn from_model_id(id: &str) -> Self {
+        if id.starts_with("claude-opus") {
+            Model::Opus
+        } else if id.starts_with("claude-sonnet") {
+            Model::Sonnet
+        } else if id.starts_with("claude-haiku") {
+            Model::Haiku
+        } else {
+            Model::Custom(id.to_string())
+        }
+    }
+}
+
 /// Backend type selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BackendType {
@@ -30,33 +89,26 @@ impl BackendType {
         matches!(self, BackendType::Claude | BackendType::Codex)
     }
 
-    pub fn default_model(&self) -> &'static str {
+    /// Model overrides available for selection in the backend picker.
+    /// Does not include `Default` — that's always implicitly available.
+    pub fn available_models(&self) -> Vec<Model> {
         match self {
-            BackendType::OpenAI => "gpt-4.1-mini",
-            BackendType::Claude => "claude-sonnet-4-5-20250514",
-            BackendType::Codex => "gpt-5.3-codex",
-            BackendType::Remote => "",
-        }
-    }
-
-    /// Models available for selection in the backend picker.
-    pub fn available_models(&self) -> &'static [&'static str] {
-        match self {
-            BackendType::Claude => &[
-                "claude-sonnet-4-5-20250514",
-                "claude-opus-4-6-20250514",
-                "claude-sonnet-4-6-20250514",
-                "claude-haiku-4-5-20251001",
-            ],
-            BackendType::Codex => &[
+            BackendType::Claude => vec![Model::Opus, Model::Sonnet, Model::Haiku],
+            BackendType::Codex => [
                 "gpt-5.3-codex",
                 "gpt-5.2-codex",
                 "gpt-5-codex",
                 "codex-mini-latest",
                 "o4-mini",
-            ],
-            BackendType::OpenAI => &["gpt-4.1-mini", "gpt-4.1", "o4-mini"],
-            BackendType::Remote => &[],
+            ]
+            .iter()
+            .map(|id| Model::Custom(id.to_string()))
+            .collect(),
+            BackendType::OpenAI => ["gpt-4.1-mini", "gpt-4.1", "o4-mini"]
+                .iter()
+                .map(|id| Model::Custom(id.to_string()))
+                .collect(),
+            BackendType::Remote => vec![],
         }
     }
 
@@ -96,7 +148,7 @@ pub trait AiBackend: Send + Sync {
         &self,
         messages: Vec<crate::Message>,
         tools: Arc<HashMap<String, Tool>>,
-        model: String,
+        model: Option<String>,
         user_id: String,
         session_id: String,
         cwd: Option<PathBuf>,
@@ -128,5 +180,30 @@ pub trait AiBackend: Send + Sync {
         _ctx: egui::Context,
     ) -> Option<mpsc::Receiver<DaveApiResponse>> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backend_type_roundtrip() {
+        for bt in [
+            BackendType::OpenAI,
+            BackendType::Claude,
+            BackendType::Codex,
+            BackendType::Remote,
+        ] {
+            let tag = bt.as_str();
+            let parsed = BackendType::from_tag_str(tag);
+            assert_eq!(
+                parsed,
+                Some(bt),
+                "roundtrip failed for {:?} (tag={:?})",
+                bt,
+                tag
+            );
+        }
     }
 }

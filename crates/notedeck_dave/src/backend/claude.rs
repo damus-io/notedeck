@@ -57,6 +57,7 @@ async fn session_actor(
     session_id: String,
     cwd: Option<PathBuf>,
     resume_session_id: Option<String>,
+    model: Option<String>,
     mut command_rx: tokio_mpsc::Receiver<SessionCommand>,
 ) {
     // Permission channel - the callback sends to perm_tx, actor receives on perm_rx
@@ -121,7 +122,7 @@ async fn session_actor(
 
     // Create client once - this maintains the persistent connection
     // Using match to handle the TypedBuilder's strict type requirements
-    let options = match (&cwd, &resume_session_id) {
+    let mut options = match (&cwd, &resume_session_id) {
         (Some(dir), Some(resume_id)) => ClaudeAgentOptions::builder()
             .permission_mode(PermissionMode::Default)
             .stderr_callback(stderr_callback)
@@ -151,6 +152,9 @@ async fn session_actor(
             .include_partial_messages(true)
             .build(),
     };
+    if model.is_some() {
+        options.model = model;
+    }
     let mut client = ClaudeClient::new(options);
 
     // Connect once - this starts the subprocess
@@ -539,7 +543,7 @@ impl AiBackend for ClaudeBackend {
         &self,
         messages: Vec<Message>,
         _tools: Arc<HashMap<String, Tool>>,
-        _model: String,
+        model: Option<String>,
         _user_id: String,
         session_id: String,
         cwd: Option<PathBuf>,
@@ -567,15 +571,17 @@ impl AiBackend for ClaudeBackend {
             let handle = entry.or_insert_with(|| {
                 let (command_tx, command_rx) = tokio_mpsc::channel(16);
 
-                // Spawn session actor with cwd and optional resume session ID
+                // Spawn session actor with cwd, optional resume session ID, and model
                 let session_id_clone = session_id.clone();
                 let cwd_clone = cwd.clone();
                 let resume_session_id_clone = resume_session_id.clone();
+                let model_clone = model.clone();
                 tokio::spawn(async move {
                     session_actor(
                         session_id_clone,
                         cwd_clone,
                         resume_session_id_clone,
+                        model_clone,
                         command_rx,
                     )
                     .await;

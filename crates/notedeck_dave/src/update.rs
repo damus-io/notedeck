@@ -3,7 +3,7 @@
 //! These are standalone functions with explicit inputs to reduce the complexity
 //! of the main Dave struct and make the code more testable and reusable.
 
-use crate::backend::{AiBackend, BackendType};
+use crate::backend::{AiBackend, BackendType, Model};
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::messages::{
@@ -947,14 +947,14 @@ pub fn create_session_with_cwd(
     hostname: &str,
     backend_type: BackendType,
     ndb: Option<&nostrdb::Ndb>,
-    model: Option<String>,
+    model: Model,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
     let id = session_manager.new_session(cwd, ai_mode, backend_type);
     if let Some(session) = session_manager.get_mut(id) {
         session.details.hostname = hostname.to_string();
-        session.details.model = model;
+        session.details.model = model.to_model_id().map(|s| s.to_string());
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -1049,7 +1049,7 @@ pub fn clone_session(
         hostname,
         backend_type,
         None,
-        None,
+        Model::Default,
     );
     None
 }

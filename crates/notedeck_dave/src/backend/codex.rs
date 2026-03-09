@@ -1298,7 +1298,7 @@ impl AiBackend for CodexBackend {
         &self,
         messages: Vec<Message>,
         _tools: Arc<HashMap<String, Tool>>,
-        model: String,
+        model: Option<String>,
         _user_id: String,
         session_id: String,
         cwd: Option<PathBuf>,
@@ -1333,7 +1333,7 @@ impl AiBackend for CodexBackend {
                         sid,
                         cwd_clone,
                         codex_binary,
-                        Some(model_clone),
+                        model_clone,
                         resume_clone,
                         command_rx,
                     )
