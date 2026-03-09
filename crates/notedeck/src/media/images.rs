@@ -1,4 +1,3 @@
-use crate::media::network::HyperHttpResponse;
 use crate::PixelDimensions;
 use egui::{pos2, Color32, ColorImage, Rect, Sense, SizeHint};
 use image::imageops::FilterType;
@@ -175,10 +174,12 @@ pub fn process_image(imgtyp: ImageType, mut image: image::DynamicImage) -> Color
 
 #[profiling::function]
 pub fn parse_img_response(
-    response: HyperHttpResponse,
+    content_type: Option<&str>,
+    bytes: &[u8],
     imgtyp: ImageType,
 ) -> Result<ColorImage, crate::Error> {
-    let content_type = response.content_type.unwrap_or_default();
+    let content_type = content_type.unwrap_or_default();
+    let imgtyp = normalize_image_type_for_request(imgtyp);
     let size_hint = match imgtyp {
         ImageType::Profile(size) => SizeHint::Size(size, size),
         ImageType::Content(Some(pixels)) => SizeHint::Size(pixels.x, pixels.y),
@@ -188,13 +189,12 @@ pub fn parse_img_response(
     if content_type.starts_with("image/svg") {
         profiling::scope!("load_svg");
 
-        let mut color_image =
-            egui_extras::image::load_svg_bytes_with_size(&response.bytes, Some(size_hint))?;
+        let mut color_image = egui_extras::image::load_svg_bytes_with_size(bytes, Some(size_hint))?;
         round_image(&mut color_image);
         Ok(color_image)
     } else if content_type.starts_with("image/") {
         profiling::scope!("load_from_memory");
-        let dyn_image = image::load_from_memory(&response.bytes)?;
+        let dyn_image = image::load_from_memory(bytes)?;
         Ok(process_image(imgtyp, dyn_image))
     } else {
         Err(format!("Expected image, found content-type {content_type:?}").into())
@@ -215,11 +215,91 @@ pub fn fetch_binary_from_disk(path: PathBuf) -> Result<Vec<u8>, crate::Error> {
     std::fs::read(path).map_err(|e| crate::Error::Generic(e.to_string()))
 }
 
+/// Normalizes image request hints so decode/resize logic matches cache key bucketing.
+pub fn normalize_image_type_for_request(img_type: ImageType) -> ImageType {
+    match img_type {
+        ImageType::Content(Some(pixels)) => ImageType::Content(Some(pixels.snap(128))),
+        other => other,
+    }
+}
+
+/// Prefix delimiter used in request keys so one URL can have multiple cached texture variants.
+const REQUEST_KEY_DELIMITER: &str = "::";
+
+/// A strongly typed texture request identity used by in-memory texture caches.
+///
+/// The string form is only used at the jobs boundary (`JobPackage` IDs).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TextureRequestKey {
+    pub url: String,
+    pub variant: TextureRequestVariant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TextureRequestVariant {
+    Full,
+    Hint(PixelDimensions),
+    Profile(u32),
+}
+
+impl TextureRequestKey {
+    /// Build the request variant from the requested image type.
+    pub fn variant_for_image_type(img_type: ImageType) -> TextureRequestVariant {
+        match normalize_image_type_for_request(img_type) {
+            ImageType::Profile(size) => TextureRequestVariant::Profile(size),
+            ImageType::Content(Some(pixels)) => TextureRequestVariant::Hint(pixels),
+            ImageType::Content(None) => TextureRequestVariant::Full,
+        }
+    }
+
+    /// Build a typed request key from a URL and request variant.
+    pub fn from_variant(url: &str, variant: TextureRequestVariant) -> Self {
+        Self {
+            url: url.to_owned(),
+            variant,
+        }
+    }
+
+    /// Encode this typed key into a stable jobs-compatible string ID.
+    pub fn to_job_id(&self) -> String {
+        let suffix = match self.variant {
+            TextureRequestVariant::Profile(size) => format!("profile-{size}"),
+            TextureRequestVariant::Hint(pixels) => format!("hint-{}x{}", pixels.x, pixels.y),
+            TextureRequestVariant::Full => "full".to_owned(),
+        };
+        format!("{}{REQUEST_KEY_DELIMITER}{suffix}", self.url)
+    }
+}
+
+/// Hint-sized content should still persist full-resolution data to disk.
+pub fn should_persist_full_content(img_type: ImageType) -> bool {
+    matches!(img_type, ImageType::Content(Some(_)))
+}
+
 /// Controls type-specific handling
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageType {
     /// Profile Image (size)
     Profile(u32),
     /// Content Image with optional size hint
     Content(Option<PixelDimensions>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_image_type_for_request, ImageType};
+    use crate::PixelDimensions;
+
+    #[test]
+    fn normalize_image_type_snaps_content_hints() {
+        let normalized =
+            normalize_image_type_for_request(ImageType::Content(Some(PixelDimensions {
+                x: 750,
+                y: 490,
+            })));
+        assert_eq!(
+            normalized,
+            ImageType::Content(Some(PixelDimensions { x: 768, y: 512 }))
+        );
+    }
 }
