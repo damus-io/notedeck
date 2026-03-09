@@ -1738,25 +1738,33 @@ fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails, backend_type: 
                 egui::Label::new(egui::RichText::new(details.display_title()).size(13.0))
                     .wrap_mode(egui::TextWrapMode::Truncate),
             );
-            if let Some(cwd) = &details.cwd {
+
+            // Subtitle line: model + cwd
+            let model_text = details.display_model();
+            let cwd_text = details.cwd.as_ref().map(|cwd| {
                 let cwd_display = if details.home_dir.is_empty() {
                     crate::path_utils::abbreviate_path(cwd)
                 } else {
                     crate::path_utils::abbreviate_with_home(cwd, &details.home_dir)
                 };
-                let display_text = if details.hostname.is_empty() {
+                if details.hostname.is_empty() {
                     cwd_display
                 } else {
                     format!("{}:{}", details.hostname, cwd_display)
-                };
+                }
+            });
+
+            let subtitle = match (model_text, &cwd_text) {
+                (Some(model), Some(cwd)) => Some(format!("{} \u{00B7} {}", model, cwd)),
+                (Some(model), None) => Some(model.to_string()),
+                (None, Some(cwd)) => Some(cwd.clone()),
+                (None, None) => None,
+            };
+
+            if let Some(text) = subtitle {
                 ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(display_text)
-                            .monospace()
-                            .size(10.0)
-                            .weak(),
-                    )
-                    .wrap_mode(egui::TextWrapMode::Truncate),
+                    egui::Label::new(egui::RichText::new(text).monospace().size(10.0).weak())
+                        .wrap_mode(egui::TextWrapMode::Truncate),
                 );
             }
         });

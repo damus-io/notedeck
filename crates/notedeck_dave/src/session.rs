@@ -60,6 +60,8 @@ pub struct SessionDetails {
     /// Home directory of the machine where this session originated.
     /// Used to abbreviate cwd paths for remote sessions.
     pub home_dir: String,
+    /// Model name reported by the backend (e.g. "claude-opus-4-6-20250514")
+    pub model: Option<String>,
 }
 
 impl SessionDetails {
@@ -67,6 +69,48 @@ impl SessionDetails {
     pub fn display_title(&self) -> &str {
         self.custom_title.as_deref().unwrap_or(&self.title)
     }
+
+    /// Returns a human-friendly model name for display.
+    ///
+    /// Converts raw model IDs like "claude-opus-4-6-20250514" to "Opus 4.6",
+    /// "gpt-5.2-codex" to "GPT-5.2 Codex", etc.
+    pub fn display_model(&self) -> Option<&str> {
+        self.model.as_deref().map(friendly_model_name)
+    }
+}
+
+/// Table mapping model ID prefixes to human-friendly display names.
+///
+/// Entries are checked in order; the first matching prefix wins.
+/// If no prefix matches, the raw model ID is returned as-is.
+const MODEL_DISPLAY_NAMES: &[(&str, &str)] = &[
+    // Claude Opus
+    ("claude-opus-4-6", "Opus 4.6"),
+    ("claude-opus-4-5", "Opus 4.5"),
+    ("claude-opus-4", "Opus 4"),
+    // Claude Sonnet
+    ("claude-sonnet-4-6", "Sonnet 4.6"),
+    ("claude-sonnet-4-5", "Sonnet 4.5"),
+    ("claude-sonnet-4.5", "Sonnet 4.5"),
+    ("claude-sonnet-4", "Sonnet 4"),
+    ("claude-3-5-sonnet", "Sonnet 3.5"),
+    ("claude-3-sonnet", "Sonnet 3"),
+    // Claude Haiku
+    ("claude-haiku-4-5", "Haiku 4.5"),
+    ("claude-3-5-haiku", "Haiku 3.5"),
+    ("claude-3-haiku", "Haiku 3"),
+];
+
+/// Convert a raw model ID to a human-friendly display name.
+///
+/// Falls back to the raw ID if no known prefix matches.
+pub fn friendly_model_name(model: &str) -> &str {
+    for &(prefix, display) in MODEL_DISPLAY_NAMES {
+        if model.starts_with(prefix) {
+            return display;
+        }
+    }
+    model
 }
 
 /// Tracks the "Compact & Approve" lifecycle.
@@ -516,6 +560,7 @@ impl ChatSession {
                 home_dir: dirs::home_dir()
                     .map(|h| h.to_string_lossy().to_string())
                     .unwrap_or_default(),
+                model: None,
             },
             backend_type,
             last_activity: None,
@@ -573,6 +618,7 @@ impl ChatSession {
                 hostname,
                 cwd: Some(cwd),
                 home_dir: String::new(),
+                model: None,
             },
             backend_type,
             last_activity: None,
