@@ -247,11 +247,14 @@ pub fn backend_icon(bt: BackendType) -> egui::Image<'static> {
 }
 
 /// Render the backend picker overlay UI.
-/// Returns Some(BackendType) when the user has selected a backend.
+/// Returns Some((BackendType, model_name)) when the user has selected a backend.
 pub fn backend_picker_overlay_ui(
     available_backends: &[BackendType],
+    selected_models: &mut std::collections::HashMap<BackendType, usize>,
     ui: &mut egui::Ui,
-) -> Option<BackendType> {
+) -> Option<(BackendType, String)> {
+    use crate::session::friendly_model_name;
+
     let mut selected = None;
 
     // Handle keyboard shortcuts: 1-9 for quick selection
@@ -265,7 +268,10 @@ pub fn backend_picker_overlay_ui(
             _ => continue,
         };
         if ui.input(|i| i.key_pressed(key)) {
-            return Some(bt);
+            let model_idx = selected_models.get(&bt).copied().unwrap_or(0);
+            let default = bt.default_model();
+            let model = bt.available_models().get(model_idx).unwrap_or(&default);
+            return Some((bt, model.to_string()));
         }
     }
 
@@ -291,43 +297,84 @@ pub fn backend_picker_overlay_ui(
                 egui::Layout::top_down(egui::Align::LEFT),
                 |ui| {
                     for (idx, &bt) in available_backends.iter().enumerate() {
-                        let desired = egui::vec2(max_width, 44.0);
-                        let (rect, response) =
-                            ui.allocate_exact_size(desired, egui::Sense::click());
-                        let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        let models = bt.available_models();
+                        let model_idx = selected_models.get(&bt).copied().unwrap_or(0);
+                        let default = bt.default_model();
+                        let current_model = models.get(model_idx).unwrap_or(&default);
+
+                        // Backend row: icon + name + model dropdown + GO button
+                        let desired = egui::vec2(max_width, 52.0);
+                        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
 
                         // Background
-                        let fill = if response.hovered() {
-                            ui.visuals().widgets.hovered.weak_bg_fill
-                        } else {
-                            ui.visuals().widgets.inactive.weak_bg_fill
-                        };
+                        let fill = ui.visuals().widgets.inactive.weak_bg_fill;
                         ui.painter().rect_filled(rect, 8.0, fill);
 
                         // Icon
                         let icon_size = 20.0;
                         let icon_x = rect.left() + 12.0;
                         let icon_rect = egui::Rect::from_center_size(
-                            egui::pos2(icon_x + icon_size / 2.0, rect.center().y),
+                            egui::pos2(icon_x + icon_size / 2.0, rect.center().y - 6.0),
                             egui::vec2(icon_size, icon_size),
                         );
                         backend_icon(bt).paint_at(ui, icon_rect);
 
-                        // Label
+                        // Backend name + keyboard shortcut
                         let label = format!("[{}] {}", idx + 1, bt.display_name());
-                        let text_pos = egui::pos2(icon_x + icon_size + 10.0, rect.center().y);
                         ui.painter().text(
-                            text_pos,
+                            egui::pos2(icon_x + icon_size + 10.0, rect.center().y - 6.0),
                             egui::Align2::LEFT_CENTER,
                             &label,
-                            egui::FontId::proportional(16.0),
+                            egui::FontId::proportional(15.0),
                             ui.visuals().text_color(),
                         );
 
-                        if response.clicked() {
-                            selected = Some(bt);
-                        }
-                        ui.add_space(4.0);
+                        // Model selector + Start button on the second line
+                        let controls_rect = egui::Rect::from_min_size(
+                            egui::pos2(icon_x + icon_size + 10.0, rect.center().y + 4.0),
+                            egui::vec2(max_width - icon_size - 34.0, 20.0),
+                        );
+
+                        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(controls_rect), |ui| {
+                            ui.horizontal(|ui| {
+                                // Model dropdown
+                                if !models.is_empty() {
+                                    let combo_id = ui.id().with("model").with(idx);
+                                    egui::ComboBox::from_id_salt(combo_id)
+                                        .selected_text(
+                                            egui::RichText::new(friendly_model_name(current_model))
+                                                .size(11.0),
+                                        )
+                                        .width(160.0)
+                                        .show_ui(ui, |ui| {
+                                            for (mi, &m) in models.iter().enumerate() {
+                                                if ui
+                                                    .selectable_label(
+                                                        mi == model_idx,
+                                                        friendly_model_name(m),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    selected_models.insert(bt, mi);
+                                                }
+                                            }
+                                        });
+                                }
+
+                                // Start button
+                                if ui
+                                    .add(
+                                        egui::Button::new(egui::RichText::new("Start").size(12.0))
+                                            .corner_radius(4.0),
+                                    )
+                                    .clicked()
+                                {
+                                    selected = Some((bt, current_model.to_string()));
+                                }
+                            });
+                        });
+
+                        ui.add_space(6.0);
                     }
                 },
             );

@@ -118,10 +118,14 @@ pub enum DaveOverlay {
     /// Backend has been chosen; showing resumable-session list.
     SessionPicker {
         backend: BackendType,
+        /// Model chosen in backend picker (threaded to session creation).
+        model: Option<String>,
     },
-    /// Directory chosen; waiting for user to pick a backend.
+    /// Directory chosen; waiting for user to pick a backend and model.
     BackendPicker {
         cwd: PathBuf,
+        /// Per-backend selected model index (persists across frames).
+        selected_models: HashMap<BackendType, usize>,
     },
 }
 
@@ -601,6 +605,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.hostname,
             self.model_config.backend,
             None,
+            None,
         );
 
         if let Some(session) = self.session_manager.get_mut(id) {
@@ -855,7 +860,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 return DaveResponse::default();
             }
-            DaveOverlay::SessionPicker { backend } => {
+            DaveOverlay::SessionPicker { backend, model } => {
                 match ui::session_picker_overlay_ui(&mut self.session_picker, ui) {
                     OverlayResult::ResumeSession {
                         cwd,
@@ -881,24 +886,34 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             backend
                         );
                         self.session_picker.close();
-                        self.create_session_with_cwd(cwd, backend);
+                        self.create_session_with_cwd(cwd, backend, model.clone());
                     }
                     OverlayResult::BackToDirectoryPicker => {
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::DirectoryPicker;
                     }
                     _ => {
-                        self.active_overlay = DaveOverlay::SessionPicker { backend };
+                        self.active_overlay = DaveOverlay::SessionPicker { backend, model };
                     }
                 }
                 return DaveResponse::default();
             }
-            DaveOverlay::BackendPicker { cwd } => {
-                if let Some(bt) = ui::backend_picker_overlay_ui(&self.available_backends, ui) {
-                    tracing::info!("backend selected: {:?}", bt);
-                    self.create_or_resume_session(cwd, bt);
+            DaveOverlay::BackendPicker {
+                cwd,
+                mut selected_models,
+            } => {
+                if let Some((bt, model)) = ui::backend_picker_overlay_ui(
+                    &self.available_backends,
+                    &mut selected_models,
+                    ui,
+                ) {
+                    tracing::info!("backend selected: {:?}, model: {}", bt, model);
+                    self.create_or_resume_session(cwd, bt, Some(model));
                 } else {
-                    self.active_overlay = DaveOverlay::BackendPicker { cwd };
+                    self.active_overlay = DaveOverlay::BackendPicker {
+                        cwd,
+                        selected_models,
+                    };
                 }
                 return DaveResponse::default();
             }
@@ -1065,7 +1080,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             AiMode::Chat => {
                 // In chat mode, create a session directly without the directory picker
                 let cwd = std::env::current_dir().unwrap_or_default();
-                self.create_session_with_cwd(cwd, self.model_config.backend);
+                self.create_session_with_cwd(cwd, self.model_config.backend, None);
             }
             AiMode::Agentic => {
                 // If remote hosts are known, show host picker first
@@ -1103,7 +1118,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Create a new session with the given cwd (called after directory picker selection)
-    fn create_session_with_cwd(&mut self, cwd: PathBuf, backend_type: BackendType) {
+    fn create_session_with_cwd(
+        &mut self,
+        cwd: PathBuf,
+        backend_type: BackendType,
+        model: Option<String>,
+    ) {
         update::create_session_with_cwd(
             &mut self.session_manager,
             &mut self.directory_picker,
@@ -1114,6 +1134,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.hostname,
             backend_type,
             None,
+            model,
         );
     }
 
@@ -1930,6 +1951,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 &self.hostname,
                 backend,
                 Some(ctx.ndb),
+                None,
             );
 
             // Store spawn_id so it's echoed in kind-31988 state events,
@@ -2238,22 +2260,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
         if let Some(bt) = self.single_agentic_backend() {
             tracing::info!("single backend detected, skipping picker: {:?}", bt);
-            self.create_or_resume_session(cwd, bt);
+            self.create_or_resume_session(cwd, bt, None);
         } else if self.available_backends.is_empty() {
             // No agentic backends — fall back to configured backend
-            self.create_or_resume_session(cwd, self.model_config.backend);
+            self.create_or_resume_session(cwd, self.model_config.backend, None);
         } else {
             tracing::info!(
                 "multiple backends available, showing backend picker: {:?}",
                 self.available_backends
             );
-            self.active_overlay = DaveOverlay::BackendPicker { cwd };
+            self.active_overlay = DaveOverlay::BackendPicker {
+                cwd,
+                selected_models: HashMap::new(),
+            };
         }
     }
 
     /// After a backend is determined, either create a session directly or
     /// show the session picker if there are resumable sessions for this backend.
-    fn create_or_resume_session(&mut self, cwd: PathBuf, backend_type: BackendType) {
+    fn create_or_resume_session(
+        &mut self,
+        cwd: PathBuf,
+        backend_type: BackendType,
+        model: Option<String>,
+    ) {
         // Only Claude has discoverable resumable sessions (from ~/.claude/)
         if backend_type == BackendType::Claude {
             let resumable = discover_sessions(&cwd);
@@ -2265,11 +2295,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 self.session_picker.open(cwd);
                 self.active_overlay = DaveOverlay::SessionPicker {
                     backend: backend_type,
+                    model,
                 };
                 return;
             }
         }
-        self.create_session_with_cwd(cwd, backend_type);
+        self.create_session_with_cwd(cwd, backend_type, model);
         self.active_overlay = DaveOverlay::None;
     }
 
@@ -2562,11 +2593,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             .and_then(|a| a.cli_resume_id().map(|s| s.to_string()));
         let backend_type = session.backend_type;
         let tools = self.tools.clone();
-        let model_name = if backend_type == self.model_config.backend {
-            self.model_config.model().to_owned()
-        } else {
-            backend_type.default_model().to_owned()
-        };
+        let model_name = session.details.model.clone().unwrap_or_else(|| {
+            if backend_type == self.model_config.backend {
+                self.model_config.model().to_owned()
+            } else {
+                backend_type.default_model().to_owned()
+            }
+        });
         let ctx = ctx.clone();
 
         // Use backend to stream request
@@ -3506,6 +3539,11 @@ fn handle_query_complete(session: &mut session::ChatSession, info: messages::Usa
 /// Sets up ndb subscriptions for permission responses and conversation events
 /// when we first learn the claude session ID.
 fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo, ndb: &nostrdb::Ndb) {
+    // Propagate model to SessionDetails so the header can display it
+    if info.model.is_some() {
+        session.details.model.clone_from(&info.model);
+    }
+
     if let Some(agentic) = &mut session.agentic {
         // Use the stable event_id (not the CLI session ID) for subscriptions,
         // since all live events are tagged with event_id as the d-tag.

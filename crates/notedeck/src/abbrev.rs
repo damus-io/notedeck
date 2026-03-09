@@ -14,6 +14,20 @@ pub fn floor_char_boundary(s: &str, index: usize) -> usize {
 }
 
 #[inline]
+pub fn ceil_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        s.len()
+    } else {
+        let upper_bound = (index + 4).min(s.len());
+        s.as_bytes()[index..upper_bound]
+            .iter()
+            .position(|b| is_utf8_char_boundary(*b))
+            .map(|pos| index + pos)
+            .unwrap_or(s.len())
+    }
+}
+
+#[inline]
 fn is_utf8_char_boundary(c: u8) -> bool {
     // This is bit magic equivalent to: b < 128 || b >= 192
     (c as i8) >= -0x40

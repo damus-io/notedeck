@@ -935,7 +935,7 @@ pub fn poll_editor_job(session_manager: &mut SessionManager) {
 // Session Management
 // =============================================================================
 
-/// Create a new session with the given cwd.
+/// Create a new session with the given cwd and optional model override.
 #[allow(clippy::too_many_arguments)]
 pub fn create_session_with_cwd(
     session_manager: &mut SessionManager,
@@ -947,12 +947,14 @@ pub fn create_session_with_cwd(
     hostname: &str,
     backend_type: BackendType,
     ndb: Option<&nostrdb::Ndb>,
+    model: Option<String>,
 ) -> SessionId {
     directory_picker.add_recent(cwd.clone());
 
     let id = session_manager.new_session(cwd, ai_mode, backend_type);
     if let Some(session) = session_manager.get_mut(id) {
         session.details.hostname = hostname.to_string();
+        session.details.model = model;
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -1046,6 +1048,7 @@ pub fn clone_session(
         cwd,
         hostname,
         backend_type,
+        None,
         None,
     );
     None

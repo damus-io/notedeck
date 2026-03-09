@@ -33,9 +33,30 @@ impl BackendType {
     pub fn default_model(&self) -> &'static str {
         match self {
             BackendType::OpenAI => "gpt-4.1-mini",
-            BackendType::Claude => "claude-sonnet-4.5",
-            BackendType::Codex => "gpt-5.2-codex",
+            BackendType::Claude => "claude-sonnet-4-5-20250514",
+            BackendType::Codex => "gpt-5.3-codex",
             BackendType::Remote => "",
+        }
+    }
+
+    /// Models available for selection in the backend picker.
+    pub fn available_models(&self) -> &'static [&'static str] {
+        match self {
+            BackendType::Claude => &[
+                "claude-sonnet-4-5-20250514",
+                "claude-opus-4-6-20250514",
+                "claude-sonnet-4-6-20250514",
+                "claude-haiku-4-5-20251001",
+            ],
+            BackendType::Codex => &[
+                "gpt-5.3-codex",
+                "gpt-5.2-codex",
+                "gpt-5-codex",
+                "codex-mini-latest",
+                "o4-mini",
+            ],
+            BackendType::OpenAI => &["gpt-4.1-mini", "gpt-4.1", "o4-mini"],
+            BackendType::Remote => &[],
         }
     }
 
