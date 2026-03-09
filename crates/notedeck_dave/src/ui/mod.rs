@@ -10,6 +10,8 @@ pub mod keybindings;
 pub mod markdown_ui;
 mod pill;
 mod query_ui;
+pub(crate) mod run_config_editor;
+pub(crate) mod run_ui;
 pub mod scene;
 pub mod session_list;
 pub mod session_picker;
@@ -18,11 +20,12 @@ mod top_buttons;
 pub mod worktree_creator;
 
 pub use ask_question::{ask_user_question_summary_ui, ask_user_question_ui};
-pub use dave::{DaveAction, DaveResponse, DaveUi};
+pub use dave::{DaveAction, DaveResponse, DaveUi, RunAction};
 pub use directory_picker::{DirectoryPicker, DirectoryPickerAction};
 pub use host_picker::HostPickerAction;
 pub use keybind_hint::{keybind_hint, paint_keybind_hint};
-pub use keybindings::{check_keybindings, KeyAction};
+pub use keybindings::check_keybindings;
+pub(crate) use run_config_editor::{run_config_editor_overlay_ui, RunConfigChange};
 pub use scene::{AgentScene, SceneAction, SceneResponse};
 pub use session_list::{SessionListAction, SessionListUi};
 pub use session_picker::{SessionPicker, SessionPickerAction};
@@ -39,6 +42,7 @@ use crate::config::{AiMode, DaveSettings, ModelConfig};
 use crate::focus_queue::FocusQueue;
 use crate::messages::PermissionResponse;
 use crate::session::{ChatSession, PermissionMessageState, SessionId, SessionManager};
+use crate::ui::keybindings::KeyAction;
 use crate::update;
 use crate::DaveOverlay;
 use egui::include_image;
@@ -49,11 +53,21 @@ fn build_dave_ui<'a>(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
+    run_configs: &'a std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
+    running_sessions: &'a std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
 ) -> DaveUi<'a> {
     let is_working = session.status() == AgentStatus::Working;
     let has_pending_permission = session.has_pending_permissions();
     let permission_mode = session.permission_mode();
     let is_remote = session.is_remote();
+    // Look up the run configs for this session's CWD
+    let session_run_configs: &'a [crate::config::RunConfig] = session
+        .cwd()
+        .and_then(|cwd| run_configs.get(cwd))
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+    // The IDs of configs currently running for this session
+    let running_config_ids = running_sessions.get(&session.id);
 
     let mut ui_builder = DaveUi::new(
         model_config.trial,
@@ -72,7 +86,9 @@ fn build_dave_ui<'a>(
     .dispatch_state(session.dispatch_state)
     .details(&session.details)
     .backend_type(session.backend_type)
-    .last_activity(session.last_activity);
+    .last_activity(session.last_activity)
+    .run_configs(session_run_configs)
+    .running_config_ids(running_config_ids);
 
     if let Some(agentic) = &mut session.agentic {
         let model = agentic
@@ -364,6 +380,8 @@ pub fn scene_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
+    run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
+    running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> (DaveResponse, SceneViewAction) {
@@ -423,6 +441,8 @@ pub fn scene_ui(
                                     model_config,
                                     is_interrupt_pending,
                                     auto_steal_focus,
+                                    run_configs,
+                                    running_sessions,
                                 )
                                 .compact(true)
                                 .ui(app_ctx, ui);
@@ -477,6 +497,8 @@ pub fn desktop_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
+    run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
+    running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
 ) -> (DaveResponse, Option<SessionListAction>, bool) {
@@ -535,6 +557,8 @@ pub fn desktop_ui(
                     model_config,
                     is_interrupt_pending,
                     auto_steal_focus,
+                    run_configs,
+                    running_sessions,
                 )
                 .ui(app_ctx, ui)
             } else {
@@ -554,6 +578,8 @@ pub fn narrow_ui(
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
+    run_configs: &std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
+    running_sessions: &std::collections::HashMap<SessionId, std::collections::HashSet<String>>,
     show_session_list: bool,
     app_ctx: &mut notedeck::AppContext,
     ui: &mut egui::Ui,
@@ -576,6 +602,8 @@ pub fn narrow_ui(
             model_config,
             is_interrupt_pending,
             auto_steal_focus,
+            run_configs,
+            running_sessions,
         )
         .status_dot_color(dot_color)
         .focus_queue_info(fq_info)
@@ -980,5 +1008,7 @@ pub fn handle_ui_action(
             )
         }
         DaveAction::Compact => UiActionResult::Compact,
+        // All run actions are intercepted and handled in lib.rs before reaching here
+        DaveAction::Run(_) => UiActionResult::Handled,
     }
 }

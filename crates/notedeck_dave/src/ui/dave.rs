@@ -3,6 +3,7 @@ use super::diff;
 use super::git_status_ui;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
+use super::run_ui;
 use super::top_buttons::top_buttons_ui;
 use crate::{
     backend::BackendType,
@@ -79,6 +80,10 @@ pub struct DaveUi<'a> {
     last_activity: Option<std::time::Instant>,
     /// Focus queue info for mobile NEXT badge: (position, total, priority)
     focus_queue_info: Option<(usize, usize, FocusPriority)>,
+    /// Named run configs for this session's CWD
+    run_configs: &'a [crate::config::RunConfig],
+    /// IDs of configs currently running for this session
+    running_config_ids: Option<&'a std::collections::HashSet<String>>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -113,6 +118,22 @@ impl DaveResponse {
     fn none() -> Self {
         DaveResponse::default()
     }
+}
+
+/// All actions related to run configurations and process control.
+#[derive(Debug)]
+pub enum RunAction {
+    /// Launch the config with this stable UUID
+    Launch { config_id: String },
+    /// Stop the running process for the config with this stable UUID
+    Stop { config_id: String },
+    /// Open the editor to create a new config for the given CWD
+    OpenNew { cwd: std::path::PathBuf },
+    /// Open the editor to edit an existing config by its stable UUID
+    OpenEdit {
+        cwd: std::path::PathBuf,
+        config_id: String,
+    },
 }
 
 /// The actions the app generates. No default action is specfied in the
@@ -170,6 +191,8 @@ pub enum DaveAction {
     Compact,
     /// Navigate to the next focus queue item (mobile)
     FocusQueueNext,
+    /// All run-config and process-control actions
+    Run(RunAction),
 }
 
 impl<'a> DaveUi<'a> {
@@ -206,6 +229,8 @@ impl<'a> DaveUi<'a> {
             permission_mode: PermissionMode::Default,
             last_activity: None,
             focus_queue_info: None,
+            run_configs: &[],
+            running_config_ids: None,
         }
     }
 
@@ -301,6 +326,19 @@ impl<'a> DaveUi<'a> {
         self
     }
 
+    pub fn run_configs(mut self, configs: &'a [crate::config::RunConfig]) -> Self {
+        self.run_configs = configs;
+        self
+    }
+
+    pub fn running_config_ids(
+        mut self,
+        ids: Option<&'a std::collections::HashSet<String>>,
+    ) -> Self {
+        self.running_config_ids = ids;
+        self
+    }
+
     pub fn usage(mut self, usage: &'a crate::messages::UsageInfo, model: Option<&str>) -> Self {
         self.usage = Some(usage);
         self.context_window = crate::messages::context_window_for_model(model);
@@ -387,15 +425,11 @@ impl<'a> DaveUi<'a> {
                         .inner;
 
                     {
-                        let permission_mode = self.permission_mode;
-                        let auto_steal_focus = self.flags.contains(DaveUiFlags::AutoStealFocus);
-                        let is_agentic = self.ai_mode == AiMode::Agentic;
                         let has_git = self.git_status.is_some();
+                        let is_agentic = self.ai_mode == AiMode::Agentic;
 
                         // Show status bar when there's git status or badges to display
                         if has_git || is_agentic {
-                            // Explicitly reserve height so bottom_up layout
-                            // keeps the chat ScrollArea from overlapping.
                             let h = if self.git_status.as_ref().is_some_and(|gs| gs.expanded) {
                                 200.0
                             } else {
@@ -411,20 +445,7 @@ impl<'a> DaveUi<'a> {
                                             top: 4,
                                             bottom: 0,
                                         })
-                                        .show(ui, |ui| {
-                                            status_bar_ui(
-                                                self.git_status.as_deref_mut(),
-                                                is_agentic,
-                                                permission_mode,
-                                                auto_steal_focus,
-                                                self.focus_queue_info,
-                                                self.usage,
-                                                self.context_window,
-                                                self.last_activity,
-                                                self.chat.len(),
-                                                ui,
-                                            )
-                                        })
+                                        .show(ui, |ui| self.status_bar_ui(ui))
                                         .inner
                                 })
                                 .inner;
@@ -1489,100 +1510,79 @@ fn format_relative_time(instant: std::time::Instant) -> String {
     }
 }
 
-/// Renders the status bar containing git status and toggle badges.
-#[allow(clippy::too_many_arguments)]
-fn status_bar_ui(
-    mut git_status: Option<&mut GitStatusCache>,
-    is_agentic: bool,
-    permission_mode: PermissionMode,
-    auto_steal_focus: bool,
-    focus_queue_info: Option<(usize, usize, FocusPriority)>,
-    usage: Option<&crate::messages::UsageInfo>,
-    context_window: u64,
-    last_activity: Option<std::time::Instant>,
-    message_count: usize,
-    ui: &mut egui::Ui,
-) -> Option<DaveAction> {
-    let snapshot = git_status
-        .as_deref()
-        .and_then(git_status_ui::StatusSnapshot::from_cache);
+/// Renders the status bar containing git status, run button, and toggle badges.
+impl DaveUi<'_> {
+    fn status_bar_ui(&mut self, ui: &mut egui::Ui) -> Option<DaveAction> {
+        let is_remote = self.flags.contains(DaveUiFlags::IsRemote);
+        let is_agentic = self.ai_mode == AiMode::Agentic;
+        let cwd = self.details.and_then(|d| d.cwd.as_deref());
 
-    ui.vertical(|ui| {
-        let action = ui
-            .horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
+        let snapshot = self
+            .git_status
+            .as_deref()
+            .and_then(git_status_ui::StatusSnapshot::from_cache);
 
-                if let Some(git_status) = git_status.as_deref_mut() {
-                    git_status_ui::git_status_content_ui(git_status, &snapshot, ui);
+        ui.vertical(|ui| {
+            let bar_action = ui
+                .horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
 
-                    // Right-aligned section: usage bar, badges, then refresh
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let badge_action = if is_agentic {
-                            toggle_badges_ui(
-                                ui,
-                                permission_mode,
-                                auto_steal_focus,
-                                focus_queue_info,
-                            )
-                        } else {
-                            None
-                        };
-                        if is_agentic {
-                            if let Some(instant) = last_activity {
-                                ui.label(
-                                    egui::RichText::new(format_relative_time(instant))
-                                        .size(10.0)
-                                        .color(ui.visuals().weak_text_color()),
-                                );
+                    // Run config buttons — leftmost elements, local sessions only
+                    let mut action = if !is_remote {
+                        let a = cwd.and_then(|p| {
+                            run_ui::run_configs_ui(self.run_configs, self.running_config_ids, p, ui)
+                        });
+                        if cwd.is_some() {
+                            ui.separator();
+                        }
+                        a
+                    } else {
+                        None
+                    };
+
+                    if let Some(gs) = self.git_status.as_deref_mut() {
+                        git_status_ui::git_status_content_ui(gs, &snapshot, ui);
+                    }
+
+                    let right = ui
+                        .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let badge_action = if is_agentic {
+                                toggle_badges_ui(
+                                    ui,
+                                    self.permission_mode,
+                                    self.flags.contains(DaveUiFlags::AutoStealFocus),
+                                    self.focus_queue_info,
+                                )
+                            } else {
+                                None
+                            };
+                            if is_agentic {
+                                if let Some(instant) = self.last_activity {
+                                    ui.label(
+                                        egui::RichText::new(format_relative_time(instant))
+                                            .size(10.0)
+                                            .color(ui.visuals().weak_text_color()),
+                                    );
+                                }
+                                usage_bar_ui(self.usage, self.context_window, ui);
                             }
-                            usage_bar_ui(usage, context_window, ui);
-                            ui.label(
-                                egui::RichText::new(format!("{} msgs", message_count))
-                                    .size(10.0)
-                                    .color(ui.visuals().weak_text_color()),
-                            );
-                        }
-                        badge_action
-                    })
-                    .inner
-                } else if is_agentic {
-                    // No git status (remote session) - just show badges and usage
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let badge_action = toggle_badges_ui(
-                            ui,
-                            permission_mode,
-                            auto_steal_focus,
-                            focus_queue_info,
-                        );
-                        if let Some(instant) = last_activity {
-                            ui.label(
-                                egui::RichText::new(format_relative_time(instant))
-                                    .size(10.0)
-                                    .color(ui.visuals().weak_text_color()),
-                            );
-                        }
-                        usage_bar_ui(usage, context_window, ui);
-                        ui.label(
-                            egui::RichText::new(format!("{} msgs", message_count))
-                                .size(10.0)
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                        badge_action
-                    })
-                    .inner
-                } else {
-                    None
-                }
-            })
-            .inner;
+                            badge_action
+                        })
+                        .inner;
 
-        if let Some(git_status) = git_status.as_deref() {
-            git_status_ui::git_expanded_files_ui(git_status, &snapshot, ui);
-        }
+                    action = action.or(right);
+                    action
+                })
+                .inner;
 
-        action
-    })
-    .inner
+            if let Some(gs) = self.git_status.as_deref() {
+                git_status_ui::git_expanded_files_ui(gs, &snapshot, ui);
+            }
+
+            bar_action
+        })
+        .inner
+    }
 }
 
 /// Format a token count in a compact human-readable form (e.g. "45K", "1.2M")

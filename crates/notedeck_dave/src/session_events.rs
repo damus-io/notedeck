@@ -4,9 +4,11 @@
 //! mixed content (text + tool_use blocks) are split into separate events.
 //! Events are threaded using NIP-10 `e` tags with root/reply markers.
 
+use crate::config::{RunConfig, AI_RUN_CONFIG_KIND};
 use crate::session_jsonl::{self, ContentBlock, JsonlLine};
 use nostrdb::{NoteBuildOptions, NoteBuilder};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Nostr event kind for AI conversation notes.
 pub const AI_CONVERSATION_KIND: u32 = 1988;
@@ -833,6 +835,94 @@ pub fn build_spawn_command_event(
         .tag_str("notedeck-dave");
 
     finalize_built_event(builder, secret_key, AI_SESSION_COMMAND_KIND)
+}
+
+/// Build a kind-31991 run-config event (parameterized replaceable, NIP-33).
+///
+/// One event per individual config. The d-tag is the config's stable UUID,
+/// which survives renames, command edits, reloads, and cross-device sync.
+pub(crate) fn build_run_config_event(
+    config: &RunConfig,
+    cwd: &str,
+    hostname: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let mut builder = init_note_builder(AI_RUN_CONFIG_KIND, "", None);
+
+    builder = builder.start_tag().tag_str("d").tag_str(&config.id);
+    builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
+    builder = builder.start_tag().tag_str("hostname").tag_str(hostname);
+    builder = builder.start_tag().tag_str("name").tag_str(&config.name);
+    builder = builder
+        .start_tag()
+        .tag_str("command")
+        .tag_str(&config.command);
+
+    finalize_built_event(builder, secret_key, AI_RUN_CONFIG_KIND)
+}
+
+/// Build a tombstone kind-31991 event to delete a run config.
+///
+/// Publishes an event with the same d-tag (config UUID) but with a `deleted`
+/// tag. This replaces the live config in nostrdb via NIP-33.
+pub(crate) fn build_run_config_delete_event(
+    config_id: &str,
+    cwd: &str,
+    hostname: &str,
+    secret_key: &[u8; 32],
+) -> Result<BuiltEvent, EventBuildError> {
+    let mut builder = init_note_builder(AI_RUN_CONFIG_KIND, "", None);
+
+    builder = builder.start_tag().tag_str("d").tag_str(config_id);
+    builder = builder.start_tag().tag_str("cwd").tag_str(cwd);
+    builder = builder.start_tag().tag_str("hostname").tag_str(hostname);
+    builder = builder.start_tag().tag_str("deleted").tag_str("true");
+
+    finalize_built_event(builder, secret_key, AI_RUN_CONFIG_KIND)
+}
+
+/// Parse a kind-31991 run-config note into a single `RunConfig`.
+///
+/// Returns `None` if this is a tombstone (has `deleted` tag) or if
+/// required tags (`d`, `cwd`, `name`, `command`) are missing.
+pub(crate) fn parse_run_config_event(note: &nostrdb::Note) -> Option<(PathBuf, RunConfig)> {
+    // Tombstone — treat as deleted
+    if get_tag_value(note, "deleted").is_some() {
+        return None;
+    }
+    let id = get_tag_value(note, "d")?.to_string();
+    let cwd = get_tag_value(note, "cwd")?;
+    if cwd.is_empty() {
+        return None;
+    }
+    let name = get_tag_value(note, "name")
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let command = get_tag_value(note, "command")
+        .filter(|s| !s.is_empty())?
+        .to_string();
+
+    Some((
+        PathBuf::from(cwd),
+        RunConfig {
+            id,
+            name,
+            command,
+            updated_at: note.created_at(),
+        },
+    ))
+}
+
+/// Extract the d-tag from a kind-31991 note. Used to identify tombstones
+/// so the caller can remove the config by ID even when `parse_run_config_event`
+/// returns `None`.
+pub(crate) fn run_config_event_id(note: &nostrdb::Note) -> Option<String> {
+    get_tag_value(note, "d").map(|s| s.to_string())
+}
+
+/// Check whether a kind-31991 note is a deletion tombstone.
+pub(crate) fn is_run_config_deleted(note: &nostrdb::Note) -> bool {
+    get_tag_value(note, "deleted").is_some()
 }
 
 /// Build a kind-1988 command event to set permission mode on a remote session.

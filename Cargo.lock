@@ -4774,6 +4774,7 @@ dependencies = [
  "futures",
  "gethostname 1.1.0",
  "hex",
+ "libc",
  "md-stream",
  "nostrdb",
  "notedeck",
