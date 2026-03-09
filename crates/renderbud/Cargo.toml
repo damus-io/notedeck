@@ -11,7 +11,7 @@ egui = { workspace = true, optional = true }
 
 glam = { version = "0.30.10", features = ["bytemuck"] }
 gltf = "1.4"
-wgpu = "24"
+wgpu = { workspace = true }
 half = "2.7.1"
 rayon = "1.10"
 
@@ -20,6 +20,6 @@ egui = ["egui-wgpu", "dep:egui"]
 
 [dev-dependencies]
 winit = "0.30"
-wgpu = "24"
+wgpu = { workspace = true }
 gltf = "1.4"
-pollster = "0.4.0"
+pollster = { workspace = true }
