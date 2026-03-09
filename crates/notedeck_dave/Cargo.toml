@@ -8,6 +8,8 @@ async-openai = { version = "0.28.0", features = ["rustls-webpki-roots"] }
 claude-agent-sdk-rs = { git = "https://github.com/jb55/claude-agent-sdk-rs", rev = "84afa5f" }
 bitflags = { workspace = true }
 egui = { workspace = true }
+egui_nav = { workspace = true }
+egui-winit = { workspace = true }
 sha2 = { workspace = true }
 notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
@@ -32,6 +34,14 @@ md-stream = { workspace = true }
 similar = "2"
 dirs = "5"
 gethostname = "1"
+arboard = { workspace = true }
+image = { workspace = true }
+base64 = { workspace = true }
+mime_guess = { workspace = true }
+tempfile = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
 rfd = { workspace = true }

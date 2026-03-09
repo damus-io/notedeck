@@ -5004,7 +5004,9 @@ dependencies = [
 name = "notedeck_dave"
 version = "0.7.1"
 dependencies = [
+ "arboard",
  "async-openai",
+ "base64 0.22.1",
  "bitflags 2.11.0",
  "bytemuck",
  "chrono",
@@ -5014,13 +5016,18 @@ dependencies = [
  "eframe",
  "egui",
  "egui-wgpu",
+ "egui-winit",
  "egui_extras",
  "egui_kittest",
+ "egui_nav",
  "enostr",
  "futures",
  "gethostname",
  "hex",
+ "image",
+ "libc",
  "md-stream",
+ "mime_guess",
  "nostrdb",
  "notedeck",
  "notedeck_ui",

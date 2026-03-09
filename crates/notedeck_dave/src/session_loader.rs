@@ -168,7 +168,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         let role = get_tag_value(note, "role");
 
         let msg = match role {
-            Some("user") => Some(Message::User(content.to_string())),
+            Some("user") => Some(Message::User(content.to_string().into())),
             Some("assistant") | Some("tool_call") => Some(Message::Assistant(
                 AssistantMessage::from_text(content.to_string()),
             )),
@@ -328,6 +328,46 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
     }
 
     states
+}
+
+/// Load all run configurations from kind-31991 events in ndb.
+///
+/// Each event is one config (d-tag = config UUID). Uses `query_replaceable`
+/// to deduplicate by d-tag, keeping only the most recent revision. Tombstoned
+/// events (with a `deleted` tag) are excluded. Only events whose `hostname`
+/// tag matches `local_hostname` are loaded.
+///
+/// Returns a map from CWD to sorted config list.
+pub(crate) fn load_run_configs_from_ndb(
+    ndb: &Ndb,
+    txn: &Transaction,
+    local_hostname: &str,
+) -> std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> {
+    use crate::config::{RunConfig, AI_RUN_CONFIG_KIND};
+    use crate::session_events::{get_tag_value, parse_run_config_event};
+
+    let filter = Filter::new().kinds([AI_RUN_CONFIG_KIND as u64]).build();
+    let note_keys = query_replaceable(ndb, txn, &[filter]);
+
+    let mut map: std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> =
+        std::collections::HashMap::new();
+    for key in note_keys {
+        let Ok(note) = ndb.get_note_by_key(txn, key) else {
+            continue;
+        };
+        if get_tag_value(&note, "hostname") != Some(local_hostname) {
+            continue;
+        }
+        // parse_run_config_event returns None for tombstones
+        if let Some((cwd, config)) = parse_run_config_event(&note) {
+            map.entry(cwd).or_default().push(config);
+        }
+    }
+    // Sort each CWD's configs by name for deterministic UI order
+    for configs in map.values_mut() {
+        RunConfig::sort_by_name(configs);
+    }
+    map
 }
 
 /// Look up the latest valid revision of a single session by d-tag.

@@ -5,6 +5,7 @@ const MODIFIED_COLOR: Color32 = Color32::from_rgb(200, 170, 50);
 const ADDED_COLOR: Color32 = Color32::from_rgb(60, 180, 60);
 const DELETED_COLOR: Color32 = Color32::from_rgb(200, 60, 60);
 const UNTRACKED_COLOR: Color32 = Color32::from_rgb(128, 128, 128);
+const CONFLICT_COLOR: Color32 = Color32::from_rgb(220, 120, 40);
 
 /// Snapshot of git status data extracted from the cache to avoid
 /// borrow conflicts when mutating `cache.expanded`.
@@ -51,15 +52,41 @@ fn count_label(ui: &mut Ui, prefix: &str, count: usize, color: Color32) {
     }
 }
 
+fn is_conflict(status: &str) -> bool {
+    matches!(status.trim(), "UU" | "UD" | "DU" | "AA" | "DD")
+}
+
 fn status_color(status: &str) -> Color32 {
-    if status.starts_with('?') {
+    if is_conflict(status) {
+        CONFLICT_COLOR
+    } else if status.starts_with('?') {
         UNTRACKED_COLOR
     } else if status.contains('D') {
         DELETED_COLOR
-    } else if status.contains('A') {
+    } else if status.contains('A') || status.contains('C') {
         ADDED_COLOR
     } else {
         MODIFIED_COLOR
+    }
+}
+
+/// Maps git porcelain XY status codes to compact UI symbols:
+/// - `?` → `○` (untracked)
+/// - `A` → `+` (added), `C` → `+` (copied, effectively added)
+/// - `D` → `-` (deleted)
+/// - `UU`/`UD`/`DU`/`AA`/`DD` → `⚠` (merge conflict)
+/// - `M`, `R`, `T`, and others → `●` (modified)
+fn status_symbol(status: &str) -> &'static str {
+    if is_conflict(status) {
+        "⚠"
+    } else if status.starts_with('?') {
+        "○"
+    } else if status.contains('D') {
+        "-"
+    } else if status.contains('A') || status.contains('C') {
+        "+"
+    } else {
+        "●"
     }
 }
 
@@ -96,10 +123,10 @@ pub fn git_status_content_ui(
             if snap.is_clean {
                 ui.label(RichText::new("clean").weak().size(11.0));
             } else {
-                count_label(ui, "~", snap.modified, MODIFIED_COLOR);
+                count_label(ui, "●", snap.modified, MODIFIED_COLOR);
                 count_label(ui, "+", snap.added, ADDED_COLOR);
                 count_label(ui, "-", snap.deleted, DELETED_COLOR);
-                count_label(ui, "?", snap.untracked, UNTRACKED_COLOR);
+                count_label(ui, "○", snap.untracked, UNTRACKED_COLOR);
             }
         }
         Some(Err(_)) => {
@@ -136,7 +163,7 @@ pub fn git_expanded_files_ui(
                                         ui.spacing_mut().item_spacing.x = 8.0;
                                         let color = status_color(status);
                                         ui.label(
-                                            RichText::new(status)
+                                            RichText::new(status_symbol(status))
                                                 .monospace()
                                                 .size(11.0)
                                                 .color(color),

@@ -494,6 +494,8 @@ pub struct ChatSession {
     pub id: SessionId,
     pub chat: Vec<Message>,
     pub input: String,
+    /// Images staged for the next message send, cleared after dispatch.
+    pub pending_images: Vec<crate::messages::ImageAttachment>,
     pub incoming_tokens: Option<Receiver<DaveApiResponse>>,
     /// Handle to the background task processing this session's AI requests.
     /// Aborted on drop to clean up the subprocess.
@@ -518,6 +520,9 @@ pub struct ChatSession {
     pub backend_type: BackendType,
     /// When the last AI response token was received (for "5m ago" display)
     pub last_activity: Option<Instant>,
+    /// When any backend message was last received (for stall detection).
+    /// Set when `incoming_tokens` is assigned, updated on every message.
+    pub last_backend_msg: Option<Instant>,
     /// Focus indicator dot state (persisted in kind-31988 note).
     /// Set on status transitions, cleared when user dismisses it.
     pub indicator: Option<FocusPriority>,
@@ -555,6 +560,7 @@ impl ChatSession {
             id,
             chat: vec![],
             input: String::new(),
+            pending_images: vec![],
             incoming_tokens: None,
             task_handle: None,
             dispatch_state: DispatchState::Idle,
@@ -576,6 +582,7 @@ impl ChatSession {
             },
             backend_type,
             last_activity: None,
+            last_backend_msg: None,
             indicator: None,
             pending_created_at: None,
             spawn_id: None,
@@ -634,7 +641,9 @@ impl ChatSession {
             },
             backend_type,
             last_activity: None,
+            last_backend_msg: None,
             indicator: None,
+            pending_images: vec![],
             pending_created_at: Some(Instant::now()),
             spawn_id: Some(spawn_id),
         }
@@ -797,7 +806,14 @@ impl ChatSession {
     pub fn update_title_from_last_message(&mut self) {
         for msg in self.chat.iter().rev() {
             let text: &str = match msg {
-                Message::User(text) => text,
+                Message::User(msg) => {
+                    let t = msg.as_str();
+                    if t.is_empty() && !msg.images.is_empty() {
+                        "[Image]"
+                    } else {
+                        t
+                    }
+                }
                 Message::Assistant(msg) => msg.text(),
                 _ => continue,
             };
@@ -1610,8 +1626,8 @@ mod tests {
             .chat
             .iter()
             .filter_map(|m| match m {
-                Message::User(s) if s == "follow up" => Some("U:follow up"),
-                Message::User(s) if s == "queued msg" => Some("U:queued msg"),
+                Message::User(s) if s.text == "follow up" => Some("U:follow up"),
+                Message::User(s) if s.text == "queued msg" => Some("U:queued msg"),
                 Message::Assistant(a) if a.text() == "response 2" => Some("A:response 2"),
                 _ => None,
             })
@@ -1954,7 +1970,7 @@ mod tests {
             .chat
             .iter()
             .map(|m| match m {
-                Message::User(s) => format!("U:{}", s),
+                Message::User(s) => format!("U:{}", s.text),
                 Message::Assistant(a) => format!("A:{}", a.text()),
                 _ => "?".into(),
             })

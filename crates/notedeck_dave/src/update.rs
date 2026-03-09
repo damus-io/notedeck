@@ -266,7 +266,7 @@ pub fn handle_permission_response(
     // If Allow has a message, add it as a User message to the chat
     if let PermissionResponse::Allow { message: Some(msg) } = &response {
         if !msg.is_empty() {
-            session.chat.push(Message::User(msg.clone()));
+            session.chat.push(Message::User(msg.clone().into()));
         }
     }
 

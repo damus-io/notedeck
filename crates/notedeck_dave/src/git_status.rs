@@ -185,7 +185,8 @@ fn parse_git_status(output: &str) -> GitStatusData {
 
 fn run_git_status(cwd: &Path) -> GitStatusResult {
     let mut cmd = std::process::Command::new("git");
-    cmd.args(["status", "--short", "--branch"]).current_dir(cwd);
+    cmd.args(["-c", "color.ui=never", "status", "--short", "--branch"])
+        .current_dir(cwd);
 
     #[cfg(target_os = "windows")]
     {

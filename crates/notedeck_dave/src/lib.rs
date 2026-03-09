@@ -24,6 +24,7 @@ mod tools;
 pub mod ui;
 mod update;
 mod vec3;
+pub mod worktree;
 
 use agent_status::AgentStatus;
 use backend::{
@@ -45,11 +46,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub use avatar::DaveAvatar;
-pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig};
+pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use messages::{
-    AskUserQuestionInput, AssistantMessage, DaveApiResponse, ExecutedTool, Message,
-    PermissionResponse, PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo,
-    SubagentStatus,
+    AskUserQuestionInput, AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment,
+    Message, PermissionResponse, PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo,
+    SubagentStatus, UserMessage,
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -59,10 +60,11 @@ pub use tools::{
     ToolResponses,
 };
 pub use ui::{
-    check_keybindings, AgentScene, DaveAction, DaveResponse, DaveSettingsPanel, DaveUi,
-    DirectoryPicker, DirectoryPickerAction, KeyAction, KeyActionResult, OverlayResult, SceneAction,
-    SceneResponse, SceneViewAction, SendActionResult, SessionListAction, SessionListUi,
-    SessionPicker, SessionPickerAction, SettingsPanelAction, UiActionResult,
+    check_keybindings, run_config_editor::RunConfigEditor, AgentScene, DaveAction, DaveResponse,
+    DaveSettingsPanel, DaveUi, DirectoryPicker, DirectoryPickerAction, KeyActionResult,
+    OverlayResult, RunAction, SceneAction, SceneResponse, SceneViewAction, SendActionResult,
+    SessionListAction, SessionListUi, SessionPicker, SessionPickerAction, SettingsPanelAction,
+    UiActionResult, WorktreeCreator, WorktreeCreatorAction,
 };
 pub use vec3::Vec3;
 
@@ -108,7 +110,7 @@ struct PendingSpawnCommand {
 /// Represents which full-screen overlay (if any) is currently active.
 /// Data-carrying variants hold the state needed for that step in the
 /// session-creation flow, replacing scattered `pending_*` fields.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Default)]
 pub enum DaveOverlay {
     #[default]
     None,
@@ -127,6 +129,10 @@ pub enum DaveOverlay {
         /// Per-backend selected model index (persists across frames).
         selected_models: HashMap<BackendType, usize>,
     },
+    /// User requested a new worktree from an existing session.
+    WorktreeCreator(Box<ui::WorktreeCreator>),
+    /// User is creating or editing a named run configuration.
+    RunConfigEditor(Box<RunConfigEditor>),
 }
 
 pub struct Dave {
@@ -201,6 +207,7 @@ pub struct Dave {
     /// Sessions pending deletion state event publication.
     /// Populated in delete_session(), drained in the update loop where AppContext is available.
     pending_deletions: Vec<DeletedSessionInfo>,
+    pending_worktree_removals: Vec<PendingWorktreeRemoval>,
     /// Thread summaries pending processing. Queued by summarize_thread(),
     /// resolved in update() where AppContext (ndb) is available.
     pending_summaries: Vec<enostr::NoteId>,
@@ -216,11 +223,64 @@ pub struct Dave {
     neg_sync_round: u8,
     /// Persists DaveSettings to dave_settings.json
     settings_serializer: TimedSerializer<DaveSettings>,
+    /// Running app processes launched via the Run button.
+    /// Keyed by (session ID, config UUID string). The config UUID is stable
+    /// across renames, reloads, and Nostr sync.
+    run_processes: HashMap<SessionId, HashMap<String, std::process::Child>>,
+    /// Maps session ID to the set of config UUIDs currently running.
+    /// Updated once per frame by `reap_run_processes()`.
+    running_session_ids: HashMap<SessionId, HashSet<String>>,
+    /// Run configs keyed by CWD — loaded from kind-31991 Nostr events on startup.
+    run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
+    /// ndb subscription for incoming kind-31991 run-config events (live updates).
+    run_config_sub: Option<nostrdb::Subscription>,
+    /// Killed child processes waiting to be reaped via non-blocking try_wait() each frame.
+    pending_reap: Vec<std::process::Child>,
 }
 
 use update::PermissionPublish;
 
 use crate::events::try_process_events_core;
+use crate::ui::keybindings::KeyAction;
+
+/// Kill a spawned process and all of its descendants.
+///
+/// On Unix, we use the process group created at spawn time (via `process_group(0)`),
+/// sending SIGKILL to the entire group so that grandchildren like `cargo`, `rustc`,
+/// or a compiled binary are all terminated.
+///
+/// On non-Unix platforms we fall back to killing only the immediate child.
+fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        // The child's PID is also its PGID because we called process_group(0) at spawn.
+        // A negative PID in kill(2) targets the entire process group.
+        let pgid = child.id() as libc::pid_t;
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+}
+
+/// Async git worktree removal: spawns a background thread and polls the result.
+struct PendingWorktreeRemoval {
+    session_id: SessionId,
+    rx: std::sync::mpsc::Receiver<Result<(), String>>,
+}
+
+impl PendingWorktreeRemoval {
+    fn spawn(session_id: SessionId, cwd: std::path::PathBuf) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(worktree::remove_git_worktree(&cwd));
+        });
+        Self { session_id, rx }
+    }
+}
 
 /// Info captured from a session before deletion, for publishing a "deleted" state event.
 struct DeletedSessionInfo {
@@ -521,12 +581,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_perm_responses: Vec::new(),
             pending_mode_commands: Vec::new(),
             pending_deletions: Vec::new(),
+            pending_worktree_removals: Vec::new(),
             pending_summaries: Vec::new(),
             hostname,
             pns_relay_url,
             neg_sync: enostr::negentropy::NegentropySync::new(),
             neg_sync_round: 0,
             settings_serializer,
+            run_processes: HashMap::new(),
+            running_session_ids: HashMap::new(),
+            run_configs: HashMap::new(),
+            pending_reap: Vec::new(),
+            run_config_sub: None,
         }
     }
 
@@ -621,7 +687,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             session.chat.push(Message::ToolCalls(vec![present]));
 
             session.chat.push(Message::User(
-                "Summarize this thread concisely.".to_string(),
+                "Summarize this thread concisely.".to_string().into(),
             ));
             session.update_title_from_last_message();
         }
@@ -670,6 +736,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let Some(session) = self.session_manager.get_mut(session_id) else {
                     break;
                 };
+
+                // Track when we last received any backend message (for stall detection)
+                session.last_backend_msg = Some(std::time::Instant::now());
 
                 // Determine the live event to publish for this response.
                 // Centralised here so every response type that needs relay
@@ -765,6 +834,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     DaveApiResponse::CompactionComplete(info) => {
                         handle_compaction_complete(session, session_id, info);
                     }
+                    DaveApiResponse::UsageUpdate(info) => {
+                        handle_usage_update(session, info);
+                    }
                     DaveApiResponse::QueryComplete(info) => {
                         handle_query_complete(session, info);
                     }
@@ -786,9 +858,63 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
                 _ => {
-                    // Channel still open, put receiver back
+                    // Channel still open — defense-in-depth stall detection.
+                    // The backends themselves have proper timeouts on their
+                    // async operations, so this should rarely fire. It exists
+                    // as a safety net in case a backend hangs in an unforeseen
+                    // way (e.g. a new code path without a timeout).
                     if let Some(session) = self.session_manager.get_mut(session_id) {
-                        session.incoming_tokens = Some(recvr);
+                        const STALL_TIMEOUT: std::time::Duration =
+                            std::time::Duration::from_secs(300);
+
+                        // Skip stall detection during compaction — the backend
+                        // can be legitimately silent for a long time while the
+                        // LLM provider compacts the context window.
+                        let is_compacting =
+                            session.agentic.as_ref().is_some_and(|a| a.is_compacting);
+
+                        let stalled = !is_compacting
+                            && session
+                                .last_backend_msg
+                                .is_some_and(|t| t.elapsed() > STALL_TIMEOUT);
+
+                        if stalled {
+                            let elapsed = session
+                                .last_backend_msg
+                                .map(|t| t.elapsed().as_secs())
+                                .unwrap_or(0);
+                            tracing::error!(
+                                "Session {}: backend stalled for {}s (safety net), aborting",
+                                session_id,
+                                elapsed
+                            );
+                            if let Some(handle) = session.task_handle.take() {
+                                handle.abort();
+                            }
+                            // Clean up the backend's session actor so the next
+                            // send_user_message_for() creates a fresh connection
+                            // instead of sending commands to a dead actor.
+                            let backend_type = session.backend_type;
+                            let backend_session_id = format!("dave-session-{}", session_id);
+                            get_backend(&self.backends, backend_type)
+                                .cleanup_session(backend_session_id);
+                            drop(recvr);
+                            handle_stream_end(
+                                session,
+                                session_id,
+                                &secret_key,
+                                app_ctx.ndb,
+                                &mut events_to_publish,
+                                &mut needs_send,
+                            );
+                            if !matches!(session.chat.last(), Some(Message::Error(_))) {
+                                session.chat.push(Message::Error(
+                                    "Backend timed out (no response for 5 minutes)".into(),
+                                ));
+                            }
+                        } else {
+                            session.incoming_tokens = Some(recvr);
+                        }
                     }
                 }
             }
@@ -917,6 +1043,73 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 return DaveResponse::default();
             }
+            DaveOverlay::WorktreeCreator(mut creator) => {
+                match ui::worktree_creator_overlay_ui(&mut creator, ui, &self.available_backends) {
+                    Some(ui::WorktreeCreatorAction::Created {
+                        worktree_path,
+                        branch,
+                        is_new_branch,
+                        backend_type,
+                    }) => {
+                        match worktree::create_git_worktree(
+                            &creator.from_cwd,
+                            &worktree_path,
+                            &branch,
+                            is_new_branch,
+                        ) {
+                            Ok(()) => {
+                                self.create_session_with_cwd(
+                                    worktree_path,
+                                    backend_type,
+                                    Model::Default,
+                                );
+                            }
+                            Err(msg) => {
+                                creator.error = Some(msg);
+                                self.active_overlay = DaveOverlay::WorktreeCreator(creator);
+                            }
+                        }
+                    }
+                    Some(ui::WorktreeCreatorAction::Cancelled) => { /* overlay closes */ }
+                    None => {
+                        self.active_overlay = DaveOverlay::WorktreeCreator(creator);
+                    }
+                }
+
+                return DaveResponse::default();
+            }
+            DaveOverlay::RunConfigEditor(mut editor) => {
+                match ui::run_config_editor_overlay_ui(&mut editor, ui) {
+                    Some(editor_action) => {
+                        let change = editor_action.process(&mut self.run_configs);
+                        if let ui::RunConfigChange::Deleted { ref config_id, .. } = change {
+                            self.kill_run_config_processes(config_id);
+                        }
+                        if let Some(sk) =
+                            secret_key_bytes(app_ctx.accounts.get_selected_account().keypair())
+                        {
+                            match change {
+                                ui::RunConfigChange::Saved { cwd, config } => {
+                                    self.publish_run_config(&config, &cwd, app_ctx.ndb, &sk);
+                                }
+                                ui::RunConfigChange::Deleted { cwd, config_id } => {
+                                    self.publish_run_config_delete(
+                                        &config_id,
+                                        &cwd,
+                                        app_ctx.ndb,
+                                        &sk,
+                                    );
+                                }
+                                ui::RunConfigChange::None => {}
+                            }
+                        }
+                    }
+                    None => {
+                        self.active_overlay = DaveOverlay::RunConfigEditor(editor);
+                    }
+                }
+                return DaveResponse::default();
+            }
             DaveOverlay::None => {}
         }
 
@@ -940,6 +1133,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
+            &self.run_configs,
+            &self.running_session_ids,
             app_ctx,
             ui,
         );
@@ -977,6 +1172,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
+            &self.run_configs,
+            &self.running_session_ids,
             app_ctx,
             ui,
         );
@@ -1013,6 +1210,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::Reset(id) => {
                     self.clear_session(id);
                 }
+                SessionListAction::NewWorktree(session_id) => {
+                    if let Some((cwd, backend_type)) = self
+                        .session_manager
+                        .get(session_id)
+                        .and_then(|s| s.cwd().cloned().map(|c| (c, s.backend_type)))
+                    {
+                        self.active_overlay = DaveOverlay::WorktreeCreator(Box::new(
+                            ui::WorktreeCreator::new(session_id, cwd, backend_type),
+                        ));
+                    }
+                }
+                SessionListAction::DeleteWorktree(session_id) => {
+                    if let Some(cwd) = self
+                        .session_manager
+                        .get(session_id)
+                        .and_then(|s| s.cwd().cloned())
+                    {
+                        self.pending_worktree_removals
+                            .push(PendingWorktreeRemoval::spawn(session_id, cwd));
+                    }
+                }
             }
         }
 
@@ -1028,6 +1246,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
+            &self.run_configs,
+            &self.running_session_ids,
             self.show_session_list,
             app_ctx,
             ui,
@@ -1066,6 +1286,28 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::Reset(id) => {
                     self.clear_session(id);
                     self.show_session_list = false;
+                }
+                SessionListAction::NewWorktree(session_id) => {
+                    if let Some((cwd, backend_type)) = self
+                        .session_manager
+                        .get(session_id)
+                        .and_then(|s| s.cwd().cloned().map(|c| (c, s.backend_type)))
+                    {
+                        self.active_overlay = DaveOverlay::WorktreeCreator(Box::new(
+                            ui::WorktreeCreator::new(session_id, cwd, backend_type),
+                        ));
+                        self.show_session_list = false;
+                    }
+                }
+                SessionListAction::DeleteWorktree(session_id) => {
+                    if let Some(cwd) = self
+                        .session_manager
+                        .get(session_id)
+                        .and_then(|s| s.cwd().cloned())
+                    {
+                        self.pending_worktree_removals
+                            .push(PendingWorktreeRemoval::spawn(session_id, cwd));
+                    }
                 }
             }
         }
@@ -1360,6 +1602,32 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Publish "deleted" state events for sessions that were deleted.
     /// Called in the update loop where AppContext is available.
+    fn poll_pending_worktree_removal(&mut self) {
+        let mut completed = Vec::new();
+        self.pending_worktree_removals
+            .retain(|p| match p.rx.try_recv() {
+                Ok(r) => {
+                    completed.push((p.session_id, Ok(r)));
+                    false
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    completed.push((
+                        p.session_id,
+                        Err("worktree removal thread disconnected".to_string()),
+                    ));
+                    false
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => true,
+            });
+
+        for (session_id, result) in completed {
+            match result {
+                Ok(Ok(())) => self.delete_session(session_id),
+                Ok(Err(msg)) | Err(msg) => tracing::error!("failed to remove worktree: {msg}"),
+            }
+        }
+    }
+
     fn publish_pending_deletions(&mut self, ctx: &mut AppContext<'_>) {
         if self.pending_deletions.is_empty() {
             return;
@@ -2027,6 +2295,14 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn delete_session(&mut self, id: SessionId) {
+        // Kill any running app processes for this session to avoid orphans
+        if let Some(mut procs) = self.run_processes.remove(&id) {
+            for (_, mut child) in procs.drain() {
+                kill_process_tree(&mut child);
+                self.pending_reap.push(child);
+            }
+        }
+
         // Capture session info before deletion so we can publish a "deleted" state event
         if let Some(session) = self.session_manager.get(id) {
             if let Some(agentic) = &session.agentic {
@@ -2078,6 +2354,173 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Returns true if an interrupt is pending confirmation
     pub fn is_interrupt_pending(&self) -> bool {
         self.interrupt_pending_since.is_some()
+    }
+
+    /// Reap finished run processes and update `self.running_session_ids` in one pass.
+    /// Called once per frame from `update()`.
+    fn reap_run_processes(&mut self) {
+        let mut still_running: HashMap<SessionId, HashSet<String>> = HashMap::new();
+        for (session_id, procs) in self.run_processes.iter_mut() {
+            procs.retain(|cfg_id, child| match child.try_wait() {
+                Ok(None) => {
+                    still_running
+                        .entry(*session_id)
+                        .or_default()
+                        .insert(cfg_id.clone());
+                    true
+                }
+                Ok(Some(status)) => {
+                    tracing::trace!(
+                        "run process [{cfg_id}] for session {session_id} exited: {status}"
+                    );
+                    false
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "run process [{cfg_id}] for session {session_id} try_wait error: {e}"
+                    );
+                    false
+                }
+            });
+        }
+        self.run_processes.retain(|_, procs| !procs.is_empty());
+        self.running_session_ids = still_running;
+    }
+
+    /// Reap killed child processes without blocking; removes entries that have exited.
+    fn poll_pending_reap(&mut self) {
+        self.pending_reap
+            .retain_mut(|child| child.try_wait().ok().flatten().is_none());
+    }
+
+    /// Poll ndb for new kind-31991 run-config events and upsert into `self.run_configs`.
+    ///
+    /// Each event is one config (d-tag = config UUID). Live events may be
+    /// upserts (name/command changed) or tombstones (deleted tag present).
+    fn poll_run_config_events(&mut self, ndb: &nostrdb::Ndb) {
+        let Some(sub) = self.run_config_sub else {
+            return;
+        };
+        let note_keys = ndb.poll_for_notes(sub, 1);
+        if note_keys.is_empty() {
+            return;
+        }
+        let Ok(txn) = nostrdb::Transaction::new(ndb) else {
+            return;
+        };
+        for key in note_keys {
+            let Ok(note) = ndb.get_note_by_key(&txn, key) else {
+                continue;
+            };
+            if note.kind() != crate::config::AI_RUN_CONFIG_KIND {
+                continue;
+            }
+            if session_events::get_tag_value(&note, "hostname") != Some(self.hostname.as_str()) {
+                continue;
+            }
+            if session_events::is_run_config_deleted(&note) {
+                // Tombstone: remove config by d-tag ID, only if newer
+                let ts = note.created_at();
+                if let Some(config_id) = session_events::run_config_event_id(&note) {
+                    let mut removed = false;
+                    for configs in self.run_configs.values_mut() {
+                        let before = configs.len();
+                        configs.retain(|c| c.id != config_id || c.updated_at > ts);
+                        if configs.len() < before {
+                            removed = true;
+                        }
+                    }
+                    if removed {
+                        self.kill_run_config_processes(&config_id);
+                    }
+                    self.run_configs.retain(|_, v| !v.is_empty());
+                }
+            } else if let Some((cwd, config)) = session_events::parse_run_config_event(&note) {
+                // Upsert: update existing or insert new, only if newer
+                let configs = self.run_configs.entry(cwd).or_default();
+                if let Some(existing) = configs.iter_mut().find(|c| c.id == config.id) {
+                    if config.updated_at >= existing.updated_at {
+                        existing.name = config.name;
+                        existing.command = config.command;
+                        existing.updated_at = config.updated_at;
+                    }
+                } else {
+                    configs.push(config);
+                }
+                RunConfig::sort_by_name(configs);
+            }
+        }
+    }
+
+    /// Kill a running process for the given session and config ID.
+    fn kill_run_process(&mut self, session_id: &SessionId, config_id: &str) {
+        if let Some(procs) = self.run_processes.get_mut(session_id) {
+            if let Some(mut child) = procs.remove(config_id) {
+                kill_process_tree(&mut child);
+                self.pending_reap.push(child);
+            }
+            if procs.is_empty() {
+                self.run_processes.remove(session_id);
+            }
+        }
+        if let Some(ids) = self.running_session_ids.get_mut(session_id) {
+            ids.remove(config_id);
+            if ids.is_empty() {
+                self.running_session_ids.remove(session_id);
+            }
+        }
+    }
+
+    /// Kill all running processes for a given config ID across all sessions.
+    fn kill_run_config_processes(&mut self, config_id: &str) {
+        let session_ids: Vec<_> = self.run_processes.keys().copied().collect();
+        for sid in session_ids {
+            self.kill_run_process(&sid, config_id);
+        }
+    }
+
+    /// Build and queue a kind-31991 event for a single run config.
+    fn publish_run_config(
+        &mut self,
+        config: &RunConfig,
+        cwd: &std::path::Path,
+        ndb: &nostrdb::Ndb,
+        sk: &[u8; 32],
+    ) {
+        queue_built_event(
+            session_events::build_run_config_event(
+                config,
+                &cwd.to_string_lossy(),
+                &self.hostname,
+                sk,
+            ),
+            "run-config",
+            ndb,
+            sk,
+            &mut self.pending_relay_events,
+        );
+    }
+
+    /// Build and queue a tombstone kind-31991 event to delete a config.
+    fn publish_run_config_delete(
+        &mut self,
+        config_id: &str,
+        cwd: &std::path::Path,
+        ndb: &nostrdb::Ndb,
+        sk: &[u8; 32],
+    ) {
+        queue_built_event(
+            session_events::build_run_config_delete_event(
+                config_id,
+                &cwd.to_string_lossy(),
+                &self.hostname,
+                sk,
+            ),
+            "run-config-delete",
+            ndb,
+            sk,
+            &mut self.pending_relay_events,
+        );
     }
 
     /// If only one agentic backend is available, return it. Otherwise None
@@ -2292,6 +2735,94 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return None;
         }
 
+        // Intercept run-app actions — handled here, not in ui::handle_ui_action
+        if let DaveAction::Run(run_action) = action {
+            use ui::RunAction;
+            match run_action {
+                RunAction::Launch { config_id } => {
+                    if let Some(session) = self.session_manager.get_active() {
+                        let session_id = session.id;
+                        let cwd = session.cwd().cloned();
+                        let cmd = cwd
+                            .as_deref()
+                            .and_then(|p| self.run_configs.get(p))
+                            .and_then(|cfgs| cfgs.iter().find(|rc| rc.id == config_id))
+                            .map(|rc| rc.command.clone());
+                        match (cwd, cmd) {
+                            (Some(cwd), Some(cmd)) => {
+                                tracing::trace!(
+                                    "RunAction::Launch: spawning `{cmd}` in {}",
+                                    cwd.display()
+                                );
+                                #[cfg(unix)]
+                                let mut command = std::process::Command::new("sh");
+                                #[cfg(windows)]
+                                let mut command = std::process::Command::new("cmd");
+                                #[cfg(unix)]
+                                command.arg("-c").arg(&cmd);
+                                #[cfg(windows)]
+                                command.arg("/C").arg(&cmd);
+                                command
+                                    .current_dir(&cwd)
+                                    .stdin(std::process::Stdio::null())
+                                    .stdout(std::process::Stdio::inherit())
+                                    .stderr(std::process::Stdio::inherit());
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::process::CommandExt;
+                                    command.process_group(0);
+                                }
+                                match command.spawn() {
+                                    Ok(child) => {
+                                        tracing::info!(
+                                            "RunAction::Launch: spawned pid {}",
+                                            child.id()
+                                        );
+                                        self.run_processes
+                                            .entry(session_id)
+                                            .or_default()
+                                            .insert(config_id, child);
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("failed to spawn run command `{cmd}`: {e}");
+                                    }
+                                }
+                            }
+                            (cwd, cmd) => {
+                                tracing::warn!(
+                                    "RunAction::Launch: missing cwd or command (cwd={:?}, has_cmd={})",
+                                    cwd,
+                                    cmd.is_some()
+                                );
+                            }
+                        }
+                    }
+                }
+                RunAction::Stop { config_id } => {
+                    if let Some(session_id) = self.session_manager.active_id() {
+                        self.kill_run_process(&session_id, &config_id);
+                    }
+                }
+                RunAction::OpenNew { cwd } => {
+                    self.active_overlay =
+                        DaveOverlay::RunConfigEditor(Box::new(RunConfigEditor::new_config(cwd)));
+                }
+                RunAction::OpenEdit { cwd, config_id } => {
+                    let existing = self
+                        .run_configs
+                        .get(&cwd)
+                        .and_then(|cfgs| cfgs.iter().find(|c| c.id == config_id))
+                        .cloned();
+                    if let Some(config) = existing {
+                        self.active_overlay = DaveOverlay::RunConfigEditor(Box::new(
+                            RunConfigEditor::edit_config(cwd, config),
+                        ));
+                    }
+                }
+            }
+            return None;
+        }
+
         let bt = self
             .session_manager
             .get_active()
@@ -2356,6 +2887,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         tracing::info!("Compact dispatched for session {}", session_id);
                         if let Some(session) = self.session_manager.get_active_mut() {
                             session.incoming_tokens = Some(rx);
+                            session.last_backend_msg = Some(std::time::Instant::now());
                         }
                     } else {
                         tracing::warn!("Compact failed: no backend session for {}", session_id);
@@ -2411,7 +2943,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             }
 
-            session.chat.push(Message::User(user_text));
+            let images = std::mem::take(&mut session.pending_images);
+            session
+                .chat
+                .push(Message::User(UserMessage::new(user_text, images)));
             session.update_title_from_last_message();
 
             // Remote sessions: publish user message to relay but don't send to local backend
@@ -2481,6 +3016,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             ctx,
         );
         session.incoming_tokens = Some(rx);
+        session.last_backend_msg = Some(std::time::Instant::now());
         session.task_handle = task_handle;
     }
 
@@ -2753,6 +3289,36 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     tracing::warn!("failed to subscribe for session command events: {:?}", e);
                 }
             }
+
+            // Load existing run configs from ndb (kind-31991) and subscribe for updates.
+            // Each config carries its own stable UUID (the d-tag); no runtime ID generation needed.
+            let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
+            self.run_configs =
+                session_loader::load_run_configs_from_ndb(ctx.ndb, &txn, &self.hostname);
+            tracing::info!("loaded {} run config CWDs from ndb", self.run_configs.len());
+
+            let rc_filter = nostrdb::Filter::new()
+                .kinds([crate::config::AI_RUN_CONFIG_KIND as u64])
+                .build();
+            match ctx.ndb.subscribe(&[rc_filter]) {
+                Ok(sub) => {
+                    self.run_config_sub = Some(sub);
+                    tracing::info!("subscribed for run config events in ndb");
+                }
+                Err(e) => {
+                    tracing::warn!("failed to subscribe for run config events: {:?}", e);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Dave {
+    fn drop(&mut self) {
+        for procs in self.run_processes.values_mut() {
+            for child in procs.values_mut() {
+                kill_process_tree(child);
+            }
         }
     }
 }
@@ -2780,11 +3346,17 @@ impl notedeck::App for Dave {
         // Poll for external editor completion
         update::poll_editor_job(&mut self.session_manager);
 
+        // Reap killed child processes without blocking the frame
+        self.poll_pending_reap();
+
         // Poll for new session states from PNS-unwrapped relay events
         self.poll_session_state_events(ctx);
 
         // Poll for spawn commands targeting this host
         self.poll_session_command_events(ctx);
+
+        // Poll for live run-config updates from PNS relay
+        self.poll_run_config_events(ctx.ndb);
 
         // Poll for live conversation events on all sessions.
         // Returns user messages from remote clients that need backend dispatch.
@@ -2901,6 +3473,14 @@ impl notedeck::App for Dave {
 
         // Publish kind-31988 state events for sessions whose status changed
         self.publish_dirty_session_states(ctx);
+
+        // Reap finished run processes and compute the set of still-running
+        // session IDs in a single pass. The cached set is read by the UI layer
+        // so we avoid redundant try_wait() syscalls during rendering.
+        self.reap_run_processes();
+
+        // Complete async worktree removal and delete session on success
+        self.poll_pending_worktree_removal();
 
         // Publish "deleted" state events for recently deleted sessions
         self.publish_pending_deletions(ctx);
@@ -3218,7 +3798,7 @@ pub(crate) fn process_conversation_notes<'a>(
         if !is_remote {
             if role == Some("user") {
                 tracing::info!("received remote user message for local session");
-                session.chat.push(Message::User(content.to_string()));
+                session.chat.push(Message::User(content.to_string().into()));
                 session.update_title_from_last_message();
                 remote_user_messages.push((session_id, content.to_string()));
             }
@@ -3231,7 +3811,7 @@ pub(crate) fn process_conversation_notes<'a>(
 
         match role {
             Some("user") => {
-                session.chat.push(Message::User(content.to_string()));
+                session.chat.push(Message::User(content.to_string().into()));
             }
             Some("assistant") => {
                 session.chat.push(Message::Assistant(
@@ -3543,11 +4123,22 @@ fn handle_compaction_complete(
     session.chat.push(Message::CompactionComplete(info));
 }
 
-/// Handle query completion (usage metrics) from the AI backend.
-fn handle_query_complete(session: &mut session::ChatSession, info: messages::UsageInfo) {
+/// Handle a per-turn usage update from an AssistantMessage.
+/// This gives the accurate current context window snapshot since it reflects
+/// a single API call's token counts (not the cumulative session total).
+fn handle_usage_update(session: &mut session::ChatSession, info: messages::UsageInfo) {
     if let Some(agentic) = &mut session.agentic {
         agentic.usage.input_tokens = info.input_tokens;
+        agentic.usage.cache_creation_input_tokens = info.cache_creation_input_tokens;
+        agentic.usage.cache_read_input_tokens = info.cache_read_input_tokens;
         agentic.usage.output_tokens = info.output_tokens;
+    }
+}
+
+/// Handle query completion (usage metrics) from the AI backend.
+/// Updates cost and turn count from the final Result message.
+fn handle_query_complete(session: &mut session::ChatSession, info: messages::UsageInfo) {
+    if let Some(agentic) = &mut session.agentic {
         agentic.usage.num_turns = info.num_turns;
         if let Some(cost) = info.cost_usd {
             agentic.usage.cost_usd = Some(cost);
@@ -3604,6 +4195,7 @@ fn handle_stream_end(
     }
 
     session.task_handle = None;
+    session.last_backend_msg = None;
 
     // If the backend returned nothing (dispatch_state never left
     // AwaitingResponse), show an error so the user isn't left staring

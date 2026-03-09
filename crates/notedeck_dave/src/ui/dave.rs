@@ -3,6 +3,7 @@ use super::diff;
 use super::git_status_ui;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
+use super::run_ui;
 use super::top_buttons::top_buttons_ui;
 use crate::{
     backend::BackendType,
@@ -11,8 +12,8 @@ use crate::{
     focus_queue::FocusPriority,
     git_status::GitStatusCache,
     messages::{
-        AskUserQuestionInput, AssistantMessage, CompactionInfo, ExecutedTool, Message,
-        PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
+        AskUserQuestionInput, AssistantMessage, CompactionInfo, ExecutedTool, ImageAttachment,
+        Message, PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
         SubagentInfo, SubagentStatus,
     },
     session::{PermissionMessageState, SessionDetails, SessionId},
@@ -79,6 +80,12 @@ pub struct DaveUi<'a> {
     last_activity: Option<std::time::Instant>,
     /// Focus queue info for mobile NEXT badge: (position, total, priority)
     focus_queue_info: Option<(usize, usize, FocusPriority)>,
+    /// Named run configs for this session's CWD
+    run_configs: &'a [crate::config::RunConfig],
+    /// IDs of configs currently running for this session
+    running_config_ids: Option<&'a std::collections::HashSet<String>>,
+    /// Pending image attachments staged for the next send
+    pending_images: Option<&'a mut Vec<ImageAttachment>>,
 }
 
 /// The response the app generates. The response contains an optional
@@ -113,6 +120,22 @@ impl DaveResponse {
     fn none() -> Self {
         DaveResponse::default()
     }
+}
+
+/// All actions related to run configurations and process control.
+#[derive(Debug)]
+pub enum RunAction {
+    /// Launch the config with this stable UUID
+    Launch { config_id: String },
+    /// Stop the running process for the config with this stable UUID
+    Stop { config_id: String },
+    /// Open the editor to create a new config for the given CWD
+    OpenNew { cwd: std::path::PathBuf },
+    /// Open the editor to edit an existing config by its stable UUID
+    OpenEdit {
+        cwd: std::path::PathBuf,
+        config_id: String,
+    },
 }
 
 /// The actions the app generates. No default action is specfied in the
@@ -170,6 +193,8 @@ pub enum DaveAction {
     Compact,
     /// Navigate to the next focus queue item (mobile)
     FocusQueueNext,
+    /// All run-config and process-control actions
+    Run(RunAction),
 }
 
 impl<'a> DaveUi<'a> {
@@ -206,7 +231,15 @@ impl<'a> DaveUi<'a> {
             permission_mode: PermissionMode::Default,
             last_activity: None,
             focus_queue_info: None,
+            run_configs: &[],
+            running_config_ids: None,
+            pending_images: None,
         }
+    }
+
+    pub fn pending_images(mut self, images: &'a mut Vec<ImageAttachment>) -> Self {
+        self.pending_images = Some(images);
+        self
     }
 
     pub fn last_activity(mut self, instant: Option<std::time::Instant>) -> Self {
@@ -301,6 +334,19 @@ impl<'a> DaveUi<'a> {
         self
     }
 
+    pub fn run_configs(mut self, configs: &'a [crate::config::RunConfig]) -> Self {
+        self.run_configs = configs;
+        self
+    }
+
+    pub fn running_config_ids(
+        mut self,
+        ids: Option<&'a std::collections::HashSet<String>>,
+    ) -> Self {
+        self.running_config_ids = ids;
+        self
+    }
+
     pub fn usage(mut self, usage: &'a crate::messages::UsageInfo, model: Option<&str>) -> Self {
         self.usage = Some(usage);
         self.context_window = crate::messages::context_window_for_model(model);
@@ -340,17 +386,27 @@ impl<'a> DaveUi<'a> {
 
             // Render session details inline, to the right of the buttons
             if let Some(details) = self.details {
-                let available_width = ui.available_width();
-                let max_width = available_width - result.right_edge_x;
+                let max_width = ui.max_rect().right() - result.right_edge_x;
                 if max_width > 50.0 {
                     let details_rect = egui::Rect::from_min_size(
                         egui::pos2(result.right_edge_x, result.y),
                         egui::vec2(max_width, 32.0),
                     );
-                    ui.allocate_new_ui(egui::UiBuilder::new().max_rect(details_rect), |ui| {
-                        ui.set_clip_rect(details_rect);
-                        session_header_ui(ui, details, self.backend_type);
-                    });
+                    let truncation = ui
+                        .allocate_new_ui(egui::UiBuilder::new().max_rect(details_rect), |ui| {
+                            ui.set_clip_rect(details_rect);
+                            session_header_ui(ui, details, self.backend_type)
+                        })
+                        .inner;
+
+                    if let Some(cwd) = &truncation.full {
+                        let hover_resp = ui.interact(
+                            details_rect,
+                            egui::Id::new("session_header_hover"),
+                            egui::Sense::hover(),
+                        );
+                        hover_resp.on_hover_text_at_pointer(cwd);
+                    }
                 }
             }
 
@@ -377,15 +433,11 @@ impl<'a> DaveUi<'a> {
                         .inner;
 
                     {
-                        let permission_mode = self.permission_mode;
-                        let auto_steal_focus = self.flags.contains(DaveUiFlags::AutoStealFocus);
-                        let is_agentic = self.ai_mode == AiMode::Agentic;
                         let has_git = self.git_status.is_some();
+                        let is_agentic = self.ai_mode == AiMode::Agentic;
 
                         // Show status bar when there's git status or badges to display
                         if has_git || is_agentic {
-                            // Explicitly reserve height so bottom_up layout
-                            // keeps the chat ScrollArea from overlapping.
                             let h = if self.git_status.as_ref().is_some_and(|gs| gs.expanded) {
                                 200.0
                             } else {
@@ -401,20 +453,7 @@ impl<'a> DaveUi<'a> {
                                             top: 4,
                                             bottom: 0,
                                         })
-                                        .show(ui, |ui| {
-                                            status_bar_ui(
-                                                self.git_status.as_deref_mut(),
-                                                is_agentic,
-                                                permission_mode,
-                                                auto_steal_focus,
-                                                self.focus_queue_info,
-                                                self.usage,
-                                                self.context_window,
-                                                self.last_activity,
-                                                self.chat.len(),
-                                                ui,
-                                            )
-                                        })
+                                        .show(ui, |ui| self.status_bar_ui(ui))
                                         .inner
                                 })
                                 .inner;
@@ -1244,128 +1283,168 @@ impl<'a> DaveUi<'a> {
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let i18n = &mut *app_ctx.i18n;
-        // Constrain input height based on line count (min 1, max 8 lines)
+        // Text input row first — in the inherited bottom_up layout this sits at the bottom.
+        // Inner layout overrides (horizontal + right_to_left) keep the text row correct.
         let line_count = self.input.lines().count().max(1).clamp(1, 8);
         let line_height = 20.0;
         let base_height = 44.0;
         let input_height = base_height + (line_count as f32 * line_height);
-        ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let mut dave_response = DaveResponse::none();
+        let response = ui
+            .allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                        let mut dave_response = DaveResponse::none();
 
-                    // Always show Ask button (messages queue while working)
-                    if ui
-                        .add(
-                            egui::Button::new(tr!(
-                                i18n,
-                                "Ask",
-                                "Button to send message to Dave AI assistant"
-                            ))
-                            .min_size(egui::vec2(60.0, 44.0)),
-                        )
-                        .clicked()
-                    {
-                        dave_response = DaveResponse::send();
-                    }
-
-                    // Show Stop button alongside Ask for local working sessions
-                    if self.flags.contains(DaveUiFlags::IsWorking)
-                        && !self.flags.contains(DaveUiFlags::IsRemote)
-                    {
+                        // Always show Ask button (messages queue while working)
                         if ui
                             .add(
                                 egui::Button::new(tr!(
                                     i18n,
-                                    "Stop",
-                                    "Button to interrupt/stop the AI operation"
+                                    "Ask",
+                                    "Button to send message to Dave AI assistant"
                                 ))
                                 .min_size(egui::vec2(60.0, 44.0)),
                             )
                             .clicked()
                         {
-                            dave_response = DaveResponse::new(DaveAction::Interrupt);
+                            dave_response = DaveResponse::send();
                         }
 
-                        // Show "Press Esc again" indicator when interrupt is pending
-                        if self.flags.contains(DaveUiFlags::InterruptPending) {
-                            ui.label(
-                                egui::RichText::new("Press Esc again to stop")
-                                    .color(ui.visuals().warn_fg_color),
-                            );
+                        // Show Stop button alongside Ask for local working sessions
+                        if self.flags.contains(DaveUiFlags::IsWorking)
+                            && !self.flags.contains(DaveUiFlags::IsRemote)
+                        {
+                            if ui
+                                .add(
+                                    egui::Button::new(tr!(
+                                        i18n,
+                                        "Stop",
+                                        "Button to interrupt/stop the AI operation"
+                                    ))
+                                    .min_size(egui::vec2(60.0, 44.0)),
+                                )
+                                .clicked()
+                            {
+                                dave_response = DaveResponse::new(DaveAction::Interrupt);
+                            }
+
+                            // Show "Press Esc again" indicator when interrupt is pending
+                            if self.flags.contains(DaveUiFlags::InterruptPending) {
+                                ui.label(
+                                    egui::RichText::new("Press Esc again to stop")
+                                        .color(ui.visuals().warn_fg_color),
+                                );
+                            }
                         }
-                    }
 
-                    let r = ui.add(
-                        egui::TextEdit::multiline(self.input)
-                            .desired_width(f32::INFINITY)
-                            .return_key(KeyboardShortcut::new(
-                                Modifiers {
-                                    shift: true,
-                                    ..Default::default()
-                                },
-                                Key::Enter,
-                            ))
-                            .hint_text(
-                                egui::RichText::new(tr!(
-                                    i18n,
-                                    "Ask dave anything...",
-                                    "Placeholder text for Dave AI input field"
-                                ))
-                                .weak(),
-                            )
-                            .frame(false),
-                    );
-                    notedeck_ui::context_menu::input_context(
-                        ui,
-                        &r,
-                        app_ctx.clipboard,
-                        self.input,
-                        notedeck_ui::context_menu::PasteBehavior::Append,
-                    );
+                        let r = egui::ScrollArea::vertical()
+                            .max_height(ui.available_height())
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(self.input)
+                                        .id_source(("dave_input", self.session_id))
+                                        .desired_width(f32::INFINITY)
+                                        .return_key(KeyboardShortcut::new(
+                                            Modifiers {
+                                                shift: true,
+                                                ..Default::default()
+                                            },
+                                            Key::Enter,
+                                        ))
+                                        .hint_text(
+                                            egui::RichText::new(tr!(
+                                                i18n,
+                                                "Ask dave anything...",
+                                                "Placeholder text for Dave AI input field"
+                                            ))
+                                            .weak(),
+                                        )
+                                        .frame(false),
+                                )
+                            })
+                            .inner;
+                        dave_input_context(
+                            ui,
+                            &r,
+                            app_ctx.clipboard,
+                            self.input,
+                            self.pending_images.as_deref_mut(),
+                        );
 
-                    // Request focus if flagged (e.g., after spawning a new agent or entering tentative state).
-                    // Skip on mobile to avoid popping up the virtual keyboard on every session switch.
-                    if *self.focus_requested {
-                        if !notedeck::ui::is_compiled_as_mobile() {
-                            r.request_focus();
+                        // Request focus if flagged (e.g., after spawning a new agent or entering tentative state).
+                        // Skip on mobile to avoid popping up the virtual keyboard on every session switch.
+                        if *self.focus_requested {
+                            if !notedeck::ui::is_compiled_as_mobile() {
+                                r.request_focus();
+                            }
+                            *self.focus_requested = false;
                         }
-                        *self.focus_requested = false;
-                    }
 
-                    // Unfocus text input when there's a pending permission request
-                    // UNLESS we're in tentative state (user needs to type message)
-                    let in_tentative_state =
-                        self.permission_message_state != PermissionMessageState::None;
-                    if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
-                        r.surrender_focus();
-                    }
+                        // Unfocus text input when there's a pending permission request
+                        // UNLESS we're in tentative state (user needs to type message)
+                        let in_tentative_state =
+                            self.permission_message_state != PermissionMessageState::None;
+                        if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
+                            r.surrender_focus();
+                        }
 
-                    if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        DaveResponse::send()
-                    } else {
-                        dave_response
-                    }
+                        if r.has_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
+                        {
+                            DaveResponse::send()
+                        } else {
+                            dave_response
+                        }
+                    })
+                    .inner
                 })
                 .inner
             })
-            .inner
-        })
-        .inner
+            .inner;
+
+        // Thumbnail strip second — in bottom_up this renders ABOVE the text row.
+        // allocate_ui_with_layout pre-positions the rect at the bottom_up cursor
+        // (unlike with_layout which takes the full available rect) and forces
+        // top_down so image_thumbnail_strip's internal widgets render correctly.
+        if let Some(pending) = &mut self.pending_images {
+            if !pending.is_empty() {
+                // Height must closely match content: in bottom_up, next_space
+                // reserves this much vertical room above the text row.
+                let strip_height = THUMBNAIL_SIZE + ui.spacing().item_spacing.y;
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), strip_height),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        image_thumbnail_strip(pending, ui);
+                    },
+                );
+            }
+        }
+
+        response
     }
 
-    fn user_chat(&self, msg: &str, is_queued: bool, ui: &mut egui::Ui) {
+    fn user_chat(&self, msg: &crate::messages::UserMessage, is_queued: bool, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             let r = egui::Frame::new()
                 .inner_margin(10.0)
                 .corner_radius(10.0)
                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                 .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(msg)
-                            .wrap_mode(egui::TextWrapMode::Wrap)
-                            .selectable(true),
-                    );
+                    for img in &msg.images {
+                        ui.add(
+                            egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
+                                .max_size(egui::vec2(200.0, 200.0))
+                                .corner_radius(4.0),
+                        );
+                    }
+                    if !msg.text.is_empty() {
+                        ui.add(
+                            egui::Label::new(&msg.text)
+                                .wrap_mode(egui::TextWrapMode::Wrap)
+                                .selectable(true),
+                        );
+                    }
                     if is_queued {
                         ui.label(
                             egui::RichText::new("queued")
@@ -1376,7 +1455,7 @@ impl<'a> DaveUi<'a> {
                 });
             notedeck_ui::context_menu::context_menu(&r.response, |ui| {
                 if ui.button("Copy").clicked() {
-                    ui.ctx().copy_text(msg.to_owned());
+                    ui.ctx().copy_text(msg.text.clone());
                     ui.close_menu();
                 }
             });
@@ -1397,6 +1476,130 @@ impl<'a> DaveUi<'a> {
                 ui.close_menu();
             }
         });
+    }
+}
+
+/// Paste text into the current input buffer using Dave's append behavior.
+fn append_clipboard_text(clipboard: &mut egui_winit::clipboard::Clipboard, input: &mut String) {
+    if let Some(text) = clipboard.get() {
+        input.push_str(&text);
+    }
+}
+
+/// Dave-specific input context menu that prefers image paste before text paste.
+fn dave_input_context(
+    ui: &mut egui::Ui,
+    response: &egui::Response,
+    clipboard: &mut egui_winit::clipboard::Clipboard,
+    input: &mut String,
+    pending_images: Option<&mut Vec<ImageAttachment>>,
+) {
+    response.context_menu(|ui| {
+        if ui.button("Paste").clicked() {
+            let pasted_image = pending_images.map(try_paste_image).unwrap_or(false);
+            if !pasted_image {
+                append_clipboard_text(clipboard, input);
+            }
+            ui.close_menu();
+        }
+
+        if ui.button("Copy").clicked() {
+            clipboard.set_text(input.to_owned());
+            ui.close_menu();
+        }
+
+        if ui.button("Cut").clicked() {
+            clipboard.set_text(input.to_owned());
+            input.clear();
+            ui.close_menu();
+        }
+    });
+
+    if response.middle_clicked() {
+        append_clipboard_text(clipboard, input);
+    }
+
+    notedeck_ui::include_input(ui, response);
+}
+
+/// Try to paste an image from the clipboard into `pending`.
+/// Returns `true` if an image was staged; `false` if the clipboard had no image.
+fn try_paste_image(pending: &mut Vec<ImageAttachment>) -> bool {
+    let mut clipboard = match arboard::Clipboard::new() {
+        Ok(c) => c,
+        Err(err) => {
+            tracing::debug!("paste_image: clipboard open failed: {}", err);
+            return false;
+        }
+    };
+    let img_data = match clipboard.get_image() {
+        Ok(d) => d,
+        Err(err) => {
+            tracing::debug!("paste_image: no image in clipboard: {}", err);
+            return false;
+        }
+    };
+    let w = img_data.width as u32;
+    let h = img_data.height as u32;
+    tracing::debug!("paste_image: got {}x{} image from clipboard", w, h);
+    let Some(rgba) = image::RgbaImage::from_raw(w, h, img_data.bytes.into_owned()) else {
+        tracing::warn!("paste_image: RgbaImage::from_raw failed (bad dimensions?)");
+        return false;
+    };
+    let mut png_bytes = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut png_bytes);
+    if let Err(err) = rgba.write_to(&mut cursor, image::ImageFormat::Png) {
+        tracing::warn!("paste_image: PNG encode failed: {}", err);
+        return false;
+    }
+    tracing::debug!("paste_image: encoded {} PNG bytes", png_bytes.len());
+    pending.push(ImageAttachment::new(png_bytes, "image/png"));
+    true
+}
+
+const THUMBNAIL_SIZE: f32 = 100.0;
+
+/// Render a horizontal strip of image thumbnails with ✕ remove buttons.
+fn image_thumbnail_strip(pending: &mut Vec<ImageAttachment>, ui: &mut egui::Ui) {
+    if pending.is_empty() {
+        return;
+    }
+
+    let mut remove_idx = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (i, img) in pending.iter().enumerate() {
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(THUMBNAIL_SIZE, THUMBNAIL_SIZE),
+                egui::Sense::hover(),
+            );
+            ui.put(
+                rect,
+                egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
+                    .fit_to_exact_size(egui::vec2(THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+                    .corner_radius(6.0),
+            );
+            // Small × button in the top-right corner
+            let btn_size = 18.0;
+            let btn_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - btn_size - 2.0, rect.top() + 2.0),
+                egui::vec2(btn_size, btn_size),
+            );
+            if ui
+                .put(
+                    btn_rect,
+                    egui::Button::new(egui::RichText::new("×").size(12.0).strong())
+                        .corner_radius(btn_size / 2.0)
+                        .min_size(egui::vec2(btn_size, btn_size)),
+                )
+                .clicked()
+            {
+                remove_idx = Some(i);
+            }
+        }
+    });
+    if let Some(idx) = remove_idx {
+        pending.remove(idx);
     }
 }
 
@@ -1474,100 +1677,79 @@ fn format_relative_time(instant: std::time::Instant) -> String {
     }
 }
 
-/// Renders the status bar containing git status and toggle badges.
-#[allow(clippy::too_many_arguments)]
-fn status_bar_ui(
-    mut git_status: Option<&mut GitStatusCache>,
-    is_agentic: bool,
-    permission_mode: PermissionMode,
-    auto_steal_focus: bool,
-    focus_queue_info: Option<(usize, usize, FocusPriority)>,
-    usage: Option<&crate::messages::UsageInfo>,
-    context_window: u64,
-    last_activity: Option<std::time::Instant>,
-    message_count: usize,
-    ui: &mut egui::Ui,
-) -> Option<DaveAction> {
-    let snapshot = git_status
-        .as_deref()
-        .and_then(git_status_ui::StatusSnapshot::from_cache);
+/// Renders the status bar containing git status, run button, and toggle badges.
+impl DaveUi<'_> {
+    fn status_bar_ui(&mut self, ui: &mut egui::Ui) -> Option<DaveAction> {
+        let is_remote = self.flags.contains(DaveUiFlags::IsRemote);
+        let is_agentic = self.ai_mode == AiMode::Agentic;
+        let cwd = self.details.and_then(|d| d.cwd.as_deref());
 
-    ui.vertical(|ui| {
-        let action = ui
-            .horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
+        let snapshot = self
+            .git_status
+            .as_deref()
+            .and_then(git_status_ui::StatusSnapshot::from_cache);
 
-                if let Some(git_status) = git_status.as_deref_mut() {
-                    git_status_ui::git_status_content_ui(git_status, &snapshot, ui);
+        ui.vertical(|ui| {
+            let bar_action = ui
+                .horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
 
-                    // Right-aligned section: usage bar, badges, then refresh
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let badge_action = if is_agentic {
-                            toggle_badges_ui(
-                                ui,
-                                permission_mode,
-                                auto_steal_focus,
-                                focus_queue_info,
-                            )
-                        } else {
-                            None
-                        };
-                        if is_agentic {
-                            if let Some(instant) = last_activity {
-                                ui.label(
-                                    egui::RichText::new(format_relative_time(instant))
-                                        .size(10.0)
-                                        .color(ui.visuals().weak_text_color()),
-                                );
+                    // Run config buttons — leftmost elements, local sessions only
+                    let mut action = if !is_remote {
+                        let a = cwd.and_then(|p| {
+                            run_ui::run_configs_ui(self.run_configs, self.running_config_ids, p, ui)
+                        });
+                        if cwd.is_some() {
+                            ui.separator();
+                        }
+                        a
+                    } else {
+                        None
+                    };
+
+                    if let Some(gs) = self.git_status.as_deref_mut() {
+                        git_status_ui::git_status_content_ui(gs, &snapshot, ui);
+                    }
+
+                    let right = ui
+                        .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let badge_action = if is_agentic {
+                                toggle_badges_ui(
+                                    ui,
+                                    self.permission_mode,
+                                    self.flags.contains(DaveUiFlags::AutoStealFocus),
+                                    self.focus_queue_info,
+                                )
+                            } else {
+                                None
+                            };
+                            if is_agentic {
+                                if let Some(instant) = self.last_activity {
+                                    ui.label(
+                                        egui::RichText::new(format_relative_time(instant))
+                                            .size(10.0)
+                                            .color(ui.visuals().weak_text_color()),
+                                    );
+                                }
+                                usage_bar_ui(self.usage, self.context_window, ui);
                             }
-                            usage_bar_ui(usage, context_window, ui);
-                            ui.label(
-                                egui::RichText::new(format!("{} msgs", message_count))
-                                    .size(10.0)
-                                    .color(ui.visuals().weak_text_color()),
-                            );
-                        }
-                        badge_action
-                    })
-                    .inner
-                } else if is_agentic {
-                    // No git status (remote session) - just show badges and usage
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let badge_action = toggle_badges_ui(
-                            ui,
-                            permission_mode,
-                            auto_steal_focus,
-                            focus_queue_info,
-                        );
-                        if let Some(instant) = last_activity {
-                            ui.label(
-                                egui::RichText::new(format_relative_time(instant))
-                                    .size(10.0)
-                                    .color(ui.visuals().weak_text_color()),
-                            );
-                        }
-                        usage_bar_ui(usage, context_window, ui);
-                        ui.label(
-                            egui::RichText::new(format!("{} msgs", message_count))
-                                .size(10.0)
-                                .color(ui.visuals().weak_text_color()),
-                        );
-                        badge_action
-                    })
-                    .inner
-                } else {
-                    None
-                }
-            })
-            .inner;
+                            badge_action
+                        })
+                        .inner;
 
-        if let Some(git_status) = git_status.as_deref() {
-            git_status_ui::git_expanded_files_ui(git_status, &snapshot, ui);
-        }
+                    action = action.or(right);
+                    action
+                })
+                .inner;
 
-        action
-    })
-    .inner
+            if let Some(gs) = self.git_status.as_deref() {
+                git_status_ui::git_expanded_files_ui(gs, &snapshot, ui);
+            }
+
+            bar_action
+        })
+        .inner
+    }
 }
 
 /// Format a token count in a compact human-readable form (e.g. "45K", "1.2M")
@@ -1724,7 +1906,18 @@ fn toggle_badges_ui(
     action
 }
 
-fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails, backend_type: BackendType) {
+/// Full CWD string from the session header, for tooltip display on hover.
+struct HeaderCwd {
+    full: Option<String>,
+}
+
+fn session_header_ui(
+    ui: &mut egui::Ui,
+    details: &SessionDetails,
+    backend_type: BackendType,
+) -> HeaderCwd {
+    let mut header_cwd = HeaderCwd { full: None };
+
     ui.horizontal(|ui| {
         // Backend icon
         if backend_type.is_agentic() {
@@ -1734,6 +1927,8 @@ fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails, backend_type: 
 
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
+
+            // Title — normal end-truncation
             ui.add(
                 egui::Label::new(egui::RichText::new(details.display_title()).size(13.0))
                     .wrap_mode(egui::TextWrapMode::Truncate),
@@ -1766,7 +1961,11 @@ fn session_header_ui(ui: &mut egui::Ui, details: &SessionDetails, backend_type: 
                     egui::Label::new(egui::RichText::new(text).monospace().size(10.0).weak())
                         .wrap_mode(egui::TextWrapMode::Truncate),
                 );
+
+                header_cwd.full = cwd_text;
             }
         });
     });
+
+    header_cwd
 }

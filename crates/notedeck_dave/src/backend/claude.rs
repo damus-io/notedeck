@@ -23,6 +23,32 @@ use std::sync::Arc;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 
+/// Build a list of `UserContentBlock`s from image attachments and optional prompt text.
+/// Images are placed first, then the text block (if non-empty).
+fn build_content_blocks(
+    images: &[crate::messages::ImageAttachment],
+    prompt: &str,
+) -> Vec<UserContentBlock> {
+    use base64::Engine as _;
+    let mut blocks: Vec<UserContentBlock> = images
+        .iter()
+        .filter_map(|img| {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&img.bytes);
+            match UserContentBlock::image_base64(&img.mime_type, &b64) {
+                Ok(block) => Some(block),
+                Err(err) => {
+                    tracing::warn!("Skipping invalid image attachment: {}", err);
+                    None
+                }
+            }
+        })
+        .collect();
+    if !prompt.is_empty() {
+        blocks.push(UserContentBlock::text(prompt));
+    }
+    blocks
+}
+
 /// Convert a ToolResultContent to a serde_json::Value for use with tool summary formatting
 fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_json::Value {
     match content {
@@ -185,11 +211,19 @@ async fn session_actor(
         match cmd {
             SessionCommand::Query {
                 prompt,
+                images,
                 response_tx,
                 ctx,
             } => {
-                // Send query using session_id for context
-                if let Err(err) = client.query_with_session(&prompt, &session_id).await {
+                let query_result = if images.is_empty() {
+                    client.query_with_session(&prompt, &session_id).await
+                } else {
+                    let blocks = build_content_blocks(&images, &prompt);
+                    client
+                        .query_with_content_and_session(blocks, &session_id)
+                        .await
+                };
+                if let Err(err) = query_result {
                     tracing::error!("Session {} query error: {}", session_id, err);
                     let _ = response_tx.send(DaveApiResponse::Failed(err.to_string()));
                     continue;
@@ -222,11 +256,14 @@ async fn session_actor(
                                     // The session history is preserved by the CLI
                                     interrupt_ctx.request_repaint();
                                 }
-                                SessionCommand::Query { response_tx: new_tx, .. } => {
+                                SessionCommand::Query {
+                                    response_tx: new_tx,
+                                    ..
+                                } => {
                                     // A new query came in while we're still streaming - shouldn't happen
                                     // but handle gracefully by rejecting it
                                     let _ = new_tx.send(DaveApiResponse::Failed(
-                                        "Query already in progress".to_string()
+                                        "Query already in progress".to_string(),
                                     ));
                                 }
                                 SessionCommand::SetPermissionMode { mode, ctx: mode_ctx } => {
@@ -278,11 +315,14 @@ async fn session_actor(
                                 }
                             };
 
-                            // Wait for UI response inline - blocking is OK since stream is
-                            // waiting for permission result anyway
+                            // Wait for UI response with a timeout — if the UI
+                            // never responds (e.g. channel held open but idle),
+                            // deny the tool to avoid hanging the backend forever.
                             let tool_name = perm_req.tool_name.clone();
-                            let result = match ui_resp_rx.await {
-                                Ok(PermissionResponse::Allow { message }) => {
+                            const PERM_TIMEOUT: std::time::Duration =
+                                std::time::Duration::from_secs(300);
+                            let result = match tokio::time::timeout(PERM_TIMEOUT, ui_resp_rx).await {
+                                Ok(Ok(PermissionResponse::Allow { message })) => {
                                     if let Some(msg) = &message {
                                         tracing::debug!("User allowed tool {} with message: {}", tool_name, msg);
                                         // Inject user message into conversation so AI sees it
@@ -291,23 +331,36 @@ async fn session_actor(
                                             &session_id
                                         ).await {
                                             tracing::error!("Failed to inject user message: {}", err);
+                                            PermissionResult::Deny(PermissionResultDeny {
+                                                message: "The user approved this tool with a condition, but the condition could not be delivered. Deny to prevent unconditional execution. Ask the user to try again.".to_string(),
+                                                interrupt: false,
+                                            })
+                                        } else {
+                                            PermissionResult::Allow(PermissionResultAllow::default())
                                         }
                                     } else {
                                         tracing::debug!("User allowed tool: {}", tool_name);
+                                        PermissionResult::Allow(PermissionResultAllow::default())
                                     }
-                                    PermissionResult::Allow(PermissionResultAllow::default())
                                 }
-                                Ok(PermissionResponse::Deny { reason }) => {
+                                Ok(Ok(PermissionResponse::Deny { reason })) => {
                                     tracing::debug!("User denied tool {}: {}", tool_name, reason);
                                     PermissionResult::Deny(PermissionResultDeny {
                                         message: reason,
                                         interrupt: false,
                                     })
                                 }
-                                Err(_) => {
+                                Ok(Err(_)) => {
                                     tracing::error!("Permission response channel closed");
                                     PermissionResult::Deny(PermissionResultDeny {
                                         message: "Permission request cancelled".to_string(),
+                                        interrupt: true,
+                                    })
+                                }
+                                Err(_) => {
+                                    tracing::error!("Permission response timed out after {}s for tool {}", PERM_TIMEOUT.as_secs(), tool_name);
+                                    PermissionResult::Deny(PermissionResultDeny {
+                                        message: "Permission request timed out".to_string(),
                                         interrupt: true,
                                     })
                                 }
@@ -320,6 +373,25 @@ async fn session_actor(
                                 Some(Ok(message)) => {
                                     match message {
                                         ClaudeMessage::Assistant(assistant_msg) => {
+                                            // Emit a per-turn UsageUpdate so the context bar
+                                            // reflects the current context window state.
+                                            // input_tokens alone is wrong when caching is active —
+                                            // actual context = input + cache_creation + cache_read.
+                                            if let Some(usage) = &assistant_msg.message.usage {
+                                                let extract = |key: &str| {
+                                                    usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
+                                                };
+                                                let usage_info = crate::messages::UsageInfo {
+                                                    input_tokens: extract("input_tokens"),
+                                                    cache_creation_input_tokens: extract("cache_creation_input_tokens"),
+                                                    cache_read_input_tokens: extract("cache_read_input_tokens"),
+                                                    output_tokens: extract("output_tokens"),
+                                                    ..Default::default()
+                                                };
+                                                let _ = response_tx.send(DaveApiResponse::UsageUpdate(usage_info));
+                                                ctx.request_repaint();
+                                            }
+
                                             for block in &assistant_msg.message.content {
                                                 if let ContentBlock::ToolUse(ToolUseBlock { id, name, input }) = block {
                                                     pending_tools.insert(id.clone(), (name.clone(), input.clone()));
@@ -387,26 +459,27 @@ async fn session_actor(
                                                 result_msg.total_cost_usd,
                                                 result_msg.num_turns
                                             );
-                                            let (input_tokens, output_tokens) = result_msg
+                                            let usage_info = result_msg
                                                 .usage
                                                 .as_ref()
                                                 .map(|u| {
-                                                    let inp = u.get("input_tokens")
-                                                        .and_then(|v| v.as_u64())
-                                                        .unwrap_or(0);
-                                                    let out = u.get("output_tokens")
-                                                        .and_then(|v| v.as_u64())
-                                                        .unwrap_or(0);
-                                                    (inp, out)
+                                                    let extract = |key: &str| {
+                                                        u.get(key).and_then(|v| v.as_u64()).unwrap_or(0)
+                                                    };
+                                                    crate::messages::UsageInfo {
+                                                        input_tokens: extract("input_tokens"),
+                                                        cache_creation_input_tokens: extract("cache_creation_input_tokens"),
+                                                        cache_read_input_tokens: extract("cache_read_input_tokens"),
+                                                        output_tokens: extract("output_tokens"),
+                                                        cost_usd: result_msg.total_cost_usd,
+                                                        num_turns: result_msg.num_turns,
+                                                    }
                                                 })
-                                                .unwrap_or((0, 0));
-
-                                            let usage_info = crate::messages::UsageInfo {
-                                                input_tokens,
-                                                output_tokens,
-                                                cost_usd: result_msg.total_cost_usd,
-                                                num_turns: result_msg.num_turns,
-                                            };
+                                                .unwrap_or_else(|| crate::messages::UsageInfo {
+                                                    cost_usd: result_msg.total_cost_usd,
+                                                    num_turns: result_msg.num_turns,
+                                                    ..Default::default()
+                                                });
                                             let _ = response_tx.send(DaveApiResponse::QueryComplete(usage_info));
 
                                             stream_done = true;
@@ -555,7 +628,7 @@ impl AiBackend for ClaudeBackend {
     ) {
         let (response_tx, response_rx) = mpsc::channel();
 
-        let prompt = shared::prepare_prompt(&messages, &resume_session_id);
+        let (prompt, images) = shared::prepare_prompt_and_images(&messages, &resume_session_id);
 
         tracing::debug!(
             "Sending request to Claude Code: session={}, resumed={}, prompt length: {}, preview: {:?}",
@@ -597,6 +670,7 @@ impl AiBackend for ClaudeBackend {
             if let Err(err) = command_tx
                 .send(SessionCommand::Query {
                     prompt,
+                    images,
                     response_tx,
                     ctx,
                 })
@@ -661,6 +735,7 @@ impl AiBackend for ClaudeBackend {
             if let Err(err) = command_tx
                 .send(SessionCommand::Query {
                     prompt: "/compact".to_string(),
+                    images: vec![],
                     response_tx,
                     ctx,
                 })
