@@ -41,7 +41,9 @@ def get_commit_crates(commit):
     for f in files.strip().split('\n'):
         m = re.match(r'^crates/([^/]+)/', f)
         if m:
-            crates.add(m.group(1))
+            name = m.group(1)
+            name = re.sub(r'^notedeck_', '', name)
+            crates.add(name)
     return sorted(crates) if crates else ["general"]
 
 
@@ -119,18 +121,19 @@ def group(entries):
     return groups
 
 
-def group_by_crate(entries):
-    """Group entries by crate, then by section within each crate."""
-    crate_entries = {}
+def group_by_section(entries):
+    """Group entries by section, sorted by crate within each section."""
+    groups = {s: [] for s in sections}
     for e in entries:
-        for crate in e.crates:
-            crate_entries.setdefault(crate, []).append(e)
-    result = {}
-    for crate in sorted(crate_entries.keys()):
-        g = group(crate_entries[crate])
-        if g:
-            result[crate] = g
-    return result
+        groups[e.section].append(e)
+    # Sort entries within each section by crate name
+    for s in sections:
+        groups[s].sort(key=lambda e: e.crates[0] if e.crates else "")
+    # Remove empty sections
+    for s in sections:
+        if len(groups[s]) == 0:
+            del groups[s]
+    return groups
 
 
 def commit_date(commitsha):
@@ -144,28 +147,20 @@ def commit_date(commitsha):
 template = Template("""<%def name="render_entries(entries)">
 % for e in entries:
  % if e.pullreq is not None:
-- ${e.content} ([#${e.pullreq}])
+- **${", ".join(e.crates)}**: ${e.content} ([#${e.pullreq}])
  % else:
-- ${e.content} ${e.author}
+- **${", ".join(e.crates)}**: ${e.content} ${e.author}
  % endif
 % endfor
 
-</%def><%def name="group_links(entries)">
-% for e in entries:
-[${e.pullreq}]: https://github.com/${repo}/pull/${e.pullreq}
-% endfor
 </%def>
-
 ${h2} [${version}] - ${date.strftime("%Y-%m-%d")}
 
-% for crate, groups in crate_groups.items():
-${h3} ${crate}
-% for section in groups:
-${h4} ${section.capitalize()}
+% for section in sections:
+${h3} ${section.capitalize()}
 ${render_entries(groups[section]) | trim}
 % endfor
 
-% endfor
 % for l in links:
 [${l.ref}]: ${l.url}
 % endfor
@@ -188,15 +183,15 @@ if __name__ == "__main__":
 
     fromcommit, tocommit = args.commitrange.split('..')
     entries = get_log_entries(args.commitrange)
-    crate_groups = group_by_crate(entries)
+    groups = group_by_section(entries)
     date = commit_date(tocommit)
 
     print(template.render(
-        crate_groups=crate_groups,
+        groups=groups,
         repo=repo,
+        sections=groups.keys(),
         h2='##',
         h3='###',
-        h4='####',
         version=tocommit[1:],
         date=date,
         links=linkify(entries),
