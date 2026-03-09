@@ -53,6 +53,7 @@ struct Bucket {
     pub clients: rustc_hash::FxHashMap<String, u32>,
     pub client_pubkeys: rustc_hash::FxHashMap<String, FxHashSet<Pubkey>>,
     pub kind1_authors: rustc_hash::FxHashMap<Pubkey, u32>,
+    pub new_contact_list_clients: rustc_hash::FxHashMap<String, u32>,
 }
 
 fn note_client_tag<'a>(note: &Note<'a>) -> Option<&'a str> {
@@ -95,6 +96,14 @@ impl Bucket {
         } else {
             // TODO(jb55): client fingerprinting ?
         }
+    }
+
+    #[inline(always)]
+    pub fn bump_new_contact_list(&mut self, client: &str) {
+        *self
+            .new_contact_list_clients
+            .entry(client.to_string())
+            .or_default() += 1;
     }
 }
 
@@ -162,6 +171,19 @@ impl RollingCache {
         }
 
         self.buckets[idx].bump(note);
+    }
+
+    #[inline(always)]
+    pub fn bump_new_contact_list(&mut self, ts: i64, client: &str) {
+        let delta = (self.anchor_end_ts - 1) - ts;
+        if delta < 0 {
+            return;
+        }
+        let idx = (delta / self.bucket_size_secs) as usize;
+        if idx >= self.buckets.len() {
+            return;
+        }
+        self.buckets[idx].bump_new_contact_list(client);
     }
 }
 
@@ -435,8 +457,14 @@ fn spawn_worker(
         .expect("failed to spawn dashboard worker thread");
 }
 
+struct FirstKind3 {
+    created_at: i64,
+    client: String,
+}
+
 struct Acc {
     last_emit: Instant,
+    first_kind3: FxHashMap<Pubkey, FirstKind3>,
 
     state: DashboardState,
 }
@@ -462,6 +490,7 @@ fn materialize_single_pass(
 
     let mut acc = Acc {
         last_emit: Instant::now(),
+        first_kind3: FxHashMap::default(),
         state: DashboardState {
             total: Bucket::default(),
             daily: RollingCache::daily(now, days),
@@ -478,6 +507,25 @@ fn materialize_single_pass(
         acc.state.weekly.bump(&note);
         acc.state.monthly.bump(&note);
 
+        if note.kind() == 3
+            && let Some(client) = note_client_tag(&note)
+        {
+            let pk = Pubkey::new(*note.pubkey());
+            let ts = note.created_at() as i64;
+            acc.first_kind3
+                .entry(pk)
+                .and_modify(|e| {
+                    if ts < e.created_at {
+                        e.created_at = ts;
+                        e.client = client.to_string();
+                    }
+                })
+                .or_insert_with(|| FirstKind3 {
+                    created_at: ts,
+                    client: client.to_string(),
+                });
+        }
+
         let now = Instant::now();
         if now.saturating_duration_since(acc.last_emit) >= emit_every {
             acc.last_emit = now;
@@ -493,6 +541,20 @@ fn materialize_single_pass(
 
         acc
     });
+
+    // Post-fold: attribute each pubkey's earliest kind 3 to its client bucket
+    for fk3 in acc.first_kind3.values() {
+        acc.state.total.bump_new_contact_list(&fk3.client);
+        acc.state
+            .daily
+            .bump_new_contact_list(fk3.created_at, &fk3.client);
+        acc.state
+            .weekly
+            .bump_new_contact_list(fk3.created_at, &fk3.client);
+        acc.state
+            .monthly
+            .bump_new_contact_list(fk3.created_at, &fk3.client);
+    }
 
     Ok(acc.state)
 }
@@ -548,6 +610,22 @@ fn top_kinds_over(cache: &RollingCache, limit: usize) -> Vec<(u64, u64)> {
         }
     }
 
+    let mut v: Vec<_> = agg.into_iter().collect();
+    v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v.truncate(limit);
+    v
+}
+
+pub(crate) fn top_new_contact_list_clients_over(
+    cache: &RollingCache,
+    limit: usize,
+) -> Vec<(String, u64)> {
+    let mut agg: FxHashMap<String, u64> = FxHashMap::default();
+    for b in &cache.buckets {
+        for (client, count) in &b.new_contact_list_clients {
+            *agg.entry(client.clone()).or_default() += *count as u64;
+        }
+    }
     let mut v: Vec<_> = agg.into_iter().collect();
     v.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     v.truncate(limit);

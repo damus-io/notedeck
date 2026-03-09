@@ -20,6 +20,7 @@ use crate::chart::horizontal_bar_chart;
 use crate::chart::palette;
 use crate::top_kind1_authors_over;
 use crate::top_kinds_over;
+use crate::top_new_contact_list_clients_over;
 
 pub fn period_picker_ui(ui: &mut egui::Ui, period: &mut Period) {
     ui.horizontal(|ui| {
@@ -305,6 +306,9 @@ fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
                 card_ui(ui, min_card, |ui| clients_trends_ui(dashboard, ui))
             });
             ui.add_sized(size, |ui: &mut egui::Ui| {
+                card_ui(ui, min_card, |ui| new_contact_lists_ui(dashboard, ui))
+            });
+            ui.add_sized(size, |ui: &mut egui::Ui| {
                 card_ui(ui, min_card, |ui| top_posters_ui(dashboard, ui, ctx))
             });
         },
@@ -493,6 +497,78 @@ fn top_clients_over(cache: &RollingCache, limit: usize) -> Vec<ClientStats> {
 
     out.truncate(limit);
     out
+}
+
+fn new_contact_list_series(cache: &RollingCache, client: &str) -> Vec<f32> {
+    let n = cache.buckets.len();
+    let mut out = Vec::with_capacity(n);
+    for i in (0..n).rev() {
+        let v = cache.buckets[i]
+            .new_contact_list_clients
+            .get(client)
+            .copied()
+            .unwrap_or(0) as f32;
+        out.push(v);
+    }
+    out
+}
+
+pub fn new_contact_lists_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
+    card_header_ui(ui, "New Contact Lists by Client");
+    ui.add_space(8.0);
+
+    let limit = 10;
+    let cache = dashboard.selected_cache();
+    let top = top_new_contact_list_clients_over(cache, limit);
+
+    if top.is_empty() && dashboard.last_error.is_none() {
+        ui.label(RichText::new("...").font(FontId::proportional(24.0)).weak());
+        return;
+    }
+    if top.is_empty() {
+        ui.label("No data");
+        return;
+    }
+
+    let spark_w = (ui.available_width() - 140.0).max(80.0);
+    let spark_h = 18.0;
+
+    for (row_i, (client, total)) in top.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(client).small());
+            ui.add_space(6.0);
+
+            let series = new_contact_list_series(cache, client);
+            let resp = crate::sparkline::sparkline(
+                ui,
+                egui::vec2(spark_w, spark_h),
+                &series,
+                palette(row_i),
+                crate::sparkline::SparkStyle::default(),
+            );
+
+            if resp.hovered() {
+                let last = series.last().copied().unwrap_or(0.0);
+                resp.on_hover_text(format!(
+                    "{} new contact lists\nlatest bucket: {:.0}",
+                    total, last
+                ));
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new(total.to_string()).small().strong());
+            });
+        });
+        ui.add_space(4.0);
+    }
+
+    footer_status_ui(
+        ui,
+        dashboard.running,
+        dashboard.last_error.as_deref(),
+        dashboard.last_snapshot,
+        dashboard.last_duration,
+    );
 }
 
 pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
