@@ -5107,11 +5107,13 @@ dependencies = [
  "nostrdb",
  "notedeck",
  "poll-promise",
+ "pollster",
  "profiling",
  "strum",
  "strum_macros",
  "tokio",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]

@@ -4,6 +4,16 @@ use egui_kittest::Harness;
 use notedeck_ui::context_menu::{stationary_arbitrary_menu_button_padding, MenuPadding};
 use notedeck_ui::widgets::search_input_box;
 
+/// Check if a wgpu adapter is available for snapshot rendering.
+/// Returns false on headless CI environments without GPU support.
+fn wgpu_adapter_available() -> bool {
+    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::all() - wgpu::Backends::BROWSER_WEBGPU,
+        ..Default::default()
+    });
+    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).is_some()
+}
+
 #[test]
 fn test_search_input_box_renders() {
     let mut harness = Harness::new_ui_state(
@@ -62,8 +72,19 @@ fn context_menu_harness(padding: MenuPadding) -> Harness<'static> {
     })
 }
 
+macro_rules! skip_if_no_gpu {
+    () => {
+        if !wgpu_adapter_available() {
+            eprintln!("Skipping snapshot test: no GPU adapter available");
+            return;
+        }
+    };
+}
+
 #[test]
 fn test_context_menu_snapshot() {
+    skip_if_no_gpu!();
+
     let mut harness = context_menu_harness(MenuPadding::default());
 
     let btn = harness.get_by_label("...");
@@ -76,6 +97,8 @@ fn test_context_menu_snapshot() {
 
 #[test]
 fn test_context_menu_thin_snapshot() {
+    skip_if_no_gpu!();
+
     // egui defaults for comparison: button_padding (4, 1), item_spacing.y = 3
     let thin = MenuPadding {
         button_padding: egui::vec2(4.0, 1.0),
