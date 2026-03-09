@@ -192,11 +192,7 @@ fn snapshot_notifications_unseen() {
 #[test]
 fn snapshot_search_button_inactive() {
     let mut h = icon_harness(|ui| {
-        ui.add(icons::search_button(
-            egui::Color32::WHITE,
-            1.5,
-            false,
-        ));
+        ui.add(icons::search_button(egui::Color32::WHITE, 1.5, false));
     });
     h.run();
     h.snapshot("search_button_inactive");
@@ -205,11 +201,7 @@ fn snapshot_search_button_inactive() {
 #[test]
 fn snapshot_search_button_active() {
     let mut h = icon_harness(|ui| {
-        ui.add(icons::search_button(
-            egui::Color32::WHITE,
-            1.5,
-            true,
-        ));
+        ui.add(icons::search_button(egui::Color32::WHITE, 1.5, true));
     });
     h.run();
     h.snapshot("search_button_active");
@@ -247,4 +239,58 @@ fn snapshot_toolbar_row() {
         });
     harness.run();
     harness.snapshot("toolbar_row");
+}
+
+// ---------------------------------------------------------------------------
+// AccessKit interaction tests — query icons by label
+// ---------------------------------------------------------------------------
+
+#[test]
+fn accesskit_home_button_queryable() {
+    let harness = Harness::new_ui(|ui| {
+        icons::home_button(ui, 24.0, false);
+    });
+    harness.get_by_label("Home");
+}
+
+#[test]
+fn accesskit_messages_button_queryable() {
+    let harness = Harness::new_ui(|ui| {
+        icons::chat_button(ui, 24.0, false);
+    });
+    harness.get_by_label("Messages");
+}
+
+#[test]
+fn accesskit_notifications_button_queryable() {
+    let harness = Harness::new_ui(|ui| {
+        icons::notifications_button(ui, 24.0, false, false);
+    });
+    harness.get_by_label("Notifications");
+}
+
+#[test]
+fn accesskit_search_button_queryable() {
+    let harness = Harness::new_ui(|ui| {
+        ui.add(icons::search_button(egui::Color32::WHITE, 1.5, false));
+    });
+    harness.get_by_label("Search");
+}
+
+#[test]
+fn accesskit_toolbar_all_buttons_queryable() {
+    let harness = Harness::new_ui(|ui| {
+        ui.horizontal(|ui| {
+            icons::home_button(ui, 24.0, true);
+            ui.add(icons::search_button(egui::Color32::WHITE, 1.5, false));
+            icons::chat_button(ui, 24.0, false);
+            icons::notifications_button(ui, 24.0, false, false);
+        });
+    });
+
+    // All four buttons should be findable by their AccessKit labels
+    harness.get_by_label("Home");
+    harness.get_by_label("Search");
+    harness.get_by_label("Messages");
+    harness.get_by_label("Notifications");
 }
