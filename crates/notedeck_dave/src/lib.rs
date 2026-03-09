@@ -1998,12 +1998,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 Err(_) => continue,
             };
 
-            // Collect and sort by created_at to process in order
+            // Collect and sort by (created_at, seq) to process in order.
+            // The seq tag is a per-session tiebreaker for events within the
+            // same second (e.g. tool_call before permission_request).
             let mut notes: Vec<_> = note_keys
                 .iter()
                 .filter_map(|key| ndb.get_note_by_key(&txn, *key).ok())
                 .collect();
-            notes.sort_by_key(|n| n.created_at());
+            notes.sort_by_key(|n| {
+                let seq = session_events::get_tag_value(n, "seq")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+                (n.created_at(), seq)
+            });
 
             for note in &notes {
                 // Skip events we've already processed (dedup)
@@ -3260,27 +3267,22 @@ fn handle_permission_request(
     // Build and publish a proper permission request event
     // with perm-id, tool-name tags for remote clients
     if let Some(sk) = secret_key {
-        let event_session_id = session
-            .agentic
-            .as_ref()
-            .map(|a| a.event_session_id().to_string());
-
-        if let Some(sid) = event_session_id {
+        if let Some(agentic) = &mut session.agentic {
+            let sid = agentic.event_session_id().to_string();
             match session_events::build_permission_request_event(
                 &pending.request.id,
                 &pending.request.tool_name,
                 &pending.request.tool_input,
                 &sid,
+                &mut agentic.live_threading,
                 sk,
             ) {
                 Ok(evt) => {
                     pns_ingest(ndb, &evt.note_json, sk);
-                    if let Some(agentic) = &mut session.agentic {
-                        agentic
-                            .permissions
-                            .request_note_ids
-                            .insert(pending.request.id, evt.note_id);
-                    }
+                    agentic
+                        .permissions
+                        .request_note_ids
+                        .insert(pending.request.id, evt.note_id);
                     events_to_publish.push(evt);
                 }
                 Err(e) => {

@@ -634,12 +634,14 @@ fn truncate_tool_input(tool_input: &serde_json::Value, max_bytes: usize) -> serd
     Value::Object(result)
 }
 
-/// Does NOT participate in threading — permission events are ancillary.
+/// Participates in threading so that permission events are correctly
+/// ordered relative to tool_call / assistant events when reconstructed.
 pub fn build_permission_request_event(
     perm_id: &uuid::Uuid,
     tool_name: &str,
     tool_input: &serde_json::Value,
     session_id: &str,
+    threading: &mut ThreadingState,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
     // Truncate large string values so the event fits within relay size
@@ -659,6 +661,10 @@ pub fn build_permission_request_event(
     // Session identity
     builder = builder.start_tag().tag_str("d").tag_str(session_id);
 
+    // Sequence number (monotonic, for unambiguous ordering)
+    let seq_str = threading.seq.to_string();
+    builder = builder.start_tag().tag_str("seq").tag_str(&seq_str);
+
     // Permission-specific tags
     builder = builder.start_tag().tag_str("perm-id").tag_str(&perm_id_str);
     builder = builder.start_tag().tag_str("tool-name").tag_str(tool_name);
@@ -675,7 +681,9 @@ pub fn build_permission_request_event(
     builder = builder.start_tag().tag_str("t").tag_str("ai-conversation");
     builder = builder.start_tag().tag_str("t").tag_str("ai-permission");
 
-    finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
+    let event = finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)?;
+    threading.record(None, event.note_id, false);
+    Ok(event)
 }
 
 /// Build a kind-1988 permission response event.
@@ -1223,10 +1231,19 @@ mod tests {
         let perm_id = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let tool_input = serde_json::json!({"command": "rm -rf /tmp/test"});
         let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        // Simulate some prior events so seq is non-zero
+        threading.seq = 5;
 
-        let event =
-            build_permission_request_event(&perm_id, "Bash", &tool_input, "sess-perm-test", &sk)
-                .unwrap();
+        let event = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &tool_input,
+            "sess-perm-test",
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
 
         assert_eq!(event.kind, AI_CONVERSATION_KIND);
 
@@ -1237,11 +1254,15 @@ mod tests {
         assert!(json.contains(r#""role","permission_request"#));
         // Has session identity
         assert!(json.contains(r#""d","sess-perm-test"#));
+        // Has seq tag for ordering
+        assert!(json.contains(r#""seq","5"#));
         // Has discoverability tags
         assert!(json.contains(r#""t","ai-conversation"#));
         assert!(json.contains(r#""t","ai-permission"#));
         // Content has tool info
         assert!(json.contains("rm -rf"));
+        // Threading state should have advanced
+        assert_eq!(threading.seq(), 6);
     }
 
     #[test]
@@ -1402,5 +1423,156 @@ mod tests {
         assert!(!wrapped.contains("hello"));
         // Should be valid JSON
         assert!(serde_json::from_str::<serde_json::Value>(&wrapped).is_ok());
+    }
+
+    /// Verify that permission_request events participate in the seq counter,
+    /// producing correct ordering when interleaved with tool_call events.
+    #[test]
+    fn test_permission_request_seq_interleaves_with_tool_calls() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+
+        // Build a tool_call event (simulating an assistant message with a tool use)
+        let tool_call_line = JsonlLine::parse(
+            r#"{"type":"assistant","uuid":"u1","sessionId":"seq-interleave","timestamp":"2026-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{"role":"assistant","model":"claude-opus-4-5-20251101","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}"#,
+        ).unwrap();
+        let tool_events = build_events(&tool_call_line, &mut threading, &sk).unwrap();
+        // tool_call event should have seq=0
+        assert!(
+            tool_events[0].note_json.contains(r#""seq","0"#),
+            "tool_call should have seq=0"
+        );
+        assert_eq!(threading.seq(), 1);
+
+        // Build a permission_request event (should get seq=1)
+        let perm_id = uuid::Uuid::new_v4();
+        let tool_input = serde_json::json!({"command": "rm -rf /tmp/test"});
+        let perm_event = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &tool_input,
+            "seq-interleave",
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        assert!(
+            perm_event.note_json.contains(r#""seq","1"#),
+            "permission_request should have seq=1"
+        );
+        assert_eq!(threading.seq(), 2);
+
+        // Build a tool_result event (should get seq=2)
+        let tool_result_line = JsonlLine::parse(
+            r#"{"type":"user","uuid":"u2","parentUuid":"u1","sessionId":"seq-interleave","timestamp":"2026-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"file1.txt\nfile2.txt"}]}}"#,
+        ).unwrap();
+        let result_events = build_events(&tool_result_line, &mut threading, &sk).unwrap();
+        assert!(
+            result_events[0].note_json.contains(r#""seq","2"#),
+            "tool_result should have seq=2"
+        );
+        assert_eq!(threading.seq(), 3);
+    }
+
+    /// Verify that events with the same created_at but different seq tags
+    /// are sorted correctly, simulating the mobile sync scenario.
+    #[tokio::test]
+    async fn test_reconstruction_ordering_with_permission_requests() {
+        use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+        use tempfile::TempDir;
+
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id = "ordering-test";
+
+        // Build events: user → tool_call → permission_request → tool_result
+        let user_line = JsonlLine::parse(
+            &format!(
+                r#"{{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"{}","timestamp":"2026-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{{"role":"user","content":"run a command"}}}}"#,
+                session_id
+            ),
+        ).unwrap();
+        let user_events = build_events(&user_line, &mut threading, &sk).unwrap();
+
+        let tool_call_line = JsonlLine::parse(
+            &format!(
+                r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"{}","timestamp":"2026-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{{"role":"assistant","model":"claude-opus-4-5-20251101","content":[{{"type":"tool_use","id":"toolu_1","name":"Bash","input":{{"command":"rm -rf /tmp/test"}}}}]}}}}"#,
+                session_id
+            ),
+        ).unwrap();
+        let tool_call_events = build_events(&tool_call_line, &mut threading, &sk).unwrap();
+
+        let perm_id = uuid::Uuid::new_v4();
+        let tool_input = serde_json::json!({"command": "rm -rf /tmp/test"});
+        let perm_event = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &tool_input,
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        // Collect all kind-1988 events
+        let mut all_events = Vec::new();
+        all_events.extend(
+            user_events
+                .iter()
+                .filter(|e| e.kind == AI_CONVERSATION_KIND),
+        );
+        all_events.push(&perm_event); // permission_request
+        all_events.extend(
+            tool_call_events
+                .iter()
+                .filter(|e| e.kind == AI_CONVERSATION_KIND),
+        );
+
+        // Ingest events into ndb in REVERSED order (simulating relay out-of-order delivery)
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([AI_CONVERSATION_KIND as u64])
+            .build();
+
+        // Ingest in reverse to simulate out-of-order relay delivery
+        for event in all_events.iter().rev() {
+            let sub_id = ndb.subscribe(&[filter.clone()]).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();
+        }
+
+        // Query and sort the same way session_loader does: (created_at, seq)
+        let txn = Transaction::new(&ndb).unwrap();
+        let results = ndb.query(&txn, &[filter], 100).unwrap();
+        let mut notes: Vec<_> = results
+            .iter()
+            .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+            .collect();
+
+        notes.sort_by_key(|note| {
+            let seq = get_tag_value(note, "seq")
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            (note.created_at(), seq)
+        });
+
+        // Extract roles in sorted order
+        let roles: Vec<_> = notes
+            .iter()
+            .filter_map(|n| get_tag_value(n, "role"))
+            .collect();
+
+        // Single-block assistant tool_use keeps role "assistant" (split only
+        // happens with multiple content blocks). The key invariant is that
+        // permission_request comes AFTER the assistant/tool_call event.
+        assert_eq!(
+            roles,
+            vec!["user", "assistant", "permission_request"],
+            "permission_request must come after assistant tool_call, got: {:?}",
+            roles
+        );
     }
 }
