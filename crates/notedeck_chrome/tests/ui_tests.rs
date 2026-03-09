@@ -130,3 +130,35 @@ fn snapshot_damus_columns() {
 
     harness.snapshot("damus_columns");
 }
+
+// ---------------------------------------------------------------------------
+// Viewport size regression snapshots
+// ---------------------------------------------------------------------------
+
+fn snapshot_at_size(width: f32, height: f32, name: &str) {
+    let ctx = egui::Context::default();
+    let state = make_test_state(&ctx);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(width, height))
+        .wgpu()
+        .build_state(render_damus_frame, state);
+
+    harness.run();
+    harness.snapshot(name);
+}
+
+#[test]
+fn snapshot_mobile() {
+    snapshot_at_size(375.0, 667.0, "damus_mobile");
+}
+
+#[test]
+fn snapshot_tablet() {
+    snapshot_at_size(1024.0, 768.0, "damus_tablet");
+}
+
+#[test]
+fn snapshot_desktop_wide() {
+    snapshot_at_size(1400.0, 900.0, "damus_desktop_wide");
+}
