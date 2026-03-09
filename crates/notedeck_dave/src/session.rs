@@ -159,8 +159,8 @@ pub struct PermissionTracker {
     pub pending: HashMap<Uuid, oneshot::Sender<PermissionResponse>>,
     /// Maps permission-request UUID → nostr note ID of the published request.
     pub request_note_ids: HashMap<Uuid, [u8; 32]>,
-    /// Permission UUIDs that have already been responded to.
-    pub responded: HashSet<Uuid>,
+    /// Permission UUIDs that have already been responded to, with the decision.
+    pub responded: HashMap<Uuid, PermissionResponseType>,
 }
 
 impl PermissionTracker {
@@ -168,7 +168,7 @@ impl PermissionTracker {
         Self {
             pending: HashMap::new(),
             request_note_ids: HashMap::new(),
-            responded: HashSet::new(),
+            responded: HashMap::new(),
         }
     }
 
@@ -204,7 +204,7 @@ impl PermissionTracker {
 
         // 2. Update PermissionTracker state
         if is_remote {
-            self.responded.insert(request_id);
+            self.responded.insert(request_id, response_type);
         } else if let Some(response) = oneshot_response {
             if let Some(sender) = self.pending.remove(&request_id) {
                 if sender.send(response).is_err() {
@@ -222,7 +222,7 @@ impl PermissionTracker {
     /// Merge loaded permission state from restored events.
     pub fn merge_loaded(
         &mut self,
-        responded: HashSet<Uuid>,
+        responded: HashMap<Uuid, PermissionResponseType>,
         request_note_ids: HashMap<Uuid, [u8; 32]>,
     ) {
         self.responded = responded;
@@ -680,7 +680,7 @@ impl ChatSession {
                     if req.response.is_some() {
                         return false;
                     }
-                    if responded.is_some_and(|ids| ids.contains(&req.id)) {
+                    if responded.is_some_and(|ids| ids.contains_key(&req.id)) {
                         return false;
                     }
                     // Skip if runtime allowlist would auto-accept

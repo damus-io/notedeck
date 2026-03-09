@@ -192,7 +192,8 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
         let responded = session.agentic.as_ref().map(|a| &a.permissions.responded);
         for msg in &session.chat {
             if let Message::PermissionRequest(req) = msg {
-                if req.response.is_none() && responded.is_none_or(|ids| !ids.contains(&req.id)) {
+                if req.response.is_none() && responded.is_none_or(|ids| !ids.contains_key(&req.id))
+                {
                     return Some(req.id);
                 }
             }
@@ -1030,6 +1031,11 @@ pub fn clone_session(
     let session = session_manager.get(id)?;
     let cwd = session.cwd().cloned()?;
     let backend_type = session.backend_type;
+    let model = session
+        .details
+        .resolve_model()
+        .map(|id| Model::from_model_id(&id))
+        .unwrap_or(Model::Default);
 
     if session.is_remote() {
         return Some(RemoteSpawn {
@@ -1049,7 +1055,7 @@ pub fn clone_session(
         hostname,
         backend_type,
         None,
-        Model::Default,
+        model,
     );
     None
 }
@@ -1106,5 +1112,98 @@ pub fn handle_cd_command(session: &mut ChatSession) -> Option<Result<PathBuf, ()
             .chat
             .push(Message::Error(format!("Invalid directory: {}", path_str)));
         Some(Err(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// clone_session must preserve the source session's model override
+    /// instead of hardcoding Model::Default.
+    #[test]
+    fn clone_session_preserves_model() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+
+        // Create a session with Model::Opus
+        let orig_id = create_session_with_cwd(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from("/tmp"),
+            "localhost",
+            BackendType::Claude,
+            None,
+            Model::Opus,
+        );
+
+        // Verify the original session has the model set
+        let orig_model = sm.get(orig_id).unwrap().details.model.clone();
+        assert!(orig_model.is_some(), "original session should have a model");
+
+        // Clone it
+        let spawn = clone_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            "localhost",
+            orig_id,
+        );
+        assert!(spawn.is_none(), "local clone should not return RemoteSpawn");
+
+        // The new session should be the active one (most recently created)
+        let new_id = sm.active_id().unwrap();
+        assert_ne!(new_id, orig_id);
+
+        let new_model = sm.get(new_id).unwrap().details.model.clone();
+        assert_eq!(
+            new_model, orig_model,
+            "cloned session should preserve the model from the original"
+        );
+    }
+
+    /// clone_session with Model::Default should keep model as None.
+    #[test]
+    fn clone_session_preserves_default_model() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+
+        let orig_id = create_session_with_cwd(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from("/tmp"),
+            "localhost",
+            BackendType::Claude,
+            None,
+            Model::Default,
+        );
+
+        assert!(sm.get(orig_id).unwrap().details.model.is_none());
+
+        clone_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            "localhost",
+            orig_id,
+        );
+
+        let new_id = sm.active_id().unwrap();
+        assert!(
+            sm.get(new_id).unwrap().details.model.is_none(),
+            "cloned default-model session should also have no model"
+        );
     }
 }

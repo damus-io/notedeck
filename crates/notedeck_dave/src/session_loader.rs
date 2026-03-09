@@ -146,7 +146,18 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         if role == Some("permission_response") {
             if let Some(perm_id_str) = get_tag_value(note, "perm-id") {
                 if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                    permissions.responded.insert(perm_id);
+                    let allowed = match serde_json::from_str::<serde_json::Value>(note.content()) {
+                        Ok(v) => {
+                            v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny") == "allow"
+                        }
+                        Err(_) => false,
+                    };
+                    let response_type = if allowed {
+                        PermissionResponseType::Allowed
+                    } else {
+                        PermissionResponseType::Denied
+                    };
+                    permissions.responded.insert(perm_id, response_type);
                 }
             }
         } else if role == Some("permission_request") {
@@ -196,11 +207,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
                         .and_then(|s| uuid::Uuid::parse_str(s).ok())
                         .unwrap_or_else(uuid::Uuid::new_v4);
 
-                    let response = if permissions.responded.contains(&perm_id) {
-                        Some(PermissionResponseType::Allowed)
-                    } else {
-                        None
-                    };
+                    let response = permissions.responded.get(&perm_id).copied();
 
                     // Parse plan markdown for ExitPlanMode requests
                     let cached_plan = if tool_name == "ExitPlanMode" {

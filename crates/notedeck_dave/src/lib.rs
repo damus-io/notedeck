@@ -3278,13 +3278,25 @@ pub(crate) fn process_conversation_notes<'a>(
                 // Track that this permission was responded to
                 if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
                     if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                        agentic.permissions.responded.insert(perm_id);
+                        // Decode the actual decision from the content
+                        let allowed = match serde_json::from_str::<serde_json::Value>(content) {
+                            Ok(v) => {
+                                v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny")
+                                    == "allow"
+                            }
+                            Err(_) => false,
+                        };
+                        let response_type = if allowed {
+                            crate::messages::PermissionResponseType::Allowed
+                        } else {
+                            crate::messages::PermissionResponseType::Denied
+                        };
+                        agentic.permissions.responded.insert(perm_id, response_type);
                         // Update the matching PermissionRequest in chat
                         for msg in session.chat.iter_mut() {
                             if let Message::PermissionRequest(req) = msg {
                                 if req.id == perm_id && req.response.is_none() {
-                                    req.response =
-                                        Some(crate::messages::PermissionResponseType::Allowed);
+                                    req.response = Some(response_type);
                                 }
                             }
                         }
@@ -3378,7 +3390,10 @@ fn handle_remote_permission_request(
             "runtime allow: auto-accepting remote '{}' for this session",
             tool_name,
         );
-        agentic.permissions.responded.insert(perm_id);
+        agentic
+            .permissions
+            .responded
+            .insert(perm_id, crate::messages::PermissionResponseType::Allowed);
         if let Some(sk) = secret_key {
             let sid = agentic.event_session_id();
             if let Ok(evt) = session_events::build_permission_response_event(
@@ -3406,11 +3421,7 @@ fn handle_remote_permission_request(
     }
 
     // Check if we already responded
-    let response = if agentic.permissions.responded.contains(&perm_id) {
-        Some(crate::messages::PermissionResponseType::Allowed)
-    } else {
-        None
-    };
+    let response = agentic.permissions.responded.get(&perm_id).copied();
 
     // Parse plan markdown for ExitPlanMode requests
     let cached_plan = if tool_name == "ExitPlanMode" {
@@ -3831,6 +3842,223 @@ mod tests {
             session.chat.len(),
             3,
             "dedup should prevent duplicate messages"
+        );
+    }
+
+    /// A denied permission_response event must set PermissionResponseType::Denied
+    /// on the matching chat PermissionRequest, not hardcode Allowed.
+    ///
+    /// This test processes events in two passes (simulating real polling):
+    /// first the permission_request, then the permission_response. This
+    /// ensures the response branch sees an existing pending request in chat.
+    #[tokio::test]
+    async fn test_permission_response_denied_is_decoded() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id_str = "perm-deny-test";
+        let perm_id = uuid::Uuid::new_v4();
+
+        // 1) Build a permission_request event.
+        let perm_req_evt = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({"command": "rm -rf /"}),
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        // 2) Build a permission_response event with allowed=false (deny).
+        let perm_resp_evt = session_events::build_permission_response_event(
+            &perm_id,
+            &[0u8; 32], // dummy request note id
+            false,      // DENIED
+            Some("too dangerous"),
+            session_id_str,
+            &sk,
+        )
+        .unwrap();
+
+        // Set up ndb
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+
+        // Ingest both events
+        for event in [&perm_req_evt, &perm_resp_evt] {
+            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+
+        // Create a remote agentic session
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Remote,
+        );
+        session.source = SessionSource::Remote;
+
+        // Pass 1: process only the permission_request event so the chat
+        // gets a pending PermissionRequest with response=None.
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            let results = ndb.query(&txn, &[filter.clone()], 128).unwrap();
+            let notes: Vec<_> = results
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .filter(|n| session_events::get_tag_value(n, "role") == Some("permission_request"))
+                .collect();
+            assert_eq!(notes.len(), 1, "should have 1 permission_request");
+
+            let _result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+        }
+
+        // Verify the request is pending (response=None)
+        let pending = session.chat.iter().find_map(|m| {
+            if let Message::PermissionRequest(req) = m {
+                Some(req.response)
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            pending,
+            Some(None),
+            "request should be pending before response"
+        );
+
+        // Pass 2: process the permission_response event.
+        // Reset the seen set for the response event only (request was already seen).
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            let results = ndb.query(&txn, &[filter], 128).unwrap();
+            let notes: Vec<_> = results
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .collect();
+
+            let _result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+        }
+
+        // Find the PermissionRequest in chat and verify it was marked Denied
+        let perm_msg = session
+            .chat
+            .iter()
+            .find_map(|m| {
+                if let Message::PermissionRequest(req) = m {
+                    if req.id == perm_id {
+                        Some(req)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .expect("should have a PermissionRequest in chat");
+
+        assert_eq!(
+            perm_msg.response,
+            Some(crate::messages::PermissionResponseType::Denied),
+            "denied permission_response should set Denied, not Allowed"
+        );
+    }
+
+    /// When both permission_request and permission_response arrive in the
+    /// same batch, the response may sort before the request. The request
+    /// handler checks `responded` — it must use the stored decision, not
+    /// hardcode Allowed.
+    #[tokio::test]
+    async fn test_permission_denied_single_batch() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id_str = "perm-single-batch";
+        let perm_id = uuid::Uuid::new_v4();
+
+        let perm_req_evt = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({"command": "rm -rf /"}),
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let perm_resp_evt = session_events::build_permission_response_event(
+            &perm_id,
+            &[0u8; 32],
+            false, // DENIED
+            Some("too dangerous"),
+            session_id_str,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+
+        for event in [&perm_req_evt, &perm_resp_evt] {
+            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Remote,
+        );
+        session.source = SessionSource::Remote;
+
+        // Process all events in one batch
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            let results = ndb.query(&txn, &[filter], 128).unwrap();
+            let notes: Vec<_> = results
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .collect();
+            assert_eq!(notes.len(), 2);
+
+            let _result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+        }
+
+        // Find the PermissionRequest — regardless of processing order,
+        // the denied response must be reflected.
+        let perm_msg = session
+            .chat
+            .iter()
+            .find_map(|m| {
+                if let Message::PermissionRequest(req) = m {
+                    if req.id == perm_id {
+                        Some(req)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .expect("should have a PermissionRequest in chat");
+
+        assert_eq!(
+            perm_msg.response,
+            Some(crate::messages::PermissionResponseType::Denied),
+            "single-batch denied response should not be marked Allowed"
         );
     }
 }
