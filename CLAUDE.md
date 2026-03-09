@@ -13,9 +13,11 @@ All work MUST be tracked through Linear:
 
 ## Committing
 
-Before committing, you must format and fix clippy issues:
+Before committing, run the local CI checks:
 
-    cargo fmt --all && cargo clippy
+    ./scripts/ci-local
+
+This runs changelog trailer checks, lint (fmt + clippy), tests, and the android build — all parsed directly from the GitHub workflow YAML. You can also run individual jobs via `./scripts/ci.py`, e.g. `./scripts/ci.py lint`.
 
 Include the Linear issue identifier in the commit message or branch name (e.g., `DECK-869`) so that the GitHub-Linear sync can track it automatically.
 

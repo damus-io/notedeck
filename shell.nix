@@ -16,6 +16,7 @@ mkShell ({
     rustup
     gdb
     libiconv
+    (python3.withPackages (ps: [ ps.pyyaml ]))
     pkg-config
     cmake
     fontconfig
