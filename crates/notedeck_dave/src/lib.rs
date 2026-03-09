@@ -3278,19 +3278,8 @@ pub(crate) fn process_conversation_notes<'a>(
                 // Track that this permission was responded to
                 if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
                     if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                        // Decode the actual decision from the content
-                        let allowed = match serde_json::from_str::<serde_json::Value>(content) {
-                            Ok(v) => {
-                                v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny")
-                                    == "allow"
-                            }
-                            Err(_) => false,
-                        };
-                        let response_type = if allowed {
-                            crate::messages::PermissionResponseType::Allowed
-                        } else {
-                            crate::messages::PermissionResponseType::Denied
-                        };
+                        let (response_type, _) =
+                            session_events::decode_permission_response(content);
                         agentic.permissions.responded.insert(perm_id, response_type);
                         // Update the matching PermissionRequest in chat
                         for msg in session.chat.iter_mut() {
@@ -3460,19 +3449,8 @@ fn handle_remote_permission_response(
         return;
     };
 
-    let content = note.content();
-    let (allowed, message) = match serde_json::from_str::<serde_json::Value>(content) {
-        Ok(v) => {
-            let decision = v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny");
-            let msg = v
-                .get("message")
-                .and_then(|m| m.as_str())
-                .filter(|s| !s.is_empty())
-                .map(|s| s.to_string());
-            (decision == "allow", msg)
-        }
-        Err(_) => (false, None),
-    };
+    let (response_type, message) = session_events::decode_permission_response(note.content());
+    let allowed = response_type == crate::messages::PermissionResponseType::Allowed;
 
     if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
         let response = if allowed {
@@ -3481,12 +3459,6 @@ fn handle_remote_permission_response(
             PermissionResponse::Deny {
                 reason: message.unwrap_or_else(|| "Denied by remote".to_string()),
             }
-        };
-
-        let response_type = if allowed {
-            crate::messages::PermissionResponseType::Allowed
-        } else {
-            crate::messages::PermissionResponseType::Denied
         };
         for msg in chat.iter_mut() {
             if let Message::PermissionRequest(req) = msg {

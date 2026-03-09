@@ -736,6 +736,35 @@ pub fn build_permission_response_event(
     finalize_built_event(builder, secret_key, AI_CONVERSATION_KIND)
 }
 
+/// Decode a permission response from its JSON content string.
+///
+/// Returns the decision as a `PermissionResponseType` and an optional
+/// human-readable message. Defaults to `Denied` if the content cannot
+/// be parsed or has no `"decision"` field.
+pub fn decode_permission_response(
+    content: &str,
+) -> (crate::messages::PermissionResponseType, Option<String>) {
+    use crate::messages::PermissionResponseType;
+
+    match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(v) => {
+            let allowed = v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny") == "allow";
+            let message = v
+                .get("message")
+                .and_then(|m| m.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let response_type = if allowed {
+                PermissionResponseType::Allowed
+            } else {
+                PermissionResponseType::Denied
+            };
+            (response_type, message)
+        }
+        Err(_) => (PermissionResponseType::Denied, None),
+    }
+}
+
 /// Build a kind-31988 session state event (parameterized replaceable).
 ///
 /// Published on every status change so remote clients and startup restore

@@ -4,9 +4,11 @@
 //! orders them by created_at, and converts them into `Message` variants
 //! for populating the chat UI.
 
-use crate::messages::{AssistantMessage, ExecutedTool, PermissionRequest, PermissionResponseType};
+use crate::messages::{AssistantMessage, ExecutedTool, PermissionRequest};
 use crate::session::PermissionTracker;
-use crate::session_events::{get_tag_value, is_conversation_role, AI_CONVERSATION_KIND};
+use crate::session_events::{
+    decode_permission_response, get_tag_value, is_conversation_role, AI_CONVERSATION_KIND,
+};
 use crate::tools::ToolResponse;
 use crate::Message;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
@@ -146,17 +148,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         if role == Some("permission_response") {
             if let Some(perm_id_str) = get_tag_value(note, "perm-id") {
                 if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                    let allowed = match serde_json::from_str::<serde_json::Value>(note.content()) {
-                        Ok(v) => {
-                            v.get("decision").and_then(|d| d.as_str()).unwrap_or("deny") == "allow"
-                        }
-                        Err(_) => false,
-                    };
-                    let response_type = if allowed {
-                        PermissionResponseType::Allowed
-                    } else {
-                        PermissionResponseType::Denied
-                    };
+                    let (response_type, _) = decode_permission_response(note.content());
                     permissions.responded.insert(perm_id, response_type);
                 }
             }
