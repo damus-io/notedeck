@@ -52,15 +52,48 @@ pub fn input_context(
     crate::include_input(ui, response)
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct MenuPadding {
+    pub button_padding: egui::Vec2,
+    pub item_spacing_y: f32,
+}
+
+impl Default for MenuPadding {
+    fn default() -> Self {
+        Self {
+            button_padding: egui::vec2(12.0, 8.0),
+            item_spacing_y: 4.0,
+        }
+    }
+}
+
 pub fn stationary_arbitrary_menu_button<R>(
     ui: &mut egui::Ui,
     button_response: egui::Response,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
+    stationary_arbitrary_menu_button_padding(
+        ui,
+        button_response,
+        MenuPadding::default(),
+        add_contents,
+    )
+}
+
+pub fn stationary_arbitrary_menu_button_padding<R>(
+    ui: &mut egui::Ui,
+    button_response: egui::Response,
+    padding: MenuPadding,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
     let bar_id = ui.id();
     let mut bar_state = egui::menu::BarState::load(ui.ctx(), bar_id);
 
-    let inner = bar_state.bar_menu(&button_response, add_contents);
+    let inner = bar_state.bar_menu(&button_response, |ui| {
+        ui.spacing_mut().button_padding = padding.button_padding;
+        ui.spacing_mut().item_spacing.y = padding.item_spacing_y;
+        add_contents(ui)
+    });
 
     bar_state.store(ui.ctx(), bar_id);
     egui::InnerResponse::new(inner.map(|r| r.inner), button_response)

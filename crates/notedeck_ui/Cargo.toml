@@ -23,5 +23,5 @@ enostr = { workspace = true }
 hashbrown = { workspace = true }
 
 [dev-dependencies]
-egui_kittest = { workspace = true }
+egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 eframe = { workspace = true, features = ["accesskit"] }

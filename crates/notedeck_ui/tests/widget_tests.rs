@@ -1,6 +1,7 @@
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
+use notedeck_ui::context_menu::{stationary_arbitrary_menu_button_padding, MenuPadding};
 use notedeck_ui::widgets::search_input_box;
 
 #[test]
@@ -42,4 +43,50 @@ fn test_search_input_box_type_text() {
 
     // Verify query state was updated
     assert_eq!(harness.state(), "hello");
+}
+
+fn menu_items(ui: &mut egui::Ui) {
+    ui.set_max_width(200.0);
+    ui.button("Summarize Thread");
+    ui.button("Copy Note Link");
+    ui.button("Copy Text");
+    ui.button("Copy Pubkey");
+    ui.button("Copy Note ID");
+    ui.button("Mute User");
+}
+
+fn context_menu_harness(padding: MenuPadding) -> Harness<'static> {
+    Harness::new_ui(move |ui| {
+        let resp = ui.button("...");
+        stationary_arbitrary_menu_button_padding(ui, resp, padding, menu_items);
+    })
+}
+
+#[test]
+fn test_context_menu_snapshot() {
+    let mut harness = context_menu_harness(MenuPadding::default());
+
+    let btn = harness.get_by_label("...");
+    btn.click();
+    harness.run();
+    harness.run();
+
+    harness.snapshot("context_menu");
+}
+
+#[test]
+fn test_context_menu_thin_snapshot() {
+    // egui defaults for comparison: button_padding (4, 1), item_spacing.y = 3
+    let thin = MenuPadding {
+        button_padding: egui::vec2(4.0, 1.0),
+        item_spacing_y: 3.0,
+    };
+    let mut harness = context_menu_harness(thin);
+
+    let btn = harness.get_by_label("...");
+    btn.click();
+    harness.run();
+    harness.run();
+
+    harness.snapshot("context_menu_thin");
 }
