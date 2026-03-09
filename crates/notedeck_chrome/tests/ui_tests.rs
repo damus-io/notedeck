@@ -162,3 +162,35 @@ fn snapshot_tablet() {
 fn snapshot_desktop_wide() {
     snapshot_at_size(1400.0, 900.0, "damus_desktop_wide");
 }
+
+// ---------------------------------------------------------------------------
+// Light mode snapshot
+// ---------------------------------------------------------------------------
+
+/// Same as render_damus_frame but switches to light theme after font setup.
+fn render_damus_frame_light(ctx: &egui::Context, state: &mut TestState) {
+    if !state.fonts_installed {
+        state.notedeck.setup(ctx);
+        ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Light);
+        state.fonts_installed = true;
+        return;
+    }
+    let mut app_ctx = state.notedeck.app_context(ctx);
+    egui::CentralPanel::default().show(ctx, |ui| {
+        state.damus.render(&mut app_ctx, ui);
+    });
+}
+
+#[test]
+fn snapshot_light_mode() {
+    let ctx = egui::Context::default();
+    let state = make_test_state(&ctx);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(800.0, 600.0))
+        .wgpu()
+        .build_state(render_damus_frame_light, state);
+
+    harness.run();
+    harness.snapshot("damus_light_mode");
+}
