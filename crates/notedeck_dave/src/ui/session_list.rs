@@ -235,7 +235,7 @@ impl<'a> SessionListUi<'a> {
 
         let ctrl_held = self.ctrl_held;
         let is_agentic = session.ai_mode == AiMode::Agentic;
-        response.context_menu(|ui| {
+        notedeck_ui::context_menu::context_menu(&response, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("Rename").clicked() {
                     let rename_state = (session.id, session.details.display_title().to_string());

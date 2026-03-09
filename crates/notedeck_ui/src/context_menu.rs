@@ -26,7 +26,7 @@ pub fn input_context(
     input: &mut String,
     paste_behavior: PasteBehavior,
 ) {
-    response.context_menu(|ui| {
+    context_menu(response, |ui| {
         if ui.button("Paste").clicked() {
             handle_paste(clipboard, input, paste_behavior);
             ui.close_menu();
@@ -97,6 +97,25 @@ pub fn stationary_arbitrary_menu_button_padding<R>(
 
     bar_state.store(ui.ctx(), bar_id);
     egui::InnerResponse::new(inner.map(|r| r.inner), button_response)
+}
+
+/// Drop-in replacement for `response.context_menu()` with configurable padding.
+pub fn context_menu_padding(
+    response: &egui::Response,
+    padding: MenuPadding,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    response.context_menu(|ui| {
+        ui.spacing_mut().button_padding = padding.button_padding;
+        ui.spacing_mut().item_spacing.y = padding.item_spacing_y;
+        add_contents(ui);
+    });
+}
+
+/// Drop-in replacement for `response.context_menu()` that applies our
+/// standard menu padding.
+pub fn context_menu(response: &egui::Response, add_contents: impl FnOnce(&mut egui::Ui)) {
+    context_menu_padding(response, MenuPadding::default(), add_contents);
 }
 
 pub fn context_button(ui: &mut egui::Ui, id: egui::Id, put_at: egui::Rect) -> egui::Response {

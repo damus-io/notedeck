@@ -472,7 +472,7 @@ fn self_chat_bubble(
         })
         .inner
     });
-    r.response.context_menu(|ui| {
+    notedeck_ui::context_menu::context_menu(&r.response, |ui| {
         if ui.button("Copy").clicked() {
             ui.ctx().copy_text(message.to_owned());
             ui.close_menu();
@@ -534,7 +534,7 @@ fn other_chat_bubble(
             .response
         })
     });
-    r.response.context_menu(|ui| {
+    notedeck_ui::context_menu::context_menu(&r.response, |ui| {
         if ui.button("Copy").clicked() {
             ui.ctx().copy_text(message_owned.clone());
             ui.close_menu();

@@ -1374,7 +1374,7 @@ impl<'a> DaveUi<'a> {
                         );
                     }
                 });
-            r.response.context_menu(|ui| {
+            notedeck_ui::context_menu::context_menu(&r.response, |ui| {
                 if ui.button("Copy").clicked() {
                     ui.ctx().copy_text(msg.to_owned());
                     ui.close_menu();
@@ -1391,7 +1391,7 @@ impl<'a> DaveUi<'a> {
         let r = ui.scope(|ui| {
             markdown_ui::render_assistant_message(elements, partial, buffer, ui);
         });
-        r.response.context_menu(|ui| {
+        notedeck_ui::context_menu::context_menu(&r.response, |ui| {
             if ui.button("Copy").clicked() {
                 ui.ctx().copy_text(text.clone());
                 ui.close_menu();

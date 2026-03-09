@@ -215,7 +215,7 @@ impl MediaUIAction {
 }
 
 fn copy_link(i18n: &mut Localization, url: &str, img_resp: &Response) {
-    img_resp.context_menu(|ui| {
+    crate::context_menu::context_menu(img_resp, |ui| {
         if ui
             .button(tr!(
                 i18n,
