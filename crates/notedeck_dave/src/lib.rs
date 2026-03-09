@@ -1998,156 +1998,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 Err(_) => continue,
             };
 
-            // Collect and sort by (created_at, seq) to process in order.
-            // The seq tag is a per-session tiebreaker for events within the
-            // same second (e.g. tool_call before permission_request).
-            let mut notes: Vec<_> = note_keys
+            let notes: Vec<_> = note_keys
                 .iter()
                 .filter_map(|key| ndb.get_note_by_key(&txn, *key).ok())
                 .collect();
-            notes.sort_by_key(|n| {
-                let seq = session_events::get_tag_value(n, "seq")
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .unwrap_or(0);
-                (n.created_at(), seq)
-            });
 
-            for note in &notes {
-                // Skip events we've already processed (dedup)
-                let note_id = *note.id();
-                let dominated = session
-                    .agentic
-                    .as_mut()
-                    .map(|a| !a.seen_note_ids.insert(note_id))
-                    .unwrap_or(true);
-                if dominated {
-                    continue;
-                }
-
-                let content = note.content();
-                let role = session_events::get_tag_value(note, "role");
-
-                // Local sessions: only process incoming user messages from remote clients
-                if !is_remote {
-                    if role == Some("user") {
-                        tracing::info!("received remote user message for local session");
-                        session.chat.push(Message::User(content.to_string()));
-                        session.update_title_from_last_message();
-                        remote_user_messages.push((session_id, content.to_string()));
-                    }
-                    continue;
-                }
-
-                let Some(agentic) = &mut session.agentic else {
-                    continue;
-                };
-
-                match role {
-                    Some("user") => {
-                        session.chat.push(Message::User(content.to_string()));
-                    }
-                    Some("assistant") => {
-                        session.chat.push(Message::Assistant(
-                            crate::messages::AssistantMessage::from_text(content.to_string()),
-                        ));
-                    }
-                    Some("tool_call") => {
-                        session.chat.push(Message::Assistant(
-                            crate::messages::AssistantMessage::from_text(content.to_string()),
-                        ));
-                    }
-                    Some("tool_result") => {
-                        let summary = if content.chars().count() > 100 {
-                            let truncated: String = content.chars().take(100).collect();
-                            format!("{}...", truncated)
-                        } else {
-                            content.to_string()
-                        };
-                        let tool_name = session_events::get_tag_value(note, "tool-name")
-                            .unwrap_or("tool")
-                            .to_string();
-                        session
-                            .chat
-                            .push(Message::ToolResponse(ToolResponse::executed_tool(
-                                crate::messages::ExecutedTool {
-                                    tool_name,
-                                    summary,
-                                    parent_task_id: None,
-                                    file_update: None,
-                                },
-                            )));
-                    }
-                    Some("permission_request") => {
-                        handle_remote_permission_request(
-                            note,
-                            content,
-                            agentic,
-                            &mut session.chat,
-                            secret_key,
-                            &mut events_to_publish,
-                        );
-                    }
-                    Some("permission_response") => {
-                        // Track that this permission was responded to
-                        if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
-                            if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                                agentic.permissions.responded.insert(perm_id);
-                                // Update the matching PermissionRequest in chat
-                                for msg in session.chat.iter_mut() {
-                                    if let Message::PermissionRequest(req) = msg {
-                                        if req.id == perm_id && req.response.is_none() {
-                                            req.response = Some(
-                                                crate::messages::PermissionResponseType::Allowed,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Some("compaction_started") => {
-                        agentic.is_compacting = true;
-                    }
-                    Some("compaction_complete") => {
-                        agentic.is_compacting = false;
-                        let pre_tokens = content.parse::<u64>().unwrap_or(0);
-                        let info = crate::messages::CompactionInfo { pre_tokens };
-                        agentic.last_compaction = Some(info.clone());
-                        session.chat.push(Message::CompactionComplete(info));
-
-                        // Advance compact-and-proceed: for remote sessions,
-                        // there's no stream-end to wait for, so go straight
-                        // to ReadyToProceed and consume immediately.
-                        if agentic.compact_and_proceed
-                            == crate::session::CompactAndProceedState::WaitingForCompaction
-                        {
-                            agentic.compact_and_proceed =
-                                crate::session::CompactAndProceedState::ReadyToProceed;
-                        }
-                    }
-                    _ => {
-                        // Skip progress, queue-operation, etc.
-                    }
-                }
-
-                // Handle proceed after compaction for remote sessions.
-                // Published as a relay event so the desktop backend picks it up.
-                if session.take_compact_and_proceed() {
-                    if let Some(sk) = secret_key {
-                        if let Some(evt) = ingest_live_event(
-                            session,
-                            ndb,
-                            sk,
-                            "Proceed with implementing the plan.",
-                            "user",
-                            None,
-                            None,
-                        ) {
-                            events_to_publish.push(evt);
-                        }
-                    }
-                }
-            }
+            let result =
+                process_conversation_notes(notes, session, session_id, is_remote, secret_key, ndb);
+            remote_user_messages.extend(result.remote_user_messages);
+            events_to_publish.extend(result.events_to_publish);
         }
         (remote_user_messages, events_to_publish)
     }
@@ -3306,6 +3165,182 @@ fn handle_permission_request(
         .push(Message::PermissionRequest(pending.request));
 }
 
+/// Result of processing a batch of conversation notes.
+pub(crate) struct ProcessedNotes {
+    /// User messages received from remote clients (for local sessions).
+    pub remote_user_messages: Vec<(SessionId, String)>,
+    /// Events that should be published to relays.
+    pub events_to_publish: Vec<session_events::BuiltEvent>,
+}
+
+/// Process a batch of kind-1988 notes for a single session.
+///
+/// Sorts by `(created_at, seq)`, deduplicates via `seen_note_ids`, and
+/// appends messages to `session.chat`. Returns any remote user messages
+/// (for local sessions) and events to publish.
+pub(crate) fn process_conversation_notes<'a>(
+    mut notes: Vec<nostrdb::Note<'a>>,
+    session: &mut session::ChatSession,
+    session_id: SessionId,
+    is_remote: bool,
+    secret_key: Option<&[u8; 32]>,
+    ndb: &nostrdb::Ndb,
+) -> ProcessedNotes {
+    let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
+    let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
+
+    // Sort by (created_at, seq) to process in order.
+    // The seq tag is a per-session tiebreaker for events within the
+    // same second (e.g. tool_call before permission_request).
+    notes.sort_by_key(|n| {
+        let seq = session_events::get_tag_value(n, "seq")
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        (n.created_at(), seq)
+    });
+
+    for note in &notes {
+        // Skip events we've already processed (dedup)
+        let note_id = *note.id();
+        let dominated = session
+            .agentic
+            .as_mut()
+            .map(|a| !a.seen_note_ids.insert(note_id))
+            .unwrap_or(true);
+        if dominated {
+            continue;
+        }
+
+        let content = note.content();
+        let role = session_events::get_tag_value(note, "role");
+
+        // Local sessions: only process incoming user messages from remote clients
+        if !is_remote {
+            if role == Some("user") {
+                tracing::info!("received remote user message for local session");
+                session.chat.push(Message::User(content.to_string()));
+                session.update_title_from_last_message();
+                remote_user_messages.push((session_id, content.to_string()));
+            }
+            continue;
+        }
+
+        let Some(agentic) = &mut session.agentic else {
+            continue;
+        };
+
+        match role {
+            Some("user") => {
+                session.chat.push(Message::User(content.to_string()));
+            }
+            Some("assistant") => {
+                session.chat.push(Message::Assistant(
+                    crate::messages::AssistantMessage::from_text(content.to_string()),
+                ));
+            }
+            Some("tool_call") => {
+                session.chat.push(Message::Assistant(
+                    crate::messages::AssistantMessage::from_text(content.to_string()),
+                ));
+            }
+            Some("tool_result") => {
+                let summary = if content.chars().count() > 100 {
+                    let truncated: String = content.chars().take(100).collect();
+                    format!("{}...", truncated)
+                } else {
+                    content.to_string()
+                };
+                let tool_name = session_events::get_tag_value(note, "tool-name")
+                    .unwrap_or("tool")
+                    .to_string();
+                session
+                    .chat
+                    .push(Message::ToolResponse(ToolResponse::executed_tool(
+                        crate::messages::ExecutedTool {
+                            tool_name,
+                            summary,
+                            parent_task_id: None,
+                            file_update: None,
+                        },
+                    )));
+            }
+            Some("permission_request") => {
+                handle_remote_permission_request(
+                    note,
+                    content,
+                    agentic,
+                    &mut session.chat,
+                    secret_key,
+                    &mut events_to_publish,
+                );
+            }
+            Some("permission_response") => {
+                // Track that this permission was responded to
+                if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
+                    if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
+                        agentic.permissions.responded.insert(perm_id);
+                        // Update the matching PermissionRequest in chat
+                        for msg in session.chat.iter_mut() {
+                            if let Message::PermissionRequest(req) = msg {
+                                if req.id == perm_id && req.response.is_none() {
+                                    req.response =
+                                        Some(crate::messages::PermissionResponseType::Allowed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Some("compaction_started") => {
+                agentic.is_compacting = true;
+            }
+            Some("compaction_complete") => {
+                agentic.is_compacting = false;
+                let pre_tokens = content.parse::<u64>().unwrap_or(0);
+                let info = crate::messages::CompactionInfo { pre_tokens };
+                agentic.last_compaction = Some(info.clone());
+                session.chat.push(Message::CompactionComplete(info));
+
+                // Advance compact-and-proceed: for remote sessions,
+                // there's no stream-end to wait for, so go straight
+                // to ReadyToProceed and consume immediately.
+                if agentic.compact_and_proceed
+                    == crate::session::CompactAndProceedState::WaitingForCompaction
+                {
+                    agentic.compact_and_proceed =
+                        crate::session::CompactAndProceedState::ReadyToProceed;
+                }
+            }
+            _ => {
+                // Skip progress, queue-operation, etc.
+            }
+        }
+
+        // Handle proceed after compaction for remote sessions.
+        // Published as a relay event so the desktop backend picks it up.
+        if session.take_compact_and_proceed() {
+            if let Some(sk) = secret_key {
+                if let Some(evt) = ingest_live_event(
+                    session,
+                    ndb,
+                    sk,
+                    "Proceed with implementing the plan.",
+                    "user",
+                    None,
+                    None,
+                ) {
+                    events_to_publish.push(evt);
+                }
+            }
+        }
+    }
+
+    ProcessedNotes {
+        remote_user_messages,
+        events_to_publish,
+    }
+}
+
 /// Handle a remote permission request from a kind-1988 conversation event.
 /// Checks runtime allowlist for auto-accept, otherwise adds to chat for UI display.
 fn handle_remote_permission_request(
@@ -3643,5 +3678,159 @@ fn activate_app(ctx: &egui::Context) {
                 unsafe { window.orderFrontRegardless() };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AiMode;
+    use crate::session::SessionSource;
+    use crate::session_events::{build_live_event, build_permission_request_event, ThreadingState};
+    use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn test_secret_key() -> [u8; 32] {
+        let mut key = [0u8; 32];
+        key[0] = 1;
+        key
+    }
+
+    /// Integration test: events ingested out of order into ndb are sorted
+    /// by `(created_at, seq)` and produce correctly ordered chat messages.
+    /// This exercises the actual `process_conversation_notes` code path
+    /// used by `poll_remote_conversation_events`.
+    #[tokio::test]
+    async fn test_process_conversation_notes_ordering() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id_str = "poll-ordering-test";
+
+        // Build events: tool_call (seq=0), permission_request (seq=1), tool_result (seq=2)
+        let tool_call_evt = build_live_event(
+            r#"{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}"#,
+            "tool_call",
+            session_id_str,
+            None,
+            Some("toolu_1"),
+            Some("Bash"),
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let perm_id = uuid::Uuid::new_v4();
+        let perm_evt = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &serde_json::json!({"command": "rm -rf /tmp/test"}),
+            session_id_str,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tool_result_evt = build_live_event(
+            "file1.txt\nfile2.txt",
+            "tool_result",
+            session_id_str,
+            None,
+            Some("toolu_1"),
+            Some("Bash"),
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        // Set up ndb
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+
+        // Ingest in REVERSED order to simulate out-of-order relay delivery
+        for event in [&tool_result_evt, &perm_evt, &tool_call_evt] {
+            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+
+        // Create a remote agentic session
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        session.source = SessionSource::Remote;
+
+        // First pass: query, process, and verify ordering
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            let results = ndb.query(&txn, &[filter.clone()], 128).unwrap();
+            let notes: Vec<_> = results
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .collect();
+            assert_eq!(notes.len(), 3, "should have 3 events in ndb");
+
+            let result = process_conversation_notes(
+                notes,
+                &mut session,
+                1,
+                true, // is_remote
+                Some(&sk),
+                &ndb,
+            );
+
+            assert!(result.remote_user_messages.is_empty());
+        }
+
+        // Assert correct ordering in chat
+        assert_eq!(
+            session.chat.len(),
+            3,
+            "should have 3 chat messages, got {}",
+            session.chat.len()
+        );
+        assert!(
+            matches!(&session.chat[0], Message::Assistant(_)),
+            "chat[0] should be Assistant (tool_call)",
+        );
+        assert!(
+            matches!(&session.chat[1], Message::PermissionRequest(_)),
+            "chat[1] should be PermissionRequest",
+        );
+        assert!(
+            matches!(&session.chat[2], Message::ToolResponse(_)),
+            "chat[2] should be ToolResponse (tool_result)",
+        );
+
+        // Verify permission request has correct tool name
+        if let Message::PermissionRequest(req) = &session.chat[1] {
+            assert_eq!(req.tool_name, "Bash");
+            assert_eq!(req.id, perm_id);
+        }
+
+        // Second pass: verify dedup prevents duplicate messages
+        {
+            let txn = Transaction::new(&ndb).unwrap();
+            let results = ndb.query(&txn, &[filter], 128).unwrap();
+            let notes: Vec<_> = results
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
+                .collect();
+
+            let _result = process_conversation_notes(notes, &mut session, 1, true, Some(&sk), &ndb);
+        }
+        assert_eq!(
+            session.chat.len(),
+            3,
+            "dedup should prevent duplicate messages"
+        );
     }
 }
