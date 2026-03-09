@@ -1011,8 +1011,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     self.duplicate_session(id);
                 }
                 SessionListAction::Reset(id) => {
-                    self.duplicate_session(id);
-                    self.delete_session(id);
+                    self.clear_session(id);
                 }
             }
         }
@@ -1065,8 +1064,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     self.show_session_list = false;
                 }
                 SessionListAction::Reset(id) => {
-                    self.duplicate_session(id);
-                    self.delete_session(id);
+                    self.clear_session(id);
                     self.show_session_list = false;
                 }
             }
@@ -2155,6 +2153,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         session.state_dirty = true;
     }
 
+    /// Clear a session: duplicate it (preserving working directory) then delete the original.
+    /// This is the canonical "reset" action used by the Clear menu button, Ctrl+Shift+K, and /clear.
+    fn clear_session(&mut self, id: SessionId) {
+        self.duplicate_session(id);
+        self.delete_session(id);
+    }
+
     fn delete_session(&mut self, id: SessionId) {
         // Capture session info before deletion so we can publish a "deleted" state event
         if let Some(session) = self.session_manager.get(id) {
@@ -2366,8 +2371,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             KeyActionResult::ClearAgent => {
                 if let Some(id) = self.session_manager.active_id() {
-                    self.duplicate_session(id);
-                    self.delete_session(id);
+                    self.clear_session(id);
                 }
             }
             KeyActionResult::SetAutoSteal(new_state) => {
@@ -2512,6 +2516,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         } else if cd_result.is_some() {
             // Error case - already handled above
             return;
+        }
+
+        // Handle /clear command: reset session (same as Clear menu action)
+        if let Some(session) = self.session_manager.get_active() {
+            if session.input.trim() == "/clear" {
+                if let Some(id) = self.session_manager.active_id() {
+                    if let Some(s) = self.session_manager.get_mut(id) {
+                        s.input.clear();
+                    }
+                    self.clear_session(id);
+                }
+                return;
+            }
         }
 
         // Normal message handling
