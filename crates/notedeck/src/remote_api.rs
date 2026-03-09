@@ -131,7 +131,7 @@ pub fn try_process_events(ctx: &Context, pool: &mut Outbox, ndb: &Ndb) {
 
     pool.outbox.keepalive_ping(wakeup);
 
-    pool.outbox.try_recv(10, |ev| {
+    pool.outbox.try_recv(100, |ev| {
         let from_client = match ev.relay_type {
             RelayImplType::Websocket => false,
             enostr::RelayImplType::Multicast => true,
