@@ -283,7 +283,7 @@ impl Tool {
             );
 
             let description = if let Some(default) = &arg.default {
-                format!("{} (Default: {default}))", arg.description)
+                format!("{} (Default: {default})", arg.description)
             } else {
                 arg.description.to_owned()
             };

@@ -92,9 +92,10 @@ fn format_write_summary(input: &serde_json::Value) -> String {
 
 fn format_bash_summary(input: &serde_json::Value, response: &serde_json::Value) -> String {
     let cmd = input.get("command").and_then(|v| v.as_str()).unwrap_or("");
-    // Truncate long commands
+    // Truncate long commands (must respect UTF-8 char boundaries)
     let cmd_display = if cmd.len() > 40 {
-        format!("{}...", &cmd[..37])
+        let cut = notedeck::abbrev::floor_char_boundary(cmd, 37);
+        format!("{}...", &cmd[..cut])
     } else {
         cmd.to_string()
     };
@@ -145,7 +146,9 @@ pub fn truncate_output(output: &str, max_size: usize) -> String {
     if output.len() <= max_size {
         output.to_string()
     } else {
-        let start = output.len() - max_size;
+        // Must ceil to a valid UTF-8 char boundary to avoid panics
+        let raw_start = output.len() - max_size;
+        let start = notedeck::abbrev::ceil_char_boundary(output, raw_start);
         // Find a newline near the start to avoid cutting mid-line
         let adjusted_start = output[start..]
             .find('\n')

@@ -347,9 +347,13 @@ impl AgenticSessionData {
         if let Some(&idx) = self.subagent_indices.get(task_id) {
             if let Some(Message::Subagent(subagent)) = chat.get_mut(idx) {
                 subagent.output.push_str(new_output);
-                // Keep only the most recent content up to max_output_size
+                // Keep only the most recent content up to max_output_size.
+                // Must find a valid UTF-8 char boundary to avoid panics.
                 if subagent.output.len() > subagent.max_output_size {
-                    let keep_from = subagent.output.len() - subagent.max_output_size;
+                    let mut keep_from = subagent.output.len() - subagent.max_output_size;
+                    while !subagent.output.is_char_boundary(keep_from) {
+                        keep_from += 1;
+                    }
                     subagent.output = subagent.output[keep_from..].to_string();
                 }
             }
