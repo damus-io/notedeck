@@ -3255,7 +3255,7 @@ mod tests {
         mock.send_delta("before").await;
 
         // Send garbage that isn't valid JSON
-        let mut garbage = "this is not json at all\n".to_string();
+        let garbage = "this is not json at all\n".to_string();
         mock.writer.write_all(garbage.as_bytes()).await.unwrap();
         mock.writer.flush().await.unwrap();
 

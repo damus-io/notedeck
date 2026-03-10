@@ -47,12 +47,12 @@ fn test_search_input_box_type_text() {
 
 fn menu_items(ui: &mut egui::Ui) {
     ui.set_max_width(200.0);
-    ui.button("Summarize Thread");
-    ui.button("Copy Note Link");
-    ui.button("Copy Text");
-    ui.button("Copy Pubkey");
-    ui.button("Copy Note ID");
-    ui.button("Mute User");
+    let _ = ui.button("Summarize Thread");
+    let _ = ui.button("Copy Note Link");
+    let _ = ui.button("Copy Text");
+    let _ = ui.button("Copy Pubkey");
+    let _ = ui.button("Copy Note ID");
+    let _ = ui.button("Mute User");
 }
 
 fn context_menu_harness(padding: MenuPadding) -> Harness<'static> {
