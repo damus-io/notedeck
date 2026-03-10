@@ -22,7 +22,7 @@ pub mod session_loader;
 pub mod session_reconstructor;
 mod tools;
 pub mod ui;
-mod update;
+pub mod update;
 mod vec3;
 pub mod worktree;
 

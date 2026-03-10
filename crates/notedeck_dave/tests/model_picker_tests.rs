@@ -3,6 +3,9 @@ use notedeck_dave::backend::traits::{BackendType, Model};
 use notedeck_dave::config::AiMode;
 use notedeck_dave::session::SessionManager;
 use notedeck_dave::ui::backend_picker_overlay_ui;
+use notedeck_dave::ui::directory_picker::DirectoryPicker;
+use notedeck_dave::ui::scene::AgentScene;
+use notedeck_dave::update::create_session_with_cwd;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -12,11 +15,9 @@ struct PickerState {
     result: Option<(BackendType, Model)>,
 }
 
-/// Test: index 0 in the picker returns Model::Default (backend picks its own).
-#[test]
-fn test_picker_default_returns_default() {
-    let bt = BackendType::Claude;
-
+/// Drive the picker UI with the given backend and model index, press the
+/// hotkey for the first backend, and return the resulting selection.
+fn pick(bt: BackendType, model_index: usize) -> (BackendType, Model) {
     let mut harness = Harness::new_ui_state(
         |ui, state: &mut PickerState| {
             state.result =
@@ -24,7 +25,7 @@ fn test_picker_default_returns_default() {
         },
         PickerState {
             backends: vec![bt],
-            selected_models: HashMap::from([(bt, 0)]), // index 0 = Default
+            selected_models: HashMap::from([(bt, model_index)]),
             result: None,
         },
     );
@@ -33,11 +34,18 @@ fn test_picker_default_returns_default() {
     harness.press_key(egui::Key::Num1);
     harness.step();
 
-    let (picked_backend, picked_model) = harness
+    harness
         .state()
         .result
         .clone()
-        .expect("picker should return a selection");
+        .expect("picker should return a selection")
+}
+
+/// Test: index 0 in the picker returns Model::Default (backend picks its own).
+#[test]
+fn test_picker_default_returns_default() {
+    let bt = BackendType::Claude;
+    let (picked_backend, picked_model) = pick(bt, 0);
 
     assert_eq!(picked_backend, bt);
     assert_eq!(picked_model, Model::Default);
@@ -51,28 +59,7 @@ fn test_picker_default_returns_default() {
 #[test]
 fn test_picker_opus_override() {
     let bt = BackendType::Claude;
-
-    let mut harness = Harness::new_ui_state(
-        |ui, state: &mut PickerState| {
-            state.result =
-                backend_picker_overlay_ui(&state.backends, &mut state.selected_models, ui);
-        },
-        PickerState {
-            backends: vec![bt],
-            selected_models: HashMap::from([(bt, 1)]), // index 1 = first override (Opus)
-            result: None,
-        },
-    );
-
-    harness.run();
-    harness.press_key(egui::Key::Num1);
-    harness.step();
-
-    let (picked_backend, picked_model) = harness
-        .state()
-        .result
-        .clone()
-        .expect("picker should return a selection");
+    let (picked_backend, picked_model) = pick(bt, 1);
 
     assert_eq!(picked_backend, bt);
     assert_eq!(picked_model, Model::Opus);
@@ -89,48 +76,36 @@ fn test_picker_opus_override() {
 #[test]
 fn test_picker_sonnet_override() {
     let bt = BackendType::Claude;
-
-    let mut harness = Harness::new_ui_state(
-        |ui, state: &mut PickerState| {
-            state.result =
-                backend_picker_overlay_ui(&state.backends, &mut state.selected_models, ui);
-        },
-        PickerState {
-            backends: vec![bt],
-            selected_models: HashMap::from([(bt, 2)]), // index 2 = Sonnet
-            result: None,
-        },
-    );
-
-    harness.run();
-    harness.press_key(egui::Key::Num1);
-    harness.step();
-
-    let (picked_backend, picked_model) = harness
-        .state()
-        .result
-        .clone()
-        .expect("picker should return a selection");
+    let (picked_backend, picked_model) = pick(bt, 2);
 
     assert_eq!(picked_backend, bt);
     assert_eq!(picked_model, Model::Sonnet);
 }
 
-/// Test: picker result flows through to session's resolve_model.
+/// Test: picker result flows through create_session_with_cwd to session's resolve_model.
 #[test]
 fn test_picker_selection_flows_to_session() {
     let bt = BackendType::Claude;
-
-    // Pick a specific override model
     let mut mgr = SessionManager::new();
-    let id = mgr.new_session(PathBuf::from("/tmp"), AiMode::Agentic, bt);
-    let session = mgr.get_mut(id).unwrap();
+    let mut dir_picker = DirectoryPicker::new();
+    let mut scene = AgentScene::new();
 
-    // Simulate picking Opus: store the model ID
-    let model = Model::Opus;
-    session.details.model = model.to_model_id().map(|s| s.to_string());
+    // Opus override: resolve_model should return an opus model ID
+    let (picked_backend, picked_model) = pick(bt, 1);
+    let id = create_session_with_cwd(
+        &mut mgr,
+        &mut dir_picker,
+        &mut scene,
+        false,
+        AiMode::Agentic,
+        PathBuf::from("/tmp"),
+        "localhost",
+        picked_backend,
+        None,
+        picked_model,
+    );
 
-    let resolved = session.details.resolve_model();
+    let resolved = mgr.get(id).unwrap().details.resolve_model();
     assert!(
         resolved.is_some(),
         "resolve_model should return Some for explicit override"
@@ -140,10 +115,23 @@ fn test_picker_selection_flows_to_session() {
         "resolved model should be an Opus model ID"
     );
 
-    // When no model is set, resolve_model returns None (CLI default)
-    session.details.model = None;
+    // Default: resolve_model should return None (CLI default)
+    let (picked_backend, picked_model) = pick(bt, 0);
+    let id = create_session_with_cwd(
+        &mut mgr,
+        &mut dir_picker,
+        &mut scene,
+        false,
+        AiMode::Agentic,
+        PathBuf::from("/tmp"),
+        "localhost",
+        picked_backend,
+        None,
+        picked_model,
+    );
+
     assert!(
-        session.details.resolve_model().is_none(),
+        mgr.get(id).unwrap().details.resolve_model().is_none(),
         "resolve_model should return None when no override is set"
     );
 }
