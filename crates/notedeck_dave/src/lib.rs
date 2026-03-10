@@ -4251,14 +4251,12 @@ fn activate_app(ctx: &egui::Context) {
             let app = NSApplication::sharedApplication(mtm);
 
             // Activate via NSRunningApplication for per-process activation
-            let current = unsafe { NSRunningApplication::currentApplication() };
-            unsafe {
-                current.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
-            };
+            let current = NSRunningApplication::currentApplication();
+            current.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
 
             // Also force the key window to front regardless of Stage Manager
             if let Some(window) = app.keyWindow() {
-                unsafe { window.orderFrontRegardless() };
+                window.orderFrontRegardless();
             }
         }
     }
