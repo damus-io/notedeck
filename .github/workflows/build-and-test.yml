@@ -24,3 +24,5 @@ jobs:
 
       - name: Run Tests (Native Only)
         run: cargo test
+        env:
+          CI: true
