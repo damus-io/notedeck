@@ -113,7 +113,7 @@ async fn test_trial_key_model_access() {
             model: model.to_string(),
             stream: Some(false),
             messages: vec![ChatCompletionRequestMessage::User(message)],
-            max_tokens: Some(5),
+            max_completion_tokens: Some(5),
             ..Default::default()
         };
 
