@@ -954,8 +954,10 @@ pub fn create_session_with_cwd(
 
     let id = session_manager.new_session(cwd, ai_mode, backend_type);
     if let Some(session) = session_manager.get_mut(id) {
+        let model_id = model.to_model_id().map(str::to_string);
         session.details.hostname = hostname.to_string();
-        session.details.model = model.to_model_id().map(|s| s.to_string());
+        session.details.requested_model = model_id.clone();
+        session.details.model = model_id;
         session.focus_requested = true;
         if show_scene {
             scene.select(id);
@@ -1142,7 +1144,7 @@ mod tests {
         );
 
         // Verify the original session has the model set
-        let orig_model = sm.get(orig_id).unwrap().details.model.clone();
+        let orig_model = sm.get(orig_id).unwrap().details.requested_model.clone();
         assert!(orig_model.is_some(), "original session should have a model");
 
         // Clone it
@@ -1161,7 +1163,7 @@ mod tests {
         let new_id = sm.active_id().unwrap();
         assert_ne!(new_id, orig_id);
 
-        let new_model = sm.get(new_id).unwrap().details.model.clone();
+        let new_model = sm.get(new_id).unwrap().details.requested_model.clone();
         assert_eq!(
             new_model, orig_model,
             "cloned session should preserve the model from the original"
@@ -1188,7 +1190,7 @@ mod tests {
             Model::Default,
         );
 
-        assert!(sm.get(orig_id).unwrap().details.model.is_none());
+        assert!(sm.get(orig_id).unwrap().details.requested_model.is_none());
 
         clone_session(
             &mut sm,
@@ -1202,8 +1204,56 @@ mod tests {
 
         let new_id = sm.active_id().unwrap();
         assert!(
-            sm.get(new_id).unwrap().details.model.is_none(),
+            sm.get(new_id).unwrap().details.requested_model.is_none(),
             "cloned default-model session should also have no model"
+        );
+    }
+
+    /// clone_session must preserve the original requested model override,
+    /// not the backend-reported runtime model shown in the UI.
+    #[test]
+    fn clone_session_uses_requested_model_not_runtime_model() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+
+        let orig_id = create_session_with_cwd(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from("/tmp"),
+            "localhost",
+            BackendType::Codex,
+            None,
+            Model::Custom("gpt-5.2-codex".to_string()),
+        );
+
+        let session = sm.get_mut(orig_id).unwrap();
+        session.details.model = Some("gpt-5.2-codex-2026-03-01".to_string());
+
+        clone_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            "localhost",
+            orig_id,
+        );
+
+        let new_id = sm.active_id().unwrap();
+        let new_session = sm.get(new_id).unwrap();
+        assert_eq!(
+            new_session.details.requested_model.as_deref(),
+            Some("gpt-5.2-codex"),
+            "clone should preserve the original requested override"
+        );
+        assert_eq!(
+            new_session.details.model.as_deref(),
+            Some("gpt-5.2-codex"),
+            "new session should start from the requested override until the backend reports otherwise"
         );
     }
 }

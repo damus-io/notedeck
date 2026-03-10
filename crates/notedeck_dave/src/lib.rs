@@ -4151,9 +4151,9 @@ fn handle_query_complete(session: &mut session::ChatSession, info: messages::Usa
 /// Sets up ndb subscriptions for permission responses and conversation events
 /// when we first learn the claude session ID.
 fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo, ndb: &nostrdb::Ndb) {
-    // Propagate model to SessionDetails so the header can display it.
-    // This reflects the model the backend is actually using, which may
-    // differ from what was requested (e.g. fallback).
+    // Propagate the runtime model for header display only.
+    // Keep the original requested override intact so duplicate/clear
+    // can reuse the user's intent instead of the backend's resolved model.
     if info.model.is_some() {
         session.details.model.clone_from(&info.model);
     }

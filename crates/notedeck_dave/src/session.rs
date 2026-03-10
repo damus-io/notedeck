@@ -60,7 +60,14 @@ pub struct SessionDetails {
     /// Home directory of the machine where this session originated.
     /// Used to abbreviate cwd paths for remote sessions.
     pub home_dir: String,
-    /// Model name reported by the backend (e.g. "claude-opus-4-6-20250514")
+    /// User-requested model override for new backend requests and clones.
+    ///
+    /// `None` means "let the backend choose its default model".
+    pub requested_model: Option<String>,
+    /// Model currently reported by the backend for display.
+    ///
+    /// This may differ from `requested_model` if the backend resolved an alias
+    /// to a concrete version or fell back to a different model.
     pub model: Option<String>,
 }
 
@@ -83,7 +90,7 @@ impl SessionDetails {
     /// Returns the user-selected model if set, otherwise `None` to let
     /// the backend use its own default.
     pub fn resolve_model(&self) -> Option<String> {
-        self.model.clone()
+        self.requested_model.clone()
     }
 }
 
@@ -578,6 +585,7 @@ impl ChatSession {
                 home_dir: dirs::home_dir()
                     .map(|h| h.to_string_lossy().to_string())
                     .unwrap_or_default(),
+                requested_model: None,
                 model: None,
             },
             backend_type,
@@ -637,6 +645,7 @@ impl ChatSession {
                 hostname,
                 cwd: Some(cwd),
                 home_dir: String::new(),
+                requested_model: None,
                 model: None,
             },
             backend_type,
