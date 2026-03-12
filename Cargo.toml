@@ -125,7 +125,7 @@ android-keyring = "0.2.0"
 rfd = "0.15"
 egui_kittest = { version = "0.31.1" }
 pollster = "0.4"
-wgpu = "24"
+wgpu = { version = "24.0.0", default-features = false }
 arboard = { git = "https://github.com/jb55/arboard", rev = "05755435fc8cf910449a8388bb8926a92b2db51e" }
 
 [profile.small]

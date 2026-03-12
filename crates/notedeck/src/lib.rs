@@ -130,6 +130,18 @@ pub use zaps::{
     NoteZapTargetOwned, PendingDefaultZapState, ZapTarget, ZapTargetOwned, ZappingError,
 };
 
+/// Skip a test when running in CI (no GPU adapter available for snapshot tests).
+/// Usage: `notedeck::skip_if_ci!();` at the top of a test function.
+#[macro_export]
+macro_rules! skip_if_ci {
+    () => {
+        if std::env::var("CI").is_ok() {
+            eprintln!("Skipping snapshot test on CI: no GPU adapter available");
+            return;
+        }
+    };
+}
+
 // export libs
 pub use enostr;
 pub use nostrdb;

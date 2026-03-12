@@ -62,7 +62,10 @@ pub fn notifications_button(
         paint_unseen_indicator(ui, indicator_rect, helper.scale_1d_pos(3.0));
     }
 
-    helper.take_animation_response()
+    let response = helper.take_animation_response();
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Notifications"));
+    response
 }
 
 fn draw_bell(
@@ -132,7 +135,9 @@ pub fn chat_button(ui: &mut egui::Ui, size: f32, is_active: bool) -> egui::Respo
 
     draw_envelope(&painter, ui, center, s, color, stroke_width, is_active);
 
-    helper.take_animation_response()
+    let response = helper.take_animation_response();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Messages"));
+    response
 }
 
 fn draw_envelope(
@@ -184,7 +189,9 @@ pub fn home_button(ui: &mut egui::Ui, size: f32, is_active: bool) -> egui::Respo
 
     draw_house(&painter, ui, center, s, color, stroke_width, is_active);
 
-    helper.take_animation_response()
+    let response = helper.take_animation_response();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Home"));
+    response
 }
 
 fn draw_house(
@@ -313,9 +320,12 @@ pub fn search_button(_color: Color32, line_width: f32, is_active: bool) -> impl 
         painter.line_segment([handle_pos_1, handle_pos_2], stroke);
         painter.circle(circle_center, min_outer_circle_radius, fill, stroke);
 
-        helper
+        let response = helper
             .take_animation_response()
-            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_cursor(CursorIcon::PointingHand);
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Search"));
+        response
     }
 }
 
@@ -361,5 +371,7 @@ pub fn expanding_button(
         paint_unseen_indicator(ui, paint_rect, helper.scale_1d_pos(3.0));
     }
 
-    helper.take_animation_response()
+    let response = helper.take_animation_response();
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    response
 }

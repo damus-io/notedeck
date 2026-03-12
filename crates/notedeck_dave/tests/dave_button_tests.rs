@@ -28,6 +28,7 @@ fn dave_inputbox_buttons_harness() -> Harness<'static> {
 
 #[test]
 fn test_dave_inputbox_buttons_snapshot() {
+    notedeck::skip_if_ci!();
     let mut harness = dave_inputbox_buttons_harness();
     harness.run();
     harness.snapshot("dave_inputbox_buttons");

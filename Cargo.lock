@@ -4879,6 +4879,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "egui_extras",
+ "egui_kittest",
  "egui_nav",
  "egui_tabs",
  "nostrdb",
@@ -5114,11 +5115,13 @@ dependencies = [
  "nostrdb",
  "notedeck",
  "poll-promise",
+ "pollster",
  "profiling",
  "strum",
  "strum_macros",
  "tokio",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]
