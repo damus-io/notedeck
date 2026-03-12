@@ -51,6 +51,7 @@ pub struct Updater {
     tx: mpsc::Sender<UpdateMsg>,
     staging_dir: PathBuf,
     ctx: egui::Context,
+    sent_relay_filter: bool,
 }
 
 impl Updater {
@@ -66,6 +67,7 @@ impl Updater {
             tx,
             staging_dir,
             ctx: ctx.clone(),
+            sent_relay_filter: false,
         }
     }
 
@@ -89,6 +91,16 @@ impl Updater {
     /// Whether the updater is waiting for a release to be provided
     pub fn wants_release(&self) -> bool {
         matches!(self.state, UpdateState::WaitingForRelease)
+    }
+
+    /// Whether the release filter needs to be sent to remote relays.
+    /// Returns true only once — after calling this, subsequent calls return false.
+    pub fn needs_relay_sub(&mut self) -> bool {
+        if self.sent_relay_filter {
+            return false;
+        }
+        self.sent_relay_filter = true;
+        true
     }
 
     /// Provide a verified release (from a signed Nostr event) to begin downloading

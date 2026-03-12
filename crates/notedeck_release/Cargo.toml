@@ -1,0 +1,23 @@
+[package]
+name = "notedeck_release"
+version = { workspace = true }
+edition = "2021"
+description = "CLI tool to publish notedeck release events to Nostr relays"
+
+[[bin]]
+name = "notedeck-release"
+path = "src/main.rs"
+
+[dependencies]
+nostrdb = { workspace = true }
+nostr = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+serde_json = { workspace = true }
+semver = { workspace = true }
+tungstenite = { version = "0.24", features = ["native-tls"] }
+ureq = { version = "2", features = ["json"] }
+
+[dev-dependencies]
+ureq = { version = "2", features = ["json"] }
+serde_json = { workspace = true }

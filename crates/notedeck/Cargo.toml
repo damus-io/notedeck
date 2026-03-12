@@ -76,6 +76,7 @@ android-activity = { workspace = true }
 ndk-context = "0.1"
 
 [features]
+auto-update = []
 puffin = ["puffin_egui", "dep:puffin"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []

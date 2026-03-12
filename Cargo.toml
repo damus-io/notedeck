@@ -17,6 +17,7 @@ members = [
     "crates/enostr",
     "crates/protoverse",
     "crates/notedeck_wasm",
+    "crates/notedeck_release",
 ]
 
 [workspace.dependencies]
