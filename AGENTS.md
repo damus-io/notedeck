@@ -99,26 +99,28 @@ This document captures the current architecture, coding conventions, and design 
 - `crates/notedeck_dave/docs/*.md` for agent-style tooling and streaming patterns.
 - `crates/notedeck_ui/docs/components.md` for reusable widgets.
 
-## Notedeck Coding Patterns
+## Notedeck Coding Rules
 
-1. Please make all **commits logically distinct**.
-2. Please make all **commits standalone** (i.e. so that they can be readily removed tens of commits later without impact the rest of the code).
-3. Related to logically distinct code, and standalone commits care must be taken for all **code to be human readable, and reviewable by human developers**.
-4. Please set up code for **performance profiling utilizing puffin** (e.g. `cargo run --release --features puffin`).
-5. Related to **Puffin & performance profiling**, for code suspected of impacting performance, carefully consider adding performance profiling attributes such as e.g. profiling::function in order to see functions performance in the profiler.
-6. **Global variables are not allowed** in this codebase, even if they are thread local. State should be managed in an struct that is passed in as reference.
-7. **Inspect notedeck code for reusable components, elements, patterns** etc. before creating new code for both A) notedeck updates, and B) apps built on notedeck.
-8.  **Nevernesting** — favor early returns and guard clauses over deeply nested conditionals; simplify control flow by exiting early instead of wrapping logic in multiple layers of `if` statements.
-9.  **Do not fudge CI tests**, in order to get a commit or PR to pass. Instead identify the underlying root cause of CI failure, and address that.
-10. Before proposing changes, please **review and analyze if a change or upgrade to nostrdb** is beneficial to the change at hand.
-11. **Ensure docstring coverage** for any code added, or modified.
-12. Run **cargo fmt, cargo clippy, cargo test**.
-13. **Do not vendor code**. In cargo.toml replace the existing url with the fork that includes the new code. If vendoring is absolutely necessary you must present the case why no other options are feasible.
-14. **Avoid Mutexes** — prefer `poll_promise::Promise` for async results, `Rc<RefCell<>>` for single-threaded interior mutability, or `tokio::sync::RwLock` when cross-thread sharing is truly necessary. Mutexes can cause UI stalls if held across frames.
-15. **Per-frame UI constraints** — the UI runs every frame; never block the render loop. Use `Promise::ready()` for non-blocking result checks. Offload CPU-heavy work to `JobPool` or `tokio::spawn()`, returning results via channels or Promises.
-16. **Cherry-pick commits** — when incorporating work from other branches or contributors, use `git cherry-pick` to preserve original authorship rather than copying code manually.
-17. **Frame-aware animations** — for animations (GIFs, video), track `repaint_at` timestamps and only request repaints when necessary; avoid spinning every frame.
+### MUST — violations block merge
 
+1. **No global state.** State lives in structs passed by reference. No global variables, not even thread-local.
+2. **Never block the render loop.** Use `Promise::ready()` for async results, `JobPool` or `tokio::spawn()` for heavy work. Avoid Mutexes; prefer `Rc<RefCell<>>` or `tokio::sync::RwLock`.
+3. **No vendored code.** Fork the dependency and reference the fork in `Cargo.toml`.
+4. **No fudging CI.** Fix root causes; never disable or weaken tests to pass CI.
+5. **Run `cargo fmt`, `cargo clippy`, `cargo test` before every commit.**
 
+### SHOULD — reviewers will push back
 
-Use this guide as a launchpad when extending Notedeck with new agents or protocol features. It highlights where to attach new functionality without duplicating existing infrastructure.
+6. **Reuse before creating.** Search the codebase for existing components, patterns, and utilities before writing new code. Never duplicate functionality that already exists.
+7. **Flat control flow.** Early returns and guard clauses, not nested `if` blocks ("nevernesting").
+8. **Standalone commits.** Each commit compiles independently and can be reverted without breaking later commits. Squash fix-up commits into the original via rebase.
+9. **Docstrings on all new or modified public items.**
+10. **Check if a nostrdb change would simplify the approach** before proposing application-level workarounds.
+
+### CONSIDER — quality signals for review
+
+11. Add `#[profiling::function]` on suspected hot paths (test with `cargo run --release --features puffin`).
+12. For animations, use `repaint_at` timestamps instead of requesting repaints every frame.
+13. Use `git cherry-pick` to preserve original authorship when pulling in external work.
+
+Use this guide as a launchpad when extending Notedeck with new agents or protocol features.
