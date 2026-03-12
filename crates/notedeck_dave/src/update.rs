@@ -1306,4 +1306,147 @@ mod tests {
             "new session should start from the requested override until the backend reports otherwise"
         );
     }
+
+    /// Helper: create a SessionManager with one session and set up an
+    /// EditorJob backed by a real temp file and a trivially-exited child.
+    fn editor_test_setup(
+        test_name: &str,
+        temp_content: &str,
+        spawn_done_sentinel: bool,
+    ) -> (SessionManager, PathBuf) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+
+        let id = create_session_with_cwd(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from("/tmp"),
+            "localhost",
+            BackendType::Claude,
+            None,
+            Model::Default,
+        );
+
+        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp_path = std::env::temp_dir().join(format!(
+            "notedeck_editor_test_{}_{}_{}.txt",
+            test_name, id, unique
+        ));
+        std::fs::write(&temp_path, temp_content).unwrap();
+
+        if spawn_done_sentinel {
+            let done_path = temp_path.with_extension("done");
+            std::fs::write(&done_path, "").unwrap();
+        }
+
+        // Spawn a child that exits immediately (simulates a daemonizing terminal).
+        let child = std::process::Command::new("true").spawn().unwrap();
+
+        sm.pending_editor = Some(crate::session::EditorJob {
+            child,
+            temp_path: temp_path.clone(),
+            session_id: id,
+        });
+
+        (sm, temp_path)
+    }
+
+    /// When the sentinel .done file exists, poll_editor_job should read
+    /// the temp file content into the session input and clean up.
+    #[test]
+    fn poll_editor_job_reads_content_on_sentinel() {
+        // Create the wrapper .sh script so poll_editor_job uses sentinel mode
+        let (mut sm, temp_path) = editor_test_setup("sentinel", "hello from editor", true);
+        let script_path = temp_path.with_extension("sh");
+        std::fs::write(&script_path, "#!/bin/sh\n").unwrap();
+
+        poll_editor_job(&mut sm);
+
+        // Input should be updated
+        let session = sm.get(sm.active_id().unwrap()).unwrap();
+        assert_eq!(session.input, "hello from editor");
+
+        // Pending editor should be cleared
+        assert!(sm.pending_editor.is_none());
+
+        // Temp files should be cleaned up
+        assert!(!temp_path.exists());
+        assert!(!temp_path.with_extension("done").exists());
+        assert!(!script_path.exists());
+    }
+
+    /// When using sentinel mode (wrapper .sh script exists) and the sentinel
+    /// .done file does NOT exist yet, poll_editor_job should NOT read the
+    /// file, even if the child process has exited. This is the daemonizing
+    /// terminal case.
+    #[test]
+    fn poll_editor_job_waits_for_sentinel_on_linux() {
+        let (mut sm, temp_path) = editor_test_setup("waits", "user text", false);
+
+        // Create the .sh script so sentinel mode is active
+        let script_path = temp_path.with_extension("sh");
+        std::fs::write(&script_path, "#!/bin/sh\n").unwrap();
+
+        // Wait for the child to exit (it's `true`, so basically instant)
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        poll_editor_job(&mut sm);
+
+        // Editor should still be pending — no sentinel yet
+        assert!(
+            sm.pending_editor.is_some(),
+            "should NOT finish without sentinel even though child exited"
+        );
+
+        // Now create the sentinel
+        std::fs::write(temp_path.with_extension("done"), "").unwrap();
+
+        poll_editor_job(&mut sm);
+
+        // Now it should have read the file
+        let session = sm.get(sm.active_id().unwrap()).unwrap();
+        assert_eq!(session.input, "user text");
+        assert!(sm.pending_editor.is_none());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&script_path);
+    }
+
+    /// Without a wrapper script (macOS path), poll_editor_job should
+    /// fall back to child exit for completion detection.
+    #[test]
+    fn poll_editor_job_falls_back_to_child_exit_without_script() {
+        let (mut sm, temp_path) = editor_test_setup("fallback", "macos content", false);
+        // No .sh script — simulates macOS path
+
+        // Verify no .sh script exists (sentinel mode should be off)
+        let script_path = temp_path.with_extension("sh");
+        assert!(
+            !script_path.exists(),
+            "no .sh script should exist for fallback test"
+        );
+
+        // Ensure the child process has exited before polling.
+        if let Some(ref mut job) = sm.pending_editor {
+            let _ = job.child.wait();
+        }
+
+        poll_editor_job(&mut sm);
+
+        // Should complete based on child exit alone
+        assert!(
+            sm.pending_editor.is_none(),
+            "pending_editor should be cleared after child exited"
+        );
+        let session = sm.get(sm.active_id().unwrap()).unwrap();
+        assert_eq!(session.input, "macos content");
+        assert!(!temp_path.exists());
+    }
 }
