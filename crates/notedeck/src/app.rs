@@ -95,6 +95,9 @@ pub struct Notedeck {
     #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
     updater: crate::updater::Updater,
 
+    #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+    release_sub: nostrdb::Subscription,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -179,6 +182,18 @@ impl eframe::App for Notedeck {
 
         #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
         {
+            if self.updater.wants_release() {
+                let nks = self.ndb.poll_for_notes(self.release_sub, 10);
+                if !nks.is_empty() {
+                    if let Ok(txn) = Transaction::new(&self.ndb) {
+                        if let Some(release) =
+                            crate::updater::nostr::find_latest_release(&self.ndb, &txn)
+                        {
+                            self.updater.provide_release(release);
+                        }
+                    }
+                }
+            }
             self.updater.poll();
             if let Some(version) = self.updater.update_ready() {
                 let version = version.to_string();
@@ -358,6 +373,12 @@ impl Notedeck {
         let (send_new_relay_jobs, receive_new_relay_jobs) = std::sync::mpsc::channel();
         let relay_limit_jobs = JobCache::new(receive_new_relay_jobs, send_new_relay_jobs);
 
+        #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+        let release_sub = {
+            let filters = crate::updater::nostr::release_filter();
+            ndb.subscribe(&filters).expect("release subscription")
+        };
+
         let notedeck = Self {
             ndb,
             img_cache,
@@ -383,6 +404,8 @@ impl Notedeck {
             i18n,
             #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
             updater: crate::updater::Updater::new(&path, ctx),
+            #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+            release_sub,
             #[cfg(target_os = "android")]
             android_app: None,
         };

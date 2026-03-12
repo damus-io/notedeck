@@ -1,17 +1,23 @@
-mod github;
+pub mod nostr;
 mod platform;
 
 use crate::{DataPath, DataPathType};
-use std::path::PathBuf;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-pub use github::ReleaseInfo;
+/// Information about a release asset available for download
+#[derive(Debug, Clone)]
+pub struct ReleaseInfo {
+    pub version: String,
+    pub asset_url: String,
+    pub asset_name: String,
+    pub expected_sha256: String,
+}
 
 /// Messages sent from background tasks to the Updater
 enum UpdateMsg {
-    /// Result of checking GitHub for updates
-    CheckResult(Result<Option<ReleaseInfo>, String>),
     /// Download completed
     DownloadComplete(Result<PathBuf, String>),
 }
@@ -20,8 +26,8 @@ enum UpdateMsg {
 enum UpdateState {
     /// Haven't started checking yet
     Idle,
-    /// Waiting for GitHub API response
-    Checking,
+    /// Waiting for a release event from ndb
+    WaitingForRelease,
     /// Downloading the update archive
     Downloading { version: String },
     /// Downloaded and ready to install
@@ -36,9 +42,9 @@ enum UpdateState {
     Error(String),
 }
 
-/// Auto-updater that checks GitHub Releases for new versions,
-/// downloads updates in the background, and prompts the user
-/// to restart.
+/// Auto-updater that discovers releases via Nostr events,
+/// downloads updates in the background, verifies SHA256 hashes,
+/// and prompts the user to restart.
 pub struct Updater {
     state: UpdateState,
     rx: mpsc::Receiver<UpdateMsg>,
@@ -69,15 +75,30 @@ impl Updater {
         // Process any messages from background tasks
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                UpdateMsg::CheckResult(result) => self.handle_check_result(result),
                 UpdateMsg::DownloadComplete(result) => self.handle_download_complete(result),
             }
         }
 
-        // Auto-transition from Idle to Checking
+        // Auto-transition from Idle to WaitingForRelease
         if matches!(self.state, UpdateState::Idle) {
-            self.start_check();
+            info!("updater: waiting for release events from nostr...");
+            self.state = UpdateState::WaitingForRelease;
         }
+    }
+
+    /// Whether the updater is waiting for a release to be provided
+    pub fn wants_release(&self) -> bool {
+        matches!(self.state, UpdateState::WaitingForRelease)
+    }
+
+    /// Provide a verified release (from a signed Nostr event) to begin downloading
+    pub fn provide_release(&mut self, release: ReleaseInfo) {
+        if !self.wants_release() {
+            return;
+        }
+
+        info!("update available: v{}", release.version);
+        self.start_download(release);
     }
 
     /// Returns the new version string if an update is ready to install.
@@ -111,37 +132,6 @@ impl Updater {
         }
     }
 
-    fn start_check(&mut self) {
-        info!("checking for updates...");
-        self.state = UpdateState::Checking;
-
-        let tx = self.tx.clone();
-        let current_version = env!("CARGO_PKG_VERSION").to_string();
-        let ctx = self.ctx.clone();
-
-        github::check_for_update(&current_version, move |result| {
-            let _ = tx.send(UpdateMsg::CheckResult(result));
-            ctx.request_repaint();
-        });
-    }
-
-    fn handle_check_result(&mut self, result: Result<Option<ReleaseInfo>, String>) {
-        match result {
-            Ok(Some(release)) => {
-                info!("update available: v{}", release.version);
-                self.start_download(release);
-            }
-            Ok(None) => {
-                info!("already up to date");
-                self.state = UpdateState::UpToDate;
-            }
-            Err(e) => {
-                warn!("update check failed: {e}");
-                self.state = UpdateState::Error(e);
-            }
-        }
-    }
-
     fn start_download(&mut self, release: ReleaseInfo) {
         let version = release.version.clone();
         self.state = UpdateState::Downloading {
@@ -152,7 +142,6 @@ impl Updater {
         let staging_dir = self.staging_dir.clone();
         let ctx = self.ctx.clone();
 
-        // Download the asset
         let mut request = ehttp::Request::get(&release.asset_url);
         request
             .headers
@@ -161,7 +150,12 @@ impl Updater {
         info!("downloading update: {}", release.asset_url);
 
         ehttp::fetch(request, move |response| {
-            let result = handle_download(response, &release.asset_name, &staging_dir);
+            let result = handle_download(
+                response,
+                &release.asset_name,
+                &release.expected_sha256,
+                &staging_dir,
+            );
             let _ = tx.send(UpdateMsg::DownloadComplete(result));
             ctx.request_repaint();
         });
@@ -191,10 +185,17 @@ impl Updater {
     }
 }
 
-/// Handle a completed download: save to disk, extract, find binary
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hex::encode(hasher.finalize())
+}
+
+/// Handle a completed download: verify SHA256, save to disk, extract, find binary
 fn handle_download(
     response: Result<ehttp::Response, String>,
     asset_name: &str,
+    expected_sha256: &str,
     staging_dir: &Path,
 ) -> Result<PathBuf, String> {
     let response = response.map_err(|e| format!("Download failed: {e}"))?;
@@ -202,6 +203,16 @@ fn handle_download(
     if response.status != 200 {
         return Err(format!("Download returned status {}", response.status));
     }
+
+    // Verify SHA256 before writing to disk
+    let actual_sha256 = sha256_hex(&response.bytes);
+    if actual_sha256 != expected_sha256 {
+        return Err(format!(
+            "SHA256 mismatch: expected {expected_sha256}, got {actual_sha256}"
+        ));
+    }
+
+    info!("SHA256 verified: {actual_sha256}");
 
     // Save archive to staging dir
     let archive_path = staging_dir.join(asset_name);
@@ -223,4 +234,82 @@ fn handle_download(
     Ok(binary_path)
 }
 
-use std::path::Path;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sha256_hex() {
+        // SHA256 of empty string
+        let hash = sha256_hex(b"");
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn test_sha256_hex_known_input() {
+        let hash = sha256_hex(b"hello world");
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn test_sha256_verification_mismatch() {
+        let response = Ok(ehttp::Response {
+            status: 200,
+            status_text: "OK".to_string(),
+            url: "https://example.com/test.tar.gz".to_string(),
+            bytes: b"some file content".to_vec(),
+            headers: Default::default(),
+            ok: true,
+        });
+
+        let staging = tempfile::tempdir().unwrap();
+        let result = handle_download(
+            response,
+            "test.tar.gz",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            staging.path(),
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("SHA256 mismatch"),
+            "error should mention SHA256 mismatch: {err}"
+        );
+    }
+
+    #[test]
+    fn test_sha256_verification_http_error() {
+        let response = Err("connection refused".to_string());
+
+        let staging = tempfile::tempdir().unwrap();
+        let result = handle_download(response, "test.tar.gz", "doesntmatter", staging.path());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Download failed"));
+    }
+
+    #[test]
+    fn test_sha256_verification_bad_status() {
+        let response = Ok(ehttp::Response {
+            status: 404,
+            status_text: "Not Found".to_string(),
+            url: "https://example.com/test.tar.gz".to_string(),
+            bytes: vec![],
+            headers: Default::default(),
+            ok: false,
+        });
+
+        let staging = tempfile::tempdir().unwrap();
+        let result = handle_download(response, "test.tar.gz", "doesntmatter", staging.path());
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("status 404"));
+    }
+}
