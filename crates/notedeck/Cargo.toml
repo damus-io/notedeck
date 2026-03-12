@@ -60,6 +60,11 @@ http-body-util = { workspace = true }
 # rustls and hyper-rustls are specified in platform-specific sections below
 # (Windows uses ring, others use aws-lc-rs)
 keyring = { workspace = true }
+semver = { workspace = true }
+self-replace = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -71,6 +76,7 @@ android-activity = { workspace = true }
 ndk-context = "0.1"
 
 [features]
+auto-update = []
 puffin = ["puffin_egui", "dep:puffin"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []

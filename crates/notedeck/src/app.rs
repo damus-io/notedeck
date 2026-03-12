@@ -92,6 +92,12 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
+    #[cfg(feature = "auto-update")]
+    updater: crate::updater::Updater,
+
+    #[cfg(feature = "auto-update")]
+    release_sub: nostrdb::Subscription,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -148,6 +154,10 @@ impl eframe::App for Notedeck {
             return;
         };
         let app = app.clone();
+
+        #[cfg(feature = "auto-update")]
+        let needs_release_sub = self.updater.needs_relay_sub();
+
         let mut app_ctx = self.app_context(ctx);
 
         // handle account updates
@@ -167,11 +177,52 @@ impl eframe::App for Notedeck {
             }
         }
 
+        // Send release filter to remote relays (once)
+        #[cfg(feature = "auto-update")]
+        if needs_release_sub {
+            let filters = crate::updater::nostr::release_filter();
+            let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
+            oneshot.oneshot(filters);
+        }
+
         render_notedeck(app, &mut app_ctx, ctx);
 
         {
             profiling::scope!("outbox ingestion");
             drop(app_ctx);
+        }
+
+        #[cfg(feature = "auto-update")]
+        {
+            if self.updater.wants_release() {
+                let nks = self.ndb.poll_for_notes(self.release_sub, 10);
+                if !nks.is_empty() {
+                    if let Ok(txn) = Transaction::new(&self.ndb) {
+                        if let Some(release) =
+                            crate::updater::nostr::find_latest_release(&self.ndb, &txn)
+                        {
+                            self.updater.provide_release(release);
+                        }
+                    }
+                }
+            }
+            self.updater.poll();
+            if let Some(version) = self.updater.update_ready() {
+                let version = version.to_string();
+                egui::TopBottomPanel::bottom("update_bar").show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Notedeck {version} is available"));
+                        if ui.button("Restart to update").clicked() {
+                            if let Err(e) = self.updater.apply_and_restart() {
+                                error!("failed to apply update: {e}");
+                            }
+                        }
+                        if ui.button("Later").clicked() {
+                            self.updater.dismiss();
+                        }
+                    });
+                });
+            }
         }
 
         self.settings.update_batch(|settings| {
@@ -334,6 +385,12 @@ impl Notedeck {
         let (send_new_relay_jobs, receive_new_relay_jobs) = std::sync::mpsc::channel();
         let relay_limit_jobs = JobCache::new(receive_new_relay_jobs, send_new_relay_jobs);
 
+        #[cfg(feature = "auto-update")]
+        let release_sub = {
+            let filters = crate::updater::nostr::release_filter();
+            ndb.subscribe(&filters).expect("release subscription")
+        };
+
         let notedeck = Self {
             ndb,
             img_cache,
@@ -357,6 +414,10 @@ impl Notedeck {
             relay_limit_jobs,
             nip05_cache: Nip05Cache::new(),
             i18n,
+            #[cfg(feature = "auto-update")]
+            updater: crate::updater::Updater::new(&path, ctx),
+            #[cfg(feature = "auto-update")]
+            release_sub,
             #[cfg(target_os = "android")]
             android_app: None,
         };

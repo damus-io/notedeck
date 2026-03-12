@@ -49,6 +49,8 @@ mod timecache;
 pub mod timed_serializer;
 pub mod ui;
 mod unknowns;
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+pub mod updater;
 mod urls;
 mod user_account;
 mod wallet;
