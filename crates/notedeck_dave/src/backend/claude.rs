@@ -315,14 +315,12 @@ async fn session_actor(
                                 }
                             };
 
-                            // Wait for UI response with a timeout — if the UI
-                            // never responds (e.g. channel held open but idle),
-                            // deny the tool to avoid hanging the backend forever.
+                            // Wait for the UI response. Permission requests
+                            // should remain pending until the user explicitly
+                            // answers or the channel closes.
                             let tool_name = perm_req.tool_name.clone();
-                            const PERM_TIMEOUT: std::time::Duration =
-                                std::time::Duration::from_secs(300);
-                            let result = match tokio::time::timeout(PERM_TIMEOUT, ui_resp_rx).await {
-                                Ok(Ok(PermissionResponse::Allow { message })) => {
+                            let result = match ui_resp_rx.await {
+                                Ok(PermissionResponse::Allow { message }) => {
                                     if let Some(msg) = &message {
                                         tracing::debug!("User allowed tool {} with message: {}", tool_name, msg);
                                         // Inject user message into conversation so AI sees it
@@ -343,24 +341,17 @@ async fn session_actor(
                                         PermissionResult::Allow(PermissionResultAllow::default())
                                     }
                                 }
-                                Ok(Ok(PermissionResponse::Deny { reason })) => {
+                                Ok(PermissionResponse::Deny { reason }) => {
                                     tracing::debug!("User denied tool {}: {}", tool_name, reason);
                                     PermissionResult::Deny(PermissionResultDeny {
                                         message: reason,
                                         interrupt: false,
                                     })
                                 }
-                                Ok(Err(_)) => {
+                                Err(_) => {
                                     tracing::error!("Permission response channel closed");
                                     PermissionResult::Deny(PermissionResultDeny {
                                         message: "Permission request cancelled".to_string(),
-                                        interrupt: true,
-                                    })
-                                }
-                                Err(_) => {
-                                    tracing::error!("Permission response timed out after {}s for tool {}", PERM_TIMEOUT.as_secs(), tool_name);
-                                    PermissionResult::Deny(PermissionResultDeny {
-                                        message: "Permission request timed out".to_string(),
                                         interrupt: true,
                                     })
                                 }
