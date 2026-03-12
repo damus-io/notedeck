@@ -39,6 +39,16 @@ pub fn dashboard_controls_ui(d: &mut Dashboard, ui: &mut egui::Ui) {
         period_picker_ui(ui, &mut d.period);
 
         ui.add_space(12.0);
+
+        let refresh_btn = if d.running {
+            egui::Button::new(RichText::new("⟳ Refreshing…").small().weak())
+        } else {
+            egui::Button::new(RichText::new("⟳ Refresh").small())
+        };
+
+        if ui.add_enabled(!d.running, refresh_btn).clicked() {
+            d.force_refresh();
+        }
     });
 }
 

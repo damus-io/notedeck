@@ -372,6 +372,23 @@ impl Dashboard {
         }
     }
 
+    pub fn force_refresh(&mut self) {
+        if self.running {
+            return;
+        }
+        if let Some(tx) = &self.cmd_tx {
+            let now = Instant::now();
+            self.running = true;
+            self.last_error = None;
+            self.last_started = Some(now);
+            self.last_snapshot = None;
+            self.last_finished = None;
+            self.last_duration = None;
+            self.state = DashboardState::default();
+            let _ = tx.send(WorkerCmd::Refresh);
+        }
+    }
+
     fn schedule_refresh(&mut self) {
         // throttle scheduling checks a bit
         let now = Instant::now();
