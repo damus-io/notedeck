@@ -739,6 +739,8 @@ pub fn open_external_editor(session_manager: &mut SessionManager) {
         Err(e) => {
             tracing::error!("Failed to spawn external editor: {}", e);
             let _ = std::fs::remove_file(&temp_path);
+            let _ = std::fs::remove_file(temp_path.with_extension("sh"));
+            let _ = std::fs::remove_file(temp_path.with_extension("done"));
         }
     }
 }
@@ -832,18 +834,48 @@ fn find_macos_bin(bin_name: &str, app_name: &str) -> String {
 }
 
 /// Linux: spawn a terminal emulator with the editor.
+///
+/// Many Linux terminals (gnome-terminal, konsole, etc.) daemonize: the
+/// spawned process exits immediately while the actual window runs as a
+/// child of a separate daemon. This means we cannot rely on the child
+/// process exit to know when the user is done editing.
+///
+/// Instead we wrap the editor invocation in a small shell script that
+/// creates a sentinel `.done` file when the editor exits.
+/// `poll_editor_job` watches for that file.
 fn spawn_linux_editor(
     editor: &str,
     file: &std::path::Path,
 ) -> std::io::Result<std::process::Child> {
     use std::process::Command;
 
+    // Write a helper script that runs the editor then creates a sentinel.
+    let script_path = file.with_extension("sh");
+    let done_path = file.with_extension("done");
+    // Remove stale sentinel from a previous run, if any.
+    let _ = std::fs::remove_file(&done_path);
+    std::fs::write(
+        &script_path,
+        format!("#!/bin/sh\n\"$@\"\ntouch '{}'\n", done_path.display()),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))?;
+    }
+
+    let spawn_via = |name: &str, prefix_args: &[&str]| -> std::io::Result<std::process::Child> {
+        tracing::debug!("Opening editor via {}: {} {}", name, editor, file.display());
+        let mut cmd = Command::new(name);
+        for arg in prefix_args {
+            cmd.arg(arg);
+        }
+        cmd.arg(&script_path).arg(editor).arg(file);
+        cmd.spawn()
+    };
+
     if let Ok(terminal) = std::env::var("TERMINAL") {
-        return Command::new(&terminal)
-            .arg("-e")
-            .arg(editor)
-            .arg(file)
-            .spawn();
+        return spawn_via(&terminal, &["-e"]);
     }
 
     // Auto-detect. Each terminal has different exec syntax.
@@ -853,6 +885,7 @@ fn spawn_linux_editor(
         ("kitty", &[]),
         ("gnome-terminal", &["--"]),
         ("konsole", &["-e"]),
+        ("foot", &[]),
         ("urxvtc", &["-e"]),
         ("urxvt", &["-e"]),
         ("xterm", &["-e"]),
@@ -866,16 +899,12 @@ fn spawn_linux_editor(
             .unwrap_or(false);
 
         if found {
-            tracing::debug!("Opening editor via {}: {} {}", name, editor, file.display());
-            let mut cmd = Command::new(name);
-            for arg in *prefix_args {
-                cmd.arg(arg);
-            }
-            cmd.arg(editor).arg(file);
-            return cmd.spawn();
+            return spawn_via(name, prefix_args);
         }
     }
 
+    // Clean up the script on failure.
+    let _ = std::fs::remove_file(&script_path);
     Err(std::io::Error::new(
         std::io::ErrorKind::NotFound,
         "No terminal emulator found. Set $TERMINAL or $VISUAL.",
@@ -883,53 +912,74 @@ fn spawn_linux_editor(
 }
 
 /// Poll for external editor completion (called each frame).
+///
+/// On Linux, many terminals daemonize so the child process exits before
+/// the editor is done. We use a sentinel `.done` file (created by the
+/// wrapper script in `spawn_linux_editor`) to detect actual completion.
+/// The child exit is still checked so we can reap the process, but we
+/// only read the temp file once the sentinel exists.
 pub fn poll_editor_job(session_manager: &mut SessionManager) {
     let Some(ref mut job) = session_manager.pending_editor else {
         return;
     };
 
-    // Non-blocking check if child has exited
-    match job.child.try_wait() {
-        Ok(Some(status)) => {
-            let session_id = job.session_id;
-            let temp_path = job.temp_path.clone();
-
-            if status.success() {
-                match std::fs::read_to_string(&temp_path) {
-                    Ok(content) => {
-                        if let Some(session) = session_manager.get_mut(session_id) {
-                            session.input = content;
-                            session.focus_requested = true;
-                            tracing::debug!(
-                                "External editor completed, updated input for session {}",
-                                session_id
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to read temp file after editing: {}", e);
-                    }
-                }
-            } else {
-                tracing::warn!("External editor exited with status: {}", status);
-            }
-
-            if let Err(e) = std::fs::remove_file(&temp_path) {
-                tracing::error!("Failed to remove temp file: {}", e);
-            }
-
-            session_manager.pending_editor = None;
-        }
-        Ok(None) => {
-            // Editor still running
-        }
+    // Reap child if it has exited (non-blocking).
+    let child_done = match job.child.try_wait() {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
         Err(e) => {
             tracing::error!("Failed to poll editor process: {}", e);
-            let temp_path = job.temp_path.clone();
-            let _ = std::fs::remove_file(&temp_path);
-            session_manager.pending_editor = None;
+            true
+        }
+    };
+
+    // Check for sentinel file produced by the wrapper script.
+    // On Linux, spawn_linux_editor always creates a wrapper .sh script
+    // that touches a .done sentinel when the editor exits. We trust only
+    // the sentinel on Linux because many terminals daemonize (the child
+    // exits immediately even though the editor is still open).
+    // On macOS (no wrapper script), we fall back to child process exit.
+    let done_path = job.temp_path.with_extension("done");
+    let script_path = job.temp_path.with_extension("sh");
+    let uses_sentinel = script_path.exists();
+    let sentinel_exists = done_path.exists();
+
+    let editor_finished = if uses_sentinel {
+        sentinel_exists
+    } else {
+        child_done
+    };
+
+    if !editor_finished {
+        return;
+    }
+
+    let session_id = job.session_id;
+    let temp_path = job.temp_path.clone();
+    let script_path = temp_path.with_extension("sh");
+
+    match std::fs::read_to_string(&temp_path) {
+        Ok(content) => {
+            if let Some(session) = session_manager.get_mut(session_id) {
+                session.input = content;
+                session.focus_requested = true;
+                tracing::debug!(
+                    "External editor completed, updated input for session {}",
+                    session_id
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!("Failed to read temp file after editing: {}", e);
         }
     }
+
+    // Clean up temp files.
+    let _ = std::fs::remove_file(&temp_path);
+    let _ = std::fs::remove_file(&done_path);
+    let _ = std::fs::remove_file(&script_path);
+
+    session_manager.pending_editor = None;
 }
 
 // =============================================================================

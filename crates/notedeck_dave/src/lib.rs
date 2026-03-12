@@ -873,7 +873,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         let is_compacting =
                             session.agentic.as_ref().is_some_and(|a| a.is_compacting);
 
+                        // Skip stall detection when a permission request is
+                        // pending — the backend is legitimately blocked waiting
+                        // for the user to accept/deny. The user may be composing
+                        // a message in an external editor (Ctrl+G), which can
+                        // easily exceed the stall timeout.
+                        let has_pending_perm = session.has_pending_permissions();
+
                         let stalled = !is_compacting
+                            && !has_pending_perm
                             && session
                                 .last_backend_msg
                                 .is_some_and(|t| t.elapsed() > STALL_TIMEOUT);
