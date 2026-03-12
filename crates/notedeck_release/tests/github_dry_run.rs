@@ -19,6 +19,7 @@ fn latest_github_version() -> String {
 const TEST_SECRET_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000001";
 
 #[test]
+#[ignore] // requires a GitHub release with artifacts; run with: cargo test -p notedeck_release -- --ignored
 fn test_github_dry_run() {
     let version = latest_github_version();
     eprintln!("testing dry-run against latest release: v{version}");
