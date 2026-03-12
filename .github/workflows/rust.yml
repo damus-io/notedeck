@@ -124,11 +124,11 @@ jobs:
 
       - name: Build Cross (${{ matrix.arch }})
         if: matrix.arch != runner.arch
-        run: cargo build --release --target=${{ matrix.arch }}-unknown-linux-gnu
+        run: cargo build --release --workspace --exclude notedeck_release --target=${{ matrix.arch }}-unknown-linux-gnu
 
       - name: Build Native (${{ matrix.arch }})
         if: matrix.arch == runner.arch
-        run: cargo build --release
+        run: cargo build --release --workspace --exclude notedeck_release
 
       - name: Build RPM (Cross)
         if: matrix.arch != runner.arch
