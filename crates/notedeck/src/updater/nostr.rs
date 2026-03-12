@@ -186,19 +186,21 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_release_event_json(
+        id: &str,
         pubkey: &str,
         version: &str,
         asset_name: &str,
         url: &str,
         sha256: &str,
+        created_at: u64,
     ) -> String {
         // Construct a kind 1063 event JSON. We use skip_validation in tests
         // so the id/sig don't need to be valid.
         format!(
             r#"["EVENT", "test_sub", {{
-                "id": "0000000000000000000000000000000000000000000000000000000000000001",
+                "id": "{id}",
                 "pubkey": "{pubkey}",
-                "created_at": 1700000000,
+                "created_at": {created_at},
                 "kind": 1063,
                 "tags": [
                     ["url", "{url}"],
@@ -253,11 +255,13 @@ mod tests {
         let expected_sha = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
 
         let ev = make_release_event_json(
+            "aa00000000000000000000000000000000000000000000000000000000000001",
             RELEASE_PUBKEY_HEX,
             "99.0.0", // far future version so it's always "newer"
             asset_name,
             "https://example.com/download/test.tar.gz",
             expected_sha,
+            1700000000,
         );
 
         // Use a broad filter to make sure the event gets ingested
@@ -293,11 +297,13 @@ mod tests {
         };
 
         let ev = make_release_event_json(
+            "bb00000000000000000000000000000000000000000000000000000000000001",
             RELEASE_PUBKEY_HEX,
             "99.0.0",
             wrong_platform,
             "https://example.com/download/wrong.tar.gz",
             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            1700000000,
         );
 
         let filter = Filter::new().kinds([RELEASE_KIND]).limit(10).build();
@@ -325,11 +331,13 @@ mod tests {
 
         // Use version 0.0.1 which should be older than any current version
         let ev = make_release_event_json(
+            "cc00000000000000000000000000000000000000000000000000000000000001",
             RELEASE_PUBKEY_HEX,
             "0.0.1",
             asset_name,
             "https://example.com/download/old.tar.gz",
             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            1700000000,
         );
 
         let filter = Filter::new().kinds([RELEASE_KIND]).limit(10).build();
@@ -357,23 +365,22 @@ mod tests {
 
         // Ingest two release events with different versions
         let ev1 = make_release_event_json(
+            "dd00000000000000000000000000000000000000000000000000000000000001",
             RELEASE_PUBKEY_HEX,
             "98.0.0",
             asset_name,
             "https://example.com/download/v98.tar.gz",
             "aaaa000000000000000000000000000000000000000000000000000000000000",
+            1700000000,
         );
-        // Need a different event id for the second one
         let ev2 = make_release_event_json(
+            "dd00000000000000000000000000000000000000000000000000000000000002",
             RELEASE_PUBKEY_HEX,
             "99.0.0",
             asset_name,
             "https://example.com/download/v99.tar.gz",
             "bbbb000000000000000000000000000000000000000000000000000000000000",
-        )
-        .replace(
-            "0000000000000000000000000000000000000000000000000000000000000001",
-            "0000000000000000000000000000000000000000000000000000000000000002",
+            1700000001,
         );
 
         let filter = Filter::new().kinds([RELEASE_KIND]).limit(10).build();
