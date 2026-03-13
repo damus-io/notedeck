@@ -80,9 +80,19 @@ async fn main() {
     // This guard must be scoped for the duration of the entire program so all logs will be written
     let _guard = setup_logging(&path);
 
+    // Pre-scan for --title so we can set the window title and show the
+    // titlebar before eframe creates the window.
+    let args_raw: Vec<String> = std::env::args().collect();
+    let (title, show_title) = args_raw
+        .iter()
+        .position(|a| a == "--title")
+        .and_then(|i| args_raw.get(i + 1).cloned())
+        .map(|t| (t, true))
+        .unwrap_or_else(|| ("Damus Notedeck".to_string(), false));
+
     let _res = eframe::run_native(
-        "Damus Notedeck",
-        generate_native_options(path),
+        &title,
+        generate_native_options(path, show_title),
         Box::new(|cc| {
             let args: Vec<String> = std::env::args().collect();
             let ctx = &cc.egui_ctx;

@@ -13,6 +13,7 @@ pub struct Args {
     pub options: NotedeckOptions,
     pub dbpath: Option<String>,
     pub datapath: Option<String>,
+    pub title: Option<String>,
 }
 
 impl Args {
@@ -39,6 +40,7 @@ impl Args {
             dbpath: None,
             datapath: None,
             locale: None,
+            title: None,
         };
 
         let mut i = 0;
@@ -139,6 +141,16 @@ impl Args {
                 res.options.set(NotedeckOptions::UseKeystore, false);
             } else if arg == "--relay-debug" {
                 res.options.set(NotedeckOptions::RelayDebug, true);
+            } else if arg == "--title" {
+                i += 1;
+                let title = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("title argument missing?");
+                    continue;
+                };
+                res.title = Some(title.clone());
+                res.options.set(NotedeckOptions::ShowTitle, true);
             } else {
                 unrecognized_args.insert(arg.clone());
             }

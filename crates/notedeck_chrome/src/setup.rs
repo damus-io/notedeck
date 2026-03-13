@@ -2,13 +2,17 @@ use eframe::NativeOptions;
 use notedeck::{AppSizeHandler, DataPath};
 use notedeck_ui::app_images;
 
-pub fn generate_native_options(paths: DataPath) -> NativeOptions {
+pub fn generate_native_options(paths: DataPath, show_title: bool) -> NativeOptions {
     let window_builder = Box::new(move |builder: egui::ViewportBuilder| {
-        let builder = builder
-            .with_fullsize_content_view(true)
-            .with_titlebar_shown(false)
-            .with_title_shown(false)
-            .with_icon(std::sync::Arc::new(app_images::app_icon()));
+        let builder = if show_title {
+            builder.with_icon(std::sync::Arc::new(app_images::app_icon()))
+        } else {
+            builder
+                .with_fullsize_content_view(true)
+                .with_titlebar_shown(false)
+                .with_title_shown(false)
+                .with_icon(std::sync::Arc::new(app_images::app_icon()))
+        };
 
         if let Some(window_size) = AppSizeHandler::new(&paths).get_app_size() {
             builder.with_inner_size(window_size)
