@@ -155,24 +155,25 @@ fn draw_envelope(
     let rounding = s * 0.08;
     let flap_tip = pos2(center.x, center.y + s * 0.05);
 
+    let corner_inset = rounding + stroke_width;
+    let flap_left = pos2(env_rect.left() + corner_inset, env_rect.top());
+    let flap_right = pos2(env_rect.right() - corner_inset, env_rect.top());
+
     if filled {
-        painter.rect_filled(env_rect, rounding, color);
         let bg = if ui.visuals().dark_mode {
             ui.visuals().window_fill
         } else {
             Color32::WHITE
         };
-        let flap = vec![
-            pos2(env_rect.left(), env_rect.top()),
-            flap_tip,
-            pos2(env_rect.right(), env_rect.top()),
-        ];
-        painter.add(egui::Shape::convex_polygon(flap, bg, Stroke::NONE));
+        let stroke = Stroke::new(stroke_width, bg);
+        painter.rect_filled(env_rect, rounding, color);
+        painter.line_segment([flap_left, flap_tip], stroke);
+        painter.line_segment([flap_right, flap_tip], stroke);
     } else {
         let stroke = Stroke::new(stroke_width, color);
         painter.rect_stroke(env_rect, rounding, stroke, egui::StrokeKind::Inside);
-        painter.line_segment([pos2(env_rect.left(), env_rect.top()), flap_tip], stroke);
-        painter.line_segment([pos2(env_rect.right(), env_rect.top()), flap_tip], stroke);
+        painter.line_segment([flap_left, flap_tip], stroke);
+        painter.line_segment([flap_right, flap_tip], stroke);
     }
 }
 
@@ -288,7 +289,7 @@ pub fn search_button(_color: Color32, line_width: f32, is_active: bool) -> impl 
     move |ui: &mut egui::Ui| -> egui::Response {
         let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
         let lw = if is_active {
-            line_width + 0.5
+            line_width + 1.0
         } else {
             line_width
         };
@@ -305,20 +306,20 @@ pub fn search_button(_color: Color32, line_width: f32, is_active: bool) -> impl 
             std::f32::consts::FRAC_1_SQRT_2,
             std::f32::consts::FRAC_1_SQRT_2,
         );
-        let handle_pos_1 = circle_center + (handle_vec * (cur_outer_circle_radius - 3.0));
+        let handle_pos_1 = circle_center + (handle_vec * cur_outer_circle_radius);
         let handle_pos_2 =
             circle_center + (handle_vec * (cur_outer_circle_radius + cur_handle_length));
 
         let icon_color = toolbar_icon_color(ui, is_active);
         let stroke = Stroke::new(cur_lw, icon_color);
-        let fill = if is_active {
-            icon_color
-        } else {
-            Color32::TRANSPARENT
-        };
 
         painter.line_segment([handle_pos_1, handle_pos_2], stroke);
-        painter.circle(circle_center, min_outer_circle_radius, fill, stroke);
+        painter.circle(
+            circle_center,
+            min_outer_circle_radius,
+            Color32::TRANSPARENT,
+            stroke,
+        );
 
         let response = helper
             .take_animation_response()
