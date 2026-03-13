@@ -223,7 +223,8 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: 
             }
 
             InlineElement::LineBreak => {
-                job.append("\n", 0.0, text_fmt.clone());
+                flush_job(&mut job, ui);
+                ui.end_row();
             }
         }
     }

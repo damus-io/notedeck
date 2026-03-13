@@ -24,6 +24,18 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+/// Tracks whether the codex backend is mid-stream for agent-message deltas
+/// so we can inject paragraph breaks between separate agent messages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TokenState {
+    /// No tokens received yet this turn.
+    Initial,
+    /// Actively receiving delta tokens.
+    Streaming,
+    /// Was streaming, then saw an item boundary — next delta burst gets a `\n\n`.
+    Paused,
+}
+
 // ---------------------------------------------------------------------------
 // Session actor
 // ---------------------------------------------------------------------------
@@ -242,6 +254,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
 
                 // Stream notifications until turn/completed
                 let mut subagent_stack: Vec<String> = Vec::new();
+                let mut agent_token_state = TokenState::Initial;
                 let mut turn_done = false;
                 let mut pending_approval: Option<(u64, oneshot::Receiver<PermissionResponse>)> =
                     None;
@@ -357,6 +370,7 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                             &ctx,
                                             &mut subagent_stack,
                                             &turn_count,
+                                            &mut agent_token_state,
                                         ) {
                                             HandleResult::Continue => {}
                                             HandleResult::TurnDone => {
@@ -599,6 +613,7 @@ fn handle_codex_message(
     ctx: &egui::Context,
     subagent_stack: &mut Vec<String>,
     turn_count: &u32,
+    agent_token_state: &mut TokenState,
 ) -> HandleResult {
     let method = match &msg.method {
         Some(m) => m.as_str(),
@@ -615,10 +630,22 @@ fn handle_codex_message(
         msg.params.is_some()
     );
 
+    // If we were actively streaming and hit an item boundary, mark as
+    // paused so the next delta burst gets a paragraph separator.
+    if *agent_token_state == TokenState::Streaming
+        && (method == "item/started" || method == "item/completed")
+    {
+        *agent_token_state = TokenState::Paused;
+    }
+
     match method {
         "item/agentMessage/delta" => {
             if let Some(params) = msg.params {
                 if let Ok(delta) = serde_json::from_value::<AgentMessageDeltaParams>(params) {
+                    if *agent_token_state == TokenState::Paused {
+                        let _ = response_tx.send(DaveApiResponse::Token("\n\n".to_string()));
+                    }
+                    *agent_token_state = TokenState::Streaming;
                     let _ = response_tx.send(DaveApiResponse::Token(delta.delta));
                     ctx.request_repaint();
                 }
@@ -1617,7 +1644,8 @@ mod tests {
 
         let msg = notification("item/agentMessage/delta", json!({ "delta": "Hello world" }));
 
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1634,7 +1662,8 @@ mod tests {
         let mut subagents = Vec::new();
 
         let msg = notification("turn/completed", json!({ "status": "completed" }));
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::TurnDone));
     }
 
@@ -1648,7 +1677,8 @@ mod tests {
             "turn/completed",
             json!({ "status": "failed", "error": "rate limit exceeded" }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::TurnDone));
 
         let response = rx.try_recv().unwrap();
@@ -1672,7 +1702,8 @@ mod tests {
             error: None,
             params: None,
         };
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err()); // nothing sent
     }
@@ -1684,7 +1715,8 @@ mod tests {
         let mut subagents = Vec::new();
 
         let msg = notification("some/future/event", json!({}));
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err());
     }
@@ -1699,7 +1731,8 @@ mod tests {
             "codex/event/error",
             json!({ "message": "context window exceeded" }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1716,7 +1749,8 @@ mod tests {
         let mut subagents = Vec::new();
 
         let msg = notification("error", json!({ "message": "something broke" }));
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1733,7 +1767,8 @@ mod tests {
         let mut subagents = Vec::new();
 
         let msg = notification("codex/event/error", json!({}));
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1762,7 +1797,8 @@ mod tests {
                 "conversationId": "thread-1"
             }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1792,7 +1828,8 @@ mod tests {
                 "turnId": "1"
             }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1816,7 +1853,8 @@ mod tests {
                 "name": "research agent"
             }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
         assert_eq!(subagents.len(), 1);
         assert_eq!(subagents[0], "agent-1");
@@ -1846,7 +1884,8 @@ mod tests {
             "item/commandExecution/requestApproval",
             json!({ "command": "git status" }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         match result {
             HandleResult::AutoAccepted(id) => assert_eq!(id, 99),
             other => panic!(
@@ -1870,7 +1909,8 @@ mod tests {
             "item/commandExecution/requestApproval",
             json!({ "command": "rm -rf /" }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         match result {
             HandleResult::NeedsApproval { rpc_id, .. } => assert_eq!(rpc_id, 100),
             other => panic!(
