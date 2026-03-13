@@ -955,6 +955,63 @@ fn spawn_linux_editor(
     ))
 }
 
+/// Open a new terminal window.
+///
+/// Uses `$TERMINAL` if set, otherwise falls back to the platform default
+/// (Terminal.app on macOS, `x-terminal-emulator` on Linux).
+pub fn open_terminal(cwd: &std::path::Path) {
+    use std::process::{Command, Stdio};
+
+    if let Ok(terminal) = std::env::var("TERMINAL") {
+        match Command::new(&terminal)
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(mut child) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return;
+            }
+            Err(e) => tracing::warn!("$TERMINAL='{}' failed: {}", terminal, e),
+        }
+    }
+
+    let result = if cfg!(target_os = "macos") {
+        Command::new("open")
+            .arg("-a")
+            .arg("Terminal")
+            .arg(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    } else if cfg!(target_os = "linux") {
+        Command::new("x-terminal-emulator")
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+    } else {
+        tracing::warn!("Open terminal not supported on this platform. Set $TERMINAL.");
+        return;
+    };
+
+    match result {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            tracing::debug!("Opened new terminal window in {:?}", cwd);
+        }
+        Err(e) => tracing::error!("Failed to open terminal: {}. Set $TERMINAL.", e),
+    }
+}
+
 /// Poll for external editor completion (called each frame).
 ///
 /// On Linux, many terminals daemonize so the child process exits before

@@ -881,6 +881,14 @@ pub fn handle_key_action(
             update::open_external_editor(session_manager);
             KeyActionResult::None
         }
+        KeyAction::OpenTerminal => {
+            if let Some(session) = session_manager.get_active() {
+                if let Some(cwd) = session.cwd() {
+                    update::open_terminal(cwd);
+                }
+            }
+            KeyActionResult::None
+        }
     }
 }
 
