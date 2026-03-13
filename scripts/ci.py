@@ -20,9 +20,11 @@ Options:
     -v / --verbose  Show command output even on success
     --all           Run all jobs viable on current platform
     --workflow FILE  Path to workflow YAML (default: .github/workflows/rust.yml)
+    -j / --jobs N   Max parallel jobs (default: half of CPU cores)
 """
 
 import argparse
+import multiprocessing
 import os
 import platform
 import re
@@ -264,6 +266,18 @@ def extract_run_steps(job_def, context):
     return steps
 
 
+def local_jobs():
+    """Return a conservative job count to avoid OOM from concurrent linker instances.
+
+    Prefers CARGO_BUILD_JOBS from the environment (set by ci-local).
+    Falls back to quarter of CPU cores if not set.
+    """
+    env_jobs = os.environ.get("CARGO_BUILD_JOBS")
+    if env_jobs:
+        return int(env_jobs)
+    return max(1, multiprocessing.cpu_count() // 4)
+
+
 def run_script(name, script, root, dry_run, verbose):
     """Run a shell script. Returns (success, output)."""
     if dry_run:
@@ -276,6 +290,12 @@ def run_script(name, script, root, dry_run, verbose):
     sys.stdout.write(f"  {dim('▸')} {name} ... ")
     sys.stdout.flush()
 
+    # Limit parallelism to avoid freezing the machine
+    jobs = str(local_jobs())
+    env = os.environ.copy()
+    env.setdefault("CARGO_BUILD_JOBS", jobs)
+    env.setdefault("RUST_TEST_THREADS", jobs)
+
     try:
         result = subprocess.run(
             ["bash", "-ec", script],
@@ -283,6 +303,7 @@ def run_script(name, script, root, dry_run, verbose):
             capture_output=True,
             text=True,
             timeout=600,
+            env=env,
         )
         elapsed = time.time() - step_start
         output = result.stdout + result.stderr
@@ -355,7 +376,13 @@ def main():
                         help="Simulate PR context (enables changelog check)")
     parser.add_argument("--master", action="store_true",
                         help="Simulate master branch context (enables packaging)")
+    parser.add_argument("-j", "--parallel", type=int, default=0, metavar="N",
+                        help="Max parallel jobs (default: half of CPU cores)")
     args = parser.parse_args()
+
+    if args.parallel > 0:
+        os.environ["CARGO_BUILD_JOBS"] = str(args.parallel)
+        os.environ["RUST_TEST_THREADS"] = str(args.parallel)
 
     root = repo_root()
     if not root:
@@ -469,8 +496,9 @@ def main():
     ordered = topo_sort(requested)
 
     # Run
+    jobs_count = args.parallel if args.parallel > 0 else local_jobs()
     print(f"{bold('notedeck local CI')}")
-    print(f"Platform: {cur}, Arch: {native_arch()}")
+    print(f"Platform: {cur}, Arch: {native_arch()}, Parallelism: {jobs_count}")
     print(f"Jobs: {', '.join(ordered)}")
     if args.dry_run:
         print(f"{yellow('DRY RUN MODE')}")

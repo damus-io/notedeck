@@ -2,6 +2,21 @@
 # Run the standard local CI checks: changelog, lint, test, android
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Limit parallelism to avoid OOM from concurrent linker instances.
+# Each rust-lld instance can use many GB of RAM, so we cap based on
+# available memory (one job per 6 GB) as well as a quarter of CPU cores.
+if [[ -z "${CARGO_BUILD_JOBS:-}" ]]; then
+    mem_gb=$(awk '/MemTotal/ {printf "%d", $2/1024/1024}' /proc/meminfo 2>/dev/null || echo 0)
+    quarter_cores=$(( $(nproc 2>/dev/null || echo 2) / 4 ))
+    mem_jobs=$(( mem_gb / 6 ))
+    [[ $mem_jobs -lt 1 ]] && mem_jobs=1
+    [[ $quarter_cores -lt 1 ]] && quarter_cores=1
+    jobs_limit=$(( quarter_cores < mem_jobs ? quarter_cores : mem_jobs ))
+    export CARGO_BUILD_JOBS="$jobs_limit"
+    export RUST_TEST_THREADS="$jobs_limit"
+fi
+
 jobs="changelog-check lint linux-test android"
 # snapshot tests require lavapipe (software Vulkan), Linux only
 if [ "$(uname -s)" = "Linux" ]; then
