@@ -63,11 +63,17 @@ pub struct ClaudeBackend {
     sessions: DashMap<String, SessionHandle>,
 }
 
-impl ClaudeBackend {
-    pub fn new() -> Self {
+impl Default for ClaudeBackend {
+    fn default() -> Self {
         Self {
             sessions: DashMap::new(),
         }
+    }
+}
+
+impl ClaudeBackend {
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 

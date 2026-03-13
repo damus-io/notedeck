@@ -360,6 +360,7 @@ impl WorktreeCreator {
         }
     }
 
+    #[allow(unused_variables)]
     fn browse_button(&mut self, ui: &mut egui::Ui) {
         #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
         if ui.button("Browse…").clicked() && self.pending_browse.is_none() {
