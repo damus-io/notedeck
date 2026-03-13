@@ -389,8 +389,9 @@ mod tests {
         ndb.process_event_with(&ev1, IngestMetadata::new()).unwrap();
         ndb.process_event_with(&ev2, IngestMetadata::new()).unwrap();
 
-        // Wait for both events to be ingested
-        let _ = ndb.wait_for_notes(sub, 2).await.unwrap();
+        // wait_for_notes returns on the first available batch, not after N notes.
+        // Use wait_for_all_notes to ensure both events are fully ingested.
+        let _ = ndb.wait_for_all_notes(sub, 2).await.unwrap();
 
         let txn = Transaction::new(&ndb).unwrap();
         let release = find_latest_release(&ndb, &txn).expect("should find a release");
