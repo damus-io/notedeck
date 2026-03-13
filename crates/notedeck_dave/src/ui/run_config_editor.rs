@@ -11,6 +11,8 @@ pub struct RunConfigEditor {
     edit_id: Option<String>,
     name: String,
     command: String,
+    /// Existing run configs to suggest in the editor.
+    suggestions: Vec<RunConfig>,
 }
 
 /// Action returned by the run-config editor overlay.
@@ -74,21 +76,23 @@ impl RunConfigEditorAction {
 }
 
 impl RunConfigEditor {
-    pub fn new_config(cwd: PathBuf) -> Self {
+    pub fn new_config(cwd: PathBuf, suggestions: Vec<RunConfig>) -> Self {
         Self {
             cwd,
             edit_id: None,
             name: String::new(),
             command: String::new(),
+            suggestions,
         }
     }
 
-    pub fn edit_config(cwd: PathBuf, config: RunConfig) -> Self {
+    pub fn edit_config(cwd: PathBuf, config: RunConfig, suggestions: Vec<RunConfig>) -> Self {
         Self {
             cwd,
             edit_id: Some(config.id),
             name: config.name,
             command: config.command,
+            suggestions,
         }
     }
 
@@ -192,6 +196,45 @@ pub(crate) fn run_config_editor_overlay_ui(
                             }
                             ui.end_row();
                         });
+
+                    // Suggestions section
+                    if !editor.suggestions.is_empty() {
+                        ui.add_space(16.0);
+                        ui.label(
+                            egui::RichText::new("Suggestions")
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                        ui.add_space(4.0);
+
+                        let text_color = ui.visuals().text_color();
+                        let dim = ui.visuals().weak_text_color();
+                        for suggestion in &editor.suggestions {
+                            let mut job = egui::text::LayoutJob::default();
+                            job.append(
+                                &suggestion.name,
+                                0.0,
+                                egui::TextFormat {
+                                    font_id: egui::FontId::proportional(12.0),
+                                    color: text_color,
+                                    ..Default::default()
+                                },
+                            );
+                            job.append(
+                                &suggestion.command,
+                                8.0,
+                                egui::TextFormat {
+                                    font_id: egui::FontId::monospace(11.0),
+                                    color: dim,
+                                    ..Default::default()
+                                },
+                            );
+
+                            if ui.add(egui::SelectableLabel::new(false, job)).clicked() {
+                                editor.name.clone_from(&suggestion.name);
+                                editor.command.clone_from(&suggestion.command);
+                            }
+                        }
+                    }
 
                     ui.add_space(16.0);
 

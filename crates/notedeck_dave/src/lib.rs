@@ -2487,6 +2487,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Collect all existing run configs as suggestions, deduplicated by (name, command).
+    /// Optionally excludes a specific config by ID (used when editing).
+    fn collect_run_config_suggestions(&self, exclude_id: Option<&str>) -> Vec<RunConfig> {
+        let mut seen = std::collections::HashSet::new();
+        let mut suggestions = Vec::new();
+
+        for configs in self.run_configs.values() {
+            for cfg in configs {
+                if exclude_id == Some(cfg.id.as_str()) {
+                    continue;
+                }
+                if seen.insert((cfg.name.clone(), cfg.command.clone())) {
+                    suggestions.push(cfg.clone());
+                }
+            }
+        }
+        RunConfig::sort_by_name(&mut suggestions);
+        suggestions
+    }
+
     /// Build and queue a kind-31991 event for a single run config.
     fn publish_run_config(
         &mut self,
@@ -2812,8 +2832,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
                 RunAction::OpenNew { cwd } => {
-                    self.active_overlay =
-                        DaveOverlay::RunConfigEditor(Box::new(RunConfigEditor::new_config(cwd)));
+                    let suggestions = self.collect_run_config_suggestions(None);
+                    self.active_overlay = DaveOverlay::RunConfigEditor(Box::new(
+                        RunConfigEditor::new_config(cwd, suggestions),
+                    ));
                 }
                 RunAction::OpenEdit { cwd, config_id } => {
                     let existing = self
@@ -2822,8 +2844,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .and_then(|cfgs| cfgs.iter().find(|c| c.id == config_id))
                         .cloned();
                     if let Some(config) = existing {
+                        let suggestions = self.collect_run_config_suggestions(Some(&config_id));
                         self.active_overlay = DaveOverlay::RunConfigEditor(Box::new(
-                            RunConfigEditor::edit_config(cwd, config),
+                            RunConfigEditor::edit_config(cwd, config, suggestions),
                         ));
                     }
                 }
