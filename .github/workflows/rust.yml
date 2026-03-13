@@ -8,6 +8,8 @@ on:
   pull_request:
     branches:
       - "*"
+  release:
+    types: [published]
 
 jobs:
   changelog-check:
@@ -100,7 +102,7 @@ jobs:
     name: rpm/deb
     runs-on: ubuntu-22.04
     needs: linux-test
-    if: github.ref_name == 'master' || github.ref_name == 'ci'
+    if: github.ref_name == 'master' || github.ref_name == 'ci' || github.event_name == 'release'
 
     strategy:
       fail-fast: false
@@ -129,6 +131,26 @@ jobs:
       - name: Build Native (${{ matrix.arch }})
         if: matrix.arch == runner.arch
         run: cargo build --release --workspace --exclude notedeck_release
+
+      - name: Create release tarball (Cross)
+        if: matrix.arch != runner.arch
+        run: |
+          mkdir -p packages
+          tar czf packages/notedeck-${{ matrix.arch }}-linux.tar.gz \
+            -C target/${{ matrix.arch }}-unknown-linux-gnu/release notedeck
+
+      - name: Create release tarball (Native)
+        if: matrix.arch == runner.arch
+        run: |
+          mkdir -p packages
+          tar czf packages/notedeck-${{ matrix.arch }}-linux.tar.gz \
+            -C target/release notedeck
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: notedeck-${{ matrix.arch }}-linux.tar.gz
+          path: packages/notedeck-${{ matrix.arch }}-linux.tar.gz
 
       - name: Build RPM (Cross)
         if: matrix.arch != runner.arch
@@ -179,7 +201,7 @@ jobs:
     name: macOS dmg
     runs-on: macos-latest
     needs: macos-test
-    if: github.ref_name == 'master' || github.ref_name == 'ci'
+    if: github.ref_name == 'master' || github.ref_name == 'ci' || github.event_name == 'release'
     env:
       NOTEDECK_APPLE_RELEASE_CERT_ID: ${{ secrets.NOTEDECK_APPLE_RELEASE_CERT_ID }}
       NOTEDECK_RELEASE_APPLE_ID: ${{ secrets.NOTEDECK_RELEASE_APPLE_ID }}
@@ -214,6 +236,18 @@ jobs:
       - name: Run macOS DMG Build Script
         run: ARCH=${{ matrix.arch }} ./scripts/macos_build.sh
 
+      - name: Create release tarball
+        run: |
+          mkdir -p packages
+          tar czf packages/notedeck-${{ matrix.arch }}-macos.tar.gz \
+            -C target/${{ matrix.arch }}-apple-darwin/release notedeck
+
+      - name: Upload tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: notedeck-${{ matrix.arch }}-macos.tar.gz
+          path: packages/notedeck-${{ matrix.arch }}-macos.tar.gz
+
       - name: Upload DMG Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -224,7 +258,7 @@ jobs:
     name: Windows Installer
     runs-on: windows-latest
     needs: windows-test
-    if: github.ref_name == 'master' || github.ref_name == 'ci'
+    if: github.ref_name == 'master' || github.ref_name == 'ci' || github.event_name == 'release'
     strategy:
       fail-fast: false
       matrix:
@@ -311,7 +345,7 @@ jobs:
     name: Upload Artifacts to Server
     runs-on: ubuntu-22.04
     needs: [packaging, macos-dmg, windows-installer]
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/ci'
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/ci' || github.event_name == 'release'
 
     steps:
       - name: Download all Artifacts
@@ -336,6 +370,44 @@ jobs:
           put $ARTIFACTS/notedeck-aarch64.dmg/*
           put $ARTIFACTS/DamusNotedeckInstaller-x86_64.exe/*
           put $ARTIFACTS/DamusNotedeckInstaller-aarch64.exe/*
+          put $ARTIFACTS/notedeck-x86_64-linux.tar.gz/*
+          put $ARTIFACTS/notedeck-aarch64-linux.tar.gz/*
+          put $ARTIFACTS/notedeck-x86_64-macos.tar.gz/*
+          put $ARTIFACTS/notedeck-aarch64-macos.tar.gz/*
           bye
           EOF
+
+  upload-to-release:
+    name: Upload to GitHub Release
+    runs-on: ubuntu-22.04
+    needs: [packaging, macos-dmg, windows-installer]
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Upload assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          echo "=== Downloaded artifact directories ==="
+          ls -la
+          for dir in */; do
+            echo "--- $dir ---"
+            ls -la "$dir"
+          done
+          echo "=== Uploading to release $tag ==="
+          for dir in notedeck-*.rpm notedeck-*.deb notedeck-*.dmg notedeck-*-linux.tar.gz notedeck-*-macos.tar.gz DamusNotedeckInstaller-*.exe; do
+            if [ -d "$dir" ]; then
+              for file in "$dir"/*; do
+                [ -f "$file" ] || continue
+                echo "uploading $file..."
+                gh release upload "$tag" "$file" --repo "${{ github.repository }}" --clobber
+              done
+            fi
+          done
 

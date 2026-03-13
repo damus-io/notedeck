@@ -23,14 +23,8 @@ fn usage() {
 
 const GITHUB_REPO: &str = "damus-io/notedeck";
 
-const RELEASE_ARTIFACTS: &[&str] = &[
-    "notedeck-x86_64-linux.tar.gz",
-    "notedeck-aarch64-linux.tar.gz",
-    "notedeck-x86_64-macos.tar.gz",
-    "notedeck-aarch64-macos.tar.gz",
-    "notedeck-x86_64-windows.zip",
-    "notedeck-aarch64-windows.zip",
-];
+/// File extensions recognized as release artifacts
+const ARTIFACT_EXTENSIONS: &[&str] = &[".tar.gz", ".zip", ".dmg", ".deb", ".rpm", ".exe", ".msi"];
 
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -98,8 +92,8 @@ fn fetch_github_artifacts(version: &str) -> Result<Vec<ArtifactInfo>, String> {
     let mut artifacts = Vec::new();
     for asset in assets {
         let name = asset["name"].as_str().unwrap_or("").to_string();
-        if !RELEASE_ARTIFACTS.contains(&name.as_str()) {
-            eprintln!("  skipping unknown asset: {name}");
+        if !ARTIFACT_EXTENSIONS.iter().any(|ext| name.ends_with(ext)) {
+            eprintln!("  skipping non-artifact asset: {name}");
             continue;
         }
         let browser_url = asset["browser_download_url"]
