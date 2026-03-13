@@ -64,9 +64,8 @@ fn context_menu_harness(padding: MenuPadding) -> Harness<'static> {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn test_context_menu_snapshot() {
-    notedeck::skip_if_ci!();
-
     let mut harness = context_menu_harness(MenuPadding::default());
 
     let btn = harness.get_by_label("...");
@@ -78,9 +77,8 @@ fn test_context_menu_snapshot() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn test_context_menu_thin_snapshot() {
-    notedeck::skip_if_ci!();
-
     // egui defaults for comparison: button_padding (4, 1), item_spacing.y = 3
     let thin = MenuPadding {
         button_padding: egui::vec2(4.0, 1.0),
@@ -103,13 +101,13 @@ fn test_context_menu_thin_snapshot() {
 fn icon_harness(f: impl Fn(&mut egui::Ui) + 'static) -> Harness<'static> {
     Harness::builder()
         .with_size(egui::Vec2::new(64.0, 64.0))
-        .wgpu()
+        .renderer(notedeck::software_renderer())
         .build_ui(f)
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_home_inactive() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         icons::home_button(ui, 24.0, false);
     });
@@ -118,8 +116,8 @@ fn snapshot_home_inactive() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_home_active() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         icons::home_button(ui, 24.0, true);
     });
@@ -128,8 +126,8 @@ fn snapshot_home_active() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_chat_inactive() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         icons::chat_button(ui, 24.0, false);
     });
@@ -138,8 +136,8 @@ fn snapshot_chat_inactive() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_chat_active() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         icons::chat_button(ui, 24.0, true);
     });
@@ -148,8 +146,8 @@ fn snapshot_chat_active() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notifications_inactive() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         icons::notifications_button(ui, 24.0, false, false);
     });
@@ -158,8 +156,8 @@ fn snapshot_notifications_inactive() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notifications_active() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         icons::notifications_button(ui, 24.0, true, false);
     });
@@ -168,8 +166,8 @@ fn snapshot_notifications_active() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notifications_unseen() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         icons::notifications_button(ui, 24.0, false, true);
     });
@@ -178,8 +176,8 @@ fn snapshot_notifications_unseen() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_search_button_inactive() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         ui.add(icons::search_button(egui::Color32::WHITE, 1.5, false));
     });
@@ -188,8 +186,8 @@ fn snapshot_search_button_inactive() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_search_button_active() {
-    notedeck::skip_if_ci!();
     let mut h = icon_harness(|ui| {
         ui.add(icons::search_button(egui::Color32::WHITE, 1.5, true));
     });
@@ -202,11 +200,11 @@ fn snapshot_search_button_active() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_search_input() {
-    notedeck::skip_if_ci!();
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(300.0, 50.0))
-        .wgpu()
+        .renderer(notedeck::software_renderer())
         .build_ui(|ui| {
             let mut query = String::new();
             ui.add(search_input_box(&mut query, "Search..."));
@@ -216,11 +214,11 @@ fn snapshot_search_input() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_toolbar_row() {
-    notedeck::skip_if_ci!();
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(300.0, 64.0))
-        .wgpu()
+        .renderer(notedeck::software_renderer())
         .build_ui(|ui| {
             ui.horizontal(|ui| {
                 icons::home_button(ui, 24.0, true);

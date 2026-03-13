@@ -41,6 +41,7 @@ re_memory = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
+notedeck = { workspace = true, features = ["snapshot-testing"] }
 
 [lib]
 crate-type = ["lib", "cdylib"]

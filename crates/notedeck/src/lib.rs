@@ -132,16 +132,44 @@ pub use zaps::{
     NoteZapTargetOwned, PendingDefaultZapState, ZapTarget, ZapTargetOwned, ZappingError,
 };
 
-/// Skip a test when running in CI (no GPU adapter available for snapshot tests).
-/// Usage: `notedeck::skip_if_ci!();` at the top of a test function.
-#[macro_export]
-macro_rules! skip_if_ci {
-    () => {
-        if std::env::var("CI").is_ok() {
-            eprintln!("Skipping snapshot test on CI: no GPU adapter available");
-            return;
-        }
-    };
+/// Create a [`egui_kittest::wgpu::WgpuTestRenderer`] that only uses software
+/// rasterizers (e.g. lavapipe / swiftshader). This gives deterministic
+/// snapshot output regardless of host GPU hardware.
+///
+/// Requires `VK_ICD_FILENAMES` to point at the lavapipe ICD JSON before the
+/// process starts (the Vulkan loader caches ICDs on first use, so `set_var`
+/// from within the process is too late). On NixOS this is handled by
+/// shell.nix via `LAVAPIPE_ICD`; use `scripts/snapshot-test` to run.
+/// On standard Linux distros, install `mesa-vulkan-drivers` (or equivalent)
+/// and the ICD is auto-discovered.
+///
+/// Panics at adapter selection time if no CPU adapter is available.
+#[cfg(feature = "snapshot-testing")]
+pub fn software_renderer() -> egui_kittest::wgpu::WgpuTestRenderer {
+    use egui_wgpu::wgpu;
+    use std::sync::Arc;
+
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
+
+    setup
+        .instance_descriptor
+        .backends
+        .remove(wgpu::Backends::BROWSER_WEBGPU);
+
+    setup.native_adapter_selector = Some(Arc::new(|adapters, _surface| {
+        adapters
+            .iter()
+            .find(|a| a.get_info().device_type == wgpu::DeviceType::Cpu)
+            .cloned()
+            .ok_or_else(|| {
+                "No CPU adapter found — install a software rasterizer \
+                 (e.g. lavapipe/swiftshader) for deterministic snapshots. \
+                 On NixOS, run via: scripts/snapshot-test"
+                    .to_owned()
+            })
+    }));
+
+    egui_kittest::wgpu::WgpuTestRenderer::from_setup(egui_wgpu::WgpuSetup::CreateNew(setup))
 }
 
 // export libs

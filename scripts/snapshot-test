@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# Run snapshot tests with lavapipe (software Vulkan) for deterministic output.
+#
+# Usage:
+#   scripts/snapshot-test              # run all snapshot tests
+#   scripts/snapshot-test --update     # update snapshot images
+#   scripts/snapshot-test <test_name>  # run a specific snapshot test
+#
+# On NixOS, LAVAPIPE_ICD is set by shell.nix. On standard Linux distros,
+# lavapipe is found at /usr/share/vulkan/icd.d/lvp_icd.x86_64.json.
+
+set -euo pipefail
+
+# Resolve lavapipe ICD path
+if [[ -n "${LAVAPIPE_ICD:-}" ]]; then
+    icd="$LAVAPIPE_ICD"
+elif [[ -f /usr/share/vulkan/icd.d/lvp_icd.x86_64.json ]]; then
+    icd="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+else
+    echo "error: lavapipe ICD not found." >&2
+    echo "  NixOS: enter the nix shell (LAVAPIPE_ICD is set by shell.nix)" >&2
+    echo "  Debian/Ubuntu: sudo apt install mesa-vulkan-drivers" >&2
+    echo "  Fedora: sudo dnf install mesa-vulkan-drivers" >&2
+    exit 1
+fi
+
+update=""
+filter="snapshot"
+
+for arg in "$@"; do
+    case "$arg" in
+        --update) update="1" ;;
+        *) filter="$arg" ;;
+    esac
+done
+
+export VK_ICD_FILENAMES="$icd"
+${update:+export UPDATE_SNAPSHOTS=1}
+
+# Snapshot tests are #[ignore]d by default so they don't run during
+# normal `cargo test`. The --ignored flag runs only those tests.
+cargo test -p notedeck_chrome --test ui_tests -- --ignored "$filter"
+cargo test -p notedeck_ui --test widget_tests -- --ignored "$filter"
+cargo test -p notedeck_dave --test dave_button_tests -- --ignored "$filter"

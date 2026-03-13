@@ -32,11 +32,11 @@ fn smoke_test_checkbox_interaction() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_basic_ui() {
-    notedeck::skip_if_ci!();
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(400.0, 300.0))
-        .wgpu()
+        .renderer(notedeck::software_renderer())
         .build_ui(|ui| {
             ui.heading("Notedeck");
             ui.separator();
@@ -118,14 +118,14 @@ fn test_damus_renders() {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_damus_columns() {
-    notedeck::skip_if_ci!();
     let ctx = egui::Context::default();
     let state = make_test_state(&ctx);
 
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
-        .wgpu()
+        .renderer(notedeck::software_renderer())
         .build_state(render_damus_frame, state);
 
     harness.run();
@@ -138,13 +138,12 @@ fn snapshot_damus_columns() {
 // ---------------------------------------------------------------------------
 
 fn snapshot_at_size(width: f32, height: f32, name: &str) {
-    notedeck::skip_if_ci!();
     let ctx = egui::Context::default();
     let state = make_test_state(&ctx);
 
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(width, height))
-        .wgpu()
+        .renderer(notedeck::software_renderer())
         .build_state(render_damus_frame, state);
 
     harness.run();
@@ -152,16 +151,19 @@ fn snapshot_at_size(width: f32, height: f32, name: &str) {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_mobile() {
     snapshot_at_size(375.0, 667.0, "damus_mobile");
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_tablet() {
     snapshot_at_size(1024.0, 768.0, "damus_tablet");
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_desktop_wide() {
     snapshot_at_size(1400.0, 900.0, "damus_desktop_wide");
 }
@@ -185,14 +187,14 @@ fn render_damus_frame_light(ctx: &egui::Context, state: &mut TestState) {
 }
 
 #[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_light_mode() {
-    notedeck::skip_if_ci!();
     let ctx = egui::Context::default();
     let state = make_test_state(&ctx);
 
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(800.0, 600.0))
-        .wgpu()
+        .renderer(notedeck::software_renderer())
         .build_state(render_damus_frame_light, state);
 
     harness.run();

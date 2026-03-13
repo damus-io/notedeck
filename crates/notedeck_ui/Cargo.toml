@@ -27,3 +27,4 @@ egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 eframe = { workspace = true, features = ["accesskit"] }
 pollster = { workspace = true }
 wgpu = { workspace = true }
+notedeck = { workspace = true, features = ["snapshot-testing"] }

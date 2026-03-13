@@ -55,6 +55,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 eframe = { workspace = true, features = ["accesskit"] }
+notedeck = { workspace = true, features = ["snapshot-testing"] }
 
 [[bin]]
 name = "notedeck-spawn"

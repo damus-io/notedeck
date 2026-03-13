@@ -44,6 +44,8 @@ mkShell ({
 } // (
   lib.optionalAttrs (!stdenv.isDarwin) {
     LD_LIBRARY_PATH = "${x11libs}";
+    # Lavapipe ICD path for deterministic snapshot tests (software Vulkan)
+    LAVAPIPE_ICD = "${mesa.drivers}/share/vulkan/icd.d/lvp_icd.x86_64.json";
     #XDG_DATA_DIRS = "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}";
   }
 ) // (

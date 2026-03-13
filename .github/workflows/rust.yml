@@ -84,6 +84,19 @@ jobs:
       additional-setup: |
         sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
 
+  snapshot-test:
+    name: Snapshot Tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev mesa-vulkan-drivers
+      - name: Run snapshot tests
+        run: ./scripts/snapshot-test
+
   macos-test:
     name: Test (macOS)
     uses: ./.github/workflows/build-and-test.yml

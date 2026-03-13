@@ -70,6 +70,15 @@ zip = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 
+[dependencies.egui_kittest]
+workspace = true
+optional = true
+features = ["snapshot", "wgpu"]
+
+[dependencies.egui-wgpu]
+workspace = true
+optional = true
+
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { workspace = true }
 android-activity = { workspace = true }
@@ -77,6 +86,7 @@ ndk-context = "0.1"
 
 [features]
 auto-update = []
+snapshot-testing = ["egui_kittest", "egui-wgpu"]
 puffin = ["puffin_egui", "dep:puffin"]
 debug-widget-callstack = ["egui/callstack"]
 debug-interactive-widgets = []
