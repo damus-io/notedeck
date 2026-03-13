@@ -1,9 +1,11 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 /// Tracks which host and cwd groups are collapsed in the session list.
 ///
 /// Used by navigation (Ctrl+Tab, Ctrl+1-9, Ctrl+N/P) to skip sessions
 /// hidden inside collapsed folders.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct CollapseState {
     hosts: HashSet<String>,
     /// Stored as "hostname\0display_cwd" to avoid allocating a tuple on every lookup.

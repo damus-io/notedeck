@@ -168,6 +168,7 @@ pub struct Dave {
     focus_queue: FocusQueue,
     /// Tracks which host/cwd folders are collapsed in the session list
     collapse_state: collapse_state::CollapseState,
+    collapse_serializer: TimedSerializer<collapse_state::CollapseState>,
     /// Auto-steal focus state: Disabled, Idle (enabled, nothing pending),
     /// or Pending (enabled, waiting to fire / retrying).
     auto_steal: focus_queue::AutoStealState,
@@ -453,6 +454,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let settings_serializer =
             TimedSerializer::new(path, DataPathType::Setting, "dave_settings.json".to_owned());
 
+        let collapse_serializer = TimedSerializer::new(
+            path,
+            DataPathType::Setting,
+            "collapse_state.json".to_owned(),
+        );
+        let collapse_state = collapse_serializer.get_item().unwrap_or_default();
+
         // Load saved settings, falling back to env-var-based defaults
         let (model_config, settings) = if let Some(saved_settings) = settings_serializer.get_item()
         {
@@ -566,7 +574,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             show_scene: false, // Default to list view
             interrupt_pending_since: None,
             focus_queue: FocusQueue::new(),
-            collapse_state: collapse_state::CollapseState::new(),
+            collapse_state,
+            collapse_serializer,
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
             directory_picker,
@@ -1246,12 +1255,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::ToggleHostCollapse(hostname) => {
                     self.collapse_state.toggle_host(&hostname);
+                    self.collapse_serializer
+                        .try_save(self.collapse_state.clone());
                     if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
                         self.auto_steal = focus_queue::AutoStealState::Pending;
                     }
                 }
                 SessionListAction::ToggleCwdCollapse(hostname, display_cwd) => {
                     self.collapse_state.toggle_cwd(&hostname, &display_cwd);
+                    self.collapse_serializer
+                        .try_save(self.collapse_state.clone());
                     if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
                         self.auto_steal = focus_queue::AutoStealState::Pending;
                     }
@@ -1337,12 +1350,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
                 SessionListAction::ToggleHostCollapse(hostname) => {
                     self.collapse_state.toggle_host(&hostname);
+                    self.collapse_serializer
+                        .try_save(self.collapse_state.clone());
                     if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
                         self.auto_steal = focus_queue::AutoStealState::Pending;
                     }
                 }
                 SessionListAction::ToggleCwdCollapse(hostname, display_cwd) => {
                     self.collapse_state.toggle_cwd(&hostname, &display_cwd);
+                    self.collapse_serializer
+                        .try_save(self.collapse_state.clone());
                     if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
                         self.auto_steal = focus_queue::AutoStealState::Pending;
                     }
