@@ -1,10 +1,9 @@
-use std::path::{Path, PathBuf};
-
 use egui::{Align, Color32, Layout, Sense};
 use notedeck_ui::app_images;
 
 use crate::agent_status::AgentStatus;
 use crate::backend::BackendType;
+use crate::collapse_state::CollapseState;
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::session::{SessionId, SessionManager};
@@ -22,12 +21,15 @@ pub enum SessionListAction {
     Reset(SessionId),
     NewWorktree(SessionId),
     DeleteWorktree(SessionId),
+    ToggleHostCollapse(String),
+    ToggleCwdCollapse(String, String),
 }
 
 /// UI component for displaying the session list sidebar
 pub struct SessionListUi<'a> {
     session_manager: &'a SessionManager,
     focus_queue: &'a FocusQueue,
+    collapse_state: &'a CollapseState,
     ctrl_held: bool,
 }
 
@@ -35,11 +37,13 @@ impl<'a> SessionListUi<'a> {
     pub fn new(
         session_manager: &'a SessionManager,
         focus_queue: &'a FocusQueue,
+        collapse_state: &'a CollapseState,
         ctrl_held: bool,
     ) -> Self {
         SessionListUi {
             session_manager,
             focus_queue,
+            collapse_state,
             ctrl_held,
         }
     }
@@ -98,29 +102,58 @@ impl<'a> SessionListUi<'a> {
         let active_id = self.session_manager.active_id();
         let mut visual_index: usize = 0;
 
-        // Agents grouped by hostname (pre-computed, no per-frame allocation)
-        for (hostname, ids) in self.session_manager.host_groups() {
-            let label = if hostname.is_empty() {
+        // Agents grouped by host → cwd (pre-computed, deterministically ordered)
+        for host_group in self.session_manager.host_cwd_groups() {
+            let host_label = if host_group.hostname.is_empty() {
                 "Local"
             } else {
-                hostname
+                &host_group.hostname
             };
-            ui.label(
-                egui::RichText::new(label)
-                    .size(12.0)
-                    .color(ui.visuals().weak_text_color()),
-            );
-            ui.add_space(4.0);
-            for &id in ids {
-                if let Some(session) = self.session_manager.get(id) {
-                    if let Some(a) = self.render_session_item(ui, session, visual_index, active_id)
-                    {
-                        action = Some(a);
-                    }
-                    visual_index += 1;
-                }
+
+            let host_collapsed = self.collapse_state.is_host_collapsed(&host_group.hostname);
+
+            let host_response = host_header_ui(ui, host_label);
+            if host_response.clicked() {
+                action = Some(SessionListAction::ToggleHostCollapse(
+                    host_group.hostname.clone(),
+                ));
             }
-            ui.add_space(8.0);
+            ui.add_space(4.0);
+
+            if host_collapsed {
+                ui.add_space(6.0);
+                continue;
+            }
+
+            for cwd_group in &host_group.cwd_groups {
+                let collapsed = self
+                    .collapse_state
+                    .is_cwd_collapsed(&host_group.hostname, &cwd_group.display_cwd);
+
+                let header_response = cwd_folder_header(ui, &cwd_group.display_cwd, collapsed);
+                if header_response.clicked() {
+                    action = Some(SessionListAction::ToggleCwdCollapse(
+                        host_group.hostname.clone(),
+                        cwd_group.display_cwd.clone(),
+                    ));
+                }
+
+                if !collapsed {
+                    ui.add_space(2.0);
+                    for &id in &cwd_group.session_ids {
+                        if let Some(session) = self.session_manager.get(id) {
+                            if let Some(a) =
+                                self.render_session_item(ui, session, visual_index, active_id)
+                            {
+                                action = Some(a);
+                            }
+                            visual_index += 1;
+                        }
+                    }
+                }
+                ui.add_space(2.0);
+            }
+            ui.add_space(6.0);
         }
 
         // Chats section (pre-computed IDs)
@@ -175,14 +208,10 @@ impl<'a> SessionListUi<'a> {
             session.details.display_title()
         };
         let (response, dot_action) = if session.ai_mode == AiMode::Agentic {
-            let empty_path = PathBuf::new();
-            let cwd = session.cwd().unwrap_or(&empty_path);
             self.agent_row_ui(
                 ui,
                 session.id,
                 display_title,
-                cwd,
-                &session.details.home_dir,
                 is_active,
                 shortcut_hint,
                 session.status(),
@@ -320,22 +349,20 @@ impl<'a> SessionListUi<'a> {
         action
     }
 
-    /// Render an agentic session row (status bar, backend icon, cwd, focus dot).
+    /// Render an agentic session row (status bar, backend icon, focus dot).
     #[allow(clippy::too_many_arguments)]
     fn agent_row_ui(
         &self,
         ui: &mut egui::Ui,
         session_id: SessionId,
         title: &str,
-        cwd: &Path,
-        home_dir: &str,
         is_active: bool,
         shortcut_hint: Option<usize>,
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
         backend_type: BackendType,
     ) -> (egui::Response, Option<SessionListAction>) {
-        let desired_size = egui::vec2(ui.available_width(), 48.0);
+        let desired_size = egui::vec2(ui.available_width(), 32.0);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
@@ -375,7 +402,13 @@ impl<'a> SessionListUi<'a> {
         );
 
         let max_text_width = rect.width() - text_start_x - right_used;
-        let title_top = rect.top() + 6.0;
+        let font_id = egui::FontId::proportional(14.0);
+        let title_height = ui
+            .painter()
+            .layout_no_wrap(title.to_string(), font_id, ui.visuals().text_color())
+            .size()
+            .y;
+        let title_top = rect.center().y - title_height / 2.0;
         render_title(
             ui,
             title,
@@ -383,16 +416,6 @@ impl<'a> SessionListUi<'a> {
             title_top,
             max_text_width,
         );
-
-        // Draw cwd below title
-        let font_id = egui::FontId::proportional(14.0);
-        let title_height = ui
-            .painter()
-            .layout_no_wrap(title.to_string(), font_id, ui.visuals().text_color())
-            .size()
-            .y;
-        let cwd_pos = egui::pos2(rect.left() + text_start_x, title_top + title_height + 1.0);
-        cwd_ui(ui, cwd, home_dir, cwd_pos, max_text_width);
 
         (response, dot_action)
     }
@@ -695,20 +718,61 @@ fn render_title(ui: &mut egui::Ui, title: &str, x: f32, y: f32, max_width: f32) 
     }
 }
 
-/// Draw cwd text (monospace, weak+small) with clipping.
-fn cwd_ui(ui: &mut egui::Ui, cwd_path: &Path, home_dir: &str, pos: egui::Pos2, max_width: f32) {
-    let display_text = if home_dir.is_empty() {
-        crate::path_utils::abbreviate_path(cwd_path)
-    } else {
-        crate::path_utils::abbreviate_with_home(cwd_path, home_dir)
-    };
+/// Render a collapsible host header. Truncates with ellipsis and shows
+/// full name on hover.
+fn host_header_ui(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    let text = egui::RichText::new(label)
+        .size(14.0)
+        .color(ui.visuals().weak_text_color());
+    let widget = egui::Label::new(text).truncate().sense(Sense::click());
+    ui.add(widget)
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+}
 
-    let (text, _) = truncate_host_and_path(ui, "", &display_text, max_width);
+/// Render a collapsible cwd folder header with disclosure triangle and truncated path.
+fn cwd_folder_header(ui: &mut egui::Ui, cwd_display: &str, collapsed: bool) -> egui::Response {
+    let header_height = 24.0;
+    let desired_size = egui::vec2(ui.available_width(), header_height);
+    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    let cwd_font = egui::FontId::monospace(10.0);
-    let cwd_color = ui.visuals().weak_text_color();
+    let triangle_size = 8.0;
+    let triangle_center = egui::pos2(rect.left() + 4.0 + triangle_size / 2.0, rect.center().y);
+    let weak_color = ui.visuals().weak_text_color();
+
+    let triangle_points = disclosure_triangle(triangle_center, collapsed);
+    ui.painter().add(egui::Shape::convex_polygon(
+        triangle_points,
+        weak_color,
+        egui::Stroke::NONE,
+    ));
+
+    let text_start = rect.left() + 4.0 + triangle_size + 4.0;
+    let max_text_width = rect.right() - text_start - 4.0;
+    let (text, _) = truncate_host_and_path(ui, "", cwd_display, max_text_width);
+    let font = egui::FontId::monospace(10.0);
+    let text_pos = egui::pos2(text_start, rect.center().y);
     ui.painter()
-        .text(pos, egui::Align2::LEFT_TOP, &text, cwd_font, cwd_color);
+        .text(text_pos, egui::Align2::LEFT_CENTER, &text, font, weak_color);
+
+    response
+}
+
+/// Compute the three vertices for a disclosure triangle.
+fn disclosure_triangle(center: egui::Pos2, collapsed: bool) -> Vec<egui::Pos2> {
+    if collapsed {
+        vec![
+            center + egui::vec2(-3.0, -4.0),
+            center + egui::vec2(4.0, 0.0),
+            center + egui::vec2(-3.0, 4.0),
+        ]
+    } else {
+        vec![
+            center + egui::vec2(-4.0, -3.0),
+            center + egui::vec2(4.0, -3.0),
+            center + egui::vec2(0.0, 4.0),
+        ]
+    }
 }
 
 /// Renders the "Delete worktree" context-menu item with an inline confirmation step.

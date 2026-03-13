@@ -567,6 +567,7 @@ pub fn scene_ui(
 pub fn desktop_ui(
     session_manager: &mut SessionManager,
     focus_queue: &FocusQueue,
+    collapse_state: &crate::collapse_state::CollapseState,
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
@@ -616,7 +617,8 @@ pub fn desktop_ui(
                         });
                         ui.separator();
                     }
-                    SessionListUi::new(session_manager, focus_queue, ctrl_held).ui(ui)
+                    SessionListUi::new(session_manager, focus_queue, collapse_state, ctrl_held)
+                        .ui(ui)
                 })
                 .inner
         })
@@ -648,6 +650,7 @@ pub fn desktop_ui(
 pub fn narrow_ui(
     session_manager: &mut SessionManager,
     focus_queue: &FocusQueue,
+    collapse_state: &crate::collapse_state::CollapseState,
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
@@ -663,7 +666,7 @@ pub fn narrow_ui(
             .fill(ui.visuals().faint_bg_color)
             .inner_margin(egui::Margin::symmetric(8, 12))
             .show(ui, |ui| {
-                SessionListUi::new(session_manager, focus_queue, ctrl_held).ui(ui)
+                SessionListUi::new(session_manager, focus_queue, collapse_state, ctrl_held).ui(ui)
             })
             .inner;
         (DaveResponse::default(), session_action)
@@ -710,6 +713,7 @@ pub fn handle_key_action(
     session_manager: &mut SessionManager,
     scene: &mut AgentScene,
     focus_queue: &mut FocusQueue,
+    collapse_state: &crate::collapse_state::CollapseState,
     backend: &dyn crate::backend::AiBackend,
     show_scene: bool,
     auto_steal_focus: bool,
@@ -790,15 +794,21 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         KeyAction::SwitchToAgent(index) => {
-            update::switch_to_agent_by_index(session_manager, scene, show_scene, index);
+            update::switch_to_agent_by_index(
+                session_manager,
+                collapse_state,
+                scene,
+                show_scene,
+                index,
+            );
             KeyActionResult::None
         }
         KeyAction::NextAgent => {
-            update::cycle_next_agent(session_manager, scene, show_scene);
+            update::cycle_next_agent(session_manager, collapse_state, scene, show_scene);
             KeyActionResult::None
         }
         KeyAction::PreviousAgent => {
-            update::cycle_prev_agent(session_manager, scene, show_scene);
+            update::cycle_prev_agent(session_manager, collapse_state, scene, show_scene);
             KeyActionResult::None
         }
         KeyAction::NewAgent => KeyActionResult::NewAgent,
@@ -834,11 +844,23 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         KeyAction::FocusQueueNext => {
-            update::focus_queue_next(session_manager, focus_queue, scene, show_scene);
+            update::focus_queue_next(
+                session_manager,
+                focus_queue,
+                collapse_state,
+                scene,
+                show_scene,
+            );
             KeyActionResult::None
         }
         KeyAction::FocusQueuePrev => {
-            update::focus_queue_prev(session_manager, focus_queue, scene, show_scene);
+            update::focus_queue_prev(
+                session_manager,
+                focus_queue,
+                collapse_state,
+                scene,
+                show_scene,
+            );
             KeyActionResult::None
         }
         KeyAction::FocusQueueToggleDone => {

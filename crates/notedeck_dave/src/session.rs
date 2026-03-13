@@ -936,12 +936,23 @@ pub struct SessionManager {
     next_id: SessionId,
     /// Pending external editor job (only one at a time)
     pub pending_editor: Option<EditorJob>,
-    /// Cached agent grouping by hostname. Each entry is (hostname, session IDs
-    /// in recency order). Rebuilt via `rebuild_host_groups()` when sessions or
-    /// hostnames change.
-    host_groups: Vec<(String, Vec<SessionId>)>,
-    /// Cached chat session IDs in recency order. Rebuilt alongside host_groups.
+    /// Cached agent grouping: host → cwd → sessions.
+    /// Rebuilt via `rebuild_cwd_groups()` when sessions change.
+    host_cwd_groups: Vec<HostGroup>,
+    /// Cached chat session IDs in recency order.
     chat_ids: Vec<SessionId>,
+}
+
+/// A group of sessions under a single hostname.
+pub struct HostGroup {
+    pub hostname: String,
+    pub cwd_groups: Vec<CwdGroup>,
+}
+
+/// A group of sessions sharing a working directory.
+pub struct CwdGroup {
+    pub display_cwd: String,
+    pub session_ids: Vec<SessionId>,
 }
 
 impl Default for SessionManager {
@@ -958,7 +969,7 @@ impl SessionManager {
             active: None,
             next_id: 1,
             pending_editor: None,
-            host_groups: Vec::new(),
+            host_cwd_groups: Vec::new(),
             chat_ids: Vec::new(),
         }
     }
@@ -977,7 +988,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
-        self.rebuild_host_groups();
+        self.rebuild_cwd_groups();
 
         id
     }
@@ -999,7 +1010,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
-        self.rebuild_host_groups();
+        self.rebuild_cwd_groups();
 
         id
     }
@@ -1020,7 +1031,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id);
         self.active = Some(id);
-        self.rebuild_host_groups();
+        self.rebuild_cwd_groups();
 
         id
     }
@@ -1062,7 +1073,7 @@ impl SessionManager {
             if self.active == Some(id) {
                 self.active = self.order.first().copied();
             }
-            self.rebuild_host_groups();
+            self.rebuild_cwd_groups();
             true
         } else {
             false
@@ -1141,10 +1152,21 @@ impl SessionManager {
         self.order.clone()
     }
 
-    /// Get cached agent session groups by hostname.
-    /// Each entry is (hostname, session IDs in recency order).
-    pub fn host_groups(&self) -> &[(String, Vec<SessionId>)] {
-        &self.host_groups
+    /// Get cached agent session groups: host → cwd → sessions.
+    pub fn host_cwd_groups(&self) -> &[HostGroup] {
+        &self.host_cwd_groups
+    }
+
+    /// Collect unique remote hostnames from all sessions.
+    pub fn remote_hostnames(&self) -> Vec<String> {
+        let mut hosts = Vec::new();
+        for session in self.sessions.values() {
+            let h = &session.details.hostname;
+            if !h.is_empty() && !hosts.contains(h) {
+                hosts.push(h.clone());
+            }
+        }
+        hosts
     }
 
     /// Get cached chat session IDs in recency order.
@@ -1152,12 +1174,20 @@ impl SessionManager {
         &self.chat_ids
     }
 
-    /// Session IDs in visual/display order (host groups then chats).
-    /// Keybinding numbers (Ctrl+1-9) map to this order.
-    pub fn visual_order(&self) -> Vec<SessionId> {
+    /// Session IDs in visual/display order (host/cwd groups then chats),
+    /// filtered by collapse state. Collapsed host/cwd groups are excluded.
+    pub fn visual_order(&self, collapse: &crate::collapse_state::CollapseState) -> Vec<SessionId> {
         let mut ids = Vec::new();
-        for (_, group_ids) in &self.host_groups {
-            ids.extend_from_slice(group_ids);
+        for host_group in &self.host_cwd_groups {
+            if collapse.is_host_collapsed(&host_group.hostname) {
+                continue;
+            }
+            for cwd_group in &host_group.cwd_groups {
+                if collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.display_cwd) {
+                    continue;
+                }
+                ids.extend_from_slice(&cwd_group.session_ids);
+            }
         }
         ids.extend_from_slice(&self.chat_ids);
         ids
@@ -1168,10 +1198,10 @@ impl SessionManager {
         self.order.iter().position(|&oid| oid == id)
     }
 
-    /// Rebuild the cached hostname groups from current sessions and order.
-    /// Call after adding/removing sessions or changing a session's hostname.
-    pub fn rebuild_host_groups(&mut self) {
-        self.host_groups.clear();
+    /// Rebuild the cached host/cwd groups from current sessions.
+    /// Call after adding/removing sessions or changing a session's cwd.
+    pub fn rebuild_cwd_groups(&mut self) {
+        self.host_cwd_groups.clear();
         self.chat_ids.clear();
 
         for &id in &self.order {
@@ -1182,17 +1212,77 @@ impl SessionManager {
                     }
                     continue;
                 }
-                let hostname = &session.details.hostname;
-                if let Some(group) = self.host_groups.iter_mut().find(|(h, _)| h == hostname) {
-                    group.1.push(id);
+
+                let hostname = session.details.hostname.clone();
+                let cwd_display = match session.cwd() {
+                    Some(cwd) => {
+                        let home = &session.details.home_dir;
+                        if home.is_empty() {
+                            crate::path_utils::abbreviate_path(cwd)
+                        } else {
+                            crate::path_utils::abbreviate_with_home(cwd, home)
+                        }
+                    }
+                    None => "(unknown)".to_string(),
+                };
+
+                // Find or create host group
+                let host_group = if let Some(hg) = self
+                    .host_cwd_groups
+                    .iter_mut()
+                    .find(|hg| hg.hostname == hostname)
+                {
+                    hg
                 } else {
-                    self.host_groups.push((hostname.clone(), vec![id]));
+                    self.host_cwd_groups.push(HostGroup {
+                        hostname: hostname.clone(),
+                        cwd_groups: Vec::new(),
+                    });
+                    self.host_cwd_groups.last_mut().unwrap()
+                };
+
+                // Find or create cwd group within host
+                if let Some(cg) = host_group
+                    .cwd_groups
+                    .iter_mut()
+                    .find(|cg| cg.display_cwd == cwd_display)
+                {
+                    cg.session_ids.push(id);
+                } else {
+                    host_group.cwd_groups.push(CwdGroup {
+                        display_cwd: cwd_display,
+                        session_ids: vec![id],
+                    });
                 }
             }
         }
 
-        // Sort groups by hostname for stable ordering
-        self.host_groups.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort host groups alphabetically (empty hostname = local, sorts first)
+        self.host_cwd_groups
+            .sort_by(|a, b| a.hostname.cmp(&b.hostname));
+
+        // Sort cwd groups and sessions within each
+        for host_group in &mut self.host_cwd_groups {
+            host_group
+                .cwd_groups
+                .sort_by(|a, b| a.display_cwd.cmp(&b.display_cwd));
+
+            for cwd_group in &mut host_group.cwd_groups {
+                cwd_group.session_ids.sort_by(|a, b| {
+                    let title_a = self
+                        .sessions
+                        .get(a)
+                        .map(|s| s.details.display_title())
+                        .unwrap_or("");
+                    let title_b = self
+                        .sessions
+                        .get(b)
+                        .map(|s| s.details.display_title())
+                        .unwrap_or("");
+                    title_a.cmp(title_b).then(a.cmp(b))
+                });
+            }
+        }
     }
 }
 

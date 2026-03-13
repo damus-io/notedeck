@@ -457,11 +457,12 @@ pub fn switch_and_focus_session(
 /// Switch to agent by index in the visual display order (0-indexed).
 pub fn switch_to_agent_by_index(
     session_manager: &mut SessionManager,
+    collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
     index: usize,
 ) {
-    let ids = session_manager.visual_order();
+    let ids = session_manager.visual_order(collapse);
     if let Some(&id) = ids.get(index) {
         switch_and_focus_session(session_manager, scene, show_scene, id);
     }
@@ -470,11 +471,12 @@ pub fn switch_to_agent_by_index(
 /// Cycle agents using a direction function that computes the next index.
 fn cycle_agent(
     session_manager: &mut SessionManager,
+    collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
     index_fn: impl FnOnce(usize, usize) -> usize,
 ) {
-    let ids = session_manager.visual_order();
+    let ids = session_manager.visual_order(collapse);
     if ids.is_empty() {
         return;
     }
@@ -491,10 +493,11 @@ fn cycle_agent(
 /// Cycle to the next agent.
 pub fn cycle_next_agent(
     session_manager: &mut SessionManager,
+    collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
 ) {
-    cycle_agent(session_manager, scene, show_scene, |idx, len| {
+    cycle_agent(session_manager, collapse, scene, show_scene, |idx, len| {
         (idx + 1) % len
     });
 }
@@ -502,10 +505,11 @@ pub fn cycle_next_agent(
 /// Cycle to the previous agent.
 pub fn cycle_prev_agent(
     session_manager: &mut SessionManager,
+    collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
 ) {
-    cycle_agent(session_manager, scene, show_scene, |idx, len| {
+    cycle_agent(session_manager, collapse, scene, show_scene, |idx, len| {
         if idx == 0 {
             len - 1
         } else {
@@ -518,31 +522,63 @@ pub fn cycle_prev_agent(
 // Focus Queue Operations
 // =============================================================================
 
-/// Navigate to the next item in the focus queue.
+/// Navigate to the next visible item in the focus queue.
+/// Skips sessions inside collapsed folders.
 /// Done items are automatically dismissed after switching to them.
 pub fn focus_queue_next(
     session_manager: &mut SessionManager,
     focus_queue: &mut FocusQueue,
+    collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
 ) {
-    if let Some(session_id) = focus_queue.next() {
-        switch_and_focus_session(session_manager, scene, show_scene, session_id);
-        dismiss_done(session_manager, focus_queue, session_id);
+    let visible = session_manager.visual_order(collapse);
+    let saved_cursor = focus_queue.cursor_index();
+    let max_attempts = focus_queue.len();
+    for _ in 0..max_attempts {
+        if let Some(session_id) = focus_queue.next() {
+            if visible.contains(&session_id) {
+                switch_and_focus_session(session_manager, scene, show_scene, session_id);
+                dismiss_done(session_manager, focus_queue, session_id);
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+    // All skipped — restore cursor to original position.
+    if let Some(idx) = saved_cursor {
+        focus_queue.set_cursor(idx);
     }
 }
 
-/// Navigate to the previous item in the focus queue.
+/// Navigate to the previous visible item in the focus queue.
+/// Skips sessions inside collapsed folders.
 /// Done items are automatically dismissed after switching to them.
 pub fn focus_queue_prev(
     session_manager: &mut SessionManager,
     focus_queue: &mut FocusQueue,
+    collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
 ) {
-    if let Some(session_id) = focus_queue.prev() {
-        switch_and_focus_session(session_manager, scene, show_scene, session_id);
-        dismiss_done(session_manager, focus_queue, session_id);
+    let visible = session_manager.visual_order(collapse);
+    let saved_cursor = focus_queue.cursor_index();
+    let max_attempts = focus_queue.len();
+    for _ in 0..max_attempts {
+        if let Some(session_id) = focus_queue.prev() {
+            if visible.contains(&session_id) {
+                switch_and_focus_session(session_manager, scene, show_scene, session_id);
+                dismiss_done(session_manager, focus_queue, session_id);
+                return;
+            }
+        } else {
+            return;
+        }
+    }
+    // All skipped — restore cursor to original position.
+    if let Some(idx) = saved_cursor {
+        focus_queue.set_cursor(idx);
     }
 }
 
@@ -606,9 +642,13 @@ pub fn toggle_auto_steal(
 /// Process auto-steal focus logic: switch to focus queue items as needed.
 /// Returns true if focus was stolen (switched to a NeedsInput or Done session),
 /// which can be used to raise the OS window.
+///
+/// Sessions inside collapsed directories are skipped — auto-steal only
+/// targets sessions the user can currently see.
 pub fn process_auto_steal_focus(
     session_manager: &mut SessionManager,
     focus_queue: &mut FocusQueue,
+    collapse: &crate::collapse_state::CollapseState,
     scene: &mut AgentScene,
     show_scene: bool,
     auto_steal_focus: bool,
@@ -618,11 +658,14 @@ pub fn process_auto_steal_focus(
         return false;
     }
 
-    let has_needs_input = focus_queue.has_needs_input();
-    let has_done = focus_queue.has_done();
+    let visible = session_manager.visual_order(collapse);
 
-    if has_needs_input {
-        // There are NeedsInput items - check if we need to steal focus
+    let first_visible_needs_input =
+        focus_queue.first_visible_index(FocusPriority::NeedsInput, &visible);
+    let first_visible_done = focus_queue.first_visible_index(FocusPriority::Done, &visible);
+
+    if let Some(idx) = first_visible_needs_input {
+        // There are visible NeedsInput items - check if we need to steal focus
         let current_session = session_manager.active_id();
         let current_priority = current_session.and_then(|id| focus_queue.get_session_priority(id));
         let already_on_needs_input = current_priority == Some(FocusPriority::NeedsInput);
@@ -634,18 +677,15 @@ pub fn process_auto_steal_focus(
                 tracing::debug!("Auto-steal: saved home session {:?}", home_session);
             }
 
-            // Jump to first NeedsInput item
-            if let Some(idx) = focus_queue.first_needs_input_index() {
-                focus_queue.set_cursor(idx);
-                if let Some(entry) = focus_queue.current() {
-                    switch_and_focus_session(session_manager, scene, show_scene, entry.session_id);
-                    tracing::debug!("Auto-steal: switched to session {:?}", entry.session_id);
-                    return true;
-                }
+            focus_queue.set_cursor(idx);
+            if let Some(entry) = focus_queue.current() {
+                switch_and_focus_session(session_manager, scene, show_scene, entry.session_id);
+                tracing::debug!("Auto-steal: switched to session {:?}", entry.session_id);
+                return true;
             }
         }
-    } else if has_done {
-        // No NeedsInput but there are Done items - auto-focus those
+    } else if let Some(idx) = first_visible_done {
+        // No visible NeedsInput but there are visible Done items - auto-focus those
         let current_session = session_manager.active_id();
         let current_priority = current_session.and_then(|id| focus_queue.get_session_priority(id));
         let already_on_done = current_priority == Some(FocusPriority::Done);
@@ -657,22 +697,26 @@ pub fn process_auto_steal_focus(
                 tracing::debug!("Auto-steal: saved home session {:?}", home_session);
             }
 
-            // Jump to first Done item (keep in queue; cleared externally
-            // when the session's clearing condition is met)
-            if let Some(idx) = focus_queue.first_done_index() {
-                focus_queue.set_cursor(idx);
-                if let Some(entry) = focus_queue.current() {
-                    let sid = entry.session_id;
-                    switch_and_focus_session(session_manager, scene, show_scene, sid);
-                    tracing::debug!("Auto-steal: switched to Done session {:?}", sid);
-                    return true;
-                }
+            focus_queue.set_cursor(idx);
+            if let Some(entry) = focus_queue.current() {
+                let sid = entry.session_id;
+                switch_and_focus_session(session_manager, scene, show_scene, sid);
+                tracing::debug!("Auto-steal: switched to Done session {:?}", sid);
+                return true;
             }
         }
     } else if let Some(home_id) = home_session.take() {
-        // No more NeedsInput or Done items - return to saved session
-        switch_and_focus_session(session_manager, scene, show_scene, home_id);
-        tracing::debug!("Auto-steal: returned to home session {:?}", home_id);
+        // No more visible NeedsInput or Done items - return to saved session
+        // only if it is still visible (not inside a collapsed group).
+        if visible.contains(&home_id) {
+            switch_and_focus_session(session_manager, scene, show_scene, home_id);
+            tracing::debug!("Auto-steal: returned to home session {:?}", home_id);
+        } else {
+            tracing::debug!(
+                "Auto-steal: home session {:?} is collapsed, staying on current",
+                home_id
+            );
+        }
     }
 
     false
@@ -1024,7 +1068,7 @@ pub fn create_session_with_cwd(
             crate::setup_conversation_action_subscription(agentic, &event_id, ndb);
         }
     }
-    session_manager.rebuild_host_groups();
+    session_manager.rebuild_cwd_groups();
     id
 }
 
@@ -1056,7 +1100,7 @@ pub fn create_resumed_session_with_cwd(
             }
         }
     }
-    session_manager.rebuild_host_groups();
+    session_manager.rebuild_cwd_groups();
     id
 }
 
