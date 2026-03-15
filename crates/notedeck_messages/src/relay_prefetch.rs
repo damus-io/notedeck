@@ -1,4 +1,4 @@
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayRoutingPreference};
 use notedeck::{
     Accounts, RelaySelection, RemoteApi, ScopedSubApi, ScopedSubIdentity, SubConfig, SubOwnerKey,
 };
@@ -14,7 +14,7 @@ fn participant_relay_prefetch_spec(participant: &Pubkey) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: vec![participant_dm_relay_list_filter(participant)],
-        routing_preference: enostr::RelayRoutingPreference::default(),
+        routing_preference: RelayRoutingPreference::default(),
     }
 }
 

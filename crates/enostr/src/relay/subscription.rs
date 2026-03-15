@@ -59,15 +59,13 @@ impl OutboxSubscriptions {
         self.subs.get(id).map(|s| s.json_size)
     }
 
-    pub fn subset_oneshot(&self, ids: &HashSet<OutboxSubId>) -> HashSet<OutboxSubId> {
-        ids.iter()
-            .filter(|id| self.subs.get(*id).is_some_and(|s| s.is_oneshot))
-            .copied()
-            .collect()
-    }
-
     pub fn is_oneshot(&self, id: &OutboxSubId) -> bool {
         self.subs.get(id).is_some_and(|s| s.is_oneshot)
+    }
+
+    /// Returns the dedicated/compaction routing preference for the subscription, if present.
+    pub fn routing_preference(&self, id: &OutboxSubId) -> Option<RelayRoutingPreference> {
+        self.subs.get(id).map(|s| s.routing_preference)
     }
 
     pub fn json_size_sum(&self, ids: &HashSet<OutboxSubId>) -> usize {
@@ -152,7 +150,7 @@ pub struct SubscribeTask {
 mod tests {
     use super::*;
     use crate::relay::RelayUrlPkgs;
-    use crate::relay::{FullModificationTask, ModifyFiltersTask, RelayRoutingPreference};
+    use crate::relay::{FullModificationTask, ModifyFiltersTask};
 
     fn subscribe_task(filters: Vec<Filter>, urls: RelayUrlPkgs) -> SubscribeTask {
         SubscribeTask {
@@ -173,7 +171,7 @@ mod tests {
     fn new_subscription_records_metadata() {
         let mut subs = OutboxSubscriptions::default();
         let mut pkgs = RelayUrlPkgs::new(relay_urls("wss://relay-meta.example.com"));
-        pkgs.routing_preference = RelayRoutingPreference::RequireDedicated;
+        pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
         let filters = vec![Filter::new().kinds(vec![1]).limit(4).build()];
         let id = OutboxSubId(7);
 
@@ -189,45 +187,8 @@ mod tests {
         assert_eq!(sub.relays.len(), 1);
         assert_eq!(
             sub.routing_preference,
-            RelayRoutingPreference::RequireDedicated
+            RelayRoutingPreference::PreferDedicated
         );
-    }
-
-    /// subset_oneshot should only return IDs corresponding to oneshot subscriptions.
-    #[test]
-    fn subset_oneshot_filters_ids() {
-        let mut subs = OutboxSubscriptions::default();
-        let filters = vec![Filter::new().kinds(vec![1]).build()];
-        let id_a = OutboxSubId(1);
-        let id_b = OutboxSubId(2);
-        subs.new_subscription(
-            id_a,
-            subscribe_task(
-                filters.clone(),
-                RelayUrlPkgs::new(relay_urls("wss://relay-a.example")),
-            ),
-            false,
-        );
-        subs.new_subscription(
-            id_b,
-            subscribe_task(
-                filters,
-                RelayUrlPkgs::new(relay_urls("wss://relay-b.example")),
-            ),
-            true,
-        );
-
-        let mut ids = HashSet::new();
-        ids.insert(id_a);
-        ids.insert(id_b);
-
-        let oneshots = subs.subset_oneshot(&ids);
-        let expected = {
-            let mut s = HashSet::new();
-            s.insert(id_b);
-            s
-        };
-        assert_eq!(oneshots, expected);
     }
 
     /// json_size_sum aggregates the JSON payload size for the requested subscriptions.

@@ -1,4 +1,4 @@
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::{
@@ -29,6 +29,10 @@ impl TransparentData {
         self.request_to_sid.contains_key(id)
     }
 
+    pub fn request_ids(&self) -> Vec<OutboxSubId> {
+        self.request_to_sid.keys().copied().collect()
+    }
+
     pub fn set_req_status(&mut self, sid: &str, status: RelayReqStatus) {
         let Some(entry) = self.sid_status.get_mut(sid) else {
             return;
@@ -45,12 +49,28 @@ impl TransparentData {
     pub fn id(&self, sid: &RelayReqId) -> Option<OutboxSubId> {
         self.sid_status.get(sid).map(|d| d.sub_req_id)
     }
+
+    #[cfg(test)]
+    pub(crate) fn queue_subscribe_for_test(&mut self, id: OutboxSubId) {
+        self.queue.enqueue(id);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queued_len_for_test(&self) -> usize {
+        self.queue.len()
+    }
 }
 
 pub struct TransparentRelay<'a> {
     relay: Option<&'a mut WebsocketRelay>,
     data: &'a mut TransparentData,
     sub_guardian: &'a mut SubPassGuardian,
+}
+
+/// Result of trying to place a subscription onto the transparent relay path.
+pub enum TransparentPlaceResult {
+    Placed,
+    NoRoom,
 }
 
 /// TransparentRelay manages per-subscription REQs for outbox subscriptions which
@@ -68,50 +88,63 @@ impl<'a> TransparentRelay<'a> {
         }
     }
 
-    pub fn try_flush_queue(&mut self, subs: &OutboxSubscriptions) {
+    /// Tries queued transparent subscribes and returns IDs that were placed.
+    pub fn try_flush_queue(&mut self, subs: &OutboxSubscriptions) -> Vec<OutboxSubId> {
+        let mut placed = Vec::new();
         while self.sub_guardian.available_passes() > 0 && !self.data.queue.is_empty() {
             let Some(next) = self.data.queue.pop() else {
-                return;
+                return placed;
             };
 
             let Some(view) = subs.view(&next) else {
                 continue;
             };
 
-            self.subscribe(view);
+            if let TransparentPlaceResult::NoRoom = self.try_subscribe(view) {
+                self.queue_subscribe(next);
+                break;
+            }
+            placed.push(next);
         }
+        placed
     }
 
-    pub fn subscribe(&mut self, view: SubscriptionView) {
+    /// Try to place this subscription on transparent without mutating the retry queue.
+    pub fn try_subscribe(&mut self, view: SubscriptionView) -> TransparentPlaceResult {
         let req_id = view.id;
-        let Some(existing_sid) = self.data.request_to_sid.get(&req_id) else {
-            let Some(new_pass) = self.sub_guardian.take_pass() else {
-                self.data.queue.enqueue(req_id);
-                return;
-            };
-            tracing::debug!("Transparent took pass for {req_id:?}");
-            let sid: RelayReqId = Uuid::new_v4().into();
-            self.data.request_to_sid.insert(req_id, sid.clone());
-            send_req(&mut self.relay, &sid, view.filters);
-            self.data.sid_status.insert(
-                sid,
-                SubData {
-                    status: RelayReqStatus::InitialQuery,
-                    sub_pass: new_pass,
-                    sub_req_id: req_id,
-                },
-            );
-            return;
+        if let Some(existing_sid) = self.data.request_to_sid.get(&req_id).cloned() {
+            if let Some(sub_data) = self.data.sid_status.get_mut(&existing_sid) {
+                // we're replacing the existing sub with new filters
+                sub_data.status = RelayReqStatus::InitialQuery;
+                send_req(&mut self.relay, &existing_sid, view.filters);
+                return TransparentPlaceResult::Placed;
+            }
+
+            // stale index; rebuild from scratch below.
+            self.data.request_to_sid.remove(&req_id);
+        }
+
+        let Some(new_pass) = self.sub_guardian.take_pass() else {
+            return TransparentPlaceResult::NoRoom;
         };
+        tracing::debug!("Transparent took pass for {req_id:?}");
+        let sid: RelayReqId = Uuid::new_v4().into();
+        self.data.request_to_sid.insert(req_id, sid.clone());
+        send_req(&mut self.relay, &sid, view.filters);
+        self.data.sid_status.insert(
+            sid,
+            SubData {
+                status: RelayReqStatus::InitialQuery,
+                sub_pass: new_pass,
+                sub_req_id: req_id,
+            },
+        );
+        TransparentPlaceResult::Placed
+    }
 
-        let Some(sub_data) = self.data.sid_status.get_mut(existing_sid) else {
-            return;
-        };
-
-        // we're replacing the existing sub with new filters
-        sub_data.status = RelayReqStatus::InitialQuery;
-
-        send_req(&mut self.relay, existing_sid, view.filters);
+    /// Queue a subscription for a later transparent placement retry.
+    pub fn queue_subscribe(&mut self, req_id: OutboxSubId) {
+        self.data.queue.enqueue(req_id);
     }
 
     pub fn unsubscribe(&mut self, req_id: OutboxSubId) {
@@ -136,15 +169,16 @@ impl<'a> TransparentRelay<'a> {
     }
 
     #[profiling::function]
-    pub fn handle_relay_open(&mut self, subs: &OutboxSubscriptions) {
+    pub fn handle_relay_open(&mut self, subs: &OutboxSubscriptions) -> HashSet<OutboxSubId> {
         let Some(relay) = &mut self.relay else {
-            return;
+            return HashSet::new();
         };
 
         if !relay.is_connected() {
-            return;
+            return HashSet::new();
         }
 
+        let mut invalidated = HashSet::new();
         for (sid, data) in &self.data.sid_status {
             let Some(view) = subs.view(&data.sub_req_id) else {
                 continue;
@@ -154,7 +188,10 @@ impl<'a> TransparentRelay<'a> {
                 sid.to_string(),
                 view.filters.get_filters().clone(),
             ));
+            invalidated.insert(data.sub_req_id);
         }
+
+        invalidated
     }
 }
 
@@ -173,32 +210,26 @@ fn send_req(relay: &mut Option<&mut WebsocketRelay>, sid: &RelayReqId, filters: 
     ));
 }
 
-#[allow(dead_code)]
-pub fn revocate_transparent_subs(
+/// Evicts transparent subscriptions whose passes were revoked and returns the
+/// affected Outbox subscription IDs for higher-level rerouting.
+pub fn take_revoked_transparent_subs(
     mut relay: Option<&mut WebsocketRelay>,
     data: &mut TransparentData,
+    ids: Vec<OutboxSubId>,
     revocations: Vec<SubPassRevocation>,
-) {
-    // Snapshot the pairs we intend to process (can't mutate while iterating).
-    let pairs: Vec<(OutboxSubId, RelayReqId)> = data
-        .request_to_sid
-        .iter()
-        .take(revocations.len())
-        .map(|(id, sid)| (*id, sid.clone()))
-        .collect();
-
-    for (mut revocation, (id, sid)) in revocations.into_iter().zip(pairs) {
-        // If we fail to remove the mapping, skip without consuming other state.
-        if data.request_to_sid.remove(&id).is_none() {
+) -> Vec<OutboxSubId> {
+    let mut revoked_ids = Vec::with_capacity(ids.len());
+    for (id, mut revocation) in ids.into_iter().zip(revocations) {
+        let Some(sid) = data.request_to_sid.remove(&id) else {
             continue;
-        }
+        };
 
         let Some(status) = data.sid_status.remove(&sid) else {
             continue;
         };
 
         revocation.revocate(status.sub_pass);
-        data.queue.enqueue(id);
+        revoked_ids.push(id);
 
         let Some(relay) = &mut relay else {
             continue;
@@ -208,6 +239,8 @@ pub fn revocate_transparent_subs(
             relay.conn.send(&ClientMessage::close(sid.to_string()));
         }
     }
+
+    revoked_ids
 }
 
 struct SubData {
@@ -219,7 +252,10 @@ struct SubData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::{RelayUrlPkgs, SubscribeTask};
+    use crate::{
+        relay::{test_utils::MockWakeup, RelayStatus, RelayUrlPkgs, SubscribeTask},
+        WebsocketConn,
+    };
     use hashbrown::HashSet;
     use nostrdb::Filter;
 
@@ -289,7 +325,7 @@ mod tests {
 
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
         }
 
         assert!(data.contains(&OutboxSubId(0)));
@@ -298,19 +334,33 @@ mod tests {
     }
 
     #[test]
-    fn transparent_relay_subscribe_queues_when_no_passes() {
+    fn transparent_relay_try_subscribe_reports_no_room_when_no_passes() {
         let mut data = TransparentData::default();
         let mut guardian = SubPassGuardian::new(0); // No passes available
         let subs = create_subs_with_filter(OutboxSubId(0), trivial_filter());
 
-        {
+        let result = {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
-        }
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap())
+        };
 
-        // Should be queued, not active
+        assert!(matches!(result, TransparentPlaceResult::NoRoom));
+        // Caller decides fallback vs retry queue.
         assert!(!data.contains(&OutboxSubId(0)));
         assert_eq!(data.num_subs(), 0);
+        assert_eq!(data.queue.len(), 0);
+    }
+
+    #[test]
+    fn transparent_relay_queue_subscribe_queues_when_requested() {
+        let mut data = TransparentData::default();
+        let mut guardian = SubPassGuardian::new(0);
+
+        {
+            let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
+            relay.queue_subscribe(OutboxSubId(0));
+        }
+
         assert_eq!(data.queue.len(), 1);
     }
 
@@ -322,7 +372,7 @@ mod tests {
 
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
         }
 
         assert_eq!(guardian.available_passes(), 0);
@@ -345,14 +395,6 @@ mod tests {
 
         // no passes available
         let mut guardian = SubPassGuardian::new(0);
-        let subs = create_subs_with_filter(OutboxSubId(0), trivial_filter());
-
-        {
-            let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
-        }
-
-        assert!(!data.queue.is_empty());
 
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
@@ -388,7 +430,7 @@ mod tests {
 
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs1.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs1.view(&OutboxSubId(0)).unwrap());
         }
 
         assert_eq!(guardian.available_passes(), 4);
@@ -397,7 +439,7 @@ mod tests {
 
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs2.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs2.view(&OutboxSubId(0)).unwrap());
         }
 
         // Should still have same number of passes (replaced, not added)
@@ -419,7 +461,7 @@ mod tests {
         // Queue a subscription
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.queue_subscribe(OutboxSubId(0));
         }
 
         assert_eq!(data.queue.len(), 1);
@@ -431,7 +473,8 @@ mod tests {
         // Flush queue
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.try_flush_queue(&subs);
+            let placed = relay.try_flush_queue(&subs);
+            assert_eq!(placed, vec![OutboxSubId(0)]);
         }
 
         // Should now be active
@@ -450,9 +493,9 @@ mod tests {
 
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
-            relay.subscribe(subs.view(&OutboxSubId(1)).unwrap());
-            relay.subscribe(subs.view(&OutboxSubId(2)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(1)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(2)).unwrap());
         }
 
         assert_eq!(data.num_subs(), 3);
@@ -474,8 +517,8 @@ mod tests {
 
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
-            relay.subscribe(subs.view(&OutboxSubId(1)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(1)).unwrap());
         }
 
         let sid = data.request_to_sid.get(&OutboxSubId(0)).unwrap().clone();
@@ -489,10 +532,45 @@ mod tests {
         assert!(data.id(&unknown_sid).is_none());
     }
 
-    // ==================== revocate_transparent_subs tests ====================
+    #[test]
+    fn handle_relay_open_reports_reissued_transparent_sub_ids() {
+        let mut data = TransparentData::default();
+        let mut guardian = SubPassGuardian::new(2);
+        let mut websocket = WebsocketRelay::new(
+            WebsocketConn::from_wakeup(
+                nostr::RelayUrl::parse("wss://transparent-replay.example.com").unwrap(),
+                MockWakeup::default(),
+            )
+            .unwrap(),
+        );
+        websocket.conn.set_status(RelayStatus::Connected);
+
+        let mut subs = OutboxSubscriptions::default();
+        insert_sub(&mut subs, OutboxSubId(0), trivial_filter(), false);
+        insert_sub(&mut subs, OutboxSubId(1), trivial_filter(), false);
+
+        {
+            let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(1)).unwrap());
+        }
+
+        let invalidated = {
+            let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
+            relay.handle_relay_open(&subs)
+        };
+
+        assert_eq!(
+            invalidated,
+            HashSet::from([OutboxSubId(0), OutboxSubId(1)]),
+            "relay-open replay should invalidate every transparent REQ it reissues"
+        );
+    }
+
+    // ==================== take_revoked_transparent_subs tests ====================
 
     #[test]
-    fn revocate_transparent_subs_removes_subscriptions() {
+    fn take_revoked_transparent_subs_removes_subscriptions() {
         let mut data = TransparentData::default();
         let mut guardian = SubPassGuardian::new(3);
         let mut subs = OutboxSubscriptions::default();
@@ -503,9 +581,9 @@ mod tests {
         // Set up some subscriptions
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
-            relay.subscribe(subs.view(&OutboxSubId(1)).unwrap());
-            relay.subscribe(subs.view(&OutboxSubId(2)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(1)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(2)).unwrap());
         }
 
         assert_eq!(data.num_subs(), 3);
@@ -513,34 +591,41 @@ mod tests {
         // Create revocations for 2 subs
         let revocations = vec![SubPassRevocation::new(), SubPassRevocation::new()];
 
-        revocate_transparent_subs(None, &mut data, revocations);
+        let revoked = take_revoked_transparent_subs(
+            None,
+            &mut data,
+            vec![OutboxSubId(0), OutboxSubId(1)],
+            revocations,
+        );
 
         // Should have removed 2 subscriptions
         assert_eq!(data.num_subs(), 1);
-        assert_eq!(data.queue.len(), 2);
+        assert_eq!(revoked.len(), 2);
+        assert_eq!(data.queue.len(), 0);
     }
 
     #[test]
-    fn revocate_transparent_subs_empty_revocations() {
+    fn take_revoked_transparent_subs_empty_revocations() {
         let mut data = TransparentData::default();
         let mut guardian = SubPassGuardian::new(2);
         let subs = create_subs_with_filter(OutboxSubId(0), trivial_filter());
 
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
         }
 
         // No revocations
         let revocations: Vec<SubPassRevocation> = vec![];
-        revocate_transparent_subs(None, &mut data, revocations);
+        let revoked = take_revoked_transparent_subs(None, &mut data, Vec::new(), revocations);
 
         // Nothing should change
+        assert!(revoked.is_empty());
         assert_eq!(data.num_subs(), 1);
     }
 
     #[test]
-    fn revocate_transparent_subs_exactly_matching() {
+    fn take_revoked_transparent_subs_exactly_matching() {
         // Test with exactly matching number of revocations and subscriptions
         let mut data = TransparentData::default();
         let mut guardian = SubPassGuardian::new(3);
@@ -552,9 +637,9 @@ mod tests {
         // Create 3 subscriptions
         {
             let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
-            relay.subscribe(subs.view(&OutboxSubId(0)).unwrap());
-            relay.subscribe(subs.view(&OutboxSubId(1)).unwrap());
-            relay.subscribe(subs.view(&OutboxSubId(2)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(1)).unwrap());
+            relay.try_subscribe(subs.view(&OutboxSubId(2)).unwrap());
         }
 
         assert_eq!(data.num_subs(), 3);
@@ -568,9 +653,15 @@ mod tests {
         ];
 
         // This should revoke all subscriptions
-        revocate_transparent_subs(None, &mut data, revocations);
+        let revoked = take_revoked_transparent_subs(
+            None,
+            &mut data,
+            vec![OutboxSubId(0), OutboxSubId(1), OutboxSubId(2)],
+            revocations,
+        );
 
         assert_eq!(data.num_subs(), 0);
-        assert_eq!(data.queue.len(), 3);
+        assert_eq!(revoked.len(), 3);
+        assert_eq!(data.queue.len(), 0);
     }
 }

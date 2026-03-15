@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayRoutingPreference};
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{
     Accounts, RelaySelection, RelayType, RemoteApi, ScopedSubEoseStatus, ScopedSubIdentity,
@@ -41,7 +41,7 @@ fn dm_relay_list_spec(selected_account: &Pubkey) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: vec![participant_dm_relay_list_filter(selected_account)],
-        routing_preference: enostr::RelayRoutingPreference::default(),
+        routing_preference: RelayRoutingPreference::default(),
     }
 }
 

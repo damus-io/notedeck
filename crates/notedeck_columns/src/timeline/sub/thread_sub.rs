@@ -1,5 +1,5 @@
 use egui_nav::ReturnType;
-use enostr::{Filter, NoteId, Pubkey};
+use enostr::{Filter, NoteId, Pubkey, RelayRoutingPreference};
 use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
 use notedeck::{
@@ -289,7 +289,7 @@ fn sub_remote(
     let config = SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: filter,
-        routing_preference: enostr::RelayRoutingPreference::default(),
+        routing_preference: RelayRoutingPreference::default(),
     };
     let _ = scoped_subs.ensure_sub(identity, config);
 }
