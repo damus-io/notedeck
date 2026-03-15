@@ -62,6 +62,7 @@ pub enum RelayImplType {
     Multicast,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RelayTask {
     Unsubscribe,
     Subscribe,
