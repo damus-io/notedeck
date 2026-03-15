@@ -33,7 +33,7 @@ pub use subscription::{
     FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask, OutboxSubscriptions,
     OutboxTask, SubscribeTask,
 };
-pub use websocket::{WebsocketConn, WebsocketRelay};
+pub use websocket::{WebsocketConn, WebsocketRelay, WebsocketSlot};
 
 #[cfg(test)]
 pub mod test_utils;
