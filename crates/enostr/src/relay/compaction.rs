@@ -54,6 +54,23 @@ impl CompactionData {
     pub fn ids(&self, sid: &RelayReqId) -> Option<&HashSet<OutboxSubId>> {
         self.relay_subs.get(sid).map(|d| &d.requests.requests)
     }
+
+    /// Returns true when compaction has queued subscribe work waiting for capacity.
+    pub fn has_queued_subs(&self) -> bool {
+        !self.queue.is_empty()
+    }
+
+    /// Returns the current compaction request costs ordered from cheapest to most
+    /// expensive for limit-downgrade planning.
+    pub fn downgrade_revocation_costs(&self, subs: &OutboxSubscriptions) -> Vec<usize> {
+        let mut costs = self
+            .relay_subs
+            .values()
+            .map(|data| subs.json_size_sum(&data.requests.requests))
+            .collect::<Vec<_>>();
+        costs.sort_unstable();
+        costs
+    }
 }
 
 /// Ensures `max_subs` REQ to the websocket relay by "compacting" subscriptions (combining multiple requests into one)
@@ -89,7 +106,7 @@ impl<'a> CompactionRelay<'a> {
     }
 
     #[profiling::function]
-    pub fn ingest_session(mut self, session: CompactionSession) {
+    pub fn ingest_session(mut self, session: CompactionSession) -> HashSet<OutboxSubId> {
         let request_free = session.request_free;
         let mut reserved: Vec<SubPass> = Vec::new();
 
@@ -110,13 +127,12 @@ impl<'a> CompactionRelay<'a> {
         // Drain queue
         {
             profiling::scope!("drain queue");
-            loop {
+            let attempts = self.ctx.data().queue.len();
+            for _ in 0..attempts {
                 let Some(id) = self.ctx.data().queue.pop() else {
                     break;
                 };
-                if self.subscribe(id) == PlaceResult::Queued {
-                    break;
-                }
+                self.subscribe(id);
             }
         }
 
@@ -124,6 +140,8 @@ impl<'a> CompactionRelay<'a> {
         for pass in reserved {
             self.sub_guardian.return_pass(pass);
         }
+
+        self.take_session_invalidations()
     }
 
     #[profiling::function]
@@ -141,15 +159,16 @@ impl<'a> CompactionRelay<'a> {
     }
 
     #[profiling::function]
-    pub fn handle_relay_open(&mut self) {
+    pub fn handle_relay_open(&mut self) -> HashSet<OutboxSubId> {
         let CompactionCtx::Active(handler) = &mut self.ctx else {
-            return;
+            return HashSet::new();
         };
 
         if !handler.relay.is_connected() {
-            return;
+            return HashSet::new();
         }
 
+        let mut invalidated = HashSet::new();
         for (sid, sub_data) in &handler.data.relay_subs {
             let filters = handler.subs.filters_all(&sub_data.requests.requests);
             if are_filters_empty(&filters) {
@@ -160,24 +179,30 @@ impl<'a> CompactionRelay<'a> {
                 .relay
                 .conn
                 .send(&ClientMessage::req(sid.to_string(), filters));
+            invalidated.extend(sub_data.requests.requests.iter().copied());
         }
+
+        invalidated
     }
 
     #[allow(dead_code)]
-    pub fn revocate(&mut self, mut revocation: SubPassRevocation) {
+    pub fn revocate(&mut self, mut revocation: SubPassRevocation) -> HashSet<OutboxSubId> {
         let Some(pass) = self.compact() else {
             // this shouldn't be possible
-            return;
+            return HashSet::new();
         };
 
         revocation.revocate(pass);
+        self.take_session_invalidations()
     }
 
     #[allow(dead_code)]
-    pub fn revocate_all(&mut self, revocations: Vec<SubPassRevocation>) {
+    pub fn revocate_all(&mut self, revocations: Vec<SubPassRevocation>) -> HashSet<OutboxSubId> {
+        let mut invalidated = HashSet::new();
         for revocation in revocations {
-            self.revocate(revocation);
+            invalidated.extend(self.revocate(revocation));
         }
+        invalidated
     }
 
     #[profiling::function]
@@ -191,6 +216,9 @@ impl<'a> CompactionRelay<'a> {
         let (id, smallest) = take_smallest_sub_reqs(subs, &mut data.relay_subs)?;
 
         session.tasks.insert(id, SubSessionTask::Removed);
+        session
+            .invalidated_sub_ids
+            .extend(smallest.requests.requests.iter().copied());
         for id in smallest.requests.requests {
             self.ctx.data().request_to_sid.remove(&id);
             self.place(id);
@@ -266,6 +294,7 @@ impl<'a> CompactionRelay<'a> {
             compaction_data.queue.cancel(id);
             return;
         };
+        session.invalidated_sub_ids.insert(id);
 
         let Some(data) = compaction_data.relay_subs.get_mut(&relay_id) else {
             compaction_data.queue.cancel(id);
@@ -327,6 +356,30 @@ impl<'a> CompactionRelay<'a> {
         data.queue.enqueue(id);
         PlaceResult::Queued
     }
+
+    /// Returns and clears sub IDs whose compaction relay legs were reset by
+    /// the current relay session.
+    pub fn take_session_invalidations(&mut self) -> HashSet<OutboxSubId> {
+        let SharedCtx {
+            data,
+            session,
+            subs: _,
+        } = self.ctx.shared();
+        let mut invalidated = std::mem::take(&mut session.invalidated_sub_ids);
+
+        for (sid, task) in &session.tasks {
+            if !matches!(task, SubSessionTask::Touched | SubSessionTask::New) {
+                continue;
+            }
+
+            let Some(relay_sub) = data.relay_subs.get(sid) else {
+                continue;
+            };
+            invalidated.extend(relay_sub.requests.requests.iter().copied());
+        }
+
+        invalidated
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -358,6 +411,7 @@ fn take_smallest_sub_reqs(
 #[derive(Default)]
 struct CompactionSubSession {
     tasks: HashMap<RelayReqId, SubSessionTask>,
+    invalidated_sub_ids: HashSet<OutboxSubId>,
 }
 
 enum SubSessionTask {
@@ -555,12 +609,20 @@ impl CompactionSession {
     pub fn is_empty(&self) -> bool {
         self.tasks.is_empty() && self.request_free == 0
     }
+
+    #[cfg(test)]
+    pub(super) fn task_for_test(&self, id: &OutboxSubId) -> Option<RelayTask> {
+        self.tasks.get(id).copied()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::{RelayUrlPkgs, SubscribeTask};
+    use crate::{
+        relay::{test_utils::MockWakeup, RelayStatus, RelayUrlPkgs, SubscribeTask},
+        WebsocketConn,
+    };
     use hashbrown::HashSet;
 
     // ==================== CompactionData tests ====================
@@ -1007,6 +1069,113 @@ mod tests {
         assert!(!data.request_to_sid.contains_key(&OutboxSubId(1)));
     }
 
+    /// Touching one compacted REQ must invalidate every sub carried by that REQ.
+    #[test]
+    fn ingest_session_reports_invalidations_for_all_touched_compaction_subs() {
+        let mut subs = OutboxSubscriptions::default();
+        subs.new_subscription(
+            OutboxSubId(0),
+            SubscribeTask {
+                filters: vec![Filter::new().kinds(vec![1]).build()],
+                relays: RelayUrlPkgs::new(HashSet::new()),
+            },
+            false,
+        );
+        subs.new_subscription(
+            OutboxSubId(1),
+            SubscribeTask {
+                filters: vec![Filter::new().kinds(vec![2]).build()],
+                relays: RelayUrlPkgs::new(HashSet::new()),
+            },
+            false,
+        );
+
+        let mut data = CompactionData::default();
+        let mut guardian = SubPassGuardian::new(1);
+        let json_limit = 100_000;
+
+        let relay = CompactionRelay::new(None, &mut data, json_limit, &mut guardian, &subs);
+        let mut create = CompactionSession::default();
+        create.sub(OutboxSubId(0));
+        assert_eq!(
+            relay.ingest_session(create),
+            HashSet::from([OutboxSubId(0)])
+        );
+
+        let relay = CompactionRelay::new(None, &mut data, json_limit, &mut guardian, &subs);
+        let mut touch = CompactionSession::default();
+        touch.sub(OutboxSubId(1));
+        let invalidated = relay.ingest_session(touch);
+
+        assert_eq!(
+            invalidated,
+            HashSet::from([OutboxSubId(0), OutboxSubId(1)]),
+            "adding one sub to an existing compacted REQ reissues that REQ for every carried sub"
+        );
+    }
+
+    #[test]
+    fn handle_relay_open_reports_all_reissued_compaction_sub_ids() {
+        let mut subs = OutboxSubscriptions::default();
+        subs.new_subscription(
+            OutboxSubId(0),
+            SubscribeTask {
+                filters: vec![Filter::new().kinds(vec![1]).build()],
+                relays: RelayUrlPkgs::new(HashSet::new()),
+            },
+            false,
+        );
+        subs.new_subscription(
+            OutboxSubId(1),
+            SubscribeTask {
+                filters: vec![Filter::new().kinds(vec![2]).build()],
+                relays: RelayUrlPkgs::new(HashSet::new()),
+            },
+            false,
+        );
+
+        let mut data = CompactionData::default();
+        let mut guardian = SubPassGuardian::new(1);
+        let json_limit = 100_000;
+        let mut websocket = WebsocketRelay::new(
+            WebsocketConn::from_wakeup(
+                nostr::RelayUrl::parse("wss://compaction-replay.example.com").unwrap(),
+                MockWakeup::default(),
+            )
+            .unwrap(),
+        );
+        websocket.conn.set_status(RelayStatus::Connected);
+
+        let relay = CompactionRelay::new(
+            Some(&mut websocket),
+            &mut data,
+            json_limit,
+            &mut guardian,
+            &subs,
+        );
+        let mut session = CompactionSession::default();
+        session.sub(OutboxSubId(0));
+        session.sub(OutboxSubId(1));
+        let _ = relay.ingest_session(session);
+
+        let invalidated = {
+            let mut relay = CompactionRelay::new(
+                Some(&mut websocket),
+                &mut data,
+                json_limit,
+                &mut guardian,
+                &subs,
+            );
+            relay.handle_relay_open()
+        };
+
+        assert_eq!(
+            invalidated,
+            HashSet::from([OutboxSubId(0), OutboxSubId(1)]),
+            "relay-open replay should invalidate every sub carried by the reissued compaction REQ"
+        );
+    }
+
     /// When requesting multiple free passes, multiple subs are compacted
     /// and all requests are consolidated into fewer relay subs.
     #[test]
@@ -1019,7 +1188,7 @@ mod tests {
             subs.new_subscription(
                 OutboxSubId(i),
                 SubscribeTask {
-                    filters: vec![Filter::new().kinds(vec![i as u64 + 1]).build()],
+                    filters: vec![Filter::new().kinds(vec![i + 1]).build()],
                     relays: RelayUrlPkgs::new(HashSet::new()),
                 },
                 false,
@@ -1041,5 +1210,78 @@ mod tests {
 
         let sub = data.relay_subs.values().next().unwrap();
         assert_eq!(sub.requests.requests.len(), 3);
+    }
+
+    /// One unplaceable queued item should not block other queued items that can be placed.
+    #[test]
+    fn queue_drain_does_not_starve_placeable_items() {
+        use crate::relay::{RelayUrlPkgs, SubscribeTask};
+        use hashbrown::HashSet;
+
+        let id_seed = OutboxSubId(0);
+        let id_blocked = OutboxSubId(1);
+        let id_placeable = OutboxSubId(2);
+
+        let mut subs = OutboxSubscriptions::default();
+        subs.new_subscription(
+            id_seed,
+            SubscribeTask {
+                filters: vec![Filter::new().kinds(vec![1]).build()],
+                relays: RelayUrlPkgs::new(HashSet::new()),
+            },
+            false,
+        );
+        subs.new_subscription(
+            id_blocked,
+            SubscribeTask {
+                filters: vec![Filter::new().kinds((2u64..40).collect::<Vec<_>>()).build()],
+                relays: RelayUrlPkgs::new(HashSet::new()),
+            },
+            false,
+        );
+        subs.new_subscription(
+            id_placeable,
+            SubscribeTask {
+                filters: vec![Filter::new().kinds(vec![3]).build()],
+                relays: RelayUrlPkgs::new(HashSet::new()),
+            },
+            false,
+        );
+
+        let overhead = 10 + RelayReqId::byte_len();
+        let seed_size = subs.json_size(&id_seed).unwrap();
+        let blocked_size = subs.json_size(&id_blocked).unwrap();
+        let placeable_size = subs.json_size(&id_placeable).unwrap();
+        assert!(blocked_size > placeable_size);
+        let json_limit = seed_size + placeable_size + overhead;
+        assert!(seed_size + blocked_size + overhead > json_limit);
+
+        let mut data = CompactionData::default();
+        let mut guardian = SubPassGuardian::new(1);
+        let seed_pass = guardian.take_pass().unwrap();
+
+        let relay_id = RelayReqId::from("seed");
+        let mut requests = SubRequests::default();
+        requests.add(id_seed);
+        data.relay_subs.insert(
+            relay_id.clone(),
+            RelaySubData {
+                requests,
+                status: RelayReqStatus::InitialQuery,
+                sub_pass: seed_pass,
+            },
+        );
+        data.request_to_sid.insert(id_seed, relay_id.clone());
+
+        data.queue.enqueue(id_blocked);
+        data.queue.enqueue(id_placeable);
+
+        let relay = CompactionRelay::new(None, &mut data, json_limit, &mut guardian, &subs);
+        relay.ingest_session(CompactionSession::default());
+
+        assert_eq!(data.request_to_sid.get(&id_seed), Some(&relay_id));
+        assert_eq!(data.request_to_sid.get(&id_placeable), Some(&relay_id));
+        assert!(!data.request_to_sid.contains_key(&id_blocked));
+        assert_eq!(data.queue.len(), 1);
     }
 }
