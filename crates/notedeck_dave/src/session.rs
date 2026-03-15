@@ -952,6 +952,7 @@ pub struct HostGroup {
 /// A group of sessions sharing a working directory.
 pub struct CwdGroup {
     pub display_cwd: String,
+    pub cwd: PathBuf,
     pub session_ids: Vec<SessionId>,
 }
 
@@ -1249,8 +1250,10 @@ impl SessionManager {
                 {
                     cg.session_ids.push(id);
                 } else {
+                    let raw_cwd = session.cwd().cloned().unwrap_or_default();
                     host_group.cwd_groups.push(CwdGroup {
                         display_cwd: cwd_display,
+                        cwd: raw_cwd,
                         session_ids: vec![id],
                     });
                 }

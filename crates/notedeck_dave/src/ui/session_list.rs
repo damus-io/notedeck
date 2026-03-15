@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use egui::{Align, Color32, Layout, Sense};
 use notedeck_ui::app_images;
 
@@ -23,6 +25,7 @@ pub enum SessionListAction {
     DeleteWorktree(SessionId),
     ToggleHostCollapse(String),
     ToggleCwdCollapse(String, String),
+    NewSessionInCwd(PathBuf),
 }
 
 /// UI component for displaying the session list sidebar
@@ -137,6 +140,13 @@ impl<'a> SessionListUi<'a> {
                         cwd_group.display_cwd.clone(),
                     ));
                 }
+
+                notedeck_ui::context_menu::context_menu(&header_response, |ui| {
+                    if ui.button("New Session").clicked() {
+                        action = Some(SessionListAction::NewSessionInCwd(cwd_group.cwd.clone()));
+                        ui.close_menu();
+                    }
+                });
 
                 if !collapsed {
                     ui.add_space(2.0);

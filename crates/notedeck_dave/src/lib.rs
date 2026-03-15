@@ -1269,6 +1269,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         self.auto_steal = focus_queue::AutoStealState::Pending;
                     }
                 }
+                SessionListAction::NewSessionInCwd(cwd) => {
+                    self.create_or_pick_backend(cwd);
+                }
             }
         }
 
@@ -1363,6 +1366,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
                         self.auto_steal = focus_queue::AutoStealState::Pending;
                     }
+                }
+                SessionListAction::NewSessionInCwd(cwd) => {
+                    self.create_or_pick_backend(cwd);
+                    self.show_session_list = false;
                 }
             }
         }
