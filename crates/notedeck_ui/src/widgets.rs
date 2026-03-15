@@ -131,13 +131,17 @@ pub fn search_input_box<'a>(query: &'a mut String, hint_text: &'a str) -> impl e
 
                         ui.add(search_icon(16.0, SEARCH_INPUT_HEIGHT));
 
-                        ui.add_sized(
+                        let response = ui.add_sized(
                             [ui.available_width(), SEARCH_INPUT_HEIGHT],
                             TextEdit::singleline(query)
                                 .hint_text(RichText::new(hint_text).weak())
                                 .margin(egui::vec2(0.0, 8.0))
                                 .frame(false),
-                        )
+                        );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, hint_text)
+                        });
+                        response
                     })
                     .inner
                 })

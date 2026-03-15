@@ -334,6 +334,13 @@ fn conversation_composer(
                                 Key::Enter,
                             ));
                         let text_resp = ui.add(text_edit);
+                        text_resp.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::TextEdit,
+                                true,
+                                "Message composer",
+                            )
+                        });
                         restore_widgets_corner_rad(ui, old);
                         send = text_resp.has_focus()
                             && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);

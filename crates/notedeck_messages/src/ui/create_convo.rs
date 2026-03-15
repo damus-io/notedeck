@@ -3,7 +3,8 @@ use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{tr, ContactState, Images, Localization, MediaJobSender, NotedeckTextStyle};
 use notedeck_ui::{
-    profile_row, search_input_box, search_profiles, ContactsListView, ProfileSearchResult,
+    profile_row_widget, search_input_box, search_profiles, ContactsListView, ProfileRowOptions,
+    ProfileSearchResult,
 };
 
 use crate::cache::CreateConvoState;
@@ -146,18 +147,20 @@ fn search_results_list(
     egui::ScrollArea::vertical().show(ui, |ui| {
         for result in results {
             let profile = ndb.get_profile_by_pubkey(txn, &result.pk).ok();
-
-            if profile_row(
-                ui,
+            let recipient = Pubkey::new(result.pk);
+            let label = recipient.npub().unwrap_or_else(|| recipient.hex());
+            let response = ui.add(profile_row_widget(
                 profile.as_ref(),
-                result.is_contact,
                 img_cache,
                 jobs,
                 i18n,
-            ) {
-                action = Some(CreateConvoResponse {
-                    recipient: Pubkey::new(result.pk),
-                });
+                ProfileRowOptions::new().contact_badge(result.is_contact),
+            ));
+            response.widget_info(move || {
+                egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.clone())
+            });
+            if response.clicked() {
+                action = Some(CreateConvoResponse { recipient });
             }
         }
     });
