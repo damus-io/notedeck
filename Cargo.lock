@@ -4837,7 +4837,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "android-activity",
  "base32",
@@ -4909,7 +4909,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_chrome"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "android-keyring",
  "bitflags 2.11.0",
@@ -4949,7 +4949,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_clndash"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "eframe",
  "egui",
@@ -4968,7 +4968,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_columns"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
  "bech32",
@@ -5025,7 +5025,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_dashboard"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -5041,7 +5041,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_dave"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "arboard",
  "async-openai",
@@ -5086,7 +5086,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_messages"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",
@@ -5109,7 +5109,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_nostrverse"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "bytemuck",
  "egui",
@@ -5129,7 +5129,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_notebook"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "egui",
  "jsoncanvas",
@@ -5138,7 +5138,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_release"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "hex",
  "nostr 0.37.0",
@@ -5152,7 +5152,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_ui"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "bitflags 2.11.0",
  "eframe",
@@ -5178,7 +5178,7 @@ dependencies = [
 
 [[package]]
 name = "notedeck_wasm"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "dirs",
  "egui",

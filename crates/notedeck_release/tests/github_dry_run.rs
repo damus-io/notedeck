@@ -1,18 +1,28 @@
 use std::process::Command;
 
-/// Fetch the latest release version from the GitHub API
-fn latest_github_version() -> String {
-    let response = ureq::get("https://api.github.com/repos/damus-io/notedeck/releases/latest")
+/// Fetch the latest release version that has artifacts from the GitHub API.
+/// `/releases/latest` only returns non-prerelease, so we list all releases
+/// and pick the first one that has assets.
+fn latest_github_version_with_assets() -> String {
+    let response = ureq::get("https://api.github.com/repos/damus-io/notedeck/releases?per_page=10")
         .set("User-Agent", "notedeck-release-test")
         .set("Accept", "application/vnd.github.v3+json")
         .call()
         .expect("GitHub API call failed");
 
-    let body: serde_json::Value = response.into_json().expect("parse JSON");
-    let tag = body["tag_name"].as_str().expect("no tag_name in response");
+    let releases: Vec<serde_json::Value> = response.into_json().expect("parse JSON");
 
-    // Strip leading 'v' if present
-    tag.strip_prefix('v').unwrap_or(tag).to_string()
+    for release in &releases {
+        let assets = release["assets"].as_array();
+        if let Some(assets) = assets {
+            if !assets.is_empty() {
+                let tag = release["tag_name"].as_str().expect("no tag_name");
+                return tag.strip_prefix('v').unwrap_or(tag).to_string();
+            }
+        }
+    }
+
+    panic!("no GitHub release found with assets");
 }
 
 /// A throwaway secret key for dry-run signing (never used on a relay)
@@ -21,7 +31,7 @@ const TEST_SECRET_HEX: &str = "0000000000000000000000000000000000000000000000000
 #[test]
 #[ignore] // requires a GitHub release with artifacts; run with: cargo test -p notedeck_release -- --ignored
 fn test_github_dry_run() {
-    let version = latest_github_version();
+    let version = latest_github_version_with_assets();
     eprintln!("testing dry-run against latest release: v{version}");
 
     let bin = env!("CARGO_BIN_EXE_notedeck-release");
