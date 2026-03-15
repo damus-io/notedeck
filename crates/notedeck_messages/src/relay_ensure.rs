@@ -41,7 +41,7 @@ fn dm_relay_list_spec(selected_account: &Pubkey) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: vec![participant_dm_relay_list_filter(selected_account)],
-        use_transparent: false,
+        routing_preference: enostr::RelayRoutingPreference::default(),
     }
 }
 

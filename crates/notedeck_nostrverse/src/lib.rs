@@ -405,7 +405,7 @@ impl NostrverseApp {
         let config = SubConfig {
             relays: RelaySelection::Explicit(relays),
             filters: vec![room_filter(), presence_filter()],
-            use_transparent: false,
+            routing_preference: enostr::RelayRoutingPreference::default(),
         };
         let _ = ctx
             .remote
