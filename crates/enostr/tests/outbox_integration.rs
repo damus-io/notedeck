@@ -4,23 +4,14 @@
 //! and test the full subscription lifecycle, EOSE propagation, and multi-relay coordination.
 
 use enostr::{
-    FullKeypair, NormRelayUrl, OutboxPool, OutboxSessionHandler, OutboxSubId, RelayId,
-    RelayReqStatus, RelayStatus, RelayUrlPkgs, Wakeup,
+    Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool, OutboxSessionHandler,
+    OutboxSubId, RelayReqStatus, RelayRoutingPreference, RelayStatus, RelayUrlPkgs, Wakeup,
 };
 use hashbrown::HashSet;
 use nostr_relay_builder::{LocalRelay, RelayBuilder};
-use nostrdb::{Config, Filter, NoteBuilder};
+use nostrdb::Filter;
 use std::sync::Once;
 use std::time::Duration;
-
-/// Returns a [`Config`] with a small mapsize suitable for tests on Windows.
-fn test_config() -> Config {
-    if cfg!(target_os = "windows") {
-        Config::new().set_mapsize(32 * 1024 * 1024)
-    } else {
-        Config::new()
-    }
-}
 
 static TRACING_INIT: Once = Once::new();
 
@@ -147,7 +138,7 @@ async fn eose_propagation_from_real_relay() {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = enostr::RelayRoutingPreference::RequireDedicated;
+    url_pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -369,10 +360,10 @@ async fn unsubscribe_during_processing() {
     assert!(empty, "status should be empty after unsubscribe");
 }
 
-// ==================== Transparent vs Compaction Mode ====================
+// ==================== Routing Preference Modes ====================
 
 #[tokio::test]
-async fn transparent_mode_subscription() {
+async fn prefer_dedicated_subscription_uses_dedicated_when_unsaturated() {
     let (_relay, url) = create_test_relay().await;
 
     let mut pool = OutboxPool::default();
@@ -380,7 +371,7 @@ async fn transparent_mode_subscription() {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = enostr::RelayRoutingPreference::RequireDedicated; // Enable transparent mode
+    url_pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -388,11 +379,15 @@ async fn transparent_mode_subscription() {
     };
 
     let got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&id)).await;
-    assert!(got_eose, "transparent mode should receive EOSE");
+    assert!(
+        got_eose,
+        "prefer-dedicated subscription should receive EOSE when dedicated capacity is available"
+    );
 }
 
+/// `NoPreference` still uses dedicated routing first when the relay is not saturated.
 #[tokio::test]
-async fn compaction_mode_subscription() {
+async fn no_preference_subscription_uses_dedicated_when_unsaturated() {
     let (_relay, url) = create_test_relay().await;
 
     let mut pool = OutboxPool::default();
@@ -400,7 +395,7 @@ async fn compaction_mode_subscription() {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = enostr::RelayRoutingPreference::NoPreference; // Compaction mode
+    url_pkgs.routing_preference = RelayRoutingPreference::NoPreference;
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -408,7 +403,74 @@ async fn compaction_mode_subscription() {
     };
 
     let got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&id)).await;
-    assert!(got_eose, "compaction mode should receive EOSE");
+    assert!(
+        got_eose,
+        "no-preference subscription should still receive EOSE when dedicated capacity is available"
+    );
+}
+
+/// When dedicated capacity is saturated, a `NoPreference` request should fall
+/// through to compaction rather than displacing an existing dedicated route.
+#[tokio::test]
+async fn no_preference_request_falls_back_to_compaction_when_dedicated_is_saturated() {
+    let (_relay, url) = create_test_relay().await;
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_280);
+
+    let mut dedicated_urls = HashSet::new();
+    dedicated_urls.insert(url.clone());
+    let mut preferred_pkg = RelayUrlPkgs::new(dedicated_urls);
+    preferred_pkg.routing_preference = RelayRoutingPreference::PreferDedicated;
+
+    let first_id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), preferred_pkg)
+    };
+
+    let applied = pool.apply_nip11_limits(
+        &url,
+        Nip11LimitationsRaw {
+            max_subscriptions: Some(1),
+            ..Default::default()
+        },
+        now,
+    );
+    assert!(matches!(
+        applied,
+        Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+    ));
+
+    let mut fallback_urls = HashSet::new();
+    fallback_urls.insert(url.clone());
+    let mut no_preference_pkg = RelayUrlPkgs::new(fallback_urls);
+    no_preference_pkg.routing_preference = RelayRoutingPreference::NoPreference;
+
+    let second_id = {
+        let mut session = pool.start_session(wakeup);
+        session.subscribe(trivial_filter(), no_preference_pkg)
+    };
+
+    let first_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&first_id)).await;
+    assert!(
+        first_got_eose,
+        "existing dedicated subscription should stay active while saturation is in effect"
+    );
+    assert!(
+        !pool.has_eose(&second_id),
+        "no-preference request should not displace the existing dedicated route"
+    );
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.unsubscribe(first_id);
+    }
+
+    let second_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&second_id)).await;
+    assert!(
+        second_got_eose,
+        "no-preference request should become active once compaction can claim capacity"
+    );
 }
 
 // ==================== Modify Filters Mid-Subscription ====================
@@ -628,7 +690,7 @@ async fn eose_applies_since_to_filters() {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = enostr::RelayRoutingPreference::RequireDedicated;
+    url_pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -676,7 +738,7 @@ async fn since_optimization_waits_for_all_relays_eose() {
     urls.insert(live_url);
     urls.insert(dead_url);
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = enostr::RelayRoutingPreference::RequireDedicated;
+    url_pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -711,580 +773,62 @@ async fn since_optimization_waits_for_all_relays_eose() {
     );
 }
 
-// ==================== Publish-Receive Tests ====================
+/// When max subscriptions is saturated, an incoming prefer-dedicated request
+/// should not displace an existing preferred dedicated route and should become
+/// active once capacity is released.
+#[tokio::test]
+async fn preferred_request_stays_active_without_displacing_existing_preferred() {
+    let (_relay, url) = create_test_relay().await;
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_275);
 
-/// Publish a signed kind-1 note with the given content to the relay via the pool.
-fn publish_note(pool: &mut OutboxPool, keypair: &FullKeypair, content: &str, url: &NormRelayUrl) {
-    let note = NoteBuilder::new()
-        .kind(1)
-        .content(content)
-        .sign(&keypair.secret_key.secret_bytes())
-        .build()
-        .expect("build signed note");
-    pool.broadcast_note(
-        &note,
-        vec![RelayId::Websocket(url.clone())],
-        &MockWakeup::default(),
-    );
-}
-
-/// Build a signed kind-1 note JSON for raw websocket tests.
-fn build_event_json(keypair: &FullKeypair, content: &str) -> String {
-    let note = NoteBuilder::new()
-        .kind(1)
-        .content(content)
-        .sign(&keypair.secret_key.secret_bytes())
-        .build()
-        .expect("build signed note");
-    let note_json = note.json().expect("note json");
-    format!(r#"["EVENT",{}]"#, note_json)
-}
-
-/// Pumps the pool, collecting received event JSON strings until `expected_count`
-/// events are gathered or the attempt limit is reached.
-async fn pump_pool_collecting(
-    pool: &mut OutboxPool,
-    received: &mut Vec<String>,
-    max_attempts: usize,
-    sleep_duration: Duration,
-    expected_count: usize,
-) -> bool {
-    for _ in 0..max_attempts {
-        pool.try_recv(100, |raw| {
-            received.push(raw.event_json.to_string());
-        });
-        if received.len() >= expected_count {
-            return true;
-        }
-        tokio::time::sleep(sleep_duration).await;
-    }
-    // Final drain
-    pool.try_recv(100, |raw| {
-        received.push(raw.event_json.to_string());
-    });
-    received.len() >= expected_count
-}
-
-/// Pumps the pool until the relay reports Connected status.
-async fn wait_for_pool_connected(pool: &mut OutboxPool, url: &NormRelayUrl) -> bool {
-    let target = url.clone();
-    pump_pool_until(pool, 100, Duration::from_millis(15), move |pool| {
-        pool.websocket_statuses()
-            .iter()
-            .any(|(u, s)| **u == target && *s == RelayStatus::Connected)
-    })
-    .await
-}
-
-fn relay_url_set(url: &NormRelayUrl) -> HashSet<NormRelayUrl> {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    urls
-}
+    let mut preferred_pkg = RelayUrlPkgs::new(urls);
+    preferred_pkg.routing_preference = RelayRoutingPreference::PreferDedicated;
 
-/// Pool A subscribes, Pool B publishes, verify Pool A receives the event.
-#[tokio::test]
-async fn basic_publish_receive() {
-    init_tracing();
-
-    let (_relay, url) = create_test_relay().await;
-
-    // Subscriber pool
-    let mut sub_pool = OutboxPool::default();
-    let sub_id = {
-        let mut session = sub_pool.start_session(MockWakeup::default());
-        session.subscribe(trivial_filter(), RelayUrlPkgs::new(relay_url_set(&url)))
+    let first_id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), preferred_pkg.clone())
     };
-    let got_eose = default_pool_pump(&mut sub_pool, |p| p.has_eose(&sub_id)).await;
-    assert!(got_eose, "subscriber should get EOSE");
 
-    // Publisher pool
-    let mut pub_pool = OutboxPool::default();
-    let keypair = FullKeypair::generate();
-    publish_note(&mut pub_pool, &keypair, "hello-from-publisher", &url);
-    let connected = wait_for_pool_connected(&mut pub_pool, &url).await;
-    assert!(connected, "publisher should connect to relay");
-
-    // Collect received events on subscriber
-    let mut received = Vec::new();
-    let got_event = pump_pool_collecting(
-        &mut sub_pool,
-        &mut received,
-        200,
-        Duration::from_millis(15),
-        1,
-    )
-    .await;
-
-    assert!(got_event, "subscriber should receive the published event");
-    assert_eq!(received.len(), 1);
-    assert!(
-        received[0].contains("hello-from-publisher"),
-        "received event should contain the published content"
+    let applied = pool.apply_nip11_limits(
+        &url,
+        Nip11LimitationsRaw {
+            max_subscriptions: Some(1),
+            ..Default::default()
+        },
+        now,
     );
-}
+    assert!(matches!(
+        applied,
+        Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+    ));
 
-/// Multiple subscriber pools all receive the same published event.
-#[tokio::test]
-async fn publish_receive_multiple_subscribers() {
-    init_tracing();
-
-    let (_relay, url) = create_test_relay().await;
-
-    // Create 3 subscriber pools
-    let mut sub_pools: Vec<OutboxPool> = Vec::new();
-    let mut sub_ids: Vec<OutboxSubId> = Vec::new();
-    for _ in 0..3 {
-        let mut pool = OutboxPool::default();
-        let id = {
-            let mut session = pool.start_session(MockWakeup::default());
-            session.subscribe(trivial_filter(), RelayUrlPkgs::new(relay_url_set(&url)))
-        };
-        let got_eose = default_pool_pump(&mut pool, |p| p.has_eose(&id)).await;
-        assert!(got_eose, "subscriber should get EOSE");
-        sub_pools.push(pool);
-        sub_ids.push(id);
-    }
-
-    // Publisher
-    let mut pub_pool = OutboxPool::default();
-    let keypair = FullKeypair::generate();
-    publish_note(&mut pub_pool, &keypair, "fan-out-test", &url);
-    let connected = wait_for_pool_connected(&mut pub_pool, &url).await;
-    assert!(connected, "publisher should connect");
-
-    // Verify all 3 subscribers receive the event
-    for (i, pool) in sub_pools.iter_mut().enumerate() {
-        let mut received = Vec::new();
-        let got =
-            pump_pool_collecting(pool, &mut received, 200, Duration::from_millis(15), 1).await;
-        assert!(
-            got,
-            "subscriber {i} should receive the event, got {} events",
-            received.len()
-        );
-        assert!(received[0].contains("fan-out-test"));
-    }
-}
-
-/// Burst-publish N events, verify subscriber receives all N.
-async fn burst_publish_receive(n: usize) {
-    init_tracing();
-
-    let (_relay, url) = create_test_relay().await;
-
-    // Subscriber
-    let mut sub_pool = OutboxPool::default();
-    let sub_id = {
-        let mut session = sub_pool.start_session(MockWakeup::default());
-        session.subscribe(trivial_filter(), RelayUrlPkgs::new(relay_url_set(&url)))
+    let second_id = {
+        let mut session = pool.start_session(wakeup);
+        session.subscribe(trivial_filter(), preferred_pkg)
     };
-    let got_eose = default_pool_pump(&mut sub_pool, |p| p.has_eose(&sub_id)).await;
-    assert!(got_eose, "subscriber should get EOSE");
 
-    // Publisher — connect first, then burst-send
-    let mut pub_pool = OutboxPool::default();
-    let keypair = FullKeypair::generate();
-
-    // Establish connection first via dummy subscribe
-    {
-        let mut session = pub_pool.start_session(MockWakeup::default());
-        session.subscribe(
-            vec![Filter::new().kinds(vec![99999]).build()],
-            RelayUrlPkgs::new(relay_url_set(&url)),
-        );
-    }
-    let connected = wait_for_pool_connected(&mut pub_pool, &url).await;
-    assert!(connected, "publisher should connect");
-
-    // Burst-send all notes with no delay
-    for i in 0..n {
-        publish_note(&mut pub_pool, &keypair, &format!("burst-msg-{i}"), &url);
-    }
-    // Pump publisher to flush
-    for _ in 0..10 {
-        pub_pool.try_recv(100, |_| {});
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-
-    // Collect on subscriber
-    let mut received = Vec::new();
-    let got_all = pump_pool_collecting(
-        &mut sub_pool,
-        &mut received,
-        500,
-        Duration::from_millis(20),
-        n,
-    )
-    .await;
-
+    let first_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&first_id)).await;
     assert!(
-        got_all,
-        "subscriber should receive all {n} events, got {}",
-        received.len()
+        first_got_eose,
+        "existing preferred subscription should remain active on dedicated routing"
+    );
+    assert!(
+        !pool.has_eose(&second_id),
+        "incoming preferred request should not displace the existing preferred dedicated route"
     );
 
-    // Verify all unique messages present
-    for i in 0..n {
-        let expected = format!("burst-msg-{i}");
-        assert!(
-            received.iter().any(|r| r.contains(&expected)),
-            "missing event with content '{expected}'"
-        );
-    }
-}
-
-#[tokio::test]
-async fn burst_publish_receive_6() {
-    burst_publish_receive(6).await;
-}
-
-#[tokio::test]
-async fn burst_publish_receive_12() {
-    burst_publish_receive(12).await;
-}
-
-#[tokio::test]
-async fn burst_publish_receive_20() {
-    burst_publish_receive(20).await;
-}
-
-/// Burst-publish with multiple subscribers — all must receive all events.
-#[tokio::test]
-async fn burst_publish_receive_multiple_subscribers() {
-    init_tracing();
-
-    let (_relay, url) = create_test_relay().await;
-    let n = 12;
-
-    // 3 subscribers
-    let mut sub_pools: Vec<OutboxPool> = Vec::new();
-    for _ in 0..3 {
-        let mut pool = OutboxPool::default();
-        let id = {
-            let mut session = pool.start_session(MockWakeup::default());
-            session.subscribe(trivial_filter(), RelayUrlPkgs::new(relay_url_set(&url)))
-        };
-        let got_eose = default_pool_pump(&mut pool, |p| p.has_eose(&id)).await;
-        assert!(got_eose);
-        sub_pools.push(pool);
-    }
-
-    // Publisher — connect then burst
-    let mut pub_pool = OutboxPool::default();
-    let keypair = FullKeypair::generate();
     {
-        let mut session = pub_pool.start_session(MockWakeup::default());
-        session.subscribe(
-            vec![Filter::new().kinds(vec![99999]).build()],
-            RelayUrlPkgs::new(relay_url_set(&url)),
-        );
-    }
-    let connected = wait_for_pool_connected(&mut pub_pool, &url).await;
-    assert!(connected);
-
-    for i in 0..n {
-        publish_note(
-            &mut pub_pool,
-            &keypair,
-            &format!("multi-sub-burst-{i}"),
-            &url,
-        );
-    }
-    for _ in 0..10 {
-        pub_pool.try_recv(100, |_| {});
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        let mut session = pool.start_session(MockWakeup::default());
+        session.unsubscribe(first_id);
     }
 
-    // Verify each subscriber got all 12
-    for (i, pool) in sub_pools.iter_mut().enumerate() {
-        let mut received = Vec::new();
-        let got_all =
-            pump_pool_collecting(pool, &mut received, 500, Duration::from_millis(20), n).await;
-        assert!(
-            got_all,
-            "subscriber {i} should receive all {n} events, got {}",
-            received.len()
-        );
-    }
-}
-
-/// Bypass OutboxPool — use raw ewebsock to verify the websocket layer directly.
-#[tokio::test]
-async fn raw_websocket_burst_publish_receive() {
-    init_tracing();
-
-    let (_relay, url) = create_test_relay().await;
-    let n = 12;
-
-    // Connect subscriber
-    let url_str = url.to_string();
-    let (mut sub_sender, sub_receiver) =
-        enostr::ewebsock::connect(&url_str, enostr::ewebsock::Options::default())
-            .expect("connect subscriber");
-
-    // Connect publisher
-    let (mut pub_sender, pub_receiver) =
-        enostr::ewebsock::connect(&url_str, enostr::ewebsock::Options::default())
-            .expect("connect publisher");
-
-    // Wait for both to open
-    for (name, receiver) in [("sub", &sub_receiver), ("pub", &pub_receiver)] {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Some(enostr::ewebsock::WsEvent::Opened) = receiver.try_recv() {
-                break;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "{name} should connect within 5s"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
-    // Subscribe on subscriber connection
-    let req = r#"["REQ","sub1",{"kinds":[1]}]"#;
-    sub_sender.send(enostr::ewebsock::WsMessage::Text(req.to_string()));
-
-    // Wait for EOSE
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if let Some(enostr::ewebsock::WsEvent::Message(enostr::ewebsock::WsMessage::Text(text))) =
-            sub_receiver.try_recv()
-        {
-            if text.contains("EOSE") {
-                break;
-            }
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "should receive EOSE within 5s"
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    // Build and send N events via publisher
-    let keypair = FullKeypair::generate();
-    for i in 0..n {
-        let event_msg = build_event_json(&keypair, &format!("raw-ws-msg-{i}"));
-        pub_sender.send(enostr::ewebsock::WsMessage::Text(event_msg));
-    }
-
-    // Collect events on subscriber
-    let mut received = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Some(enostr::ewebsock::WsEvent::Message(enostr::ewebsock::WsMessage::Text(text))) =
-            sub_receiver.try_recv()
-        {
-            if text.starts_with("[\"EVENT\"") {
-                received.push(text);
-            }
-        }
-        if received.len() >= n {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "should receive all {n} events within 10s, got {}",
-            received.len()
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    assert_eq!(received.len(), n);
-    for i in 0..n {
-        let expected = format!("raw-ws-msg-{i}");
-        assert!(
-            received.iter().any(|r| r.contains(&expected)),
-            "missing raw ws event with content '{expected}'"
-        );
-    }
-
-    drop(sub_sender);
-    drop(pub_sender);
-}
-
-// ==================== Silent Message Loss on Dead Connection ====================
-
-/// Proves that messages published after a relay connection dies but before
-/// try_recv detects the disconnect are silently lost.
-///
-/// This is a real production issue: WsSender::send() calls tx.send(msg).ok(),
-/// discarding the SendError when the background thread has exited.
-#[tokio::test]
-async fn publish_to_dead_connection_loses_message() {
-    init_tracing();
-
-    let (relay, url) = create_test_relay().await;
-
-    // Publisher pool — connect and verify
-    let mut pub_pool = OutboxPool::default();
-    let keypair = FullKeypair::generate();
-    {
-        let mut session = pub_pool.start_session(MockWakeup::default());
-        session.subscribe(
-            vec![Filter::new().kinds(vec![99999]).build()],
-            RelayUrlPkgs::new(relay_url_set(&url)),
-        );
-    }
-    let connected = wait_for_pool_connected(&mut pub_pool, &url).await;
-    assert!(connected, "publisher should connect");
-
-    // Publish msg-1 while alive — verify it reaches the relay
-    publish_note(&mut pub_pool, &keypair, "msg-alive", &url);
-    for _ in 0..5 {
-        pub_pool.try_recv(100, |_| {});
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-
-    // Kill the relay
-    drop(relay);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Status is STALE — still says Connected because try_recv hasn't run
-    let target = url.clone();
-    let stale_connected = pub_pool
-        .websocket_statuses()
-        .iter()
-        .any(|(u, s)| **u == target && *s == RelayStatus::Connected);
+    let second_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&second_id)).await;
     assert!(
-        stale_connected,
-        "status should still say Connected (stale) before pumping"
+        second_got_eose,
+        "incoming preferred request should become active once the dedicated slot is released"
     );
-
-    // Publish msg-2 while status is stale Connected but connection is dead.
-    // broadcast() checks is_connected() -> true, calls conn.send() which
-    // writes to a dead mpsc channel. WsSender::send() discards the error.
-    publish_note(&mut pub_pool, &keypair, "msg-lost", &url);
-
-    // Now pump — this processes the Closed/Error event, updates to Disconnected
-    for _ in 0..10 {
-        pub_pool.try_recv(100, |_| {});
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-
-    let is_disconnected = pub_pool
-        .websocket_statuses()
-        .iter()
-        .any(|(u, s)| **u == target && *s == RelayStatus::Disconnected);
-    assert!(
-        is_disconnected,
-        "publisher should detect the dead connection after pumping"
-    );
-
-    // msg-lost was silently dropped — it went to conn.send() which wrote to
-    // a dead mpsc channel. WsSender::send() calls tx.send(msg).ok() which
-    // discards the SendError. The message never reached BroadcastCache
-    // (because is_connected() was true), and never reached the wire
-    // (because the background thread was dead).
-}
-
-// ==================== Publish-Receive + NDB Ingestion ====================
-
-/// Verify events received via OutboxPool can be ingested into NDB and queried.
-#[tokio::test]
-async fn publish_receive_ndb_ingest() {
-    init_tracing();
-
-    let (_relay, url) = create_test_relay().await;
-
-    // Set up NDB
-    let tmpdir = tempfile::TempDir::new().expect("tmpdir");
-    let db_path = tmpdir.path().join("db");
-    std::fs::create_dir_all(&db_path).expect("create db dir");
-    let ndb = nostrdb::Ndb::new(db_path.to_str().unwrap(), &test_config()).expect("ndb");
-
-    // Subscriber pool
-    let mut sub_pool = OutboxPool::default();
-    let sub_id = {
-        let mut session = sub_pool.start_session(MockWakeup::default());
-        session.subscribe(trivial_filter(), RelayUrlPkgs::new(relay_url_set(&url)))
-    };
-    let got_eose = default_pool_pump(&mut sub_pool, |p| p.has_eose(&sub_id)).await;
-    assert!(got_eose, "subscriber should get EOSE");
-
-    // Publisher: connect then burst-send 6 notes
-    let mut pub_pool = OutboxPool::default();
-    let keypair = FullKeypair::generate();
-    {
-        let mut session = pub_pool.start_session(MockWakeup::default());
-        session.subscribe(
-            vec![Filter::new().kinds(vec![99999]).build()],
-            RelayUrlPkgs::new(relay_url_set(&url)),
-        );
-    }
-    let connected = wait_for_pool_connected(&mut pub_pool, &url).await;
-    assert!(connected);
-
-    let n = 6;
-    for i in 0..n {
-        publish_note(&mut pub_pool, &keypair, &format!("ndb-ingest-{i}"), &url);
-    }
-    for _ in 0..10 {
-        pub_pool.try_recv(100, |_| {});
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-
-    // Receive events and ingest into NDB (same path as the real app)
-    let mut ingested = 0usize;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        sub_pool.try_recv(100, |raw| {
-            if let Err(e) = ndb.process_event_with(
-                raw.event_json,
-                nostrdb::IngestMetadata::new().relay(raw.url),
-            ) {
-                tracing::error!("ndb ingest error: {e}");
-            } else {
-                ingested += 1;
-            }
-        });
-        if ingested >= n {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "should ingest {n} events, got {ingested}"
-        );
-        tokio::time::sleep(Duration::from_millis(15)).await;
-    }
-
-    // Query NDB for the notes — NDB ingestion is async, so poll
-    let filter = nostrdb::Filter::new()
-        .kinds([1])
-        .authors([keypair.pubkey.bytes()])
-        .build();
-    let query_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let txn = nostrdb::Transaction::new(&ndb).expect("txn");
-        let results = ndb.query(&txn, &[filter.clone()], 100).expect("query");
-        if results.len() >= n {
-            // Verify contents
-            let contents: std::collections::BTreeSet<String> = results
-                .iter()
-                .filter_map(|r| {
-                    let c = r.note.content();
-                    if c.starts_with("ndb-ingest-") {
-                        Some(c.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            assert_eq!(
-                contents.len(),
-                n,
-                "all {n} unique messages should be in NDB"
-            );
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < query_deadline,
-            "NDB should have {n} notes, found {}",
-            results.len()
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 }

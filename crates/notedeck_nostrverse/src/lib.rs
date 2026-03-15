@@ -21,7 +21,7 @@ pub use room_state::{
 };
 pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
-use enostr::{NormRelayUrl, Pubkey, RelayId};
+use enostr::{NormRelayUrl, Pubkey, RelayId, RelayRoutingPreference};
 use glam::Vec3;
 use nostrdb::Filter;
 use notedeck::{
@@ -405,7 +405,7 @@ impl NostrverseApp {
         let config = SubConfig {
             relays: RelaySelection::Explicit(relays),
             filters: vec![room_filter(), presence_filter()],
-            routing_preference: enostr::RelayRoutingPreference::default(),
+            routing_preference: RelayRoutingPreference::default(),
         };
         let _ = ctx
             .remote

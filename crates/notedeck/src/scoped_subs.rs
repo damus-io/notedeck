@@ -137,6 +137,7 @@ pub enum RelaySelection {
 pub struct SubConfig {
     pub relays: RelaySelection,
     pub filters: Vec<Filter>,
+    /// Routing intent when dedicated relay capacity is constrained.
     pub routing_preference: RelayRoutingPreference,
 }
 
@@ -909,7 +910,7 @@ mod tests {
             slot,
             scope,
             key,
-            empty_config(scope.clone()),
+            empty_config(scope),
         );
         let second = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1195,7 +1196,7 @@ mod tests {
         let relays_b = relay_set("wss://relay-b.example.com");
         let slot = runtime.create_slot();
 
-        let mut spec = empty_config(scope.clone());
+        let mut spec = empty_config(scope);
         spec.filters = vec![Filter::new().kinds(vec![1]).limit(2).build()];
 
         let first = runtime.set_sub_with_relays(

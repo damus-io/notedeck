@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use egui_virtual_list::VirtualList;
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayRoutingPreference};
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use notedeck::{
     create_nip51_set, filter::default_limit, Nip51SetCache, RelaySelection, ScopedSubApi,
@@ -80,7 +80,7 @@ impl Onboarding {
                     let sub_config = SubConfig {
                         relays: RelaySelection::AccountsRead,
                         filters: vec![follow_filter.clone()],
-                        routing_preference: enostr::RelayRoutingPreference::default(),
+                        routing_preference: RelayRoutingPreference::default(),
                     };
                     let _ = scoped_subs.ensure_sub(identity, sub_config);
 
