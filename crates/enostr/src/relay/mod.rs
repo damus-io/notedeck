@@ -18,7 +18,8 @@ mod websocket;
 
 pub use broadcast::{BroadcastCache, BroadcastRelay};
 pub use identity::{
-    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs,
+    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayRoutingPreference,
+    RelayType, RelayUrlPkgs,
 };
 pub use limits::{
     RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,

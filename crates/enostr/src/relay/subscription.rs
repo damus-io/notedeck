@@ -1,14 +1,16 @@
 use hashbrown::{HashMap, HashSet};
 use nostrdb::Filter;
 
-use crate::relay::{MetadataFilters, NormRelayUrl, OutboxSubId, RelayType, RelayUrlPkgs};
+use crate::relay::{
+    MetadataFilters, NormRelayUrl, OutboxSubId, RelayRoutingPreference, RelayUrlPkgs,
+};
 
 pub struct OutboxSubscription {
     pub relays: HashSet<NormRelayUrl>,
     pub filters: MetadataFilters,
     json_size: usize,
     pub is_oneshot: bool,
-    pub relay_type: RelayType,
+    pub routing_preference: RelayRoutingPreference,
 }
 
 impl OutboxSubscription {
@@ -103,11 +105,7 @@ impl OutboxSubscriptions {
                 filters,
                 json_size,
                 is_oneshot,
-                relay_type: if task.relays.use_transparent {
-                    RelayType::Transparent
-                } else {
-                    RelayType::Compaction
-                },
+                routing_preference: task.relays.routing_preference,
             },
         );
     }
@@ -154,7 +152,7 @@ pub struct SubscribeTask {
 mod tests {
     use super::*;
     use crate::relay::RelayUrlPkgs;
-    use crate::relay::{FullModificationTask, ModifyFiltersTask};
+    use crate::relay::{FullModificationTask, ModifyFiltersTask, RelayRoutingPreference};
 
     fn subscribe_task(filters: Vec<Filter>, urls: RelayUrlPkgs) -> SubscribeTask {
         SubscribeTask {
@@ -175,7 +173,7 @@ mod tests {
     fn new_subscription_records_metadata() {
         let mut subs = OutboxSubscriptions::default();
         let mut pkgs = RelayUrlPkgs::new(relay_urls("wss://relay-meta.example.com"));
-        pkgs.use_transparent = true;
+        pkgs.routing_preference = RelayRoutingPreference::RequireDedicated;
         let filters = vec![Filter::new().kinds(vec![1]).limit(4).build()];
         let id = OutboxSubId(7);
 
@@ -189,7 +187,10 @@ mod tests {
 
         let sub = subs.get_mut(&id).expect("subscription metadata");
         assert_eq!(sub.relays.len(), 1);
-        assert_eq!(sub.relay_type, RelayType::Transparent);
+        assert_eq!(
+            sub.routing_preference,
+            RelayRoutingPreference::RequireDedicated
+        );
     }
 
     /// subset_oneshot should only return IDs corresponding to oneshot subscriptions.

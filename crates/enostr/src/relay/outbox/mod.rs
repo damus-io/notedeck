@@ -12,7 +12,7 @@ use crate::{
         websocket::WebsocketRelay,
         ModifyTask, MulticastRelayCache, Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw,
         NormRelayUrl, OutboxSubId, OutboxSubscriptions, OutboxTask, RawEventData, RelayId,
-        RelayLimitations, RelayReqStatus, RelayStatus, RelayType,
+        RelayLimitations, RelayReqStatus, RelayStatus,
     },
     EventClientMessage, Wakeup, WebsocketConn,
 };
@@ -119,7 +119,7 @@ impl OutboxPool {
                         ModifyTask::Filters(_) => {
                             for relay in &sub.relays {
                                 get_session(&mut sessions, relay)
-                                    .subscribe(id, sub.relay_type == RelayType::Transparent);
+                                    .subscribe(id, sub.routing_preference);
                             }
                         }
                         ModifyTask::Relays(modify_relays_task) => {
@@ -131,7 +131,7 @@ impl OutboxPool {
                             let relays_to_add = modify_relays_task.0.difference(&sub.relays);
                             for relay in relays_to_add {
                                 get_session(&mut sessions, relay)
-                                    .subscribe(id, sub.relay_type == RelayType::Transparent);
+                                    .subscribe(id, sub.routing_preference);
                             }
                         }
                         ModifyTask::Full(full_modification_task) => {
@@ -149,7 +149,7 @@ impl OutboxPool {
 
                             for relay in new_relays {
                                 get_session(&mut sessions, relay)
-                                    .subscribe(id, sub.relay_type == RelayType::Transparent);
+                                    .subscribe(id, sub.routing_preference);
                             }
                         }
                     }
@@ -170,14 +170,14 @@ impl OutboxPool {
                 OutboxTask::Oneshot(subscribe) => {
                     for relay in &subscribe.relays.urls {
                         get_session(&mut sessions, relay)
-                            .subscribe(id, subscribe.relays.use_transparent);
+                            .subscribe(id, subscribe.relays.routing_preference);
                     }
                     self.subs.new_subscription(id, subscribe, true);
                 }
                 OutboxTask::Subscribe(subscribe) => {
                     for relay in &subscribe.relays.urls {
                         get_session(&mut sessions, relay)
-                            .subscribe(id, subscribe.relays.use_transparent);
+                            .subscribe(id, subscribe.relays.routing_preference);
                     }
 
                     self.subs.new_subscription(id, subscribe, false);
@@ -657,7 +657,7 @@ mod tests {
     use crate::relay::{
         coordinator::CoordinationTask,
         test_utils::{filters_json, trivial_filter, MockWakeup},
-        RelayUrlPkgs,
+        RelayRoutingPreference, RelayUrlPkgs,
     };
 
     /// Ensures the subscription registry always yields unique IDs.
@@ -856,7 +856,10 @@ mod tests {
             assert_eq!(sub.relays.len(), 1);
             assert!(sub.relays.contains(&relay_a));
             assert!(!sub.is_oneshot);
-            assert_eq!(sub.relay_type, RelayType::Compaction);
+            assert_eq!(
+                sub.routing_preference,
+                RelayRoutingPreference::PreferDedicated
+            );
         }
 
         let sessions = {
@@ -883,7 +886,10 @@ mod tests {
             .get(&relay_b)
             .and_then(|session| session.tasks.get(&new_sub_id))
             .expect("expected a task for relay relay_b");
-        assert!(matches!(new_task, CoordinationTask::CompactionSub));
+        assert!(matches!(
+            new_task,
+            CoordinationTask::Subscribe(RelayRoutingPreference::PreferDedicated)
+        ));
     }
 
     /// Oneshot requests route to compaction mode by default.
@@ -905,7 +911,10 @@ mod tests {
             .get(&relay)
             .and_then(|session| session.tasks.get(&id))
             .expect("expected task for oneshot relay");
-        assert!(matches!(relay_task, CoordinationTask::CompactionSub));
+        assert!(matches!(
+            relay_task,
+            CoordinationTask::Subscribe(RelayRoutingPreference::PreferDedicated)
+        ));
     }
 
     /// Unsubscribing from a multi-relay subscription emits unsubscribe tasks for each relay.
@@ -938,7 +947,7 @@ mod tests {
         assert!(matches!(task_b, Some(CoordinationTask::Unsubscribe)));
     }
 
-    /// Subscriptions with use_transparent=true route to transparent mode.
+    /// Subscriptions with RequireDedicated route to transparent mode.
     #[test]
     fn subscribe_transparent_mode() {
         let mut pool = OutboxPool::default();
@@ -948,14 +957,19 @@ mod tests {
         let mut urls = HashSet::new();
         urls.insert(relay.clone());
         let mut pkgs = RelayUrlPkgs::new(urls);
-        pkgs.use_transparent = true;
+        pkgs.routing_preference = RelayRoutingPreference::RequireDedicated;
 
         let mut session = OutboxSession::default();
         session.subscribe(id, trivial_filter(), pkgs);
         let sessions = pool.collect_sessions(session);
 
         let task = sessions.get(&relay).and_then(|s| s.tasks.get(&id));
-        assert!(matches!(task, Some(CoordinationTask::TransparentSub)));
+        assert!(matches!(
+            task,
+            Some(CoordinationTask::Subscribe(
+                RelayRoutingPreference::RequireDedicated
+            ))
+        ));
     }
 
     /// Modifying filters should re-subscribe the routed relays with the new filters.
@@ -989,7 +1003,10 @@ mod tests {
             .get(&relay)
             .and_then(|session| session.tasks.get(&sub_id))
             .expect("expected coordination task");
-        assert!(matches!(task, CoordinationTask::CompactionSub));
+        assert!(matches!(
+            task,
+            CoordinationTask::Subscribe(RelayRoutingPreference::PreferDedicated)
+        ));
     }
 
     /// Modifying relays should unsubscribe removed relays and subscribe new ones.
@@ -1026,7 +1043,10 @@ mod tests {
             .get(&relay_b)
             .and_then(|session| session.tasks.get(&sub_id))
             .expect("missing relay_b task");
-        assert!(matches!(sub_task, CoordinationTask::CompactionSub));
+        assert!(matches!(
+            sub_task,
+            CoordinationTask::Subscribe(RelayRoutingPreference::PreferDedicated)
+        ));
     }
 
     /// Full modifications that end up with no relays should drop the subscription entirely.
@@ -1137,7 +1157,7 @@ mod tests {
         let url = NormRelayUrl::new("wss://relay.example.com").unwrap();
 
         let session = get_session(&mut map, &url);
-        session.subscribe(OutboxSubId(0), false);
+        session.subscribe(OutboxSubId(0), RelayRoutingPreference::PreferDedicated);
 
         // Map should still have exactly one entry
         assert_eq!(map.len(), 1);

@@ -9,7 +9,8 @@ use crate::{
         transparent::{revocate_transparent_subs, TransparentData, TransparentRelay},
         BroadcastCache, BroadcastRelay, NormRelayUrl, OutboxSubId, OutboxSubscriptions,
         RawEventData, RelayCoordinatorLimits, RelayImplType, RelayLimitations, RelayReqId,
-        RelayReqStatus, RelayType, SubPassGuardian, SubPassRevocation, WebsocketRelay,
+        RelayReqStatus, RelayRoutingPreference, RelayType, SubPassGuardian, SubPassRevocation,
+        WebsocketRelay,
     },
     EventClientMessage, RelayMessage, RelayStatus, Wakeup, WebsocketConn,
 };
@@ -162,19 +163,25 @@ impl CoordinationData {
 
         for (id, task) in session.tasks {
             match task {
-                CoordinationTask::TransparentSub => {
-                    if let Some(RelayType::Compaction) = self.coordination.get(&id) {
-                        compaction_session.unsub(id);
+                CoordinationTask::Subscribe(pref) => {
+                    let use_transparent = matches!(
+                        pref,
+                        RelayRoutingPreference::RequireDedicated
+                            | RelayRoutingPreference::PreferDedicated
+                    );
+                    if use_transparent {
+                        if let Some(RelayType::Compaction) = self.coordination.get(&id) {
+                            compaction_session.unsub(id);
+                        }
+                        self.coordination.insert(id, RelayType::Transparent);
+                        trans.insert(id);
+                    } else {
+                        if let Some(RelayType::Transparent) = self.coordination.get(&id) {
+                            trans_unsubs.insert(id);
+                        }
+                        self.coordination.insert(id, RelayType::Compaction);
+                        compaction_session.sub(id);
                     }
-                    self.coordination.insert(id, RelayType::Transparent);
-                    trans.insert(id);
-                }
-                CoordinationTask::CompactionSub => {
-                    if let Some(RelayType::Transparent) = self.coordination.get(&id) {
-                        trans_unsubs.insert(id);
-                    }
-                    self.coordination.insert(id, RelayType::Compaction);
-                    compaction_session.sub(id);
                 }
                 CoordinationTask::Unsubscribe => {
                     let Some(rtype) = self.coordination.remove(&id) else {
@@ -468,21 +475,14 @@ pub struct CoordinationSession {
 }
 
 pub enum CoordinationTask {
-    TransparentSub,
-    CompactionSub,
+    Subscribe(RelayRoutingPreference),
     Unsubscribe,
 }
 
 impl CoordinationSession {
-    pub fn subscribe(&mut self, id: OutboxSubId, use_transparent: bool) {
-        self.tasks.insert(
-            id,
-            if use_transparent {
-                CoordinationTask::TransparentSub
-            } else {
-                CoordinationTask::CompactionSub
-            },
-        );
+    pub fn subscribe(&mut self, id: OutboxSubId, routing_preference: RelayRoutingPreference) {
+        self.tasks
+            .insert(id, CoordinationTask::Subscribe(routing_preference));
     }
 
     pub fn unsubscribe(&mut self, id: OutboxSubId) {
@@ -512,29 +512,29 @@ mod tests {
         assert!(session.tasks.is_empty());
     }
 
-    /// Transparent subscriptions should be recorded as TransparentSub tasks.
+    /// RequireDedicated subscriptions should be recorded as Subscribe tasks.
     #[test]
     fn coordination_session_subscribe_transparent() {
         let mut session = CoordinationSession::default();
 
-        session.subscribe(OutboxSubId(0), true); // use_transparent = true
+        session.subscribe(OutboxSubId(0), RelayRoutingPreference::RequireDedicated);
 
         assert!(matches!(
             expect_task(&session, OutboxSubId(0)),
-            CoordinationTask::TransparentSub
+            CoordinationTask::Subscribe(RelayRoutingPreference::RequireDedicated)
         ));
     }
 
-    /// Compaction mode subscriptions should be recorded as CompactionSub tasks.
+    /// NoPreference subscriptions should be recorded as Subscribe tasks.
     #[test]
     fn coordination_session_subscribe_compaction() {
         let mut session = CoordinationSession::default();
 
-        session.subscribe(OutboxSubId(0), false); // use_transparent = false means compaction
+        session.subscribe(OutboxSubId(0), RelayRoutingPreference::NoPreference);
 
         assert!(matches!(
             expect_task(&session, OutboxSubId(0)),
-            CoordinationTask::CompactionSub
+            CoordinationTask::Subscribe(RelayRoutingPreference::NoPreference)
         ));
     }
 
@@ -556,21 +556,21 @@ mod tests {
     fn coordination_session_subscribe_overwrites_previous() {
         let mut session = CoordinationSession::default();
 
-        // First subscribe as transparent
-        session.subscribe(OutboxSubId(0), true);
+        // First subscribe as RequireDedicated
+        session.subscribe(OutboxSubId(0), RelayRoutingPreference::RequireDedicated);
 
         assert!(matches!(
             expect_task(&session, OutboxSubId(0)),
-            CoordinationTask::TransparentSub
+            CoordinationTask::Subscribe(RelayRoutingPreference::RequireDedicated)
         ));
 
-        // Then as compaction
-        session.subscribe(OutboxSubId(0), false);
+        // Then as NoPreference
+        session.subscribe(OutboxSubId(0), RelayRoutingPreference::NoPreference);
 
-        // Should be compaction now
+        // Should be NoPreference now
         assert!(matches!(
             expect_task(&session, OutboxSubId(0)),
-            CoordinationTask::CompactionSub
+            CoordinationTask::Subscribe(RelayRoutingPreference::NoPreference)
         ));
     }
 
@@ -579,10 +579,10 @@ mod tests {
     fn coordination_session_unsubscribe_overwrites_subscribe() {
         let mut session = CoordinationSession::default();
 
-        session.subscribe(OutboxSubId(0), true);
+        session.subscribe(OutboxSubId(0), RelayRoutingPreference::RequireDedicated);
         assert!(matches!(
             expect_task(&session, OutboxSubId(0)),
-            CoordinationTask::TransparentSub
+            CoordinationTask::Subscribe(RelayRoutingPreference::RequireDedicated)
         ));
         session.unsubscribe(OutboxSubId(0));
 
@@ -597,8 +597,8 @@ mod tests {
     fn coordination_session_multiple_tasks() {
         let mut session = CoordinationSession::default();
 
-        session.subscribe(OutboxSubId(0), true);
-        session.subscribe(OutboxSubId(1), false);
+        session.subscribe(OutboxSubId(0), RelayRoutingPreference::RequireDedicated);
+        session.subscribe(OutboxSubId(1), RelayRoutingPreference::NoPreference);
         session.unsubscribe(OutboxSubId(2));
 
         assert_eq!(session.tasks.len(), 3);

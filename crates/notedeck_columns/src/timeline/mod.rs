@@ -19,7 +19,7 @@ use notedeck::{
 };
 
 use egui_virtual_list::VirtualList;
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayRoutingPreference};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::rc::Rc;
 use std::{cell::RefCell, collections::HashSet};
@@ -52,11 +52,14 @@ fn timeline_remote_sub_key(kind: &TimelineKind) -> SubKey {
         .finish()
 }
 
-fn timeline_remote_sub_config(remote_filters: Vec<Filter>, use_transparent: bool) -> SubConfig {
+fn timeline_remote_sub_config(
+    remote_filters: Vec<Filter>,
+    routing_preference: RelayRoutingPreference,
+) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: remote_filters,
-        use_transparent,
+        routing_preference,
     }
 }
 
@@ -70,7 +73,11 @@ pub(crate) fn ensure_remote_timeline_subscription(
     let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
     let config = timeline_remote_sub_config(
         remote_filters,
-        matches!(&timeline.kind, TimelineKind::Notifications(_)),
+        if matches!(&timeline.kind, TimelineKind::Notifications(_)) {
+            RelayRoutingPreference::RequireDedicated
+        } else {
+            RelayRoutingPreference::default()
+        },
     );
     let _ = scoped_subs.ensure_sub(identity, config);
     timeline.subscription.mark_remote_seeded(account_pk);
@@ -85,7 +92,11 @@ pub(crate) fn update_remote_timeline_subscription(
     let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
     let config = timeline_remote_sub_config(
         remote_filters,
-        matches!(&timeline.kind, TimelineKind::Notifications(_)),
+        if matches!(&timeline.kind, TimelineKind::Notifications(_)) {
+            RelayRoutingPreference::RequireDedicated
+        } else {
+            RelayRoutingPreference::default()
+        },
     );
     let _ = scoped_subs.set_sub(identity, config);
     timeline

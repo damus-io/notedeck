@@ -289,7 +289,7 @@ fn sub_remote(
     let config = SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: filter,
-        use_transparent: false,
+        routing_preference: enostr::RelayRoutingPreference::default(),
     };
     let _ = scoped_subs.ensure_sub(identity, config);
 }

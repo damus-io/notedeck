@@ -80,7 +80,7 @@ impl Onboarding {
                     let sub_config = SubConfig {
                         relays: RelaySelection::AccountsRead,
                         filters: vec![follow_filter.clone()],
-                        use_transparent: false,
+                        routing_preference: enostr::RelayRoutingPreference::default(),
                     };
                     let _ = scoped_subs.ensure_sub(identity, sub_config);
 

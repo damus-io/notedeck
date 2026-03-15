@@ -138,7 +138,7 @@ async fn eose_propagation_from_real_relay() {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.use_transparent = true;
+    url_pkgs.routing_preference = enostr::RelayRoutingPreference::RequireDedicated;
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -371,7 +371,7 @@ async fn transparent_mode_subscription() {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.use_transparent = true; // Enable transparent mode
+    url_pkgs.routing_preference = enostr::RelayRoutingPreference::RequireDedicated; // Enable transparent mode
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -391,7 +391,7 @@ async fn compaction_mode_subscription() {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.use_transparent = false; // Compaction mode (default)
+    url_pkgs.routing_preference = enostr::RelayRoutingPreference::NoPreference; // Compaction mode
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -619,7 +619,7 @@ async fn eose_applies_since_to_filters() {
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.use_transparent = true;
+    url_pkgs.routing_preference = enostr::RelayRoutingPreference::RequireDedicated;
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -667,7 +667,7 @@ async fn since_optimization_waits_for_all_relays_eose() {
     urls.insert(live_url);
     urls.insert(dead_url);
     let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.use_transparent = true;
+    url_pkgs.routing_preference = enostr::RelayRoutingPreference::RequireDedicated;
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
