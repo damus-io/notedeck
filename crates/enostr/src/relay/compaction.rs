@@ -263,12 +263,12 @@ impl<'a> CompactionRelay<'a> {
             subs: _,
         } = self.ctx.shared();
         let Some(relay_id) = compaction_data.request_to_sid.remove(&id) else {
-            compaction_data.queue.add(id, RelayTask::Unsubscribe);
+            compaction_data.queue.cancel(id);
             return;
         };
 
         let Some(data) = compaction_data.relay_subs.get_mut(&relay_id) else {
-            compaction_data.queue.add(id, RelayTask::Unsubscribe);
+            compaction_data.queue.cancel(id);
             return;
         };
 
@@ -324,7 +324,7 @@ impl<'a> CompactionRelay<'a> {
             return PlaceResult::Placed;
         }
 
-        data.queue.add(id, RelayTask::Subscribe);
+        data.queue.enqueue(id);
         PlaceResult::Queued
     }
 }

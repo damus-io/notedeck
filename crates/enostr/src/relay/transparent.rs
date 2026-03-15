@@ -4,8 +4,8 @@ use uuid::Uuid;
 use crate::{
     relay::{
         subscription::SubscriptionView, MetadataFilters, OutboxSubId, OutboxSubscriptions,
-        QueuedTasks, RelayReqId, RelayReqStatus, RelayTask, SubPass, SubPassGuardian,
-        SubPassRevocation, WebsocketRelay,
+        QueuedTasks, RelayReqId, RelayReqStatus, SubPass, SubPassGuardian, SubPassRevocation,
+        WebsocketRelay,
     },
     ClientMessage,
 };
@@ -86,7 +86,7 @@ impl<'a> TransparentRelay<'a> {
         let req_id = view.id;
         let Some(existing_sid) = self.data.request_to_sid.get(&req_id) else {
             let Some(new_pass) = self.sub_guardian.take_pass() else {
-                self.data.queue.add(req_id, RelayTask::Subscribe);
+                self.data.queue.enqueue(req_id);
                 return;
             };
             tracing::debug!("Transparent took pass for {req_id:?}");
@@ -116,7 +116,7 @@ impl<'a> TransparentRelay<'a> {
 
     pub fn unsubscribe(&mut self, req_id: OutboxSubId) {
         let Some(sid) = self.data.request_to_sid.remove(&req_id) else {
-            self.data.queue.add(req_id, RelayTask::Unsubscribe);
+            self.data.queue.cancel(req_id);
             return;
         };
 
@@ -198,7 +198,7 @@ pub fn revocate_transparent_subs(
         };
 
         revocation.revocate(status.sub_pass);
-        data.queue.add(id, RelayTask::Subscribe);
+        data.queue.enqueue(id);
 
         let Some(relay) = &mut relay else {
             continue;
