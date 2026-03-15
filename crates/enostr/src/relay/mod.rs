@@ -3,6 +3,7 @@ mod broadcast;
 mod compaction;
 mod coordinator;
 mod identity;
+mod indexed_queue;
 mod limits;
 pub mod message;
 mod multicast;
