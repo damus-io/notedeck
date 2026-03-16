@@ -5,7 +5,7 @@ use crate::backend::tool_summary::{format_tool_summary, truncate_output};
 use crate::file_update::FileUpdate;
 use crate::messages::{
     DaveApiResponse, ExecutedTool, ImageAttachment, PendingPermission, PermissionRequest,
-    UserMessage,
+    PermissionView, UserMessage,
 };
 use crate::Message;
 use claude_agent_sdk_rs::PermissionMode;
@@ -198,26 +198,29 @@ pub fn forward_permission_to_ui(
     response_tx: &mpsc::Sender<DaveApiResponse>,
     ctx: &egui::Context,
 ) -> Option<oneshot::Receiver<crate::messages::PermissionResponse>> {
+    forward_permission_to_ui_with_view(tool_name, tool_input, None, response_tx, ctx)
+}
+
+/// Variant of [`forward_permission_to_ui`] that allows a backend to provide an
+/// explicit shared permission view instead of relying on inference.
+pub fn forward_permission_to_ui_with_view(
+    tool_name: &str,
+    tool_input: serde_json::Value,
+    view: Option<PermissionView>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    ctx: &egui::Context,
+) -> Option<oneshot::Receiver<crate::messages::PermissionResponse>> {
     let request_id = Uuid::new_v4();
     let (ui_resp_tx, ui_resp_rx) = oneshot::channel();
 
-    let cached_plan = if tool_name == "ExitPlanMode" {
-        tool_input
-            .get("plan")
-            .and_then(|v| v.as_str())
-            .map(crate::messages::ParsedMarkdown::parse)
-    } else {
-        None
-    };
-
-    let request = PermissionRequest {
-        id: request_id,
-        tool_name: tool_name.to_string(),
+    let request = PermissionRequest::new(
+        request_id,
+        tool_name.to_string(),
         tool_input,
-        response: None,
-        answer_summary: None,
-        cached_plan,
-    };
+        view,
+        None,
+        None,
+    );
 
     let pending = PendingPermission {
         request,
@@ -274,7 +277,9 @@ pub fn prepare_prompt_and_images(
 mod tests {
     use super::prepare_prompt_and_images;
     use super::*;
-    use crate::messages::{AssistantMessage, CompactionInfo, ImageAttachment, UserMessage};
+    use crate::messages::{
+        AssistantMessage, CompactionInfo, ImageAttachment, PermissionView, UserMessage,
+    };
     use crate::Message;
 
     fn img(bytes: &[u8], mime: &str) -> ImageAttachment {
@@ -433,8 +438,8 @@ mod tests {
             DaveApiResponse::PermissionRequest(pending) => {
                 assert_eq!(pending.request.tool_name, "Bash");
                 assert_eq!(pending.request.tool_input, input);
+                assert!(matches!(pending.request.view, PermissionView::RawFallback));
                 assert!(pending.request.response.is_none());
-                assert!(pending.request.cached_plan.is_none());
                 assert!(pending.request.answer_summary.is_none());
             }
             _ => panic!("expected PermissionRequest"),
@@ -453,9 +458,14 @@ mod tests {
         match resp {
             DaveApiResponse::PermissionRequest(pending) => {
                 assert_eq!(pending.request.tool_name, "ExitPlanMode");
+                assert!(matches!(
+                    pending.request.view,
+                    PermissionView::PlanReview(_)
+                ));
                 let plan = pending
                     .request
-                    .cached_plan
+                    .view
+                    .plan_markdown()
                     .expect("ExitPlanMode should cache plan");
                 assert!(plan.source.contains("My Plan"));
             }
@@ -563,7 +573,7 @@ mod tests {
         match resp {
             DaveApiResponse::PermissionRequest(pending) => {
                 // Non-string "plan" should gracefully result in None
-                assert!(pending.request.cached_plan.is_none());
+                assert!(pending.request.view.plan_markdown().is_none());
             }
             _ => panic!("expected PermissionRequest"),
         }

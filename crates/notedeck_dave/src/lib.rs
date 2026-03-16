@@ -49,8 +49,8 @@ use std::time::Instant;
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use messages::{
-    AskUserQuestionInput, AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment,
-    Message, PermissionResponse, PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo,
+    AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
+    PermissionResponseType, QuestionAnswer, QuestionSetInput, SessionInfo, SubagentInfo,
     SubagentStatus, UserMessage,
 };
 pub use quaternion::Quaternion;
@@ -2696,7 +2696,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         update::first_pending_permission(&self.session_manager)
     }
 
-    /// Check if the first pending permission is an AskUserQuestion tool call
+    /// Check if the first pending permission is a shared question-set prompt
     fn has_pending_question(&self) -> bool {
         update::has_pending_question(&self.session_manager)
     }
@@ -4067,14 +4067,14 @@ fn handle_remote_permission_request(
             }
         }
         chat.push(Message::PermissionRequest(
-            crate::messages::PermissionRequest {
-                id: perm_id,
+            crate::messages::PermissionRequest::new(
+                perm_id,
                 tool_name,
                 tool_input,
-                response: Some(crate::messages::PermissionResponseType::Allowed),
-                answer_summary: None,
-                cached_plan: None,
-            },
+                None,
+                Some(crate::messages::PermissionResponseType::Allowed),
+                None,
+            ),
         ));
         return;
     }
@@ -4082,25 +4082,10 @@ fn handle_remote_permission_request(
     // Check if we already responded
     let response = agentic.permissions.responded.get(&perm_id).copied();
 
-    // Parse plan markdown for ExitPlanMode requests
-    let cached_plan = if tool_name == "ExitPlanMode" {
-        tool_input
-            .get("plan")
-            .and_then(|v| v.as_str())
-            .map(crate::messages::ParsedMarkdown::parse)
-    } else {
-        None
-    };
-
     chat.push(Message::PermissionRequest(
-        crate::messages::PermissionRequest {
-            id: perm_id,
-            tool_name,
-            tool_input,
-            response,
-            answer_summary: None,
-            cached_plan,
-        },
+        crate::messages::PermissionRequest::new(
+            perm_id, tool_name, tool_input, None, response, None,
+        ),
     ));
 }
 

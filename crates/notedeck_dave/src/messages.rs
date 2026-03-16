@@ -89,17 +89,18 @@ impl ParsedMarkdown {
 }
 use nostrdb::{Ndb, Transaction};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-/// A question option from AskUserQuestion
+/// A selectable option in a shared question-set prompt.
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuestionOption {
     pub label: String,
     pub description: String,
 }
 
-/// A single question from AskUserQuestion
+/// A single question in a shared question-set prompt.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserQuestion {
@@ -110,10 +111,135 @@ pub struct UserQuestion {
     pub options: Vec<QuestionOption>,
 }
 
-/// Parsed AskUserQuestion tool input
+/// Parsed multi-question prompt input for the shared permission UI.
 #[derive(Debug, Clone, Deserialize)]
-pub struct AskUserQuestionInput {
+pub struct QuestionSetInput {
     pub questions: Vec<UserQuestion>,
+}
+
+/// Structured approval prompt payload that can be rendered with the generic
+/// allow/deny permission UI.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApprovalPromptInput {
+    pub questions: Vec<ApprovalPromptQuestion>,
+}
+
+/// One approval question shown in the compact permission card.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ApprovalPromptQuestion {
+    #[serde(default)]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub question: Option<String>,
+}
+
+/// Backend-neutral view model for permission requests.
+#[derive(Debug, Clone)]
+pub enum PermissionView {
+    /// A simple approval prompt rendered with allow/deny controls.
+    Approval(ApprovalPromptInput),
+    /// A structured question set rendered with the shared question UI.
+    QuestionSet(QuestionSetInput),
+    /// Exit plan mode review card.
+    PlanReview(Option<ParsedMarkdown>),
+    /// Fallback when we only know how to show raw tool input.
+    RawFallback,
+}
+
+impl PermissionView {
+    /// Infer the most specific UI view we can safely render from raw request data.
+    pub fn infer(tool_name: &str, tool_input: &Value) -> Self {
+        if tool_name == "ExitPlanMode" {
+            return Self::PlanReview(
+                tool_input
+                    .get("plan")
+                    .and_then(|v| v.as_str())
+                    .map(ParsedMarkdown::parse),
+            );
+        }
+
+        if tool_name == "AskUserQuestion" {
+            if let Ok(questions) = serde_json::from_value::<QuestionSetInput>(tool_input.clone()) {
+                return Self::QuestionSet(questions);
+            }
+        }
+
+        if let Some(prompt) = Self::infer_approval_prompt(tool_input) {
+            return Self::Approval(prompt);
+        }
+
+        Self::RawFallback
+    }
+
+    /// Infer an approval prompt only from the narrow shape we intentionally
+    /// emit for compact allow/deny cards.
+    fn infer_approval_prompt(tool_input: &Value) -> Option<ApprovalPromptInput> {
+        let questions = tool_input.get("questions")?.as_array()?;
+        if questions.is_empty() {
+            return None;
+        }
+
+        let mut parsed_questions = Vec::with_capacity(questions.len());
+        for question in questions {
+            let obj = question.as_object()?;
+            if obj.keys().any(|key| key != "header" && key != "question") {
+                return None;
+            }
+
+            let header = obj
+                .get("header")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned);
+            let prompt = obj
+                .get("question")
+                .and_then(|v| v.as_str())
+                .map(ToOwned::to_owned);
+
+            let has_display_text = header.as_deref().is_some_and(|text| !text.is_empty())
+                || prompt.as_deref().is_some_and(|text| !text.is_empty());
+            if !has_display_text {
+                return None;
+            }
+
+            parsed_questions.push(ApprovalPromptQuestion {
+                header,
+                question: prompt,
+            });
+        }
+
+        Some(ApprovalPromptInput {
+            questions: parsed_questions,
+        })
+    }
+
+    /// Return the shared question set when this view supports structured answers.
+    pub fn question_set(&self) -> Option<&QuestionSetInput> {
+        match self {
+            Self::QuestionSet(questions) => Some(questions),
+            _ => None,
+        }
+    }
+
+    /// Return the structured approval prompt when this view can use the compact card.
+    pub fn approval_prompt(&self) -> Option<&ApprovalPromptInput> {
+        match self {
+            Self::Approval(prompt) => Some(prompt),
+            _ => None,
+        }
+    }
+
+    /// Whether this request should use the plan review renderer.
+    pub fn is_plan_review(&self) -> bool {
+        matches!(self, Self::PlanReview(_))
+    }
+
+    /// Return parsed markdown for a plan review if it is available.
+    pub fn plan_markdown(&self) -> Option<&ParsedMarkdown> {
+        match self {
+            Self::PlanReview(Some(plan)) => Some(plan),
+            _ => None,
+        }
+    }
 }
 
 /// User's answer to a question
@@ -134,12 +260,36 @@ pub struct PermissionRequest {
     pub tool_name: String,
     /// The arguments the tool will be called with
     pub tool_input: serde_json::Value,
+    /// Backend-neutral UI model used to render this request consistently.
+    pub view: PermissionView,
     /// The user's response (None if still pending)
     pub response: Option<PermissionResponseType>,
-    /// For AskUserQuestion: pre-computed summary of answers for display
+    /// For question-set prompts: pre-computed summary of answers for display
     pub answer_summary: Option<AnswerSummary>,
-    /// For ExitPlanMode: pre-parsed markdown with source text for span resolution
-    pub cached_plan: Option<ParsedMarkdown>,
+}
+
+impl PermissionRequest {
+    /// Build a new permission request, inferring a shared UI view when one is
+    /// not provided explicitly by the backend.
+    pub fn new(
+        id: Uuid,
+        tool_name: String,
+        tool_input: Value,
+        view: Option<PermissionView>,
+        response: Option<PermissionResponseType>,
+        answer_summary: Option<AnswerSummary>,
+    ) -> Self {
+        let view = view.unwrap_or_else(|| PermissionView::infer(&tool_name, &tool_input));
+
+        Self {
+            id,
+            tool_name,
+            tool_input,
+            view,
+            response,
+            answer_summary,
+        }
+    }
 }
 
 /// A single entry in an answer summary
@@ -151,7 +301,7 @@ pub struct AnswerSummaryEntry {
     pub answer: String,
 }
 
-/// Pre-computed summary of an AskUserQuestion response for display
+/// Pre-computed summary of a question-set response for display
 #[derive(Debug, Clone)]
 pub struct AnswerSummary {
     pub entries: Vec<AnswerSummaryEntry>,

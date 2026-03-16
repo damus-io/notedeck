@@ -12,9 +12,9 @@ use crate::{
     focus_queue::FocusPriority,
     git_status::GitStatusCache,
     messages::{
-        AskUserQuestionInput, AssistantMessage, CompactionInfo, ExecutedTool, ImageAttachment,
-        Message, PermissionRequest, PermissionResponse, PermissionResponseType, QuestionAnswer,
-        SubagentInfo, SubagentStatus,
+        ApprovalPromptInput, AssistantMessage, CompactionInfo, ExecutedTool, ImageAttachment,
+        Message, PermissionRequest, PermissionResponse, PermissionResponseType, PermissionView,
+        QuestionAnswer, SubagentInfo, SubagentStatus,
     },
     session::{PermissionMessageState, SessionDetails, SessionId},
     tools::{PresentNotesCall, ToolCall, ToolCalls, ToolResponse, ToolResponses},
@@ -53,9 +53,9 @@ pub struct DaveUi<'a> {
     session_id: SessionId,
     /// State for tentative permission response (waiting for message)
     permission_message_state: PermissionMessageState,
-    /// State for AskUserQuestion responses (selected options per question)
+    /// State for shared question-set responses (selected options per question)
     question_answers: Option<&'a mut HashMap<Uuid, Vec<QuestionAnswer>>>,
-    /// Current question index for multi-question AskUserQuestion
+    /// Current question index for multi-question prompts
     question_index: Option<&'a mut HashMap<Uuid, usize>>,
     /// AI interaction mode (Chat vs Agentic)
     ai_mode: AiMode,
@@ -175,7 +175,7 @@ pub enum DaveAction {
     },
     /// Tentative allow always — add to session allowlist, enter message mode
     TentativeAllowAlways,
-    /// User responded to an AskUserQuestion
+    /// User responded to a shared question-set prompt
     QuestionResponse {
         request_id: Uuid,
         answers: Vec<QuestionAnswer>,
@@ -639,6 +639,63 @@ impl<'a> DaveUi<'a> {
         }
     }
 
+    /// Render a compact approval card for structured `requestUserInput` prompts.
+    ///
+    /// Returns `true` when the payload matched the expected shape and was rendered.
+    fn approval_prompt_ui(
+        &self,
+        request: &PermissionRequest,
+        prompt: &ApprovalPromptInput,
+        inner_margin: f32,
+        corner_radius: f32,
+        ui: &mut egui::Ui,
+        action: &mut Option<DaveAction>,
+    ) -> bool {
+        if prompt.questions.is_empty() {
+            return false;
+        }
+
+        egui::Frame::new()
+            .fill(ui.visuals().widgets.noninteractive.bg_fill)
+            .inner_margin(inner_margin)
+            .corner_radius(corner_radius)
+            .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(&request.tool_name).strong());
+                ui.add_space(6.0);
+
+                for (idx, question) in prompt.questions.iter().enumerate() {
+                    if idx > 0 {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                    }
+
+                    if let Some(header) = question.header.as_deref().filter(|text| !text.is_empty())
+                    {
+                        ui.label(egui::RichText::new(header).small().weak());
+                    }
+
+                    let question_text = question
+                        .question
+                        .as_deref()
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or("Allow this action?");
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(question_text))
+                            .wrap_mode(egui::TextWrapMode::Wrap),
+                    );
+                }
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    self.permission_buttons(request, ui, action);
+                });
+            });
+
+        true
+    }
+
     /// Render a permission request with Allow/Deny buttons or response state
     fn permission_request_ui(
         &mut self,
@@ -655,7 +712,7 @@ impl<'a> DaveUi<'a> {
 
         match request.response {
             Some(PermissionResponseType::Allowed) => {
-                // Check if this is an answered AskUserQuestion with stored summary
+                // Check if this is an answered shared question set with stored summary
                 if let Some(summary) = &request.answer_summary {
                     super::ask_user_question_summary_ui(summary, ui);
                     return None;
@@ -701,27 +758,21 @@ impl<'a> DaveUi<'a> {
                     });
             }
             None => {
-                // Check if this is an ExitPlanMode tool call
-                if request.tool_name == "ExitPlanMode" {
+                if request.view.is_plan_review() {
                     return self.exit_plan_mode_ui(request, ui);
                 }
 
-                // Check if this is an AskUserQuestion tool call
-                if request.tool_name == "AskUserQuestion" {
-                    if let Ok(questions) =
-                        serde_json::from_value::<AskUserQuestionInput>(request.tool_input.clone())
+                if let PermissionView::QuestionSet(questions) = &request.view {
+                    if let (Some(answers_map), Some(index_map)) =
+                        (&mut self.question_answers, &mut self.question_index)
                     {
-                        if let (Some(answers_map), Some(index_map)) =
-                            (&mut self.question_answers, &mut self.question_index)
-                        {
-                            return super::ask_user_question_ui(
-                                request,
-                                &questions,
-                                answers_map,
-                                index_map,
-                                ui,
-                            );
-                        }
+                        return super::ask_user_question_ui(
+                            request,
+                            questions,
+                            answers_map,
+                            index_map,
+                            ui,
+                        );
                     }
                 }
 
@@ -751,6 +802,17 @@ impl<'a> DaveUi<'a> {
                                 self.permission_buttons(request, ui, &mut action);
                             });
                         });
+                } else if let Some(prompt) = request.view.approval_prompt() {
+                    if !self.approval_prompt_ui(
+                        request,
+                        prompt,
+                        inner_margin,
+                        corner_radius,
+                        ui,
+                        &mut action,
+                    ) {
+                        return None;
+                    }
                 } else {
                     // Parse tool input for display (existing logic)
                     let obj = request.tool_input.as_object();
@@ -794,7 +856,7 @@ impl<'a> DaveUi<'a> {
                                     ui.label(egui::RichText::new(value).monospace());
                                 });
                             } else {
-                                // Fallback: show JSON
+                                // Fallback: show JSON when we don't have a better renderer.
                                 ui.label(egui::RichText::new(&request.tool_name).strong());
                                 let formatted = serde_json::to_string_pretty(&request.tool_input)
                                     .unwrap_or_else(|_| request.tool_input.to_string());
@@ -950,7 +1012,7 @@ impl<'a> DaveUi<'a> {
                     ui.add_space(8.0);
 
                     // Render plan content as markdown (pre-parsed at construction)
-                    if let Some(plan) = &request.cached_plan {
+                    if let Some(plan) = request.view.plan_markdown() {
                         markdown_ui::render_assistant_message(
                             &plan.elements,
                             None,

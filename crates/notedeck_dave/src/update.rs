@@ -7,8 +7,8 @@ use crate::backend::{AiBackend, BackendType, Model};
 use crate::config::AiMode;
 use crate::focus_queue::{FocusPriority, FocusQueue};
 use crate::messages::{
-    AnswerSummary, AnswerSummaryEntry, AskUserQuestionInput, Message, PermissionResponse,
-    QuestionAnswer,
+    AnswerSummary, AnswerSummaryEntry, Message, PermissionRequest, PermissionResponse,
+    PermissionView, QuestionAnswer,
 };
 use crate::session::{ChatSession, EditorJob, PermissionMessageState, SessionId, SessionManager};
 use crate::ui::{AgentScene, DirectoryPicker};
@@ -222,15 +222,15 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
     }
 }
 
-/// Get the tool name of the first pending permission request.
-pub fn pending_permission_tool_name(session_manager: &SessionManager) -> Option<&str> {
+/// Get the first pending permission request for the active session.
+pub fn pending_permission(session_manager: &SessionManager) -> Option<&PermissionRequest> {
     let request_id = first_pending_permission(session_manager)?;
     let session = session_manager.get_active()?;
 
     for msg in &session.chat {
         if let Message::PermissionRequest(req) = msg {
             if req.id == request_id {
-                return Some(&req.tool_name);
+                return Some(req);
             }
         }
     }
@@ -238,14 +238,15 @@ pub fn pending_permission_tool_name(session_manager: &SessionManager) -> Option<
     None
 }
 
-/// Check if the first pending permission is an AskUserQuestion tool call.
+/// Check if the first pending permission is a shared question-set prompt.
 pub fn has_pending_question(session_manager: &SessionManager) -> bool {
-    pending_permission_tool_name(session_manager) == Some("AskUserQuestion")
+    pending_permission(session_manager)
+        .is_some_and(|request| matches!(request.view, PermissionView::QuestionSet(_)))
 }
 
 /// Check if the first pending permission is an ExitPlanMode tool call.
 pub fn has_pending_exit_plan_mode(session_manager: &SessionManager) -> bool {
-    pending_permission_tool_name(session_manager) == Some("ExitPlanMode")
+    pending_permission(session_manager).is_some_and(|request| request.view.is_plan_review())
 }
 
 /// Data needed to publish a permission response to relays.
@@ -323,7 +324,7 @@ pub fn handle_permission_response(
     })
 }
 
-/// Handle a user's response to an AskUserQuestion tool call.
+/// Handle a user's response to a shared question-set prompt.
 pub fn handle_question_response(
     session_manager: &mut SessionManager,
     request_id: uuid::Uuid,
@@ -333,11 +334,11 @@ pub fn handle_question_response(
 
     let is_remote = session.is_remote();
 
-    // Find the original AskUserQuestion request to get the question labels
+    // Find the original shared question-set request to get the option labels.
     let questions_input = session.chat.iter().find_map(|msg| {
         if let Message::PermissionRequest(req) = msg {
-            if req.id == request_id && req.tool_name == "AskUserQuestion" {
-                serde_json::from_value::<AskUserQuestionInput>(req.tool_input.clone()).ok()
+            if req.id == request_id {
+                req.view.question_set()
             } else {
                 None
             }
@@ -347,7 +348,7 @@ pub fn handle_question_response(
     });
 
     // Format answers as JSON for the tool response, and build summary for display
-    let (formatted_response, answer_summary) = if let Some(ref questions) = questions_input {
+    let (formatted_response, answer_summary) = if let Some(questions) = questions_input {
         let mut answers_obj = serde_json::Map::new();
         let mut summary_entries = Vec::with_capacity(questions.questions.len());
 

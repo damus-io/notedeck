@@ -1,6 +1,6 @@
-//! UI for rendering AskUserQuestion tool calls from Claude Code
+//! UI for rendering shared multi-question permission prompts.
 
-use crate::messages::{AskUserQuestionInput, PermissionRequest, QuestionAnswer};
+use crate::messages::{PermissionRequest, QuestionAnswer, QuestionSetInput};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -8,13 +8,13 @@ use super::badge;
 use super::keybind_hint;
 use super::DaveAction;
 
-/// Render an AskUserQuestion tool call with selectable options
+/// Render a shared question-set permission request with selectable options.
 ///
 /// Shows one question at a time with numbered options.
 /// Returns a `DaveAction::QuestionResponse` when the user submits all answers.
 pub fn ask_user_question_ui(
     request: &PermissionRequest,
-    questions: &AskUserQuestionInput,
+    questions: &QuestionSetInput,
     answers_map: &mut HashMap<Uuid, Vec<QuestionAnswer>>,
     index_map: &mut HashMap<Uuid, usize>,
     ui: &mut egui::Ui,
@@ -243,7 +243,7 @@ pub fn ask_user_question_ui(
     action
 }
 
-/// Render a compact summary of an answered AskUserQuestion
+/// Render a compact summary of an answered question-set permission request.
 ///
 /// Shows the question header(s) and selected answer(s) in a single line.
 /// Uses pre-computed AnswerSummary to avoid per-frame allocations.

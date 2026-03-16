@@ -201,24 +201,9 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
 
                     let response = permissions.responded.get(&perm_id).copied();
 
-                    // Parse plan markdown for ExitPlanMode requests
-                    let cached_plan = if tool_name == "ExitPlanMode" {
-                        tool_input
-                            .get("plan")
-                            .and_then(|v| v.as_str())
-                            .map(crate::messages::ParsedMarkdown::parse)
-                    } else {
-                        None
-                    };
-
-                    Some(Message::PermissionRequest(PermissionRequest {
-                        id: perm_id,
-                        tool_name,
-                        tool_input,
-                        response,
-                        answer_summary: None,
-                        cached_plan,
-                    }))
+                    Some(Message::PermissionRequest(PermissionRequest::new(
+                        perm_id, tool_name, tool_input, None, response, None,
+                    )))
                 } else {
                     None
                 }
