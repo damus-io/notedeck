@@ -58,6 +58,26 @@ fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_js
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancelledTurnMessageAction {
+    Ignore,
+    FinishTurn,
+}
+
+/// Decide how to handle a Claude stream message after the user has cancelled the turn.
+fn cancelled_turn_message_action(message: &ClaudeMessage) -> CancelledTurnMessageAction {
+    match message {
+        ClaudeMessage::Result(_) => CancelledTurnMessageAction::FinishTurn,
+        // These variants are still part of the cancelled turn and must not
+        // leak into chat after the user exits the tool call.
+        ClaudeMessage::Assistant(_)
+        | ClaudeMessage::System(_)
+        | ClaudeMessage::StreamEvent(_)
+        | ClaudeMessage::User(_)
+        | ClaudeMessage::ControlCancelRequest(_) => CancelledTurnMessageAction::Ignore,
+    }
+}
+
 pub struct ClaudeBackend {
     /// Registry of active sessions (using dashmap for lock-free access)
     sessions: DashMap<String, SessionHandle>,
@@ -245,6 +265,7 @@ async fn session_actor(
                 // Stream response with select! to handle stream, permission requests, and interrupts
                 let mut stream = client.receive_response();
                 let mut stream_done = false;
+                let mut cancel_current_turn = false;
 
                 while !stream_done {
                     tokio::select! {
@@ -325,7 +346,7 @@ async fn session_actor(
                             // should remain pending until the user explicitly
                             // answers or the channel closes.
                             let tool_name = perm_req.tool_name.clone();
-                            let result = match ui_resp_rx.await {
+                            let (result, should_cancel_turn) = match ui_resp_rx.await {
                                 Ok(PermissionResponse::Allow { message }) => {
                                     if let Some(msg) = &message {
                                         tracing::debug!("User allowed tool {} with message: {}", tool_name, msg);
@@ -335,39 +356,86 @@ async fn session_actor(
                                             &session_id
                                         ).await {
                                             tracing::error!("Failed to inject user message: {}", err);
-                                            PermissionResult::Deny(PermissionResultDeny {
-                                                message: "The user approved this tool with a condition, but the condition could not be delivered. Deny to prevent unconditional execution. Ask the user to try again.".to_string(),
-                                                interrupt: false,
-                                            })
+                                            (
+                                                PermissionResult::Deny(PermissionResultDeny {
+                                                    message: "The user approved this tool with a condition, but the condition could not be delivered. Deny to prevent unconditional execution. Ask the user to try again.".to_string(),
+                                                    interrupt: false,
+                                                }),
+                                                false,
+                                            )
                                         } else {
-                                            PermissionResult::Allow(PermissionResultAllow::default())
+                                            (PermissionResult::Allow(PermissionResultAllow::default()), false)
                                         }
                                     } else {
                                         tracing::debug!("User allowed tool: {}", tool_name);
-                                        PermissionResult::Allow(PermissionResultAllow::default())
+                                        (PermissionResult::Allow(PermissionResultAllow::default()), false)
                                     }
                                 }
                                 Ok(PermissionResponse::Deny { reason }) => {
                                     tracing::debug!("User denied tool {}: {}", tool_name, reason);
-                                    PermissionResult::Deny(PermissionResultDeny {
-                                        message: reason,
-                                        interrupt: false,
-                                    })
+                                    (
+                                        PermissionResult::Deny(PermissionResultDeny {
+                                            message: reason,
+                                            interrupt: false,
+                                        }),
+                                        false,
+                                    )
+                                }
+                                Ok(PermissionResponse::Cancel { reason }) => {
+                                    tracing::debug!(
+                                        "User exited tool {} and cancelled the turn: {}",
+                                        tool_name,
+                                        reason
+                                    );
+                                    (
+                                        PermissionResult::Deny(PermissionResultDeny {
+                                            message: reason,
+                                            interrupt: true,
+                                        }),
+                                        true,
+                                    )
                                 }
                                 Err(_) => {
                                     tracing::error!("Permission response channel closed");
-                                    PermissionResult::Deny(PermissionResultDeny {
-                                        message: "Permission request cancelled".to_string(),
-                                        interrupt: true,
-                                    })
+                                    (
+                                        PermissionResult::Deny(PermissionResultDeny {
+                                            message: "Permission request cancelled".to_string(),
+                                            interrupt: true,
+                                        }),
+                                        true,
+                                    )
                                 }
                             };
                             let _ = perm_req.response_tx.send(result);
+                            if should_cancel_turn {
+                                cancel_current_turn = true;
+                                if let Err(err) = client.interrupt().await {
+                                    tracing::error!(
+                                        "Failed to interrupt Claude session {} after tool exit: {}",
+                                        session_id,
+                                        err
+                                    );
+                                }
+                            }
                         }
 
                         stream_result = stream.next() => {
                             match stream_result {
                                 Some(Ok(message)) => {
+                                    if cancel_current_turn {
+                                        match cancelled_turn_message_action(&message) {
+                                            CancelledTurnMessageAction::FinishTurn => {
+                                                stream_done = true;
+                                            }
+                                            CancelledTurnMessageAction::Ignore => {
+                                                tracing::debug!(
+                                                    "Suppressing Claude message after cancelled turn: {:?}",
+                                                    std::mem::discriminant(&message)
+                                                );
+                                            }
+                                        }
+                                        continue;
+                                    }
                                     match message {
                                         ClaudeMessage::Assistant(assistant_msg) => {
                                             // Emit a per-turn UsageUpdate so the context bar
@@ -749,6 +817,50 @@ impl AiBackend for ClaudeBackend {
 mod tests {
     use super::*;
     use crate::messages::AssistantMessage;
+
+    #[test]
+    fn cancelled_turn_suppresses_follow_up_messages_until_result() {
+        let assistant = serde_json::from_value::<ClaudeMessage>(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "content": [{ "type": "text", "text": "extra output" }]
+            }
+        }))
+        .expect("assistant message should deserialize");
+        let stream_event = serde_json::from_value::<ClaudeMessage>(serde_json::json!({
+            "type": "stream_event",
+            "uuid": "evt-1",
+            "session_id": "sess-1",
+            "event": {
+                "type": "content_block_delta",
+                "delta": { "text": "more tokens" }
+            }
+        }))
+        .expect("stream event should deserialize");
+        let result = serde_json::from_value::<ClaudeMessage>(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "sess-1"
+        }))
+        .expect("result message should deserialize");
+
+        assert_eq!(
+            cancelled_turn_message_action(&assistant),
+            CancelledTurnMessageAction::Ignore
+        );
+        assert_eq!(
+            cancelled_turn_message_action(&stream_event),
+            CancelledTurnMessageAction::Ignore
+        );
+        assert_eq!(
+            cancelled_turn_message_action(&result),
+            CancelledTurnMessageAction::FinishTurn
+        );
+    }
 
     #[test]
     fn pending_messages_single_user() {

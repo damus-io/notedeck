@@ -161,6 +161,10 @@ pub enum DaveAction {
     },
     /// User wants to interrupt/stop the current AI operation
     Interrupt,
+    /// Exit the tool call: deny it and cancel the current turn
+    ExitToolCall {
+        request_id: Uuid,
+    },
     /// Enter tentative accept mode (Shift+click on Yes)
     TentativeAccept,
     /// Enter tentative deny mode (Shift+click on No)
@@ -892,6 +896,21 @@ impl<'a> DaveUi<'a> {
                             request_id: request.id,
                         });
                     }
+                }
+
+                // Exit button (orange) — deny permission and stop the turn
+                let exit_response = super::badge::ActionButton::new(
+                    "Exit",
+                    egui::Color32::from_rgb(200, 140, 30),
+                    button_text_color,
+                )
+                .show(ui)
+                .on_hover_text("Deny this tool call and return to chat");
+
+                if exit_response.clicked() {
+                    *action = Some(DaveAction::ExitToolCall {
+                        request_id: request.id,
+                    });
                 }
 
                 add_msg_link(ui, shift_held, action);

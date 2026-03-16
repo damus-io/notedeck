@@ -148,7 +148,7 @@ pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> 
         if role == Some("permission_response") {
             if let Some(perm_id_str) = get_tag_value(note, "perm-id") {
                 if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                    let (response_type, _) = decode_permission_response(note.content());
+                    let (response_type, _, _) = decode_permission_response(note.content());
                     permissions.responded.insert(perm_id, response_type);
                 }
             }

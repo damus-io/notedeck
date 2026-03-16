@@ -1768,6 +1768,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     request_note_id,
                     resp.allowed,
                     resp.message.as_deref(),
+                    resp.cancel_turn,
                     &session_id,
                     &sk,
                 ),
@@ -3946,7 +3947,7 @@ pub(crate) fn process_conversation_notes<'a>(
                 // Track that this permission was responded to
                 if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
                     if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                        let (response_type, _) =
+                        let (response_type, _, _) =
                             session_events::decode_permission_response(content);
                         agentic.permissions.responded.insert(perm_id, response_type);
                         // Update the matching PermissionRequest in chat
@@ -4058,6 +4059,7 @@ fn handle_remote_permission_request(
                 note.id(),
                 true,
                 None,
+                false,
                 sid,
                 sk,
             ) {
@@ -4117,12 +4119,17 @@ fn handle_remote_permission_response(
         return;
     };
 
-    let (response_type, message) = session_events::decode_permission_response(note.content());
+    let (response_type, message, cancel_turn) =
+        session_events::decode_permission_response(note.content());
     let allowed = response_type == crate::messages::PermissionResponseType::Allowed;
 
     if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
         let response = if allowed {
             PermissionResponse::Allow { message }
+        } else if cancel_turn {
+            PermissionResponse::Cancel {
+                reason: message.unwrap_or_else(|| "Tool call exited by remote".to_string()),
+            }
         } else {
             PermissionResponse::Deny {
                 reason: message.unwrap_or_else(|| "Denied by remote".to_string()),
@@ -4525,6 +4532,7 @@ mod tests {
             &[0u8; 32], // dummy request note id
             false,      // DENIED
             Some("too dangerous"),
+            false,
             session_id_str,
             &sk,
         )
@@ -4647,6 +4655,7 @@ mod tests {
             &[0u8; 32],
             false, // DENIED
             Some("too dangerous"),
+            false,
             session_id_str,
             &sk,
         )

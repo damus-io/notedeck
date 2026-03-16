@@ -172,6 +172,15 @@ pub enum PermissionResponse {
     Allow { message: Option<String> },
     /// Deny the tool execution with a reason
     Deny { reason: String },
+    /// Cancel the current turn after marking the request denied in the UI
+    Cancel { reason: String },
+}
+
+impl PermissionResponse {
+    /// Whether this response should cancel the current turn after the tool is denied.
+    pub fn cancels_turn(&self) -> bool {
+        matches!(self, Self::Cancel { .. })
+    }
 }
 
 /// The recorded response type for display purposes (without channel details)

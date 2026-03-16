@@ -306,12 +306,42 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                             }
 
                             result = &mut rx => {
-                                let decision = match result {
-                                    Ok(PermissionResponse::Allow { .. }) => ApprovalDecision::Accept,
-                                    Ok(PermissionResponse::Deny { .. }) => ApprovalDecision::Decline,
-                                    Err(_) => ApprovalDecision::Cancel,
-                                };
-                                let _ = send_approval_response(&mut writer, rpc_id, decision).await;
+                                match result {
+                                    Ok(PermissionResponse::Allow { .. }) => {
+                                        let _ = send_approval_response(
+                                            &mut writer,
+                                            rpc_id,
+                                            ApprovalDecision::Accept,
+                                        )
+                                        .await;
+                                    }
+                                    Ok(PermissionResponse::Deny { .. }) => {
+                                        let _ = send_approval_response(
+                                            &mut writer,
+                                            rpc_id,
+                                            ApprovalDecision::Decline,
+                                        )
+                                        .await;
+                                    }
+                                    Ok(PermissionResponse::Cancel { .. }) | Err(_) => {
+                                        let _ = send_approval_response(
+                                            &mut writer,
+                                            rpc_id,
+                                            ApprovalDecision::Cancel,
+                                        )
+                                        .await;
+                                        if let Some(ref tid) = current_turn_id {
+                                            request_counter += 1;
+                                            let _ = send_turn_interrupt(
+                                                &mut writer,
+                                                request_counter,
+                                                &thread_id,
+                                                tid,
+                                            )
+                                            .await;
+                                        }
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -2643,6 +2673,51 @@ mod tests {
         assert_eq!(result["decision"], "decline");
 
         mock.send_turn_completed("completed").await;
+        drop(command_tx);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_integration_approval_cancel() {
+        let (mut mock, command_tx, handle) = setup_integration_test();
+
+        mock.handle_init().await;
+        mock.handle_thread_start().await;
+
+        let response_rx = send_query(&command_tx, "dangerous").await;
+        mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
+
+        mock.send_approval_request(
+            77,
+            "item/commandExecution/requestApproval",
+            json!({ "command": "sudo rm -rf /" }),
+        )
+        .await;
+
+        let resp = response_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("timed out waiting for PermissionRequest");
+        let pending = match resp {
+            DaveApiResponse::PermissionRequest(p) => p,
+            _ => panic!("Expected PermissionRequest"),
+        };
+
+        pending
+            .response_tx
+            .send(PermissionResponse::Cancel {
+                reason: "user exited".to_string(),
+            })
+            .unwrap();
+
+        let cancel_msg = mock.read_message().await;
+        assert_eq!(cancel_msg.id, Some(77));
+        assert_eq!(cancel_msg.result.unwrap()["decision"], "cancel");
+
+        let interrupt_msg = mock.read_message().await;
+        assert_eq!(interrupt_msg.method.as_deref(), Some("turn/interrupt"));
+
+        mock.send_turn_completed("interrupted").await;
         drop(command_tx);
         handle.await.unwrap();
     }

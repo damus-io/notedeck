@@ -78,6 +78,20 @@ pub fn execute_interrupt(
     }
 }
 
+/// Exit a tool call by denying it and cancelling the current turn.
+pub fn exit_tool_call(
+    session_manager: &mut SessionManager,
+    request_id: uuid::Uuid,
+) -> Option<PermissionPublish> {
+    handle_permission_response(
+        session_manager,
+        request_id,
+        PermissionResponse::Cancel {
+            reason: "User exited tool call".into(),
+        },
+    )
+}
+
 /// Check if interrupt confirmation has timed out.
 /// Returns None if timed out, otherwise returns the original value.
 pub fn check_interrupt_timeout(pending_since: Option<Instant>) -> Option<Instant> {
@@ -239,6 +253,7 @@ pub struct PermissionPublish {
     pub perm_id: uuid::Uuid,
     pub allowed: bool,
     pub message: Option<String>,
+    pub cancel_turn: bool,
 }
 
 /// Handle a permission response (from UI button or keybinding).
@@ -250,17 +265,22 @@ pub fn handle_permission_response(
     let session = session_manager.get_active_mut()?;
 
     let is_remote = session.is_remote();
+    let cancels_turn = response.cancels_turn();
 
     let response_type = match &response {
         PermissionResponse::Allow { .. } => crate::messages::PermissionResponseType::Allowed,
-        PermissionResponse::Deny { .. } => crate::messages::PermissionResponseType::Denied,
+        PermissionResponse::Deny { .. } | PermissionResponse::Cancel { .. } => {
+            crate::messages::PermissionResponseType::Denied
+        }
     };
 
     // Extract relay-publish info before we move `response`.
     let allowed = matches!(&response, PermissionResponse::Allow { .. });
     let message = match &response {
         PermissionResponse::Allow { message } => message.clone(),
-        PermissionResponse::Deny { reason } => Some(reason.clone()),
+        PermissionResponse::Deny { reason } | PermissionResponse::Cancel { reason } => {
+            Some(reason.clone())
+        }
     };
 
     // If Allow has a message, add it as a User message to the chat
@@ -290,7 +310,7 @@ pub fn handle_permission_response(
         // have to wait for the full round-trip (phone→relay→desktop→relay→phone)
         // before auto-steal can move on. The desktop will publish the real
         // status once it processes the permission response.
-        if is_remote {
+        if is_remote && !cancels_turn {
             agentic.remote_status = Some(crate::agent_status::AgentStatus::Working);
         }
     }
@@ -299,6 +319,7 @@ pub fn handle_permission_response(
         perm_id: request_id,
         allowed,
         message,
+        cancel_turn: cancels_turn,
     })
 }
 
@@ -421,6 +442,7 @@ pub fn handle_question_response(
         perm_id: request_id,
         allowed: true,
         message: Some(formatted_response),
+        cancel_turn: false,
     })
 }
 

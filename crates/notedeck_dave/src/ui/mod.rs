@@ -1021,6 +1021,12 @@ pub fn handle_ui_action(
             update::execute_interrupt(session_manager, backend, ctx);
             UiActionResult::Handled
         }
+        DaveAction::ExitToolCall { request_id } => {
+            update::exit_tool_call(session_manager, request_id).map_or(
+                UiActionResult::Handled,
+                UiActionResult::PublishPermissionResponse,
+            )
+        }
         DaveAction::TentativeAccept => {
             set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
             UiActionResult::Handled
