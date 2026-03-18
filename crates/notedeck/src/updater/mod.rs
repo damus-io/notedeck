@@ -1,5 +1,5 @@
 pub mod nostr;
-mod platform;
+pub mod platform;
 
 use crate::{DataPath, DataPathType};
 use sha2::{Digest, Sha256};

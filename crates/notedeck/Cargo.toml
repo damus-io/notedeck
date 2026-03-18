@@ -66,6 +66,11 @@ flate2 = { workspace = true }
 tar = { workspace = true }
 zip = { workspace = true }
 
+[[bin]]
+name = "update_test_helper"
+path = "src/bin/update_test_helper.rs"
+required-features = ["auto-update"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }

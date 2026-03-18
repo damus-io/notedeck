@@ -225,6 +225,7 @@ fn render_notedeck_tick(ctx: &egui::Context, state: &mut TickTestState) {
     state.notedeck.tick(ctx);
 }
 
+#[cfg(feature = "auto-update")]
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_update_bar() {
