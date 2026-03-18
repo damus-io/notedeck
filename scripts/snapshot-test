@@ -43,3 +43,4 @@ ${update:+export UPDATE_SNAPSHOTS=1}
 cargo test -p notedeck_chrome --test ui_tests -- --ignored "$filter"
 cargo test -p notedeck_ui --test widget_tests -- --ignored "$filter"
 cargo test -p notedeck_dave --test dave_button_tests -- --ignored "$filter"
+cargo test -p notedeck_nostrverse --test snapshot_tests -- --ignored "$filter"

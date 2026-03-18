@@ -111,6 +111,9 @@ pub struct Renderer {
     /// we can dynamically resize next time get one.
     target_size: (u32, u32),
 
+    /// The texture format used for the color target.
+    color_format: wgpu::TextureFormat,
+
     model_ids: u64,
 
     depth_tex: wgpu::Texture,
@@ -656,6 +659,7 @@ impl Renderer {
             world,
             camera_mode,
             target_size: size,
+            color_format: format,
             model_ids,
             size,
             pipeline,
@@ -679,6 +683,12 @@ impl Renderer {
 
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// Set the camera eye and target positions.
+    pub fn set_camera(&mut self, eye: Vec3, target: Vec3) {
+        self.world.camera = Camera::new(eye, target);
+        self.camera_mode = CameraMode::Fly(FlyController::from_camera(&self.world.camera));
     }
 
     fn globals_mut(&mut self) -> &mut Globals {
@@ -1075,6 +1085,100 @@ impl Renderer {
         });
 
         self.render_pass(&mut rpass);
+    }
+
+    /// Render the current scene to an in-memory RGBA image.
+    ///
+    /// Creates an offscreen texture, renders into it, and reads back the
+    /// pixel data. Useful for snapshot tests and headless rendering.
+    pub fn render_to_image(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> image::RgbaImage {
+        let (width, height) = self.size;
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("snapshot_target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.color_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        self.update();
+        self.prepare(queue);
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("snapshot_encoder"),
+        });
+
+        self.render(&view, &mut encoder);
+
+        // Copy texture to a buffer for CPU readback
+        let bytes_per_pixel = 4u32;
+        let unpadded_row = bytes_per_pixel * width;
+        let padded_row = (unpadded_row + 255) & !255; // wgpu requires 256-byte row alignment
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("snapshot_readback"),
+            size: (padded_row * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        queue.submit(Some(encoder.finish()));
+
+        // Map and read back
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            tx.send(result).unwrap();
+        });
+        device.poll(wgpu::Maintain::Wait);
+        rx.recv().unwrap().unwrap();
+
+        let data = slice.get_mapped_range();
+
+        // Strip row padding
+        let mut img_data = Vec::with_capacity((unpadded_row * height) as usize);
+        for row in 0..height {
+            let start = (row * padded_row) as usize;
+            let end = start + unpadded_row as usize;
+            img_data.extend_from_slice(&data[start..end]);
+        }
+
+        image::RgbaImage::from_raw(width, height, img_data).expect("Failed to create image")
     }
 
     pub fn render_pass(&self, rpass: &mut wgpu::RenderPass<'_>) {
