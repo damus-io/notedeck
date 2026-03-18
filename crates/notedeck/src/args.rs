@@ -73,6 +73,7 @@ impl Args {
                 res.options.set(NotedeckOptions::Debug, true);
             } else if arg == "--testrunner" {
                 res.options.set(NotedeckOptions::Tests, true);
+                res.options.set(NotedeckOptions::UseKeystore, false);
             } else if arg == "--pub" || arg == "--npub" {
                 i += 1;
                 let pubstr = if let Some(next_arg) = args.get(i) {
@@ -135,7 +136,7 @@ impl Args {
                 };
                 res.relays.push(relay.clone());
             } else if arg == "--no-keystore" {
-                res.options.set(NotedeckOptions::UseKeystore, true);
+                res.options.set(NotedeckOptions::UseKeystore, false);
             } else if arg == "--relay-debug" {
                 res.options.set(NotedeckOptions::RelayDebug, true);
             } else {
@@ -146,5 +147,29 @@ impl Args {
         }
 
         (res, unrecognized_args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies `--no-keystore` disables OS-backed secure storage.
+    #[test]
+    fn parse_no_keystore_disables_keystore() {
+        let (args, unrecognized) = Args::parse(&["--no-keystore".to_owned()]);
+
+        assert!(unrecognized.is_empty());
+        assert!(!args.options.contains(NotedeckOptions::UseKeystore));
+    }
+
+    /// Verifies the test runner path never touches the host keyring.
+    #[test]
+    fn parse_testrunner_disables_keystore() {
+        let (args, unrecognized) = Args::parse(&["--testrunner".to_owned()]);
+
+        assert!(unrecognized.is_empty());
+        assert!(args.options.contains(NotedeckOptions::Tests));
+        assert!(!args.options.contains(NotedeckOptions::UseKeystore));
     }
 }
