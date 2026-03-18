@@ -18,7 +18,7 @@ use notedeck::{
 use crate::{
     cache::{ConversationCache, ConversationListState, ConversationStates},
     loader::{LoaderMsg, MessagesLoader},
-    nip17::conversation_filter,
+    nip17::{conversation_filter, known_participant_dm_relay_list_authors},
     relay_ensure::ensure_selected_account_dm_list,
     ui::{login_nsec_prompt, messages::messages_ui},
 };
@@ -141,6 +141,10 @@ fn initialize(
     is_narrow: bool,
     loader: &MessagesLoader,
 ) {
+    tracing::debug!(
+        "initializing Messages conversation list for selected_account={} narrow={is_narrow}",
+        ctx.accounts.selected_account_pubkey()
+    );
     let giftwrap_ndb = ctx.ndb.clone();
     let r = std::thread::Builder::new()
         .name("process_giftwraps".into())
@@ -152,7 +156,9 @@ fn initialize(
             //
             // TODO(jb55): move the giftwrap query logic into the internal
             // threadpool so we don't have to spawn a thread here
+            tracing::debug!("starting background giftwrap processing during Messages initialize");
             giftwrap_ndb.process_giftwraps(&txn);
+            tracing::debug!("finished background giftwrap processing during Messages initialize");
         });
 
     if let Err(err) = r {
@@ -171,7 +177,13 @@ fn initialize(
     };
 
     loader.load_conversation_list(*ctx.accounts.selected_account_pubkey());
+    let subscription_present = sub.is_some();
     cache.state = ConversationListState::Loading { subscription: sub };
+    tracing::debug!(
+        "Messages conversation loader started for selected_account={} subscription_present={}",
+        ctx.accounts.selected_account_pubkey(),
+        subscription_present
+    );
 
     if !is_narrow {
         cache.active = None;
@@ -225,6 +237,14 @@ fn handle_loader_messages(
                     other => other,
                 };
 
+                let known_participants =
+                    startup_prefetch_participants(ctx.ndb, cache, ctx.accounts);
+                relay_prefetch::ensure_participant_prefetch(
+                    &mut ctx.remote,
+                    ctx.accounts,
+                    &known_participants,
+                );
+
                 if cache.active.is_none() && !is_narrow {
                     if let Some(first) = cache.first_convo_id() {
                         open_conversation_with_prefetch(
@@ -254,6 +274,26 @@ fn handle_loader_messages(
             }
         }
     }
+}
+
+/// Collects known participants for startup relay-list prefetch from cache and local NDB state.
+fn startup_prefetch_participants(
+    ndb: &Ndb,
+    cache: &ConversationCache,
+    accounts: &Accounts,
+) -> Vec<Pubkey> {
+    let selected_account = accounts.selected_account_pubkey();
+    let mut participants = HashSet::new();
+    participants.extend(cache.known_participants_except(selected_account));
+
+    let txn = Transaction::new(ndb).expect("txn");
+    participants.extend(known_participant_dm_relay_list_authors(
+        ndb,
+        &txn,
+        selected_account,
+    ));
+
+    participants.into_iter().collect()
 }
 
 /// Lookup note keys in NostrDB and ingest them into the conversation cache.

@@ -15,7 +15,7 @@ use crate::{
 
 use super::message_store::MessageStore;
 use enostr::Pubkey;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use nostrdb::{Ndb, Note, NoteKey, Subscription, Transaction};
 use notedeck::{note::event_tag, NoteCache, NoteRef, UnknownIds};
 
@@ -99,6 +99,21 @@ impl ConversationCache {
 
     pub fn first_convo_id(&self) -> Option<ConversationId> {
         Some(self.order.first()?.id)
+    }
+
+    /// Returns all known conversation participants except the selected account.
+    pub fn known_participants_except(&self, selected_account: &Pubkey) -> Vec<Pubkey> {
+        let mut participants = HashSet::new();
+
+        for conversation in self.conversations.values() {
+            for participant in &conversation.metadata.participants {
+                if participant != selected_account {
+                    participants.insert(*participant);
+                }
+            }
+        }
+
+        participants.into_iter().collect()
     }
 
     /// Mutable access to the selected-account DM relay-list ensure state.
