@@ -231,6 +231,19 @@ impl RelayPool {
                             relay.retry_connect_after =
                                 WebsocketRelay::initial_reconnect_duration();
 
+                            // Detect stale connections: if no pong has come
+                            // back within 2x the ping rate, the connection is
+                            // silently dead (laptop sleep, NAT timeout, etc).
+                            let pong_timeout = self.ping_rate * 2;
+                            if now - relay.last_pong > pong_timeout {
+                                tracing::warn!(
+                                    "pong timeout on {}, marking disconnected",
+                                    relay.conn.url
+                                );
+                                relay.conn.set_status(RelayStatus::Disconnected);
+                                continue;
+                            }
+
                             let should_ping = now - relay.last_ping > self.ping_rate;
                             if should_ping {
                                 trace!("pinging {}", relay.conn.url);
@@ -345,6 +358,9 @@ impl RelayPool {
                 match &event {
                     WsEvent::Opened => {
                         relay.set_status(RelayStatus::Connected);
+                        if let PoolRelay::Websocket(wsr) = relay {
+                            wsr.last_pong = Instant::now();
+                        }
                     }
                     WsEvent::Closed => {
                         relay.set_status(RelayStatus::Disconnected);
@@ -354,17 +370,24 @@ impl RelayPool {
                         relay.set_status(RelayStatus::Disconnected);
                     }
                     WsEvent::Message(ev) => {
-                        // let's just handle pongs here.
-                        // We only need to do this natively.
+                        // Handle ping/pong natively
                         #[cfg(not(target_arch = "wasm32"))]
-                        if let WsMessage::Ping(ref bs) = ev {
-                            trace!("pong {}", relay.url());
-                            match relay {
-                                PoolRelay::Websocket(wsr) => {
-                                    wsr.conn.sender.send(WsMessage::Pong(bs.to_owned()));
+                        match ev {
+                            WsMessage::Ping(ref bs) => {
+                                trace!("pong {}", relay.url());
+                                match relay {
+                                    PoolRelay::Websocket(wsr) => {
+                                        wsr.conn.sender.send(WsMessage::Pong(bs.to_owned()));
+                                    }
+                                    PoolRelay::Multicast(_mcr) => {}
                                 }
-                                PoolRelay::Multicast(_mcr) => {}
                             }
+                            WsMessage::Pong(_) => {
+                                if let PoolRelay::Websocket(wsr) = relay {
+                                    wsr.last_pong = Instant::now();
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }

@@ -303,6 +303,18 @@ impl OutboxPool {
                     websocket.reconnect_attempt = 0;
                     websocket.retry_connect_after = WebsocketRelay::initial_reconnect_duration();
 
+                    // Detect stale connections: if we've been pinging but no
+                    // pong has come back within PONG_TIMEOUT, the connection
+                    // is silently dead (e.g. laptop sleep, NAT timeout).
+                    if now - websocket.last_pong > self.pong_timeout {
+                        tracing::warn!(
+                            "pong timeout on {}, marking disconnected",
+                            websocket.conn.url
+                        );
+                        websocket.conn.set_status(RelayStatus::Disconnected);
+                        continue;
+                    }
+
                     let should_ping = now - websocket.last_ping > KEEPALIVE_PING_RATE;
                     if should_ping {
                         tracing::trace!("pinging {}", websocket.conn.url);
