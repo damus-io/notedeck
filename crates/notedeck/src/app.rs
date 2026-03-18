@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 use std::time::SystemTime;
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
@@ -253,6 +254,10 @@ fn setup_puffin() {
 }
 
 impl Notedeck {
+    pub fn set_pong_timeout(&mut self, timeout: Duration) {
+        self.pool.set_pong_timeout(timeout);
+    }
+
     #[cfg(target_os = "android")]
     pub fn set_android_context(&mut self, context: AndroidApp) {
         self.android_app = Some(context);

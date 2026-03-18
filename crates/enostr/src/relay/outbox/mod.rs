@@ -24,6 +24,7 @@ pub use handler::OutboxSessionHandler;
 pub use session::OutboxSession;
 
 const KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
+const PONG_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30 * 60); // 30 minutes
 const NIP11_REFRESH_AFTER_SUCCESS: Duration = Duration::from_secs(60 * 60);
 
@@ -34,6 +35,7 @@ pub struct OutboxPool {
     relays: HashMap<NormRelayUrl, CoordinationData>,
     subs: OutboxSubscriptions,
     multicast: MulticastRelayCache,
+    pong_timeout: Duration,
 }
 
 impl Default for OutboxPool {
@@ -43,11 +45,16 @@ impl Default for OutboxPool {
             relays: HashMap::new(),
             multicast: Default::default(),
             subs: Default::default(),
+            pong_timeout: PONG_TIMEOUT,
         }
     }
 }
 
 impl OutboxPool {
+    pub fn set_pong_timeout(&mut self, timeout: Duration) {
+        self.pong_timeout = timeout;
+    }
+
     fn remove_completed_oneshots(&mut self, ids: HashSet<OutboxSubId>) {
         for id in ids {
             if self.all_have_eose(&id) {
