@@ -202,10 +202,10 @@ fn snapshot_light_mode() {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-update bar snapshot
+// Auto-update sidebar snapshot
 // ---------------------------------------------------------------------------
 
-/// State for tick()-based tests — the Damus app is set on Notedeck via set_app,
+/// State for tick()-based tests — Chrome is set on Notedeck via set_app,
 /// so tick() handles all rendering through the real code path.
 struct TickTestState {
     notedeck: Notedeck,
@@ -214,7 +214,7 @@ struct TickTestState {
 }
 
 /// Render via Notedeck::tick(), which runs the full app loop
-/// including the auto-update bar rendering.
+/// including the Chrome sidebar with update item.
 fn render_notedeck_tick(ctx: &egui::Context, state: &mut TickTestState) {
     if !state.fonts_installed {
         state.notedeck.setup(ctx);
@@ -233,18 +233,23 @@ fn snapshot_update_bar() {
     let _guard = _rt.enter();
 
     use notedeck::updater::nostr::test_helpers;
+    use notedeck_chrome::Chrome;
 
     let ctx = egui::Context::default();
     let tmpdir = tempfile::TempDir::new().unwrap();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
     let mut notedeck_ctx = Notedeck::init(&ctx, tmpdir.path(), &args);
-    let damus = Damus::new(&mut notedeck_ctx.notedeck.app_context(&ctx), &args);
-    notedeck_ctx.notedeck.set_app(damus);
 
-    // Point the updater at our test signing key
-    notedeck_ctx
-        .notedeck
-        .set_release_pubkey(test_helpers::TEST_PUBKEY);
+    // Create Chrome with updater, pointing at our test signing key
+    let mut chrome = {
+        let mut app_ctx = notedeck_ctx.notedeck.app_context(&ctx);
+        Chrome::new_test(&mut app_ctx, &ctx, &args)
+    };
+
+    chrome.set_release_pubkey(
+        &mut notedeck_ctx.notedeck.app_context(&ctx).ndb,
+        test_helpers::TEST_PUBKEY,
+    );
 
     // Ingest a properly signed kind 1063 release event
     let ev = test_helpers::build_signed_release_event(
@@ -265,9 +270,12 @@ fn snapshot_update_bar() {
     // Force updater into ReadyToInstall (the event was ingested and would
     // be discovered by tick(), but the download would fail in tests since
     // the URL is fake — so we skip straight to ReadyToInstall)
-    notedeck_ctx
-        .notedeck
-        .force_update_ready("99.0.0".to_string());
+    chrome.force_update_ready("99.0.0".to_string());
+
+    // Open the drawer so the update item is visible in the snapshot
+    chrome.toggle();
+
+    notedeck_ctx.notedeck.set_app(chrome);
 
     let state = TickTestState {
         notedeck: notedeck_ctx.notedeck,

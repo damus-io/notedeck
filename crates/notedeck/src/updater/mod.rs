@@ -7,31 +7,6 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use tracing::{error, info};
 
-/// Actions the update bar can produce
-pub enum UpdateBarAction {
-    ApplyAndRestart,
-    Dismiss,
-    None,
-}
-
-/// Render the update bar at the bottom of the screen.
-/// Returns the action the user chose, if any.
-pub fn render_update_bar(ctx: &egui::Context, version: &str) -> UpdateBarAction {
-    let mut action = UpdateBarAction::None;
-    egui::TopBottomPanel::bottom("update_bar").show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(format!("Notedeck {version} is available"));
-            if ui.button("Restart to update").clicked() {
-                action = UpdateBarAction::ApplyAndRestart;
-            }
-            if ui.button("Later").clicked() {
-                action = UpdateBarAction::Dismiss;
-            }
-        });
-    });
-    action
-}
-
 /// Information about a release asset available for download
 #[derive(Debug, Clone)]
 pub struct ReleaseInfo {

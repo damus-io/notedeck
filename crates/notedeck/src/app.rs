@@ -92,12 +92,6 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
-    #[cfg(feature = "auto-update")]
-    updater: crate::updater::Updater,
-
-    #[cfg(feature = "auto-update")]
-    release_sub: nostrdb::Subscription,
-
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -173,44 +167,6 @@ impl Notedeck {
         };
         let app = app.clone();
 
-        #[cfg(feature = "auto-update")]
-        let needs_release_sub = self.updater.needs_relay_sub();
-        #[cfg(feature = "auto-update")]
-        let release_pubkey = *self.updater.release_pubkey();
-
-        // Poll for release events and render update bar before the central
-        // panel — egui requires side/bottom panels to be added first.
-        #[cfg(feature = "auto-update")]
-        {
-            if self.updater.wants_release() {
-                let nks = self.ndb.poll_for_notes(self.release_sub, 10);
-                if !nks.is_empty() {
-                    if let Ok(txn) = Transaction::new(&self.ndb) {
-                        if let Some(release) = crate::updater::nostr::find_latest_release(
-                            &self.ndb,
-                            &txn,
-                            &release_pubkey,
-                        ) {
-                            self.updater.provide_release(release);
-                        }
-                    }
-                }
-            }
-            self.updater.poll();
-            if let Some(version) = self.updater.update_ready() {
-                let version = version.to_string();
-                match crate::updater::render_update_bar(ctx, &version) {
-                    crate::updater::UpdateBarAction::ApplyAndRestart => {
-                        if let Err(e) = self.updater.apply_and_restart() {
-                            error!("failed to apply update: {e}");
-                        }
-                    }
-                    crate::updater::UpdateBarAction::Dismiss => self.updater.dismiss(),
-                    crate::updater::UpdateBarAction::None => {}
-                }
-            }
-        }
-
         let mut app_ctx = self.app_context(ctx);
 
         // handle account updates
@@ -228,14 +184,6 @@ impl Notedeck {
                 let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
                 unknown_id_send(app_ctx.unknown_ids, &mut oneshot);
             }
-        }
-
-        // Send release filter to remote relays (once)
-        #[cfg(feature = "auto-update")]
-        if needs_release_sub {
-            let filters = crate::updater::nostr::release_filter(&release_pubkey);
-            let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
-            oneshot.oneshot(filters);
         }
 
         render_notedeck(app, &mut app_ctx, ctx);
@@ -392,14 +340,6 @@ impl Notedeck {
         let (send_new_relay_jobs, receive_new_relay_jobs) = std::sync::mpsc::channel();
         let relay_limit_jobs = JobCache::new(receive_new_relay_jobs, send_new_relay_jobs);
 
-        #[cfg(feature = "auto-update")]
-        let release_pubkey = crate::updater::nostr::DEFAULT_RELEASE_PUBKEY;
-        #[cfg(feature = "auto-update")]
-        let release_sub = {
-            let filters = crate::updater::nostr::release_filter(&release_pubkey);
-            ndb.subscribe(&filters).expect("release subscription")
-        };
-
         let notedeck = Self {
             ndb,
             img_cache,
@@ -423,10 +363,6 @@ impl Notedeck {
             relay_limit_jobs,
             nip05_cache: Nip05Cache::new(),
             i18n,
-            #[cfg(feature = "auto-update")]
-            updater: crate::updater::Updater::new(&path, ctx, release_pubkey),
-            #[cfg(feature = "auto-update")]
-            release_sub,
             #[cfg(target_os = "android")]
             android_app: None,
         };
@@ -456,21 +392,6 @@ impl Notedeck {
     pub fn app<A: App + 'static>(mut self, app: A) -> Self {
         self.set_app(app);
         self
-    }
-
-    /// Override the release signing pubkey and resubscribe to ndb.
-    /// Used in tests to verify the full pipeline with a test signing key.
-    #[cfg(all(feature = "snapshot-testing", feature = "auto-update"))]
-    pub fn set_release_pubkey(&mut self, pubkey: [u8; 32]) {
-        self.updater.set_release_pubkey(pubkey);
-        let filters = crate::updater::nostr::release_filter(&pubkey);
-        self.release_sub = self.ndb.subscribe(&filters).expect("release subscription");
-    }
-
-    /// Force the updater into ReadyToInstall state (for snapshot tests).
-    #[cfg(all(feature = "snapshot-testing", feature = "auto-update"))]
-    pub fn force_update_ready(&mut self, version: String) {
-        self.updater.force_ready(version);
     }
 
     pub fn app_context(&mut self, ui_ctx: &egui::Context) -> AppContext<'_> {

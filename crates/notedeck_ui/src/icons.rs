@@ -330,6 +330,28 @@ pub fn search_button(_color: Color32, line_width: f32, is_active: bool) -> impl 
     }
 }
 
+/// Draw an upward arrow icon (used for updates)
+pub fn draw_update_icon(
+    painter: &egui::Painter,
+    center: Pos2,
+    s: f32,
+    color: Color32,
+    stroke_width: f32,
+) {
+    let stroke = Stroke::new(stroke_width, color);
+
+    // Vertical shaft
+    let shaft_top = pos2(center.x, center.y - s * 0.4);
+    let shaft_bottom = pos2(center.x, center.y + s * 0.4);
+    painter.line_segment([shaft_top, shaft_bottom], stroke);
+
+    // Arrowhead
+    let arrow_left = pos2(center.x - s * 0.3, center.y - s * 0.1);
+    let arrow_right = pos2(center.x + s * 0.3, center.y - s * 0.1);
+    painter.line_segment([shaft_top, arrow_left], stroke);
+    painter.line_segment([shaft_top, arrow_right], stroke);
+}
+
 fn paint_unseen_indicator(ui: &mut egui::Ui, rect: egui::Rect, radius: f32) {
     let center = rect.center();
     let top_right = rect.right_top();

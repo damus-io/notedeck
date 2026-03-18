@@ -40,7 +40,6 @@ use notedeck_ui::expanding_button;
 use notedeck_ui::{app_images, galley_centered_pos, ProfilePic};
 use std::collections::HashMap;
 
-#[derive(Default)]
 pub struct Chrome {
     active: i32,
     options: ChromeOptions,
@@ -55,6 +54,12 @@ pub struct Chrome {
 
     pub repaint_causes: HashMap<egui::RepaintCause, u64>,
     nav: DrawerRouter,
+
+    #[cfg(feature = "auto-update")]
+    updater: notedeck::updater::Updater,
+
+    #[cfg(feature = "auto-update")]
+    release_sub: nostrdb::Subscription,
 }
 
 #[derive(Clone)]
@@ -70,6 +75,10 @@ pub enum ChromePanelAction {
     Wallet,
     SaveTheme(ThemePreference),
     Profile(notedeck::enostr::Pubkey),
+    #[cfg(feature = "auto-update")]
+    ApplyUpdate,
+    #[cfg(feature = "auto-update")]
+    DismissUpdate,
 }
 
 bitflags! {
@@ -129,6 +138,18 @@ impl ChromePanelAction {
             Self::Profile(pk) => {
                 columns_route_to_profile(pk, chrome, ctx, ui);
             }
+
+            #[cfg(feature = "auto-update")]
+            Self::ApplyUpdate => {
+                if let Err(e) = chrome.updater.apply_and_restart() {
+                    tracing::error!("failed to apply update: {e}");
+                }
+            }
+
+            #[cfg(feature = "auto-update")]
+            Self::DismissUpdate => {
+                chrome.updater.dismiss();
+            }
         }
     }
 }
@@ -173,7 +194,36 @@ impl Chrome {
             .path
             .path(notedeck::DataPathType::Cache)
             .join("wasm_apps");
-        let mut chrome = Chrome::default();
+
+        #[cfg(feature = "auto-update")]
+        let release_pubkey = notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY;
+        #[cfg(feature = "auto-update")]
+        let release_sub = {
+            let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
+            notedeck_ref
+                .app_ctx
+                .ndb
+                .subscribe(&filters)
+                .expect("release subscription")
+        };
+
+        let mut chrome = Chrome {
+            active: 0,
+            options: ChromeOptions::default(),
+            apps: Vec::new(),
+            opened: Vec::new(),
+            soft_kb_anim_state: AnimState::default(),
+            repaint_causes: HashMap::new(),
+            nav: DrawerRouter::default(),
+            #[cfg(feature = "auto-update")]
+            updater: notedeck::updater::Updater::new(
+                notedeck_ref.app_ctx.path,
+                &cc.egui_ctx,
+                release_pubkey,
+            ),
+            #[cfg(feature = "auto-update")]
+            release_sub,
+        };
 
         if !app_args.iter().any(|arg| arg == "--no-columns-app") {
             let columns = Damus::new(&mut notedeck_ref.app_ctx, app_args);
@@ -238,6 +288,50 @@ impl Chrome {
         chrome.set_active(0);
 
         Ok(chrome)
+    }
+
+    /// Create a Chrome for snapshot tests — no eframe CreationContext needed.
+    #[cfg(feature = "auto-update")]
+    pub fn new_test(
+        ctx: &mut notedeck::AppContext,
+        egui_ctx: &egui::Context,
+        args: &[String],
+    ) -> Self {
+        let release_pubkey = notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY;
+        let release_sub = {
+            let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
+            ctx.ndb.subscribe(&filters).expect("release subscription")
+        };
+
+        let damus = Damus::new(ctx, args);
+        let mut chrome = Chrome {
+            active: 0,
+            options: ChromeOptions::default(),
+            apps: Vec::new(),
+            opened: Vec::new(),
+            soft_kb_anim_state: AnimState::default(),
+            repaint_causes: HashMap::new(),
+            nav: DrawerRouter::default(),
+            updater: notedeck::updater::Updater::new(ctx.path, egui_ctx, release_pubkey),
+            release_sub,
+        };
+        chrome.add_app(NotedeckApp::Columns(Box::new(damus)));
+        chrome.set_active(0);
+        chrome
+    }
+
+    /// Override the release signing pubkey and resubscribe to ndb.
+    #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+    pub fn set_release_pubkey(&mut self, ndb: &mut nostrdb::Ndb, pubkey: [u8; 32]) {
+        self.updater.set_release_pubkey(pubkey);
+        let filters = notedeck::updater::nostr::release_filter(&pubkey);
+        self.release_sub = ndb.subscribe(&filters).expect("release subscription");
+    }
+
+    /// Force the updater into ReadyToInstall state (for snapshot tests).
+    #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
+    pub fn force_update_ready(&mut self, version: String) {
+        self.updater.force_ready(version);
     }
 
     pub fn toggle(&mut self) {
@@ -544,14 +638,98 @@ impl Chrome {
     }
 }
 
+#[cfg(feature = "auto-update")]
+fn poll_updater(
+    updater: &mut notedeck::updater::Updater,
+    release_sub: nostrdb::Subscription,
+    ctx: &mut notedeck::AppContext,
+) {
+    if updater.needs_relay_sub() {
+        let release_pubkey = *updater.release_pubkey();
+        let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
+        let mut oneshot = ctx.remote.oneshot(ctx.accounts);
+        oneshot.oneshot(filters);
+    }
+
+    if updater.wants_release() {
+        let nks = ctx.ndb.poll_for_notes(release_sub, 10);
+        if !nks.is_empty() {
+            let release_pubkey = *updater.release_pubkey();
+            if let Ok(txn) = nostrdb::Transaction::new(ctx.ndb) {
+                if let Some(release) =
+                    notedeck::updater::nostr::find_latest_release(ctx.ndb, &txn, &release_pubkey)
+                {
+                    updater.provide_release(release);
+                }
+            }
+        }
+    }
+    updater.poll();
+}
+
+#[cfg(feature = "auto-update")]
+fn update_sidebar_item_ui(
+    updater: &notedeck::updater::Updater,
+    ui: &mut egui::Ui,
+) -> Option<ChromePanelAction> {
+    let version = updater.update_ready()?;
+
+    let accent = notedeck_ui::colors::PINK;
+    let desired_size = egui::vec2(ui.available_width(), 40.0);
+    let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let rounding = 8.0;
+        let bg = if response.hovered() {
+            accent.gamma_multiply(0.9)
+        } else {
+            accent
+        };
+        ui.painter().rect_filled(rect, rounding, bg);
+
+        // Draw update arrow icon on the left
+        let icon_size = 16.0;
+        let icon_center = egui::pos2(rect.left() + 20.0, rect.center().y);
+        notedeck_ui::icons::draw_update_icon(
+            ui.painter(),
+            icon_center,
+            icon_size,
+            Color32::WHITE,
+            2.0,
+        );
+
+        // "Update available" text
+        let text_pos = egui::pos2(rect.left() + 38.0, rect.center().y);
+        let font = egui::FontId::new(
+            notedeck::fonts::get_font_size(ui.ctx(), &NotedeckTextStyle::Body),
+            egui::FontFamily::Name(notedeck::fonts::NamedFontFamily::Bold.as_str().into()),
+        );
+        let galley =
+            ui.painter()
+                .layout_no_wrap(format!("Update to {version}"), font, Color32::WHITE);
+        let text_y = text_pos.y - galley.size().y / 2.0;
+        ui.painter()
+            .galley(egui::pos2(text_pos.x, text_y), galley, Color32::WHITE);
+    }
+
+    if response.clicked() {
+        Some(ChromePanelAction::ApplyUpdate)
+    } else {
+        None
+    }
+}
+
 impl notedeck::App for Chrome {
-    fn update(&mut self, ctx: &mut notedeck::AppContext, egui_ctx: &egui::Context) {
+    fn update(&mut self, ctx: &mut notedeck::AppContext, _egui_ctx: &egui::Context) {
+        #[cfg(feature = "auto-update")]
+        poll_updater(&mut self.updater, self.release_sub, ctx);
+
         // Update opened apps every frame so background processing
         // (relay pools, subscriptions, etc.) stays alive.
         // Apps that haven't been opened yet are skipped.
         for (i, app) in self.apps.iter_mut().enumerate() {
             if self.opened.get(i).copied().unwrap_or(false) {
-                app.update(ctx, egui_ctx);
+                app.update(ctx, _egui_ctx);
             }
         }
     }
@@ -1002,6 +1180,11 @@ fn topdown_sidebar(
     }
 
     let mut action = None;
+
+    #[cfg(feature = "auto-update")]
+    if let Some(update_action) = update_sidebar_item_ui(&chrome.updater, ui) {
+        action = Some(update_action);
+    }
 
     let theme = ui.ctx().theme();
 

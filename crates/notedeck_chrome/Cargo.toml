@@ -56,6 +56,8 @@ path = "src/notedeck.rs"
 
 [features]
 default = []
+auto-update = ["notedeck/auto-update"]
+snapshot-testing = ["notedeck/snapshot-testing"]
 memory = ["re_memory"]
 puffin = ["profiling/profile-with-puffin", "dep:puffin"]
 tracy = ["profiling/profile-with-tracy"]
