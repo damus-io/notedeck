@@ -4979,6 +4979,7 @@ dependencies = [
  "egui",
  "egui-winit",
  "egui_extras",
+ "egui_kittest",
  "egui_nav",
  "egui_tabs",
  "egui_virtual_list",
@@ -4991,8 +4992,11 @@ dependencies = [
  "indexmap 2.13.0",
  "jni 0.21.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "ndk-context",
+ "nostr 0.37.0",
+ "nostr-relay-builder",
  "nostrdb",
  "notedeck",
+ "notedeck_testing",
  "notedeck_ui",
  "oot_bitset",
  "opener",
@@ -5008,6 +5012,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
+ "serial_test",
  "sha2 0.10.9",
  "strum",
  "strum_macros",
@@ -5090,20 +5095,28 @@ version = "0.8.0"
 dependencies = [
  "chrono",
  "crossbeam-channel",
+ "eframe",
  "egui",
  "egui-winit",
  "egui_extras",
+ "egui_kittest",
  "egui_nav",
  "egui_virtual_list",
  "enostr",
  "hashbrown 0.15.5",
  "nostr 0.37.0",
+ "nostr-relay-builder",
  "nostrdb",
  "notedeck",
+ "notedeck_testing",
  "notedeck_ui",
  "profiling",
+ "serial_test",
  "tempfile",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -5148,6 +5161,22 @@ dependencies = [
  "sha2 0.10.9",
  "tungstenite 0.24.0",
  "ureq 2.12.1",
+]
+
+[[package]]
+name = "notedeck_testing"
+version = "0.8.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui_kittest",
+ "enostr",
+ "nostr 0.37.0",
+ "nostrdb",
+ "notedeck",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -7071,6 +7100,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "scc"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46e6f046b7fef48e2660c57ed794263155d713de679057f2d0c169bfc6e756cc"
+dependencies = [
+ "sdd",
+]
+
+[[package]]
 name = "schannel"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7139,6 +7177,12 @@ dependencies = [
  "smithay-client-toolkit 0.19.2",
  "tiny-skia",
 ]
+
+[[package]]
+name = "sdd"
+version = "3.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "secp256k1"
@@ -7345,6 +7389,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6d4e30573c8cb306ed6ab1dca8423eec9a463ea0e155f45399455e0368b27e0"
 dependencies = [
  "darling 0.21.3",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "serial_test"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "911bd979bf1070a3f3aa7b691a3b3e9968f339ceeec89e08c280a8a22207a32f"
+dependencies = [
+ "futures-executor",
+ "futures-util",
+ "log",
+ "once_cell",
+ "parking_lot",
+ "scc",
+ "serial_test_derive",
+]
+
+[[package]]
+name = "serial_test_derive"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a7d91949b85b0d2fb687445e448b40d322b6b3e4af6b44a29b21d9a5f33e6d9"
+dependencies = [
  "proc-macro2",
  "quote",
  "syn",

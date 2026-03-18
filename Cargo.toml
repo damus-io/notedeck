@@ -18,6 +18,7 @@ members = [
     "crates/protoverse",
     "crates/notedeck_wasm",
     "crates/notedeck_release",
+    "crates/notedeck_testing",
 ]
 
 [workspace.dependencies]
@@ -82,6 +83,7 @@ notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 renderbud = { path = "crates/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }
+notedeck_testing = { path = "crates/notedeck_testing" }
 notedeck_wasm = { path = "crates/notedeck_wasm" }
 tokenator = { path = "crates/tokenator" }
 md-stream = { path = "crates/md-stream" }

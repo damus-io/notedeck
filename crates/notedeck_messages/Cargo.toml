@@ -23,3 +23,13 @@ nostr = { workspace = true }
 egui_nav = { workspace = true }
 egui-winit = { workspace = true }
 crossbeam-channel = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true, features = ["eframe"] }
+eframe = { workspace = true }
+nostr-relay-builder = "0.37"
+notedeck_testing = { workspace = true }
+serial_test = "3"
+tokio = { workspace = true, features = ["net", "io-util"] }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }

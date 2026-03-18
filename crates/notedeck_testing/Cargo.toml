@@ -1,0 +1,18 @@
+[package]
+name = "notedeck_testing"
+version = { workspace = true }
+edition = "2021"
+description = "Shared E2E test harness for Notedeck apps"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+eframe = { workspace = true }
+egui = { workspace = true }
+egui_kittest = { workspace = true, features = ["eframe"] }
+enostr = { workspace = true }
+nostr = { workspace = true }
+nostrdb = { workspace = true }
+notedeck = { workspace = true }
+tempfile = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
