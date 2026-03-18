@@ -7,6 +7,31 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use tracing::{error, info};
 
+/// Actions the update bar can produce
+pub enum UpdateBarAction {
+    ApplyAndRestart,
+    Dismiss,
+    None,
+}
+
+/// Render the update bar at the bottom of the screen.
+/// Returns the action the user chose, if any.
+pub fn render_update_bar(ctx: &egui::Context, version: &str) -> UpdateBarAction {
+    let mut action = UpdateBarAction::None;
+    egui::TopBottomPanel::bottom("update_bar").show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(format!("Notedeck {version} is available"));
+            if ui.button("Restart to update").clicked() {
+                action = UpdateBarAction::ApplyAndRestart;
+            }
+            if ui.button("Later").clicked() {
+                action = UpdateBarAction::Dismiss;
+            }
+        });
+    });
+    action
+}
+
 /// Information about a release asset available for download
 #[derive(Debug, Clone)]
 pub struct ReleaseInfo {
@@ -52,11 +77,12 @@ pub struct Updater {
     staging_dir: PathBuf,
     ctx: egui::Context,
     sent_relay_filter: bool,
+    release_pubkey: [u8; 32],
 }
 
 impl Updater {
     /// Create a new updater. Begins in `Idle` state.
-    pub fn new(data_path: &DataPath, ctx: &egui::Context) -> Self {
+    pub fn new(data_path: &DataPath, ctx: &egui::Context, release_pubkey: [u8; 32]) -> Self {
         let (tx, rx) = mpsc::channel();
         let staging_dir = data_path.path(DataPathType::Update);
         let _ = std::fs::create_dir_all(&staging_dir);
@@ -68,7 +94,13 @@ impl Updater {
             staging_dir,
             ctx: ctx.clone(),
             sent_relay_filter: false,
+            release_pubkey,
         }
+    }
+
+    /// The trusted release signing pubkey
+    pub fn release_pubkey(&self) -> &[u8; 32] {
+        &self.release_pubkey
     }
 
     /// Poll for state changes. Call this every frame from `eframe::App::update()`.
@@ -135,6 +167,21 @@ impl Updater {
             }
             _ => Err("No update ready to install".to_string()),
         }
+    }
+
+    /// Override the release signing pubkey (for tests)
+    #[cfg(feature = "snapshot-testing")]
+    pub fn set_release_pubkey(&mut self, pubkey: [u8; 32]) {
+        self.release_pubkey = pubkey;
+    }
+
+    /// Force the updater into ReadyToInstall state (for snapshot tests)
+    #[cfg(feature = "snapshot-testing")]
+    pub fn force_ready(&mut self, version: String) {
+        self.state = UpdateState::ReadyToInstall {
+            version,
+            binary_path: PathBuf::from("/dev/null"),
+        };
     }
 
     /// User dismissed the update notification

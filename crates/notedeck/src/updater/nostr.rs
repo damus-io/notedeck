@@ -6,15 +6,12 @@ use super::ReleaseInfo;
 /// The kind for NIP-94 file metadata events (used by zapstore convention)
 const RELEASE_KIND: u64 = 1063;
 
-/// Trusted release signing pubkey (hex-encoded, set during build/release configuration)
+/// Default trusted release signing pubkey
 /// TODO: Replace with the actual release signing pubkey before shipping
-const RELEASE_PUBKEY_HEX: &str = "32e1827635450ebb3c5a7d12c1f8e7b2b514439ac10a67eef3d9fd9c5c68e245";
-
-fn release_pubkey() -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    hex::decode_to_slice(RELEASE_PUBKEY_HEX, &mut bytes).expect("RELEASE_PUBKEY_HEX is valid hex");
-    bytes
-}
+pub const DEFAULT_RELEASE_PUBKEY: [u8; 32] = [
+    0x32, 0xe1, 0x82, 0x76, 0x35, 0x45, 0x0e, 0xbb, 0x3c, 0x5a, 0x7d, 0x12, 0xc1, 0xf8, 0xe7, 0xb2,
+    0xb5, 0x14, 0x43, 0x9a, 0xc1, 0x0a, 0x67, 0xee, 0xf3, 0xd9, 0xfd, 0x9c, 0x5c, 0x68, 0xe2, 0x45,
+];
 
 /// Returns the expected asset name for the current platform/arch
 pub fn target_asset_name() -> &'static str {
@@ -44,11 +41,10 @@ pub fn target_asset_name() -> &'static str {
     }
 }
 
-/// Build a nostrdb filter for release file metadata events from the trusted pubkey
-pub fn release_filter() -> Vec<Filter> {
-    let pk = release_pubkey();
+/// Build a nostrdb filter for release file metadata events from the given pubkey
+pub fn release_filter(pubkey: &[u8; 32]) -> Vec<Filter> {
     vec![Filter::new()
-        .authors([&pk])
+        .authors([pubkey])
         .kinds([RELEASE_KIND])
         .limit(10)
         .build()]
@@ -147,8 +143,8 @@ pub fn parse_release_note(note: &Note) -> Result<ReleaseInfo, ReleaseParseError>
 
 /// Query ndb for the latest release matching our platform that is newer
 /// than the currently running version.
-pub fn find_latest_release(ndb: &Ndb, txn: &Transaction) -> Option<ReleaseInfo> {
-    let filters = release_filter();
+pub fn find_latest_release(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> Option<ReleaseInfo> {
+    let filters = release_filter(pubkey);
 
     let results = match ndb.query(txn, &filters, 10) {
         Ok(r) => r,
@@ -179,13 +175,67 @@ pub fn find_latest_release(ndb: &Ndb, txn: &Transaction) -> Option<ReleaseInfo> 
     best
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nostrdb::{Config, IngestMetadata, Ndb};
-    use tempfile::TempDir;
+/// Test helpers for constructing release events, available to other crates
+/// when the `snapshot-testing` feature is enabled.
+#[cfg(any(test, feature = "snapshot-testing"))]
+pub mod test_helpers {
+    use nostrdb::NoteBuilder;
 
-    fn make_release_event_json(
+    /// A throwaway secret key for test signing (never used on a relay)
+    pub const TEST_SECRET_KEY: [u8; 32] = [
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01,
+    ];
+
+    /// The pubkey corresponding to TEST_SECRET_KEY
+    pub const TEST_PUBKEY: [u8; 32] = [
+        0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87, 0x0b,
+        0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8,
+        0x17, 0x98,
+    ];
+
+    /// Build a properly signed kind 1063 release event as a nostr JSON string.
+    /// This can be ingested into ndb without `skip_validation`.
+    pub fn build_signed_release_event(
+        seckey: &[u8; 32],
+        version: &str,
+        asset_name: &str,
+        url: &str,
+        sha256: &str,
+    ) -> String {
+        let note = NoteBuilder::new()
+            .kind(1063)
+            .content("")
+            .sign(seckey)
+            .start_tag()
+            .tag_str("url")
+            .tag_str(url)
+            .start_tag()
+            .tag_str("x")
+            .tag_str(sha256)
+            .start_tag()
+            .tag_str("version")
+            .tag_str(version)
+            .start_tag()
+            .tag_str("name")
+            .tag_str(asset_name)
+            .start_tag()
+            .tag_str("m")
+            .tag_str("application/gzip")
+            .start_tag()
+            .tag_str("size")
+            .tag_str("12345678")
+            .build()
+            .expect("build release note");
+
+        let json = note.json().expect("serialize note to json");
+        format!(r#"["EVENT", "test_sub", {json}]"#)
+    }
+
+    /// Construct a kind 1063 event JSON string for testing.
+    /// Uses a dummy sig so `skip_validation` must be enabled on the ndb.
+    pub fn make_release_event_json(
         id: &str,
         pubkey: &str,
         version: &str,
@@ -194,8 +244,6 @@ mod tests {
         sha256: &str,
         created_at: u64,
     ) -> String {
-        // Construct a kind 1063 event JSON. We use skip_validation in tests
-        // so the id/sig don't need to be valid.
         format!(
             r#"["EVENT", "test_sub", {{
                 "id": "{id}",
@@ -215,6 +263,18 @@ mod tests {
             }}]"#
         )
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_helpers::{make_release_event_json, TEST_PUBKEY};
+    use super::*;
+    use nostrdb::{Config, IngestMetadata, Ndb};
+    use tempfile::TempDir;
+
+    /// Hex pubkey string for use with make_release_event_json (skip_validation tests)
+    const TEST_PUBKEY_HEX: &str =
+        "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
     fn test_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().unwrap();
@@ -238,14 +298,8 @@ mod tests {
 
     #[test]
     fn test_release_filter_builds() {
-        let filters = release_filter();
+        let filters = release_filter(&DEFAULT_RELEASE_PUBKEY);
         assert_eq!(filters.len(), 1);
-    }
-
-    #[test]
-    fn test_release_pubkey_parses() {
-        let pk = release_pubkey();
-        assert_ne!(pk, [0u8; 32]);
     }
 
     #[tokio::test]
@@ -256,7 +310,7 @@ mod tests {
 
         let ev = make_release_event_json(
             "aa00000000000000000000000000000000000000000000000000000000000001",
-            RELEASE_PUBKEY_HEX,
+            TEST_PUBKEY_HEX,
             "99.0.0", // far future version so it's always "newer"
             asset_name,
             "https://example.com/download/test.tar.gz",
@@ -298,7 +352,7 @@ mod tests {
 
         let ev = make_release_event_json(
             "bb00000000000000000000000000000000000000000000000000000000000001",
-            RELEASE_PUBKEY_HEX,
+            TEST_PUBKEY_HEX,
             "99.0.0",
             wrong_platform,
             "https://example.com/download/wrong.tar.gz",
@@ -332,7 +386,7 @@ mod tests {
         // Use version 0.0.1 which should be older than any current version
         let ev = make_release_event_json(
             "cc00000000000000000000000000000000000000000000000000000000000001",
-            RELEASE_PUBKEY_HEX,
+            TEST_PUBKEY_HEX,
             "0.0.1",
             asset_name,
             "https://example.com/download/old.tar.gz",
@@ -366,7 +420,7 @@ mod tests {
         // Ingest two release events with different versions
         let ev1 = make_release_event_json(
             "dd00000000000000000000000000000000000000000000000000000000000001",
-            RELEASE_PUBKEY_HEX,
+            TEST_PUBKEY_HEX,
             "98.0.0",
             asset_name,
             "https://example.com/download/v98.tar.gz",
@@ -375,7 +429,7 @@ mod tests {
         );
         let ev2 = make_release_event_json(
             "dd00000000000000000000000000000000000000000000000000000000000002",
-            RELEASE_PUBKEY_HEX,
+            TEST_PUBKEY_HEX,
             "99.0.0",
             asset_name,
             "https://example.com/download/v99.tar.gz",
@@ -394,7 +448,7 @@ mod tests {
         let _ = ndb.wait_for_all_notes(sub, 2).await.unwrap();
 
         let txn = Transaction::new(&ndb).unwrap();
-        let release = find_latest_release(&ndb, &txn).expect("should find a release");
+        let release = find_latest_release(&ndb, &txn, &TEST_PUBKEY).expect("should find a release");
 
         assert_eq!(release.version, "99.0.0");
         assert_eq!(

@@ -200,3 +200,85 @@ fn snapshot_light_mode() {
     harness.run();
     harness.snapshot("damus_light_mode");
 }
+
+// ---------------------------------------------------------------------------
+// Auto-update bar snapshot
+// ---------------------------------------------------------------------------
+
+/// State for tick()-based tests — the Damus app is set on Notedeck via set_app,
+/// so tick() handles all rendering through the real code path.
+struct TickTestState {
+    notedeck: Notedeck,
+    _tmpdir: tempfile::TempDir,
+    fonts_installed: bool,
+}
+
+/// Render via Notedeck::tick(), which runs the full app loop
+/// including the auto-update bar rendering.
+fn render_notedeck_tick(ctx: &egui::Context, state: &mut TickTestState) {
+    if !state.fonts_installed {
+        state.notedeck.setup(ctx);
+        ctx.style_mut(|s| s.animation_time = 0.0);
+        state.fonts_installed = true;
+        return;
+    }
+    state.notedeck.tick(ctx);
+}
+
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_update_bar() {
+    // tick() uses tokio (media jobs, relay limits)
+    let _rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = _rt.enter();
+
+    use notedeck::updater::nostr::test_helpers;
+
+    let ctx = egui::Context::default();
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let mut notedeck_ctx = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let damus = Damus::new(&mut notedeck_ctx.notedeck.app_context(&ctx), &args);
+    notedeck_ctx.notedeck.set_app(damus);
+
+    // Point the updater at our test signing key
+    notedeck_ctx
+        .notedeck
+        .set_release_pubkey(test_helpers::TEST_PUBKEY);
+
+    // Ingest a properly signed kind 1063 release event
+    let ev = test_helpers::build_signed_release_event(
+        &test_helpers::TEST_SECRET_KEY,
+        "99.0.0",
+        notedeck::updater::nostr::target_asset_name(),
+        "https://example.com/download/notedeck.tar.gz",
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+    );
+    {
+        let app_ctx = notedeck_ctx.notedeck.app_context(&ctx);
+        app_ctx
+            .ndb
+            .process_event_with(&ev, nostrdb::IngestMetadata::new())
+            .unwrap();
+    }
+
+    // Force updater into ReadyToInstall (the event was ingested and would
+    // be discovered by tick(), but the download would fail in tests since
+    // the URL is fake — so we skip straight to ReadyToInstall)
+    notedeck_ctx
+        .notedeck
+        .force_update_ready("99.0.0".to_string());
+
+    let state = TickTestState {
+        notedeck: notedeck_ctx.notedeck,
+        _tmpdir: tmpdir,
+        fonts_installed: false,
+    };
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(800.0, 600.0))
+        .renderer(notedeck::software_renderer())
+        .build_state(render_notedeck_tick, state);
+
+    harness.snapshot("update_bar");
+}
