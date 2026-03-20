@@ -16,6 +16,7 @@ mod key_parsing;
 pub mod login_manager;
 mod media_upload;
 mod nav;
+pub mod nfilter;
 mod onboarding;
 pub mod options;
 mod post;
