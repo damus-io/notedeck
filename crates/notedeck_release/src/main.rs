@@ -146,9 +146,15 @@ fn http_get(url: &str) -> Result<Vec<u8>, String> {
 /// Fetch artifacts from a GitHub release. If `version` is None, uses the latest release.
 /// Returns (version, artifacts).
 fn fetch_github_artifacts(version: Option<&str>) -> Result<(String, Vec<ArtifactInfo>), String> {
-    let api_url = match version {
-        Some(v) => format!("https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{v}"),
-        None => format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest"),
+    let (api_url, is_list) = match version {
+        Some(v) => (
+            format!("https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{v}"),
+            false,
+        ),
+        None => (
+            format!("https://api.github.com/repos/{GITHUB_REPO}/releases?per_page=1"),
+            true,
+        ),
     };
     eprintln!("fetching release info from {api_url}...");
 
@@ -162,10 +168,19 @@ fn fetch_github_artifacts(version: Option<&str>) -> Result<(String, Vec<Artifact
         .into_json()
         .map_err(|e| format!("parse GitHub response: {e}"))?;
 
+    // /releases returns an array; /releases/tags/v{x} returns an object
+    let release = if is_list {
+        body.as_array()
+            .and_then(|a| a.first().cloned())
+            .ok_or("no releases found")?
+    } else {
+        body
+    };
+
     let version = match version {
         Some(v) => v.to_string(),
         None => {
-            let tag = body["tag_name"]
+            let tag = release["tag_name"]
                 .as_str()
                 .ok_or("no tag_name in GitHub release")?;
             let v = tag.strip_prefix('v').unwrap_or(tag).to_string();
@@ -174,7 +189,7 @@ fn fetch_github_artifacts(version: Option<&str>) -> Result<(String, Vec<Artifact
         }
     };
 
-    let assets = body["assets"]
+    let assets = release["assets"]
         .as_array()
         .ok_or("no assets in GitHub release")?;
 
