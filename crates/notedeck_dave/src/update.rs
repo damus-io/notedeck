@@ -1581,7 +1581,19 @@ mod tests {
         std::fs::create_dir_all(&cwd).unwrap();
 
         let output_path = tempdir.path().join("pwd.txt");
+        #[cfg(windows)]
+        let script_path = tempdir.path().join("terminal.cmd");
+        #[cfg(not(windows))]
         let script_path = tempdir.path().join("terminal.sh");
+
+        #[cfg(windows)]
+        std::fs::write(
+            &script_path,
+            format!("@echo off\r\ncd > \"{}\"\r\n", output_path.display()),
+        )
+        .unwrap();
+
+        #[cfg(not(windows))]
         std::fs::write(
             &script_path,
             format!("#!/bin/sh\npwd > \"{}\"\n", output_path.display()),
