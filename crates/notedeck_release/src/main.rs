@@ -57,36 +57,64 @@ fn github_download_url(version: &str, filename: &str) -> String {
     format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{filename}")
 }
 
+/// Normalize architecture names to our canonical form.
+/// amd64/x86_64 → x86_64, arm64/aarch64 → aarch64
+fn normalize_arch(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" | "amd64" => Some("x86_64"),
+        "aarch64" | "arm64" => Some("aarch64"),
+        _ => None,
+    }
+}
+
 /// Derive the NIP-82 platform "f" tag from an artifact filename.
-/// e.g. "notedeck-x86_64-linux.tar.gz" → "linux-x86_64"
+///
+/// Handles all notedeck artifact naming patterns:
+///   notedeck-x86_64-linux.tar.gz    → linux-x86_64
+///   notedeck-aarch64-macos.tar.gz   → macos-aarch64
+///   notedeck-aarch64.dmg            → macos-aarch64   (dmg implies macos)
+///   DamusNotedeckInstaller.exe      → windows-x86_64  (exe/msi implies windows)
+///   notedeck-0.8.0-1.x86_64.rpm    → linux-x86_64    (rpm implies linux)
+///   notedeck_0.8.0-1_amd64.deb     → linux-x86_64    (deb implies linux, amd64=x86_64)
 fn platform_tag_from_name(name: &str) -> Option<String> {
-    // Expected pattern: notedeck-{arch}-{os}.{ext}
-    let stem = name.strip_prefix("notedeck-").unwrap_or(name);
+    // .exe / .msi → windows (currently only x86_64 builds)
+    if name.ends_with(".exe") || name.ends_with(".msi") {
+        return Some("windows-x86_64".to_string());
+    }
 
-    // Remove extension(s)
-    let stem = if let Some(s) = stem.strip_suffix(".tar.gz") {
-        s
-    } else if let Some(s) = stem.strip_suffix(".zip") {
-        s
-    } else if let Some(s) = stem.strip_suffix(".dmg") {
-        s
-    } else if let Some(s) = stem.strip_suffix(".deb") {
-        s
-    } else if let Some(s) = stem.strip_suffix(".rpm") {
-        s
-    } else if let Some(s) = stem.strip_suffix(".exe") {
-        s
-    } else if let Some(s) = stem.strip_suffix(".msi") {
-        s
-    } else {
-        return None;
-    };
+    // .dmg → macos, arch from filename: notedeck-{arch}.dmg
+    if name.ends_with(".dmg") {
+        let stem = name.strip_prefix("notedeck-")?.strip_suffix(".dmg")?;
+        let arch = normalize_arch(stem)?;
+        return Some(format!("macos-{arch}"));
+    }
 
-    // Split into arch-os (e.g. "x86_64-linux")
+    // .deb → linux: notedeck_0.8.0-1_{debarch}.deb
+    if name.ends_with(".deb") {
+        let stem = name.strip_suffix(".deb")?;
+        let deb_arch = stem.rsplit('_').next()?;
+        let arch = normalize_arch(deb_arch)?;
+        return Some(format!("linux-{arch}"));
+    }
+
+    // .rpm → linux: notedeck-0.8.0-1.{rpmarch}.rpm
+    if name.ends_with(".rpm") {
+        let stem = name.strip_suffix(".rpm")?;
+        let rpm_arch = stem.rsplit('.').next()?;
+        let arch = normalize_arch(rpm_arch)?;
+        return Some(format!("linux-{arch}"));
+    }
+
+    // .tar.gz / .zip → notedeck-{arch}-{os}.{ext}
+    let stem = name.strip_prefix("notedeck-")?;
+    let stem = stem
+        .strip_suffix(".tar.gz")
+        .or_else(|| stem.strip_suffix(".zip"))?;
+
     let parts: Vec<&str> = stem.splitn(2, '-').collect();
     if parts.len() == 2 {
-        // Flip to os-arch format
-        Some(format!("{}-{}", parts[1], parts[0]))
+        let arch = normalize_arch(parts[0])?;
+        Some(format!("{}-{arch}", parts[1]))
     } else {
         None
     }
