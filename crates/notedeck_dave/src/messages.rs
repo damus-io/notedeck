@@ -684,3 +684,82 @@ impl Message {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PermissionRequest, PermissionResponseType, PermissionView, QuestionSetInput, UserQuestion,
+    };
+    use serde_json::json;
+    use uuid::Uuid;
+
+    #[test]
+    fn permission_view_infers_compact_approval_prompt_shape() {
+        let tool_input = json!({
+            "questions": [{
+                "header": "Approve app tool call?",
+                "question": "Allow this action?"
+            }]
+        });
+
+        let view = PermissionView::infer("SaveIssue", &tool_input);
+
+        match view {
+            PermissionView::Approval(prompt) => {
+                assert_eq!(prompt.questions.len(), 1);
+                assert_eq!(
+                    prompt.questions[0].header.as_deref(),
+                    Some("Approve app tool call?")
+                );
+                assert_eq!(
+                    prompt.questions[0].question.as_deref(),
+                    Some("Allow this action?")
+                );
+            }
+            other => panic!("expected Approval view, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn permission_request_new_infers_question_set_for_ask_user_question() {
+        let request = PermissionRequest::new(
+            Uuid::new_v4(),
+            "AskUserQuestion".to_string(),
+            json!({
+                "questions": [{
+                    "header": "Theme",
+                    "question": "Pick a theme",
+                    "multiSelect": false,
+                    "options": [{
+                        "label": "Light",
+                        "description": "Bright background"
+                    }]
+                }]
+            }),
+            None,
+            Some(PermissionResponseType::Denied),
+            None,
+        );
+
+        match &request.view {
+            PermissionView::QuestionSet(QuestionSetInput { questions }) => {
+                assert_eq!(questions.len(), 1);
+                let UserQuestion {
+                    header,
+                    question,
+                    multi_select,
+                    options,
+                } = &questions[0];
+                assert_eq!(header, "Theme");
+                assert_eq!(question, "Pick a theme");
+                assert!(!multi_select);
+                assert_eq!(options.len(), 1);
+                assert_eq!(options[0].label, "Light");
+                assert_eq!(options[0].description, "Bright background");
+            }
+            other => panic!("expected QuestionSet view, got {:?}", other),
+        }
+
+        assert_eq!(request.response, Some(PermissionResponseType::Denied));
+    }
+}

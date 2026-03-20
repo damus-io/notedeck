@@ -2118,3 +2118,155 @@ fn session_header_ui(
 
     header_cwd
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DaveAction, DaveUi};
+    use crate::config::AiMode;
+    use crate::messages::{PermissionRequest, PermissionResponse, QuestionAnswer};
+    use egui_kittest::{kittest::Queryable, Harness};
+    use serde_json::json;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    struct PermissionUiHarnessState {
+        request: PermissionRequest,
+        input: String,
+        focus_requested: bool,
+        question_answers: HashMap<Uuid, Vec<QuestionAnswer>>,
+        question_index: HashMap<Uuid, usize>,
+        action: Option<DaveAction>,
+    }
+
+    impl PermissionUiHarnessState {
+        fn new(request: PermissionRequest) -> Self {
+            Self {
+                request,
+                input: String::new(),
+                focus_requested: false,
+                question_answers: HashMap::new(),
+                question_index: HashMap::new(),
+                action: None,
+            }
+        }
+    }
+
+    #[test]
+    fn approval_prompt_ui_allows_request() {
+        let expected_request_id = Uuid::new_v4();
+        let request = PermissionRequest::new(
+            expected_request_id,
+            "SaveIssue".to_string(),
+            json!({
+                "questions": [{
+                    "header": "Approve app tool call?",
+                    "question": "Allow this action?"
+                }]
+            }),
+            None,
+            None,
+            None,
+        );
+
+        let mut harness = Harness::new_ui_state(
+            |ui, state: &mut PermissionUiHarnessState| {
+                let mut dave_ui = DaveUi::new(
+                    false,
+                    1,
+                    &[],
+                    &mut state.input,
+                    &mut state.focus_requested,
+                    AiMode::Agentic,
+                );
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                    state.action = Some(action);
+                }
+            },
+            PermissionUiHarnessState::new(request),
+        );
+
+        harness.run();
+        harness.get_by_label("SaveIssue");
+        harness.get_by_label("Allow this action?");
+        harness.get_by_label("Allow").click();
+        harness.run();
+
+        match harness.state().action.as_ref() {
+            Some(DaveAction::PermissionResponse {
+                request_id,
+                response,
+            }) => {
+                assert_eq!(*request_id, expected_request_id);
+                assert!(matches!(
+                    response,
+                    PermissionResponse::Allow { message: None }
+                ));
+            }
+            other => panic!("expected PermissionResponse action, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn question_set_prompt_ui_submits_selected_answer() {
+        let expected_request_id = Uuid::new_v4();
+        let request = PermissionRequest::new(
+            expected_request_id,
+            "AskUserQuestion".to_string(),
+            json!({
+                "questions": [{
+                    "header": "Theme",
+                    "question": "Pick a theme",
+                    "multiSelect": false,
+                    "options": [{
+                        "label": "Light",
+                        "description": "Bright background"
+                    }]
+                }]
+            }),
+            None,
+            None,
+            None,
+        );
+
+        let mut harness = Harness::new_ui_state(
+            |ui, state: &mut PermissionUiHarnessState| {
+                let mut dave_ui = DaveUi::new(
+                    false,
+                    1,
+                    &[],
+                    &mut state.input,
+                    &mut state.focus_requested,
+                    AiMode::Agentic,
+                )
+                .question_answers(&mut state.question_answers)
+                .question_index(&mut state.question_index);
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                    state.action = Some(action);
+                }
+            },
+            PermissionUiHarnessState::new(request),
+        );
+
+        harness.run();
+        harness.get_by_label("Pick a theme");
+        harness.get_by_label("Light");
+        harness.get_by_label("Bright background");
+        harness.press_key(egui::Key::Num1);
+        harness.step();
+        harness.get_by_label("Submit").click();
+        harness.run();
+
+        match harness.state().action.as_ref() {
+            Some(DaveAction::QuestionResponse {
+                request_id,
+                answers,
+            }) => {
+                assert_eq!(*request_id, expected_request_id);
+                assert_eq!(answers.len(), 1);
+                assert_eq!(answers[0].selected, vec![0]);
+                assert_eq!(answers[0].other_text, None);
+            }
+            other => panic!("expected QuestionResponse action, got {:?}", other),
+        }
+    }
+}
