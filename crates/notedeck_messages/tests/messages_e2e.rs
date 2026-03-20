@@ -3263,6 +3263,7 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     open_conversation_via_ui(carol.device(1), &bob.npub);
 
     const MESSAGES_PER_DIRECTION: usize = 40;
+    const CONVERGENCE_BATCH: usize = 5;
 
     let alice_to_bob = build_direct_message_batch("alice", "bob", MESSAGES_PER_DIRECTION);
     let alice_to_carol = build_direct_message_batch("alice", "carol", MESSAGES_PER_DIRECTION);
@@ -3280,6 +3281,40 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
         send_message_via_ui(carol.device(1), &carol_to_bob[idx]);
 
         step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+
+        if (idx + 1) % CONVERGENCE_BATCH == 0 {
+            let expected_alice = alice_to_bob[..=idx]
+                .iter()
+                .chain(alice_to_carol[..=idx].iter())
+                .chain(bob_to_alice[..=idx].iter())
+                .chain(carol_to_alice[..=idx].iter())
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let expected_bob = alice_to_bob[..=idx]
+                .iter()
+                .chain(bob_to_alice[..=idx].iter())
+                .chain(bob_to_carol[..=idx].iter())
+                .chain(carol_to_bob[..=idx].iter())
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let expected_carol = alice_to_carol[..=idx]
+                .iter()
+                .chain(bob_to_carol[..=idx].iter())
+                .chain(carol_to_alice[..=idx].iter())
+                .chain(carol_to_bob[..=idx].iter())
+                .cloned()
+                .collect::<BTreeSet<_>>();
+
+            wait_for_cluster_convergence(
+                &mut alice,
+                &expected_alice,
+                &mut bob,
+                &expected_bob,
+                &mut carol,
+                &expected_carol,
+                TEST_TIMEOUT,
+            );
+        }
     }
 
     let expected_alice = alice_to_bob
