@@ -745,6 +745,7 @@ fn cwd_folder_header(ui: &mut egui::Ui, cwd_display: &str, collapsed: bool) -> e
     let desired_size = egui::vec2(ui.available_width(), header_height);
     let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, cwd_display));
 
     let triangle_size = 8.0;
     let triangle_center = egui::pos2(rect.left() + 4.0 + triangle_size / 2.0, rect.center().y);
@@ -817,4 +818,115 @@ fn delete_worktree_menu_item(
     }
 
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SessionListAction, SessionListUi};
+    use crate::backend::BackendType;
+    use crate::collapse_state::CollapseState;
+    use crate::config::AiMode;
+    use crate::focus_queue::FocusQueue;
+    use crate::session::SessionManager;
+    use egui::Event;
+    use egui_kittest::{kittest::Queryable, Harness};
+    use std::path::PathBuf;
+
+    struct SessionListHarnessState {
+        ui: SessionListUiOwnedState,
+        action: Option<SessionListAction>,
+    }
+
+    struct SessionListUiOwnedState {
+        session_manager: SessionManager,
+        focus_queue: FocusQueue,
+        collapse_state: CollapseState,
+        ctrl_held: bool,
+        cwd_label: String,
+        cwd_path: PathBuf,
+    }
+
+    impl SessionListUiOwnedState {
+        fn new() -> Self {
+            let cwd_path = PathBuf::from("/tmp/project");
+            let mut session_manager = SessionManager::new();
+            let session_id =
+                session_manager.new_session(cwd_path.clone(), AiMode::Agentic, BackendType::Claude);
+            let session = session_manager
+                .get_mut(session_id)
+                .expect("session should exist");
+            session.details.hostname = "host-a".to_string();
+            session.details.title = "Workspace agent".to_string();
+            session.details.custom_title = None;
+            session.details.home_dir = String::new();
+            session_manager.rebuild_cwd_groups();
+
+            let cwd_label = session_manager.host_cwd_groups()[0].cwd_groups[0]
+                .display_cwd
+                .clone();
+
+            Self {
+                session_manager,
+                focus_queue: FocusQueue::new(),
+                collapse_state: CollapseState::new(),
+                ctrl_held: false,
+                cwd_label,
+                cwd_path,
+            }
+        }
+    }
+
+    #[test]
+    fn right_clicking_cwd_header_can_start_a_new_session_in_that_cwd() {
+        let mut harness = Harness::new_ui_state(
+            |ui, state: &mut SessionListHarnessState| {
+                let session_list = SessionListUi::new(
+                    &state.ui.session_manager,
+                    &state.ui.focus_queue,
+                    &state.ui.collapse_state,
+                    state.ui.ctrl_held,
+                );
+                if let Some(action) = session_list.ui(ui) {
+                    state.action = Some(action);
+                }
+            },
+            SessionListHarnessState {
+                ui: SessionListUiOwnedState::new(),
+                action: None,
+            },
+        );
+
+        harness.run();
+
+        let header = harness.get_by_label(harness.state().ui.cwd_label.as_str());
+        let bounds = header.raw_bounds().expect("cwd header bounds");
+        let center = egui::pos2(
+            ((bounds.x0 + bounds.x1) / 2.0) as f32,
+            ((bounds.y0 + bounds.y1) / 2.0) as f32,
+        );
+        harness.input_mut().events.push(Event::PointerMoved(center));
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.input_mut().events.push(Event::PointerButton {
+            pos: center,
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+
+        harness.get_by_label("New Session").click();
+        harness.run();
+
+        match harness.state().action.as_ref() {
+            Some(SessionListAction::NewSessionInCwd(cwd)) => {
+                assert_eq!(cwd, &harness.state().ui.cwd_path);
+            }
+            other => panic!("expected NewSessionInCwd action, got {:?}", other),
+        }
+    }
 }
