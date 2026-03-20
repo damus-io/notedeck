@@ -1692,6 +1692,19 @@ async fn same_account_devices_converge_after_expanded_relay_visibility_startup_e
         "recipient device with relay b visibility only",
     );
 
+    wait_for_messages_device_shutdown(
+        recipient_a,
+        pre_recovery_a_dir.path(),
+        TEST_TIMEOUT,
+        "drop relay-a-only pre-recovery device before expanded-visibility startup",
+    );
+    wait_for_messages_device_shutdown(
+        recipient_b,
+        pre_recovery_b_dir.path(),
+        TEST_TIMEOUT,
+        "drop relay-b-only pre-recovery device before expanded-visibility startup",
+    );
+
     let mut recovered_a = build_messages_device_in_path_with_relays(
         &[&relay_a_url, &relay_b_url],
         &recipient,
