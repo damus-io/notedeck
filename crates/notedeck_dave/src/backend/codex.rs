@@ -863,20 +863,32 @@ fn handle_codex_message(
             }
         }
 
-        "item/tool/requestUserInput" => {
-            if let (Some(rpc_id), Some(params)) = (msg.id, msg.params) {
+        "item/tool/requestUserInput" => match (msg.id, msg.params) {
+            (Some(rpc_id), Some(params)) => {
                 match serde_json::from_value::<RequestUserInputParams>(params) {
                     Ok(input_req) => {
                         return handle_request_user_input(rpc_id, input_req, response_tx, ctx);
                     }
                     Err(e) => {
                         tracing::error!("requestUserInput deser FAILED: {}", e);
+                        return HandleResult::Rejected {
+                            rpc_id,
+                            message: format!("Invalid requestUserInput params: {e}"),
+                        };
                     }
                 }
-            } else {
-                tracing::warn!("requestUserInput missing id or params");
             }
-        }
+            (Some(rpc_id), None) => {
+                tracing::warn!("requestUserInput missing params");
+                return HandleResult::Rejected {
+                    rpc_id,
+                    message: "requestUserInput missing params".to_string(),
+                };
+            }
+            (None, _) => {
+                tracing::warn!("requestUserInput missing id");
+            }
+        },
 
         "thread/tokenUsage/updated" => {
             if let Some(params) = msg.params {
@@ -2493,6 +2505,44 @@ mod tests {
             handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_request_user_input_missing_params_rejected() {
+        let (tx, _rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = RpcMessage {
+            id: Some(207),
+            method: Some("item/tool/requestUserInput".to_string()),
+            result: None,
+            error: None,
+            params: None,
+        };
+
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 207, .. }));
+    }
+
+    #[test]
+    fn test_request_user_input_invalid_params_rejected() {
+        let (tx, _rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            208,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": "not-an-array"
+            }),
+        );
+
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 208, .. }));
     }
 
     #[test]
