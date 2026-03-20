@@ -287,7 +287,7 @@ impl Notedeck {
         let map_size = if cfg!(target_os = "windows")
             && parsed_args.options.contains(NotedeckOptions::Tests)
         {
-            1024usize * 1024usize * 1024usize
+            256usize * 1024usize * 1024usize
         } else if cfg!(target_os = "windows") {
             // 16 Gib on windows because it actually creates the file
             1024usize * 1024usize * 1024usize * 16usize
