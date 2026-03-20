@@ -2009,6 +2009,59 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_delta_inserts_paragraph_break_only_after_item_boundary() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+        let mut token_state = TokenState::Initial;
+
+        let first = notification("item/agentMessage/delta", json!({ "delta": "First" }));
+        let result = handle_codex_message(first, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(matches!(token_state, TokenState::Streaming));
+
+        let noise = notification("some/future/event", json!({}));
+        let result = handle_codex_message(noise, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(
+            matches!(token_state, TokenState::Streaming),
+            "non-item protocol noise should not force a paragraph break"
+        );
+
+        let continued = notification(
+            "item/agentMessage/delta",
+            json!({ "delta": " still first" }),
+        );
+        let result =
+            handle_codex_message(continued, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(matches!(token_state, TokenState::Streaming));
+
+        let boundary = notification(
+            "item/completed",
+            json!({ "item": { "id": "agent-1", "type": "agentMessage" } }),
+        );
+        let result =
+            handle_codex_message(boundary, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(matches!(token_state, TokenState::Paused));
+
+        let second = notification("item/agentMessage/delta", json!({ "delta": "Second" }));
+        let result = handle_codex_message(second, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(matches!(token_state, TokenState::Streaming));
+
+        let tokens: Vec<_> = rx
+            .try_iter()
+            .map(|response| match response {
+                DaveApiResponse::Token(token) => token,
+                other => panic!("Expected Token, got {:?}", std::mem::discriminant(&other)),
+            })
+            .collect();
+        assert_eq!(tokens, vec!["First", " still first", "\n\n", "Second"]);
+    }
+
+    #[test]
     fn test_handle_turn_completed_success() {
         let (tx, _rx) = mpsc::channel();
         let ctx = egui::Context::default();
