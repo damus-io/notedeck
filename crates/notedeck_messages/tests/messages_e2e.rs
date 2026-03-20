@@ -302,11 +302,12 @@ async fn same_account_devices_catch_up_after_one_device_falls_behind_e2e() {
         std::thread::sleep(Duration::from_millis(25));
     }
 
-    wait_for_device_group_messages(
+    wait_for_device_group_messages_while_flushing(
         &mut [&mut live_device_a, &mut live_device_b],
         &expected,
         TEST_TIMEOUT,
         "live same-account devices to stay current while one device is paused",
+        &mut [&mut sender_device],
     );
 
     assert_ne!(
@@ -315,11 +316,12 @@ async fn same_account_devices_catch_up_after_one_device_falls_behind_e2e() {
         "expected the paused device to lag behind before it resumes stepping"
     );
 
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut lagging_device,
         &expected,
         TEST_TIMEOUT,
         "paused same-account device to catch up from relay history",
+        &mut [&mut sender_device],
     );
 
     assert_eq!(local_chat_messages(&mut live_device_a), expected);
@@ -979,7 +981,12 @@ async fn same_account_devices_converge_during_interleaved_multi_conversation_sen
 async fn same_account_devices_merge_startup_backfill_with_live_multi_conversation_delivery_e2e() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
+    let relay_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+
+    let relay = LocalRelay::run(RelayBuilder::default().database(relay_db.clone()))
         .await
         .expect("start local relay");
     let relay_url = relay.url().to_owned();
@@ -1020,6 +1027,21 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
     for sender_device in &mut history_sender_devices {
         step_device_frames(sender_device, 3);
     }
+
+    {
+        let mut history_sender_refs: Vec<&mut DeviceHarness> =
+            history_sender_devices.iter_mut().collect();
+        wait_for_relay_count_at_least(
+            &relay_db,
+            NostrFilter::new().kind(NostrKind::GiftWrap),
+            expected.len(),
+            TEST_TIMEOUT,
+            "startup-history giftwraps to land on relay",
+            history_sender_refs.as_mut_slice(),
+        )
+        .await;
+    }
+
     std::thread::sleep(Duration::from_millis(150));
 
     let mut live_sender_devices: Vec<_> = live_senders
@@ -1063,30 +1085,33 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
         }
     }
 
-    let deadline = Instant::now() + TEST_TIMEOUT;
-    loop {
-        step_devices(&mut live_sender_devices);
-        step_devices(&mut recipient_devices);
-
-        if recipient_devices
-            .iter_mut()
-            .all(|device| local_chat_messages(device) == expected)
-        {
-            break;
-        }
-
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for same-account devices to merge startup backfill with live multi-conversation delivery; expected {:?}, actual {:?}",
-            expected,
-            recipient_devices
-                .iter_mut()
-                .map(local_chat_messages)
-                .collect::<Vec<BTreeSet<String>>>()
-        );
-
-        std::thread::sleep(Duration::from_millis(20));
+    {
+        let mut live_sender_refs: Vec<&mut DeviceHarness> =
+            live_sender_devices.iter_mut().collect();
+        wait_for_relay_count_at_least(
+            &relay_db,
+            NostrFilter::new().kind(NostrKind::GiftWrap),
+            expected.len(),
+            TEST_TIMEOUT,
+            "startup-live giftwraps to land on relay",
+            live_sender_refs.as_mut_slice(),
+        )
+        .await;
     }
+
+    {
+        let mut recipient_refs: Vec<&mut DeviceHarness> = recipient_devices.iter_mut().collect();
+        let mut live_sender_refs: Vec<&mut DeviceHarness> =
+            live_sender_devices.iter_mut().collect();
+        wait_for_device_group_messages_while_flushing(
+            recipient_refs.as_mut_slice(),
+            &expected,
+            TEST_TIMEOUT,
+            "same-account devices to merge startup backfill with live multi-conversation delivery",
+            live_sender_refs.as_mut_slice(),
+        );
+    }
+
     assert_devices_match_expected(
         &mut recipient_devices,
         &expected,
@@ -3834,7 +3859,6 @@ async fn stale_connection_detected_after_silent_stall_e2e() {
     let mut restored_proxy = false;
     while Instant::now() < deadline {
         bob_device.step();
-        std::thread::sleep(Duration::from_millis(50));
 
         // After 5 seconds, restore the proxy so reconnection CAN work.
         // This isolates the bug to detection, not recovery.
@@ -3844,9 +3868,11 @@ async fn stale_connection_detected_after_silent_stall_e2e() {
         }
 
         let current = local_chat_messages(&mut bob_device);
-        if current.len() > initial_messages.len() {
+        if current == all_expected {
             break;
         }
+
+        std::thread::sleep(Duration::from_millis(50));
     }
 
     let final_messages = local_chat_messages(&mut bob_device);
