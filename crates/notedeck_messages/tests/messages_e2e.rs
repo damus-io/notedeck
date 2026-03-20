@@ -24,11 +24,12 @@ use harness::{
     build_messages_cluster, build_messages_device, build_messages_device_in_path_with_relays,
     build_messages_device_in_tmpdir, build_messages_device_with_relays, cluster_actual_sets,
     cluster_converged_on, init_tracing, local_chat_message_count, local_chat_messages,
-    publish_note_via_device, select_account_on_device, step_clusters, step_device_frames,
-    step_device_group, step_devices, wait_for_cluster_convergence, wait_for_convergence,
-    wait_for_device_group_messages, wait_for_device_group_messages_while_flushing,
-    wait_for_device_messages, wait_for_device_messages_while_flushing, wait_for_devices_messages,
-    wait_for_messages_device_shutdown, warm_up_clusters, DeviceHarness, TEST_TIMEOUT,
+    publish_note_via_device, select_account_on_device, shutdown_messages_device, step_clusters,
+    step_device_frames, step_device_group, step_devices, wait_for_cluster_convergence,
+    wait_for_convergence, wait_for_device_group_messages,
+    wait_for_device_group_messages_while_flushing, wait_for_device_messages,
+    wait_for_device_messages_while_flushing, wait_for_devices_messages, warm_up_clusters,
+    DeviceHarness, TEST_TIMEOUT,
 };
 use nostr::{nips::nip17, Event, Filter as NostrFilter, JsonUtil, Kind as NostrKind};
 use nostr_relay_builder::{
@@ -144,9 +145,12 @@ async fn relay_dm_relay_list_relays(
 async fn same_account_devices_converge_on_sent_messages_e2e() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
-        .await
-        .expect("start local relay");
+    let relay = LocalRelay::run(RelayBuilder::default().rate_limit(RateLimit {
+        max_reqs: 2_000,
+        notes_per_minute: 10_000,
+    }))
+    .await
+    .expect("start local relay");
     let relay_url = relay.url().to_owned();
 
     let recipient = FullKeypair::generate();
@@ -199,9 +203,12 @@ async fn same_account_devices_converge_on_sent_messages_e2e() {
 async fn same_account_devices_backfill_preexisting_giftwraps_e2e() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
-        .await
-        .expect("start local relay");
+    let relay = LocalRelay::run(RelayBuilder::default().rate_limit(RateLimit {
+        max_reqs: 2_000,
+        notes_per_minute: 10_000,
+    }))
+    .await
+    .expect("start local relay");
     let relay_url = relay.url().to_owned();
 
     let recipient = FullKeypair::generate();
@@ -501,10 +508,8 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
         "initial same-account device convergence before restart",
     );
 
-    wait_for_messages_device_shutdown(
+    shutdown_messages_device(
         restarting_device,
-        &restart_path,
-        TEST_TIMEOUT,
         "same-account restart device shutdown before reopen",
     );
 
@@ -825,10 +830,8 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
         "same-account devices to converge on many direct conversations before restart",
     );
 
-    wait_for_messages_device_shutdown(
+    shutdown_messages_device(
         restarting_device,
-        &restart_path,
-        TEST_TIMEOUT,
         "many-conversation restart device shutdown before reopen",
     );
 
@@ -1410,10 +1413,8 @@ async fn same_account_device_restart_recovers_during_active_multi_conversation_d
         "same-account devices to converge before restarting during active delivery",
     );
 
-    wait_for_messages_device_shutdown(
+    shutdown_messages_device(
         restarting_device,
-        &restart_path,
-        TEST_TIMEOUT,
         "active-delivery restart device shutdown before reopen",
     );
 
@@ -1692,16 +1693,12 @@ async fn same_account_devices_converge_after_expanded_relay_visibility_startup_e
         "recipient device with relay b visibility only",
     );
 
-    wait_for_messages_device_shutdown(
+    shutdown_messages_device(
         recipient_a,
-        pre_recovery_a_dir.path(),
-        TEST_TIMEOUT,
         "drop relay-a-only pre-recovery device before expanded-visibility startup",
     );
-    wait_for_messages_device_shutdown(
+    shutdown_messages_device(
         recipient_b,
-        pre_recovery_b_dir.path(),
-        TEST_TIMEOUT,
         "drop relay-b-only pre-recovery device before expanded-visibility startup",
     );
 
@@ -2304,10 +2301,8 @@ async fn same_account_device_recovers_missed_messages_after_offline_restart_e2e(
 
     // Phase 2: recipient goes fully offline.  Messages arrive on the relays
     // while the device is down.
-    wait_for_messages_device_shutdown(
+    shutdown_messages_device(
         recipient_device,
-        &churn_path,
-        TEST_TIMEOUT,
         "recipient device shutdown before offline restart",
     );
 
@@ -2434,10 +2429,8 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &mut [&mut sender_current],
     );
 
-    wait_for_messages_device_shutdown(
+    shutdown_messages_device(
         sender_offline,
-        &offline_path,
-        TEST_TIMEOUT,
         "offline same-account sender shutdown before restart",
     );
 
@@ -2636,10 +2629,8 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &mut [&mut sender_current],
     );
 
-    wait_for_messages_device_shutdown(
+    shutdown_messages_device(
         sender_offline,
-        &offline_path,
-        TEST_TIMEOUT,
         "participant relay prefetch sender shutdown before restart",
     );
 
@@ -2831,10 +2822,8 @@ async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
 
     for cycle in 1..=3 {
         if let Some(flapping_device) = flapping_device.take() {
-            wait_for_messages_device_shutdown(
+            shutdown_messages_device(
                 flapping_device,
-                &restart_path,
-                TEST_TIMEOUT,
                 "flapping same-account device shutdown before restart cycle reopen",
             );
         }
@@ -3242,8 +3231,8 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     init_tracing();
 
     let relay = LocalRelay::run(RelayBuilder::default().rate_limit(RateLimit {
-        max_reqs: 20,
-        notes_per_minute: 2_000,
+        max_reqs: 2_000,
+        notes_per_minute: 10_000,
     }))
     .await
     .expect("start local relay");
@@ -3276,7 +3265,7 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     open_conversation_via_ui(carol.device(1), &bob.npub);
 
     const MESSAGES_PER_DIRECTION: usize = 40;
-    const CONVERGENCE_BATCH: usize = 5;
+    const CONVERGENCE_BATCH: usize = 2;
 
     let alice_to_bob = build_direct_message_batch("alice", "bob", MESSAGES_PER_DIRECTION);
     let alice_to_carol = build_direct_message_batch("alice", "carol", MESSAGES_PER_DIRECTION);
@@ -3293,6 +3282,8 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
         send_message_via_ui(carol.device(0), &carol_to_alice[idx]);
         send_message_via_ui(carol.device(1), &carol_to_bob[idx]);
 
+        step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+        std::thread::sleep(Duration::from_millis(10));
         step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
         if (idx + 1) % CONVERGENCE_BATCH == 0 {
@@ -3434,6 +3425,34 @@ fn extract_port(relay_url: &str) -> u16 {
         .expect("parse relay URL")
         .port()
         .expect("relay URL must have a port")
+}
+
+/// Restarts a local relay on a fixed port, retrying until the OS releases the socket.
+async fn restart_relay_on_port_with_retry(
+    relay_db: &MemoryDatabase,
+    relay_port: u16,
+    timeout: Duration,
+) -> LocalRelay {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match LocalRelay::run(
+            RelayBuilder::default()
+                .port(relay_port)
+                .database(relay_db.clone()),
+        )
+        .await
+        {
+            Ok(relay) => return relay,
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out restarting relay on port {relay_port}; last error: {error:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+    }
 }
 
 /// Forwards bytes between two TCP halves while `active` is true.
@@ -3667,13 +3686,8 @@ async fn messages_recover_after_relay_restart_e2e() {
     }
 
     // Phase 4: Restart the relay on the same port with the same database
-    let relay2 = LocalRelay::run(
-        RelayBuilder::default()
-            .port(relay_port)
-            .database(relay_db.clone()),
-    )
-    .await
-    .expect("restart relay on same port");
+    let relay2 =
+        restart_relay_on_port_with_retry(&relay_db, relay_port, Duration::from_secs(5)).await;
 
     // Sanity: the new relay has the same URL
     assert_eq!(

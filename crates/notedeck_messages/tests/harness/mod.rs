@@ -91,6 +91,12 @@ pub fn build_messages_device_in_path_with_relays(
     )
 }
 
+/// Shuts down a Messages device deterministically before dropping it.
+pub fn shutdown_messages_device(mut device: DeviceHarness, _context: &str) {
+    device.state_mut().notedeck.shutdown_app();
+    drop(device);
+}
+
 /// Builds an account cluster with Messages app devices.
 pub fn build_messages_cluster(
     name: &'static str,
@@ -193,20 +199,6 @@ fn wait_for_device_messages_impl(
 
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-/// Drops one Messages device and waits briefly for in-process background work to unwind.
-///
-/// Some restart E2Es reuse the same data dir immediately after `drop(device)`. A
-/// short delay avoids racing detached startup work during teardown.
-pub fn wait_for_messages_device_shutdown(
-    device: DeviceHarness,
-    _data_dir: &Path,
-    timeout: Duration,
-    _context: &str,
-) {
-    drop(device);
-    std::thread::sleep(timeout.min(Duration::from_millis(100)));
 }
 
 /// Waits until every device matches the expected local message set.

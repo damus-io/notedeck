@@ -105,9 +105,7 @@ pub struct Notedeck {
 
 impl Drop for Notedeck {
     fn drop(&mut self) {
-        // Ensure app-owned background workers are shut down before core runtime
-        // resources (including NDB) begin dropping.
-        self.app.take();
+        self.shutdown_app();
     }
 }
 
@@ -262,6 +260,11 @@ fn setup_puffin() {
 }
 
 impl Notedeck {
+    /// Shuts down app-owned runtime state before dropping the host.
+    pub fn shutdown_app(&mut self) {
+        self.app.take();
+    }
+
     pub fn set_pong_timeout(&mut self, timeout: Duration) {
         self.pool.set_pong_timeout(timeout);
     }
