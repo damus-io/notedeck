@@ -25,7 +25,11 @@ pub fn seed_cluster_known_profiles(
 }
 
 /// Seeds raw local note JSON into one device's on-disk NostrDB before app startup.
-pub fn seed_local_notes_in_data_dir(data_dir: &Path, note_jsons: &[String]) {
+pub fn seed_local_notes_in_data_dir(
+    data_dir: &Path,
+    note_jsons: &[String],
+    expected_kinds: &[u64],
+) {
     let db_path = ndb_path(data_dir);
     fs::create_dir_all(&db_path).expect("create db dir");
 
@@ -35,7 +39,9 @@ pub fn seed_local_notes_in_data_dir(data_dir: &Path, note_jsons: &[String]) {
             .expect("ingest pre-seeded local note history");
     }
 
-    let filters = [FilterBuilder::new().kinds([14]).build()];
+    let filters = [FilterBuilder::new()
+        .kinds(expected_kinds.iter().copied())
+        .build()];
     wait_for_import_count(
         &ndb,
         &filters,
@@ -45,7 +51,7 @@ pub fn seed_local_notes_in_data_dir(data_dir: &Path, note_jsons: &[String]) {
     );
 }
 
-/// Seeds a local-only kind `0` profile note so tests can resolve participants.
+/// Seeds a kind `0` profile note locally and publishes it to account relays.
 pub fn seed_local_profile_metadata(
     device: &mut DeviceHarness,
     account: &FullKeypair,

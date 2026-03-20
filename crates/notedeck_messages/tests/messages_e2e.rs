@@ -384,9 +384,9 @@ async fn same_account_devices_reconcile_divergent_local_history_e2e() {
     let tmpdir_b = TempDir::new().expect("tmpdir b");
     let tmpdir_c = TempDir::new().expect("tmpdir c");
 
-    seed_local_notes_in_data_dir(tmpdir_a.path(), &subset_a);
-    seed_local_notes_in_data_dir(tmpdir_b.path(), &subset_b);
-    seed_local_notes_in_data_dir(tmpdir_c.path(), &subset_c);
+    seed_local_notes_in_data_dir(tmpdir_a.path(), &subset_a, &[14]);
+    seed_local_notes_in_data_dir(tmpdir_b.path(), &subset_b, &[14]);
+    seed_local_notes_in_data_dir(tmpdir_c.path(), &subset_c, &[14]);
 
     let before_sets = vec![
         local_chat_messages_in_data_dir(tmpdir_a.path(), &recipient),
@@ -1663,10 +1663,10 @@ async fn same_account_devices_converge_after_expanded_relay_visibility_startup_e
     let local_b =
         build_local_chat_note_jsons(&sender, &recipient, &["relay-b-only-01", "relay-b-only-02"]);
     for dir in [pre_recovery_a_dir.path(), recovered_a_dir.path()] {
-        seed_local_notes_in_data_dir(dir, &local_a);
+        seed_local_notes_in_data_dir(dir, &local_a, &[14]);
     }
     for dir in [pre_recovery_b_dir.path(), recovered_b_dir.path()] {
-        seed_local_notes_in_data_dir(dir, &local_b);
+        seed_local_notes_in_data_dir(dir, &local_b, &[14]);
     }
 
     let mut recipient_a = build_messages_device_in_path_with_relays(

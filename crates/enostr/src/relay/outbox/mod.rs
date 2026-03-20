@@ -51,6 +51,8 @@ impl Default for OutboxPool {
 }
 
 impl OutboxPool {
+    /// Overrides the maximum allowed time since the last websocket pong before
+    /// a connected relay is marked disconnected by keepalive checks.
     pub fn set_pong_timeout(&mut self, timeout: Duration) {
         self.pong_timeout = timeout;
     }
