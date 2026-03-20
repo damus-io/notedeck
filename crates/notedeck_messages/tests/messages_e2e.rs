@@ -2590,6 +2590,26 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &mut recipient_b,
     ]);
 
+    let expected_a = vec![relay_a_url.trim_end_matches('/').to_owned()];
+    let initial_deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        sender_current.step();
+        let actual: Vec<_> = local_dm_relay_list_relays(&mut sender_current, &recipient)
+            .into_iter()
+            .map(|url| url.trim_end_matches('/').to_owned())
+            .collect();
+        if actual == expected_a {
+            break;
+        }
+        assert!(
+            Instant::now() < initial_deadline,
+            "timed out waiting for initial participant relay-list prefetch; expected {:?}, actual {:?}",
+            expected_a,
+            actual
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
     send_direct_message(
         &mut sender_current,
         &recipient_npub,
