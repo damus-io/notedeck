@@ -2542,24 +2542,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Collect all existing run configs as suggestions, deduplicated by (name, command).
-    /// Optionally excludes a specific config by ID (used when editing).
+    /// Collect all existing run configs as editor suggestions.
     fn collect_run_config_suggestions(&self, exclude_id: Option<&str>) -> Vec<RunConfig> {
-        let mut seen = std::collections::HashSet::new();
-        let mut suggestions = Vec::new();
-
-        for configs in self.run_configs.values() {
-            for cfg in configs {
-                if exclude_id == Some(cfg.id.as_str()) {
-                    continue;
-                }
-                if seen.insert((cfg.name.clone(), cfg.command.clone())) {
-                    suggestions.push(cfg.clone());
-                }
-            }
-        }
-        RunConfig::sort_by_name(&mut suggestions);
-        suggestions
+        ui::run_config_editor::collect_run_config_suggestions(&self.run_configs, exclude_id)
     }
 
     /// Build and queue a kind-31991 event for a single run config.
