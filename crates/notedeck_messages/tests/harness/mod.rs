@@ -136,11 +136,35 @@ pub fn local_chat_message_count(device: &mut DeviceHarness) -> usize {
     results.len()
 }
 
+/// Waits until one device can observe the expected local message set from durable state.
+///
+/// Use this only when all relevant relay writes are already durable and no sender
+/// device needs to keep stepping to flush its outbox.
+pub fn wait_for_device_messages(
+    device: &mut DeviceHarness,
+    expected: &BTreeSet<String>,
+    timeout: Duration,
+    context: &str,
+) {
+    wait_for_device_messages_impl(device, expected, timeout, context, &mut []);
+}
+
 /// Waits until a single device matches the expected local message set.
 ///
 /// Any `senders` are stepped each iteration so their outbox continues
 /// flushing while the primary device polls for incoming messages.
-pub fn wait_for_device_messages(
+pub fn wait_for_device_messages_while_flushing(
+    device: &mut DeviceHarness,
+    expected: &BTreeSet<String>,
+    timeout: Duration,
+    context: &str,
+    senders: &mut [&mut DeviceHarness],
+) {
+    wait_for_device_messages_impl(device, expected, timeout, context, senders);
+}
+
+/// Implements the shared polling loop behind the single-device wait helpers.
+fn wait_for_device_messages_impl(
     device: &mut DeviceHarness,
     expected: &BTreeSet<String>,
     timeout: Duration,
@@ -169,6 +193,20 @@ pub fn wait_for_device_messages(
 
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Drops one Messages device and waits briefly for in-process background work to unwind.
+///
+/// Some restart E2Es reuse the same data dir immediately after `drop(device)`. A
+/// short delay avoids racing detached startup work during teardown.
+pub fn wait_for_messages_device_shutdown(
+    device: DeviceHarness,
+    _data_dir: &Path,
+    timeout: Duration,
+    _context: &str,
+) {
+    drop(device);
+    std::thread::sleep(timeout.min(Duration::from_millis(100)));
 }
 
 /// Waits until every device matches the expected local message set.
@@ -211,10 +249,35 @@ pub fn wait_for_device_group_messages(
     timeout: Duration,
     context: &str,
 ) {
+    wait_for_device_group_messages_impl(devices, expected, timeout, context, &mut []);
+}
+
+/// Waits until every borrowed device matches while also stepping any active senders.
+pub fn wait_for_device_group_messages_while_flushing(
+    devices: &mut [&mut DeviceHarness],
+    expected: &BTreeSet<String>,
+    timeout: Duration,
+    context: &str,
+    senders: &mut [&mut DeviceHarness],
+) {
+    wait_for_device_group_messages_impl(devices, expected, timeout, context, senders);
+}
+
+/// Implements the shared polling loop behind the borrowed-group wait helpers.
+fn wait_for_device_group_messages_impl(
+    devices: &mut [&mut DeviceHarness],
+    expected: &BTreeSet<String>,
+    timeout: Duration,
+    context: &str,
+    senders: &mut [&mut DeviceHarness],
+) {
     let deadline = Instant::now() + timeout;
 
     loop {
         step_device_group(devices);
+        for sender in senders.iter_mut() {
+            sender.step();
+        }
 
         if devices
             .iter_mut()

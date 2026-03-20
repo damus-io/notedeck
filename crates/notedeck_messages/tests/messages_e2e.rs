@@ -26,8 +26,9 @@ use harness::{
     cluster_converged_on, init_tracing, local_chat_message_count, local_chat_messages,
     publish_note_via_device, select_account_on_device, step_clusters, step_device_frames,
     step_device_group, step_devices, wait_for_cluster_convergence, wait_for_convergence,
-    wait_for_device_group_messages, wait_for_device_messages, wait_for_devices_messages,
-    warm_up_clusters, DeviceHarness, TEST_TIMEOUT,
+    wait_for_device_group_messages, wait_for_device_group_messages_while_flushing,
+    wait_for_device_messages, wait_for_device_messages_while_flushing, wait_for_devices_messages,
+    wait_for_messages_device_shutdown, warm_up_clusters, DeviceHarness, TEST_TIMEOUT,
 };
 use nostr::{nips::nip17, Event, Filter as NostrFilter, JsonUtil, Kind as NostrKind};
 use nostr_relay_builder::{
@@ -312,7 +313,6 @@ async fn same_account_devices_catch_up_after_one_device_falls_behind_e2e() {
         &expected,
         TEST_TIMEOUT,
         "paused same-account device to catch up from relay history",
-        &mut [],
     );
 
     assert_eq!(local_chat_messages(&mut live_device_a), expected);
@@ -365,7 +365,6 @@ async fn same_account_devices_reconcile_divergent_local_history_e2e() {
         &expected,
         TEST_TIMEOUT,
         "sender local history",
-        &mut [],
     );
 
     let subset_a = build_local_chat_note_jsons(
@@ -481,7 +480,6 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
             &sender_expected,
             TEST_TIMEOUT,
             "sender self-copy before restart",
-            &mut [],
         );
         wait_for_relay_count_at_least(
             &relay_db,
@@ -503,7 +501,12 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
         "initial same-account device convergence before restart",
     );
 
-    drop(restarting_device);
+    wait_for_messages_device_shutdown(
+        restarting_device,
+        &restart_path,
+        TEST_TIMEOUT,
+        "same-account restart device shutdown before reopen",
+    );
 
     let expected = BTreeSet::from([
         "restart-01".to_owned(),
@@ -525,7 +528,6 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
             &sender_expected,
             TEST_TIMEOUT,
             "sender self-copy during restart gap",
-            &mut [],
         );
         wait_for_relay_count_at_least(
             &relay_db,
@@ -545,7 +547,6 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
         &expected,
         TEST_TIMEOUT,
         "stable same-account device after peer restart",
-        &mut [],
     );
 
     let mut restarted_device =
@@ -555,7 +556,6 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
         &expected,
         TEST_TIMEOUT,
         "restarted same-account device to recover missed relay history",
-        &mut [],
     );
 
     assert_eq!(local_chat_messages(&mut stable_device), expected);
@@ -803,7 +803,6 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
                 &sender_expected[idx],
                 TEST_TIMEOUT,
                 "sender self-copy before many-conversation restart",
-                &mut [],
             );
             wait_for_relay_count_at_least(
                 &relay_db,
@@ -826,7 +825,12 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
         "same-account devices to converge on many direct conversations before restart",
     );
 
-    drop(restarting_device);
+    wait_for_messages_device_shutdown(
+        restarting_device,
+        &restart_path,
+        TEST_TIMEOUT,
+        "many-conversation restart device shutdown before reopen",
+    );
 
     let mut expected = initial_expected.clone();
     for (idx, sender_device) in sender_devices.iter_mut().enumerate() {
@@ -846,7 +850,6 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
                 &sender_expected[idx],
                 TEST_TIMEOUT,
                 "sender self-copy during many-conversation restart gap",
-                &mut [],
             );
             wait_for_relay_count_at_least(
                 &relay_db,
@@ -867,7 +870,6 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
         &expected,
         TEST_TIMEOUT,
         "stable same-account device after restart gap across many conversations",
-        &mut [],
     );
 
     let mut restarted_device =
@@ -877,7 +879,6 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
         &expected,
         TEST_TIMEOUT,
         "restarted same-account device to recover many missed conversations",
-        &mut [],
     );
 
     assert_eq!(local_chat_messages(&mut stable_device), expected);
@@ -1387,7 +1388,6 @@ async fn same_account_device_restart_recovers_during_active_multi_conversation_d
                 &BTreeSet::from([message.clone()]),
                 TEST_TIMEOUT,
                 "third sender to persist its own pre-restart self-copy",
-                &mut [],
             );
         }
         wait_for_relay_count_at_least(
@@ -1410,7 +1410,12 @@ async fn same_account_device_restart_recovers_during_active_multi_conversation_d
         "same-account devices to converge before restarting during active delivery",
     );
 
-    drop(restarting_device);
+    wait_for_messages_device_shutdown(
+        restarting_device,
+        &restart_path,
+        TEST_TIMEOUT,
+        "active-delivery restart device shutdown before reopen",
+    );
 
     for (idx, sender_device) in sender_devices.iter_mut().enumerate() {
         let message = format!("restart-active-s{}:mid", idx + 1);
@@ -1510,7 +1515,6 @@ async fn startup_backfills_relay_giftwrap_older_than_local_wrapper_created_at_e2
         &expected,
         TEST_TIMEOUT,
         "backdated giftwrap backfill",
-        &mut [],
     );
 
     assert_eq!(
@@ -1580,7 +1584,6 @@ async fn same_account_devices_backfill_split_history_across_relays_e2e() {
         &expected,
         TEST_TIMEOUT,
         "multi-relay cold-start backfill",
-        &mut [],
     );
     assert_eq!(local_chat_messages(&mut recipient_device), expected);
 
@@ -1588,15 +1591,23 @@ async fn same_account_devices_backfill_split_history_across_relays_e2e() {
     relay_b.shutdown();
 }
 
-/// Verifies same-account devices with different relay visibility diverge first, then converge after relay recovery.
+/// Verifies same-account devices recover to the union of history after startup with expanded relay visibility.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn same_account_devices_converge_after_relay_visibility_recovers_e2e() {
+async fn same_account_devices_converge_after_expanded_relay_visibility_startup_e2e() {
     init_tracing();
 
-    let relay_a = LocalRelay::run(RelayBuilder::default())
+    let relay_a_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+    let relay_b_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+    let relay_a = LocalRelay::run(RelayBuilder::default().database(relay_a_db.clone()))
         .await
         .expect("start relay a");
-    let relay_b = LocalRelay::run(RelayBuilder::default())
+    let relay_b = LocalRelay::run(RelayBuilder::default().database(relay_b_db.clone()))
         .await
         .expect("start relay b");
     let relay_a_url = relay_a.url().to_owned();
@@ -1604,88 +1615,92 @@ async fn same_account_devices_converge_after_relay_visibility_recovers_e2e() {
 
     let recipient = FullKeypair::generate();
     let sender = FullKeypair::generate();
-    let recipient_npub = recipient.pubkey.npub().expect("recipient npub");
-
-    let mut sender_a = build_messages_device(&relay_a_url, &sender);
-    let mut sender_b = build_messages_device(&relay_b_url, &sender);
-    seed_local_dm_relay_list(&mut sender_a, &sender, &relay_a_url);
-    seed_local_dm_relay_list(&mut sender_b, &sender, &relay_b_url);
-    seed_local_dm_relay_list(&mut sender_a, &recipient, &relay_a_url);
-    seed_local_dm_relay_list(&mut sender_b, &recipient, &relay_b_url);
-
-    let device_a_dir = TempDir::new().expect("device a dir");
-    let device_b_dir = TempDir::new().expect("device b dir");
-    let device_a_path = device_a_dir.path().to_path_buf();
-    let device_b_path = device_b_dir.path().to_path_buf();
-    let mut recipient_a =
-        build_messages_device_in_path_with_relays(&[&relay_a_url], &recipient, &device_a_path);
-    let mut recipient_b =
-        build_messages_device_in_path_with_relays(&[&relay_b_url], &recipient, &device_b_path);
-
-    step_device_group(&mut [
-        &mut sender_a,
-        &mut sender_b,
-        &mut recipient_a,
-        &mut recipient_b,
-    ]);
-    std::thread::sleep(Duration::from_millis(100));
-    step_device_group(&mut [
-        &mut sender_a,
-        &mut sender_b,
-        &mut recipient_a,
-        &mut recipient_b,
-    ]);
-
-    open_conversation_via_ui(&mut sender_a, &recipient_npub);
-    open_conversation_via_ui(&mut sender_b, &recipient_npub);
-    for message in ["relay-a-only-01", "relay-a-only-02"] {
-        send_message_via_ui(&mut sender_a, message);
-        sender_a.step();
-        recipient_a.step();
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    for message in ["relay-b-only-01", "relay-b-only-02"] {
-        send_message_via_ui(&mut sender_b, message);
-        sender_b.step();
-        recipient_b.step();
-        std::thread::sleep(Duration::from_millis(25));
-    }
-
     let expected_a = BTreeSet::from(["relay-a-only-01".to_owned(), "relay-a-only-02".to_owned()]);
     let expected_b = BTreeSet::from(["relay-b-only-01".to_owned(), "relay-b-only-02".to_owned()]);
-    wait_for_device_messages(
-        &mut recipient_a,
-        &expected_a,
-        TEST_TIMEOUT,
-        "recipient device with relay a visibility only",
-        &mut [],
-    );
-    wait_for_device_messages(
-        &mut recipient_b,
-        &expected_b,
-        TEST_TIMEOUT,
-        "recipient device with relay b visibility only",
-        &mut [],
-    );
-
-    drop(recipient_a);
-    drop(recipient_b);
-
     let expected_union = BTreeSet::from([
         "relay-a-only-01".to_owned(),
         "relay-a-only-02".to_owned(),
         "relay-b-only-01".to_owned(),
         "relay-b-only-02".to_owned(),
     ]);
+
+    for (idx, message) in expected_a.iter().enumerate() {
+        let wrap = build_backdated_giftwrap_note(
+            &sender,
+            &recipient,
+            message,
+            unix_time_secs() + idx as u64,
+        );
+        let event =
+            Event::from_json(wrap.json().expect("relay a wrap json")).expect("relay a wrap event");
+        relay_a_db
+            .save_event(&event)
+            .await
+            .expect("seed relay a visibility history");
+    }
+    for (idx, message) in expected_b.iter().enumerate() {
+        let wrap = build_backdated_giftwrap_note(
+            &sender,
+            &recipient,
+            message,
+            unix_time_secs() + expected_a.len() as u64 + idx as u64,
+        );
+        let event =
+            Event::from_json(wrap.json().expect("relay b wrap json")).expect("relay b wrap event");
+        relay_b_db
+            .save_event(&event)
+            .await
+            .expect("seed relay b visibility history");
+    }
+
+    let pre_recovery_a_dir = TempDir::new().expect("pre-recovery a dir");
+    let pre_recovery_b_dir = TempDir::new().expect("pre-recovery b dir");
+    let recovered_a_dir = TempDir::new().expect("recovered a dir");
+    let recovered_b_dir = TempDir::new().expect("recovered b dir");
+
+    let local_a =
+        build_local_chat_note_jsons(&sender, &recipient, &["relay-a-only-01", "relay-a-only-02"]);
+    let local_b =
+        build_local_chat_note_jsons(&sender, &recipient, &["relay-b-only-01", "relay-b-only-02"]);
+    for dir in [pre_recovery_a_dir.path(), recovered_a_dir.path()] {
+        seed_local_notes_in_data_dir(dir, &local_a);
+    }
+    for dir in [pre_recovery_b_dir.path(), recovered_b_dir.path()] {
+        seed_local_notes_in_data_dir(dir, &local_b);
+    }
+
+    let mut recipient_a = build_messages_device_in_path_with_relays(
+        &[&relay_a_url],
+        &recipient,
+        pre_recovery_a_dir.path(),
+    );
+    let mut recipient_b = build_messages_device_in_path_with_relays(
+        &[&relay_b_url],
+        &recipient,
+        pre_recovery_b_dir.path(),
+    );
+    wait_for_device_messages(
+        &mut recipient_a,
+        &expected_a,
+        TEST_TIMEOUT,
+        "recipient device with relay a visibility only",
+    );
+    wait_for_device_messages(
+        &mut recipient_b,
+        &expected_b,
+        TEST_TIMEOUT,
+        "recipient device with relay b visibility only",
+    );
+
     let mut recovered_a = build_messages_device_in_path_with_relays(
         &[&relay_a_url, &relay_b_url],
         &recipient,
-        &device_a_path,
+        recovered_a_dir.path(),
     );
     let mut recovered_b = build_messages_device_in_path_with_relays(
         &[&relay_a_url, &relay_b_url],
         &recipient,
-        &device_b_path,
+        recovered_b_dir.path(),
     );
 
     wait_for_device_group_messages(
@@ -1726,7 +1741,7 @@ async fn duplicate_giftwrap_across_relays_is_deduped_e2e() {
     let mut recipient_device =
         build_messages_device_with_relays(&[&relay_a_url, &relay_b_url], &recipient);
     let expected = BTreeSet::from(["dedupe-me".to_owned()]);
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_device,
         &expected,
         TEST_TIMEOUT,
@@ -1765,7 +1780,7 @@ async fn invalid_giftwrap_does_not_block_valid_history_e2e() {
 
     let mut recipient_device = build_messages_device(&relay_url, &recipient);
     let expected = BTreeSet::from(["valid-neighbor".to_owned()]);
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_device,
         &expected,
         TEST_TIMEOUT,
@@ -1815,7 +1830,7 @@ async fn mixed_giftwrap_failures_do_not_block_valid_history_e2e() {
 
     let mut recipient_device = build_messages_device(&relay_url, &recipient);
     let expected = BTreeSet::from(["valid-batch-01".to_owned(), "valid-batch-02".to_owned()]);
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_device,
         &expected,
         TEST_TIMEOUT,
@@ -2033,14 +2048,14 @@ async fn sending_uses_latest_participant_dm_relay_list_e2e() {
 
     let mut recipient_a = build_messages_device(&relay_a_url, &recipient);
     let mut recipient_b = build_messages_device(&relay_b_url, &recipient);
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_a,
         &BTreeSet::from(["route-a".to_owned()]),
         TEST_TIMEOUT,
         "initial relay-list route to relay a",
         &mut [&mut sender_device],
     );
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_b,
         &BTreeSet::from(["route-b".to_owned()]),
         TEST_TIMEOUT,
@@ -2090,7 +2105,7 @@ async fn switching_accounts_isolates_messages_state_e2e() {
     );
     send_message_via_ui(&mut sender_to_b, "for-account-b");
 
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut switching_device,
         &BTreeSet::from(["for-account-b".to_owned()]),
         TEST_TIMEOUT,
@@ -2105,7 +2120,7 @@ async fn switching_accounts_isolates_messages_state_e2e() {
         &account_a.pubkey.npub().expect("account a npub"),
     );
     send_message_via_ui(&mut sender_to_a, "for-account-a");
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut switching_device,
         &BTreeSet::from(["for-account-a".to_owned()]),
         TEST_TIMEOUT,
@@ -2266,7 +2281,7 @@ async fn same_account_device_recovers_missed_messages_after_offline_restart_e2e(
 
     let expected_initial =
         BTreeSet::from(["before-outage-a".to_owned(), "before-outage-b".to_owned()]);
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_device,
         &expected_initial,
         TEST_TIMEOUT,
@@ -2276,8 +2291,12 @@ async fn same_account_device_recovers_missed_messages_after_offline_restart_e2e(
 
     // Phase 2: recipient goes fully offline.  Messages arrive on the relays
     // while the device is down.
-    drop(recipient_device);
-    std::thread::sleep(Duration::from_millis(50));
+    wait_for_messages_device_shutdown(
+        recipient_device,
+        &churn_path,
+        TEST_TIMEOUT,
+        "recipient device shutdown before offline restart",
+    );
 
     send_message_via_ui(&mut sender_b, "during-outage-b");
 
@@ -2316,7 +2335,6 @@ async fn same_account_device_recovers_missed_messages_after_offline_restart_e2e(
         &expected_all,
         TEST_TIMEOUT,
         "recipient device after restart recovers missed messages",
-        &mut [],
     );
 
     relay_a.shutdown();
@@ -2395,7 +2413,7 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &recipient_npub,
         "route-a-before-offline",
     );
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_a,
         &BTreeSet::from(["route-a-before-offline".to_owned()]),
         TEST_TIMEOUT,
@@ -2403,7 +2421,12 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &mut [&mut sender_current],
     );
 
-    drop(sender_offline);
+    wait_for_messages_device_shutdown(
+        sender_offline,
+        &offline_path,
+        TEST_TIMEOUT,
+        "offline same-account sender shutdown before restart",
+    );
 
     seed_local_dm_relay_list_with_relays(
         &mut recipient_b,
@@ -2483,7 +2506,7 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &recipient_npub,
         "route-b-after-restart",
     );
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_b,
         &BTreeSet::from(["route-b-after-restart".to_owned()]),
         TEST_TIMEOUT,
@@ -2572,7 +2595,7 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &recipient_npub,
         "prefetch-before-offline",
     );
-    wait_for_device_messages(
+    wait_for_device_messages_while_flushing(
         &mut recipient_a,
         &BTreeSet::from(["prefetch-before-offline".to_owned()]),
         TEST_TIMEOUT,
@@ -2580,7 +2603,12 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &mut [&mut sender_current],
     );
 
-    drop(sender_offline);
+    wait_for_messages_device_shutdown(
+        sender_offline,
+        &offline_path,
+        TEST_TIMEOUT,
+        "participant relay prefetch sender shutdown before restart",
+    );
 
     seed_local_dm_relay_list_with_relays(
         &mut recipient_b,
@@ -2637,12 +2665,16 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
     relay_b.shutdown();
 }
 
-/// Verifies restart-time relay replay does not duplicate already-ingested giftwrap history.
+/// Verifies startup relay replay does not duplicate already-ingested local giftwrap history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn duplicate_relay_history_is_deduped_across_restart_e2e() {
+async fn startup_relay_replay_is_deduped_against_local_giftwrap_history_e2e() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
+    let relay_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+    let relay = LocalRelay::run(RelayBuilder::default().database(relay_db.clone()))
         .await
         .expect("start local relay");
     let relay_url = relay.url().to_owned();
@@ -2657,12 +2689,19 @@ async fn duplicate_relay_history_is_deduped_across_restart_e2e() {
         now.saturating_sub(1),
     );
     let live_wrap = build_backdated_giftwrap_note(&sender, &recipient, "restart-dedupe-02", now);
-
-    let mut publisher = build_messages_device(&relay_url, &sender);
-    publish_note_via_device(&mut publisher, &initial_wrap);
+    let initial_event = Event::from_json(initial_wrap.json().expect("initial wrap json"))
+        .expect("initial wrap event");
+    relay_db
+        .save_event(&initial_event)
+        .await
+        .expect("seed initial relay history");
 
     let restart_dir = TempDir::new().expect("restart dedupe dir");
     let restart_path = restart_dir.path().to_path_buf();
+    let local_initial = vec![initial_wrap.json().expect("initial local giftwrap json")];
+    seed_local_giftwraps_in_data_dir(&restart_path, &recipient, &local_initial);
+
+    let mut publisher = build_messages_device(&relay_url, &sender);
     let mut recipient_device =
         build_messages_device_in_path_with_relays(&[&relay_url], &recipient, &restart_path);
     let expected_initial = BTreeSet::from(["restart-dedupe-01".to_owned()]);
@@ -2670,41 +2709,23 @@ async fn duplicate_relay_history_is_deduped_across_restart_e2e() {
         &mut recipient_device,
         &expected_initial,
         TEST_TIMEOUT,
-        "initial giftwrap delivery before restart dedupe check",
-        &mut [&mut publisher],
+        "startup replay should stay deduped against local history",
     );
     assert_eq!(local_chat_message_count(&mut recipient_device), 1);
-
-    drop(recipient_device);
-
-    let mut restarted_recipient =
-        build_messages_device_in_path_with_relays(&[&relay_url], &recipient, &restart_path);
-    wait_for_device_messages(
-        &mut restarted_recipient,
-        &expected_initial,
-        TEST_TIMEOUT,
-        "restart-time relay replay should not duplicate stored history",
-        &mut [],
-    );
-    assert_eq!(
-        local_chat_message_count(&mut restarted_recipient),
-        1,
-        "expected replayed relay history to remain deduped after restart"
-    );
 
     publish_note_via_device(&mut publisher, &live_wrap);
     let expected_final = BTreeSet::from([
         "restart-dedupe-01".to_owned(),
         "restart-dedupe-02".to_owned(),
     ]);
-    wait_for_device_messages(
-        &mut restarted_recipient,
+    wait_for_device_messages_while_flushing(
+        &mut recipient_device,
         &expected_final,
         TEST_TIMEOUT,
-        "live delivery after restart dedupe replay",
-        &mut [],
+        "live delivery after startup dedupe replay",
+        &mut [&mut publisher],
     );
-    assert_eq!(local_chat_message_count(&mut restarted_recipient), 2);
+    assert_eq!(local_chat_message_count(&mut recipient_device), 2);
 
     relay.shutdown();
 }
@@ -2762,7 +2783,7 @@ async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
 
     let mut expected = BTreeSet::from(["restart-cycle-baseline".to_owned()]);
     send_message_via_ui(&mut sender_device, "restart-cycle-baseline");
-    wait_for_device_group_messages(
+    wait_for_device_group_messages_while_flushing(
         &mut [
             &mut stable_device,
             flapping_device
@@ -2772,10 +2793,18 @@ async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
         &expected,
         TEST_TIMEOUT,
         "baseline same-account convergence before repeated restart cycles",
+        &mut [&mut sender_device],
     );
 
     for cycle in 1..=3 {
-        drop(flapping_device.take());
+        if let Some(flapping_device) = flapping_device.take() {
+            wait_for_messages_device_shutdown(
+                flapping_device,
+                &restart_path,
+                TEST_TIMEOUT,
+                "flapping same-account device shutdown before restart cycle reopen",
+            );
+        }
 
         for suffix in ["offline-a", "offline-b"] {
             let message = format!("restart-cycle-{cycle}:{suffix}");
@@ -2791,7 +2820,6 @@ async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
             &expected,
             TEST_TIMEOUT,
             "stable same-account device while peer is offline during restart cycles",
-            &mut [],
         );
 
         flapping_device = Some(build_messages_device_in_path_with_relays(
@@ -2812,7 +2840,7 @@ async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
         ]);
         std::thread::sleep(Duration::from_millis(20));
 
-        wait_for_device_group_messages(
+        wait_for_device_group_messages_while_flushing(
             &mut [
                 &mut stable_device,
                 flapping_device
@@ -2822,6 +2850,7 @@ async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
             &expected,
             TEST_TIMEOUT,
             "same-account devices across repeated restart cycles",
+            &mut [&mut sender_device],
         );
     }
 
@@ -3126,11 +3155,17 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     let carol_to_bob = "carol->bob:01".to_owned();
 
     send_direct_message(alice.device(0), &bob.npub, &alice_to_bob);
+    step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
     send_direct_message(alice.device(1), &carol.npub, &alice_to_carol);
+    step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
     send_direct_message(bob.device(0), &alice.npub, &bob_to_alice);
+    step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
     send_direct_message(bob.device(1), &carol.npub, &bob_to_carol);
+    step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
     send_direct_message(carol.device(0), &alice.npub, &carol_to_alice);
+    step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
     send_direct_message(carol.device(1), &bob.npub, &carol_to_bob);
+    step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
     let expected_alice = BTreeSet::from([
         alice_to_bob.clone(),
@@ -3314,7 +3349,6 @@ async fn messages_backfill_reliability_limit_e2e() {
         &expected,
         TEST_TIMEOUT,
         "cold-start backfill of 600 injected messages",
-        &mut [],
     );
 
     assert_eq!(
@@ -3545,7 +3579,6 @@ async fn messages_recover_after_relay_restart_e2e() {
         &initial_messages,
         TEST_TIMEOUT,
         "bob to receive initial messages before relay restart",
-        &mut [],
     );
 
     // Phase 2: Kill the relay — Bob's connection goes stale
@@ -3593,7 +3626,6 @@ async fn messages_recover_after_relay_restart_e2e() {
         &all_expected,
         TEST_TIMEOUT,
         "bob to recover messages after relay restart",
-        &mut [],
     );
 
     assert_eq!(
@@ -3680,7 +3712,6 @@ async fn stale_connection_detected_after_silent_stall_e2e() {
         &initial_messages,
         TEST_TIMEOUT,
         "bob to receive initial messages through proxy",
-        &mut [],
     );
 
     // Phase 2: Black-hole the proxy — Bob's TCP connection stays alive but
