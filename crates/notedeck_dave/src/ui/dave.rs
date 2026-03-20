@@ -2207,6 +2207,49 @@ mod tests {
     }
 
     #[test]
+    fn permission_request_ui_exit_button_emits_exit_tool_call_action() {
+        let expected_request_id = Uuid::new_v4();
+        let request = PermissionRequest::new(
+            expected_request_id,
+            "Bash".to_string(),
+            json!({
+                "command": "rm -rf /tmp/scratch"
+            }),
+            None,
+            None,
+            None,
+        );
+
+        let mut harness = Harness::new_ui_state(
+            |ui, state: &mut PermissionUiHarnessState| {
+                let mut dave_ui = DaveUi::new(
+                    false,
+                    1,
+                    &[],
+                    &mut state.input,
+                    &mut state.focus_requested,
+                    AiMode::Agentic,
+                );
+                if let Some(action) = dave_ui.permission_request_ui(&state.request, ui) {
+                    state.action = Some(action);
+                }
+            },
+            PermissionUiHarnessState::new(request),
+        );
+
+        harness.run();
+        harness.get_by_label("Exit").click();
+        harness.run();
+
+        match harness.state().action.as_ref() {
+            Some(DaveAction::ExitToolCall { request_id }) => {
+                assert_eq!(*request_id, expected_request_id);
+            }
+            other => panic!("expected ExitToolCall action, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn question_set_prompt_ui_submits_selected_answer() {
         let expected_request_id = Uuid::new_v4();
         let request = PermissionRequest::new(
