@@ -4,18 +4,24 @@ use std::io::Read;
 use std::path::PathBuf;
 use tungstenite::{connect, Message};
 
+/// NIP-82 app identifier
+const APP_ID: &str = "io.damus.notedeck";
+
 fn usage() {
     eprintln!(
         "Usage: notedeck-release --version <semver> --nsec <nsec_or_hex> --relay <wss://...> [--relay ...] [options]"
     );
     eprintln!();
-    eprintln!("Publishes NIP-94 file metadata events (kind 1063) for each release artifact.");
+    eprintln!(
+        "Publishes NIP-82 release events (kind 30063 + kind 3063) for each release artifact."
+    );
     eprintln!("By default, fetches artifacts from the GitHub Release for the given version.");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --version    Release version (semver, e.g. 1.2.0)");
     eprintln!("  --nsec       Secret key (nsec bech32 or hex)");
     eprintln!("  --relay      Relay URL (repeatable)");
+    eprintln!("  --channel    Release channel: main (default), beta, nightly, dev");
     eprintln!("  --dry-run    Print events as JSON without publishing");
     eprintln!("  <files...>   Local artifact files (skips GitHub fetch)");
     std::process::exit(1);
@@ -25,6 +31,9 @@ const GITHUB_REPO: &str = "damus-io/notedeck";
 
 /// File extensions recognized as release artifacts
 const ARTIFACT_EXTENSIONS: &[&str] = &[".tar.gz", ".zip", ".dmg", ".deb", ".rpm", ".exe", ".msi"];
+
+/// Valid release channels
+const VALID_CHANNELS: &[&str] = &["main", "beta", "nightly", "dev"];
 
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -46,6 +55,41 @@ fn mime_for_artifact(name: &str) -> &'static str {
 
 fn github_download_url(version: &str, filename: &str) -> String {
     format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{filename}")
+}
+
+/// Derive the NIP-82 platform "f" tag from an artifact filename.
+/// e.g. "notedeck-x86_64-linux.tar.gz" → "linux-x86_64"
+fn platform_tag_from_name(name: &str) -> Option<String> {
+    // Expected pattern: notedeck-{arch}-{os}.{ext}
+    let stem = name.strip_prefix("notedeck-").unwrap_or(name);
+
+    // Remove extension(s)
+    let stem = if let Some(s) = stem.strip_suffix(".tar.gz") {
+        s
+    } else if let Some(s) = stem.strip_suffix(".zip") {
+        s
+    } else if let Some(s) = stem.strip_suffix(".dmg") {
+        s
+    } else if let Some(s) = stem.strip_suffix(".deb") {
+        s
+    } else if let Some(s) = stem.strip_suffix(".rpm") {
+        s
+    } else if let Some(s) = stem.strip_suffix(".exe") {
+        s
+    } else if let Some(s) = stem.strip_suffix(".msi") {
+        s
+    } else {
+        return None;
+    };
+
+    // Split into arch-os (e.g. "x86_64-linux")
+    let parts: Vec<&str> = stem.splitn(2, '-').collect();
+    if parts.len() == 2 {
+        // Flip to os-arch format
+        Some(format!("{}-{}", parts[1], parts[0]))
+    } else {
+        None
+    }
 }
 
 struct ArtifactInfo {
@@ -145,18 +189,24 @@ fn load_local_artifacts(version: &str, paths: &[PathBuf]) -> Result<Vec<Artifact
     Ok(artifacts)
 }
 
-fn build_release_event(
+/// Build a NIP-82 kind 3063 (Software Asset) event.
+/// Returns the event JSON and the event id (needed for the release event's "e" tags).
+fn build_asset_event(
     seckey: &[u8; 32],
     version: &str,
     artifact: &ArtifactInfo,
-) -> Result<String, String> {
+) -> Result<(String, [u8; 32]), String> {
     let mime = mime_for_artifact(&artifact.name);
     let size = artifact.size.to_string();
+    let platform = platform_tag_from_name(&artifact.name).unwrap_or_else(|| "unknown".to_string());
 
     let note = NoteBuilder::new()
-        .kind(1063)
+        .kind(3063)
         .content("")
         .sign(seckey)
+        .start_tag()
+        .tag_str("i")
+        .tag_str(APP_ID)
         .start_tag()
         .tag_str("url")
         .tag_str(&artifact.url)
@@ -167,6 +217,9 @@ fn build_release_event(
         .tag_str("version")
         .tag_str(version)
         .start_tag()
+        .tag_str("f")
+        .tag_str(&platform)
+        .start_tag()
         .tag_str("name")
         .tag_str(&artifact.name)
         .start_tag()
@@ -176,8 +229,44 @@ fn build_release_event(
         .tag_str("size")
         .tag_str(&size)
         .build()
-        .ok_or("failed to build note")?;
+        .ok_or("failed to build asset note")?;
 
+    let id = *note.id();
+    let json = note.json().map_err(|e| format!("json: {e}"))?;
+    Ok((json, id))
+}
+
+/// Build a NIP-82 kind 30063 (Software Release) event referencing the given asset event ids.
+fn build_release_event(
+    seckey: &[u8; 32],
+    version: &str,
+    channel: &str,
+    asset_ids: &[[u8; 32]],
+) -> Result<String, String> {
+    let d_tag = format!("{APP_ID}@{version}");
+
+    let mut builder = NoteBuilder::new()
+        .kind(30063)
+        .content("")
+        .sign(seckey)
+        .start_tag()
+        .tag_str("d")
+        .tag_str(&d_tag)
+        .start_tag()
+        .tag_str("i")
+        .tag_str(APP_ID)
+        .start_tag()
+        .tag_str("version")
+        .tag_str(version)
+        .start_tag()
+        .tag_str("c")
+        .tag_str(channel);
+
+    for asset_id in asset_ids {
+        builder = builder.start_tag().tag_str("e").tag_id(asset_id);
+    }
+
+    let note = builder.build().ok_or("failed to build release note")?;
     note.json().map_err(|e| format!("json: {e}"))
 }
 
@@ -242,6 +331,7 @@ fn main() {
     let mut relays: Vec<String> = Vec::new();
     let mut local_files: Vec<PathBuf> = Vec::new();
     let mut dry_run = false;
+    let mut channel = "main".to_string();
 
     let mut i = 0;
     while i < args.len() {
@@ -258,6 +348,12 @@ fn main() {
                 i += 1;
                 if let Some(r) = args.get(i) {
                     relays.push(r.clone());
+                }
+            }
+            "--channel" => {
+                i += 1;
+                if let Some(c) = args.get(i) {
+                    channel = c.clone();
                 }
             }
             "--dry-run" => {
@@ -292,6 +388,14 @@ fn main() {
         usage();
     }
 
+    if !VALID_CHANNELS.contains(&channel.as_str()) {
+        eprintln!(
+            "error: invalid channel '{channel}'. Valid channels: {}",
+            VALID_CHANNELS.join(", ")
+        );
+        std::process::exit(1);
+    }
+
     let seckey = parse_secret_key(&nsec_str).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         std::process::exit(1);
@@ -321,23 +425,52 @@ fn main() {
         })
     };
 
-    eprintln!("building {} release events...", artifacts.len());
+    // Step 1: Build and publish asset events (kind 3063), collecting their ids
+    eprintln!("building {} asset events (kind 3063)...", artifacts.len());
+    let mut asset_ids: Vec<[u8; 32]> = Vec::new();
+    let mut asset_jsons: Vec<String> = Vec::new();
+
     for artifact in &artifacts {
-        eprintln!("  {}", artifact.name);
-        let event_json = build_release_event(&seckey, &version, artifact).unwrap_or_else(|e| {
+        let platform =
+            platform_tag_from_name(&artifact.name).unwrap_or_else(|| "unknown".to_string());
+        eprintln!("  {} (platform: {})", artifact.name, platform);
+
+        let (json, id) = build_asset_event(&seckey, &version, artifact).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
         });
 
         if dry_run {
-            println!("{event_json}");
-            continue;
+            println!("{json}");
+        } else {
+            for relay in &relays {
+                if let Err(e) = publish_event(relay, &json) {
+                    eprintln!("    error: {e}");
+                }
+            }
         }
+
+        asset_ids.push(id);
+        asset_jsons.push(json);
+    }
+
+    // Step 2: Build and publish the release event (kind 30063) referencing all assets
+    eprintln!("building release event (kind 30063, channel: {channel})...");
+    let release_json =
+        build_release_event(&seckey, &version, &channel, &asset_ids).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        });
+
+    if dry_run {
+        println!("{release_json}");
+    } else {
         for relay in &relays {
-            if let Err(e) = publish_event(relay, &event_json) {
+            if let Err(e) = publish_event(relay, &release_json) {
                 eprintln!("    error: {e}");
             }
         }
     }
+
     eprintln!("done.");
 }

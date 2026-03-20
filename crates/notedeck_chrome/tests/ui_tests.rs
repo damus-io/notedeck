@@ -225,7 +225,7 @@ fn render_notedeck_tick(ctx: &egui::Context, state: &mut TickTestState) {
     state.notedeck.tick(ctx);
 }
 
-#[cfg(feature = "auto-update")]
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_update_bar() {
@@ -252,19 +252,29 @@ fn snapshot_update_bar() {
         test_helpers::TEST_PUBKEY,
     );
 
-    // Ingest a properly signed kind 1063 release event
-    let ev = test_helpers::build_signed_release_event(
+    // Ingest properly signed NIP-82 events (kind 3063 asset + kind 30063 release)
+    let (asset_ev, asset_id) = test_helpers::build_signed_asset_event(
         &test_helpers::TEST_SECRET_KEY,
         "99.0.0",
-        notedeck::updater::nostr::target_asset_name(),
+        notedeck::updater::nostr::target_platform_tag(),
         "https://example.com/download/notedeck.tar.gz",
         "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+    );
+    let release_ev = test_helpers::build_signed_release_event(
+        &test_helpers::TEST_SECRET_KEY,
+        "99.0.0",
+        "main",
+        &[asset_id],
     );
     {
         let app_ctx = notedeck_ctx.notedeck.app_context(&ctx);
         app_ctx
             .ndb
-            .process_event_with(&ev, nostrdb::IngestMetadata::new())
+            .process_event_with(&asset_ev, nostrdb::IngestMetadata::new())
+            .unwrap();
+        app_ctx
+            .ndb
+            .process_event_with(&release_ev, nostrdb::IngestMetadata::new())
             .unwrap();
     }
 

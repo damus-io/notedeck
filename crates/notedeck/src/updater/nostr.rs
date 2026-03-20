@@ -3,8 +3,14 @@ use tracing::{info, warn};
 
 use super::ReleaseInfo;
 
-/// The kind for NIP-94 file metadata events (used by zapstore convention)
-const RELEASE_KIND: u64 = 1063;
+/// NIP-82 Software Release event kind
+const RELEASE_KIND: u64 = 30063;
+
+/// NIP-82 Software Asset event kind
+const ASSET_KIND: u64 = 3063;
+
+/// The app identifier used in NIP-82 "i" tags
+pub const APP_ID: &str = "io.damus.notedeck";
 
 /// Default trusted release signing pubkey
 /// TODO: Replace with the actual release signing pubkey before shipping
@@ -12,6 +18,37 @@ pub const DEFAULT_RELEASE_PUBKEY: [u8; 32] = [
     0x32, 0xe1, 0x82, 0x76, 0x35, 0x45, 0x0e, 0xbb, 0x3c, 0x5a, 0x7d, 0x12, 0xc1, 0xf8, 0xe7, 0xb2,
     0xb5, 0x14, 0x43, 0x9a, 0xc1, 0x0a, 0x67, 0xee, 0xf3, 0xd9, 0xfd, 0x9c, 0x5c, 0x68, 0xe2, 0x45,
 ];
+
+/// Release channels supported by the NIP-82 zapstore convention
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ReleaseChannel {
+    #[default]
+    Main,
+    Beta,
+    Nightly,
+    Dev,
+}
+
+impl ReleaseChannel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Main => "main",
+            Self::Beta => "beta",
+            Self::Nightly => "nightly",
+            Self::Dev => "dev",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "main" => Some(Self::Main),
+            "beta" => Some(Self::Beta),
+            "nightly" => Some(Self::Nightly),
+            "dev" => Some(Self::Dev),
+            _ => None,
+        }
+    }
+}
 
 /// Returns the expected asset name for the current platform/arch
 pub fn target_asset_name() -> &'static str {
@@ -41,13 +78,54 @@ pub fn target_asset_name() -> &'static str {
     }
 }
 
-/// Build a nostrdb filter for release file metadata events from the given pubkey
-pub fn release_filter(pubkey: &[u8; 32]) -> Vec<Filter> {
-    vec![Filter::new()
-        .authors([pubkey])
-        .kinds([RELEASE_KIND])
-        .limit(10)
-        .build()]
+/// Returns the platform tag value for the current platform/arch (NIP-82 "f" tag)
+pub fn target_platform_tag() -> &'static str {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        "linux-x86_64"
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        "linux-aarch64"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "macos-x86_64"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "macos-aarch64"
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        "windows-x86_64"
+    }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        "windows-aarch64"
+    }
+}
+
+/// Build nostrdb filters for NIP-82 release events and asset events from the given pubkey.
+/// Returns two filters: one for kind 30063 (releases) and one for kind 3063 (assets).
+pub fn release_filter(pubkey: &[u8; 32], channel: ReleaseChannel) -> Vec<Filter> {
+    vec![
+        // Kind 30063: Software Release events filtered by app id and channel
+        Filter::new()
+            .authors([pubkey])
+            .kinds([RELEASE_KIND])
+            .tags([APP_ID], 'i')
+            .tags([channel.as_str()], 'c')
+            .limit(10)
+            .build(),
+        // Kind 3063: Software Asset events (we need these to resolve release references)
+        Filter::new()
+            .authors([pubkey])
+            .kinds([ASSET_KIND])
+            .tags([APP_ID], 'i')
+            .limit(50)
+            .build(),
+    ]
 }
 
 #[derive(Debug)]
@@ -56,6 +134,7 @@ pub enum ReleaseParseError {
     WrongPlatform { got: String, expected: String },
     InvalidVersion(String),
     NotNewer { current: String, remote: String },
+    AssetNotFound,
 }
 
 impl std::fmt::Display for ReleaseParseError {
@@ -69,17 +148,21 @@ impl std::fmt::Display for ReleaseParseError {
             Self::NotNewer { current, remote } => {
                 write!(f, "not newer: current={current}, remote={remote}")
             }
+            Self::AssetNotFound => write!(f, "no matching asset event found"),
         }
     }
 }
 
-/// Parse a NIP-94 file metadata note into a ReleaseInfo, if it matches
-/// the current platform and is newer than the running version.
-pub fn parse_release_note(note: &Note) -> Result<ReleaseInfo, ReleaseParseError> {
-    let mut url = None;
-    let mut sha256 = None;
+/// Parsed info from a kind 30063 release event (before asset resolution)
+struct ReleaseEventInfo {
+    version: String,
+    asset_event_ids: Vec<[u8; 32]>,
+}
+
+/// Parse a NIP-82 kind 30063 (Software Release) event to extract version and asset references.
+fn parse_release_event(note: &Note) -> Result<ReleaseEventInfo, ReleaseParseError> {
     let mut version = None;
-    let mut name = None;
+    let mut asset_event_ids = Vec::new();
 
     for tag in note.tags() {
         if tag.count() < 2 {
@@ -91,33 +174,17 @@ pub fn parse_release_note(note: &Note) -> Result<ReleaseInfo, ReleaseParseError>
         };
 
         match key {
-            "url" => url = tag.get_str(1).map(|s| s.to_owned()),
-            "x" => {
-                // nostrdb stores 32-byte hex strings as binary internally
-                sha256 = tag
-                    .get_id(1)
-                    .map(hex::encode)
-                    .or_else(|| tag.get_str(1).map(|s| s.to_owned()));
-            }
             "version" => version = tag.get_str(1).map(|s| s.to_owned()),
-            "name" => name = tag.get_str(1).map(|s| s.to_owned()),
+            "e" => {
+                if let Some(id) = tag.get_id(1) {
+                    asset_event_ids.push(*id);
+                }
+            }
             _ => {}
         }
     }
 
-    let url = url.ok_or(ReleaseParseError::MissingTag("url"))?;
-    let sha256 = sha256.ok_or(ReleaseParseError::MissingTag("x"))?;
     let version_str = version.ok_or(ReleaseParseError::MissingTag("version"))?;
-    let asset_name = name.ok_or(ReleaseParseError::MissingTag("name"))?;
-
-    // Only match events for our platform
-    let expected = target_asset_name();
-    if asset_name != expected {
-        return Err(ReleaseParseError::WrongPlatform {
-            got: asset_name,
-            expected: expected.to_string(),
-        });
-    }
 
     // Only return if newer than current version
     let current_version = env!("CARGO_PKG_VERSION");
@@ -133,8 +200,65 @@ pub fn parse_release_note(note: &Note) -> Result<ReleaseInfo, ReleaseParseError>
         });
     }
 
-    Ok(ReleaseInfo {
+    if asset_event_ids.is_empty() {
+        return Err(ReleaseParseError::MissingTag("e"));
+    }
+
+    Ok(ReleaseEventInfo {
         version: version_str,
+        asset_event_ids,
+    })
+}
+
+/// Parse a NIP-82 kind 3063 (Software Asset) event to extract download info.
+/// Returns None if the asset doesn't match the current platform.
+fn parse_asset_event(note: &Note) -> Option<ReleaseInfo> {
+    let mut url = None;
+    let mut sha256 = None;
+    let mut version = None;
+    let mut platform = None;
+    let mut name = None;
+
+    for tag in note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        let Some(key) = tag.get_str(0) else {
+            continue;
+        };
+
+        match key {
+            "url" => url = tag.get_str(1).map(|s| s.to_owned()),
+            "x" => {
+                sha256 = tag
+                    .get_id(1)
+                    .map(hex::encode)
+                    .or_else(|| tag.get_str(1).map(|s| s.to_owned()));
+            }
+            "version" => version = tag.get_str(1).map(|s| s.to_owned()),
+            "f" => platform = tag.get_str(1).map(|s| s.to_owned()),
+            "name" => name = tag.get_str(1).map(|s| s.to_owned()),
+            _ => {}
+        }
+    }
+
+    // Check platform match
+    let expected_platform = target_platform_tag();
+    let plat = platform.as_deref()?;
+    if plat != expected_platform {
+        return None;
+    }
+
+    let url = url?;
+    let sha256 = sha256?;
+    let version = version?;
+    // Use name if present, otherwise derive from URL
+    let asset_name =
+        name.unwrap_or_else(|| url.rsplit('/').next().unwrap_or("notedeck").to_string());
+
+    Some(ReleaseInfo {
+        version,
         asset_url: url,
         asset_name,
         expected_sha256: sha256,
@@ -143,10 +267,18 @@ pub fn parse_release_note(note: &Note) -> Result<ReleaseInfo, ReleaseParseError>
 
 /// Query ndb for the latest release matching our platform that is newer
 /// than the currently running version.
-pub fn find_latest_release(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> Option<ReleaseInfo> {
-    let filters = release_filter(pubkey);
+///
+/// Two-step lookup: find kind 30063 release events, then resolve their
+/// "e" tag references to kind 3063 asset events for platform matching.
+pub fn find_latest_release(
+    ndb: &Ndb,
+    txn: &Transaction,
+    pubkey: &[u8; 32],
+    channel: ReleaseChannel,
+) -> Option<ReleaseInfo> {
+    let filters = release_filter(pubkey, channel);
 
-    let results = match ndb.query(txn, &filters, 10) {
+    let results = match ndb.query(txn, &filters, 50) {
         Ok(r) => r,
         Err(e) => {
             warn!("failed to query ndb for release events: {e}");
@@ -156,18 +288,44 @@ pub fn find_latest_release(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> O
 
     let mut best: Option<ReleaseInfo> = None;
 
-    for result in results {
-        if let Ok(release) = parse_release_note(&result.note) {
-            let dominated = best.as_ref().is_some_and(|b| {
-                semver::Version::parse(&release.version)
-                    .ok()
-                    .zip(semver::Version::parse(&b.version).ok())
-                    .is_some_and(|(new, old)| new <= old)
-            });
+    // Filter to only kind 30063 release events
+    for result in &results {
+        if result.note.kind() as u64 != RELEASE_KIND {
+            continue;
+        }
 
-            if !dominated {
-                info!("found release candidate: v{}", release.version);
-                best = Some(release);
+        let release_info = match parse_release_event(&result.note) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        // Check if this version is better than our current best
+        let dominated = best.as_ref().is_some_and(|b| {
+            semver::Version::parse(&release_info.version)
+                .ok()
+                .zip(semver::Version::parse(&b.version).ok())
+                .is_some_and(|(new, old)| new <= old)
+        });
+
+        if dominated {
+            continue;
+        }
+
+        // Resolve asset references — find a matching platform asset
+        for asset_id in &release_info.asset_event_ids {
+            let asset_note = ndb
+                .get_notekey_by_id(txn, asset_id)
+                .ok()
+                .and_then(|nk| ndb.get_note_by_key(txn, nk).ok());
+
+            let Some(asset_note) = asset_note else {
+                continue;
+            };
+
+            if let Some(asset_info) = parse_asset_event(&asset_note) {
+                info!("found release candidate: v{}", release_info.version);
+                best = Some(asset_info);
+                break;
             }
         }
     }
@@ -175,10 +333,11 @@ pub fn find_latest_release(ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) -> O
     best
 }
 
-/// Test helpers for constructing release events, available to other crates
+/// Test helpers for constructing NIP-82 release events, available to other crates
 /// when the `snapshot-testing` feature is enabled.
 #[cfg(any(test, feature = "snapshot-testing"))]
 pub mod test_helpers {
+    use super::*;
     use nostrdb::NoteBuilder;
 
     /// A throwaway secret key for test signing (never used on a relay)
@@ -195,19 +354,22 @@ pub mod test_helpers {
         0x17, 0x98,
     ];
 
-    /// Build a properly signed kind 1063 release event as a nostr JSON string.
-    /// This can be ingested into ndb without `skip_validation`.
-    pub fn build_signed_release_event(
+    /// Build a properly signed kind 3063 (Software Asset) event.
+    /// Returns the event JSON string and the note id bytes.
+    pub fn build_signed_asset_event(
         seckey: &[u8; 32],
         version: &str,
-        asset_name: &str,
+        platform: &str,
         url: &str,
         sha256: &str,
-    ) -> String {
+    ) -> (String, [u8; 32]) {
         let note = NoteBuilder::new()
-            .kind(1063)
+            .kind(ASSET_KIND as u32)
             .content("")
             .sign(seckey)
+            .start_tag()
+            .tag_str("i")
+            .tag_str(APP_ID)
             .start_tag()
             .tag_str("url")
             .tag_str(url)
@@ -218,8 +380,8 @@ pub mod test_helpers {
             .tag_str("version")
             .tag_str(version)
             .start_tag()
-            .tag_str("name")
-            .tag_str(asset_name)
+            .tag_str("f")
+            .tag_str(platform)
             .start_tag()
             .tag_str("m")
             .tag_str("application/gzip")
@@ -227,19 +389,56 @@ pub mod test_helpers {
             .tag_str("size")
             .tag_str("12345678")
             .build()
-            .expect("build release note");
+            .expect("build asset note");
 
+        let id = *note.id();
+        let json = note.json().expect("serialize note to json");
+        let event_str = format!(r#"["EVENT", "test_sub", {json}]"#);
+        (event_str, id)
+    }
+
+    /// Build a properly signed kind 30063 (Software Release) event
+    /// referencing the given asset event ids.
+    pub fn build_signed_release_event(
+        seckey: &[u8; 32],
+        version: &str,
+        channel: &str,
+        asset_ids: &[[u8; 32]],
+    ) -> String {
+        let d_tag = format!("{APP_ID}@{version}");
+        let mut builder = NoteBuilder::new()
+            .kind(RELEASE_KIND as u32)
+            .content("")
+            .sign(seckey)
+            .start_tag()
+            .tag_str("d")
+            .tag_str(&d_tag)
+            .start_tag()
+            .tag_str("i")
+            .tag_str(APP_ID)
+            .start_tag()
+            .tag_str("version")
+            .tag_str(version)
+            .start_tag()
+            .tag_str("c")
+            .tag_str(channel);
+
+        for asset_id in asset_ids {
+            builder = builder.start_tag().tag_str("e").tag_id(asset_id);
+        }
+
+        let note = builder.build().expect("build release note");
         let json = note.json().expect("serialize note to json");
         format!(r#"["EVENT", "test_sub", {json}]"#)
     }
 
-    /// Construct a kind 1063 event JSON string for testing.
+    /// Construct a kind 3063 (Software Asset) event JSON string for testing.
     /// Uses a dummy sig so `skip_validation` must be enabled on the ndb.
-    pub fn make_release_event_json(
+    pub fn make_asset_event_json(
         id: &str,
         pubkey: &str,
         version: &str,
-        asset_name: &str,
+        platform: &str,
         url: &str,
         sha256: &str,
         created_at: u64,
@@ -249,14 +448,48 @@ pub mod test_helpers {
                 "id": "{id}",
                 "pubkey": "{pubkey}",
                 "created_at": {created_at},
-                "kind": 1063,
+                "kind": {ASSET_KIND},
                 "tags": [
+                    ["i", "{APP_ID}"],
                     ["url", "{url}"],
                     ["x", "{sha256}"],
                     ["version", "{version}"],
-                    ["name", "{asset_name}"],
+                    ["f", "{platform}"],
                     ["m", "application/gzip"],
                     ["size", "12345678"]
+                ],
+                "content": "",
+                "sig": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+            }}]"#
+        )
+    }
+
+    /// Construct a kind 30063 (Software Release) event JSON string for testing.
+    /// Uses a dummy sig so `skip_validation` must be enabled on the ndb.
+    pub fn make_release_event_json(
+        id: &str,
+        pubkey: &str,
+        version: &str,
+        channel: &str,
+        asset_event_ids: &[&str],
+        created_at: u64,
+    ) -> String {
+        let d_tag = format!("{APP_ID}@{version}");
+        let mut e_tags = String::new();
+        for asset_id in asset_event_ids {
+            e_tags.push_str(&format!(r#",["e", "{asset_id}"]"#));
+        }
+        format!(
+            r#"["EVENT", "test_sub", {{
+                "id": "{id}",
+                "pubkey": "{pubkey}",
+                "created_at": {created_at},
+                "kind": {RELEASE_KIND},
+                "tags": [
+                    ["d", "{d_tag}"],
+                    ["i", "{APP_ID}"],
+                    ["version", "{version}"],
+                    ["c", "{channel}"]{e_tags}
                 ],
                 "content": "",
                 "sig": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
@@ -267,12 +500,12 @@ pub mod test_helpers {
 
 #[cfg(test)]
 mod tests {
-    use super::test_helpers::{make_release_event_json, TEST_PUBKEY};
+    use super::test_helpers::*;
     use super::*;
     use nostrdb::{Config, IngestMetadata, Ndb};
     use tempfile::TempDir;
 
-    /// Hex pubkey string for use with make_release_event_json (skip_validation tests)
+    /// Hex pubkey string for use with make_*_event_json (skip_validation tests)
     const TEST_PUBKEY_HEX: &str =
         "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
@@ -297,61 +530,110 @@ mod tests {
     }
 
     #[test]
+    fn test_target_platform_tag_is_valid() {
+        let tag = target_platform_tag();
+        let parts: Vec<&str> = tag.split('-').collect();
+        assert_eq!(parts.len(), 2, "platform tag should be os-arch: {tag}");
+        assert!(
+            ["linux", "macos", "windows"].contains(&parts[0]),
+            "unexpected OS in platform tag: {tag}"
+        );
+        assert!(
+            ["x86_64", "aarch64"].contains(&parts[1]),
+            "unexpected arch in platform tag: {tag}"
+        );
+    }
+
+    #[test]
+    fn test_release_channel_roundtrip() {
+        for ch in [
+            ReleaseChannel::Main,
+            ReleaseChannel::Beta,
+            ReleaseChannel::Nightly,
+            ReleaseChannel::Dev,
+        ] {
+            assert_eq!(ReleaseChannel::parse(ch.as_str()), Some(ch));
+        }
+        assert_eq!(ReleaseChannel::parse("unknown"), None);
+    }
+
+    #[test]
     fn test_release_filter_builds() {
-        let filters = release_filter(&DEFAULT_RELEASE_PUBKEY);
-        assert_eq!(filters.len(), 1);
+        let filters = release_filter(&DEFAULT_RELEASE_PUBKEY, ReleaseChannel::Main);
+        assert_eq!(filters.len(), 2, "should have release + asset filters");
     }
 
     #[tokio::test]
-    async fn test_parse_release_note_matching_platform() {
+    async fn test_find_latest_release_nip82() {
         let (_tmp, ndb) = test_ndb();
-        let asset_name = target_asset_name();
+        let platform = target_platform_tag();
         let expected_sha = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
 
-        let ev = make_release_event_json(
-            "aa00000000000000000000000000000000000000000000000000000000000001",
+        // Asset event id (fake but deterministic)
+        let asset_id = "aa00000000000000000000000000000000000000000000000000000000000001";
+
+        // Create asset event (kind 3063)
+        let asset_ev = make_asset_event_json(
+            asset_id,
             TEST_PUBKEY_HEX,
-            "99.0.0", // far future version so it's always "newer"
-            asset_name,
-            "https://example.com/download/test.tar.gz",
+            "99.0.0",
+            platform,
+            "https://example.com/download/notedeck.tar.gz",
             expected_sha,
             1700000000,
         );
 
-        // Use a broad filter to make sure the event gets ingested
-        let filter = Filter::new().kinds([RELEASE_KIND]).limit(10).build();
-        let sub = ndb.subscribe(&[filter]).unwrap();
-        ndb.process_event_with(&ev, IngestMetadata::new()).unwrap();
+        // Create release event (kind 30063) referencing the asset
+        let release_ev = make_release_event_json(
+            "bb00000000000000000000000000000000000000000000000000000000000001",
+            TEST_PUBKEY_HEX,
+            "99.0.0",
+            "main",
+            &[asset_id],
+            1700000001,
+        );
 
-        let nks = ndb.wait_for_notes(sub, 1).await.unwrap();
-        assert_eq!(nks.len(), 1);
+        // Subscribe and ingest both events
+        let filter = Filter::new()
+            .kinds([RELEASE_KIND, ASSET_KIND])
+            .limit(20)
+            .build();
+        let sub = ndb.subscribe(&[filter]).unwrap();
+
+        ndb.process_event_with(&asset_ev, IngestMetadata::new())
+            .unwrap();
+        ndb.process_event_with(&release_ev, IngestMetadata::new())
+            .unwrap();
+
+        let _ = ndb.wait_for_all_notes(sub, 2).await.unwrap();
 
         let txn = Transaction::new(&ndb).unwrap();
-        let note = ndb.get_note_by_key(&txn, nks[0]).unwrap();
+        let release = find_latest_release(&ndb, &txn, &TEST_PUBKEY, ReleaseChannel::Main)
+            .expect("should find a release");
 
-        let release = parse_release_note(&note).expect("should parse release note");
         assert_eq!(release.version, "99.0.0");
-        assert_eq!(release.asset_name, asset_name);
         assert_eq!(release.expected_sha256, expected_sha);
         assert_eq!(
             release.asset_url,
-            "https://example.com/download/test.tar.gz"
+            "https://example.com/download/notedeck.tar.gz"
         );
     }
 
     #[tokio::test]
-    async fn test_parse_release_note_wrong_platform() {
+    async fn test_find_latest_release_wrong_platform() {
         let (_tmp, ndb) = test_ndb();
 
-        // Use a platform name that doesn't match the current one
-        let wrong_platform = if target_asset_name().contains("linux") {
-            "notedeck-x86_64-windows.zip"
+        // Use a platform that doesn't match
+        let wrong_platform = if target_platform_tag().contains("linux") {
+            "windows-x86_64"
         } else {
-            "notedeck-x86_64-linux.tar.gz"
+            "linux-x86_64"
         };
 
-        let ev = make_release_event_json(
-            "bb00000000000000000000000000000000000000000000000000000000000001",
+        let asset_id = "cc00000000000000000000000000000000000000000000000000000000000001";
+
+        let asset_ev = make_asset_event_json(
+            asset_id,
             TEST_PUBKEY_HEX,
             "99.0.0",
             wrong_platform,
@@ -360,100 +642,152 @@ mod tests {
             1700000000,
         );
 
-        let filter = Filter::new().kinds([RELEASE_KIND]).limit(10).build();
-        let sub = ndb.subscribe(&[filter]).unwrap();
-        ndb.process_event_with(&ev, IngestMetadata::new()).unwrap();
-
-        let nks = ndb.wait_for_notes(sub, 1).await.unwrap();
-        let txn = Transaction::new(&ndb).unwrap();
-        let note = ndb.get_note_by_key(&txn, nks[0]).unwrap();
-
-        assert!(
-            matches!(
-                parse_release_note(&note),
-                Err(ReleaseParseError::WrongPlatform { .. })
-            ),
-            "should not match wrong platform: {:?}",
-            parse_release_note(&note)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_parse_release_note_older_version() {
-        let (_tmp, ndb) = test_ndb();
-        let asset_name = target_asset_name();
-
-        // Use version 0.0.1 which should be older than any current version
-        let ev = make_release_event_json(
-            "cc00000000000000000000000000000000000000000000000000000000000001",
-            TEST_PUBKEY_HEX,
-            "0.0.1",
-            asset_name,
-            "https://example.com/download/old.tar.gz",
-            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-            1700000000,
-        );
-
-        let filter = Filter::new().kinds([RELEASE_KIND]).limit(10).build();
-        let sub = ndb.subscribe(&[filter]).unwrap();
-        ndb.process_event_with(&ev, IngestMetadata::new()).unwrap();
-
-        let nks = ndb.wait_for_notes(sub, 1).await.unwrap();
-        let txn = Transaction::new(&ndb).unwrap();
-        let note = ndb.get_note_by_key(&txn, nks[0]).unwrap();
-
-        assert!(
-            matches!(
-                parse_release_note(&note),
-                Err(ReleaseParseError::NotNewer { .. })
-            ),
-            "should not return older version: {:?}",
-            parse_release_note(&note)
-        );
-    }
-
-    #[tokio::test]
-    async fn test_find_latest_release() {
-        let (_tmp, ndb) = test_ndb();
-        let asset_name = target_asset_name();
-
-        // Ingest two release events with different versions
-        let ev1 = make_release_event_json(
+        let release_ev = make_release_event_json(
             "dd00000000000000000000000000000000000000000000000000000000000001",
             TEST_PUBKEY_HEX,
+            "99.0.0",
+            "main",
+            &[asset_id],
+            1700000001,
+        );
+
+        let filter = Filter::new()
+            .kinds([RELEASE_KIND, ASSET_KIND])
+            .limit(20)
+            .build();
+        let sub = ndb.subscribe(&[filter]).unwrap();
+
+        ndb.process_event_with(&asset_ev, IngestMetadata::new())
+            .unwrap();
+        ndb.process_event_with(&release_ev, IngestMetadata::new())
+            .unwrap();
+
+        let _ = ndb.wait_for_all_notes(sub, 2).await.unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let release = find_latest_release(&ndb, &txn, &TEST_PUBKEY, ReleaseChannel::Main);
+
+        assert!(release.is_none(), "should not match wrong platform");
+    }
+
+    #[tokio::test]
+    async fn test_find_latest_release_picks_highest_version() {
+        let (_tmp, ndb) = test_ndb();
+        let platform = target_platform_tag();
+
+        // Two releases: v98 and v99
+        let asset_id_98 = "ee00000000000000000000000000000000000000000000000000000000000001";
+        let asset_id_99 = "ee00000000000000000000000000000000000000000000000000000000000002";
+
+        let asset_ev_98 = make_asset_event_json(
+            asset_id_98,
+            TEST_PUBKEY_HEX,
             "98.0.0",
-            asset_name,
+            platform,
             "https://example.com/download/v98.tar.gz",
             "aaaa000000000000000000000000000000000000000000000000000000000000",
             1700000000,
         );
-        let ev2 = make_release_event_json(
-            "dd00000000000000000000000000000000000000000000000000000000000002",
+        let asset_ev_99 = make_asset_event_json(
+            asset_id_99,
             TEST_PUBKEY_HEX,
             "99.0.0",
-            asset_name,
+            platform,
             "https://example.com/download/v99.tar.gz",
             "bbbb000000000000000000000000000000000000000000000000000000000000",
             1700000001,
         );
 
-        let filter = Filter::new().kinds([RELEASE_KIND]).limit(10).build();
+        let release_ev_98 = make_release_event_json(
+            "ff00000000000000000000000000000000000000000000000000000000000001",
+            TEST_PUBKEY_HEX,
+            "98.0.0",
+            "main",
+            &[asset_id_98],
+            1700000002,
+        );
+        let release_ev_99 = make_release_event_json(
+            "ff00000000000000000000000000000000000000000000000000000000000002",
+            TEST_PUBKEY_HEX,
+            "99.0.0",
+            "main",
+            &[asset_id_99],
+            1700000003,
+        );
+
+        let filter = Filter::new()
+            .kinds([RELEASE_KIND, ASSET_KIND])
+            .limit(20)
+            .build();
         let sub = ndb.subscribe(&[filter]).unwrap();
 
-        ndb.process_event_with(&ev1, IngestMetadata::new()).unwrap();
-        ndb.process_event_with(&ev2, IngestMetadata::new()).unwrap();
+        ndb.process_event_with(&asset_ev_98, IngestMetadata::new())
+            .unwrap();
+        ndb.process_event_with(&asset_ev_99, IngestMetadata::new())
+            .unwrap();
+        ndb.process_event_with(&release_ev_98, IngestMetadata::new())
+            .unwrap();
+        ndb.process_event_with(&release_ev_99, IngestMetadata::new())
+            .unwrap();
 
-        // wait_for_notes returns on the first available batch, not after N notes.
-        // Use wait_for_all_notes to ensure both events are fully ingested.
-        let _ = ndb.wait_for_all_notes(sub, 2).await.unwrap();
+        let _ = ndb.wait_for_all_notes(sub, 4).await.unwrap();
 
         let txn = Transaction::new(&ndb).unwrap();
-        let release = find_latest_release(&ndb, &txn, &TEST_PUBKEY).expect("should find a release");
+        let release = find_latest_release(&ndb, &txn, &TEST_PUBKEY, ReleaseChannel::Main)
+            .expect("should find a release");
 
         assert_eq!(release.version, "99.0.0");
         assert_eq!(
             release.expected_sha256,
             "bbbb000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_find_latest_release_older_version() {
+        let (_tmp, ndb) = test_ndb();
+        let platform = target_platform_tag();
+
+        let asset_id = "1100000000000000000000000000000000000000000000000000000000000001";
+
+        let asset_ev = make_asset_event_json(
+            asset_id,
+            TEST_PUBKEY_HEX,
+            "0.0.1",
+            platform,
+            "https://example.com/download/old.tar.gz",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            1700000000,
+        );
+
+        let release_ev = make_release_event_json(
+            "2200000000000000000000000000000000000000000000000000000000000001",
+            TEST_PUBKEY_HEX,
+            "0.0.1",
+            "main",
+            &[asset_id],
+            1700000001,
+        );
+
+        let filter = Filter::new()
+            .kinds([RELEASE_KIND, ASSET_KIND])
+            .limit(20)
+            .build();
+        let sub = ndb.subscribe(&[filter]).unwrap();
+
+        ndb.process_event_with(&asset_ev, IngestMetadata::new())
+            .unwrap();
+        ndb.process_event_with(&release_ev, IngestMetadata::new())
+            .unwrap();
+
+        let _ = ndb.wait_for_all_notes(sub, 2).await.unwrap();
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let release = find_latest_release(&ndb, &txn, &TEST_PUBKEY, ReleaseChannel::Main);
+
+        assert!(
+            release.is_none(),
+            "should not return older version than current"
         );
     }
 }

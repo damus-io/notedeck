@@ -53,6 +53,7 @@ pub struct Updater {
     ctx: egui::Context,
     sent_relay_filter: bool,
     release_pubkey: [u8; 32],
+    channel: nostr::ReleaseChannel,
 }
 
 impl Updater {
@@ -70,12 +71,18 @@ impl Updater {
             ctx: ctx.clone(),
             sent_relay_filter: false,
             release_pubkey,
+            channel: nostr::ReleaseChannel::default(),
         }
     }
 
     /// The trusted release signing pubkey
     pub fn release_pubkey(&self) -> &[u8; 32] {
         &self.release_pubkey
+    }
+
+    /// The current release channel
+    pub fn channel(&self) -> nostr::ReleaseChannel {
+        self.channel
     }
 
     /// Poll for state changes. Call this every frame from `eframe::App::update()`.

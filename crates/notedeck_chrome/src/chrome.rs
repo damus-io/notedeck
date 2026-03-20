@@ -199,7 +199,10 @@ impl Chrome {
         let release_pubkey = notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY;
         #[cfg(feature = "auto-update")]
         let release_sub = {
-            let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
+            let filters = notedeck::updater::nostr::release_filter(
+                &release_pubkey,
+                notedeck::updater::nostr::ReleaseChannel::default(),
+            );
             notedeck_ref
                 .app_ctx
                 .ndb
@@ -299,7 +302,10 @@ impl Chrome {
     ) -> Self {
         let release_pubkey = notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY;
         let release_sub = {
-            let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
+            let filters = notedeck::updater::nostr::release_filter(
+                &release_pubkey,
+                notedeck::updater::nostr::ReleaseChannel::default(),
+            );
             ctx.ndb.subscribe(&filters).expect("release subscription")
         };
 
@@ -324,7 +330,7 @@ impl Chrome {
     #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
     pub fn set_release_pubkey(&mut self, ndb: &mut nostrdb::Ndb, pubkey: [u8; 32]) {
         self.updater.set_release_pubkey(pubkey);
-        let filters = notedeck::updater::nostr::release_filter(&pubkey);
+        let filters = notedeck::updater::nostr::release_filter(&pubkey, self.updater.channel());
         self.release_sub = ndb.subscribe(&filters).expect("release subscription");
     }
 
@@ -646,7 +652,8 @@ fn poll_updater(
 ) {
     if updater.needs_relay_sub() {
         let release_pubkey = *updater.release_pubkey();
-        let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
+        let channel = updater.channel();
+        let filters = notedeck::updater::nostr::release_filter(&release_pubkey, channel);
         let mut oneshot = ctx.remote.oneshot(ctx.accounts);
         oneshot.oneshot(filters);
     }
@@ -655,10 +662,14 @@ fn poll_updater(
         let nks = ctx.ndb.poll_for_notes(release_sub, 10);
         if !nks.is_empty() {
             let release_pubkey = *updater.release_pubkey();
+            let channel = updater.channel();
             if let Ok(txn) = nostrdb::Transaction::new(ctx.ndb) {
-                if let Some(release) =
-                    notedeck::updater::nostr::find_latest_release(ctx.ndb, &txn, &release_pubkey)
-                {
+                if let Some(release) = notedeck::updater::nostr::find_latest_release(
+                    ctx.ndb,
+                    &txn,
+                    &release_pubkey,
+                    channel,
+                ) {
                     updater.provide_release(release);
                 }
             }
