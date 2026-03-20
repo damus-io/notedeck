@@ -98,4 +98,21 @@ mod tests {
         assert!(!collapse.is_visible("remote-a", "/srv/app"));
         assert!(collapse.is_visible("remote-a", "/srv/other"));
     }
+
+    #[test]
+    fn serde_roundtrip_preserves_hosts_and_cwds() {
+        let mut collapse = CollapseState::new();
+        collapse.toggle_host("remote-a");
+        collapse.toggle_cwd("remote-b", "/srv/api");
+
+        let json = serde_json::to_string(&collapse).expect("collapse state should serialize");
+        let restored: CollapseState =
+            serde_json::from_str(&json).expect("collapse state should deserialize");
+
+        assert!(restored.is_host_collapsed("remote-a"));
+        assert!(restored.is_cwd_collapsed("remote-b", "/srv/api"));
+        assert!(!restored.is_visible("remote-a", "/srv/other"));
+        assert!(!restored.is_visible("remote-b", "/srv/api"));
+        assert!(restored.is_visible("remote-b", "/srv/other"));
+    }
 }

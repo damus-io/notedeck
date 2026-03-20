@@ -628,6 +628,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.settings = settings;
     }
 
+    /// Toggle a host collapse state, persist it, and re-arm auto-steal if needed.
+    fn toggle_host_collapse(&mut self, hostname: &str) {
+        self.collapse_state.toggle_host(hostname);
+        self.collapse_serializer
+            .try_save(self.collapse_state.clone());
+        if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
+            self.auto_steal = focus_queue::AutoStealState::Pending;
+        }
+    }
+
+    /// Toggle a cwd collapse state, persist it, and re-arm auto-steal if needed.
+    fn toggle_cwd_collapse(&mut self, hostname: &str, display_cwd: &str) {
+        self.collapse_state.toggle_cwd(hostname, display_cwd);
+        self.collapse_serializer
+            .try_save(self.collapse_state.clone());
+        if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
+            self.auto_steal = focus_queue::AutoStealState::Pending;
+        }
+    }
+
     /// Queue a thread summary request. The thread is fetched and formatted
     /// in update() where AppContext (ndb) is available.
     pub fn summarize_thread(&mut self, note_id: enostr::NoteId) {
@@ -1254,20 +1274,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
                 SessionListAction::ToggleHostCollapse(hostname) => {
-                    self.collapse_state.toggle_host(&hostname);
-                    self.collapse_serializer
-                        .try_save(self.collapse_state.clone());
-                    if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
-                        self.auto_steal = focus_queue::AutoStealState::Pending;
-                    }
+                    self.toggle_host_collapse(&hostname);
                 }
                 SessionListAction::ToggleCwdCollapse(hostname, display_cwd) => {
-                    self.collapse_state.toggle_cwd(&hostname, &display_cwd);
-                    self.collapse_serializer
-                        .try_save(self.collapse_state.clone());
-                    if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
-                        self.auto_steal = focus_queue::AutoStealState::Pending;
-                    }
+                    self.toggle_cwd_collapse(&hostname, &display_cwd);
                 }
                 SessionListAction::NewSessionInCwd(cwd) => {
                     self.create_or_pick_backend(cwd);
@@ -1352,20 +1362,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
                 SessionListAction::ToggleHostCollapse(hostname) => {
-                    self.collapse_state.toggle_host(&hostname);
-                    self.collapse_serializer
-                        .try_save(self.collapse_state.clone());
-                    if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
-                        self.auto_steal = focus_queue::AutoStealState::Pending;
-                    }
+                    self.toggle_host_collapse(&hostname);
                 }
                 SessionListAction::ToggleCwdCollapse(hostname, display_cwd) => {
-                    self.collapse_state.toggle_cwd(&hostname, &display_cwd);
-                    self.collapse_serializer
-                        .try_save(self.collapse_state.clone());
-                    if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
-                        self.auto_steal = focus_queue::AutoStealState::Pending;
-                    }
+                    self.toggle_cwd_collapse(&hostname, &display_cwd);
                 }
                 SessionListAction::NewSessionInCwd(cwd) => {
                     self.create_or_pick_backend(cwd);
@@ -4326,13 +4326,21 @@ mod tests {
     use crate::session::SessionSource;
     use crate::session_events::{build_live_event, build_permission_request_event, ThreadingState};
     use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+    use notedeck::timed_serializer::TimedSerializer;
     use std::path::PathBuf;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn test_secret_key() -> [u8; 32] {
         let mut key = [0u8; 32];
         key[0] = 1;
         key
+    }
+
+    fn test_dave(data_path: &DataPath) -> Dave {
+        let ndb_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        Dave::new(None, ndb, egui::Context::default(), data_path)
     }
 
     /// Integration test: events ingested out of order into ndb are sorted
@@ -4689,5 +4697,95 @@ mod tests {
             Some(crate::messages::PermissionResponseType::Denied),
             "single-batch denied response should not be marked Allowed"
         );
+    }
+
+    #[test]
+    fn collapse_state_persists_across_restart() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+
+        let mut dave = test_dave(&data_path);
+        dave.collapse_serializer = TimedSerializer::new(
+            &data_path,
+            DataPathType::Setting,
+            "collapse_state.json".to_owned(),
+        )
+        .with_delay(Duration::ZERO);
+
+        dave.toggle_host_collapse("remote-a");
+        dave.toggle_cwd_collapse("remote-b", "/srv/api");
+
+        let persisted = dave
+            .collapse_serializer
+            .get_item()
+            .expect("collapse state should be persisted");
+        assert!(persisted.is_host_collapsed("remote-a"));
+        assert!(persisted.is_cwd_collapsed("remote-b", "/srv/api"));
+
+        drop(dave);
+
+        let restored = test_dave(&data_path);
+        assert!(restored.collapse_state.is_host_collapsed("remote-a"));
+        assert!(restored
+            .collapse_state
+            .is_cwd_collapsed("remote-b", "/srv/api"));
+    }
+
+    #[test]
+    fn invalid_collapse_state_file_falls_back_to_default() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+        let settings_dir = data_path.path(DataPathType::Setting);
+        std::fs::create_dir_all(&settings_dir).expect("settings dir should be created");
+        std::fs::write(settings_dir.join("collapse_state.json"), "{not valid json")
+            .expect("invalid collapse state should be written");
+
+        let restored = test_dave(&data_path);
+
+        assert!(
+            !restored.collapse_state.is_host_collapsed("remote-a"),
+            "invalid saved state should fall back to a clean default"
+        );
+        assert!(
+            !restored
+                .collapse_state
+                .is_cwd_collapsed("remote-a", "/srv/api"),
+            "invalid saved state should not restore any collapsed cwd entries"
+        );
+    }
+
+    #[test]
+    fn collapse_toggle_rearms_auto_steal_and_persists_current_state() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+
+        let mut dave = test_dave(&data_path);
+        dave.collapse_serializer = TimedSerializer::new(
+            &data_path,
+            DataPathType::Setting,
+            "collapse_state.json".to_owned(),
+        )
+        .with_delay(Duration::ZERO);
+        dave.auto_steal = focus_queue::AutoStealState::Idle;
+        dave.focus_queue
+            .enqueue(42, focus_queue::FocusPriority::NeedsInput);
+
+        dave.toggle_host_collapse("remote-a");
+
+        assert_eq!(dave.auto_steal, focus_queue::AutoStealState::Pending);
+        let persisted = dave
+            .collapse_serializer
+            .get_item()
+            .expect("collapse state should be saved");
+        assert!(persisted.is_host_collapsed("remote-a"));
+
+        dave.toggle_cwd_collapse("remote-a", "/srv/api");
+
+        let persisted = dave
+            .collapse_serializer
+            .get_item()
+            .expect("collapse state should stay saved");
+        assert!(persisted.is_host_collapsed("remote-a"));
+        assert!(persisted.is_cwd_collapsed("remote-a", "/srv/api"));
     }
 }
