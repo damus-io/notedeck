@@ -166,6 +166,42 @@ impl Args {
 mod tests {
     use super::*;
 
+    fn parse_args(args: &[&str]) -> Args {
+        let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let (parsed, unrecognized) = Args::parse(&owned);
+        assert!(
+            unrecognized.is_empty(),
+            "expected all args to be recognized, got {unrecognized:?}"
+        );
+        parsed
+    }
+
+    #[test]
+    fn parse_title_variants() {
+        let cases = [
+            (
+                vec!["--title", "feature branch"],
+                Some("feature branch"),
+                true,
+            ),
+            (
+                vec!["--title", "first", "--title", "second"],
+                Some("second"),
+                true,
+            ),
+            (vec!["--title"], None, false),
+        ];
+
+        for (args, expected_title, expected_show_title) in cases {
+            let parsed = parse_args(&args);
+            assert_eq!(parsed.title.as_deref(), expected_title);
+            assert_eq!(
+                parsed.options.contains(NotedeckOptions::ShowTitle),
+                expected_show_title
+            );
+        }
+    }
+
     /// Verifies `--no-keystore` disables OS-backed secure storage.
     #[test]
     fn parse_no_keystore_disables_keystore() {
