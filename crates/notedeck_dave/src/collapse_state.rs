@@ -56,3 +56,46 @@ impl CollapseState {
         !self.is_host_collapsed(hostname) && !self.is_cwd_collapsed(hostname, display_cwd)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CollapseState;
+
+    #[test]
+    fn toggle_cwd_only_hides_that_cwd() {
+        let mut collapse = CollapseState::new();
+
+        assert!(collapse.is_visible("remote-a", "/srv/app"));
+        assert!(collapse.is_visible("remote-a", "/srv/other"));
+
+        collapse.toggle_cwd("remote-a", "/srv/app");
+
+        assert!(collapse.is_cwd_collapsed("remote-a", "/srv/app"));
+        assert!(!collapse.is_visible("remote-a", "/srv/app"));
+        assert!(collapse.is_visible("remote-a", "/srv/other"));
+
+        collapse.toggle_cwd("remote-a", "/srv/app");
+
+        assert!(!collapse.is_cwd_collapsed("remote-a", "/srv/app"));
+        assert!(collapse.is_visible("remote-a", "/srv/app"));
+    }
+
+    #[test]
+    fn host_collapse_hides_all_cwds_without_clearing_cwd_state() {
+        let mut collapse = CollapseState::new();
+        collapse.toggle_cwd("remote-a", "/srv/app");
+
+        collapse.toggle_host("remote-a");
+
+        assert!(collapse.is_host_collapsed("remote-a"));
+        assert!(!collapse.is_visible("remote-a", "/srv/app"));
+        assert!(!collapse.is_visible("remote-a", "/srv/other"));
+
+        collapse.toggle_host("remote-a");
+
+        assert!(!collapse.is_host_collapsed("remote-a"));
+        assert!(collapse.is_cwd_collapsed("remote-a", "/srv/app"));
+        assert!(!collapse.is_visible("remote-a", "/srv/app"));
+        assert!(collapse.is_visible("remote-a", "/srv/other"));
+    }
+}

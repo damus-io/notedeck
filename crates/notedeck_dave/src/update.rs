@@ -1294,6 +1294,39 @@ pub fn handle_cd_command(session: &mut ChatSession) -> Option<Result<PathBuf, ()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collapse_state::CollapseState;
+    use crate::focus_queue::{FocusPriority, FocusQueue};
+    use crate::session::SessionId;
+
+    fn create_named_agent_session(
+        sm: &mut SessionManager,
+        picker: &mut DirectoryPicker,
+        scene: &mut AgentScene,
+        hostname: &str,
+        cwd: &str,
+        title: &str,
+    ) -> SessionId {
+        let id = create_session_with_cwd(
+            sm,
+            picker,
+            scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from(cwd),
+            hostname,
+            BackendType::Claude,
+            None,
+            Model::Default,
+        );
+
+        let session = sm.get_mut(id).expect("session should exist");
+        session.details.title = title.to_string();
+        session.details.custom_title = None;
+        session.details.home_dir = "/home/tester".to_string();
+
+        sm.rebuild_cwd_groups();
+        id
+    }
 
     /// clone_session must preserve the source session's model override
     /// instead of hardcoding Model::Default.
@@ -1428,6 +1461,102 @@ mod tests {
             new_session.details.model.as_deref(),
             Some("gpt-5.2-codex"),
             "new session should start from the requested override until the backend reports otherwise"
+        );
+    }
+
+    #[test]
+    fn focus_queue_next_skips_sessions_hidden_by_collapsed_cwd() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let mut focus_queue = FocusQueue::new();
+
+        let visible_id = create_named_agent_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            "remote-a",
+            "/srv/visible",
+            "Visible",
+        );
+        let hidden_id = create_named_agent_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            "remote-a",
+            "/srv/hidden",
+            "Hidden",
+        );
+
+        let mut collapse = CollapseState::new();
+        collapse.toggle_cwd("remote-a", "/srv/hidden");
+
+        focus_queue.enqueue(hidden_id, FocusPriority::NeedsInput);
+        focus_queue.enqueue(visible_id, FocusPriority::Error);
+        focus_queue.set_cursor(1);
+
+        assert_eq!(sm.active_id(), Some(hidden_id));
+
+        focus_queue_next(&mut sm, &mut focus_queue, &collapse, &mut scene, false);
+
+        assert_eq!(sm.active_id(), Some(visible_id));
+        assert_eq!(
+            focus_queue.current().map(|entry| entry.session_id),
+            Some(visible_id)
+        );
+    }
+
+    #[test]
+    fn auto_steal_ignores_collapsed_needs_input_and_uses_visible_done() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let mut focus_queue = FocusQueue::new();
+
+        let home_id =
+            create_named_agent_session(&mut sm, &mut picker, &mut scene, "", "/work/home", "Home");
+        let hidden_needs_input = create_named_agent_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            "remote-a",
+            "/srv/hidden",
+            "Needs input",
+        );
+        let visible_done = create_named_agent_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            "remote-b",
+            "/srv/done",
+            "Done",
+        );
+
+        sm.switch_to(home_id);
+
+        let mut collapse = CollapseState::new();
+        collapse.toggle_host("remote-a");
+
+        focus_queue.enqueue(hidden_needs_input, FocusPriority::NeedsInput);
+        focus_queue.enqueue(visible_done, FocusPriority::Done);
+
+        let mut home_session = None;
+        let stole_focus = process_auto_steal_focus(
+            &mut sm,
+            &mut focus_queue,
+            &collapse,
+            &mut scene,
+            false,
+            true,
+            &mut home_session,
+        );
+
+        assert!(stole_focus);
+        assert_eq!(sm.active_id(), Some(visible_done));
+        assert_eq!(home_session, Some(home_id));
+        assert_eq!(
+            focus_queue.current().map(|entry| entry.session_id),
+            Some(visible_done)
         );
     }
 

@@ -1471,6 +1471,7 @@ impl ChatSession {
 mod tests {
     use super::*;
     use crate::backend::BackendType;
+    use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
     use crate::messages::AssistantMessage;
     use std::sync::mpsc;
@@ -1482,6 +1483,26 @@ mod tests {
             AiMode::Agentic,
             BackendType::Claude,
         )
+    }
+
+    fn create_grouped_session(
+        mgr: &mut SessionManager,
+        hostname: &str,
+        cwd: &str,
+        title: &str,
+        ai_mode: AiMode,
+    ) -> SessionId {
+        let backend = match ai_mode {
+            AiMode::Agentic => BackendType::Claude,
+            AiMode::Chat => BackendType::OpenAI,
+        };
+        let id = mgr.new_session(PathBuf::from(cwd), ai_mode, backend);
+        let session = mgr.get_mut(id).expect("session should exist");
+        session.details.hostname = hostname.to_string();
+        session.details.title = title.to_string();
+        session.details.custom_title = None;
+        session.details.home_dir = "/home/tester".to_string();
+        id
     }
 
     #[test]
@@ -2714,5 +2735,133 @@ mod tests {
 
         // Verify all three are still present
         assert_eq!(ordered.len(), 3);
+    }
+
+    #[test]
+    fn rebuild_cwd_groups_groups_hosts_cwds_and_sessions_deterministically() {
+        let mut mgr = SessionManager::new();
+
+        let local_zulu =
+            create_grouped_session(&mut mgr, "", "/work/alpha", "Zulu task", AiMode::Agentic);
+        let local_alpha =
+            create_grouped_session(&mut mgr, "", "/work/alpha", "Alpha task", AiMode::Agentic);
+        let remote_beta = create_grouped_session(
+            &mut mgr,
+            "beta-host",
+            "/srv/backend",
+            "Beta host task",
+            AiMode::Agentic,
+        );
+        let remote_zulu = create_grouped_session(
+            &mut mgr,
+            "zulu-host",
+            "/srv/api",
+            "Zulu host task",
+            AiMode::Agentic,
+        );
+        let chat_id = create_grouped_session(&mut mgr, "", "/chat/ignored", "Chat", AiMode::Chat);
+
+        mgr.rebuild_cwd_groups();
+
+        let groups = mgr.host_cwd_groups();
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].hostname, "");
+        assert_eq!(groups[1].hostname, "beta-host");
+        assert_eq!(groups[2].hostname, "zulu-host");
+
+        let local_group = &groups[0];
+        assert_eq!(local_group.cwd_groups.len(), 1);
+        assert_eq!(local_group.cwd_groups[0].display_cwd, "/work/alpha");
+        assert_eq!(
+            local_group.cwd_groups[0].session_ids,
+            vec![local_alpha, local_zulu]
+        );
+
+        assert_eq!(groups[1].cwd_groups[0].session_ids, vec![remote_beta]);
+        assert_eq!(groups[2].cwd_groups[0].session_ids, vec![remote_zulu]);
+
+        assert_eq!(
+            mgr.visual_order(&CollapseState::new()),
+            vec![local_alpha, local_zulu, remote_beta, remote_zulu, chat_id]
+        );
+    }
+
+    #[test]
+    fn rebuild_cwd_groups_sorts_multiple_cwds_within_a_host() {
+        let mut mgr = SessionManager::new();
+
+        let alpha_first = create_grouped_session(
+            &mut mgr,
+            "remote-a",
+            "/srv/alpha",
+            "Alpha first",
+            AiMode::Agentic,
+        );
+        let zeta_only = create_grouped_session(
+            &mut mgr,
+            "remote-a",
+            "/srv/zeta",
+            "Zeta only",
+            AiMode::Agentic,
+        );
+        let alpha_second = create_grouped_session(
+            &mut mgr,
+            "remote-a",
+            "/srv/alpha",
+            "Alpha second",
+            AiMode::Agentic,
+        );
+
+        mgr.rebuild_cwd_groups();
+
+        let groups = mgr.host_cwd_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].hostname, "remote-a");
+        assert_eq!(groups[0].cwd_groups.len(), 2);
+        assert_eq!(groups[0].cwd_groups[0].display_cwd, "/srv/alpha");
+        assert_eq!(groups[0].cwd_groups[1].display_cwd, "/srv/zeta");
+        assert_eq!(
+            groups[0].cwd_groups[0].session_ids,
+            vec![alpha_first, alpha_second]
+        );
+        assert_eq!(groups[0].cwd_groups[1].session_ids, vec![zeta_only]);
+        assert_eq!(
+            mgr.visual_order(&CollapseState::new()),
+            vec![alpha_first, alpha_second, zeta_only]
+        );
+    }
+
+    #[test]
+    fn visual_order_skips_collapsed_hosts_and_cwds_but_keeps_chats() {
+        let mut mgr = SessionManager::new();
+
+        let _local_a = create_grouped_session(&mut mgr, "", "/work/a", "Local A", AiMode::Agentic);
+        let local_b = create_grouped_session(&mut mgr, "", "/work/b", "Local B", AiMode::Agentic);
+        let remote_a = create_grouped_session(
+            &mut mgr,
+            "remote-a",
+            "/srv/keep",
+            "Remote A",
+            AiMode::Agentic,
+        );
+        let _remote_b = create_grouped_session(
+            &mut mgr,
+            "remote-b",
+            "/srv/hide",
+            "Remote B",
+            AiMode::Agentic,
+        );
+        let chat_id = create_grouped_session(&mut mgr, "", "/chat/ignored", "Chat", AiMode::Chat);
+
+        mgr.rebuild_cwd_groups();
+
+        let mut collapse = CollapseState::new();
+        collapse.toggle_cwd("", "/work/a");
+        collapse.toggle_host("remote-b");
+
+        assert_eq!(
+            mgr.visual_order(&collapse),
+            vec![local_b, remote_a, chat_id]
+        );
     }
 }
