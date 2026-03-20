@@ -9,16 +9,16 @@ const APP_ID: &str = "io.damus.notedeck";
 
 fn usage() {
     eprintln!(
-        "Usage: notedeck-release --version <semver> --nsec <nsec_or_hex> --relay <wss://...> [--relay ...] [options]"
+        "Usage: notedeck-release --nsec <nsec_or_hex> --relay <wss://...> [--relay ...] [options]"
     );
     eprintln!();
     eprintln!(
         "Publishes NIP-82 release events (kind 30063 + kind 3063) for each release artifact."
     );
-    eprintln!("By default, fetches artifacts from the GitHub Release for the given version.");
+    eprintln!("By default, fetches artifacts from the latest GitHub Release (or a specific version with --version).");
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --version    Release version (semver, e.g. 1.2.0)");
+    eprintln!("  --version    Release version (semver, e.g. 1.2.0; defaults to latest)");
     eprintln!("  --nsec       Secret key (nsec bech32 or hex)");
     eprintln!("  --relay      Relay URL (repeatable)");
     eprintln!("  --channel    Release channel: main (default), beta, nightly, dev");
@@ -143,8 +143,13 @@ fn http_get(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn fetch_github_artifacts(version: &str) -> Result<Vec<ArtifactInfo>, String> {
-    let api_url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{version}");
+/// Fetch artifacts from a GitHub release. If `version` is None, uses the latest release.
+/// Returns (version, artifacts).
+fn fetch_github_artifacts(version: Option<&str>) -> Result<(String, Vec<ArtifactInfo>), String> {
+    let api_url = match version {
+        Some(v) => format!("https://api.github.com/repos/{GITHUB_REPO}/releases/tags/v{v}"),
+        None => format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest"),
+    };
     eprintln!("fetching release info from {api_url}...");
 
     let response = ureq::get(&api_url)
@@ -156,6 +161,18 @@ fn fetch_github_artifacts(version: &str) -> Result<Vec<ArtifactInfo>, String> {
     let body: serde_json::Value = response
         .into_json()
         .map_err(|e| format!("parse GitHub response: {e}"))?;
+
+    let version = match version {
+        Some(v) => v.to_string(),
+        None => {
+            let tag = body["tag_name"]
+                .as_str()
+                .ok_or("no tag_name in GitHub release")?;
+            let v = tag.strip_prefix('v').unwrap_or(tag).to_string();
+            eprintln!("latest release: v{v}");
+            v
+        }
+    };
 
     let assets = body["assets"]
         .as_array()
@@ -176,7 +193,7 @@ fn fetch_github_artifacts(version: &str) -> Result<Vec<ArtifactInfo>, String> {
         let data = http_get(browser_url)?;
         let sha256 = sha256_hex(&data);
         let size = data.len();
-        let url = github_download_url(version, &name);
+        let url = github_download_url(&version, &name);
         eprintln!("    sha256: {sha256}");
         eprintln!("    size:   {size}");
         artifacts.push(ArtifactInfo {
@@ -192,7 +209,7 @@ fn fetch_github_artifacts(version: &str) -> Result<Vec<ArtifactInfo>, String> {
             "no matching release artifacts found for v{version}"
         ));
     }
-    Ok(artifacts)
+    Ok((version, artifacts))
 }
 
 fn load_local_artifacts(version: &str, paths: &[PathBuf]) -> Result<Vec<ArtifactInfo>, String> {
@@ -399,11 +416,10 @@ fn main() {
         i += 1;
     }
 
-    let version = version.unwrap_or_else(|| {
-        eprintln!("error: --version required");
+    if !local_files.is_empty() && version.is_none() {
+        eprintln!("error: --version required when using local files");
         usage();
-        unreachable!()
-    });
+    }
 
     let nsec_str = nsec.unwrap_or_else(|| {
         eprintln!("error: --nsec required");
@@ -429,28 +445,38 @@ fn main() {
         std::process::exit(1);
     });
 
-    if semver::Version::parse(&version).is_err() {
-        eprintln!("error: invalid semver version: {version}");
-        std::process::exit(1);
+    if let Some(ref v) = version {
+        if semver::Version::parse(v).is_err() {
+            eprintln!("error: invalid semver version: {v}");
+            std::process::exit(1);
+        }
     }
 
-    let artifacts = if local_files.is_empty() {
-        eprintln!("fetching artifacts from GitHub Release v{version}...");
-        fetch_github_artifacts(&version).unwrap_or_else(|e| {
+    let (version, artifacts) = if local_files.is_empty() {
+        let v = version.as_deref();
+        if let Some(v) = v {
+            eprintln!("fetching artifacts from GitHub Release v{v}...");
+        } else {
+            eprintln!("fetching latest GitHub Release...");
+        }
+        let (version, artifacts) = fetch_github_artifacts(v).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
-        })
+        });
+        (version, artifacts)
     } else {
+        let version = version.unwrap(); // guaranteed by check above
         for f in &local_files {
             if !f.exists() {
                 eprintln!("error: artifact not found: {}", f.display());
                 std::process::exit(1);
             }
         }
-        load_local_artifacts(&version, &local_files).unwrap_or_else(|e| {
+        let artifacts = load_local_artifacts(&version, &local_files).unwrap_or_else(|e| {
             eprintln!("error: {e}");
             std::process::exit(1);
-        })
+        });
+        (version, artifacts)
     };
 
     // Step 1: Build and publish asset events (kind 3063), collecting their ids
