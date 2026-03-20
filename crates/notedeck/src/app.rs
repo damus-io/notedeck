@@ -284,7 +284,11 @@ impl Notedeck {
         let img_cache_dir = path.path(DataPathType::Cache);
         let _ = std::fs::create_dir_all(img_cache_dir.clone());
 
-        let map_size = if cfg!(target_os = "windows") {
+        let map_size = if cfg!(target_os = "windows")
+            && parsed_args.options.contains(NotedeckOptions::Tests)
+        {
+            1024usize * 1024usize * 1024usize
+        } else if cfg!(target_os = "windows") {
             // 16 Gib on windows because it actually creates the file
             1024usize * 1024usize * 1024usize * 16usize
         } else {
