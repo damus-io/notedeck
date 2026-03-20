@@ -39,6 +39,8 @@ enum TokenState {
 // ---------------------------------------------------------------------------
 /// Question ID prefix Codex uses for MCP tool-call approval requests.
 const MCP_APPROVAL_PREFIX: &str = "mcp_tool_call_approval_";
+/// JSON-RPC error code for invalid method params.
+const JSON_RPC_INVALID_PARAMS_CODE: i64 = -32602;
 
 // Session actor
 // ---------------------------------------------------------------------------
@@ -1403,7 +1405,13 @@ async fn send_rpc_error<W: AsyncWrite + Unpin>(
     id: u64,
     message: &str,
 ) -> Result<(), std::io::Error> {
-    let resp = serde_json::json!({ "id": id, "error": { "message": message } });
+    let resp = serde_json::json!({
+        "id": id,
+        "error": {
+            "code": JSON_RPC_INVALID_PARAMS_CODE,
+            "message": message
+        }
+    });
     let mut line = serde_json::to_string(&resp)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push('\n');
@@ -1989,6 +1997,28 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("\"decision\":\"decline\""));
+    }
+
+    #[tokio::test]
+    async fn test_send_rpc_error_includes_code() {
+        let (writer_stream, reader_stream) = tokio::io::duplex(512);
+        let mut writer = tokio::io::BufWriter::new(writer_stream);
+        let mut reader = tokio::io::BufReader::new(reader_stream);
+
+        send_rpc_error(&mut writer, 321, "bad params")
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let value: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+
+        assert_eq!(value["id"], serde_json::json!(321));
+        assert_eq!(
+            value["error"]["code"],
+            serde_json::json!(JSON_RPC_INVALID_PARAMS_CODE)
+        );
+        assert_eq!(value["error"]["message"], serde_json::json!("bad params"));
     }
 
     #[test]
