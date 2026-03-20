@@ -882,12 +882,19 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         KeyAction::OpenTerminal => {
-            if let Some(session) = session_manager.get_active() {
-                if let Some(cwd) = session.cwd() {
-                    update::open_terminal(cwd);
-                }
-            }
+            dispatch_open_terminal(session_manager, update::open_terminal);
             KeyActionResult::None
+        }
+    }
+}
+
+fn dispatch_open_terminal(
+    session_manager: &SessionManager,
+    mut open_terminal: impl FnMut(&std::path::Path),
+) {
+    if let Some(session) = session_manager.get_active() {
+        if let Some(cwd) = session.cwd() {
+            open_terminal(cwd);
         }
     }
 }
@@ -1119,5 +1126,33 @@ pub fn handle_ui_action(
         DaveAction::Compact => UiActionResult::Compact,
         // All run actions are intercepted and handled in lib.rs before reaching here
         DaveAction::Run(_) => UiActionResult::Handled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dispatch_open_terminal;
+    use crate::config::AiMode;
+    use crate::session::SessionManager;
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn open_terminal_key_action_dispatches_active_session_cwd() {
+        let mut session_manager = SessionManager::new();
+        let expected_cwd = PathBuf::from("/tmp/terminal-cwd");
+        let session_id = session_manager.new_session(
+            expected_cwd.clone(),
+            AiMode::Agentic,
+            crate::backend::BackendType::Claude,
+        );
+        session_manager.switch_to(session_id);
+
+        let launched_cwd = RefCell::new(None::<PathBuf>);
+        dispatch_open_terminal(&session_manager, |cwd: &Path| {
+            launched_cwd.replace(Some(cwd.to_path_buf()));
+        });
+
+        assert_eq!(launched_cwd.into_inner(), Some(expected_cwd));
     }
 }

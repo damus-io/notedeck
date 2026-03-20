@@ -983,10 +983,18 @@ fn spawn_linux_editor(
 /// Uses `$TERMINAL` if set, otherwise falls back to the platform default
 /// (Terminal.app on macOS, `x-terminal-emulator` on Linux).
 pub fn open_terminal(cwd: &std::path::Path) {
+    let terminal = std::env::var("TERMINAL").ok();
+    let _ = open_terminal_with_terminal(cwd, terminal.as_deref());
+}
+
+/// Open a new terminal window, optionally overriding the terminal executable.
+///
+/// Returns `true` if a terminal process was successfully started.
+fn open_terminal_with_terminal(cwd: &std::path::Path, terminal: Option<&str>) -> bool {
     use std::process::{Command, Stdio};
 
-    if let Ok(terminal) = std::env::var("TERMINAL") {
-        match Command::new(&terminal)
+    if let Some(terminal) = terminal {
+        match Command::new(terminal)
             .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -997,7 +1005,7 @@ pub fn open_terminal(cwd: &std::path::Path) {
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
-                return;
+                return true;
             }
             Err(e) => tracing::warn!("$TERMINAL='{}' failed: {}", terminal, e),
         }
@@ -1021,7 +1029,7 @@ pub fn open_terminal(cwd: &std::path::Path) {
             .spawn()
     } else {
         tracing::warn!("Open terminal not supported on this platform. Set $TERMINAL.");
-        return;
+        return false;
     };
 
     match result {
@@ -1030,8 +1038,12 @@ pub fn open_terminal(cwd: &std::path::Path) {
                 let _ = child.wait();
             });
             tracing::debug!("Opened new terminal window in {:?}", cwd);
+            true
         }
-        Err(e) => tracing::error!("Failed to open terminal: {}. Set $TERMINAL.", e),
+        Err(e) => {
+            tracing::error!("Failed to open terminal: {}. Set $TERMINAL.", e);
+            false
+        }
     }
 }
 
@@ -1557,6 +1569,55 @@ mod tests {
         assert_eq!(
             focus_queue.current().map(|entry| entry.session_id),
             Some(visible_done)
+        );
+    }
+
+    #[test]
+    fn open_terminal_uses_override_and_launches_in_requested_cwd() {
+        use std::io::ErrorKind;
+
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let cwd = tempdir.path().join("project");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let output_path = tempdir.path().join("pwd.txt");
+        let script_path = tempdir.path().join("terminal.sh");
+        std::fs::write(
+            &script_path,
+            format!("#!/bin/sh\npwd > \"{}\"\n", output_path.display()),
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        assert!(
+            open_terminal_with_terminal(&cwd, script_path.to_str()),
+            "terminal override should launch successfully"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let launched_cwd = loop {
+            match std::fs::read_to_string(&output_path) {
+                Ok(contents) => break contents,
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "terminal script did not write its cwd before timeout"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
+                Err(err) => panic!("failed reading terminal output: {err}"),
+            }
+        };
+
+        let launched_cwd = std::path::PathBuf::from(launched_cwd.trim_end());
+        assert_eq!(
+            launched_cwd.canonicalize().unwrap(),
+            cwd.canonicalize().unwrap()
         );
     }
 
