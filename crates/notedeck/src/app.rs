@@ -103,6 +103,14 @@ pub struct Notedeck {
     android_app: Option<AndroidApp>,
 }
 
+impl Drop for Notedeck {
+    fn drop(&mut self) {
+        // Ensure app-owned background workers are shut down before core runtime
+        // resources (including NDB) begin dropping.
+        self.app.take();
+    }
+}
+
 /// Our chrome, which is basically nothing
 fn main_panel(style: &egui::Style) -> egui::CentralPanel {
     egui::CentralPanel::default().frame(egui::Frame {
@@ -284,9 +292,7 @@ impl Notedeck {
         let img_cache_dir = path.path(DataPathType::Cache);
         let _ = std::fs::create_dir_all(img_cache_dir.clone());
 
-        let map_size = if cfg!(target_os = "windows")
-            && parsed_args.options.contains(NotedeckOptions::Tests)
-        {
+        let map_size = if parsed_args.options.contains(NotedeckOptions::Tests) {
             256usize * 1024usize * 1024usize
         } else if cfg!(target_os = "windows") {
             // 16 Gib on windows because it actually creates the file
