@@ -4,11 +4,13 @@ use crossbeam_channel as chan;
 use nostrdb::Ndb;
 use std::sync::Arc;
 use std::thread;
+use tracing::error;
 
 /// Handle for a background async loader that processes commands on worker threads.
 pub struct AsyncLoader<Cmd, Msg> {
     cmd_tx: Option<chan::Sender<Cmd>>,
     msg_rx: Option<chan::Receiver<Msg>>,
+    workers: Vec<thread::JoinHandle<()>>,
 }
 
 impl<Cmd, Msg> AsyncLoader<Cmd, Msg>
@@ -21,6 +23,7 @@ where
         Self {
             cmd_tx: None,
             msg_rx: None,
+            workers: Vec::new(),
         }
     }
 
@@ -57,7 +60,7 @@ where
                 format!("{worker_name}-{idx}")
             };
 
-            thread::Builder::new()
+            let handle = thread::Builder::new()
                 .name(name)
                 .spawn(move || {
                     while let Ok(cmd) = cmd_rx.recv() {
@@ -65,6 +68,7 @@ where
                     }
                 })
                 .expect("failed to spawn async loader worker");
+            self.workers.push(handle);
         }
 
         true
@@ -86,6 +90,19 @@ where
         };
 
         rx.try_recv().ok()
+    }
+}
+
+impl<Cmd, Msg> Drop for AsyncLoader<Cmd, Msg> {
+    fn drop(&mut self) {
+        self.cmd_tx.take();
+        self.msg_rx.take();
+
+        for worker in self.workers.drain(..) {
+            if let Err(err) = worker.join() {
+                error!("async loader worker panicked during shutdown: {err:?}");
+            }
+        }
     }
 }
 

@@ -22,6 +22,7 @@ use crate::{
     relay_ensure::ensure_selected_account_dm_list,
     ui::{login_nsec_prompt, messages::messages_ui},
 };
+use std::thread;
 
 /// Max loader messages to process per frame to avoid UI stalls.
 const MAX_LOADER_MSGS_PER_FRAME: usize = 8;
@@ -33,6 +34,7 @@ pub struct MessagesApp {
     router: Router<Route>,
     loader: MessagesLoader,
     inflight_messages: HashSet<cache::ConversationId>,
+    giftwrap_workers: Vec<thread::JoinHandle<()>>,
 }
 
 impl MessagesApp {
@@ -43,6 +45,7 @@ impl MessagesApp {
             router: Router::new(vec![Route::ConvoList]),
             loader: MessagesLoader::new(),
             inflight_messages: HashSet::new(),
+            giftwrap_workers: Vec::new(),
         }
     }
 }
@@ -50,6 +53,12 @@ impl MessagesApp {
 impl Default for MessagesApp {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for MessagesApp {
+    fn drop(&mut self) {
+        join_giftwrap_workers(&mut self.giftwrap_workers);
     }
 }
 
@@ -66,7 +75,14 @@ impl App for MessagesApp {
 
         match cache.state {
             ConversationListState::Initializing => {
-                initialize(ctx, cache, is_narrow(egui_ctx), &self.loader);
+                reap_finished_giftwrap_workers(&mut self.giftwrap_workers);
+                initialize(
+                    ctx,
+                    cache,
+                    is_narrow(egui_ctx),
+                    &self.loader,
+                    &mut self.giftwrap_workers,
+                );
             }
             ConversationListState::Loading { subscription } => {
                 if let Some(sub) = subscription {
@@ -140,6 +156,7 @@ fn initialize(
     cache: &mut ConversationCache,
     is_narrow: bool,
     loader: &MessagesLoader,
+    giftwrap_workers: &mut Vec<thread::JoinHandle<()>>,
 ) {
     tracing::debug!(
         "initializing Messages conversation list for selected_account={} narrow={is_narrow}",
@@ -161,8 +178,9 @@ fn initialize(
             tracing::debug!("finished background giftwrap processing during Messages initialize");
         });
 
-    if let Err(err) = r {
-        tracing::error!("failed to spawn process_giftwraps thread: {err}");
+    match r {
+        Ok(handle) => giftwrap_workers.push(handle),
+        Err(err) => tracing::error!("failed to spawn process_giftwraps thread: {err}"),
     }
 
     let sub = match ctx
@@ -187,6 +205,30 @@ fn initialize(
 
     if !is_narrow {
         cache.active = None;
+    }
+}
+
+/// Joins any completed giftwrap worker threads and removes them from the worker list.
+fn reap_finished_giftwrap_workers(workers: &mut Vec<thread::JoinHandle<()>>) {
+    let mut idx = 0;
+    while idx < workers.len() {
+        if workers[idx].is_finished() {
+            let worker = workers.swap_remove(idx);
+            if let Err(err) = worker.join() {
+                tracing::error!("process_giftwraps thread panicked during shutdown: {err:?}");
+            }
+        } else {
+            idx += 1;
+        }
+    }
+}
+
+/// Joins all tracked giftwrap worker threads before Messages teardown completes.
+fn join_giftwrap_workers(workers: &mut Vec<thread::JoinHandle<()>>) {
+    for worker in workers.drain(..) {
+        if let Err(err) = worker.join() {
+            tracing::error!("process_giftwraps thread panicked during shutdown: {err:?}");
+        }
     }
 }
 
