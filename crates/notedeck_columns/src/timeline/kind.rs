@@ -1,4 +1,5 @@
 use crate::error::Error;
+use crate::nfilter::{filter_from_querystring, filter_to_querystring};
 use crate::search::SearchQuery;
 use crate::timeline::{Timeline, TimelineTab};
 use enostr::{Filter, NoteId, Pubkey};
@@ -207,6 +208,32 @@ impl PartialEq for ThreadSelection {
 
 impl Eq for ThreadSelection {}
 
+/// Stores filters as querystrings for serialization
+/// and thread safety (nostrdb::Filter is not Send).
+/// Decodes to Vec<Filter> on demand.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FilterVec(pub Vec<String>);
+
+impl FilterVec {
+    /// Create from querystrings
+    pub fn new(querystrings: Vec<String>) -> Self {
+        Self(querystrings)
+    }
+
+    /// Create from Filters by encoding them as querystrings
+    pub fn from_filters(filters: &[Filter]) -> Self {
+        Self(filters.iter().map(|f| filter_to_querystring(f)).collect())
+    }
+
+    /// Decode stored querystrings to Filters
+    pub fn to_filters(&self) -> Vec<Filter> {
+        self.0
+            .iter()
+            .filter_map(|s| filter_from_querystring(s))
+            .collect()
+    }
+}
+
 ///
 /// What kind of timeline is it?
 ///   - Follow List
@@ -230,8 +257,8 @@ pub enum TimelineKind {
 
     Universe,
 
-    /// Generic filter, references a hash of a filter
-    Generic(u64),
+    /// Custom filter timeline
+    Generic(FilterVec),
 
     Hashtag(Vec<String>),
 }
@@ -380,9 +407,11 @@ impl TimelineKind {
             TimelineKind::Universe => {
                 writer.write_token("universe");
             }
-            TimelineKind::Generic(_usize) => {
-                // TODO: lookup filter and then serialize
+            TimelineKind::Generic(filter_vec) => {
                 writer.write_token("generic");
+                for qs in &filter_vec.0 {
+                    writer.write_token(qs);
+                }
             }
             TimelineKind::Hashtag(ht) => {
                 writer.write_token("hashtag");
@@ -435,8 +464,16 @@ impl TimelineKind {
                 },
                 |p| {
                     p.parse_token("generic")?;
-                    // TODO: generic filter serialization
-                    Ok(TimelineKind::Generic(0))
+                    let mut querystrings = Vec::new();
+                    while let Ok(token) = p.try_parse(|p| p.pull_token()) {
+                        if filter_from_querystring(token).is_some() {
+                            querystrings.push(token.to_string());
+                        } else {
+                            p.unpop_token();
+                            break;
+                        }
+                    }
+                    Ok(TimelineKind::Generic(FilterVec::new(querystrings)))
                 },
                 |p| {
                     p.parse_token("hashtag")?;
@@ -542,9 +579,7 @@ impl TimelineKind {
                 },
             },
 
-            TimelineKind::Generic(_) => {
-                todo!("implement generic filter lookups")
-            }
+            TimelineKind::Generic(filter_vec) => FilterState::ready(filter_vec.to_filters()),
 
             TimelineKind::Profile(pk) => FilterState::ready_hybrid(profile_filter(pk.bytes())),
         }
@@ -567,10 +602,13 @@ impl TimelineKind {
                 TimelineTab::full_tabs(),
             )),
 
-            TimelineKind::Generic(_filter_id) => {
-                warn!("you can't convert a TimelineKind::Generic to a Timeline");
-                // TODO: you actually can! just need to look up the filter id
-                None
+            TimelineKind::Generic(filter_vec) => {
+                let filters = filter_vec.to_filters();
+                Some(Timeline::new(
+                    TimelineKind::Generic(filter_vec),
+                    FilterState::ready(filters),
+                    TimelineTab::full_tabs(),
+                ))
             }
 
             TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::Contact(pk))) => {

@@ -1,6 +1,6 @@
+use crate::nfilter::{filter_from_querystring, filter_to_querystring};
 use enostr::Pubkey;
-use nostrdb::{Filter, FilterBuilder};
-use rmpv::Value;
+use nostrdb::{Filter, FilterBuilder, FilterField};
 use tokenator::{ParseError, TokenParser, TokenSerializable, TokenWriter};
 
 #[derive(Debug, Eq, PartialEq, Clone, Hash)]
@@ -11,11 +11,11 @@ pub struct SearchQuery {
 
 impl TokenSerializable for SearchQuery {
     fn serialize_tokens(&self, writer: &mut TokenWriter) {
-        writer.write_token(&self.to_nfilter())
+        writer.write_token(&self.to_querystring())
     }
 
     fn parse_from_tokens<'a>(parser: &mut TokenParser<'a>) -> Result<Self, ParseError<'a>> {
-        if let Some(query) = SearchQuery::from_nfilter(parser.pull_token()?) {
+        if let Some(query) = SearchQuery::from_querystring(parser.pull_token()?) {
             Ok(query)
         } else {
             Err(ParseError::DecodeFailed)
@@ -28,96 +28,47 @@ impl SearchQuery {
         let author: Option<Pubkey> = None;
         Self { search, author }
     }
-    /// Convert the query to a filter-compatible MessagePack value
-    fn to_msgpack_value(&self) -> Value {
-        let mut values: Vec<(Value, Value)> = Vec::with_capacity(2);
-        let search_str: &str = &self.search;
-        values.push(("search".into(), search_str.into()));
-        if let Some(pubkey) = self.author() {
-            values.push((
-                "authors".into(),
-                Value::Array(vec![Value::Binary(pubkey.bytes().to_vec())]),
-            ))
+
+    pub fn filter(&self) -> FilterBuilder {
+        let mut builder = Filter::new().search(&self.search).kinds([1]);
+        if let Some(pk) = self.author() {
+            builder = builder.authors([pk.bytes()]);
         }
-
-        Value::Map(values)
+        builder
     }
 
-    pub fn to_nfilter(&self) -> String {
-        let hrp = bech32::Hrp::parse_unchecked("nfilter");
-        let msgpack_value = self.to_msgpack_value();
-        let mut buf = vec![];
-        rmpv::encode::write_value(&mut buf, &msgpack_value)
-            .expect("expected nfilter to encode ok. too big?");
-
-        bech32::encode::<bech32::Bech32>(hrp, &buf).expect("expected bech32 nfilter to encode ok")
+    fn to_filter(&self) -> Filter {
+        self.filter().build()
     }
 
-    fn decode_value(value: &Value) -> Option<Self> {
+    pub fn to_querystring(&self) -> String {
+        filter_to_querystring(&self.to_filter())
+    }
+
+    pub fn from_querystring(qs: &str) -> Option<Self> {
+        let filter = filter_from_querystring(qs)?;
+
         let mut search: Option<String> = None;
         let mut author: Option<Pubkey> = None;
 
-        let values = if let Value::Map(values) = value {
-            values
-        } else {
-            return None;
-        };
-
-        for (key, value) in values {
-            let key_str: &str = if let Value::String(s) = key {
-                s.as_str()?
-            } else {
-                continue;
-            };
-
-            if key_str == "search" {
-                if let Value::String(search_str) = value {
-                    search = search_str.clone().into_str();
-                } else {
-                    continue;
+        for field in &filter {
+            match field {
+                FilterField::Search(s) => {
+                    search = Some(s.to_string());
                 }
-            } else if key_str == "authors" {
-                let authors = if let Value::Array(authors) = value {
-                    authors
-                } else {
-                    continue;
-                };
-
-                let author_value = if let Some(author_value) = authors.first() {
-                    author_value
-                } else {
-                    continue;
-                };
-
-                let author_bytes: &[u8] = if let Value::Binary(author_bytes) = author_value {
-                    author_bytes
-                } else {
-                    continue;
-                };
-
-                let pubkey = Pubkey::new(author_bytes.try_into().ok()?);
-                author = Some(pubkey);
+                FilterField::Authors(authors) => {
+                    if let Some(pk_bytes) = authors.into_iter().next() {
+                        author = Some(Pubkey::new(*pk_bytes));
+                    }
+                }
+                _ => {}
             }
         }
 
-        let search = search?;
-
-        Some(Self { search, author })
-    }
-
-    pub fn filter(&self) -> FilterBuilder {
-        Filter::new().search(&self.search).kinds([1])
-    }
-
-    pub fn from_nfilter(nfilter: &str) -> Option<Self> {
-        let (hrp, msgpack_data) = bech32::decode(nfilter).ok()?;
-        if hrp.as_str() != "nfilter" {
-            return None;
-        }
-
-        let value = rmpv::decode::read_value(&mut &msgpack_data[..]).ok()?;
-
-        Self::decode_value(&value)
+        Some(Self {
+            search: search?,
+            author,
+        })
     }
 
     pub fn author(&self) -> Option<&Pubkey> {
@@ -129,58 +80,37 @@ impl SearchQuery {
 mod tests {
     use super::*;
     use enostr::Pubkey;
-    use rmpv::Value;
     use tokenator::{TokenParser, TokenSerializable, TokenWriter};
 
     fn test_pubkey() -> Pubkey {
-        let bytes: [u8; 32] = [1; 32]; // Example public key
+        let bytes: [u8; 32] = [1; 32];
         Pubkey::new(bytes)
     }
 
     #[test]
-    fn test_to_msgpack_value() {
+    fn test_to_querystring() {
         let query = SearchQuery {
             author: Some(test_pubkey()),
             search: "nostrdb".to_string(),
         };
-        let msgpack_value = query.to_msgpack_value();
-
-        if let Value::Map(values) = msgpack_value {
-            assert!(values
-                .iter()
-                .any(|(k, v)| *k == Value::String("search".into())
-                    && *v == Value::String("nostrdb".into())));
-            assert!(values
-                .iter()
-                .any(|(k, _v)| *k == Value::String("authors".into())));
-        } else {
-            panic!("Failed to encode SearchQuery to MessagePack");
-        }
+        let encoded = query.to_querystring();
+        assert!(encoded.contains("search=nostrdb"));
+        assert!(encoded.contains("authors="));
     }
 
     #[test]
-    fn test_to_nfilter() {
+    fn test_from_querystring() {
         let query = SearchQuery {
             author: Some(test_pubkey()),
             search: "nostrdb".to_string(),
         };
-        let encoded = query.to_nfilter();
-        assert!(encoded.starts_with("nfilter"), "nfilter encoding failed");
-    }
-
-    #[test]
-    fn test_from_nfilter() {
-        let query = SearchQuery {
-            author: Some(test_pubkey()),
-            search: "nostrdb".to_string(),
-        };
-        let encoded = query.to_nfilter();
-        let decoded = SearchQuery::from_nfilter(&encoded).expect("Failed to decode nfilter");
+        let encoded = query.to_querystring();
+        let decoded = SearchQuery::from_querystring(&encoded).expect("Failed to decode");
         assert_eq!(query, decoded);
     }
 
     #[test]
-    fn test_nfilter_roundtrip() {
+    fn test_querystring_roundtrip() {
         let queries = vec![
             SearchQuery {
                 author: None,
@@ -193,23 +123,15 @@ mod tests {
         ];
 
         for query in queries {
-            let encoded = query.to_nfilter();
-            let decoded =
-                SearchQuery::from_nfilter(&encoded).expect("Failed to decode valid nfilter");
+            let encoded = query.to_querystring();
+            let decoded = SearchQuery::from_querystring(&encoded).expect("Failed to decode");
             assert_eq!(query, decoded, "Roundtrip encoding/decoding failed");
         }
     }
 
     #[test]
-    fn test_invalid_nfilter() {
-        let invalid_nfilter = "nfilter1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
-        assert!(SearchQuery::from_nfilter(invalid_nfilter).is_none());
-    }
-
-    #[test]
-    fn test_invalid_hrp() {
-        let invalid_nfilter = "invalid1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
-        assert!(SearchQuery::from_nfilter(invalid_nfilter).is_none());
+    fn test_invalid_querystring() {
+        assert!(SearchQuery::from_querystring("").is_none());
     }
 
     #[test]

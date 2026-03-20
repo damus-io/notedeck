@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use crate::timeline::kind::FilterVec;
 use crate::timeline::TimelineKind;
 use enostr::{Filter, Pubkey};
 use oot_bitset::{bitset_clear, bitset_get, bitset_set};
@@ -206,10 +207,7 @@ pub enum ArgColumn {
 impl ArgColumn {
     pub fn into_timeline_kind(self) -> TimelineKind {
         match self {
-            ArgColumn::Generic(_filters) => {
-                // TODO: fix generic filters by referencing some filter map
-                TimelineKind::Generic(0)
-            }
+            ArgColumn::Generic(filters) => TimelineKind::Generic(FilterVec::from_filters(&filters)),
             ArgColumn::Timeline(tk) => tk,
         }
     }
