@@ -998,7 +998,7 @@ fn handle_codex_message(
 
 /// Check auto-accept rules. If matched, return `AutoAccepted`. Otherwise
 /// create a `PendingPermission`, send it to the UI, and return `NeedsApproval`
-/// with the oneshot receiver.
+/// with the oneshot receiver. If UI forwarding fails, reject the request.
 fn check_approval_or_forward(
     rpc_id: u64,
     tool_name: &str,
@@ -1019,10 +1019,9 @@ fn check_approval_or_forward(
             rx,
             kind: ResponseKind::Standard,
         },
-        // Can't reach UI — auto-accept as fallback
-        None => HandleResult::AutoAccepted {
+        None => HandleResult::Rejected {
             rpc_id,
-            kind: ResponseKind::Standard,
+            message: format!("Approval UI unavailable for tool: {tool_name}"),
         },
     }
 }
@@ -1216,8 +1215,10 @@ fn handle_request_user_input(
             ctx,
         ) {
             Some(rx) => HandleResult::NeedsApproval { rpc_id, rx, kind },
-            // Can't reach UI — auto-accept as fallback
-            None => HandleResult::AutoAccepted { rpc_id, kind },
+            None => HandleResult::Rejected {
+                rpc_id,
+                message: format!("Approval UI unavailable for tool: {tool_name}"),
+            },
         }
     } else if input_req.questions.iter().all(is_approval_shaped) {
         // All questions are binary approval-shaped — safe to route through
@@ -1241,7 +1242,10 @@ fn handle_request_user_input(
             ctx,
         ) {
             Some(rx) => HandleResult::NeedsApproval { rpc_id, rx, kind },
-            None => HandleResult::AutoAccepted { rpc_id, kind },
+            None => HandleResult::Rejected {
+                rpc_id,
+                message: format!("Approval UI unavailable for prompt: {display_name}"),
+            },
         }
     } else {
         // Unsupported interactive prompt — reject to avoid fabricating input.
@@ -2448,6 +2452,32 @@ mod tests {
     }
 
     #[test]
+    fn test_request_user_input_mcp_approval_rejects_when_ui_unavailable() {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            209,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "mcp_tool_call_approval_call_abc123",
+                    "question": "The linear MCP server wants to run the tool \"Save issue\", which may modify or delete data. Allow this action?",
+                    "options": [
+                        {"label": "Approve Once"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 209, .. }));
+    }
+
+    #[test]
     fn test_request_user_input_mcp_with_unsafe_non_mcp_rejected() {
         let (tx, _rx) = mpsc::channel();
         let ctx = egui::Context::default();
@@ -2624,6 +2654,33 @@ mod tests {
         // Permission request sent to UI
         let response = rx.try_recv().unwrap();
         assert!(matches!(response, DaveApiResponse::PermissionRequest(_)));
+    }
+
+    #[test]
+    fn test_request_user_input_non_mcp_approval_rejects_when_ui_unavailable() {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            210,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "some_approval_question",
+                    "header": "Confirm action",
+                    "question": "Do you want to proceed?",
+                    "options": [
+                        {"label": "Approve Once"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 210, .. }));
     }
 
     #[test]
@@ -3094,6 +3151,17 @@ mod tests {
                 std::mem::discriminant(&other)
             ),
         }
+    }
+
+    #[test]
+    fn test_approval_rejects_when_ui_channel_closed() {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let ctx = egui::Context::default();
+
+        let result =
+            check_approval_or_forward(43, "Bash", json!({"command": "sudo rm -rf /"}), &tx, &ctx);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 43, .. }));
     }
 
     // -----------------------------------------------------------------------
