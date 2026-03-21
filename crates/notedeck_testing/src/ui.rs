@@ -3,16 +3,15 @@
 use std::time::{Duration, Instant};
 
 use egui_kittest::kittest::Queryable;
+use egui_kittest::Harness;
 
-use crate::device::DeviceHarness;
-
-/// Waits until a labeled UI node appears on the given device.
-pub fn wait_for_label(device: &mut DeviceHarness, label: &str, timeout: Duration) {
+/// Waits until a labeled UI node appears on the given harness.
+pub fn wait_for_label<S>(harness: &mut Harness<'_, S>, label: &str, timeout: Duration) {
     let deadline = Instant::now() + timeout;
 
     loop {
-        device.step();
-        if device.query_all_by_label(label).next().is_some() {
+        harness.step();
+        if harness.query_all_by_label(label).next().is_some() {
             return;
         }
 
@@ -26,8 +25,8 @@ pub fn wait_for_label(device: &mut DeviceHarness, label: &str, timeout: Duration
 }
 
 /// Clicks the enabled UI node matching the given label.
-pub fn click_enabled_label(device: &DeviceHarness, label: &str) {
-    let node = device
+pub fn click_enabled_label<S>(harness: &Harness<'_, S>, label: &str) {
+    let node = harness
         .query_all_by_label(label)
         .find(|node| !node.is_disabled())
         .unwrap_or_else(|| panic!("no enabled UI node found for label {label:?}"));

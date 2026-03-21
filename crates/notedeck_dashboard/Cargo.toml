@@ -15,3 +15,16 @@ notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
+egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
+enostr = { workspace = true }
+notedeck = { workspace = true, features = ["snapshot-testing"] }
+notedeck_testing = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[features]
+default = []
+snapshot-testing = ["notedeck/snapshot-testing"]
