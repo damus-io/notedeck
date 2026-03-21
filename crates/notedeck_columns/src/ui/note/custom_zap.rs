@@ -347,7 +347,7 @@ fn show_selection_button(
     let helper = AnimationHelper::new_from_rect(ui, ("zap_selection_button", &button), rect);
     let painter = ui.painter();
 
-    let corner = CornerRadius::same(8);
+    let corner = CornerRadius::same(notedeck::tokens::RADIUS_MD as u8);
     painter.rect_filled(rect, corner, ui.visuals().noninteractive().weak_bg_fill);
 
     let amount = button.sats();

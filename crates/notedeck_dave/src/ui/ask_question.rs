@@ -50,7 +50,10 @@ pub fn ask_user_question_ui(
         .fill(ui.visuals().widgets.noninteractive.bg_fill)
         .inner_margin(inner_margin)
         .corner_radius(corner_radius)
-        .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color))
+        .stroke(egui::Stroke::new(
+            notedeck::tokens::STROKE_THIN,
+            ui.visuals().selection.stroke.color,
+        ))
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 // Progress indicator if multiple questions

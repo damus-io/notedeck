@@ -74,7 +74,7 @@ pub fn display_name_widget<'a>(
         };
 
         if add_placeholder_space {
-            ui.add_space(16.0);
+            ui.add_space(notedeck::tokens::SPACING_LG);
         }
 
         resp
@@ -88,7 +88,7 @@ pub fn about_section_widget<'a>(profile: Option<&'a ProfileRecord<'a>>) -> impl 
             .and_then(|p| p.and_then(|p| p.about()))
         {
             let resp = ui.label(about);
-            ui.add_space(8.0);
+            ui.add_space(notedeck::tokens::SPACING_SM);
             resp
         } else {
             // need any Response so we dont need an Option

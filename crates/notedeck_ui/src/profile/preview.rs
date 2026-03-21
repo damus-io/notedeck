@@ -2,6 +2,7 @@ use crate::ProfilePic;
 use egui::{Frame, Label, RichText};
 use egui_extras::Size;
 use nostrdb::ProfileRecord;
+use notedeck::tokens::{PFP_LG, PFP_XL, SPACING_MD};
 
 use notedeck::{
     name::get_display_name, profile::get_profile_url, tr, Images, Localization, MediaJobSender,
@@ -23,7 +24,7 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
         cache: &'cache mut Images,
         jobs: &'cache MediaJobSender,
     ) -> Self {
-        let banner_height = Size::exact(80.0);
+        let banner_height = Size::exact(PFP_XL);
         ProfilePreview {
             profile,
             jobs,
@@ -37,10 +38,10 @@ impl<'a, 'cache> ProfilePreview<'a, 'cache> {
     }
 
     fn body(self, ui: &mut egui::Ui) {
-        let padding = 12.0;
+        let padding = SPACING_MD;
         crate::padding(padding, ui, |ui| {
             let mut pfp_rect = ui.available_rect_before_wrap();
-            let size = 80.0;
+            let size = PFP_XL;
             pfp_rect.set_width(size);
             pfp_rect.set_height(size);
             let pfp_rect = pfp_rect.translate(egui::vec2(0.0, -(padding + 2.0 + (size / 2.0))));
@@ -68,7 +69,7 @@ impl egui::Widget for ProfilePreview<'_, '_> {
                 self.cache,
                 self.jobs,
                 self.profile.record().profile().and_then(|p| p.banner()),
-                80.0,
+                PFP_XL,
             );
 
             self.body(ui);
@@ -109,7 +110,7 @@ impl egui::Widget for SimpleProfilePreview<'_, '_> {
             .show(ui, |ui| {
                 ui.add(
                     &mut ProfilePic::new(self.cache, self.jobs, get_profile_url(self.profile))
-                        .size(48.0),
+                        .size(PFP_LG),
                 );
                 ui.vertical(|ui| {
                     ui.add(display_name_widget(&get_display_name(self.profile), true));

@@ -426,9 +426,9 @@ impl<'a> DaveUi<'a> {
                             top: 0,
                             bottom: bottom_margin,
                         })
-                        .inner_margin(egui::Margin::same(8))
+                        .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
                         .fill(ui.visuals().extreme_bg_color)
-                        .corner_radius(12.0)
+                        .corner_radius(notedeck::tokens::RADIUS_LG)
                         .show(ui, |ui| self.inputbox(app_ctx, ui))
                         .inner;
 
@@ -643,8 +643,8 @@ impl<'a> DaveUi<'a> {
     ) -> Option<DaveAction> {
         let mut action = None;
 
-        let inner_margin = 8.0;
-        let corner_radius = 6.0;
+        let inner_margin = notedeck::tokens::SPACING_SM;
+        let corner_radius = notedeck::tokens::RADIUS_SM;
         let spacing_x = 8.0;
 
         ui.spacing_mut().item_spacing.x = spacing_x;
@@ -730,7 +730,10 @@ impl<'a> DaveUi<'a> {
                         .fill(ui.visuals().widgets.noninteractive.bg_fill)
                         .inner_margin(inner_margin)
                         .corner_radius(corner_radius)
-                        .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
+                        .stroke(egui::Stroke::new(
+                            notedeck::tokens::STROKE_THIN,
+                            ui.visuals().warn_fg_color,
+                        ))
                         .show(ui, |ui| {
                             // Header with file path
                             diff::file_path_header(&file_update, ui);
@@ -761,7 +764,10 @@ impl<'a> DaveUi<'a> {
                         .fill(ui.visuals().widgets.noninteractive.bg_fill)
                         .inner_margin(inner_margin)
                         .corner_radius(corner_radius)
-                        .stroke(egui::Stroke::new(1.0, ui.visuals().warn_fg_color))
+                        .stroke(egui::Stroke::new(
+                            notedeck::tokens::STROKE_THIN,
+                            ui.visuals().warn_fg_color,
+                        ))
                         .show(ui, |ui| {
                             // Tool info display
                             if let Some(desc) = description {
@@ -900,14 +906,17 @@ impl<'a> DaveUi<'a> {
         ui: &mut egui::Ui,
     ) -> Option<DaveAction> {
         let mut action = None;
-        let inner_margin = 12.0;
-        let corner_radius = 8.0;
+        let inner_margin = notedeck::tokens::SPACING_MD;
+        let corner_radius = notedeck::tokens::RADIUS_MD;
 
         egui::Frame::new()
             .fill(ui.visuals().widgets.noninteractive.bg_fill)
             .inner_margin(inner_margin)
             .corner_radius(corner_radius)
-            .stroke(egui::Stroke::new(1.0, ui.visuals().selection.stroke.color))
+            .stroke(egui::Stroke::new(
+                notedeck::tokens::STROKE_THIN,
+                ui.visuals().selection.stroke.color,
+            ))
             .show(ui, |ui| {
                 ui.vertical(|ui| {
                     // Header with badge
@@ -1287,7 +1296,7 @@ impl<'a> DaveUi<'a> {
         // Inner layout overrides (horizontal + right_to_left) keep the text row correct.
         let line_count = self.input.lines().count().max(1).clamp(1, 8);
         let line_height = 20.0;
-        let base_height = 44.0;
+        let base_height = notedeck::tokens::BUTTON_LG;
         let input_height = base_height + (line_count as f32 * line_height);
         let response = ui
             .allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
@@ -1303,7 +1312,7 @@ impl<'a> DaveUi<'a> {
                                     "Ask",
                                     "Button to send message to Dave AI assistant"
                                 ))
-                                .min_size(egui::vec2(60.0, 44.0)),
+                                .min_size(egui::vec2(60.0, notedeck::tokens::BUTTON_LG)),
                             )
                             .clicked()
                         {
@@ -1321,7 +1330,7 @@ impl<'a> DaveUi<'a> {
                                         "Stop",
                                         "Button to interrupt/stop the AI operation"
                                     ))
-                                    .min_size(egui::vec2(60.0, 44.0)),
+                                    .min_size(egui::vec2(60.0, notedeck::tokens::BUTTON_LG)),
                                 )
                                 .clicked()
                             {

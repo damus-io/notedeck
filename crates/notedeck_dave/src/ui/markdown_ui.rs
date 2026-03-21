@@ -72,7 +72,7 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
             ui.horizontal_wrapped(|ui| {
                 render_inlines(inlines, theme, buffer, ui);
             });
-            ui.add_space(8.0);
+            ui.add_space(notedeck::tokens::SPACING_SM);
         }
 
         MdElement::CodeBlock(CodeBlock { language, content }) => {
@@ -87,21 +87,27 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
         MdElement::BlockQuote(nested) => {
             egui::Frame::default()
                 .fill(theme.blockquote_bg)
-                .stroke(egui::Stroke::new(2.0, theme.blockquote_border))
-                .inner_margin(egui::Margin::symmetric(8, 4))
+                .stroke(egui::Stroke::new(
+                    notedeck::tokens::STROKE_THICK,
+                    theme.blockquote_border,
+                ))
+                .inner_margin(egui::Margin::symmetric(
+                    notedeck::tokens::SPACING_SM as i8,
+                    notedeck::tokens::SPACING_XS as i8,
+                ))
                 .show(ui, |ui| {
                     for elem in nested {
                         render_element(elem, theme, buffer, ui);
                     }
                 });
-            ui.add_space(8.0);
+            ui.add_space(notedeck::tokens::SPACING_SM);
         }
 
         MdElement::UnorderedList(items) => {
             for item in items {
                 render_list_item(item, "\u{2022}", theme, buffer, ui);
             }
-            ui.add_space(8.0);
+            ui.add_space(notedeck::tokens::SPACING_SM);
         }
 
         MdElement::OrderedList { start, items } => {
@@ -109,7 +115,7 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
                 let marker = format!("{}.", start + i as u32);
                 render_list_item(item, &marker, theme, buffer, ui);
             }
-            ui.add_space(8.0);
+            ui.add_space(notedeck::tokens::SPACING_SM);
         }
 
         MdElement::Table { headers, rows } => {
@@ -118,7 +124,7 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
 
         MdElement::ThematicBreak => {
             ui.separator();
-            ui.add_space(8.0);
+            ui.add_space(notedeck::tokens::SPACING_SM);
         }
 
         MdElement::Text(span) => {
@@ -162,7 +168,7 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: 
     let strikethrough_fmt = TextFormat {
         font_id: FontId::new(font_size, FontFamily::Proportional),
         color: text_color,
-        strikethrough: egui::Stroke::new(1.0, text_color),
+        strikethrough: egui::Stroke::new(notedeck::tokens::STROKE_THIN, text_color),
         ..Default::default()
     };
 

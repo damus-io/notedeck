@@ -292,7 +292,12 @@ impl<'a> NavTitle<'a> {
 
 fn back_button(ui: &mut egui::Ui, chev_size: egui::Vec2) -> egui::Response {
     let color = ui.style().visuals.noninteractive().fg_stroke.color;
-    chevron(ui, 2.0, chev_size, egui::Stroke::new(2.0, color))
+    chevron(
+        ui,
+        notedeck::tokens::STROKE_THICK,
+        chev_size,
+        egui::Stroke::new(notedeck::tokens::STROKE_THICK, color),
+    )
 }
 
 fn prev<R>(xs: &[R]) -> Option<&R> {

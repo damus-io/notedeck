@@ -97,7 +97,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
     #[inline]
     pub fn default_size() -> i8 {
-        38
+        notedeck::tokens::PFP_MD as i8
     }
 
     #[inline]
@@ -107,7 +107,7 @@ impl<'cache, 'url> ProfilePic<'cache, 'url> {
 
     #[inline]
     pub fn small_size() -> i8 {
-        24
+        notedeck::tokens::PFP_SM as i8
     }
 
     #[inline]

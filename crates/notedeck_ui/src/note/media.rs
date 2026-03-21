@@ -103,7 +103,7 @@ pub fn image_carousel(
                         }
                     })
                     .response;
-                ui.add_space(8.0);
+                ui.add_space(notedeck::tokens::SPACING_SM);
                 response
             })
             .inner
@@ -391,7 +391,7 @@ fn render_blur_text(
 
     painter.rect(
         button_rect,
-        egui::CornerRadius::same(8),
+        egui::CornerRadius::same(notedeck::tokens::RADIUS_MD as u8),
         button_fill,
         egui::Stroke::NONE,
         egui::StrokeKind::Middle,

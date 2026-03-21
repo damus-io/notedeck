@@ -108,10 +108,10 @@ pub fn card_ui(
     let visuals = ui.visuals().clone();
     egui::Frame::group(ui.style())
         .fill(visuals.extreme_bg_color)
-        .corner_radius(egui::CornerRadius::same(12))
-        .inner_margin(egui::Margin::same(12))
+        .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
+        .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_MD as i8))
         .stroke(egui::Stroke::new(
-            1.0,
+            notedeck::tokens::STROKE_THIN,
             visuals.widgets.noninteractive.bg_stroke.color,
         ))
         .show(ui, |ui| {

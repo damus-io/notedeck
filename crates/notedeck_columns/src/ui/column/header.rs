@@ -154,7 +154,12 @@ impl<'a> NavTitle<'a> {
         //let spacing_prev = ui.spacing().item_spacing.x;
         //ui.spacing_mut().item_spacing.x = 0.0;
 
-        let chev_resp = chevron(ui, 2.0, chev_size, Stroke::new(2.0, color));
+        let chev_resp = chevron(
+            ui,
+            notedeck::tokens::STROKE_THICK,
+            chev_size,
+            Stroke::new(notedeck::tokens::STROKE_THICK, color),
+        );
 
         //ui.spacing_mut().item_spacing.x = spacing_prev;
 
@@ -332,7 +337,10 @@ impl<'a> NavTitle<'a> {
                                         closest_index,
                                         distance,
                                     ),
-                                    egui::Stroke::new(1.0, ui.visuals().text_color()),
+                                    egui::Stroke::new(
+                                        notedeck::tokens::STROKE_THIN,
+                                        ui.visuals().text_color(),
+                                    ),
                                 );
                             }
 
@@ -355,8 +363,11 @@ impl<'a> NavTitle<'a> {
     ) -> Vec<(egui::Response, f32)> {
         let y_margin: i8 = 4;
         let item_frame = egui::Frame::new()
-            .corner_radius(egui::CornerRadius::same(8))
-            .inner_margin(Margin::symmetric(8, y_margin));
+            .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_MD as u8))
+            .inner_margin(Margin::symmetric(
+                notedeck::tokens::SPACING_SM as i8,
+                y_margin,
+            ));
 
         (0..self.columns.num_columns())
             .filter_map(|col| {
@@ -364,7 +375,10 @@ impl<'a> NavTitle<'a> {
                 let col_resp = if col == self.col_id {
                     ui.dnd_drag_source(item_id, col, |ui| {
                         item_frame
-                            .stroke(egui::Stroke::new(2.0, notedeck_ui::colors::PINK))
+                            .stroke(egui::Stroke::new(
+                                notedeck::tokens::STROKE_THICK,
+                                notedeck_ui::colors::PINK,
+                            ))
                             .fill(ui.visuals().widgets.noninteractive.bg_stroke.color)
                             .show(ui, |ui| self.move_tooltip_col_presentation(ui, col));
                     })

@@ -141,7 +141,10 @@ pub fn horizontal_bar_chart(
         painter.rect_stroke(
             track_rect,
             style.rounding,
-            Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color),
+            Stroke::new(
+                notedeck::tokens::STROKE_THIN,
+                ui.visuals().widgets.inactive.bg_stroke.color,
+            ),
             StrokeKind::Middle,
         );
 
@@ -245,7 +248,10 @@ pub fn stacked_bars(
         painter.rect_stroke(
             outline,
             0.0,
-            Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color),
+            Stroke::new(
+                notedeck::tokens::STROKE_THIN,
+                ui.visuals().widgets.inactive.bg_stroke.color,
+            ),
             StrokeKind::Middle,
         );
     }

@@ -10,7 +10,7 @@ pub struct SparkStyle {
 impl Default for SparkStyle {
     fn default() -> Self {
         Self {
-            stroke: Stroke::new(1.5, Color32::WHITE),
+            stroke: Stroke::new(notedeck::tokens::STROKE_MEDIUM, Color32::WHITE),
             //fill_alpha: 40,
             //rounding: 3.0,
         }

@@ -4,6 +4,7 @@ use crate::ProfilePic;
 use egui::{RichText, Sense, Stroke};
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
+use notedeck::tokens::{PFP_LG, SPACING_SM, SPACING_XS, STROKE_MEDIUM};
 use notedeck::{
     name::get_display_name, profile::get_profile_url, tr, ContactState, DragResponse, Images,
     Localization, MediaJobSender,
@@ -77,9 +78,9 @@ pub fn profile_row_widget<'a>(
 
         let mut child_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         child_ui.horizontal(|ui| {
-            ui.add_space(4.0);
-            ui.add(&mut ProfilePic::new(img_cache, jobs, profile_url).size(48.0));
-            ui.add_space(8.0);
+            ui.add_space(SPACING_XS);
+            ui.add(&mut ProfilePic::new(img_cache, jobs, profile_url).size(PFP_LG));
+            ui.add_space(SPACING_SM);
             ui.add(
                 egui::Label::new(
                     RichText::new(name_str)
@@ -89,7 +90,7 @@ pub fn profile_row_widget<'a>(
                 .selectable(false),
             );
             if options.show_contact_badge {
-                ui.add_space(8.0);
+                ui.add_space(SPACING_SM);
                 let badge_text = tr!(
                     i18n,
                     "Contact",
@@ -121,14 +122,14 @@ pub fn profile_row_widget<'a>(
                     egui::Pos2::new(x_center.x - x_size / 2.0, x_center.y - x_size / 2.0),
                     egui::Pos2::new(x_center.x + x_size / 2.0, x_center.y + x_size / 2.0),
                 ],
-                Stroke::new(1.5, ui.visuals().text_color()),
+                Stroke::new(STROKE_MEDIUM, ui.visuals().text_color()),
             );
             painter.line_segment(
                 [
                     egui::Pos2::new(x_center.x + x_size / 2.0, x_center.y - x_size / 2.0),
                     egui::Pos2::new(x_center.x - x_size / 2.0, x_center.y + x_size / 2.0),
                 ],
-                Stroke::new(1.5, ui.visuals().text_color()),
+                Stroke::new(STROKE_MEDIUM, ui.visuals().text_color()),
             );
         }
 

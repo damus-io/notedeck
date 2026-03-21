@@ -255,6 +255,6 @@ fn in_frame(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
 
 fn button(text: &str, width: f32) -> egui::Button<'static> {
     Button::new(text)
-        .corner_radius(CornerRadius::same(8))
+        .corner_radius(CornerRadius::same(notedeck::tokens::RADIUS_MD as u8))
         .min_size(vec2(width, 40.0))
 }

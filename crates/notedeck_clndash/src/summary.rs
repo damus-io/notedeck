@@ -112,8 +112,8 @@ fn card_cell(ui: &mut egui::Ui, title: &str, value: String, delta: Option<String
     let weak = ui.visuals().weak_text_color();
     egui::Frame::group(ui.style())
         .fill(ui.visuals().extreme_bg_color)
-        .corner_radius(egui::CornerRadius::same(10))
-        .inner_margin(egui::Margin::same(10))
+        .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
+        .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_MD as i8))
         .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
         .show(ui, |ui| {
             ui.set_min_width(min_card);

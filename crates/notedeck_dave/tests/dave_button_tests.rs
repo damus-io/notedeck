@@ -7,15 +7,21 @@ fn dave_inputbox_buttons_harness() -> Harness<'static> {
         .with_size(egui::Vec2::new(300.0, 64.0))
         .renderer(notedeck::software_renderer())
         .build_ui(|ui| {
-            let base_height = 44.0;
+            let base_height = notedeck::tokens::BUTTON_LG;
             let line_height = 20.0;
             let input_height = base_height + line_height;
             ui.allocate_ui(egui::vec2(300.0, input_height), |ui| {
                 ui.horizontal(|ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add(egui::Button::new("Ask").min_size(egui::vec2(60.0, 44.0)));
+                        ui.add(
+                            egui::Button::new("Ask")
+                                .min_size(egui::vec2(60.0, notedeck::tokens::BUTTON_LG)),
+                        );
 
-                        ui.add(egui::Button::new("Stop").min_size(egui::vec2(60.0, 44.0)));
+                        ui.add(
+                            egui::Button::new("Stop")
+                                .min_size(egui::vec2(60.0, notedeck::tokens::BUTTON_LG)),
+                        );
 
                         ui.add(
                             egui::TextEdit::multiline(&mut String::new())

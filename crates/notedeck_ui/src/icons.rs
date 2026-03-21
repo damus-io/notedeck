@@ -3,7 +3,7 @@ use egui::{pos2, vec2, Color32, CursorIcon, Pos2, Stroke, Widget};
 use crate::AnimationHelper;
 
 pub static ICON_WIDTH: f32 = 40.0;
-pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
+pub static ICON_EXPANSION_MULTIPLE: f32 = notedeck::tokens::ICON_EXPANSION_MULTIPLE;
 
 /// Creates a magnifying glass icon widget
 pub fn search_icon(size: f32, height: f32) -> impl egui::Widget {
@@ -14,7 +14,10 @@ pub fn search_icon(size: f32, height: f32) -> impl egui::Widget {
 
         // Calculate center position - this ensures the icon is centered in its allocated space
         let center_pos = rect.center();
-        let stroke = Stroke::new(1.5, Color32::from_rgb(150, 150, 150));
+        let stroke = Stroke::new(
+            notedeck::tokens::STROKE_MEDIUM,
+            Color32::from_rgb(150, 150, 150),
+        );
 
         // Draw circle
         let circle_radius = size * 0.35;

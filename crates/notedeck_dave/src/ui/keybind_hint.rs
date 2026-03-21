@@ -61,7 +61,10 @@ impl<'a> KeybindHint<'a> {
         painter.rect_stroke(
             rect,
             corner_radius,
-            egui::Stroke::new(1.0, stroke_color.gamma_multiply(0.6)),
+            egui::Stroke::new(
+                notedeck::tokens::STROKE_THIN,
+                stroke_color.gamma_multiply(0.6),
+            ),
             egui::StrokeKind::Inside,
         );
 

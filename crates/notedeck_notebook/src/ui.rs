@@ -168,10 +168,10 @@ fn node_box_ui(
     ui.put(pos, |ui: &mut egui::Ui| {
         egui::Frame::default()
             .fill(ui.visuals().noninteractive().weak_bg_fill)
-            .inner_margin(egui::Margin::same(16))
-            .corner_radius(egui::CornerRadius::same(10))
+            .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
+            .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
             .stroke(egui::Stroke::new(
-                2.0,
+                notedeck::tokens::STROKE_THICK,
                 ui.visuals().noninteractive().bg_stroke.color,
             ))
             .show(ui, |ui| {

@@ -1,7 +1,8 @@
 use crate::anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE};
 use crate::icons::search_icon;
-use egui::{emath::GuiRounding, Align, Color32, CornerRadius, Pos2, RichText, Stroke, TextEdit};
-use notedeck::NotedeckTextStyle;
+use egui::{emath::GuiRounding, Align, CornerRadius, Pos2, RichText, Stroke, TextEdit};
+use notedeck::tokens::{RADIUS_MD, RADIUS_PILL, SPACING_SM, STROKE_THIN};
+use notedeck::{ColorTheme, NotedeckTextStyle};
 
 pub fn x_button(rect: egui::Rect) -> impl egui::Widget {
     move |ui: &mut egui::Ui| -> egui::Response {
@@ -57,8 +58,8 @@ pub fn styled_button_toggleable(
             ui.available_width(),
         );
 
-        let size = galley.rect.expand2(egui::vec2(16.0, 8.0)).size();
-        let mut button = egui::Button::new(galley).corner_radius(8.0);
+        let size = galley.rect.expand2(egui::vec2(16.0, SPACING_SM)).size();
+        let mut button = egui::Button::new(galley).corner_radius(RADIUS_MD);
 
         if !enabled {
             button = button
@@ -81,39 +82,24 @@ pub fn styled_button_toggleable(
 
 /// Get appropriate background color for active side panel icon button
 pub fn side_panel_active_bg(ui: &egui::Ui) -> egui::Color32 {
-    if ui.visuals().dark_mode {
-        egui::Color32::from_rgb(70, 70, 70)
-    } else {
-        egui::Color32::from_rgb(220, 220, 220)
-    }
+    ColorTheme::current(ui.ctx()).interactive_hover
 }
 
 /// Get appropriate tint color for side panel icons to ensure visibility
 pub fn side_panel_icon_tint(ui: &egui::Ui) -> egui::Color32 {
-    if ui.visuals().dark_mode {
-        egui::Color32::WHITE
-    } else {
-        egui::Color32::BLACK
-    }
+    ColorTheme::current(ui.ctx()).text_primary
 }
 
 /// Returns a styled Frame for search input boxes with rounded corners.
-pub fn search_input_frame(dark_mode: bool) -> egui::Frame {
+pub fn search_input_frame(ctx: &egui::Context) -> egui::Frame {
+    let theme = ColorTheme::current(ctx);
     egui::Frame {
-        inner_margin: egui::Margin::symmetric(8, 0),
+        inner_margin: egui::Margin::symmetric(SPACING_SM as i8, 0),
         outer_margin: egui::Margin::ZERO,
-        corner_radius: CornerRadius::same(18),
+        corner_radius: CornerRadius::same(RADIUS_PILL as u8),
         shadow: Default::default(),
-        fill: if dark_mode {
-            Color32::from_rgb(30, 30, 30)
-        } else {
-            Color32::from_rgb(240, 240, 240)
-        },
-        stroke: if dark_mode {
-            Stroke::new(1.0, Color32::from_rgb(60, 60, 60))
-        } else {
-            Stroke::new(1.0, Color32::from_rgb(200, 200, 200))
-        },
+        fill: theme.surface_secondary,
+        stroke: Stroke::new(STROKE_THIN, theme.border_default),
     }
 }
 
@@ -124,12 +110,12 @@ pub const SEARCH_INPUT_HEIGHT: f32 = 34.0;
 pub fn search_input_box<'a>(query: &'a mut String, hint_text: &'a str) -> impl egui::Widget + 'a {
     move |ui: &mut egui::Ui| -> egui::Response {
         ui.horizontal(|ui| {
-            search_input_frame(ui.visuals().dark_mode)
+            search_input_frame(ui.ctx())
                 .show(ui, |ui| {
                     ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+                        ui.spacing_mut().item_spacing = egui::vec2(SPACING_SM, 0.0);
 
-                        ui.add(search_icon(16.0, SEARCH_INPUT_HEIGHT));
+                        ui.add(search_icon(notedeck::tokens::ICON_SM, SEARCH_INPUT_HEIGHT));
 
                         ui.add_sized(
                             [ui.available_width(), SEARCH_INPUT_HEIGHT],

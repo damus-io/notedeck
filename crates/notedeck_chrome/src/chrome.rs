@@ -399,7 +399,7 @@ impl Chrome {
                     },
                 );
                 egui::Frame::new()
-                    .inner_margin(Margin::same(16))
+                    .inner_margin(Margin::same(notedeck::tokens::SPACING_LG as i8))
                     .show(ui, |ui| {
                         let options = if amt_keyboard_open > 0.0 {
                             SidebarOptions::Compact

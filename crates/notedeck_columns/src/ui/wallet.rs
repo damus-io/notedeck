@@ -468,7 +468,7 @@ fn show_valid_msats(
 
     painter.rect_filled(
         rect,
-        CornerRadius::same(8),
+        CornerRadius::same(notedeck::tokens::RADIUS_MD as u8),
         ui.visuals().noninteractive().bg_fill,
     );
 

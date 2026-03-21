@@ -320,11 +320,14 @@ impl<'a, 'd> NoteView<'a, 'd> {
         } else if self.options().contains(NoteOptions::Framed) {
             egui::Frame::new()
                 .fill(ui.visuals().noninteractive().weak_bg_fill)
-                .inner_margin(egui::Margin::same(8))
-                .outer_margin(egui::Margin::symmetric(0, 8))
-                .corner_radius(egui::CornerRadius::same(10))
+                .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_SM as i8))
+                .outer_margin(egui::Margin::symmetric(
+                    0,
+                    notedeck::tokens::SPACING_SM as i8,
+                ))
+                .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    notedeck::tokens::STROKE_THIN,
                     ui.visuals().noninteractive().bg_stroke.color,
                 ))
                 .show(ui, |ui| {
@@ -937,7 +940,7 @@ fn actionbar_ui(
     i18n: &mut Localization,
 ) -> Option<NoteAction> {
     let mut action = None;
-    let spacing = 24.0;
+    let spacing = notedeck::tokens::SPACING_XL;
 
     ui.spacing_mut().item_spacing.x = 2.0;
     ui.set_min_height(26.0);

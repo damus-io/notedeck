@@ -34,7 +34,7 @@ impl HorizontalHeader {
     pub fn new(height: f32) -> Self {
         Self {
             height,
-            margin: Margin::same(8),
+            margin: Margin::same(notedeck::tokens::SPACING_SM as i8),
             layout: Layout::left_to_right(egui::Align::Center),
         }
     }

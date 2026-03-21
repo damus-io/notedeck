@@ -19,10 +19,10 @@ pub fn pill_label(name: &str, value: &str, ui: &mut Ui) {
 pub fn pill_label_ui(name: &str, mut value: impl FnMut(&mut Ui), ui: &mut Ui) {
     egui::Frame::new()
         .fill(ui.visuals().noninteractive().bg_fill)
-        .inner_margin(egui::Margin::same(4))
-        .corner_radius(egui::CornerRadius::same(10))
+        .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_XS as i8))
+        .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
         .stroke(egui::Stroke::new(
-            1.0,
+            notedeck::tokens::STROKE_THIN,
             ui.visuals().noninteractive().bg_stroke.color,
         ))
         .show(ui, |ui| {
@@ -31,7 +31,7 @@ pub fn pill_label_ui(name: &str, mut value: impl FnMut(&mut Ui), ui: &mut Ui) {
                 .inner_margin(egui::Margin::same(4))
                 .corner_radius(egui::CornerRadius::same(10))
                 .stroke(egui::Stroke::new(
-                    1.0,
+                    notedeck::tokens::STROKE_THIN,
                     ui.visuals().noninteractive().bg_stroke.color,
                 ))
                 .show(ui, |ui| {
