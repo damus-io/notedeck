@@ -16,8 +16,23 @@ pub fn setup_egui_context(
         tracing::info!("Loaded theme {:?} from disk", theme);
         o.theme_preference = theme;
     });
-    ctx.set_visuals_of(egui::Theme::Dark, theme::dark_mode(is_oled));
-    ctx.set_visuals_of(egui::Theme::Light, theme::light_mode());
+    let dark_theme = if is_oled {
+        theme::mobile_dark_color_theme()
+    } else {
+        theme::desktop_dark_color_theme()
+    };
+    let light_theme = theme::light_color_theme();
+
+    ctx.set_visuals_of(
+        egui::Theme::Dark,
+        theme::create_themed_visuals(dark_theme, egui::Visuals::dark()),
+    );
+    ctx.set_visuals_of(
+        egui::Theme::Light,
+        theme::create_themed_visuals(light_theme, egui::Visuals::light()),
+    );
+
+    crate::ColorTheme::store_themes(ctx, light_theme, dark_theme);
 
     fonts::setup_fonts(ctx);
 
