@@ -541,12 +541,12 @@ fn search_box(
     clipboard: &mut Clipboard,
 ) -> SearchResponse {
     ui.horizontal(|ui| {
-        search_input_frame(ui.visuals().dark_mode)
+        search_input_frame(ui.ctx())
             .show(ui, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
+                    ui.spacing_mut().item_spacing = egui::vec2(notedeck::tokens::SPACING_SM, 0.0);
 
-                    ui.add(search_icon(16.0, SEARCH_INPUT_HEIGHT));
+                    ui.add(search_icon(notedeck::tokens::ICON_SM, SEARCH_INPUT_HEIGHT));
 
                     let before_len = input.len();
 
@@ -773,14 +773,14 @@ fn recent_search_item(
                 egui::Pos2::new(x_center.x - x_size / 2.0, x_center.y - x_size / 2.0),
                 egui::Pos2::new(x_center.x + x_size / 2.0, x_center.y + x_size / 2.0),
             ],
-            egui::Stroke::new(1.5, ui.visuals().text_color()),
+            egui::Stroke::new(notedeck::tokens::STROKE_MEDIUM, ui.visuals().text_color()),
         );
         painter.line_segment(
             [
                 egui::Pos2::new(x_center.x + x_size / 2.0, x_center.y - x_size / 2.0),
                 egui::Pos2::new(x_center.x - x_size / 2.0, x_center.y + x_size / 2.0),
             ],
-            egui::Stroke::new(1.5, ui.visuals().text_color()),
+            egui::Stroke::new(notedeck::tokens::STROKE_MEDIUM, ui.visuals().text_color()),
         );
 
         resp

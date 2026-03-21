@@ -65,7 +65,7 @@ impl<'a> ConversationUi<'a> {
                 // Calculate height based on number of lines (min 1, max 8)
                 let line_count = self.state.composer.lines().count().clamp(1, 8);
                 let line_height = 20.0; // approximate line height
-                let base_height = 44.0; // padding + margin
+                let base_height = notedeck::tokens::BUTTON_LG; // padding + margin
                 let composer_height = base_height + (line_count as f32 * line_height);
                 ui.allocate_ui(vec2(ui.available_width(), composer_height), |ui| {
                     let comp_resp = conversation_composer(
@@ -334,6 +334,13 @@ fn conversation_composer(
                                 Key::Enter,
                             ));
                         let text_resp = ui.add(text_edit);
+                        text_resp.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::TextEdit,
+                                true,
+                                "Message composer",
+                            )
+                        });
                         restore_widgets_corner_rad(ui, old);
                         send = text_resp.has_focus()
                             && ui.input(|i| i.key_pressed(Key::Enter) && !i.modifiers.shift);

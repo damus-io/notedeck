@@ -3,7 +3,7 @@ use egui::{pos2, vec2, Color32, CursorIcon, Pos2, Stroke, Widget};
 use crate::AnimationHelper;
 
 pub static ICON_WIDTH: f32 = 40.0;
-pub static ICON_EXPANSION_MULTIPLE: f32 = 1.2;
+pub static ICON_EXPANSION_MULTIPLE: f32 = notedeck::tokens::ICON_EXPANSION_MULTIPLE;
 
 /// Creates a magnifying glass icon widget
 pub fn search_icon(size: f32, height: f32) -> impl egui::Widget {
@@ -14,7 +14,10 @@ pub fn search_icon(size: f32, height: f32) -> impl egui::Widget {
 
         // Calculate center position - this ensures the icon is centered in its allocated space
         let center_pos = rect.center();
-        let stroke = Stroke::new(1.5, Color32::from_rgb(150, 150, 150));
+        let stroke = Stroke::new(
+            notedeck::tokens::STROKE_MEDIUM,
+            Color32::from_rgb(150, 150, 150),
+        );
 
         // Draw circle
         let circle_radius = size * 0.35;
@@ -328,6 +331,28 @@ pub fn search_button(_color: Color32, line_width: f32, is_active: bool) -> impl 
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Search"));
         response
     }
+}
+
+/// Draw an upward arrow icon (used for updates)
+pub fn draw_update_icon(
+    painter: &egui::Painter,
+    center: Pos2,
+    s: f32,
+    color: Color32,
+    stroke_width: f32,
+) {
+    let stroke = Stroke::new(stroke_width, color);
+
+    // Vertical shaft
+    let shaft_top = pos2(center.x, center.y - s * 0.4);
+    let shaft_bottom = pos2(center.x, center.y + s * 0.4);
+    painter.line_segment([shaft_top, shaft_bottom], stroke);
+
+    // Arrowhead
+    let arrow_left = pos2(center.x - s * 0.3, center.y - s * 0.1);
+    let arrow_right = pos2(center.x + s * 0.3, center.y - s * 0.1);
+    painter.line_segment([shaft_top, arrow_left], stroke);
+    painter.line_segment([shaft_top, arrow_right], stroke);
 }
 
 fn paint_unseen_indicator(ui: &mut egui::Ui, rect: egui::Rect, radius: f32) {

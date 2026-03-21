@@ -118,6 +118,7 @@ impl WebsocketConn {
 pub struct WebsocketRelay {
     pub conn: WebsocketConn,
     pub last_ping: Instant,
+    pub last_pong: Instant,
     pub last_connect_attempt: Instant,
     pub retry_connect_after: Duration,
     /// Number of consecutive failed reconnect attempts. Reset to 0 on successful connection.
@@ -126,10 +127,12 @@ pub struct WebsocketRelay {
 
 impl WebsocketRelay {
     pub fn new(relay: WebsocketConn) -> Self {
+        let now = Instant::now();
         Self {
             conn: relay,
-            last_ping: Instant::now(),
-            last_connect_attempt: Instant::now(),
+            last_ping: now,
+            last_pong: now,
+            last_connect_attempt: now,
             retry_connect_after: Self::initial_reconnect_duration(),
             reconnect_attempt: 0,
         }

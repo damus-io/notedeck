@@ -198,3 +198,125 @@ fn find_binary_in_dir(dir: &Path) -> Result<PathBuf, String> {
         dir.display()
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Helper: create a tar.gz archive containing a single file named `name`
+    /// with contents `data`. Returns the path to the archive.
+    fn make_tar_gz(dir: &Path, archive_name: &str, name: &str, data: &[u8]) -> PathBuf {
+        let archive_path = dir.join(archive_name);
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let enc = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(enc);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append_data(&mut header, name, data).unwrap();
+        builder.finish().unwrap();
+
+        archive_path
+    }
+
+    #[test]
+    fn test_extract_tar_gz_finds_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let archive_dir = tmp.path().join("archives");
+        let staging_dir = tmp.path().join("staging");
+        std::fs::create_dir_all(&archive_dir).unwrap();
+        std::fs::create_dir_all(&staging_dir).unwrap();
+
+        let fake_binary = b"#!/bin/sh\necho hello\n";
+        let archive_path = make_tar_gz(&archive_dir, "notedeck.tar.gz", "notedeck", fake_binary);
+
+        let result = extract_archive(&archive_path, &staging_dir);
+        assert!(result.is_ok(), "extract_archive failed: {:?}", result.err());
+
+        let binary_path = result.unwrap();
+        assert!(binary_path.exists(), "binary should exist");
+        assert_eq!(
+            binary_path.file_name().unwrap().to_str().unwrap(),
+            "notedeck"
+        );
+
+        // Verify contents match
+        let contents = std::fs::read(&binary_path).unwrap();
+        assert_eq!(contents, fake_binary);
+
+        // Verify executable permission on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&binary_path)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert!(mode & 0o111 != 0, "binary should be executable");
+        }
+    }
+
+    #[test]
+    fn test_extract_raw_binary_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging_dir = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging_dir).unwrap();
+
+        // Create a file that doesn't look like an archive
+        let raw_path = tmp.path().join("notedeck_raw");
+        let fake_binary = b"ELF fake binary content";
+        std::fs::write(&raw_path, fake_binary).unwrap();
+
+        let result = extract_archive(&raw_path, &staging_dir);
+        assert!(result.is_ok(), "extract_archive failed: {:?}", result.err());
+
+        let binary_path = result.unwrap();
+        assert_eq!(
+            binary_path.file_name().unwrap().to_str().unwrap(),
+            "notedeck"
+        );
+        let contents = std::fs::read(&binary_path).unwrap();
+        assert_eq!(contents, fake_binary);
+    }
+
+    #[test]
+    fn test_find_binary_in_dir_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = find_binary_in_dir(tmp.path());
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .contains("Could not find notedeck binary"));
+    }
+
+    #[test]
+    fn test_extract_zip_finds_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staging_dir = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging_dir).unwrap();
+
+        // Create a zip with a notedeck binary inside
+        let zip_path = tmp.path().join("notedeck.zip");
+        let file = std::fs::File::create(&zip_path).unwrap();
+        let mut zip_writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
+        zip_writer.start_file("notedeck", options).unwrap();
+        let fake_binary = b"fake zip binary";
+        zip_writer.write_all(fake_binary).unwrap();
+        zip_writer.finish().unwrap();
+
+        let result = extract_archive(&zip_path, &staging_dir);
+        assert!(result.is_ok(), "extract_archive failed: {:?}", result.err());
+
+        let binary_path = result.unwrap();
+        assert_eq!(
+            binary_path.file_name().unwrap().to_str().unwrap(),
+            "notedeck"
+        );
+        let contents = std::fs::read(&binary_path).unwrap();
+        assert_eq!(contents, fake_binary);
+    }
+}

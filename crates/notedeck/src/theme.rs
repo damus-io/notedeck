@@ -31,6 +31,7 @@ const LIGHT_GRAY: Color32 = Color32::from_rgb(0xc8, 0xc8, 0xc8); // 78%
 const DARKER_GRAY: Color32 = Color32::from_rgb(0xa5, 0xa5, 0xa5); // 65%
 const EVEN_DARKER_GRAY: Color32 = Color32::from_rgb(0x89, 0x89, 0x89); // 54%
 
+#[derive(Clone, Copy)]
 pub struct ColorTheme {
     // VISUALS
     pub panel_fill: Color32,
@@ -55,6 +56,62 @@ pub struct ColorTheme {
     pub inactive_bg_stroke_color: Color32,
     pub inactive_bg_fill: Color32,
     pub inactive_weak_bg_fill: Color32,
+
+    // SEMANTIC: Surfaces
+    pub surface_primary: Color32,
+    pub surface_secondary: Color32,
+    pub surface_elevated: Color32,
+
+    // SEMANTIC: Text
+    pub text_primary: Color32,
+    pub text_secondary: Color32,
+    pub text_muted: Color32,
+
+    // SEMANTIC: Actions
+    pub accent: Color32,
+    pub destructive: Color32,
+    pub warning: Color32,
+    pub success: Color32,
+
+    // SEMANTIC: Borders
+    pub border_default: Color32,
+    pub border_strong: Color32,
+
+    // SEMANTIC: Interactive states
+    pub interactive_hover: Color32,
+    pub interactive_pressed: Color32,
+}
+
+const THEME_LIGHT_ID: &str = "notedeck_color_theme_light";
+const THEME_DARK_ID: &str = "notedeck_color_theme_dark";
+
+impl ColorTheme {
+    /// Store light and dark themes in egui context for later retrieval.
+    pub fn store_themes(ctx: &egui::Context, light: ColorTheme, dark: ColorTheme) {
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new(THEME_LIGHT_ID), light);
+            d.insert_temp(egui::Id::new(THEME_DARK_ID), dark);
+        });
+    }
+
+    /// Retrieve the active ColorTheme from egui context.
+    /// Falls back to reconstructing the theme if not stored.
+    pub fn current(ctx: &egui::Context) -> ColorTheme {
+        let is_dark = ctx.style().visuals.dark_mode;
+        let id = if is_dark {
+            THEME_DARK_ID
+        } else {
+            THEME_LIGHT_ID
+        };
+        ctx.data(|d| d.get_temp(egui::Id::new(id)))
+            .unwrap_or_else(|| {
+                if is_dark {
+                    desktop_dark_color_theme()
+                } else {
+                    light_color_theme()
+                }
+            })
+    }
 }
 
 const WIDGET_CORNER_RADIUS: CornerRadius = CornerRadius::same(8);
@@ -140,6 +197,30 @@ pub fn desktop_dark_color_theme() -> ColorTheme {
         inactive_bg_stroke_color: SEMI_DARKER_BG,
         inactive_bg_fill: Color32::from_rgb(0x25, 0x25, 0x25),
         inactive_weak_bg_fill: SEMI_DARK_BG,
+
+        // SEMANTIC: Surfaces
+        surface_primary: DARKER_BG,
+        surface_secondary: DARK_BG,
+        surface_elevated: SEMI_DARK_BG,
+
+        // SEMANTIC: Text
+        text_primary: Color32::WHITE,
+        text_secondary: LIGHT_GRAY,
+        text_muted: GRAY_SECONDARY,
+
+        // SEMANTIC: Actions
+        accent: PURPLE,
+        destructive: RED_700,
+        warning: ORANGE_700,
+        success: Color32::from_rgb(0x4C, 0xAF, 0x50),
+
+        // SEMANTIC: Borders
+        border_default: SEMI_DARKER_BG,
+        border_strong: EVEN_DARKER_GRAY,
+
+        // SEMANTIC: Interactive states
+        interactive_hover: Color32::from_rgb(0x46, 0x46, 0x46),
+        interactive_pressed: Color32::from_rgb(0x50, 0x50, 0x50),
     }
 }
 
@@ -176,6 +257,30 @@ pub fn light_color_theme() -> ColorTheme {
         inactive_bg_stroke_color: EVEN_DARKER_GRAY,
         inactive_bg_fill: LIGHTER_GRAY,
         inactive_weak_bg_fill: LIGHTER_GRAY,
+
+        // SEMANTIC: Surfaces
+        surface_primary: Color32::WHITE,
+        surface_secondary: LIGHTER_GRAY,
+        surface_elevated: Color32::WHITE,
+
+        // SEMANTIC: Text
+        text_primary: BLACK,
+        text_secondary: EVEN_DARKER_GRAY,
+        text_muted: GRAY_SECONDARY,
+
+        // SEMANTIC: Actions
+        accent: PURPLE,
+        destructive: RED_700,
+        warning: ORANGE_700,
+        success: Color32::from_rgb(0x2E, 0x7D, 0x32),
+
+        // SEMANTIC: Borders
+        border_default: LIGHT_GRAY,
+        border_strong: DARKER_GRAY,
+
+        // SEMANTIC: Interactive states
+        interactive_hover: Color32::from_rgb(0xDC, 0xDC, 0xDC),
+        interactive_pressed: Color32::from_rgb(0xCC, 0xCC, 0xCC),
     }
 }
 

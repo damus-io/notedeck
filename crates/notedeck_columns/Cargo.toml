@@ -65,8 +65,16 @@ crossbeam-channel = { workspace = true }
 rfd = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+egui_kittest = { workspace = true, features = ["eframe"] }
+eframe = { workspace = true }
+nostr = { workspace = true }
+nostr-relay-builder = "0.37"
+notedeck_testing = { workspace = true }
 pretty_assertions = { workspace = true }
+serial_test = "3"
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.11.0"

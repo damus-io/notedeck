@@ -41,7 +41,7 @@ re_memory = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
-notedeck = { workspace = true, features = ["snapshot-testing"] }
+notedeck = { workspace = true, features = ["snapshot-testing", "auto-update"] }
 
 [lib]
 crate-type = ["lib", "cdylib"]
@@ -56,6 +56,8 @@ path = "src/notedeck.rs"
 
 [features]
 default = []
+auto-update = ["notedeck/auto-update"]
+snapshot-testing = ["notedeck/snapshot-testing"]
 memory = ["re_memory"]
 puffin = ["profiling/profile-with-puffin", "dep:puffin"]
 tracy = ["profiling/profile-with-tracy"]

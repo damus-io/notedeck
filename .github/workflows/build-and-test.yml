@@ -23,6 +23,16 @@ jobs:
         run: ${{ inputs.additional-setup }}
 
       - name: Run Tests (Native Only)
-        run: cargo test
+        run: cargo test --workspace --exclude notedeck_messages
+        env:
+          CI: true
+
+      - name: Run notedeck_messages Unit Tests
+        run: cargo test -p notedeck_messages --lib
+        env:
+          CI: true
+
+      - name: Run notedeck_messages E2E Tests
+        run: cargo test -p notedeck_messages --test messages_e2e -- --test-threads=1
         env:
           CI: true

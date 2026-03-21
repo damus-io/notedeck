@@ -59,28 +59,56 @@ fn test_github_dry_run() {
     // Should have printed at least one JSON event to stdout
     assert!(!stdout.is_empty(), "no events printed to stdout");
 
-    // Each line should be valid JSON with expected NIP-94 fields
-    for line in stdout.lines() {
-        let event: serde_json::Value =
-            serde_json::from_str(line).expect("each line should be valid JSON");
+    // NIP-82 output: N asset events (kind 3063) + 1 release event (kind 30063)
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line should be valid JSON"))
+        .collect();
 
-        assert_eq!(event["kind"], 1063, "event kind should be 1063");
+    let asset_events: Vec<&serde_json::Value> =
+        events.iter().filter(|e| e["kind"] == 3063).collect();
+    let release_events: Vec<&serde_json::Value> =
+        events.iter().filter(|e| e["kind"] == 30063).collect();
+
+    assert!(
+        !asset_events.is_empty(),
+        "expected at least 1 asset event (kind 3063)"
+    );
+    assert_eq!(
+        release_events.len(),
+        1,
+        "expected exactly 1 release event (kind 30063)"
+    );
+
+    // Validate asset events (kind 3063)
+    for event in &asset_events {
         assert!(event["sig"].is_string(), "event should be signed");
         assert!(event["pubkey"].is_string(), "event should have pubkey");
 
         let tags = event["tags"].as_array().expect("tags should be an array");
-
         let tag_names: Vec<&str> = tags
             .iter()
             .filter_map(|t| t.get(0).and_then(|v| v.as_str()))
             .collect();
 
+        assert!(tag_names.contains(&"i"), "missing i (app id) tag");
         assert!(tag_names.contains(&"url"), "missing url tag");
         assert!(tag_names.contains(&"x"), "missing x (sha256) tag");
         assert!(tag_names.contains(&"version"), "missing version tag");
-        assert!(tag_names.contains(&"name"), "missing name tag");
+        assert!(tag_names.contains(&"f"), "missing f (platform) tag");
         assert!(tag_names.contains(&"m"), "missing m (mime) tag");
         assert!(tag_names.contains(&"size"), "missing size tag");
+
+        // Verify app id
+        let i_tag = tags
+            .iter()
+            .find(|t| t.get(0).and_then(|v| v.as_str()) == Some("i"))
+            .expect("i tag");
+        assert_eq!(
+            i_tag[1].as_str().unwrap(),
+            "io.damus.notedeck",
+            "app id mismatch"
+        );
 
         // Verify version tag matches
         let version_tag = tags
@@ -117,10 +145,44 @@ fn test_github_dry_run() {
         );
     }
 
-    let event_count = stdout.lines().count();
-    eprintln!("validated {event_count} release events");
-    assert!(
-        event_count >= 1,
-        "expected at least 1 artifact event, got {event_count}"
+    // Validate release event (kind 30063)
+    let release = release_events[0];
+    let tags = release["tags"].as_array().expect("tags should be an array");
+    let tag_names: Vec<&str> = tags
+        .iter()
+        .filter_map(|t| t.get(0).and_then(|v| v.as_str()))
+        .collect();
+
+    assert!(tag_names.contains(&"d"), "missing d (addressable id) tag");
+    assert!(tag_names.contains(&"i"), "missing i (app id) tag");
+    assert!(tag_names.contains(&"version"), "missing version tag");
+    assert!(tag_names.contains(&"c"), "missing c (channel) tag");
+    assert!(tag_names.contains(&"e"), "missing e (asset reference) tag");
+
+    // Verify channel defaults to "main"
+    let c_tag = tags
+        .iter()
+        .find(|t| t.get(0).and_then(|v| v.as_str()) == Some("c"))
+        .expect("c tag");
+    assert_eq!(
+        c_tag[1].as_str().unwrap(),
+        "main",
+        "default channel should be main"
+    );
+
+    // Verify the release references at least one asset
+    let e_tags: Vec<&serde_json::Value> = tags
+        .iter()
+        .filter(|t| t.get(0).and_then(|v| v.as_str()) == Some("e"))
+        .collect();
+    assert_eq!(
+        e_tags.len(),
+        asset_events.len(),
+        "release should reference all asset events"
+    );
+
+    eprintln!(
+        "validated {} asset events + 1 release event",
+        asset_events.len()
     );
 }

@@ -170,8 +170,11 @@ pub fn render_summary(
 
     Frame::new()
         .fill(fill)
-        .corner_radius(CornerRadius::same(12))
-        .inner_margin(Margin::symmetric(12, 8))
+        .corner_radius(CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
+        .inner_margin(Margin::symmetric(
+            notedeck::tokens::SPACING_MD as i8,
+            notedeck::tokens::SPACING_SM as i8,
+        ))
         .show(ui, |ui| {
             render_summary_inner(
                 ui,

@@ -78,8 +78,8 @@ impl<'a> RepostDecisionView<'a> {
                             let painter = ui.painter_at(resp.rect);
                             ui.painter().rect_stroke(
                                 resp.rect,
-                                CornerRadius::same(32),
-                                egui::Stroke::new(1.5, color),
+                                CornerRadius::same(notedeck::tokens::RADIUS_PILL as u8),
+                                egui::Stroke::new(notedeck::tokens::STROKE_MEDIUM, color),
                                 egui::StrokeKind::Inside,
                             );
 

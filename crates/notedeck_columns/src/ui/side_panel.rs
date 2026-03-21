@@ -262,7 +262,7 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
                         ui.painter().circle_stroke(
                             rect.center(),
                             radius + 2.0,
-                            Stroke::new(1.5, ui.visuals().text_color()),
+                            Stroke::new(notedeck::tokens::STROKE_MEDIUM, ui.visuals().text_color()),
                         );
                     }
 
@@ -782,11 +782,7 @@ fn connectivity_indicator(
         egui::Color32::from_rgb(0xFF - (0x99 as f32 * t) as u8, 0xCC, 0x66)
     };
 
-    let inactive_color = if ui.visuals().dark_mode {
-        egui::Color32::from_rgb(60, 60, 60)
-    } else {
-        egui::Color32::from_rgb(200, 200, 200)
-    };
+    let inactive_color = notedeck::ColorTheme::current(ui.ctx()).border_default;
 
     let max_size = ICON_WIDTH * ICON_EXPANSION_MULTIPLE;
     let helper = AnimationHelper::new(ui, "connectivity-indicator", vec2(max_size, max_size));

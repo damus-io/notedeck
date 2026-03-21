@@ -438,7 +438,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             .outer_margin(egui::Margin::same(PostView::outer_margin()))
             .fill(ui.visuals().window_fill)
             .stroke(stroke)
-            .corner_radius(12.0);
+            .corner_radius(notedeck::tokens::RADIUS_LG);
 
         if focused {
             frame = frame.shadow(egui::epaint::Shadow {
@@ -698,7 +698,11 @@ fn render_post_view_media(
             .to_points(ui.pixels_per_point())
             .to_vec();
 
-            let img_resp = ui.add(egui::Image::new(tex).max_size(size).corner_radius(12.0));
+            let img_resp = ui.add(
+                egui::Image::new(tex)
+                    .max_size(size)
+                    .corner_radius(notedeck::tokens::RADIUS_LG),
+            );
 
             let remove_button_rect = {
                 let top_left = img_resp.rect.left_top();

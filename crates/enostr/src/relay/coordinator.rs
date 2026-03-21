@@ -1,5 +1,6 @@
 use ewebsock::{WsEvent, WsMessage};
 use hashbrown::{HashMap, HashSet};
+use std::time::Instant;
 
 use crate::{
     relay::{
@@ -324,6 +325,7 @@ impl CoordinationData {
             WsEvent::Opened => {
                 websocket.conn.set_status(RelayStatus::Connected);
                 websocket.reconnect_attempt = 0;
+                websocket.last_pong = Instant::now();
                 websocket.retry_connect_after = WebsocketRelay::initial_reconnect_duration();
                 handle_relay_open(
                     websocket,
@@ -349,6 +351,11 @@ impl CoordinationData {
                 #[cfg(not(target_arch = "wasm32"))]
                 WsMessage::Ping(bs) => {
                     websocket.conn.sender.send(WsMessage::Pong(bs.clone()));
+                    None
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                WsMessage::Pong(_) => {
+                    websocket.last_pong = Instant::now();
                     None
                 }
                 WsMessage::Text(text) => {

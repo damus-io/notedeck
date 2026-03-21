@@ -111,10 +111,9 @@ impl<'a> RelayMessage<'a> {
         // Event
         // Relay response format: ["EVENT", <subscription id>, <event JSON>]
         if &msg[0..=7] == "[\"EVENT\"" {
-            let mut start = 9;
-            while let Some(&b' ') = msg.as_bytes().get(start) {
-                start += 1; // Move past optional spaces
-            }
+            let raw = &msg[9..];
+            let trimmed = raw.trim_start_matches(' ');
+            let start = msg.len() - trimmed.len();
             if let Some(comma_index) = msg[start..].find(',') {
                 let subid_end = start + comma_index;
                 let subid = &msg[start..subid_end].trim().trim_matches('"');
@@ -161,18 +160,37 @@ impl<'a> RelayMessage<'a> {
 
         // OK (NIP-20)
         // Relay response format: ["OK",<event_id>, <true|false>, <message>]
-        if &msg[0..=5] == "[\"OK\"," && msg.len() >= 78 {
+        if &msg[0..=5] == "[\"OK\"," {
+            if msg.len() < 78 {
+                return Err(Error::DecodeFailed("Invalid OK format".into()));
+            }
+
             let event_id = &msg[7..71];
             let booly = &msg[73..77];
-            let status: bool = if booly == "true" {
-                true
-            } else if booly == "false" {
-                false
+            let (status, idx) = if booly == "true" {
+                (true, 77)
+            } else if msg[73..].starts_with("false") {
+                (false, 78)
             } else {
                 return Err(Error::DecodeFailed("bad boolean value".into()));
             };
-            let message_start = msg.rfind(',').unwrap() + 1;
-            let message = &msg[message_start..msg.len() - 2].trim().trim_matches('"');
+
+            if msg.as_bytes().get(idx).copied() != Some(b',') {
+                return Err(Error::DecodeFailed("Invalid OK format".into()));
+            }
+
+            if msg.as_bytes().get(idx + 1).copied() != Some(b'"') {
+                return Err(Error::DecodeFailed("Invalid OK format".into()));
+            }
+
+            if msg.as_bytes().get(msg.len() - 2).copied() != Some(b'"')
+                || msg.as_bytes().last().copied() != Some(b']')
+            {
+                return Err(Error::DecodeFailed("Invalid OK format".into()));
+            }
+
+            let message = &msg[(idx + 2)..(msg.len() - 2)];
+
             return Ok(Self::ok(event_id, status, message));
         }
 
@@ -238,6 +256,14 @@ mod tests {
                     "pow: difficulty 25>=24",
                 )),
             ),
+            (
+                r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",false,"contains comma, and escaped quote \"x\""]"#,
+                Ok(RelayMessage::ok(
+                    "b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",
+                    false,
+                    r#"contains comma, and escaped quote \"x\""#,
+                )),
+            ),
             // Invalid cases
             (
                 r#"["EVENT","random_string"]"#,
@@ -253,15 +279,17 @@ mod tests {
             ),
             (
                 r#"["NOTICE": 404]"#,
-                Err(Error::DecodeFailed("unrecognized message type: '[\"NOTICE\": 404]'".into())),
+                Err(Error::DecodeFailed(
+                    "unrecognized message type: '[\"NOTICE\": 404]'".into(),
+                )),
             ),
             (
                 r#"["OK","event_id"]"#,
-                Err(Error::DecodeFailed("unrecognized message type: '[\"OK\",\"event_id\"]'".into())),
+                Err(Error::DecodeFailed("Invalid OK format".into())),
             ),
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30"]"#,
-                Err(Error::DecodeFailed("unrecognized message type: '[\"OK\",\"b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30\"]'".into())),
+                Err(Error::DecodeFailed("Invalid OK format".into())),
             ),
             (
                 r#"["OK","b1a649ebe8b435ec71d3784793f3bbf4b93e64e17568a741aecd4c7ddeafce30",hello,""]"#,
@@ -290,7 +318,7 @@ mod tests {
                 Err(expected_err) => {
                     let result = RelayMessage::from_json(input);
                     assert!(
-                        matches!(result, Err(ref e) if *e.to_string() == expected_err.to_string()),
+                        matches!(result, Err(ref e) if e.to_string() == expected_err.to_string()),
                         "Expected error {:?} for input: {}, but got: {:?}",
                         expected_err,
                         input,

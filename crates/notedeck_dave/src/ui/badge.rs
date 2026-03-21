@@ -192,7 +192,7 @@ impl<'a> StatusBadge<'a> {
                 painter.rect_stroke(
                     box_rect,
                     3.0,
-                    egui::Stroke::new(1.0, box_stroke),
+                    egui::Stroke::new(notedeck::tokens::STROKE_THIN, box_stroke),
                     egui::StrokeKind::Inside,
                 );
 
@@ -300,7 +300,7 @@ impl<'a> ActionButton<'a> {
                 painter.rect_stroke(
                     box_rect,
                     3.0,
-                    egui::Stroke::new(1.0, Color32::WHITE),
+                    egui::Stroke::new(notedeck::tokens::STROKE_THIN, Color32::WHITE),
                     egui::StrokeKind::Inside,
                 );
 

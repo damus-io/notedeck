@@ -312,7 +312,10 @@ impl AgentScene {
             painter.rect_stroke(
                 rect,
                 0.0,
-                egui::Stroke::new(1.0, Color32::from_rgb(100, 150, 255)),
+                egui::Stroke::new(
+                    notedeck::tokens::STROKE_THIN,
+                    Color32::from_rgb(100, 150, 255),
+                ),
                 egui::StrokeKind::Outside,
             );
         }

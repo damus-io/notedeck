@@ -23,6 +23,7 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Duration;
 use std::time::SystemTime;
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
@@ -92,14 +93,14 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
 
-    #[cfg(feature = "auto-update")]
-    updater: crate::updater::Updater,
-
-    #[cfg(feature = "auto-update")]
-    release_sub: nostrdb::Subscription,
-
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
+}
+
+impl Drop for Notedeck {
+    fn drop(&mut self) {
+        self.shutdown_app();
+    }
 }
 
 /// Our chrome, which is basically nothing
@@ -129,7 +130,25 @@ impl eframe::App for Notedeck {
         profiling::finish_frame!();
         self.frame_history
             .on_new_frame(ctx.input(|i| i.time), frame.info().cpu_usage);
+        self.tick(ctx);
+    }
 
+    /// Called by the framework to save state before shutdown.
+    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
+        //eframe::set_value(storage, eframe::APP_KEY, self);
+    }
+}
+
+#[cfg(feature = "puffin")]
+fn setup_puffin() {
+    info!("setting up puffin");
+    puffin::set_scopes_on(true); // tell puffin to collect data
+}
+
+impl Notedeck {
+    /// Core per-frame logic, independent of eframe::Frame.
+    /// Called by `eframe::App::update` in production and directly in tests.
+    pub fn tick(&mut self, ctx: &egui::Context) {
         {
             profiling::scope!("media jobs");
             self.media_jobs.run_received(&mut self.job_pool, |id| {
@@ -155,9 +174,6 @@ impl eframe::App for Notedeck {
         };
         let app = app.clone();
 
-        #[cfg(feature = "auto-update")]
-        let needs_release_sub = self.updater.needs_relay_sub();
-
         let mut app_ctx = self.app_context(ctx);
 
         // handle account updates
@@ -177,52 +193,11 @@ impl eframe::App for Notedeck {
             }
         }
 
-        // Send release filter to remote relays (once)
-        #[cfg(feature = "auto-update")]
-        if needs_release_sub {
-            let filters = crate::updater::nostr::release_filter();
-            let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
-            oneshot.oneshot(filters);
-        }
-
         render_notedeck(app, &mut app_ctx, ctx);
 
         {
             profiling::scope!("outbox ingestion");
             drop(app_ctx);
-        }
-
-        #[cfg(feature = "auto-update")]
-        {
-            if self.updater.wants_release() {
-                let nks = self.ndb.poll_for_notes(self.release_sub, 10);
-                if !nks.is_empty() {
-                    if let Ok(txn) = Transaction::new(&self.ndb) {
-                        if let Some(release) =
-                            crate::updater::nostr::find_latest_release(&self.ndb, &txn)
-                        {
-                            self.updater.provide_release(release);
-                        }
-                    }
-                }
-            }
-            self.updater.poll();
-            if let Some(version) = self.updater.update_ready() {
-                let version = version.to_string();
-                egui::TopBottomPanel::bottom("update_bar").show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("Notedeck {version} is available"));
-                        if ui.button("Restart to update").clicked() {
-                            if let Err(e) = self.updater.apply_and_restart() {
-                                error!("failed to apply update: {e}");
-                            }
-                        }
-                        if ui.button("Later").clicked() {
-                            self.updater.dismiss();
-                        }
-                    });
-                });
-            }
         }
 
         self.settings.update_batch(|settings| {
@@ -240,19 +215,15 @@ impl eframe::App for Notedeck {
         puffin_egui::profiler_window(ctx);
     }
 
-    /// Called by the framework to save state before shutdown.
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) {
-        //eframe::set_value(storage, eframe::APP_KEY, self);
+    /// Shuts down app-owned runtime state before dropping the host.
+    pub fn shutdown_app(&mut self) {
+        self.app.take();
     }
-}
 
-#[cfg(feature = "puffin")]
-fn setup_puffin() {
-    info!("setting up puffin");
-    puffin::set_scopes_on(true); // tell puffin to collect data
-}
+    pub fn set_pong_timeout(&mut self, timeout: Duration) {
+        self.pool.set_pong_timeout(timeout);
+    }
 
-impl Notedeck {
     #[cfg(target_os = "android")]
     pub fn set_android_context(&mut self, context: AndroidApp) {
         self.android_app = Some(context);
@@ -279,7 +250,9 @@ impl Notedeck {
         let img_cache_dir = path.path(DataPathType::Cache);
         let _ = std::fs::create_dir_all(img_cache_dir.clone());
 
-        let map_size = if cfg!(target_os = "windows") {
+        let map_size = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            256usize * 1024usize * 1024usize
+        } else if cfg!(target_os = "windows") {
             // 16 Gib on windows because it actually creates the file
             1024usize * 1024usize * 1024usize * 16usize
         } else {
@@ -385,12 +358,6 @@ impl Notedeck {
         let (send_new_relay_jobs, receive_new_relay_jobs) = std::sync::mpsc::channel();
         let relay_limit_jobs = JobCache::new(receive_new_relay_jobs, send_new_relay_jobs);
 
-        #[cfg(feature = "auto-update")]
-        let release_sub = {
-            let filters = crate::updater::nostr::release_filter();
-            ndb.subscribe(&filters).expect("release subscription")
-        };
-
         let notedeck = Self {
             ndb,
             img_cache,
@@ -414,10 +381,6 @@ impl Notedeck {
             relay_limit_jobs,
             nip05_cache: Nip05Cache::new(),
             i18n,
-            #[cfg(feature = "auto-update")]
-            updater: crate::updater::Updater::new(&path, ctx),
-            #[cfg(feature = "auto-update")]
-            release_sub,
             #[cfg(target_os = "android")]
             android_app: None,
         };

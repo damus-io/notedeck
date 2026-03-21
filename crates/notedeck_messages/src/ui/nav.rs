@@ -109,58 +109,69 @@ fn render_nav_body(
     i18n: &mut Localization,
     clipboard: &mut Clipboard,
 ) -> RouteResponse<Option<MessagesAction>> {
-    let response = match top {
-        Route::ConvoList => {
-            let mut frame = Frame::new();
-            if !is_narrow(ui.ctx()) {
-                frame = frame.inner_margin(Margin {
-                    left: 12,
-                    right: 12,
-                    top: 0,
-                    bottom: 10,
-                });
-            }
-            frame
-                .show(ui, |ui| {
-                    ConversationListUi::new(cache, states, jobs, ndb, img_cache, i18n)
-                        .ui(ui, selected_pubkey)
-                })
-                .inner
-        }
-        Route::CreateConvo => 's: {
-            // Escape key goes back
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                break 's Some(MessagesAction::Back);
-            }
+    // Route-specific IDs keep egui_nav transitions from reusing the same
+    // auto-generated widget IDs across background/foreground layers.
+    let response = ui
+        .push_id(
+            match top {
+                Route::ConvoList => "convo_list",
+                Route::CreateConvo => "create_convo",
+                Route::Conversation => "conversation",
+            },
+            |ui| match top {
+                Route::ConvoList => {
+                    let mut frame = Frame::new();
+                    if !is_narrow(ui.ctx()) {
+                        frame = frame.inner_margin(Margin {
+                            left: 12,
+                            right: 12,
+                            top: 0,
+                            bottom: 10,
+                        });
+                    }
+                    frame
+                        .show(ui, |ui| {
+                            ConversationListUi::new(cache, states, jobs, ndb, img_cache, i18n)
+                                .ui(ui, selected_pubkey)
+                        })
+                        .inner
+                }
+                Route::CreateConvo => 's: {
+                    // Escape key goes back
+                    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                        break 's Some(MessagesAction::Back);
+                    }
 
-            let Some(r) = CreateConvoUi::new(
-                ndb,
-                jobs,
-                img_cache,
-                contacts,
-                i18n,
-                &mut states.create_convo,
-            )
-            .ui(ui) else {
-                break 's None;
-            };
+                    let Some(r) = CreateConvoUi::new(
+                        ndb,
+                        jobs,
+                        img_cache,
+                        contacts,
+                        i18n,
+                        &mut states.create_convo,
+                    )
+                    .ui(ui) else {
+                        break 's None;
+                    };
 
-            Some(MessagesAction::Create {
-                recipient: r.recipient,
-            })
-        }
-        Route::Conversation => conversation_ui(
-            cache,
-            states,
-            jobs,
-            ndb,
-            ui,
-            img_cache,
-            i18n,
-            selected_pubkey,
-            clipboard,
-        ),
-    };
+                    Some(MessagesAction::Create {
+                        recipient: r.recipient,
+                    })
+                }
+                Route::Conversation => conversation_ui(
+                    cache,
+                    states,
+                    jobs,
+                    ndb,
+                    ui,
+                    img_cache,
+                    i18n,
+                    selected_pubkey,
+                    clipboard,
+                ),
+            },
+        )
+        .inner;
 
     RouteResponse {
         response,
@@ -236,13 +247,16 @@ impl<'a> NavTitle<'a> {
                 },
                 |ui: &mut egui::Ui| match top {
                     Route::ConvoList => {
-                        let new_msg_icon = app_images::new_message_image().max_height(24.0);
-                        if ui
-                            .add(new_msg_icon)
-                            .on_hover_cursor(CursorIcon::PointingHand)
-                            .interact(egui::Sense::click())
-                            .clicked()
-                        {
+                        let new_msg_icon = app_images::new_message_image()
+                            .max_height(24.0)
+                            .alt_text("New Chat");
+                        let response = ui
+                            .add(egui::ImageButton::new(new_msg_icon).frame(false))
+                            .on_hover_cursor(CursorIcon::PointingHand);
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New Chat")
+                        });
+                        if response.clicked() {
                             tracing::info!("CLICKED NEW MSG");
                             right_action = Some(MessagesAction::Creating);
                         }
@@ -292,7 +306,12 @@ impl<'a> NavTitle<'a> {
 
 fn back_button(ui: &mut egui::Ui, chev_size: egui::Vec2) -> egui::Response {
     let color = ui.style().visuals.noninteractive().fg_stroke.color;
-    chevron(ui, 2.0, chev_size, egui::Stroke::new(2.0, color))
+    chevron(
+        ui,
+        notedeck::tokens::STROKE_THICK,
+        chev_size,
+        egui::Stroke::new(notedeck::tokens::STROKE_THICK, color),
+    )
 }
 
 fn prev<R>(xs: &[R]) -> Option<&R> {

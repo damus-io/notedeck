@@ -80,9 +80,9 @@ impl<'a> Nip51SetWidget<'a> {
         }
 
         let pack_resp = egui::Frame::new()
-            .corner_radius(CornerRadius::same(8))
+            .corner_radius(CornerRadius::same(notedeck::tokens::RADIUS_MD as u8))
             //.fill(ui.visuals().extreme_bg_color)
-            .inner_margin(Margin::same(8))
+            .inner_margin(Margin::same(notedeck::tokens::SPACING_SM as i8))
             .show(ui, |ui| {
                 render_pack(
                     ui,

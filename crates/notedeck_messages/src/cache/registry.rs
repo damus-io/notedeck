@@ -144,3 +144,29 @@ impl<'a> ConversationIdentifierUnowned<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies multi-participant NIP-17 conversations normalize participant order and duplicates.
+    #[test]
+    fn group_participant_sets_normalize_to_one_conversation_id() {
+        let alice = [0xA1; 32];
+        let bob = [0xB2; 32];
+        let carol = [0xC3; 32];
+        let mut registry = ConversationRegistry::default();
+
+        let first = registry.get_or_insert(ConversationIdentifierUnowned::Nip17(
+            ParticipantSetUnowned::new(vec![&alice, &bob, &carol]),
+        ));
+        let second = registry.get_or_insert(ConversationIdentifierUnowned::Nip17(
+            ParticipantSetUnowned::new(vec![&carol, &alice, &bob, &alice]),
+        ));
+
+        assert_eq!(
+            first, second,
+            "expected reordered or duplicated group participants to map to the same conversation"
+        );
+    }
+}

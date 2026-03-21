@@ -39,6 +39,66 @@ pub struct MessagesUiResponse {
     pub conversation_panel_response: Option<MessagesAction>,
 }
 
+/// Returns whether route transitions should animate for the current app context.
+fn nav_transitions_enabled(ctx: &mut AppContext<'_>) -> bool {
+    ctx.settings.get_settings_mut().animate_nav_transitions
+}
+
+/// Pushes a route immediately when transitions are disabled.
+fn route_to(router: &mut Router<Route>, route: Route, animate: bool) {
+    if animate {
+        router.route_to(route);
+        return;
+    }
+
+    router.navigating = false;
+    router.returning = false;
+    router.routes.push(route);
+}
+
+/// Applies a replacement route immediately when transitions are disabled.
+fn route_to_replaced(
+    router: &mut Router<Route>,
+    route: Route,
+    replacement_type: ReplacementType,
+    animate: bool,
+) {
+    if animate {
+        router.route_to_replaced(route, replacement_type);
+        return;
+    }
+
+    router.navigating = false;
+    router.returning = false;
+    match replacement_type {
+        ReplacementType::Single => {
+            router.routes.push(route);
+            let len = router.routes.len();
+            if len >= 2 {
+                router.routes.remove(len - 2);
+            }
+        }
+        ReplacementType::All => {
+            router.routes.clear();
+            router.routes.push(route);
+        }
+    }
+}
+
+/// Pops the current route immediately when transitions are disabled.
+fn go_back(router: &mut Router<Route>, animate: bool) {
+    if animate {
+        let _ = router.go_back();
+        return;
+    }
+
+    if router.routes.len() > 1 {
+        router.navigating = false;
+        router.returning = false;
+        router.routes.pop();
+    }
+}
+
 /// Apply UI responses and navigation actions to the messages router.
 pub fn process_messages_ui_response(
     resp: MessagesUiResponse,
@@ -137,6 +197,7 @@ fn handle_messages_action(
     inflight_messages: &mut HashSet<ConversationId>,
 ) -> Option<AppAction> {
     let mut app_action = None;
+    let animate_nav = nav_transitions_enabled(ctx);
     match action {
         MessagesAction::SendMessage {
             conversation_id,
@@ -171,16 +232,21 @@ fn handle_messages_action(
             );
 
             if is_narrow {
-                router.route_to_replaced(Route::Conversation, ReplacementType::Single);
+                route_to_replaced(
+                    router,
+                    Route::Conversation,
+                    ReplacementType::Single,
+                    animate_nav,
+                );
             } else {
-                router.go_back();
+                go_back(router, animate_nav);
             }
         }
         MessagesAction::Creating => {
-            router.route_to(Route::CreateConvo);
+            route_to(router, Route::CreateConvo, animate_nav);
         }
         MessagesAction::Back => {
-            router.go_back();
+            go_back(router, animate_nav);
         }
         MessagesAction::ToggleChrome => app_action = Some(AppAction::ToggleChrome),
     }
@@ -198,6 +264,7 @@ fn open_coversation_action(
     loader: &MessagesLoader,
     inflight_messages: &mut HashSet<ConversationId>,
 ) {
+    let animate_nav = nav_transitions_enabled(ctx);
     open_conversation_with_prefetch(&mut ctx.remote, ctx.accounts, cache, id);
     request_conversation_messages(
         cache,
@@ -208,7 +275,7 @@ fn open_coversation_action(
     );
 
     if is_narrow {
-        router.route_to(Route::Conversation);
+        route_to(router, Route::Conversation, animate_nav);
     }
 }
 

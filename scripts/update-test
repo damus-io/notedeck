@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#
+# Run auto-update integration tests (self-replace + relaunch).
+#
+# These tests build a helper binary, exercise self_replace::self_replace(),
+# and verify the relaunched process is the new version.
+#
+# Usage:
+#   scripts/update-test                  # run all update tests
+#   scripts/update-test <test_name>      # run a specific test
+
+set -euo pipefail
+
+if [[ $# -gt 0 ]]; then
+    cargo test -p notedeck --features auto-update --test update_install -- --ignored "$1"
+else
+    cargo test -p notedeck --features auto-update --test update_install -- --ignored
+fi

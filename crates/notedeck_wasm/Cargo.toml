@@ -11,6 +11,9 @@ notedeck = { workspace = true }
 egui = { workspace = true }
 tracing = { workspace = true }
 
+[build-dependencies]
+cc = "1"
+
 [dev-dependencies]
 wat = "1"
 dirs = { workspace = true }

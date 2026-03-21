@@ -219,7 +219,7 @@ pub fn spiral_gallery(ui: &mut egui::Ui, images: &[ImageItem], params: LayoutPar
         painter.rect_stroke(
             Rect::from_min_size(rect.min, size),
             0.0,
-            Stroke::new(1.0, Color32::DARK_GRAY),
+            Stroke::new(notedeck::tokens::STROKE_THIN, Color32::DARK_GRAY),
         );
 
         let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));

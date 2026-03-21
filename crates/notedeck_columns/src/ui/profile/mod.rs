@@ -480,7 +480,7 @@ fn copy_key_widget<'a>(
         painter.rect_stroke(
             copy_key_rect.shrink(1.0),
             copy_key_rounding,
-            Stroke::new(1.0, stroke_color),
+            Stroke::new(notedeck::tokens::STROKE_THIN, stroke_color),
             egui::StrokeKind::Outside,
         );
 
@@ -506,7 +506,7 @@ fn edit_profile_button<'a>(i18n: &'a mut Localization) -> impl egui::Widget + 'a
 
         painter.rect_filled(
             rect,
-            CornerRadius::same(8),
+            CornerRadius::same(notedeck::tokens::RADIUS_MD as u8),
             if resp.hovered() {
                 ui.visuals().widgets.active.bg_fill
             } else {
@@ -515,7 +515,7 @@ fn edit_profile_button<'a>(i18n: &'a mut Localization) -> impl egui::Widget + 'a
         );
         painter.rect_stroke(
             rect.shrink(1.0),
-            CornerRadius::same(8),
+            CornerRadius::same(notedeck::tokens::RADIUS_MD as u8),
             if resp.hovered() {
                 ui.visuals().widgets.active.bg_stroke
             } else {

@@ -40,6 +40,9 @@ ${update:+export UPDATE_SNAPSHOTS=1}
 
 # Snapshot tests are #[ignore]d by default so they don't run during
 # normal `cargo test`. The --ignored flag runs only those tests.
-cargo test -p notedeck_chrome --test ui_tests -- --ignored "$filter"
-cargo test -p notedeck_ui --test widget_tests -- --ignored "$filter"
-cargo test -p notedeck_dave --test dave_button_tests -- --ignored "$filter"
+# Run in release mode to avoid egui debug_assert panics when widget
+# layer_ids change between frames (tooltips: Background → Foreground).
+cargo test --release -p notedeck_chrome --features auto-update,snapshot-testing --test ui_tests -- --ignored "$filter"
+cargo test --release -p notedeck_ui --test widget_tests -- --ignored "$filter"
+cargo test --release -p notedeck_dave --test dave_button_tests -- --ignored "$filter"
+cargo test --release -p notedeck_nostrverse --test snapshot_tests -- --ignored "$filter"

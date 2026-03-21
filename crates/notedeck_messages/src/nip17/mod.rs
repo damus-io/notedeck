@@ -210,6 +210,24 @@ pub fn build_default_dm_relay_list_note(sender_secret: &SecretKey) -> Option<Not
     builder.sign(&sender_secret.secret_bytes()).build()
 }
 
+/// Builds a signed kind `10050` DM relay-list note with `created_at = 1`.
+///
+/// The extremely old timestamp ensures that any real relay list the user has published
+/// on any relay will naturally supersede this one (relays reject older replaceable events).
+/// This is used as a fallback when relay-list EOSE times out, so the account can
+/// immediately send/receive DMs via the default relays without waiting forever.
+pub fn build_backdated_default_dm_relay_list_note(
+    sender_secret: &SecretKey,
+) -> Option<Note<'static>> {
+    let mut builder = NoteBuilder::new().kind(10050).content("").created_at(1);
+
+    for relay in default_dm_relay_urls() {
+        builder = builder.start_tag().tag_str("relay").tag_str(relay);
+    }
+
+    builder.sign(&sender_secret.secret_bytes()).build()
+}
+
 /// Parses a kind `10050` note into unique websocket relay URLs.
 pub fn parse_dm_relay_list_relays(note: &Note<'_>) -> Vec<NormRelayUrl> {
     if note.kind() != 10050 {
@@ -249,6 +267,7 @@ pub fn parse_dm_relay_list_relays(note: &Note<'_>) -> Vec<NormRelayUrl> {
 /// Queries NDB for one participant's latest kind `10050` relay list.
 ///
 /// Returns explicit websocket relay URLs when available, else an empty vec.
+#[profiling::function]
 pub fn query_participant_dm_relays(
     ndb: &Ndb,
     txn: &Transaction,
@@ -256,14 +275,58 @@ pub fn query_participant_dm_relays(
 ) -> Vec<NormRelayUrl> {
     let filter = participant_dm_relay_list_filter(participant);
     let Ok(results) = ndb.query(txn, std::slice::from_ref(&filter), 1) else {
+        tracing::debug!(
+            "failed to query dm relay list for participant {}",
+            participant
+        );
         return Vec::new();
     };
 
     let Some(result) = results.first() else {
+        tracing::debug!("no dm relay list found for participant {}", participant);
         return Vec::new();
     };
 
-    parse_dm_relay_list_relays(&result.note)
+    let relays = parse_dm_relay_list_relays(&result.note);
+    tracing::debug!(
+        "selected dm relay list for participant {} at created_at={} with {} relay(s)",
+        participant,
+        result.note.created_at(),
+        relays.len()
+    );
+    relays
+}
+
+/// Returns unique authors of locally stored kind `10050` notes, excluding the selected account.
+#[profiling::function]
+pub fn known_participant_dm_relay_list_authors(
+    ndb: &Ndb,
+    txn: &Transaction,
+    selected_account: &Pubkey,
+) -> Vec<Pubkey> {
+    let filter = FilterBuilder::new().kinds([10050]).build();
+    let Ok(results) = ndb.query(txn, std::slice::from_ref(&filter), 1_024) else {
+        tracing::debug!(
+            "failed to query known participant dm relay-list authors for selected_account={}",
+            selected_account
+        );
+        return Vec::new();
+    };
+
+    let mut participants = HashSet::new();
+    for result in results {
+        let participant = Pubkey::new(*result.note.pubkey());
+        if &participant != selected_account {
+            participants.insert(participant);
+        }
+    }
+
+    tracing::debug!(
+        "found {} known participant dm relay-list author(s) for selected_account={}",
+        participants.len(),
+        selected_account
+    );
+    participants.into_iter().collect()
 }
 
 // easily retrievable from Note<'a>
@@ -317,11 +380,22 @@ pub fn parse_chat_message<'a>(note: &Note<'a>) -> Option<Nip17ChatMessage<'a>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostrdb::NoteBuilder;
+    use nostrdb::{Config, Ndb, NoteBuilder, Transaction};
+    use std::time::{Duration, Instant};
+    use tempfile::tempdir;
 
     fn relay_note(relays: &[&str]) -> Note<'static> {
         let signer = FullKeypair::generate();
+        relay_note_with_created_at(&signer, relays, 1_700_000_000)
+    }
+
+    fn relay_note_with_created_at(
+        signer: &FullKeypair,
+        relays: &[&str],
+        created_at: u64,
+    ) -> Note<'static> {
         let mut builder = NoteBuilder::new().kind(10050).content("");
+        builder = builder.created_at(created_at);
         for relay in relays {
             builder = builder.start_tag().tag_str("relay").tag_str(relay);
         }
@@ -381,5 +455,44 @@ mod tests {
         assert_eq!(note.kind(), 10050);
         let urls = parse_dm_relay_list_relays(&note);
         assert!(!urls.is_empty());
+    }
+
+    /// Verifies local participant relay-list author discovery ignores the selected account.
+    #[test]
+    fn known_participant_dm_relay_list_authors_skips_selected_account() {
+        let tempdir = tempdir().expect("tempdir");
+        let ndb = Ndb::new(tempdir.path().to_str().expect("db path"), &Config::new()).expect("ndb");
+        let selected = FullKeypair::generate();
+        let participant_a = FullKeypair::generate();
+        let participant_b = FullKeypair::generate();
+
+        for note in [
+            relay_note_with_created_at(&selected, &["wss://relay-selected.example.com"], 10),
+            relay_note_with_created_at(&participant_a, &["wss://relay-a.example.com"], 11),
+            relay_note_with_created_at(&participant_a, &["wss://relay-a-new.example.com"], 12),
+            relay_note_with_created_at(&participant_b, &["wss://relay-b.example.com"], 13),
+        ] {
+            let note_json = note.json().expect("relay-list note json");
+            ndb.process_client_event(&note_json)
+                .expect("ingest relay-list note");
+        }
+
+        let expected = HashSet::from_iter([participant_a.pubkey, participant_b.pubkey]);
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        loop {
+            let txn = Transaction::new(&ndb).expect("txn");
+            let authors = known_participant_dm_relay_list_authors(&ndb, &txn, &selected.pubkey);
+            let actual: HashSet<Pubkey> = authors.into_iter().collect();
+            if actual == expected {
+                break;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for known relay-list authors; actual={actual:?}, expected={expected:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
