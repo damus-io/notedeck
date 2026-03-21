@@ -46,3 +46,4 @@ cargo test --release -p notedeck_chrome --features auto-update,snapshot-testing 
 cargo test --release -p notedeck_ui --test widget_tests -- --ignored "$filter"
 cargo test --release -p notedeck_dave --test dave_button_tests -- --ignored "$filter"
 cargo test --release -p notedeck_nostrverse --test snapshot_tests -- --ignored "$filter"
+cargo test --release -p notedeck_dashboard --features snapshot-testing --test snapshot_tests -- --ignored "$filter"
