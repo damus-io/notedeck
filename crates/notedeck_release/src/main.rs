@@ -127,6 +127,43 @@ struct ArtifactInfo {
     size: usize,
 }
 
+fn cache_dir() -> PathBuf {
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        PathBuf::from(xdg)
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".cache")
+    } else {
+        PathBuf::from("/tmp")
+    }
+    .join("notedeck-release")
+}
+
+/// Look up a cached artifact by URL. Returns (data, sha256) if cached.
+fn cache_lookup(url: &str) -> Option<(Vec<u8>, String)> {
+    let dir = cache_dir();
+    let url_hash = sha256_hex(url.as_bytes());
+    let link_path = dir.join(format!("url_{url_hash}"));
+    let content_hash = std::fs::read_to_string(&link_path).ok()?;
+    let content_hash = content_hash.trim().to_string();
+    let data = std::fs::read(dir.join(&content_hash)).ok()?;
+    // verify content integrity
+    if sha256_hex(&data) != content_hash {
+        return None;
+    }
+    Some((data, content_hash))
+}
+
+/// Store an artifact in the content-addressed cache.
+fn cache_store(url: &str, data: &[u8], content_hash: &str) {
+    let dir = cache_dir();
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let _ = std::fs::write(dir.join(content_hash), data);
+    let url_hash = sha256_hex(url.as_bytes());
+    let _ = std::fs::write(dir.join(format!("url_{url_hash}")), content_hash);
+}
+
 fn http_get(url: &str) -> Result<Vec<u8>, String> {
     let response = ureq::get(url)
         .call()
@@ -204,9 +241,16 @@ fn fetch_github_artifacts(version: Option<&str>) -> Result<(String, Vec<Artifact
             .as_str()
             .ok_or_else(|| format!("no download URL for {name}"))?;
 
-        eprintln!("  downloading {name}...");
-        let data = http_get(browser_url)?;
-        let sha256 = sha256_hex(&data);
+        let (data, sha256) = if let Some((data, hash)) = cache_lookup(browser_url) {
+            eprintln!("  {name} (cached)");
+            (data, hash)
+        } else {
+            eprintln!("  downloading {name}...");
+            let data = http_get(browser_url)?;
+            let hash = sha256_hex(&data);
+            cache_store(browser_url, &data, &hash);
+            (data, hash)
+        };
         let size = data.len();
         let url = github_download_url(&version, &name);
         eprintln!("    sha256: {sha256}");
