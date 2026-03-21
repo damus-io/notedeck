@@ -89,6 +89,13 @@ fn seed_dashboard_notes(data_dir: &std::path::Path) {
     });
 }
 
+/// Responsive breakpoints to snapshot
+const SIZES: &[(&str, f32, f32)] = &[
+    ("dashboard_mobile", 400.0, 900.0),
+    ("dashboard_tablet", 800.0, 600.0),
+    ("dashboard_desktop", 1200.0, 800.0),
+];
+
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_dashboard() {
@@ -106,6 +113,7 @@ fn snapshot_dashboard() {
         fonts_installed: false,
     };
 
+    // Start at desktop size for initial data load
     let mut harness = Harness::builder()
         .with_size(egui::Vec2::new(1200.0, 800.0))
         .renderer(notedeck::software_renderer())
@@ -125,5 +133,11 @@ fn snapshot_dashboard() {
     // Wait for the count to stabilize after the second refresh
     wait_for_label(&mut harness, &expected, Duration::from_secs(5));
 
-    harness.snapshot("dashboard");
+    // Snapshot at each breakpoint
+    for &(name, w, h) in SIZES {
+        harness.set_size(egui::Vec2::new(w, h));
+        // Run a few frames so layout settles at the new size
+        harness.run_steps(3);
+        harness.snapshot(name);
+    }
 }

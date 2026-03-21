@@ -66,6 +66,49 @@ pub fn period_picker_ui(ui: &mut egui::Ui, period: &mut Period) {
 }
 
 pub fn dashboard_controls_ui(d: &mut Dashboard, ui: &mut egui::Ui) {
+    if notedeck::ui::is_narrow(ui.ctx()) {
+        dashboard_controls_narrow(d, ui);
+    } else {
+        dashboard_controls_wide(d, ui);
+    }
+}
+
+fn dashboard_controls_narrow(d: &mut Dashboard, ui: &mut egui::Ui) {
+    let theme = ColorTheme::current(ui.ctx());
+
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Dashboard")
+                .font(FontId::proportional(20.0))
+                .color(theme.text_primary)
+                .strong(),
+        );
+
+        ui.add_space(tokens::SPACING_SM);
+
+        period_picker_ui(ui, &mut d.period);
+    });
+
+    ui.add_space(tokens::SPACING_XS);
+
+    ui.horizontal(|ui| {
+        let refresh_btn = if d.running {
+            egui::Button::new(RichText::new("Refreshing…").small().color(theme.text_muted))
+        } else {
+            egui::Button::new(RichText::new("⟳ Refresh").small())
+        };
+
+        if ui.add_enabled(!d.running, refresh_btn).clicked() {
+            d.force_refresh();
+        }
+
+        ui.add_space(tokens::SPACING_SM);
+
+        status_text(ui, d);
+    });
+}
+
+fn dashboard_controls_wide(d: &mut Dashboard, ui: &mut egui::Ui) {
     let theme = ColorTheme::current(ui.ctx());
 
     ui.horizontal(|ui| {
@@ -81,7 +124,6 @@ pub fn dashboard_controls_ui(d: &mut Dashboard, ui: &mut egui::Ui) {
         period_picker_ui(ui, &mut d.period);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Status on the right
             status_text(ui, d);
 
             ui.add_space(tokens::SPACING_MD);
@@ -139,7 +181,7 @@ fn card_header_ui(ui: &mut egui::Ui, title: &str) {
 
 pub fn card_ui(
     ui: &mut egui::Ui,
-    min_card: f32,
+    min_h: f32,
     content: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
     let theme = ColorTheme::current(ui.ctx());
@@ -150,8 +192,7 @@ pub fn card_ui(
         .inner_margin(egui::Margin::same(tokens::SPACING_LG as i8))
         .stroke(egui::Stroke::new(tokens::STROKE_THIN, theme.border_default))
         .show(ui, |ui| {
-            ui.set_min_width(min_card);
-            ui.set_min_height(min_card * 0.5);
+            ui.set_min_height(min_h);
             ui.vertical(|ui| {
                 content(ui);
             });
@@ -314,36 +355,65 @@ pub fn dashboard_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppC
 }
 
 fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
-    let min_card = 260.0;
+    let avail = ui.available_width();
+
+    // Card sizing hierarchy — clamped to available width
+    let kpi_w = 160.0_f32.min(avail);
+    let kpi_h = 90.0;
+    let chart_w = 340.0_f32.min(avail);
+    let chart_h = 280.0;
+    let list_w = 340.0_f32.min(avail);
+    let list_h = 320.0;
+    let gap = egui::vec2(tokens::SPACING_SM, tokens::SPACING_SM);
 
     dashboard_controls_ui(dashboard, ui);
     ui.add_space(tokens::SPACING_LG);
 
+    // --- KPI row: compact stat cards ---
     ui.with_layout(
         egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
         |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(tokens::SPACING_SM, tokens::SPACING_SM);
-            let size = [min_card, min_card];
-            ui.add_sized(size, |ui: &mut egui::Ui| {
-                card_ui(ui, min_card, |ui| totals_ui(dashboard, ui))
+            ui.spacing_mut().item_spacing = gap;
+            ui.add_sized([kpi_w, kpi_h], |ui: &mut egui::Ui| {
+                card_ui(ui, kpi_h, |ui| totals_ui(dashboard, ui))
             });
-            ui.add_sized(size, |ui: &mut egui::Ui| {
-                card_ui(ui, min_card, |ui| posts_per_period_ui(dashboard, ui))
+        },
+    );
+
+    ui.add_space(tokens::SPACING_SM);
+
+    // --- Chart row: wider cards for data-heavy views ---
+    ui.with_layout(
+        egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+        |ui| {
+            ui.spacing_mut().item_spacing = gap;
+            ui.add_sized([chart_w, chart_h], |ui: &mut egui::Ui| {
+                card_ui(ui, chart_h, |ui| posts_per_period_ui(dashboard, ui))
             });
-            ui.add_sized(size, |ui: &mut egui::Ui| {
-                card_ui(ui, min_card, |ui| kinds_ui(dashboard, ui))
+            ui.add_sized([chart_w, chart_h], |ui: &mut egui::Ui| {
+                card_ui(ui, chart_h, |ui| kinds_ui(dashboard, ui))
             });
-            ui.add_sized(size, |ui: &mut egui::Ui| {
-                card_ui(ui, min_card, |ui| clients_stack_ui(dashboard, ui))
+            ui.add_sized([chart_w, chart_h], |ui: &mut egui::Ui| {
+                card_ui(ui, chart_h, |ui| clients_stack_ui(dashboard, ui))
             });
-            ui.add_sized(size, |ui: &mut egui::Ui| {
-                card_ui(ui, min_card, |ui| clients_trends_ui(dashboard, ui))
+        },
+    );
+
+    ui.add_space(tokens::SPACING_SM);
+
+    // --- List row: sparkline/list cards ---
+    ui.with_layout(
+        egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+        |ui| {
+            ui.spacing_mut().item_spacing = gap;
+            ui.add_sized([list_w, list_h], |ui: &mut egui::Ui| {
+                card_ui(ui, list_h, |ui| clients_trends_ui(dashboard, ui))
             });
-            ui.add_sized(size, |ui: &mut egui::Ui| {
-                card_ui(ui, min_card, |ui| new_contact_lists_ui(dashboard, ui))
+            ui.add_sized([list_w, list_h], |ui: &mut egui::Ui| {
+                card_ui(ui, list_h, |ui| new_contact_lists_ui(dashboard, ui))
             });
-            ui.add_sized(size, |ui: &mut egui::Ui| {
-                card_ui(ui, min_card, |ui| top_posters_ui(dashboard, ui, ctx))
+            ui.add_sized([list_w, list_h], |ui: &mut egui::Ui| {
+                card_ui(ui, list_h, |ui| top_posters_ui(dashboard, ui, ctx))
             });
         },
     );
