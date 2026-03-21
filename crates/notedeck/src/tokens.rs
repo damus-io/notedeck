@@ -87,3 +87,28 @@ pub const ICON_EXPANSION_MULTIPLE: f32 = 1.2;
 
 /// Default frame margin
 pub const FRAME_MARGIN: f32 = 8.0;
+
+// --- Chart ---
+
+/// Bar chart row height
+pub const CHART_ROW_HEIGHT: f32 = 20.0;
+/// Gap between bar chart rows
+pub const CHART_ROW_GAP: f32 = 4.0;
+/// Sparkline height
+pub const SPARKLINE_HEIGHT: f32 = 18.0;
+
+// --- Color Palette ---
+
+/// Chart color palette — 10 visually distinct, modern muted tones
+pub const PALETTE: [egui::Color32; 10] = [
+    egui::Color32::from_rgb(99, 102, 241), // indigo
+    egui::Color32::from_rgb(16, 185, 129), // emerald
+    egui::Color32::from_rgb(245, 158, 11), // amber
+    egui::Color32::from_rgb(139, 92, 246), // violet
+    egui::Color32::from_rgb(236, 72, 153), // pink
+    egui::Color32::from_rgb(6, 182, 212),  // cyan
+    egui::Color32::from_rgb(251, 146, 60), // orange
+    egui::Color32::from_rgb(34, 197, 94),  // green
+    egui::Color32::from_rgb(168, 85, 247), // purple
+    egui::Color32::from_rgb(59, 130, 246), // blue
+];

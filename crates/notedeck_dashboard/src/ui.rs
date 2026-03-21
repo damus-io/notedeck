@@ -1,12 +1,12 @@
 use egui::FontId;
 use egui::RichText;
 
-use std::time::Duration;
 use std::time::Instant;
 
 use nostrdb::Transaction;
 use notedeck::{
     AppContext, abbrev::floor_char_boundary, name::get_display_name, profile::get_profile_url,
+    theme::ColorTheme, tokens,
 };
 use notedeck_ui::ProfilePic;
 
@@ -23,81 +23,118 @@ use crate::top_kinds_over;
 use crate::top_new_contact_list_clients_over;
 
 pub fn period_picker_ui(ui: &mut egui::Ui, period: &mut Period) {
+    let theme = ColorTheme::current(ui.ctx());
+
     ui.horizontal(|ui| {
-        for p in Period::ALL {
-            let selected = *period == p;
-            if ui.selectable_label(selected, p.label()).clicked() {
-                *period = p;
+        ui.spacing_mut().item_spacing.x = 0.0;
+
+        for (i, p) in Period::ALL.iter().enumerate() {
+            let selected = *period == *p;
+
+            let (bg, text_color) = if selected {
+                (theme.accent, egui::Color32::WHITE)
+            } else {
+                (egui::Color32::TRANSPARENT, theme.text_secondary)
+            };
+
+            let rounding = match i {
+                0 => egui::CornerRadius {
+                    nw: tokens::RADIUS_SM as u8,
+                    sw: tokens::RADIUS_SM as u8,
+                    ne: 0,
+                    se: 0,
+                },
+                2 => egui::CornerRadius {
+                    nw: 0,
+                    sw: 0,
+                    ne: tokens::RADIUS_SM as u8,
+                    se: tokens::RADIUS_SM as u8,
+                },
+                _ => egui::CornerRadius::ZERO,
+            };
+
+            let btn = egui::Button::new(RichText::new(p.label()).small().color(text_color))
+                .fill(bg)
+                .corner_radius(rounding)
+                .stroke(egui::Stroke::new(tokens::STROKE_THIN, theme.border_default));
+
+            if ui.add(btn).clicked() {
+                *period = *p;
             }
         }
     });
 }
 
 pub fn dashboard_controls_ui(d: &mut Dashboard, ui: &mut egui::Ui) {
+    let theme = ColorTheme::current(ui.ctx());
+
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Range").small().weak());
+        ui.label(
+            RichText::new("Dashboard")
+                .font(FontId::proportional(20.0))
+                .color(theme.text_primary)
+                .strong(),
+        );
+
+        ui.add_space(tokens::SPACING_LG);
+
         period_picker_ui(ui, &mut d.period);
 
-        ui.add_space(12.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Status on the right
+            status_text(ui, d);
 
-        let refresh_btn = if d.running {
-            egui::Button::new(RichText::new("⟳ Refreshing…").small().weak())
-        } else {
-            egui::Button::new(RichText::new("⟳ Refresh").small())
-        };
+            ui.add_space(tokens::SPACING_MD);
 
-        if ui.add_enabled(!d.running, refresh_btn).clicked() {
-            d.force_refresh();
-        }
+            let refresh_btn = if d.running {
+                egui::Button::new(RichText::new("Refreshing…").small().color(theme.text_muted))
+            } else {
+                egui::Button::new(RichText::new("⟳ Refresh").small())
+            };
+
+            if ui.add_enabled(!d.running, refresh_btn).clicked() {
+                d.force_refresh();
+            }
+        });
     });
 }
 
-pub fn footer_status_ui(
-    ui: &mut egui::Ui,
-    running: bool,
-    err: Option<&str>,
-    last_snapshot: Option<Instant>,
-    last_duration: Option<Duration>,
-) {
-    ui.add_space(8.0);
+fn status_text(ui: &mut egui::Ui, d: &Dashboard) {
+    let theme = ColorTheme::current(ui.ctx());
 
-    if let Some(e) = err {
-        ui.label(RichText::new(e).color(ui.visuals().error_fg_color).small());
+    if let Some(e) = &d.last_error {
+        ui.label(RichText::new(e).color(theme.destructive).small());
         return;
     }
 
     let mut parts: Vec<String> = Vec::new();
-    if running {
+    if d.running {
         parts.push("updating…".to_owned());
     }
-
-    if let Some(t) = last_snapshot {
+    if let Some(t) = d.last_snapshot {
         parts.push(format!(
             "updated {:.1?} ago",
             Instant::now().duration_since(t)
         ));
     }
-
-    if let Some(d) = last_duration {
-        let ms = d.as_secs_f64() * 1000.0;
+    if let Some(dur) = d.last_duration {
+        let ms = dur.as_secs_f64() * 1000.0;
         parts.push(format!("{ms:.0} ms"));
     }
-
     if parts.is_empty() {
         parts.push("—".to_owned());
     }
 
-    ui.label(RichText::new(parts.join(" · ")).small().weak());
+    ui.label(
+        RichText::new(parts.join(" · "))
+            .small()
+            .color(theme.text_muted),
+    );
 }
 
 fn card_header_ui(ui: &mut egui::Ui, title: &str) {
-    ui.horizontal(|ui| {
-        let weak = ui.visuals().weak_text_color();
-        ui.add(
-            egui::Label::new(egui::RichText::new(title).small().color(weak))
-                .wrap_mode(egui::TextWrapMode::Wrap),
-        );
-    });
+    let theme = ColorTheme::current(ui.ctx());
+    ui.label(RichText::new(title).small().color(theme.text_muted));
 }
 
 pub fn card_ui(
@@ -105,15 +142,13 @@ pub fn card_ui(
     min_card: f32,
     content: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    let visuals = ui.visuals().clone();
+    let theme = ColorTheme::current(ui.ctx());
+
     egui::Frame::group(ui.style())
-        .fill(visuals.extreme_bg_color)
-        .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
-        .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_MD as i8))
-        .stroke(egui::Stroke::new(
-            notedeck::tokens::STROKE_THIN,
-            visuals.widgets.noninteractive.bg_stroke.color,
-        ))
+        .fill(theme.surface_secondary)
+        .corner_radius(egui::CornerRadius::same(tokens::RADIUS_MD as u8))
+        .inner_margin(egui::Margin::same(tokens::SPACING_LG as i8))
+        .stroke(egui::Stroke::new(tokens::STROKE_THIN, theme.border_default))
         .show(ui, |ui| {
             ui.set_min_width(min_card);
             ui.set_min_height(min_card * 0.5);
@@ -125,10 +160,9 @@ pub fn card_ui(
 }
 
 pub fn kinds_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
-    card_header_ui(ui, "Kinds");
-    ui.add_space(8.0);
+    card_header_ui(ui, "KINDS");
+    ui.add_space(tokens::SPACING_SM);
 
-    // top kind limit, don't show more then this
     let limit = 10;
 
     let window_total = match dashboard.period {
@@ -146,24 +180,21 @@ pub fn kinds_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     let bars = kinds_to_bars(&top);
 
     if bars.is_empty() && window_total == 0 && dashboard.last_error.is_none() {
-        // still show something (no loading screen)
-        ui.label(RichText::new("…").font(FontId::proportional(24.0)).weak());
+        let theme = ColorTheme::current(ui.ctx());
+        ui.label(
+            RichText::new("…")
+                .font(FontId::proportional(24.0))
+                .color(theme.text_muted),
+        );
     } else {
         horizontal_bar_chart(ui, None, &bars, BarChartStyle::default());
     }
-
-    footer_status_ui(
-        ui,
-        dashboard.running,
-        dashboard.last_error.as_deref(),
-        dashboard.last_snapshot,
-        dashboard.last_duration,
-    );
 }
 
 pub fn totals_ui(dashboard: &Dashboard, ui: &mut egui::Ui) {
-    card_header_ui(ui, "All notes");
-    ui.add_space(8.0);
+    let theme = ColorTheme::current(ui.ctx());
+    card_header_ui(ui, "TOTAL EVENTS");
+    ui.add_space(tokens::SPACING_SM);
 
     let count: u64 = match dashboard.period {
         Period::Daily => total_over(&dashboard.state.daily),
@@ -171,42 +202,39 @@ pub fn totals_ui(dashboard: &Dashboard, ui: &mut egui::Ui) {
         Period::Monthly => total_over(&dashboard.state.monthly),
     };
 
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(count.to_string())
-                .font(FontId::proportional(34.0))
-                .strong(),
-        );
-
-        ui.add_space(10.0);
-    });
+    ui.label(
+        RichText::new(count.to_string())
+            .font(FontId::proportional(36.0))
+            .color(theme.text_primary)
+            .strong(),
+    );
 }
 
-pub fn posts_per_period_ui(dashboard: &Dashboard, ui: &mut egui::Ui) {
+pub fn posts_per_period_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     card_header_ui(
         ui,
-        &format!("Kind 1 posts per {}", dashboard.period.label()),
+        &format!(
+            "KIND 1 POSTS PER {}",
+            dashboard.period.label().to_uppercase()
+        ),
     );
-    ui.add_space(8.0);
+    ui.add_space(tokens::SPACING_SM);
 
     let cache = dashboard.selected_cache();
     let bars = series_bars_for_kind(dashboard.period, cache, 1);
 
     if bars.is_empty() && dashboard.state.total.total == 0 && dashboard.last_error.is_none() {
-        ui.label(RichText::new("…").font(FontId::proportional(24.0)).weak());
+        let theme = ColorTheme::current(ui.ctx());
+        ui.label(
+            RichText::new("…")
+                .font(FontId::proportional(24.0))
+                .color(theme.text_muted),
+        );
     } else if bars.is_empty() {
         ui.label("No data");
     } else {
         horizontal_bar_chart(ui, None, &bars, BarChartStyle::default());
     }
-
-    footer_status_ui(
-        ui,
-        dashboard.running,
-        dashboard.last_error.as_deref(),
-        dashboard.last_snapshot,
-        dashboard.last_duration,
-    );
 }
 
 fn kinds_to_bars(top_kinds: &[(u64, u64)]) -> Vec<Bar> {
@@ -222,9 +250,6 @@ fn kinds_to_bars(top_kinds: &[(u64, u64)]) -> Vec<Bar> {
 }
 
 fn month_label(year: i32, month: u32) -> String {
-    // e.g. "Jan ’26" when year differs, otherwise just "Jan" would be
-    // ambiguous across years We'll always include the year suffix to
-    // keep it clear when the range crosses years.
     const NAMES: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -236,7 +261,6 @@ fn month_label(year: i32, month: u32) -> String {
 fn bucket_label(period: Period, start_ts: i64, end_ts: i64) -> String {
     use chrono::{Datelike, TimeZone, Utc};
 
-    // end-1 keeps labels stable at boundaries
     let default_label = "—";
     let Some(end_dt) = Utc.timestamp_opt(end_ts.saturating_sub(1), 0).single() else {
         return default_label.to_owned();
@@ -281,7 +305,7 @@ fn total_over(cache: &RollingCache) -> u64 {
 
 pub fn dashboard_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
     egui::Frame::new()
-        .inner_margin(egui::Margin::same(20))
+        .inner_margin(egui::Margin::same(tokens::SPACING_XL as i8))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 dashboard_ui_inner(dashboard, ui, ctx);
@@ -290,15 +314,15 @@ pub fn dashboard_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppC
 }
 
 fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
-    let min_card = 240.0;
-    let gap = 8.0;
+    let min_card = 260.0;
 
     dashboard_controls_ui(dashboard, ui);
+    ui.add_space(tokens::SPACING_LG);
 
     ui.with_layout(
         egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
         |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+            ui.spacing_mut().item_spacing = egui::vec2(tokens::SPACING_SM, tokens::SPACING_SM);
             let size = [min_card, min_card];
             ui.add_sized(size, |ui: &mut egui::Ui| {
                 card_ui(ui, min_card, |ui| totals_ui(dashboard, ui))
@@ -326,7 +350,6 @@ fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
 }
 
 fn client_series(cache: &RollingCache, client: &str) -> Vec<f32> {
-    // left=oldest, right=newest — unique pubkeys per bucket
     let n = cache.buckets.len();
     let mut out = Vec::with_capacity(n);
     for i in (0..n).rev() {
@@ -341,8 +364,8 @@ fn client_series(cache: &RollingCache, client: &str) -> Vec<f32> {
 }
 
 pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
-    card_header_ui(ui, "Clients (trend)");
-    ui.add_space(8.0);
+    card_header_ui(ui, "CLIENTS (TREND)");
+    ui.add_space(tokens::SPACING_SM);
 
     let limit = 10;
 
@@ -352,9 +375,14 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
         Period::Monthly => &dashboard.state.monthly,
     };
 
-    let top = top_clients_over(cache, limit); // your existing “top N” is fine as a selector
+    let top = top_clients_over(cache, limit);
     if top.is_empty() && dashboard.last_error.is_none() {
-        ui.label(RichText::new("…").font(FontId::proportional(24.0)).weak());
+        let theme = ColorTheme::current(ui.ctx());
+        ui.label(
+            RichText::new("…")
+                .font(FontId::proportional(24.0))
+                .color(theme.text_muted),
+        );
         return;
     }
     if top.is_empty() {
@@ -363,18 +391,17 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     }
 
     let spark_w = (ui.available_width() - 140.0).max(80.0);
-    let spark_h = 18.0;
 
     for (row_i, cs) in top.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.label(RichText::new(&cs.name).small());
-            ui.add_space(6.0);
+            ui.add_space(tokens::SPACING_SM);
 
             let series = client_series(cache, &cs.name);
 
             let resp = crate::sparkline::sparkline(
                 ui,
-                egui::vec2(spark_w, spark_h),
+                egui::vec2(spark_w, tokens::SPARKLINE_HEIGHT),
                 &series,
                 palette(row_i),
                 crate::sparkline::SparkStyle::default(),
@@ -396,16 +423,8 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
                 );
             });
         });
-        ui.add_space(4.0);
+        ui.add_space(tokens::SPACING_XS);
     }
-
-    footer_status_ui(
-        ui,
-        dashboard.running,
-        dashboard.last_error.as_deref(),
-        dashboard.last_snapshot,
-        dashboard.last_duration,
-    );
 }
 
 fn stacked_clients_over_time(
@@ -415,7 +434,6 @@ fn stacked_clients_over_time(
     let n = cache.buckets.len();
     let mut out = Vec::with_capacity(n);
 
-    // oldest -> newest
     for i in (0..n).rev() {
         let mut segs = Vec::with_capacity(top.len());
         for (idx, cs) in top.iter().enumerate() {
@@ -428,16 +446,21 @@ fn stacked_clients_over_time(
 }
 
 pub fn clients_stack_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
-    card_header_ui(ui, "Clients (stacked over time)");
-    ui.add_space(8.0);
+    card_header_ui(ui, "CLIENTS (STACKED)");
+    ui.add_space(tokens::SPACING_SM);
 
-    let limit = 6; // stacked charts get noisy fast; 5–7 is usually sweet spot
+    let limit = 6;
 
     let cache = dashboard.selected_cache();
     let top = top_clients_over(cache, limit);
 
     if top.is_empty() && dashboard.last_error.is_none() {
-        ui.label(RichText::new("…").font(FontId::proportional(24.0)).weak());
+        let theme = ColorTheme::current(ui.ctx());
+        ui.label(
+            RichText::new("…")
+                .font(FontId::proportional(24.0))
+                .color(theme.text_muted),
+        );
     } else if top.is_empty() {
         ui.label("No client tags");
     } else {
@@ -448,16 +471,15 @@ pub fn clients_stack_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
         let resp = crate::chart::stacked_bars(ui, egui::vec2(w, h), &buckets);
 
         // legend
-        ui.add_space(6.0);
+        ui.add_space(tokens::SPACING_SM);
         ui.horizontal_wrapped(|ui| {
             for (i, cs) in top.iter().enumerate() {
                 ui.label(RichText::new("■").color(palette(i)));
                 ui.label(RichText::new(&cs.name).small());
-                ui.add_space(10.0);
+                ui.add_space(tokens::SPACING_MD);
             }
         });
 
-        // you can also attach hover-to-bucket tooltip later if you want (based on pointer x -> bucket index)
         let _ = resp;
     }
 }
@@ -497,7 +519,6 @@ fn top_clients_over(cache: &RollingCache, limit: usize) -> Vec<ClientStats> {
         })
         .collect();
 
-    // sort desc by unique pubkeys; tie-break by events then name
     out.sort_by(|a, b| {
         b.unique_pubkeys
             .cmp(&a.unique_pubkeys)
@@ -524,15 +545,20 @@ fn new_contact_list_series(cache: &RollingCache, client: &str) -> Vec<f32> {
 }
 
 pub fn new_contact_lists_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
-    card_header_ui(ui, "New Contact Lists by Client");
-    ui.add_space(8.0);
+    card_header_ui(ui, "NEW CONTACT LISTS BY CLIENT");
+    ui.add_space(tokens::SPACING_SM);
 
     let limit = 10;
     let cache = dashboard.selected_cache();
     let top = top_new_contact_list_clients_over(cache, limit);
 
     if top.is_empty() && dashboard.last_error.is_none() {
-        ui.label(RichText::new("...").font(FontId::proportional(24.0)).weak());
+        let theme = ColorTheme::current(ui.ctx());
+        ui.label(
+            RichText::new("…")
+                .font(FontId::proportional(24.0))
+                .color(theme.text_muted),
+        );
         return;
     }
     if top.is_empty() {
@@ -541,17 +567,16 @@ pub fn new_contact_lists_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     }
 
     let spark_w = (ui.available_width() - 140.0).max(80.0);
-    let spark_h = 18.0;
 
     for (row_i, (client, total)) in top.iter().enumerate() {
         ui.horizontal(|ui| {
             ui.label(RichText::new(client).small());
-            ui.add_space(6.0);
+            ui.add_space(tokens::SPACING_SM);
 
             let series = new_contact_list_series(cache, client);
             let resp = crate::sparkline::sparkline(
                 ui,
-                egui::vec2(spark_w, spark_h),
+                egui::vec2(spark_w, tokens::SPARKLINE_HEIGHT),
                 &series,
                 palette(row_i),
                 crate::sparkline::SparkStyle::default(),
@@ -569,31 +594,28 @@ pub fn new_contact_lists_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
                 ui.label(RichText::new(total.to_string()).small().strong());
             });
         });
-        ui.add_space(4.0);
+        ui.add_space(tokens::SPACING_XS);
     }
-
-    footer_status_ui(
-        ui,
-        dashboard.running,
-        dashboard.last_error.as_deref(),
-        dashboard.last_snapshot,
-        dashboard.last_duration,
-    );
 }
 
 pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
     let cache = dashboard.selected_cache();
     let n = cache.buckets.len();
     let unit = dashboard.period.label();
-    let header = format!("Top Posters ({n} {unit}s)");
+    let header = format!("TOP POSTERS ({n} {unit}s)");
     card_header_ui(ui, &header);
-    ui.add_space(8.0);
+    ui.add_space(tokens::SPACING_SM);
 
     let limit = 10;
     let top = top_kind1_authors_over(cache, limit);
 
     if top.is_empty() && dashboard.last_error.is_none() {
-        ui.label(RichText::new("...").font(FontId::proportional(24.0)).weak());
+        let theme = ColorTheme::current(ui.ctx());
+        ui.label(
+            RichText::new("…")
+                .font(FontId::proportional(24.0))
+                .color(theme.text_muted),
+        );
         return;
     }
 
@@ -617,7 +639,7 @@ pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
                 &mut ProfilePic::new(ctx.img_cache, ctx.media_jobs.sender(), pfp_url)
                     .size(pfp_size),
             );
-            ui.add_space(6.0);
+            ui.add_space(tokens::SPACING_SM);
 
             let display = name.name();
             let truncated = if display.len() > 16 {
@@ -632,14 +654,6 @@ pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
                 ui.label(RichText::new(count.to_string()).small().strong());
             });
         });
-        ui.add_space(4.0);
+        ui.add_space(tokens::SPACING_XS);
     }
-
-    footer_status_ui(
-        ui,
-        dashboard.running,
-        dashboard.last_error.as_deref(),
-        dashboard.last_snapshot,
-        dashboard.last_duration,
-    );
 }

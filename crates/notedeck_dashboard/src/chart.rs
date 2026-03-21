@@ -1,19 +1,7 @@
 use egui::{Align2, Color32, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 pub fn palette(i: usize) -> Color32 {
-    const P: [Color32; 10] = [
-        Color32::from_rgb(231, 76, 60),
-        Color32::from_rgb(52, 152, 219),
-        Color32::from_rgb(46, 204, 113),
-        Color32::from_rgb(155, 89, 182),
-        Color32::from_rgb(241, 196, 15),
-        Color32::from_rgb(230, 126, 34),
-        Color32::from_rgb(26, 188, 156),
-        Color32::from_rgb(149, 165, 166),
-        Color32::from_rgb(52, 73, 94),
-        Color32::from_rgb(233, 150, 122),
-    ];
-    P[i % P.len()]
+    notedeck::tokens::PALETTE[i % notedeck::tokens::PALETTE.len()]
 }
 
 // ----------------------
@@ -39,9 +27,9 @@ pub struct BarChartStyle {
 impl Default for BarChartStyle {
     fn default() -> Self {
         Self {
-            row_height: 18.0,
-            gap: 6.0,
-            rounding: 3.0,
+            row_height: notedeck::tokens::CHART_ROW_HEIGHT,
+            gap: notedeck::tokens::CHART_ROW_GAP,
+            rounding: notedeck::tokens::RADIUS_SM,
             show_values: true,
             value_precision: 0,
         }
@@ -88,7 +76,7 @@ pub fn horizontal_bar_chart(
                 .fold(0.0, f32::max)
         })
         .ceil()
-        + 10.0;
+        + notedeck::tokens::SPACING_MD;
 
     let avail_w = ui.available_width().max(50.0);
     let bar_col_w = (avail_w - label_col_w).max(50.0);
@@ -100,7 +88,11 @@ pub fn horizontal_bar_chart(
     let painter = ui.painter_at(outer_rect);
 
     // Optional: faint background
-    painter.rect_filled(outer_rect, 6.0, ui.visuals().faint_bg_color);
+    painter.rect_filled(
+        outer_rect,
+        notedeck::tokens::RADIUS_MD,
+        ui.visuals().faint_bg_color,
+    );
 
     let mut y = outer_rect.top();
 
@@ -116,7 +108,10 @@ pub fn horizontal_bar_chart(
         );
 
         // Label (left)
-        let label_pos = Pos2::new(row_rect.left() + 6.0, row_rect.center().y);
+        let label_pos = Pos2::new(
+            row_rect.left() + notedeck::tokens::SPACING_SM,
+            row_rect.center().y,
+        );
         painter.text(
             label_pos,
             Align2::LEFT_CENTER,
@@ -167,7 +162,10 @@ pub fn horizontal_bar_chart(
                 format!("{:.*}", style.value_precision, b.value)
             };
             painter.text(
-                Pos2::new(track_rect.right() - 6.0, row_rect.center().y),
+                Pos2::new(
+                    track_rect.right() - notedeck::tokens::SPACING_SM,
+                    row_rect.center().y,
+                ),
                 Align2::RIGHT_CENTER,
                 txt,
                 FontId::proportional(13.0),
@@ -196,7 +194,11 @@ pub fn stacked_bars(
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect);
 
-    painter.rect_filled(rect, 6.0, ui.visuals().faint_bg_color);
+    painter.rect_filled(
+        rect,
+        notedeck::tokens::RADIUS_MD,
+        ui.visuals().faint_bg_color,
+    );
 
     if buckets.is_empty() {
         return resp;
