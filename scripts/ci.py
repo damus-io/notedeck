@@ -338,10 +338,10 @@ def run_job(job_id, job_def, root, context, dry_run, verbose):
     print(f"{'='*60}")
 
     # Platform check
-    cur = current_os()
-    if not runs_on_matches(runs_on, cur):
-        print(f"  {yellow('SKIP')} (requires {runs_on}, running on {cur})")
-        return True
+    #cur = current_os()
+    #If not runs_on_matches(runs_on, cur):
+    #    print(f"  {yellow('SKIP')} (requires {runs_on}, running on {cur})")
+    #    return True
 
     steps = extract_run_steps(job_def, context)
     if not steps:
