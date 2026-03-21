@@ -2,6 +2,7 @@ pub mod nostr;
 pub mod platform;
 
 use crate::{DataPath, DataPathType};
+use nostrdb::{Ndb, Subscription};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -54,14 +55,23 @@ pub struct Updater {
     sent_relay_filter: bool,
     release_pubkey: [u8; 32],
     channel: nostr::ReleaseChannel,
+    release_sub: Subscription,
 }
 
 impl Updater {
     /// Create a new updater. Begins in `Idle` state.
-    pub fn new(data_path: &DataPath, ctx: &egui::Context, release_pubkey: [u8; 32]) -> Self {
+    pub fn new(
+        data_path: &DataPath,
+        ndb: &Ndb,
+        ctx: &egui::Context,
+        release_pubkey: [u8; 32],
+    ) -> Self {
         let (tx, rx) = mpsc::channel();
         let staging_dir = data_path.path(DataPathType::Update);
         let _ = std::fs::create_dir_all(&staging_dir);
+        let channel = nostr::ReleaseChannel::default();
+        let filters = nostr::release_filter(&release_pubkey, channel);
+        let release_sub = ndb.subscribe(&filters).expect("release subscription");
 
         Self {
             state: UpdateState::Idle,
@@ -71,7 +81,8 @@ impl Updater {
             ctx: ctx.clone(),
             sent_relay_filter: false,
             release_pubkey,
-            channel: nostr::ReleaseChannel::default(),
+            channel,
+            release_sub,
         }
     }
 
@@ -83,6 +94,11 @@ impl Updater {
     /// The current release channel
     pub fn channel(&self) -> nostr::ReleaseChannel {
         self.channel
+    }
+
+    /// The ndb subscription for release events
+    pub fn release_sub(&self) -> Subscription {
+        self.release_sub
     }
 
     /// Poll for state changes. Call this every frame from `eframe::App::update()`.
@@ -151,10 +167,12 @@ impl Updater {
         }
     }
 
-    /// Override the release signing pubkey (for tests)
+    /// Override the release signing pubkey and resubscribe (for tests)
     #[cfg(feature = "snapshot-testing")]
-    pub fn set_release_pubkey(&mut self, pubkey: [u8; 32]) {
+    pub fn set_release_pubkey(&mut self, ndb: &Ndb, pubkey: [u8; 32]) {
         self.release_pubkey = pubkey;
+        let filters = nostr::release_filter(&pubkey, self.channel);
+        self.release_sub = ndb.subscribe(&filters).expect("release subscription");
     }
 
     /// Force the updater into ReadyToInstall state (for snapshot tests)

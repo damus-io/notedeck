@@ -248,7 +248,7 @@ fn snapshot_update_bar() {
     };
 
     chrome.set_release_pubkey(
-        &mut notedeck_ctx.notedeck.app_context(&ctx).ndb,
+        &notedeck_ctx.notedeck.app_context(&ctx).ndb,
         test_helpers::TEST_PUBKEY,
     );
 

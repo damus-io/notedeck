@@ -57,9 +57,6 @@ pub struct Chrome {
 
     #[cfg(feature = "auto-update")]
     updater: notedeck::updater::Updater,
-
-    #[cfg(feature = "auto-update")]
-    release_sub: nostrdb::Subscription,
 }
 
 #[derive(Clone)]
@@ -195,21 +192,6 @@ impl Chrome {
             .path(notedeck::DataPathType::Cache)
             .join("wasm_apps");
 
-        #[cfg(feature = "auto-update")]
-        let release_pubkey = notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY;
-        #[cfg(feature = "auto-update")]
-        let release_sub = {
-            let filters = notedeck::updater::nostr::release_filter(
-                &release_pubkey,
-                notedeck::updater::nostr::ReleaseChannel::default(),
-            );
-            notedeck_ref
-                .app_ctx
-                .ndb
-                .subscribe(&filters)
-                .expect("release subscription")
-        };
-
         let mut chrome = Chrome {
             active: 0,
             options: ChromeOptions::default(),
@@ -221,11 +203,10 @@ impl Chrome {
             #[cfg(feature = "auto-update")]
             updater: notedeck::updater::Updater::new(
                 notedeck_ref.app_ctx.path,
+                &notedeck_ref.app_ctx.ndb,
                 &cc.egui_ctx,
-                release_pubkey,
+                notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
             ),
-            #[cfg(feature = "auto-update")]
-            release_sub,
         };
 
         if !app_args.iter().any(|arg| arg == "--no-columns-app") {
@@ -300,15 +281,6 @@ impl Chrome {
         egui_ctx: &egui::Context,
         args: &[String],
     ) -> Self {
-        let release_pubkey = notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY;
-        let release_sub = {
-            let filters = notedeck::updater::nostr::release_filter(
-                &release_pubkey,
-                notedeck::updater::nostr::ReleaseChannel::default(),
-            );
-            ctx.ndb.subscribe(&filters).expect("release subscription")
-        };
-
         let damus = Damus::new(ctx, args);
         let mut chrome = Chrome {
             active: 0,
@@ -318,8 +290,12 @@ impl Chrome {
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
-            updater: notedeck::updater::Updater::new(ctx.path, egui_ctx, release_pubkey),
-            release_sub,
+            updater: notedeck::updater::Updater::new(
+                ctx.path,
+                &ctx.ndb,
+                egui_ctx,
+                notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
+            ),
         };
         chrome.add_app(NotedeckApp::Columns(Box::new(damus)));
         chrome.set_active(0);
@@ -328,10 +304,8 @@ impl Chrome {
 
     /// Override the release signing pubkey and resubscribe to ndb.
     #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
-    pub fn set_release_pubkey(&mut self, ndb: &mut nostrdb::Ndb, pubkey: [u8; 32]) {
-        self.updater.set_release_pubkey(pubkey);
-        let filters = notedeck::updater::nostr::release_filter(&pubkey, self.updater.channel());
-        self.release_sub = ndb.subscribe(&filters).expect("release subscription");
+    pub fn set_release_pubkey(&mut self, ndb: &nostrdb::Ndb, pubkey: [u8; 32]) {
+        self.updater.set_release_pubkey(ndb, pubkey);
     }
 
     /// Force the updater into ReadyToInstall state (for snapshot tests).
@@ -645,11 +619,7 @@ impl Chrome {
 }
 
 #[cfg(feature = "auto-update")]
-fn poll_updater(
-    updater: &mut notedeck::updater::Updater,
-    release_sub: nostrdb::Subscription,
-    ctx: &mut notedeck::AppContext,
-) {
+fn poll_updater(updater: &mut notedeck::updater::Updater, ctx: &mut notedeck::AppContext) {
     if updater.needs_relay_sub() {
         let release_pubkey = *updater.release_pubkey();
         let channel = updater.channel();
@@ -659,6 +629,7 @@ fn poll_updater(
     }
 
     if updater.wants_release() {
+        let release_sub = updater.release_sub();
         let nks = ctx.ndb.poll_for_notes(release_sub, 10);
         if !nks.is_empty() {
             let release_pubkey = *updater.release_pubkey();
@@ -733,7 +704,7 @@ fn update_sidebar_item_ui(
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, _egui_ctx: &egui::Context) {
         #[cfg(feature = "auto-update")]
-        poll_updater(&mut self.updater, self.release_sub, ctx);
+        poll_updater(&mut self.updater, ctx);
 
         // Update opened apps every frame so background processing
         // (relay pools, subscriptions, etc.) stays alive.
