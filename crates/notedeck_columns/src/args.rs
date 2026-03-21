@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use crate::nfilter::filter_from_querystring;
 use crate::timeline::kind::FilterVec;
 use crate::timeline::TimelineKind;
 use enostr::{Filter, Pubkey};
@@ -65,6 +66,8 @@ impl ColumnsArgs {
                 };
 
                 if let Ok(filter) = Filter::from_json(filter) {
+                    res.columns.push(ArgColumn::Generic(vec![filter]));
+                } else if let Some(filter) = filter_from_querystring(filter) {
                     res.columns.push(ArgColumn::Generic(vec![filter]));
                 } else {
                     error!("failed to parse filter '{}'", filter);
