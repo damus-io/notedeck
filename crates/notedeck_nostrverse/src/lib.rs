@@ -495,18 +495,6 @@ impl NostrverseApp {
             }
         }
 
-        // Transfer tilemap handles before overwriting state
-        let old_tilemap_handles = self
-            .state
-            .tilemap()
-            .map(|tm| (tm.scene_object_id, tm.model_handle));
-        if let (Some(new_tm), Some((scene_id, model_handle))) =
-            (&mut data.info.tilemap, old_tilemap_handles)
-        {
-            new_tm.scene_object_id = scene_id;
-            new_tm.model_handle = model_handle;
-        }
-
         // Remove orphaned scene objects (old objects not in the new set)
         if let Some(renderer) = &self.renderer {
             let mut r = renderer.renderer.lock().unwrap();
@@ -517,9 +505,11 @@ impl NostrverseApp {
                     r.remove_object(scene_id);
                 }
             }
-            // Remove old tilemap scene object if being replaced
-            if let Some((Some(scene_id), _)) = old_tilemap_handles {
-                r.remove_object(scene_id);
+            // Remove old tilemap scene object — will be rebuilt from new data
+            if let Some(tm) = self.state.tilemap() {
+                if let Some(scene_id) = tm.scene_object_id {
+                    r.remove_object(scene_id);
+                }
             }
         }
 
