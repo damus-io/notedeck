@@ -1292,124 +1292,47 @@ impl<'a> DaveUi<'a> {
 
     fn inputbox(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let i18n = &mut *app_ctx.i18n;
-        // Text input row first — in the inherited bottom_up layout this sits at the bottom.
-        // Inner layout overrides (horizontal + right_to_left) keep the text row correct.
-        let line_count = self.input.lines().count().max(1).clamp(1, 8);
-        let line_height = 20.0;
-        let base_height = notedeck::tokens::BUTTON_LG;
-        let input_height = base_height + (line_count as f32 * line_height);
-        let response = ui
-            .allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
-                ui.horizontal(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
-                        let mut dave_response = DaveResponse::none();
+        let show_stop = self.flags.contains(DaveUiFlags::IsWorking)
+            && !self.flags.contains(DaveUiFlags::IsRemote);
+        let show_esc_hint = show_stop && self.flags.contains(DaveUiFlags::InterruptPending);
 
-                        // Always show Ask button (messages queue while working)
-                        if ui
-                            .add(
-                                egui::Button::new(tr!(
-                                    i18n,
-                                    "Ask",
-                                    "Button to send message to Dave AI assistant"
-                                ))
-                                .min_size(egui::vec2(60.0, notedeck::tokens::BUTTON_LG)),
-                            )
-                            .clicked()
-                        {
-                            dave_response = DaveResponse::send();
-                        }
+        let layout = InputboxLayout::new(self.input, i18n)
+            .show_stop(show_stop)
+            .show_esc_hint(show_esc_hint)
+            .id(egui::Id::new(("dave_input", self.session_id)));
 
-                        // Show Stop button alongside Ask for local working sessions
-                        if self.flags.contains(DaveUiFlags::IsWorking)
-                            && !self.flags.contains(DaveUiFlags::IsRemote)
-                        {
-                            if ui
-                                .add(
-                                    egui::Button::new(tr!(
-                                        i18n,
-                                        "Stop",
-                                        "Button to interrupt/stop the AI operation"
-                                    ))
-                                    .min_size(egui::vec2(60.0, notedeck::tokens::BUTTON_LG)),
-                                )
-                                .clicked()
-                            {
-                                dave_response = DaveResponse::new(DaveAction::Interrupt);
-                            }
+        let result = layout.show(ui);
 
-                            // Show "Press Esc again" indicator when interrupt is pending
-                            if self.flags.contains(DaveUiFlags::InterruptPending) {
-                                ui.label(
-                                    egui::RichText::new("Press Esc again to stop")
-                                        .color(ui.visuals().warn_fg_color),
-                                );
-                            }
-                        }
+        if let Some(r) = &result.text_response {
+            dave_input_context(
+                ui,
+                r,
+                app_ctx.clipboard,
+                self.input,
+                self.pending_images.as_deref_mut(),
+            );
 
-                        let r = egui::ScrollArea::vertical()
-                            .max_height(ui.available_height())
-                            .show(ui, |ui| {
-                                ui.add(
-                                    egui::TextEdit::multiline(self.input)
-                                        .id_source(("dave_input", self.session_id))
-                                        .desired_width(f32::INFINITY)
-                                        .return_key(KeyboardShortcut::new(
-                                            Modifiers {
-                                                shift: true,
-                                                ..Default::default()
-                                            },
-                                            Key::Enter,
-                                        ))
-                                        .hint_text(
-                                            egui::RichText::new(tr!(
-                                                i18n,
-                                                "Ask dave anything...",
-                                                "Placeholder text for Dave AI input field"
-                                            ))
-                                            .weak(),
-                                        )
-                                        .frame(false),
-                                )
-                            })
-                            .inner;
-                        dave_input_context(
-                            ui,
-                            &r,
-                            app_ctx.clipboard,
-                            self.input,
-                            self.pending_images.as_deref_mut(),
-                        );
+            // Request focus if flagged (e.g., after spawning a new agent or entering tentative state).
+            // Skip on mobile to avoid popping up the virtual keyboard on every session switch.
+            if *self.focus_requested {
+                if !notedeck::ui::is_compiled_as_mobile() {
+                    r.request_focus();
+                }
+                *self.focus_requested = false;
+            }
 
-                        // Request focus if flagged (e.g., after spawning a new agent or entering tentative state).
-                        // Skip on mobile to avoid popping up the virtual keyboard on every session switch.
-                        if *self.focus_requested {
-                            if !notedeck::ui::is_compiled_as_mobile() {
-                                r.request_focus();
-                            }
-                            *self.focus_requested = false;
-                        }
+            // Unfocus text input when there's a pending permission request
+            // UNLESS we're in tentative state (user needs to type message)
+            let in_tentative_state = self.permission_message_state != PermissionMessageState::None;
+            if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
+                r.surrender_focus();
+            }
 
-                        // Unfocus text input when there's a pending permission request
-                        // UNLESS we're in tentative state (user needs to type message)
-                        let in_tentative_state =
-                            self.permission_message_state != PermissionMessageState::None;
-                        if self.flags.contains(DaveUiFlags::HasPendingPerm) && !in_tentative_state {
-                            r.surrender_focus();
-                        }
-
-                        if r.has_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
-                        {
-                            DaveResponse::send()
-                        } else {
-                            dave_response
-                        }
-                    })
-                    .inner
-                })
-                .inner
-            })
-            .inner;
+            if r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift)
+            {
+                return DaveResponse::send();
+            }
+        }
 
         // Thumbnail strip second — in bottom_up this renders ABOVE the text row.
         // allocate_ui_with_layout pre-positions the rect at the bottom_up cursor
@@ -1430,7 +1353,14 @@ impl<'a> DaveUi<'a> {
             }
         }
 
-        response
+        if result.ask_clicked {
+            return DaveResponse::send();
+        }
+        if result.stop_clicked {
+            return DaveResponse::new(DaveAction::Interrupt);
+        }
+
+        DaveResponse::none()
     }
 
     fn user_chat(&self, msg: &crate::messages::UserMessage, is_queued: bool, ui: &mut egui::Ui) {
@@ -1492,6 +1422,135 @@ impl<'a> DaveUi<'a> {
 fn append_clipboard_text(clipboard: &mut egui_winit::clipboard::Clipboard, input: &mut String) {
     if let Some(text) = clipboard.get() {
         input.push_str(&text);
+    }
+}
+
+/// Result of rendering an InputboxLayout.
+pub struct InputboxResult {
+    pub ask_clicked: bool,
+    pub stop_clicked: bool,
+    pub text_response: Option<egui::Response>,
+}
+
+/// Extracted inputbox layout used by both DaveUi and tests.
+///
+/// Renders the Ask/Stop buttons and text input in a right-to-left layout.
+pub struct InputboxLayout<'a> {
+    pub input: &'a mut String,
+    pub ask_label: String,
+    pub stop_label: String,
+    pub hint_text: String,
+    pub show_stop: bool,
+    pub show_esc_hint: bool,
+    pub id: Option<egui::Id>,
+}
+
+impl<'a> InputboxLayout<'a> {
+    pub fn new(input: &'a mut String, i18n: &mut notedeck::Localization) -> Self {
+        Self {
+            input,
+            ask_label: notedeck::tr!(i18n, "Ask", "Button to send message to Dave AI assistant"),
+            stop_label: notedeck::tr!(i18n, "Stop", "Button to interrupt/stop the AI operation"),
+            hint_text: notedeck::tr!(
+                i18n,
+                "Ask dave anything...",
+                "Placeholder text for Dave AI input field"
+            ),
+            show_stop: false,
+            show_esc_hint: false,
+            id: None,
+        }
+    }
+
+    pub fn new_default(input: &'a mut String) -> Self {
+        Self {
+            input,
+            ask_label: "Ask".to_string(),
+            stop_label: "Stop".to_string(),
+            hint_text: "Ask dave anything...".to_string(),
+            show_stop: false,
+            show_esc_hint: false,
+            id: None,
+        }
+    }
+
+    pub fn show_stop(mut self, show: bool) -> Self {
+        self.show_stop = show;
+        self
+    }
+
+    pub fn show_esc_hint(mut self, show: bool) -> Self {
+        self.show_esc_hint = show;
+        self
+    }
+
+    pub fn id(mut self, id: egui::Id) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    pub fn show(self, ui: &mut egui::Ui) -> InputboxResult {
+        let line_count = self.input.lines().count().max(1).clamp(1, 8);
+        let line_height = 20.0;
+        let base_height = notedeck::tokens::BUTTON_LG;
+        let input_height = base_height + (line_count as f32 * line_height);
+        let button_size = egui::vec2(60.0, notedeck::tokens::BUTTON_LG);
+
+        ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                    let ask_clicked = ui
+                        .add(egui::Button::new(&self.ask_label).min_size(button_size))
+                        .clicked();
+
+                    let mut stop_clicked = false;
+                    if self.show_stop {
+                        stop_clicked = ui
+                            .add(egui::Button::new(&self.stop_label).min_size(button_size))
+                            .clicked();
+
+                        if self.show_esc_hint {
+                            ui.label(
+                                egui::RichText::new("Press Esc again to stop")
+                                    .color(ui.visuals().warn_fg_color),
+                            );
+                        }
+                    }
+
+                    let text_response = egui::ScrollArea::vertical()
+                        .max_height(ui.available_height())
+                        .show(ui, |ui| {
+                            let mut edit = egui::TextEdit::multiline(self.input)
+                                .desired_width(f32::INFINITY)
+                                .return_key(KeyboardShortcut::new(
+                                    Modifiers {
+                                        shift: true,
+                                        ..Default::default()
+                                    },
+                                    Key::Enter,
+                                ))
+                                .hint_text(egui::RichText::new(&self.hint_text).weak())
+                                .frame(false);
+
+                            if let Some(id) = self.id {
+                                edit = edit.id_source(id);
+                            }
+
+                            ui.add(edit)
+                        })
+                        .inner;
+
+                    InputboxResult {
+                        ask_clicked,
+                        stop_clicked,
+                        text_response: Some(text_response),
+                    }
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
     }
 }
 
