@@ -2,8 +2,14 @@
 //!
 //! Delegates generic device management, stepping, and UI helpers to
 //! `notedeck_testing` and layers messages-specific functionality on top.
+//!
+//! Each test file is a separate crate, so not every crate uses every
+//! function — dead_code warnings are expected and suppressed here.
+
+#![allow(dead_code)]
 
 pub mod fixtures;
+pub mod relay;
 pub mod ui;
 
 use std::collections::BTreeSet;
@@ -19,11 +25,14 @@ use notedeck_messages::{
 use tempfile::TempDir;
 
 // Re-export everything from the shared harness that tests use directly.
+// Not every test crate uses every re-export, but they're all used across the suite.
 pub use notedeck_testing::cluster::AccountCluster;
 pub use notedeck_testing::device::DeviceHarness;
+#[allow(unused_imports)]
 pub use notedeck_testing::fixtures::{
     add_account_to_device, publish_note_via_device, select_account_on_device,
 };
+#[allow(unused_imports)]
 pub use notedeck_testing::stepping::{
     step_clusters, step_device_frames, step_device_group, step_devices, warm_up_clusters,
 };

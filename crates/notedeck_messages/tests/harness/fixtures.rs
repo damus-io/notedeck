@@ -18,6 +18,8 @@ use notedeck_messages::nip17::{
 };
 
 // Re-export general fixtures from the shared harness.
+// Not every test crate uses every re-export, but they're all used across the suite.
+#[allow(unused_imports)]
 pub use notedeck_testing::fixtures::{
     ndb_path, nostr_pubkey, open_ndb, seed_cluster_known_profiles, seed_local_notes_in_data_dir,
     seed_local_profile_metadata, wait_for_import_count,
