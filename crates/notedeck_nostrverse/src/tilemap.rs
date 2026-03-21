@@ -3,7 +3,9 @@
 use crate::room_state::TilemapData;
 use egui_wgpu::wgpu;
 use glam::Vec3;
+use poll_promise::Promise;
 use renderbud::{Aabb, MaterialUniform, Mesh, ModelData, ModelDraw, Vertex};
+use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
 /// Size of each tile in the atlas, in pixels.
@@ -189,9 +191,18 @@ fn fill_tile(rgba: &mut [u8], atlas_w: u32, y_start: u32, name: &str, tile_idx: 
     }
 }
 
+/// Returns true if a tileset entry is a remote URL.
+fn is_tile_url(name: &str) -> bool {
+    name.starts_with("http://") || name.starts_with("https://")
+}
+
 /// Build the atlas RGBA texture data.
 /// Atlas is a 1-tile-wide vertical strip (TILE_PX x (TILE_PX * N)).
-fn build_atlas(tileset: &[String]) -> (u32, u32, Vec<u8>) {
+/// For URL-based tileset entries, pre-loaded image data from `tile_images` is used.
+fn build_atlas(
+    tileset: &[String],
+    tile_images: &std::collections::HashMap<String, Vec<u8>>,
+) -> (u32, u32, Vec<u8>) {
     let n = tileset.len().max(1) as u32;
     let atlas_w = TILE_PX;
     let atlas_h = TILE_PX * n;
@@ -199,10 +210,50 @@ fn build_atlas(tileset: &[String]) -> (u32, u32, Vec<u8>) {
 
     for (i, name) in tileset.iter().enumerate() {
         let y_start = i as u32 * TILE_PX;
-        fill_tile(&mut rgba, atlas_w, y_start, name, i as u32);
+        if is_tile_url(name) {
+            if let Some(pixels) = tile_images.get(name) {
+                blit_tile_image(&mut rgba, atlas_w, y_start, pixels);
+            } else {
+                // Placeholder: magenta/black checkerboard while downloading
+                fill_placeholder(&mut rgba, atlas_w, y_start);
+            }
+        } else {
+            fill_tile(&mut rgba, atlas_w, y_start, name, i as u32);
+        }
     }
 
     (atlas_w, atlas_h, rgba)
+}
+
+/// Blit pre-loaded RGBA image data into the atlas at the given row.
+/// Expects exactly TILE_PX * TILE_PX * 4 bytes.
+fn blit_tile_image(rgba: &mut [u8], atlas_w: u32, y_start: u32, pixels: &[u8]) {
+    let expected = (TILE_PX * TILE_PX * 4) as usize;
+    if pixels.len() != expected {
+        fill_placeholder(rgba, atlas_w, y_start);
+        return;
+    }
+    for y in 0..TILE_PX {
+        let dst_off = ((y_start + y) * atlas_w * 4) as usize;
+        let src_off = (y * TILE_PX * 4) as usize;
+        rgba[dst_off..dst_off + (TILE_PX * 4) as usize]
+            .copy_from_slice(&pixels[src_off..src_off + (TILE_PX * 4) as usize]);
+    }
+}
+
+/// Fill a tile slot with a magenta/black checkerboard placeholder.
+fn fill_placeholder(rgba: &mut [u8], atlas_w: u32, y_start: u32) {
+    for y in y_start..y_start + TILE_PX {
+        for x in 0..TILE_PX {
+            let off = ((y * atlas_w + x) * 4) as usize;
+            let checker = ((x / 4) + (y / 4)) % 2 == 0;
+            if checker {
+                rgba[off..off + 4].copy_from_slice(&[255, 0, 255, 255]);
+            } else {
+                rgba[off..off + 4].copy_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+    }
 }
 
 /// Build a tilemap model (mesh + atlas material) and register it in the renderer.
@@ -218,7 +269,7 @@ pub fn build_tilemap_model(
     let n_tileset = tm.tileset.len().max(1) as f32;
 
     // Build atlas texture
-    let (atlas_w, atlas_h, atlas_rgba) = build_atlas(&tm.tileset);
+    let (atlas_w, atlas_h, atlas_rgba) = build_atlas(&tm.tileset, &tm.tile_images);
     let atlas_view = renderbud::upload_rgba8_texture_2d(
         device,
         queue,
@@ -345,4 +396,107 @@ pub fn build_tilemap_model(
     };
 
     renderer.insert_model(model_data)
+}
+
+/// Status of a tile image fetch.
+enum TileFetchStatus {
+    /// HTTP download in progress.
+    Downloading(Promise<Result<Vec<u8>, String>>),
+    /// Download complete, RGBA pixels ready.
+    Ready,
+    /// Download or decode failed.
+    Failed,
+}
+
+/// Manages async downloading and decoding of tile images from URLs.
+pub struct TileImageCache {
+    fetches: HashMap<String, TileFetchStatus>,
+}
+
+impl TileImageCache {
+    pub fn new() -> Self {
+        Self {
+            fetches: HashMap::new(),
+        }
+    }
+
+    /// Request tile images for any URL entries in the tileset.
+    /// Starts async downloads for URLs not yet requested.
+    pub fn request_tiles(&mut self, tileset: &[String]) {
+        for name in tileset {
+            if !is_tile_url(name) || self.fetches.contains_key(name.as_str()) {
+                continue;
+            }
+
+            tracing::info!("Downloading tile image: {}", name);
+            let (sender, promise) = Promise::new();
+            let request = ehttp::Request::get(name);
+            let url_owned = name.clone();
+
+            ehttp::fetch(request, move |response: Result<ehttp::Response, String>| {
+                let result = (|| -> Result<Vec<u8>, String> {
+                    let resp = response.map_err(|e| format!("HTTP error: {e}"))?;
+                    if !resp.ok {
+                        return Err(format!("HTTP {}: {}", resp.status, resp.status_text));
+                    }
+                    if resp.bytes.is_empty() {
+                        return Err("Empty response body".to_string());
+                    }
+                    // Decode image and resize to TILE_PX × TILE_PX RGBA
+                    decode_tile_image(&resp.bytes, &url_owned)
+                })();
+                sender.send(result);
+            });
+
+            self.fetches
+                .insert(name.clone(), TileFetchStatus::Downloading(promise));
+        }
+    }
+
+    /// Poll in-flight downloads. Returns true if any new tiles became ready
+    /// (caller should rebuild the tilemap model).
+    pub fn poll(&mut self, tile_images: &mut HashMap<String, Vec<u8>>) -> bool {
+        let mut any_ready = false;
+        let keys: Vec<String> = self.fetches.keys().cloned().collect();
+
+        for url in keys {
+            let needs_transition = {
+                let status = self.fetches.get(&url).unwrap();
+                matches!(status, TileFetchStatus::Downloading(p) if p.ready().is_some())
+            };
+
+            if needs_transition {
+                if let Some(TileFetchStatus::Downloading(promise)) = self.fetches.remove(&url) {
+                    match promise.block_and_take() {
+                        Ok(pixels) => {
+                            tile_images.insert(url.clone(), pixels);
+                            self.fetches.insert(url, TileFetchStatus::Ready);
+                            any_ready = true;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Tile image download failed for {}: {}", url, e);
+                            self.fetches.insert(url, TileFetchStatus::Failed);
+                        }
+                    }
+                }
+            }
+        }
+
+        any_ready
+    }
+}
+
+/// Decode raw image bytes into TILE_PX × TILE_PX RGBA pixels.
+fn decode_tile_image(bytes: &[u8], url: &str) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| format!("Failed to decode image from {url}: {e}"))?;
+
+    let resized = image::imageops::resize(
+        &img.to_rgba8(),
+        TILE_PX,
+        TILE_PX,
+        image::imageops::FilterType::Nearest,
+    );
+
+    Ok(resized.into_raw())
 }

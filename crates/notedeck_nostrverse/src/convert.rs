@@ -81,6 +81,7 @@ fn collect_objects(
             tiles,
             scene_object_id: None,
             model_handle: None,
+            tile_images: std::collections::HashMap::new(),
         });
     } else if let CellType::Object(ref obj_type) = cell.cell_type {
         let obj_id = space.id_str(id).unwrap_or("").to_string();
@@ -498,6 +499,7 @@ mod tests {
                 tiles: vec![0], // fill-all
                 scene_object_id: None,
                 model_handle: None,
+                tile_images: std::collections::HashMap::new(),
             }),
         };
         let objects = vec![RoomObject::new(

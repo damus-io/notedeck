@@ -166,6 +166,7 @@ pub struct TilemapData {
     /// Grid height in tiles
     pub height: u32,
     /// Tile type names (index 0 = first name, etc.)
+    /// Entries can be procedural names ("grass", "stone") or image URLs.
     pub tileset: Vec<String>,
     /// Tile indices, row-major. Length == 1 means fill-all with that value.
     pub tiles: Vec<u8>,
@@ -173,6 +174,9 @@ pub struct TilemapData {
     pub scene_object_id: Option<ObjectId>,
     /// Runtime: loaded model handle for the tilemap mesh
     pub model_handle: Option<Model>,
+    /// Runtime: cached RGBA pixel data for URL-based tileset entries.
+    /// Key is the URL, value is TILE_PX×TILE_PX RGBA bytes.
+    pub tile_images: std::collections::HashMap<String, Vec<u8>>,
 }
 
 impl TilemapData {

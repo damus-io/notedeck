@@ -97,8 +97,8 @@ const MAX_EXTRAPOLATION_DISTANCE: f32 = 10.0;
 pub const DEMO_SPACE: &str = r#"(space (name "Notedeck HQ")
   (group
     (tilemap (width 10) (height 10)
-      (tileset "grass" "stone" "water" "sand" "dirt" "snow" "wood")
-      (data "0 0 0 0 0 0 0 0 0 0 0 1 1 1 0 0 4 4 4 0 0 1 1 1 0 0 4 4 4 0 0 0 0 0 0 0 0 0 0 0 3 3 3 0 0 0 0 5 5 5 3 3 3 0 0 0 0 5 5 5 0 0 0 0 2 2 0 0 0 0 0 0 0 0 2 2 0 0 0 0 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6"))
+      (tileset "grass" "stone" "water" "sand" "dirt")
+      (data "0 0 0 0 0 0 0 0 0 0 0 0 4 4 0 0 0 0 0 0 0 4 4 4 0 0 3 3 0 0 0 4 4 0 0 3 3 2 3 0 0 0 0 0 0 0 3 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 1 0 0 0 0 0 0 0 0 0 1 0 0 0 0 0 0 0 0 0 1 1 1 0 0 0"))
 
     (room (shape rectangle)
           (name "Living Room")
@@ -326,6 +326,8 @@ pub struct NostrverseApp {
     start_time: std::time::Instant,
     /// Model download/cache manager (initialized lazily in initialize())
     model_cache: Option<model_cache::ModelCache>,
+    /// Tile image download/cache for URL-based tileset entries
+    tile_image_cache: tilemap::TileImageCache,
     /// Dedicated relay URL for multiplayer sync (from NOSTRVERSE_RELAY env)
     relay_url: NormRelayUrl,
 }
@@ -358,6 +360,7 @@ impl NostrverseApp {
             last_save_id: None,
             start_time: std::time::Instant::now(),
             model_cache: None,
+            tile_image_cache: tilemap::TileImageCache::new(),
             relay_url,
         }
     }
@@ -769,8 +772,21 @@ impl NostrverseApp {
 
         sync_objects_to_scene(&mut self.state.objects, &mut r);
 
-        // Build + place tilemap if needed
+        // Download URL-based tile images and build/rebuild tilemap
         if let Some(tm) = self.state.tilemap_mut() {
+            // Start downloads for any URL tileset entries
+            self.tile_image_cache.request_tiles(&tm.tileset);
+
+            // Poll downloads; rebuild tilemap model if new images arrived
+            let new_images = self.tile_image_cache.poll(&mut tm.tile_images);
+            if new_images {
+                // Remove old model so it gets rebuilt with new images
+                if let Some(obj_id) = tm.scene_object_id.take() {
+                    r.remove_object(obj_id);
+                }
+                tm.model_handle = None;
+            }
+
             if tm.model_handle.is_none()
                 && let (Some(device), Some(queue)) = (&self.device, &self.queue)
             {

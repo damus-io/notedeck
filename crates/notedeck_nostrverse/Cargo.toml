@@ -18,8 +18,8 @@ ehttp = { workspace = true }
 sha2 = { workspace = true }
 poll-promise = { workspace = true }
 bytemuck = { workspace = true }
+image = { workspace = true }
 
 [dev-dependencies]
 pollster = "0.4.0"
 wgpu = "24"
-image = { workspace = true }
