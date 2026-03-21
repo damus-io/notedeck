@@ -1498,7 +1498,7 @@ impl<'a> InputboxLayout<'a> {
 
         ui.allocate_ui(egui::vec2(ui.available_width(), input_height), |ui| {
             ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let ask_clicked = ui
                         .add(egui::Button::new(&self.ask_label).min_size(button_size))
                         .clicked();
