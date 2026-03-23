@@ -939,17 +939,23 @@ pub struct SessionManager {
     /// Cached agent grouping: host → cwd → sessions.
     /// Rebuilt via `rebuild_cwd_groups()` when sessions change.
     host_cwd_groups: Vec<HostGroup>,
+    /// Whether host/cwd grouping cache must be rebuilt before reads.
+    host_cwd_groups_dirty: bool,
     /// Cached chat session IDs in recency order.
     chat_ids: Vec<SessionId>,
+    /// Whether chat ID cache must be rebuilt before reads.
+    chat_ids_dirty: bool,
 }
 
 /// A group of sessions under a single hostname.
+#[derive(Clone)]
 pub struct HostGroup {
     pub hostname: String,
     pub cwd_groups: Vec<CwdGroup>,
 }
 
 /// A group of sessions sharing a working directory.
+#[derive(Clone)]
 pub struct CwdGroup {
     pub display_cwd: String,
     pub cwd: PathBuf,
@@ -971,7 +977,9 @@ impl SessionManager {
             next_id: 1,
             pending_editor: None,
             host_cwd_groups: Vec::new(),
+            host_cwd_groups_dirty: false,
             chat_ids: Vec::new(),
+            chat_ids_dirty: false,
         }
     }
 
@@ -1044,6 +1052,7 @@ impl SessionManager {
 
     /// Get a mutable reference to the active session
     pub fn get_active_mut(&mut self) -> Option<&mut ChatSession> {
+        self.mark_grouping_cache_dirty();
         self.active.and_then(|id| self.sessions.get_mut(&id))
     }
 
@@ -1094,6 +1103,7 @@ impl SessionManager {
         if self.sessions.contains_key(&id) {
             self.order.retain(|&x| x != id);
             self.order.insert(0, id);
+            self.mark_grouping_cache_dirty();
         }
     }
 
@@ -1114,6 +1124,7 @@ impl SessionManager {
 
     /// Get a mutable reference to a session by ID
     pub fn get_mut(&mut self, id: SessionId) -> Option<&mut ChatSession> {
+        self.mark_grouping_cache_dirty();
         self.sessions.get_mut(&id)
     }
 
@@ -1124,6 +1135,7 @@ impl SessionManager {
 
     /// Iterate over all sessions mutably
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ChatSession> {
+        self.mark_grouping_cache_dirty();
         self.sessions.values_mut()
     }
 
@@ -1154,7 +1166,8 @@ impl SessionManager {
     }
 
     /// Get cached agent session groups: host → cwd → sessions.
-    pub fn host_cwd_groups(&self) -> &[HostGroup] {
+    pub fn host_cwd_groups(&mut self) -> &[HostGroup] {
+        self.ensure_grouping_cache();
         &self.host_cwd_groups
     }
 
@@ -1171,13 +1184,18 @@ impl SessionManager {
     }
 
     /// Get cached chat session IDs in recency order.
-    pub fn chat_ids(&self) -> &[SessionId] {
+    pub fn chat_ids(&mut self) -> &[SessionId] {
+        self.ensure_grouping_cache();
         &self.chat_ids
     }
 
     /// Session IDs in visual/display order (host/cwd groups then chats),
     /// filtered by collapse state. Collapsed host/cwd groups are excluded.
-    pub fn visual_order(&self, collapse: &crate::collapse_state::CollapseState) -> Vec<SessionId> {
+    pub fn visual_order(
+        &mut self,
+        collapse: &crate::collapse_state::CollapseState,
+    ) -> Vec<SessionId> {
+        self.ensure_grouping_cache();
         let mut ids = Vec::new();
         for host_group in &self.host_cwd_groups {
             if collapse.is_host_collapsed(&host_group.hostname) {
@@ -1215,7 +1233,8 @@ impl SessionManager {
                 }
 
                 let hostname = session.details.hostname.clone();
-                let cwd_display = match session.cwd() {
+                let cwd = session.cwd().or(session.details.cwd.as_ref());
+                let cwd_display = match cwd {
                     Some(cwd) => {
                         let home = &session.details.home_dir;
                         if home.is_empty() {
@@ -1250,7 +1269,7 @@ impl SessionManager {
                 {
                     cg.session_ids.push(id);
                 } else {
-                    let raw_cwd = session.cwd().cloned().unwrap_or_default();
+                    let raw_cwd = cwd.cloned().unwrap_or_default();
                     host_group.cwd_groups.push(CwdGroup {
                         display_cwd: cwd_display,
                         cwd: raw_cwd,
@@ -1285,6 +1304,22 @@ impl SessionManager {
                     title_a.cmp(title_b).then(a.cmp(b))
                 });
             }
+        }
+
+        self.host_cwd_groups_dirty = false;
+        self.chat_ids_dirty = false;
+    }
+
+    /// Mark cached grouping state dirty after mutable session access.
+    fn mark_grouping_cache_dirty(&mut self) {
+        self.host_cwd_groups_dirty = true;
+        self.chat_ids_dirty = true;
+    }
+
+    /// Ensure host/cwd and chat caches are rebuilt before read access.
+    fn ensure_grouping_cache(&mut self) {
+        if self.host_cwd_groups_dirty || self.chat_ids_dirty {
+            self.rebuild_cwd_groups();
         }
     }
 }
@@ -2735,6 +2770,56 @@ mod tests {
 
         // Verify all three are still present
         assert_eq!(ordered.len(), 3);
+    }
+
+    #[test]
+    fn chat_id_cache_refreshes_after_touch_without_manual_rebuild() {
+        let mut mgr = SessionManager::new();
+        let id1 = mgr.new_session(PathBuf::from("/tmp/one"), AiMode::Chat, BackendType::OpenAI);
+        let id2 = mgr.new_session(PathBuf::from("/tmp/two"), AiMode::Chat, BackendType::OpenAI);
+
+        assert_eq!(mgr.chat_ids(), &[id2, id1]);
+
+        mgr.touch(id1);
+        assert_eq!(mgr.chat_ids(), &[id1, id2]);
+    }
+
+    #[test]
+    fn host_group_cache_refreshes_after_get_mut_hostname_change() {
+        let mut mgr = SessionManager::new();
+        let id = mgr.new_session(
+            PathBuf::from("/tmp/work"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+
+        {
+            let session = mgr.get_mut(id).expect("session should exist");
+            session.details.hostname = "remote-a".to_string();
+        }
+
+        let groups = mgr.host_cwd_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].hostname, "remote-a");
+    }
+
+    #[test]
+    fn pending_placeholder_group_uses_requested_cwd() {
+        let mut mgr = SessionManager::new();
+        let requested_cwd = PathBuf::from("/srv/project");
+        mgr.new_pending_placeholder(
+            requested_cwd.clone(),
+            "remote-a".to_string(),
+            BackendType::Claude,
+            "spawn-1".to_string(),
+        );
+
+        let groups = mgr.host_cwd_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].hostname, "remote-a");
+        assert_eq!(groups[0].cwd_groups.len(), 1);
+        assert_eq!(groups[0].cwd_groups[0].cwd, requested_cwd);
+        assert_eq!(groups[0].cwd_groups[0].display_cwd, "/srv/project");
     }
 
     #[test]

@@ -25,12 +25,12 @@ pub enum SessionListAction {
     DeleteWorktree(SessionId),
     ToggleHostCollapse(String),
     ToggleCwdCollapse(String, String),
-    NewSessionInCwd(PathBuf),
+    NewSessionInCwd(String, PathBuf),
 }
 
 /// UI component for displaying the session list sidebar
 pub struct SessionListUi<'a> {
-    session_manager: &'a SessionManager,
+    session_manager: &'a mut SessionManager,
     focus_queue: &'a FocusQueue,
     collapse_state: &'a CollapseState,
     ctrl_held: bool,
@@ -38,7 +38,7 @@ pub struct SessionListUi<'a> {
 
 impl<'a> SessionListUi<'a> {
     pub fn new(
-        session_manager: &'a SessionManager,
+        session_manager: &'a mut SessionManager,
         focus_queue: &'a FocusQueue,
         collapse_state: &'a CollapseState,
         ctrl_held: bool,
@@ -51,7 +51,7 @@ impl<'a> SessionListUi<'a> {
         }
     }
 
-    pub fn ui(&self, ui: &mut egui::Ui) -> Option<SessionListAction> {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action: Option<SessionListAction> = None;
 
         ui.vertical(|ui| {
@@ -100,13 +100,14 @@ impl<'a> SessionListUi<'a> {
         action
     }
 
-    fn sessions_list_ui(&self, ui: &mut egui::Ui) -> Option<SessionListAction> {
+    fn sessions_list_ui(&mut self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
         let active_id = self.session_manager.active_id();
         let mut visual_index: usize = 0;
+        let host_groups = self.session_manager.host_cwd_groups().to_vec();
 
         // Agents grouped by host → cwd (pre-computed, deterministically ordered)
-        for host_group in self.session_manager.host_cwd_groups() {
+        for host_group in &host_groups {
             let host_label = if host_group.hostname.is_empty() {
                 "Local"
             } else {
@@ -143,7 +144,10 @@ impl<'a> SessionListUi<'a> {
 
                 notedeck_ui::context_menu::context_menu(&header_response, |ui| {
                     if ui.button("New Session").clicked() {
-                        action = Some(SessionListAction::NewSessionInCwd(cwd_group.cwd.clone()));
+                        action = Some(SessionListAction::NewSessionInCwd(
+                            host_group.hostname.clone(),
+                            cwd_group.cwd.clone(),
+                        ));
                         ui.close_menu();
                     }
                 });
@@ -167,7 +171,7 @@ impl<'a> SessionListUi<'a> {
         }
 
         // Chats section (pre-computed IDs)
-        let chat_ids = self.session_manager.chat_ids();
+        let chat_ids = self.session_manager.chat_ids().to_vec();
         if !chat_ids.is_empty() {
             ui.label(
                 egui::RichText::new("Chats")
@@ -175,7 +179,7 @@ impl<'a> SessionListUi<'a> {
                     .color(ui.visuals().weak_text_color()),
             );
             ui.add_space(4.0);
-            for &id in chat_ids {
+            for id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
                     if let Some(a) = self.render_session_item(ui, session, visual_index, active_id)
                     {
@@ -881,11 +885,12 @@ mod tests {
         let mut harness = Harness::new_ui_state(
             |ui, state: &mut SessionListHarnessState| {
                 let session_list = SessionListUi::new(
-                    &state.ui.session_manager,
+                    &mut state.ui.session_manager,
                     &state.ui.focus_queue,
                     &state.ui.collapse_state,
                     state.ui.ctrl_held,
                 );
+                let mut session_list = session_list;
                 if let Some(action) = session_list.ui(ui) {
                     state.action = Some(action);
                 }
@@ -923,7 +928,8 @@ mod tests {
         harness.run();
 
         match harness.state().action.as_ref() {
-            Some(SessionListAction::NewSessionInCwd(cwd)) => {
+            Some(SessionListAction::NewSessionInCwd(host, cwd)) => {
+                assert_eq!(host, "host-a");
                 assert_eq!(cwd, &harness.state().ui.cwd_path);
             }
             other => panic!("expected NewSessionInCwd action, got {:?}", other),

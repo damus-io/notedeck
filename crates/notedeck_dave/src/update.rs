@@ -252,6 +252,8 @@ pub fn has_pending_exit_plan_mode(session_manager: &SessionManager) -> bool {
 /// Data needed to publish a permission response to relays.
 pub struct PermissionPublish {
     pub perm_id: uuid::Uuid,
+    pub event_session_id: String,
+    pub request_note_id: [u8; 32],
     pub allowed: bool,
     pub message: Option<String>,
     pub cancel_turn: bool,
@@ -267,6 +269,14 @@ pub fn handle_permission_response(
 
     let is_remote = session.is_remote();
     let cancels_turn = response.cancels_turn();
+    let publish_metadata = session.agentic.as_ref().and_then(|agentic| {
+        let request_note_id = agentic
+            .permissions
+            .request_note_ids
+            .get(&request_id)
+            .copied()?;
+        Some((agentic.event_session_id().to_string(), request_note_id))
+    });
 
     let response_type = match &response {
         PermissionResponse::Allow { .. } => crate::messages::PermissionResponseType::Allowed,
@@ -316,8 +326,20 @@ pub fn handle_permission_response(
         }
     }
 
+    let Some((event_session_id, request_note_id)) = publish_metadata else {
+        if is_remote {
+            tracing::warn!(
+                "missing permission publish metadata for remote request {}",
+                request_id
+            );
+        }
+        return None;
+    };
+
     Some(PermissionPublish {
         perm_id: request_id,
+        event_session_id,
+        request_note_id,
         allowed,
         message,
         cancel_turn: cancels_turn,
@@ -333,6 +355,14 @@ pub fn handle_question_response(
     let session = session_manager.get_active_mut()?;
 
     let is_remote = session.is_remote();
+    let publish_metadata = session.agentic.as_ref().and_then(|agentic| {
+        let request_note_id = agentic
+            .permissions
+            .request_note_ids
+            .get(&request_id)
+            .copied()?;
+        Some((agentic.event_session_id().to_string(), request_note_id))
+    });
 
     // Find the original shared question-set request to get the option labels.
     let questions_input = session.chat.iter().find_map(|msg| {
@@ -439,8 +469,20 @@ pub fn handle_question_response(
         }
     }
 
+    let Some((event_session_id, request_note_id)) = publish_metadata else {
+        if is_remote {
+            tracing::warn!(
+                "missing question publish metadata for remote request {}",
+                request_id
+            );
+        }
+        return None;
+    };
+
     Some(PermissionPublish {
         perm_id: request_id,
+        event_session_id,
+        request_note_id,
         allowed: true,
         message: Some(formatted_response),
         cancel_turn: false,

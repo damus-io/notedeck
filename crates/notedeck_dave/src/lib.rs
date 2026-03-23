@@ -127,6 +127,8 @@ pub enum DaveOverlay {
     /// Directory chosen; waiting for user to pick a backend and model.
     BackendPicker {
         cwd: PathBuf,
+        /// Optional remote host to spawn on after backend/model selection.
+        target_host: Option<String>,
         /// Per-backend selected model index (persists across frames).
         selected_models: HashMap<BackendType, usize>,
     },
@@ -1015,7 +1017,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             );
                         } else {
                             tracing::info!("directory selected: {:?}", path);
-                            self.create_or_pick_backend(path);
+                            self.create_or_pick_backend(path, None);
                         }
                     }
                     OverlayResult::Close => {
@@ -1067,6 +1069,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             DaveOverlay::BackendPicker {
                 cwd,
+                target_host,
                 mut selected_models,
             } => {
                 if let Some((bt, model)) = ui::backend_picker_overlay_ui(
@@ -1075,10 +1078,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     ui,
                 ) {
                     tracing::info!("backend selected: {:?}, model: {:?}", bt, model);
-                    self.create_or_resume_session(cwd, bt, model);
+                    if let Some(host) = target_host {
+                        self.queue_spawn_command(&host, &cwd, bt);
+                    } else {
+                        self.create_or_resume_session(cwd, bt, model);
+                    }
                 } else {
                     self.active_overlay = DaveOverlay::BackendPicker {
                         cwd,
+                        target_host,
                         selected_models,
                     };
                 }
@@ -1279,8 +1287,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::ToggleCwdCollapse(hostname, display_cwd) => {
                     self.toggle_cwd_collapse(&hostname, &display_cwd);
                 }
-                SessionListAction::NewSessionInCwd(cwd) => {
-                    self.create_or_pick_backend(cwd);
+                SessionListAction::NewSessionInCwd(hostname, cwd) => {
+                    let target_host = if hostname.is_empty() {
+                        None
+                    } else {
+                        Some(hostname)
+                    };
+                    self.create_or_pick_backend(cwd, target_host);
                 }
             }
         }
@@ -1367,8 +1380,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::ToggleCwdCollapse(hostname, display_cwd) => {
                     self.toggle_cwd_collapse(&hostname, &display_cwd);
                 }
-                SessionListAction::NewSessionInCwd(cwd) => {
-                    self.create_or_pick_backend(cwd);
+                SessionListAction::NewSessionInCwd(hostname, cwd) => {
+                    let target_host = if hostname.is_empty() {
+                        None
+                    } else {
+                        Some(hostname)
+                    };
+                    self.create_or_pick_backend(cwd, target_host);
                     self.show_session_list = false;
                 }
             }
@@ -1742,34 +1760,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let pending = std::mem::take(&mut self.pending_perm_responses);
 
-        // Get session info from the active session
-        let session = match self.session_manager.get_active() {
-            Some(s) => s,
-            None => return,
-        };
-        let agentic = match &session.agentic {
-            Some(a) => a,
-            None => return,
-        };
-        let session_id = agentic.event_session_id().to_string();
-
         for resp in pending {
-            let request_note_id = match agentic.permissions.request_note_ids.get(&resp.perm_id) {
-                Some(id) => id,
-                None => {
-                    tracing::warn!("no request note_id for perm_id {}", resp.perm_id);
-                    continue;
-                }
-            };
-
             queue_built_event(
                 session_events::build_permission_response_event(
                     &resp.perm_id,
-                    request_note_id,
+                    &resp.request_note_id,
                     resp.allowed,
                     resp.message.as_deref(),
                     resp.cancel_turn,
-                    &session_id,
+                    &resp.event_session_id,
                     &sk,
                 ),
                 &format!(
@@ -2629,18 +2628,31 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.active_overlay = DaveOverlay::None;
     }
 
-    fn create_or_pick_backend(&mut self, cwd: PathBuf) {
+    fn create_or_pick_backend(&mut self, cwd: PathBuf, target_host: Option<String>) {
         tracing::info!(
-            "create_or_pick_backend: {} available backends: {:?}",
+            "create_or_pick_backend: {} available backends: {:?} target_host={:?}",
             self.available_backends.len(),
-            self.available_backends
+            self.available_backends,
+            target_host
         );
+        let remote_target = target_host
+            .filter(|host| !host.is_empty())
+            .filter(|host| host != &self.hostname);
+
         if let Some(bt) = self.single_agentic_backend() {
             tracing::info!("single backend detected, skipping picker: {:?}", bt);
-            self.create_or_resume_session(cwd, bt, Model::Default);
+            if let Some(host) = remote_target.as_deref() {
+                self.queue_spawn_command(host, &cwd, bt);
+            } else {
+                self.create_or_resume_session(cwd, bt, Model::Default);
+            }
         } else if self.available_backends.is_empty() {
             // No agentic backends — fall back to configured backend
-            self.create_or_resume_session(cwd, self.model_config.backend, Model::Default);
+            if let Some(host) = remote_target.as_deref() {
+                self.queue_spawn_command(host, &cwd, self.model_config.backend);
+            } else {
+                self.create_or_resume_session(cwd, self.model_config.backend, Model::Default);
+            }
         } else {
             tracing::info!(
                 "multiple backends available, showing backend picker: {:?}",
@@ -2648,6 +2660,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
             self.active_overlay = DaveOverlay::BackendPicker {
                 cwd,
+                target_host: remote_target,
                 selected_models: HashMap::new(),
             };
         }

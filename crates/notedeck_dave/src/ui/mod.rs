@@ -893,6 +893,9 @@ fn dispatch_open_terminal(
     mut open_terminal: impl FnMut(&std::path::Path),
 ) {
     if let Some(session) = session_manager.get_active() {
+        if session.is_remote() {
+            return;
+        }
         if let Some(cwd) = session.cwd() {
             open_terminal(cwd);
         }
@@ -1154,5 +1157,27 @@ mod tests {
         });
 
         assert_eq!(launched_cwd.into_inner(), Some(expected_cwd));
+    }
+
+    #[test]
+    fn open_terminal_key_action_ignores_remote_sessions() {
+        let mut session_manager = SessionManager::new();
+        let session_id = session_manager.new_session(
+            PathBuf::from("/tmp/remote-cwd"),
+            AiMode::Agentic,
+            crate::backend::BackendType::Claude,
+        );
+        let session = session_manager
+            .get_mut(session_id)
+            .expect("remote test session should exist");
+        session.source = crate::session::SessionSource::Remote;
+        session_manager.switch_to(session_id);
+
+        let launched_cwd = RefCell::new(None::<PathBuf>);
+        dispatch_open_terminal(&session_manager, |cwd: &Path| {
+            launched_cwd.replace(Some(cwd.to_path_buf()));
+        });
+
+        assert!(launched_cwd.into_inner().is_none());
     }
 }
