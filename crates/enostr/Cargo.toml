@@ -21,3 +21,7 @@ mio = { workspace = true }
 tokio = { workspace = true }
 tokenator = { workspace = true }
 hashbrown = { workspace = true }
+
+[dev-dependencies]
+schemata-validator-rs = { git = "https://github.com/nostrability/schemata-validator-rs.git" }
+serde_json = { workspace = true }
