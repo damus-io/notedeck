@@ -34,3 +34,4 @@ nostr-relay-builder = "0.37"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = { workspace = true }
+schemata-validator-rs = { git = "https://github.com/nostrability/schemata-validator-rs.git", rev = "188f2511" }
