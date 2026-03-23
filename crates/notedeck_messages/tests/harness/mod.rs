@@ -92,9 +92,8 @@ pub fn build_messages_device_in_path_with_relays(
 }
 
 /// Shuts down a Messages device deterministically before dropping it.
-pub fn shutdown_messages_device(mut device: DeviceHarness, _context: &str) {
-    device.state_mut().notedeck.shutdown_app();
-    drop(device);
+pub fn shutdown_messages_device(device: DeviceHarness, _context: &str) {
+    notedeck_testing::shutdown_device(device);
 }
 
 /// Builds an account cluster with Messages app devices.

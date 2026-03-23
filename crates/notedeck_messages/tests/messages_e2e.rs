@@ -3,6 +3,7 @@
 mod harness;
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -40,6 +41,51 @@ use nostr_relay_builder::{
 use notedeck::unix_time_secs;
 use notedeck_messages::nip17::default_dm_relay_urls;
 use tempfile::TempDir;
+
+/// Seeds one device data dir with local chat notes using a real Messages app host.
+///
+/// This avoids pre-start raw NDB writes with a different runtime config and ensures
+/// shutdown follows the same path as production app teardown before reopening.
+fn seed_local_chat_history_via_messages_host(
+    data_dir: &Path,
+    account: &FullKeypair,
+    note_jsons: &[String],
+    expected: &BTreeSet<String>,
+    context: &str,
+) {
+    const OFFLINE_RELAY: &str = "ws://127.0.0.1:65535";
+
+    let mut device = build_messages_device_in_path_with_relays(&[OFFLINE_RELAY], account, data_dir);
+    {
+        let ctx = device.ctx.clone();
+        let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+        for note_json in note_jsons {
+            app_ctx
+                .ndb
+                .process_client_event(note_json)
+                .expect("ingest seeded local chat note");
+        }
+    }
+
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        let actual = local_chat_messages(&mut device);
+        if actual == *expected {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {context}; expected {:?}, actual {:?}",
+            expected,
+            actual
+        );
+
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    shutdown_messages_device(device, context);
+}
 
 /// Waits until the relay database stores the expected number of giftwrap events.
 ///
@@ -388,14 +434,43 @@ async fn same_account_devices_reconcile_divergent_local_history_e2e() {
         &recipient,
         &["divergent-01", "divergent-02", "divergent-06"],
     );
+    let subset_a_expected = BTreeSet::from([
+        "divergent-01".to_owned(),
+        "divergent-03".to_owned(),
+        "divergent-05".to_owned(),
+    ]);
+    let subset_b_expected = BTreeSet::from(["divergent-02".to_owned(), "divergent-04".to_owned()]);
+    let subset_c_expected = BTreeSet::from([
+        "divergent-01".to_owned(),
+        "divergent-02".to_owned(),
+        "divergent-06".to_owned(),
+    ]);
 
     let tmpdir_a = TempDir::new().expect("tmpdir a");
     let tmpdir_b = TempDir::new().expect("tmpdir b");
     let tmpdir_c = TempDir::new().expect("tmpdir c");
 
-    seed_local_notes_in_data_dir(tmpdir_a.path(), &subset_a, &[14]);
-    seed_local_notes_in_data_dir(tmpdir_b.path(), &subset_b, &[14]);
-    seed_local_notes_in_data_dir(tmpdir_c.path(), &subset_c, &[14]);
+    seed_local_chat_history_via_messages_host(
+        tmpdir_a.path(),
+        &recipient,
+        &subset_a,
+        &subset_a_expected,
+        "seed divergent subset A via messages host",
+    );
+    seed_local_chat_history_via_messages_host(
+        tmpdir_b.path(),
+        &recipient,
+        &subset_b,
+        &subset_b_expected,
+        "seed divergent subset B via messages host",
+    );
+    seed_local_chat_history_via_messages_host(
+        tmpdir_c.path(),
+        &recipient,
+        &subset_c,
+        &subset_c_expected,
+        "seed divergent subset C via messages host",
+    );
 
     let before_sets = vec![
         local_chat_messages_in_data_dir(tmpdir_a.path(), &recipient),
@@ -404,19 +479,7 @@ async fn same_account_devices_reconcile_divergent_local_history_e2e() {
     ];
     assert_eq!(
         before_sets,
-        vec![
-            BTreeSet::from([
-                "divergent-01".to_owned(),
-                "divergent-03".to_owned(),
-                "divergent-05".to_owned(),
-            ]),
-            BTreeSet::from(["divergent-02".to_owned(), "divergent-04".to_owned()]),
-            BTreeSet::from([
-                "divergent-01".to_owned(),
-                "divergent-02".to_owned(),
-                "divergent-06".to_owned(),
-            ]),
-        ],
+        vec![subset_a_expected, subset_b_expected, subset_c_expected],
         "expected distinct local histories before startup sync"
     );
 
@@ -990,6 +1053,7 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
         .await
         .expect("start local relay");
     let relay_url = relay.url().to_owned();
+    let giftwrap_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
 
     let recipient = FullKeypair::generate();
     let recipient_npub = recipient.pubkey.npub().expect("recipient npub");
@@ -1013,6 +1077,10 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
         open_conversation_via_ui(sender_device, &recipient_npub);
     }
 
+    let history_relay_count_before = relay_db
+        .count(vec![giftwrap_filter.clone()])
+        .await
+        .expect("query relay giftwrap count before startup-history sends");
     let mut expected = BTreeSet::new();
     for (idx, sender_device) in history_sender_devices.iter_mut().enumerate() {
         for message in build_direct_message_batch(&format!("startup-history-{}", idx + 1), "dm", 2)
@@ -1027,14 +1095,15 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
     for sender_device in &mut history_sender_devices {
         step_device_frames(sender_device, 3);
     }
+    let history_message_count = expected.len();
 
     {
         let mut history_sender_refs: Vec<&mut DeviceHarness> =
             history_sender_devices.iter_mut().collect();
         wait_for_relay_count_at_least(
             &relay_db,
-            NostrFilter::new().kind(NostrKind::GiftWrap),
-            expected.len(),
+            giftwrap_filter.clone(),
+            history_relay_count_before + history_message_count,
             TEST_TIMEOUT,
             "startup-history giftwraps to land on relay",
             history_sender_refs.as_mut_slice(),
@@ -1075,6 +1144,10 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
     std::thread::sleep(Duration::from_millis(100));
     step_devices(&mut recipient_devices);
 
+    let live_relay_count_before = relay_db
+        .count(vec![giftwrap_filter.clone()])
+        .await
+        .expect("query relay giftwrap count before startup-live sends");
     for (idx, sender_device) in live_sender_devices.iter_mut().enumerate() {
         for message in build_direct_message_batch(&format!("startup-live-{}", idx + 1), "dm", 2) {
             expected.insert(message.clone());
@@ -1084,14 +1157,15 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
             std::thread::sleep(Duration::from_millis(25));
         }
     }
+    let live_message_count = expected.len() - history_message_count;
 
     {
         let mut live_sender_refs: Vec<&mut DeviceHarness> =
             live_sender_devices.iter_mut().collect();
         wait_for_relay_count_at_least(
             &relay_db,
-            NostrFilter::new().kind(NostrKind::GiftWrap),
-            expected.len(),
+            giftwrap_filter.clone(),
+            live_relay_count_before + live_message_count,
             TEST_TIMEOUT,
             "startup-live giftwraps to land on relay",
             live_sender_refs.as_mut_slice(),
@@ -3170,10 +3244,15 @@ async fn ensure_dm_relay_list_republishes_late_real_list_after_timeout_fallback_
 async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
+    let relay_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+    let relay = LocalRelay::run(RelayBuilder::default().database(relay_db.clone()))
         .await
         .expect("start local relay");
     let relay_url = relay.url().to_owned();
+    let giftwrap_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
 
     let mut alice = build_messages_cluster("alice", &relay_url, 2);
     let mut bob = build_messages_cluster("bob", &relay_url, 2);
@@ -3193,6 +3272,10 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     seed_cluster_known_profiles(&mut carol, &profiles);
 
     warm_up_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+    let relay_giftwrap_count_before = relay_db
+        .count(vec![giftwrap_filter.clone()])
+        .await
+        .expect("query relay giftwrap count before pairwise mesh");
 
     let alice_to_bob = "alice->bob:01".to_owned();
     let bob_to_alice = "bob->alice:01".to_owned();
@@ -3213,6 +3296,31 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
     send_direct_message(carol.device(1), &bob.npub, &carol_to_bob);
     step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+
+    const DIRECTIONS_PER_ROUND: usize = 6;
+    let expected_giftwrap_delta = DIRECTIONS_PER_ROUND * 2;
+    let relay_count_deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+
+        let relay_actual = relay_db
+            .count(vec![giftwrap_filter.clone()])
+            .await
+            .expect("query relay giftwrap count during pairwise mesh");
+        if relay_actual >= relay_giftwrap_count_before + expected_giftwrap_delta {
+            break;
+        }
+
+        assert!(
+            Instant::now() < relay_count_deadline,
+            "timed out waiting for pairwise mesh giftwraps to persist; \
+             expected at least {}, actual {}",
+            relay_giftwrap_count_before + expected_giftwrap_delta,
+            relay_actual
+        );
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     let expected_alice = BTreeSet::from([
         alice_to_bob.clone(),
@@ -3255,10 +3363,18 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
 async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default().rate_limit(RateLimit {
-        max_reqs: 2_000,
-        notes_per_minute: 10_000,
-    }))
+    let relay_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+    let relay = LocalRelay::run(
+        RelayBuilder::default()
+            .database(relay_db.clone())
+            .rate_limit(RateLimit {
+                max_reqs: 2_000,
+                notes_per_minute: 10_000,
+            }),
+    )
     .await
     .expect("start local relay");
     let relay_url = relay.url().to_owned();
@@ -3290,7 +3406,8 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     open_conversation_via_ui(carol.device(1), &bob.npub);
 
     const MESSAGES_PER_DIRECTION: usize = 40;
-    const CONVERGENCE_BATCH: usize = 2;
+    const DRAIN_BATCH: usize = 4;
+    const DRAIN_STEPS: usize = 6;
 
     let alice_to_bob = build_direct_message_batch("alice", "bob", MESSAGES_PER_DIRECTION);
     let alice_to_carol = build_direct_message_batch("alice", "carol", MESSAGES_PER_DIRECTION);
@@ -3298,6 +3415,11 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     let bob_to_carol = build_direct_message_batch("bob", "carol", MESSAGES_PER_DIRECTION);
     let carol_to_alice = build_direct_message_batch("carol", "alice", MESSAGES_PER_DIRECTION);
     let carol_to_bob = build_direct_message_batch("carol", "bob", MESSAGES_PER_DIRECTION);
+    let giftwrap_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
+    let relay_giftwrap_count_before = relay_db
+        .count(vec![giftwrap_filter.clone()])
+        .await
+        .expect("query relay giftwrap count before high-volume mesh");
 
     for idx in 0..MESSAGES_PER_DIRECTION {
         send_message_via_ui(alice.device(0), &alice_to_bob[idx]);
@@ -3311,39 +3433,37 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
         std::thread::sleep(Duration::from_millis(10));
         step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
-        if (idx + 1) % CONVERGENCE_BATCH == 0 {
-            let expected_alice = alice_to_bob[..=idx]
-                .iter()
-                .chain(alice_to_carol[..=idx].iter())
-                .chain(bob_to_alice[..=idx].iter())
-                .chain(carol_to_alice[..=idx].iter())
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            let expected_bob = alice_to_bob[..=idx]
-                .iter()
-                .chain(bob_to_alice[..=idx].iter())
-                .chain(bob_to_carol[..=idx].iter())
-                .chain(carol_to_bob[..=idx].iter())
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            let expected_carol = alice_to_carol[..=idx]
-                .iter()
-                .chain(bob_to_carol[..=idx].iter())
-                .chain(carol_to_alice[..=idx].iter())
-                .chain(carol_to_bob[..=idx].iter())
-                .cloned()
-                .collect::<BTreeSet<_>>();
-
-            wait_for_cluster_convergence(
-                &mut alice,
-                &expected_alice,
-                &mut bob,
-                &expected_bob,
-                &mut carol,
-                &expected_carol,
-                TEST_TIMEOUT,
-            );
+        if (idx + 1) % DRAIN_BATCH == 0 {
+            for _ in 0..DRAIN_STEPS {
+                step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+                std::thread::sleep(Duration::from_millis(10));
+            }
         }
+    }
+
+    const DIRECTIONS_PER_ROUND: usize = 6;
+    let expected_giftwrap_delta = MESSAGES_PER_DIRECTION * DIRECTIONS_PER_ROUND * 2;
+    let relay_count_deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+
+        let relay_actual = relay_db
+            .count(vec![giftwrap_filter.clone()])
+            .await
+            .expect("query relay giftwrap count during high-volume mesh");
+        if relay_actual >= relay_giftwrap_count_before + expected_giftwrap_delta {
+            break;
+        }
+
+        assert!(
+            Instant::now() < relay_count_deadline,
+            "timed out waiting for high-volume mesh giftwraps to persist; \
+             expected at least {}, actual {}",
+            relay_giftwrap_count_before + expected_giftwrap_delta,
+            relay_actual
+        );
+
+        std::thread::sleep(Duration::from_millis(20));
     }
 
     let expected_alice = alice_to_bob

@@ -11,7 +11,7 @@ pub mod stepping;
 pub mod ui;
 
 pub use cluster::AccountCluster;
-pub use device::{AppFactory, DeviceDataDir, DeviceHarness, DeviceState};
+pub use device::{shutdown_device, AppFactory, DeviceDataDir, DeviceHarness, DeviceState};
 
 use std::sync::Once;
 
