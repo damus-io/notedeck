@@ -579,9 +579,9 @@ impl OutboxPool {
     where
         for<'a> F: FnMut(RawEventData<'a>),
     {
+        let mut tracker_invalidations = Vec::new();
         's: while max_notes > 0 {
             let mut received_any = false;
-            let mut tracker_invalidations = Vec::new();
 
             for (relay_id, relay) in &mut self.relays {
                 let resp = relay.try_recv(&self.subs, &mut process);
@@ -608,15 +608,12 @@ impl OutboxPool {
             }
 
             if !received_any {
-                for (relay_id, invalidated) in tracker_invalidations {
-                    self.apply_relay_tracker_invalidations(&relay_id, invalidated);
-                }
                 break;
             }
+        }
 
-            for (relay_id, invalidated) in tracker_invalidations {
-                self.apply_relay_tracker_invalidations(&relay_id, invalidated);
-            }
+        for (relay_id, invalidated) in tracker_invalidations {
+            self.apply_relay_tracker_invalidations(&relay_id, invalidated);
         }
 
         self.process_pending_eose_relays();

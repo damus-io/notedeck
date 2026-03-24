@@ -169,12 +169,13 @@ impl<'a> CompactionRelay<'a> {
         }
 
         let mut invalidated = HashSet::new();
-        for (sid, sub_data) in &handler.data.relay_subs {
+        for (sid, sub_data) in &mut handler.data.relay_subs {
             let filters = handler.subs.filters_all(&sub_data.requests.requests);
             if are_filters_empty(&filters) {
                 continue;
             }
 
+            sub_data.status = RelayReqStatus::InitialQuery;
             handler
                 .relay
                 .conn
@@ -1158,6 +1159,19 @@ mod tests {
         session.sub(OutboxSubId(1));
         let _ = relay.ingest_session(session);
 
+        let sid0 = data
+            .request_to_sid
+            .get(&OutboxSubId(0))
+            .expect("sid for first compaction sub")
+            .clone();
+        let sid1 = data
+            .request_to_sid
+            .get(&OutboxSubId(1))
+            .expect("sid for second compaction sub")
+            .clone();
+        data.set_req_status(&sid0.to_string(), RelayReqStatus::Eose);
+        data.set_req_status(&sid1.to_string(), RelayReqStatus::Eose);
+
         let invalidated = {
             let mut relay = CompactionRelay::new(
                 Some(&mut websocket),
@@ -1173,6 +1187,16 @@ mod tests {
             invalidated,
             HashSet::from([OutboxSubId(0), OutboxSubId(1)]),
             "relay-open replay should invalidate every sub carried by the reissued compaction REQ"
+        );
+        assert_eq!(
+            data.req_status(&OutboxSubId(0)),
+            Some(RelayReqStatus::InitialQuery),
+            "relay-open replay must reset compaction req status to InitialQuery"
+        );
+        assert_eq!(
+            data.req_status(&OutboxSubId(1)),
+            Some(RelayReqStatus::InitialQuery),
+            "relay-open replay must reset compaction req status to InitialQuery"
         );
     }
 
