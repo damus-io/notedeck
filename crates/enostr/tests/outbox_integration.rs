@@ -832,3 +832,316 @@ async fn preferred_request_stays_active_without_displacing_existing_preferred() 
         "incoming preferred request should become active once the dedicated slot is released"
     );
 }
+
+/// When dedicated capacity is saturated, a `RequireDedicated` request must not
+/// fall back to compaction; it should stay queued until a dedicated slot opens.
+#[tokio::test]
+async fn require_dedicated_request_queues_without_compaction_fallback_when_saturated() {
+    let (_relay, url) = create_test_relay().await;
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_285);
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    let mut required_pkg = RelayUrlPkgs::new(urls);
+    required_pkg.routing_preference = RelayRoutingPreference::RequireDedicated;
+
+    let first_id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), required_pkg.clone())
+    };
+
+    let applied = pool.apply_nip11_limits(
+        &url,
+        Nip11LimitationsRaw {
+            max_subscriptions: Some(1),
+            ..Default::default()
+        },
+        now,
+    );
+    assert!(matches!(
+        applied,
+        Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+    ));
+
+    let second_id = {
+        let mut session = pool.start_session(wakeup);
+        session.subscribe(trivial_filter(), required_pkg)
+    };
+
+    let first_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&first_id)).await;
+    assert!(
+        first_got_eose,
+        "existing required-dedicated subscription should remain active under saturation"
+    );
+    assert!(
+        pool.status(&second_id).is_empty(),
+        "queued required-dedicated request should have no active relay leg while saturated"
+    );
+    assert!(
+        !pool.has_eose(&second_id),
+        "queued required-dedicated request should not produce EOSE before a dedicated slot is available"
+    );
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.unsubscribe(first_id);
+    }
+
+    let second_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&second_id)).await;
+    assert!(
+        second_got_eose,
+        "queued required-dedicated request should activate once dedicated capacity is released"
+    );
+}
+
+/// Multiple `RequireDedicated` requests competing for one dedicated slot should
+/// stay queued and activate one at a time as capacity is released.
+#[tokio::test]
+async fn require_dedicated_requests_compete_for_last_slot() {
+    let (_relay, url) = create_test_relay().await;
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_286);
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    let mut required_pkg = RelayUrlPkgs::new(urls);
+    required_pkg.routing_preference = RelayRoutingPreference::RequireDedicated;
+
+    let first_id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), required_pkg.clone())
+    };
+
+    let applied = pool.apply_nip11_limits(
+        &url,
+        Nip11LimitationsRaw {
+            max_subscriptions: Some(1),
+            ..Default::default()
+        },
+        now,
+    );
+    assert!(matches!(
+        applied,
+        Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+    ));
+
+    let first_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&first_id)).await;
+    assert!(
+        first_got_eose,
+        "first required-dedicated request should claim the only dedicated slot"
+    );
+
+    let second_id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), required_pkg.clone())
+    };
+    let third_id = {
+        let mut session = pool.start_session(wakeup);
+        session.subscribe(trivial_filter(), required_pkg)
+    };
+
+    assert!(
+        pool.status(&second_id).is_empty(),
+        "second required-dedicated request should be queued under saturation"
+    );
+    assert!(
+        pool.status(&third_id).is_empty(),
+        "third required-dedicated request should be queued under saturation"
+    );
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.unsubscribe(first_id);
+    }
+
+    let second_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&second_id)).await;
+    assert!(
+        second_got_eose,
+        "second required-dedicated request should activate after first releases capacity"
+    );
+    assert!(
+        !pool.has_eose(&third_id),
+        "third required-dedicated request should still wait while second owns the only dedicated slot"
+    );
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.unsubscribe(second_id);
+    }
+
+    let third_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&third_id)).await;
+    assert!(
+        third_got_eose,
+        "third required-dedicated request should activate after second releases capacity"
+    );
+}
+
+/// Under saturation, an existing `RequireDedicated` subscription must not be
+/// displaced by an incoming `PreferDedicated` request.
+#[tokio::test]
+async fn prefer_dedicated_does_not_displace_existing_require_dedicated() {
+    let (_relay, url) = create_test_relay().await;
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_287);
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    let mut required_pkg = RelayUrlPkgs::new(urls.clone());
+    required_pkg.routing_preference = RelayRoutingPreference::RequireDedicated;
+    let mut preferred_pkg = RelayUrlPkgs::new(urls);
+    preferred_pkg.routing_preference = RelayRoutingPreference::PreferDedicated;
+
+    let required_id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), required_pkg)
+    };
+
+    let applied = pool.apply_nip11_limits(
+        &url,
+        Nip11LimitationsRaw {
+            max_subscriptions: Some(1),
+            ..Default::default()
+        },
+        now,
+    );
+    assert!(matches!(
+        applied,
+        Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+    ));
+
+    let required_got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&required_id)).await;
+    assert!(
+        required_got_eose,
+        "required-dedicated request should own the only dedicated slot"
+    );
+
+    let preferred_id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), preferred_pkg)
+    };
+
+    assert!(
+        pool.has_eose(&required_id),
+        "required-dedicated request should remain active after incoming preferred request"
+    );
+    assert!(
+        pool.status(&preferred_id).is_empty(),
+        "preferred request should not displace required-dedicated under saturation"
+    );
+
+    {
+        let mut session = pool.start_session(wakeup);
+        session.unsubscribe(required_id);
+    }
+
+    let preferred_got_eose =
+        default_pool_pump(&mut pool, |pool| pool.has_eose(&preferred_id)).await;
+    assert!(
+        preferred_got_eose,
+        "preferred request should activate once required slot is released"
+    );
+}
+
+/// Production-like mixed policy set on one relay:
+/// two `RequireDedicated` and two `PreferDedicated` subscriptions.
+/// Required routes should hold dedicated capacity first; preferred routes should
+/// wait and then activate as required routes release capacity.
+#[tokio::test]
+async fn mixed_require_and_prefer_dedicated_on_one_relay_behaves_as_expected() {
+    let (_relay, url) = create_test_relay().await;
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_288);
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    let mut required_pkg = RelayUrlPkgs::new(urls.clone());
+    required_pkg.routing_preference = RelayRoutingPreference::RequireDedicated;
+    let mut preferred_pkg = RelayUrlPkgs::new(urls);
+    preferred_pkg.routing_preference = RelayRoutingPreference::PreferDedicated;
+
+    let required_a = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), required_pkg.clone())
+    };
+    let required_b = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), required_pkg)
+    };
+
+    let applied = pool.apply_nip11_limits(
+        &url,
+        Nip11LimitationsRaw {
+            max_subscriptions: Some(2),
+            ..Default::default()
+        },
+        now,
+    );
+    assert!(matches!(
+        applied,
+        Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+    ));
+
+    let required_ready = default_pool_pump(&mut pool, |pool| {
+        pool.has_eose(&required_a) && pool.has_eose(&required_b)
+    })
+    .await;
+    assert!(
+        required_ready,
+        "both required-dedicated requests should fill dedicated capacity"
+    );
+
+    let preferred_a = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), preferred_pkg.clone())
+    };
+    let preferred_b = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(trivial_filter(), preferred_pkg)
+    };
+
+    assert!(
+        pool.status(&preferred_a).is_empty(),
+        "preferred A should wait while required routes consume dedicated capacity"
+    );
+    assert!(
+        pool.status(&preferred_b).is_empty(),
+        "preferred B should wait while required routes consume dedicated capacity"
+    );
+
+    {
+        let mut session = pool.start_session(wakeup.clone());
+        session.unsubscribe(required_a);
+    }
+
+    let first_preferred_ready = default_pool_pump(&mut pool, |pool| {
+        pool.has_eose(&preferred_a) || pool.has_eose(&preferred_b)
+    })
+    .await;
+    assert!(
+        first_preferred_ready,
+        "one preferred request should activate after first required route releases capacity"
+    );
+
+    let remaining_preferred = if pool.has_eose(&preferred_a) {
+        preferred_b
+    } else {
+        preferred_a
+    };
+
+    {
+        let mut session = pool.start_session(wakeup);
+        session.unsubscribe(required_b);
+    }
+
+    let second_preferred_ready =
+        default_pool_pump(&mut pool, |pool| pool.has_eose(&remaining_preferred)).await;
+    assert!(
+        second_preferred_ready,
+        "remaining preferred request should activate after second required route releases capacity"
+    );
+}

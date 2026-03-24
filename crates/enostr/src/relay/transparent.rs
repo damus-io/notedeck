@@ -179,11 +179,12 @@ impl<'a> TransparentRelay<'a> {
         }
 
         let mut invalidated = HashSet::new();
-        for (sid, data) in &self.data.sid_status {
+        for (sid, data) in &mut self.data.sid_status {
             let Some(view) = subs.view(&data.sub_req_id) else {
                 continue;
             };
 
+            data.status = RelayReqStatus::InitialQuery;
             relay.conn.send(&ClientMessage::req(
                 sid.to_string(),
                 view.filters.get_filters().clone(),
@@ -555,6 +556,19 @@ mod tests {
             relay.try_subscribe(subs.view(&OutboxSubId(1)).unwrap());
         }
 
+        let sid0 = data
+            .request_to_sid
+            .get(&OutboxSubId(0))
+            .expect("sid for first transparent sub")
+            .clone();
+        let sid1 = data
+            .request_to_sid
+            .get(&OutboxSubId(1))
+            .expect("sid for second transparent sub")
+            .clone();
+        data.set_req_status(&sid0.to_string(), RelayReqStatus::Eose);
+        data.set_req_status(&sid1.to_string(), RelayReqStatus::Eose);
+
         let invalidated = {
             let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
             relay.handle_relay_open(&subs)
@@ -564,6 +578,16 @@ mod tests {
             invalidated,
             HashSet::from([OutboxSubId(0), OutboxSubId(1)]),
             "relay-open replay should invalidate every transparent REQ it reissues"
+        );
+        assert_eq!(
+            data.req_status(&OutboxSubId(0)),
+            Some(RelayReqStatus::InitialQuery),
+            "relay-open replay must reset transparent req status to InitialQuery"
+        );
+        assert_eq!(
+            data.req_status(&OutboxSubId(1)),
+            Some(RelayReqStatus::InitialQuery),
+            "relay-open replay must reset transparent req status to InitialQuery"
         );
     }
 
