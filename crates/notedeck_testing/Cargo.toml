@@ -13,6 +13,8 @@ enostr = { workspace = true }
 nostr = { workspace = true }
 nostrdb = { workspace = true }
 notedeck = { workspace = true }
+nostr-relay-builder = "0.37"
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "time", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

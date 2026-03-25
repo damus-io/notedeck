@@ -7,11 +7,13 @@
 pub mod cluster;
 pub mod device;
 pub mod fixtures;
+pub mod relay;
 pub mod stepping;
 pub mod ui;
 
 pub use cluster::AccountCluster;
 pub use device::{shutdown_device, AppFactory, DeviceDataDir, DeviceHarness, DeviceState};
+pub use relay::LocalRelayExt;
 
 use std::sync::Once;
 

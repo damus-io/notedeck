@@ -194,7 +194,7 @@ fn wait_for_contact_notes(device: &mut DeviceHarness) {
 /// 4. Boot a Columns device for alice — the Home timeline should fill
 ///
 /// Assertion: notes from bob+carol are rendered in the timeline UI.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn home_timeline_fills_from_contacts_e2e() {
     init_tracing();

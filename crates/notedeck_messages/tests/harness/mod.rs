@@ -28,7 +28,7 @@ pub use notedeck_testing::stepping::{
     step_clusters, step_device_frames, step_device_group, step_devices, warm_up_clusters,
 };
 
-pub use notedeck_testing::init_tracing;
+pub use notedeck_testing::{init_tracing, LocalRelayExt};
 
 /// Maximum time any polling loop will wait before failing.
 ///
