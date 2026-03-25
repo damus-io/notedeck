@@ -1139,7 +1139,7 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
         wait_for_relay_count_at_least(
             &relay_db,
             giftwrap_filter.clone(),
-            history_relay_count_before + history_message_count,
+            history_relay_count_before + history_message_count * 2,
             TEST_TIMEOUT,
             "startup-history giftwraps to land on relay",
             history_sender_refs.as_mut_slice(),
@@ -1201,7 +1201,7 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
         wait_for_relay_count_at_least(
             &relay_db,
             giftwrap_filter.clone(),
-            live_relay_count_before + live_message_count,
+            live_relay_count_before + live_message_count * 2,
             TEST_TIMEOUT,
             "startup-live giftwraps to land on relay",
             live_sender_refs.as_mut_slice(),
@@ -3148,7 +3148,7 @@ async fn bidirectional_dm_thread_converges_across_devices_e2e() {
         wait_for_relay_count_at_least(
             &relay_db,
             giftwrap_filter.clone(),
-            relay_giftwrap_count_before + 1,
+            relay_giftwrap_count_before + 2,
             TEST_TIMEOUT,
             "alice send giftwrap to land on relay",
             &mut [alice.device(0)],
@@ -3172,7 +3172,7 @@ async fn bidirectional_dm_thread_converges_across_devices_e2e() {
         wait_for_relay_count_at_least(
             &relay_db,
             giftwrap_filter.clone(),
-            relay_giftwrap_count_before + 1,
+            relay_giftwrap_count_before + 2,
             TEST_TIMEOUT,
             "bob send giftwrap to land on relay",
             &mut [bob.device(0)],
