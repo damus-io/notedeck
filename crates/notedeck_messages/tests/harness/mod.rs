@@ -28,7 +28,7 @@ pub use notedeck_testing::stepping::{
     step_clusters, step_device_frames, step_device_group, step_devices, warm_up_clusters,
 };
 
-pub use notedeck_testing::init_tracing;
+pub use notedeck_testing::{init_tracing, LocalRelayExt};
 
 /// Maximum time any polling loop will wait before failing.
 ///
@@ -92,9 +92,8 @@ pub fn build_messages_device_in_path_with_relays(
 }
 
 /// Shuts down a Messages device deterministically before dropping it.
-pub fn shutdown_messages_device(mut device: DeviceHarness, _context: &str) {
-    device.state_mut().notedeck.shutdown_app();
-    drop(device);
+pub fn shutdown_messages_device(device: DeviceHarness, _context: &str) {
+    notedeck_testing::shutdown_device(device);
 }
 
 /// Builds an account cluster with Messages app devices.

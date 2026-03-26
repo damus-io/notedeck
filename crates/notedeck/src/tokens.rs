@@ -1,7 +1,7 @@
-/// Centralized design tokens for the Notedeck design system.
-///
-/// All spacing, sizing, radius, and stroke values used across notedeck
-/// apps should reference these tokens instead of using magic numbers.
+//! Centralized design tokens for the Notedeck design system.
+//!
+//! All spacing, sizing, radius, and stroke values used across notedeck
+//! apps should reference these tokens instead of using magic numbers.
 
 // --- Spacing ---
 

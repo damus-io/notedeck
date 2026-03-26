@@ -43,3 +43,15 @@ android-tracy: fake
 	adb shell am start -n com.damus.notedeck/.MainActivity
 	adb forward tcp:8086 tcp:8086
 	adb logcat -v color -s GameActivity -s RustStdoutStderr -s threaded_app | tee logcat.txt
+
+test-messages-docker:
+	docker build -f crates/notedeck_testing/Dockerfile -t notedeck-test-base .
+	docker run --rm \
+	  --cpus=2 --memory=6g --memory-swap=6g \
+	  --ulimit nofile=256:256 \
+	  -v "$$PWD":/work -w /work \
+	  -v cargo-registry:/root/.cargo/registry \
+	  -v cargo-git:/root/.cargo/git \
+	  -v cargo-target:/target \
+	  -e CARGO_TARGET_DIR=/target \
+	  notedeck-test-base bash -lc 'cargo test -p notedeck_messages --test messages_e2e -- --test-threads=1'

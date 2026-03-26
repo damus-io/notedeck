@@ -5177,9 +5177,11 @@ dependencies = [
  "egui_kittest",
  "enostr",
  "nostr 0.37.0",
+ "nostr-relay-builder",
  "nostrdb",
  "notedeck",
  "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

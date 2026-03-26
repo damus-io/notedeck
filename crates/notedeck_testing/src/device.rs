@@ -17,6 +17,12 @@ pub struct DeviceState {
     _data_dir: DeviceDataDir,
 }
 
+impl Drop for DeviceState {
+    fn drop(&mut self) {
+        self.notedeck.shutdown_app();
+    }
+}
+
 pub enum DeviceDataDir {
     Temp {
         /// Keeps the tempdir alive for the lifetime of the device harness.
@@ -27,6 +33,12 @@ pub enum DeviceDataDir {
 
 /// Convenience alias for one full test device.
 pub type DeviceHarness = Harness<'static, DeviceState>;
+
+/// Shuts down one device deterministically before dropping the harness.
+pub fn shutdown_device(mut device: DeviceHarness) {
+    device.state_mut().notedeck.shutdown_app();
+    drop(device);
+}
 
 impl eframe::App for DeviceState {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
