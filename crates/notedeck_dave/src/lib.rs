@@ -49,9 +49,9 @@ use std::time::Instant;
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use messages::{
-    AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
-    PermissionResponseType, QuestionAnswer, QuestionSetInput, SessionInfo, SubagentInfo,
-    SubagentStatus, UserMessage,
+    AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionRequest,
+    PermissionResponse, PermissionResponseType, PermissionView, QuestionAnswer, QuestionSetInput,
+    SessionInfo, SubagentInfo, SubagentStatus, UserMessage,
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -421,6 +421,15 @@ fn calculate_user_id(keypair: KeypairUnowned) -> String {
 impl Dave {
     pub fn avatar_mut(&mut self) -> Option<&mut DaveAvatar> {
         self.avatar.as_mut()
+    }
+
+    pub fn session_manager_mut(&mut self) -> &mut SessionManager {
+        &mut self.session_manager
+    }
+
+    /// Dismiss any active overlay (e.g. the directory picker).
+    pub fn clear_overlay(&mut self) {
+        self.active_overlay = DaveOverlay::None;
     }
 
     fn _system_prompt() -> Message {
@@ -2985,6 +2994,50 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Record a user-authored message in the target session.
+    ///
+    /// This uses the same message construction path as the live UI send flow:
+    /// create a live user event when possible, append `Message::User` to chat,
+    /// and update the session title.
+    ///
+    /// Returns `true` when the caller should dispatch this session to the
+    /// backend immediately.
+    pub fn add_user_message_for_session(
+        &mut self,
+        sid: SessionId,
+        app_ctx: &AppContext,
+        user_text: String,
+        images: Vec<ImageAttachment>,
+    ) -> bool {
+        let Some(session) = self.session_manager.get_mut(sid) else {
+            return false;
+        };
+
+        if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
+            if let Some(evt) =
+                ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None, None)
+            {
+                self.pending_relay_events.push(evt);
+            }
+        }
+
+        session
+            .chat
+            .push(Message::User(UserMessage::new(user_text, images)));
+        session.update_title_from_last_message();
+
+        if session.is_remote() {
+            return false;
+        }
+
+        if session.is_dispatched() {
+            tracing::info!("message queued, will dispatch after current turn");
+            return false;
+        }
+
+        true
+    }
+
     /// Handle a user send action triggered by the ui
     fn handle_user_send(&mut self, app_ctx: &AppContext, ui: &egui::Ui) {
         // Check for /cd command first (agentic only)
@@ -3015,48 +3068,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
-        // Normal message handling
-        if let Some(session) = self.session_manager.get_active_mut() {
-            let user_text = session.input.clone();
-            session.input.clear();
-
-            // Generate live event for user message
-            if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
-                if let Some(evt) =
-                    ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None, None)
-                {
-                    self.pending_relay_events.push(evt);
-                }
-            }
-
-            let images = std::mem::take(&mut session.pending_images);
-            session
-                .chat
-                .push(Message::User(UserMessage::new(user_text, images)));
-            session.update_title_from_last_message();
-
-            // Remote sessions: publish user message to relay but don't send to local backend
-            if session.is_remote() {
-                return;
-            }
-
-            // If already dispatched (waiting for or receiving response), queue
-            // the message in chat without dispatching.
-            // needs_redispatch_after_stream_end() will dispatch it when the
-            // current turn finishes.
-            if session.is_dispatched() {
-                tracing::info!("message queued, will dispatch after current turn");
-                return;
-            }
-        }
-        self.send_user_message(app_ctx, ui.ctx());
-    }
-
-    fn send_user_message(&mut self, app_ctx: &AppContext, ctx: &egui::Context) {
         let Some(active_id) = self.session_manager.active_id() else {
             return;
         };
-        self.send_user_message_for(active_id, app_ctx, ctx);
+
+        let Some((user_text, images)) = self.session_manager.get_mut(active_id).map(|session| {
+            let user_text = session.input.clone();
+            session.input.clear();
+            let images = std::mem::take(&mut session.pending_images);
+            (user_text, images)
+        }) else {
+            return;
+        };
+
+        if self.add_user_message_for_session(active_id, app_ctx, user_text, images) {
+            self.send_user_message_for(active_id, app_ctx, ui.ctx());
+        }
     }
 
     /// Send a message for a specific session by ID
