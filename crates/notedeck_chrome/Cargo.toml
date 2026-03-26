@@ -24,7 +24,7 @@ notedeck_nostrverse = { workspace = true, optional = true }
 notedeck_clndash = { workspace = true, optional = true }
 notedeck_dashboard = { workspace = true, optional = true }
 notedeck_wasm = { workspace = true, optional = true }
-notedeck = { workspace = true }
+notedeck = { workspace = true, features = ["sound"] }
 nostrdb = { workspace = true }
 puffin = { workspace = true, optional = true }
 puffin_egui = { workspace = true, optional = true }

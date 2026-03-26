@@ -135,6 +135,7 @@ semver = "1"
 tar = "0.4"
 wgpu = { version = "24.0.0", default-features = false }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+rodio = { version = "0.20", default-features = false, features = ["wav", "mp3"] }
 
 [profile.small]
 inherits = 'release'

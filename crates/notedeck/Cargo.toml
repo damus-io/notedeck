@@ -52,6 +52,7 @@ regex = "1"
 chrono = { workspace = true }
 indexmap = {workspace = true}
 rand = {workspace = true}
+rodio = { workspace = true, optional = true }
 crossbeam-channel = { workspace = true }
 crossbeam = { workspace = true }
 hyper = { workspace = true }
@@ -91,6 +92,7 @@ ndk-context = "0.1"
 
 [features]
 auto-update = []
+sound = ["rodio"]
 snapshot-testing = ["egui_kittest", "egui-wgpu"]
 puffin = ["puffin_egui", "dep:puffin"]
 debug-widget-callstack = ["egui/callstack"]

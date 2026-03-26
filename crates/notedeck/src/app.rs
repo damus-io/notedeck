@@ -92,6 +92,7 @@ pub struct Notedeck {
     relay_limit_jobs: RelayLimitJobs,
     nip05_cache: Nip05Cache,
     i18n: Localization,
+    sound: crate::SoundManager,
 
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
@@ -260,7 +261,7 @@ impl Notedeck {
             1024usize * 1024usize * 1024usize * 1024usize
         };
 
-        let settings = SettingsHandler::new(&path).load();
+        let mut settings = SettingsHandler::new(&path).load();
 
         let config = Config::new()
             .set_ingester_threads(2)
@@ -358,6 +359,11 @@ impl Notedeck {
         let (send_new_relay_jobs, receive_new_relay_jobs) = std::sync::mpsc::channel();
         let relay_limit_jobs = JobCache::new(receive_new_relay_jobs, send_new_relay_jobs);
 
+        let sound = {
+            let s = settings.get_settings_mut();
+            crate::SoundManager::new(s.sounds_enabled, s.sound_volume)
+        };
+
         let notedeck = Self {
             ndb,
             img_cache,
@@ -381,6 +387,7 @@ impl Notedeck {
             relay_limit_jobs,
             nip05_cache: Nip05Cache::new(),
             i18n,
+            sound,
             #[cfg(target_os = "android")]
             android_app: None,
         };
@@ -446,6 +453,7 @@ impl Notedeck {
                 media_jobs: &mut self.media_jobs,
                 nip05_cache: &mut self.nip05_cache,
                 i18n: &mut self.i18n,
+                sound: &self.sound,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },

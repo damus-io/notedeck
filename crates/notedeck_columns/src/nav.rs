@@ -265,6 +265,8 @@ fn process_nav_resp(
     if let Some(action) = response.action {
         match action {
             NavAction::Returned(return_type) => {
+                //ctx.sound.play(notedeck::SoundEffect::Closed);
+
                 let r = app
                     .columns_mut(ctx.i18n, ctx.accounts)
                     .column_mut(col)
@@ -449,6 +451,7 @@ impl RouterAction {
         self,
         stack_router: &mut ColumnsRouter<Route>,
         sheet_router: &mut SingletonRouter<Route>,
+        sound: &notedeck::SoundManager,
     ) -> Option<ProcessNavResult> {
         match self {
             RouterAction::GoBack => {
@@ -471,17 +474,21 @@ impl RouterAction {
                 }
             }
 
-            RouterAction::RouteTo(route, router_type) => match router_type {
-                RouterType::Sheet(percent) => {
-                    sheet_router.route_to(route, percent);
-                    None
+            RouterAction::RouteTo(route, router_type) => {
+                sound.play(notedeck::SoundEffect::Opened);
+                match router_type {
+                    RouterType::Sheet(percent) => {
+                        sheet_router.route_to(route, percent);
+                        None
+                    }
+                    RouterType::Stack => {
+                        stack_router.route_to(route);
+                        None
+                    }
                 }
-                RouterType::Stack => {
-                    stack_router.route_to(route);
-                    None
-                }
-            },
+            }
             RouterAction::Overlay { route, make_new } => {
+                sound.play(notedeck::SoundEffect::Opened);
                 if make_new {
                     stack_router.route_to_overlaid_new(route);
                 } else {
@@ -646,7 +653,7 @@ fn process_render_nav_action(
         let router = &mut cols.router;
         let sheet_router = &mut cols.sheet_router;
 
-        action.process_router_action(router, sheet_router)
+        action.process_router_action(router, sheet_router, ctx.sound)
     } else {
         None
     }
@@ -673,6 +680,7 @@ fn render_nav_body(
         clipboard: ctx.clipboard,
         i18n: ctx.i18n,
         global_wallet: ctx.global_wallet,
+        sound: ctx.sound,
     };
     match top {
         Route::Timeline(kind) => {

@@ -14,14 +14,14 @@ pub fn filter_to_querystring(filter: &Filter) -> String {
     for field in filter {
         match field {
             FilterField::Ids(ids) => {
-                let mut arr: Vec<String> = ids.into_iter().map(|id| hex::encode(id)).collect();
+                let mut arr: Vec<String> = ids.into_iter().map(hex::encode).collect();
                 arr.sort();
                 if !arr.is_empty() {
                     pairs.push(("ids".to_string(), arr.join(",")));
                 }
             }
             FilterField::Authors(authors) => {
-                let mut arr: Vec<String> = authors.into_iter().map(|id| hex::encode(id)).collect();
+                let mut arr: Vec<String> = authors.into_iter().map(hex::encode).collect();
                 arr.sort();
                 if !arr.is_empty() {
                     pairs.push(("authors".to_string(), arr.join(",")));

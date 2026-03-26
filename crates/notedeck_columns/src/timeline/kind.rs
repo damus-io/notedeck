@@ -222,7 +222,7 @@ impl FilterVec {
 
     /// Create from Filters by encoding them as querystrings
     pub fn from_filters(filters: &[Filter]) -> Self {
-        Self(filters.iter().map(|f| filter_to_querystring(f)).collect())
+        Self(filters.iter().map(filter_to_querystring).collect())
     }
 
     /// Decode stored querystrings to Filters

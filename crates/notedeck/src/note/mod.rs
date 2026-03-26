@@ -11,6 +11,7 @@ pub use publish::{
 
 use crate::jobs::MediaJobSender;
 use crate::nip05::Nip05Cache;
+use crate::sound::SoundManager;
 use crate::Accounts;
 use crate::GlobalWallet;
 use crate::Localization;
@@ -36,6 +37,7 @@ pub struct NoteContext<'d> {
     pub unknown_ids: &'d mut UnknownIds,
     pub nip05_cache: &'d mut Nip05Cache,
     pub clipboard: &'d mut egui_winit::clipboard::Clipboard,
+    pub sound: &'d SoundManager,
 }
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash)]
