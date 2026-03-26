@@ -131,11 +131,48 @@ fn build_device_with_data_dir(
         args.push((*relay).to_owned());
     }
 
+    build_device_raw(
+        args,
+        egui::Vec2::new(900.0, 700.0),
+        data_dir,
+        data_dir_guard,
+        app_factory,
+    )
+}
+
+/// Creates a minimal device with no account or relay configuration.
+///
+/// Useful for UI-only tests (e.g. layout/overflow checks) that don't need
+/// networking. The caller supplies the viewport size and app factory.
+pub fn build_device_minimal(size: egui::Vec2, app_factory: AppFactory) -> DeviceHarness {
+    let tmpdir = TempDir::new().expect("tmpdir");
+    let data_dir = tmpdir.path().to_path_buf();
+    let args = vec![
+        "notedeck-test".to_owned(),
+        "--testrunner".to_owned(),
+        "--no-keystore".to_owned(),
+    ];
+    build_device_raw(
+        args,
+        size,
+        data_dir,
+        DeviceDataDir::Temp { _dir: tmpdir },
+        app_factory,
+    )
+}
+
+fn build_device_raw(
+    args: Vec<String>,
+    size: egui::Vec2,
+    data_dir: PathBuf,
+    data_dir_guard: DeviceDataDir,
+    app_factory: AppFactory,
+) -> DeviceHarness {
     // Wrap in Option so we can take() it inside the FnOnce closure
     let mut app_factory = Some(app_factory);
 
     Harness::builder()
-        .with_size(egui::Vec2::new(900.0, 700.0))
+        .with_size(size)
         .with_max_steps(24)
         .with_step_dt(0.05)
         .build_eframe(move |cc| {
