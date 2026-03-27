@@ -206,6 +206,9 @@ impl Chrome {
                 &notedeck_ref.app_ctx.ndb,
                 &cc.egui_ctx,
                 notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
+                notedeck::updater::nostr::ReleaseChannel::from_setting(
+                    notedeck_ref.app_ctx.settings.release_channel(),
+                ),
             ),
         };
 
@@ -300,6 +303,9 @@ impl Chrome {
                 &ctx.ndb,
                 egui_ctx,
                 notedeck::updater::nostr::DEFAULT_RELEASE_PUBKEY,
+                notedeck::updater::nostr::ReleaseChannel::from_setting(
+                    ctx.settings.release_channel(),
+                ),
             ),
         };
         chrome.add_app(NotedeckApp::Columns(Box::new(damus)));
@@ -309,7 +315,7 @@ impl Chrome {
 
     /// Override the release signing pubkey and resubscribe to ndb.
     #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
-    pub fn set_release_pubkey(&mut self, ndb: &nostrdb::Ndb, pubkey: [u8; 32]) {
+    pub fn set_release_pubkey(&mut self, ndb: &mut nostrdb::Ndb, pubkey: [u8; 32]) {
         self.updater.set_release_pubkey(ndb, pubkey);
     }
 
@@ -625,6 +631,14 @@ impl Chrome {
 
 #[cfg(feature = "auto-update")]
 fn poll_updater(updater: &mut notedeck::updater::Updater, ctx: &mut notedeck::AppContext) {
+    // Sync release channel from settings (cheap string compare, only parses on change)
+    let setting_str = ctx.settings.release_channel();
+    if setting_str != updater.channel().as_str() {
+        if let Some(ch) = notedeck::updater::nostr::ReleaseChannel::parse(setting_str) {
+            updater.set_channel(ctx.ndb, ch);
+        }
+    }
+
     if updater.needs_relay_sub() {
         let release_pubkey = *updater.release_pubkey();
         let channel = updater.channel();

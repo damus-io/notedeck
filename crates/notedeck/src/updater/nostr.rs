@@ -48,6 +48,11 @@ impl ReleaseChannel {
             _ => None,
         }
     }
+
+    /// Parse a channel from the settings string, defaulting to Main
+    pub fn from_setting(s: &str) -> Self {
+        Self::parse(s).unwrap_or_default()
+    }
 }
 
 /// Returns the expected asset name for the current platform/arch

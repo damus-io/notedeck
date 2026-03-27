@@ -65,11 +65,11 @@ impl Updater {
         ndb: &Ndb,
         ctx: &egui::Context,
         release_pubkey: [u8; 32],
+        channel: nostr::ReleaseChannel,
     ) -> Self {
         let (tx, rx) = mpsc::channel();
         let staging_dir = data_path.path(DataPathType::Update);
         let _ = std::fs::create_dir_all(&staging_dir);
-        let channel = nostr::ReleaseChannel::default();
         let filters = nostr::release_filter(&release_pubkey, channel);
         let release_sub = ndb.subscribe(&filters).expect("release subscription");
 
@@ -167,12 +167,36 @@ impl Updater {
         }
     }
 
+    /// Unsubscribe from the current release filter and resubscribe with
+    /// the current pubkey and channel.
+    fn resubscribe(&mut self, ndb: &mut Ndb) {
+        let _ = ndb.unsubscribe(self.release_sub);
+        let filters = nostr::release_filter(&self.release_pubkey, self.channel);
+        self.release_sub = ndb.subscribe(&filters).expect("release subscription");
+        self.sent_relay_filter = false;
+    }
+
+    /// Change the release channel and resubscribe
+    pub fn set_channel(&mut self, ndb: &mut Ndb, channel: nostr::ReleaseChannel) {
+        if self.channel == channel {
+            return;
+        }
+        self.channel = channel;
+        self.resubscribe(ndb);
+        // Reset to re-check with the new channel
+        if matches!(
+            self.state,
+            UpdateState::UpToDate | UpdateState::WaitingForRelease
+        ) {
+            self.state = UpdateState::Idle;
+        }
+    }
+
     /// Override the release signing pubkey and resubscribe (for tests)
     #[cfg(feature = "snapshot-testing")]
-    pub fn set_release_pubkey(&mut self, ndb: &Ndb, pubkey: [u8; 32]) {
+    pub fn set_release_pubkey(&mut self, ndb: &mut Ndb, pubkey: [u8; 32]) {
         self.release_pubkey = pubkey;
-        let filters = nostr::release_filter(&pubkey, self.channel);
-        self.release_sub = ndb.subscribe(&filters).expect("release subscription");
+        self.resubscribe(ndb);
     }
 
     /// Force the updater into ReadyToInstall state (for snapshot tests)

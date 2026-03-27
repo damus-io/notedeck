@@ -180,7 +180,7 @@ pub fn extract_archive(archive_path: &Path, staging_dir: &Path) -> Result<PathBu
         // APK is the final artifact — no extraction needed
         let dest = staging_dir.join(file_name);
         std::fs::copy(archive_path, &dest).map_err(|e| format!("Failed to copy APK: {e}"))?;
-        return Ok(dest);
+        Ok(dest)
     } else if file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz") {
         extract_tar_gz(archive_path, staging_dir)
     } else if file_name.ends_with(".zip") {

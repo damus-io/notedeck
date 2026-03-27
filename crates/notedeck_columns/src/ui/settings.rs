@@ -33,6 +33,7 @@ pub enum SettingsAction {
     SetRepliestNewestFirst(bool),
     SetAnimateNavTransitions(bool),
     SetMaxHashtagsPerNote(usize),
+    SetReleaseChannel(String),
     OpenRelays,
     OpenCacheFolder,
     ClearCacheFolder,
@@ -93,6 +94,9 @@ impl SettingsAction {
             Self::SetSoundVolume(value) => {
                 app_ctx.sound.set_volume(value);
                 app_ctx.settings.set_sound_volume(value);
+            }
+            Self::SetReleaseChannel(channel) => {
+                app_ctx.settings.set_release_channel(&channel);
             }
             Self::CompactDatabase => {
                 let own_pubkeys: Vec<[u8; 32]> = app_ctx
@@ -704,6 +708,29 @@ impl<'a> SettingsView<'a> {
                 ui.label(
                     richtext_small(&text).color(ui.visuals().gray_out(ui.visuals().text_color())),
                 );
+            });
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small("Release channel:"));
+
+                let channels = ["main", "beta", "nightly", "dev"];
+                let mut selected = self.settings.release_channel.clone();
+                ComboBox::from_id_salt("release_channel")
+                    .selected_text(richtext_small(&selected))
+                    .show_ui(ui, |ui| {
+                        for ch in &channels {
+                            if ui
+                                .selectable_value(
+                                    &mut selected,
+                                    ch.to_string(),
+                                    richtext_small(*ch),
+                                )
+                                .changed()
+                            {
+                                action = Some(SettingsAction::SetReleaseChannel(selected.clone()));
+                            }
+                        }
+                    });
             });
         });
 

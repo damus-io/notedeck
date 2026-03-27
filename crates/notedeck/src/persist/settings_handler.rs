@@ -50,6 +50,14 @@ pub struct Settings {
     pub sounds_enabled: bool,
     #[serde(default = "default_sound_volume")]
     pub sound_volume: f32,
+    #[serde(default = "default_release_channel")]
+    pub release_channel: String,
+}
+
+const DEFAULT_RELEASE_CHANNEL: &str = "main";
+
+fn default_release_channel() -> String {
+    DEFAULT_RELEASE_CHANNEL.to_string()
 }
 
 fn default_animate_nav_transitions() -> bool {
@@ -85,6 +93,7 @@ impl Default for Settings {
             age_verified: false,
             sounds_enabled: default_sounds_enabled(),
             sound_volume: default_sound_volume(),
+            release_channel: default_release_channel(),
         }
     }
 }
@@ -322,6 +331,18 @@ impl SettingsHandler {
             .as_ref()
             .map(|s| s.tos_accepted)
             .unwrap_or(false)
+    }
+
+    pub fn release_channel(&self) -> &str {
+        self.current_settings
+            .as_ref()
+            .map(|s| s.release_channel.as_str())
+            .unwrap_or(DEFAULT_RELEASE_CHANNEL)
+    }
+
+    pub fn set_release_channel(&mut self, channel: &str) {
+        self.get_settings_mut().release_channel = channel.to_string();
+        self.try_save_settings();
     }
 
     pub fn accept_tos(&mut self) {
