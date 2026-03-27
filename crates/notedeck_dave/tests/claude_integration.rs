@@ -535,19 +535,37 @@ async fn test_can_use_tool_deny_prevents_execution() {
 
     let mut response_text = String::new();
     let mut stream = client.receive_response();
+    let mut received_result = false;
     while let Some(result) = stream.next().await {
-        if let Ok(ClaudeMessage::Assistant(msg)) = result {
-            for block in &msg.message.content {
-                if let ContentBlock::Text(TextBlock { text }) = block {
-                    response_text.push_str(text);
+        match result {
+            Ok(ClaudeMessage::Assistant(msg)) => {
+                for block in &msg.message.content {
+                    if let ContentBlock::Text(TextBlock { text }) = block {
+                        response_text.push_str(text);
+                    }
                 }
+            }
+            Ok(ClaudeMessage::Result(_)) => {
+                received_result = true;
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                panic!("Stream error: {}", e);
             }
         }
     }
+    drop(stream);
+
+    client.disconnect().await.expect("Failed to disconnect");
 
     assert!(
         was_denied.load(Ordering::SeqCst),
         "The can_use_tool callback should have been invoked and denied"
+    );
+    assert!(
+        received_result,
+        "Denied tool request should still produce a terminal Result message"
     );
     println!("Response after denial: {}", response_text);
 }
