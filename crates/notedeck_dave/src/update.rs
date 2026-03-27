@@ -198,21 +198,33 @@ pub fn exit_plan_mode(
 // Permission Handling
 // =============================================================================
 
+fn first_remote_pending_permission(
+    session: &ChatSession,
+) -> Option<&crate::messages::PermissionRequest> {
+    let agentic = session.agentic.as_ref();
+    let responded = agentic.map(|a| &a.permissions.responded);
+    session.chat.iter().find_map(|msg| {
+        let Message::PermissionRequest(req) = msg else {
+            return None;
+        };
+        if req.response.is_some() {
+            return None;
+        }
+        if responded.is_some_and(|ids| ids.contains_key(&req.id)) {
+            return None;
+        }
+        if agentic.is_some_and(|a| a.should_runtime_allow(&req.tool_name, &req.tool_input)) {
+            return None;
+        }
+        Some(req)
+    })
+}
+
 /// Get the first pending permission request ID for the active session.
 pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid::Uuid> {
     let session = session_manager.get_active()?;
     if session.is_remote() {
-        // Remote: find first unresponded PermissionRequest in chat
-        let responded = session.agentic.as_ref().map(|a| &a.permissions.responded);
-        for msg in &session.chat {
-            if let Message::PermissionRequest(req) = msg {
-                if req.response.is_none() && responded.is_none_or(|ids| !ids.contains_key(&req.id))
-                {
-                    return Some(req.id);
-                }
-            }
-        }
-        None
+        first_remote_pending_permission(session).map(|req| req.id)
     } else {
         // Local: check oneshot senders
         session
@@ -224,18 +236,21 @@ pub fn first_pending_permission(session_manager: &SessionManager) -> Option<uuid
 
 /// Get the first pending permission request for the active session.
 pub fn pending_permission(session_manager: &SessionManager) -> Option<&PermissionRequest> {
-    let request_id = first_pending_permission(session_manager)?;
     let session = session_manager.get_active()?;
 
-    for msg in &session.chat {
+    if session.is_remote() {
+        return first_remote_pending_permission(session);
+    }
+
+    let request_id = first_pending_permission(session_manager)?;
+    session.chat.iter().find_map(|msg| {
         if let Message::PermissionRequest(req) = msg {
             if req.id == request_id {
                 return Some(req);
             }
         }
-    }
-
-    None
+        None
+    })
 }
 
 /// Check if the first pending permission is a shared question-set prompt.
@@ -249,7 +264,7 @@ pub fn has_pending_exit_plan_mode(session_manager: &SessionManager) -> bool {
     pending_permission(session_manager).is_some_and(|request| request.view.is_plan_review())
 }
 
-/// Data needed to publish a permission response to relays.
+/// Data needed to publish a permission response event.
 pub struct PermissionPublish {
     pub perm_id: uuid::Uuid,
     pub event_session_id: String,
@@ -277,6 +292,13 @@ pub fn handle_permission_response(
             .copied()?;
         Some((agentic.event_session_id().to_string(), request_note_id))
     });
+    if is_remote && publish_metadata.is_none() {
+        tracing::warn!(
+            "missing permission publish metadata for remote request {}",
+            request_id
+        );
+        return None;
+    }
 
     let response_type = match &response {
         PermissionResponse::Allow { .. } => crate::messages::PermissionResponseType::Allowed,
@@ -326,17 +348,7 @@ pub fn handle_permission_response(
         }
     }
 
-    let Some((event_session_id, request_note_id)) = publish_metadata else {
-        if is_remote {
-            tracing::warn!(
-                "missing permission publish metadata for remote request {}",
-                request_id
-            );
-        }
-        return None;
-    };
-
-    Some(PermissionPublish {
+    publish_metadata.map(|(event_session_id, request_note_id)| PermissionPublish {
         perm_id: request_id,
         event_session_id,
         request_note_id,
@@ -363,6 +375,13 @@ pub fn handle_question_response(
             .copied()?;
         Some((agentic.event_session_id().to_string(), request_note_id))
     });
+    if is_remote && publish_metadata.is_none() {
+        tracing::warn!(
+            "missing question publish metadata for remote request {}",
+            request_id
+        );
+        return None;
+    }
 
     // Find the original shared question-set request to get the option labels.
     let questions_input = session.chat.iter().find_map(|msg| {
@@ -469,17 +488,7 @@ pub fn handle_question_response(
         }
     }
 
-    let Some((event_session_id, request_note_id)) = publish_metadata else {
-        if is_remote {
-            tracing::warn!(
-                "missing question publish metadata for remote request {}",
-                request_id
-            );
-        }
-        return None;
-    };
-
-    Some(PermissionPublish {
+    publish_metadata.map(|(event_session_id, request_note_id)| PermissionPublish {
         perm_id: request_id,
         event_session_id,
         request_note_id,
@@ -1350,7 +1359,7 @@ mod tests {
     use super::*;
     use crate::collapse_state::CollapseState;
     use crate::focus_queue::{FocusPriority, FocusQueue};
-    use crate::session::SessionId;
+    use crate::session::{SessionId, SessionSource};
 
     fn create_named_agent_session(
         sm: &mut SessionManager,
@@ -1380,6 +1389,94 @@ mod tests {
 
         sm.rebuild_cwd_groups();
         id
+    }
+
+    fn create_remote_agent_session(
+        sm: &mut SessionManager,
+        picker: &mut DirectoryPicker,
+        scene: &mut AgentScene,
+    ) -> SessionId {
+        let id = create_session_with_cwd(
+            sm,
+            picker,
+            scene,
+            false,
+            AiMode::Agentic,
+            PathBuf::from("/tmp"),
+            "remote-a",
+            BackendType::Claude,
+            None,
+            Model::Default,
+        );
+        let session = sm.get_mut(id).expect("session should exist");
+        session.source = SessionSource::Remote;
+        id
+    }
+
+    fn find_permission_request(
+        session: &crate::session::ChatSession,
+        request_id: uuid::Uuid,
+    ) -> &PermissionRequest {
+        session
+            .chat
+            .iter()
+            .find_map(|msg| match msg {
+                Message::PermissionRequest(req) if req.id == request_id => Some(req),
+                _ => None,
+            })
+            .expect("permission request should exist")
+    }
+
+    #[test]
+    fn pending_permission_skips_runtime_allowed_remote_requests() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_remote_agent_session(&mut sm, &mut picker, &mut scene);
+        let allowed_id = uuid::Uuid::new_v4();
+        let next_id = uuid::Uuid::new_v4();
+
+        let session = sm.get_mut(id).expect("session should exist");
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::new(
+                allowed_id,
+                "Bash".to_owned(),
+                serde_json::json!({"command": "echo hi"}),
+                Some(PermissionView::RawFallback),
+                None,
+                None,
+            )));
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::new(
+                next_id,
+                "AskUserQuestion".to_owned(),
+                serde_json::json!({}),
+                Some(PermissionView::QuestionSet(
+                    crate::messages::QuestionSetInput {
+                        questions: vec![crate::messages::UserQuestion {
+                            question: "Pick one".to_owned(),
+                            header: "choice".to_owned(),
+                            multi_select: false,
+                            options: vec![crate::messages::QuestionOption {
+                                label: "A".to_owned(),
+                                description: "Option A".to_owned(),
+                            }],
+                        }],
+                    },
+                )),
+                None,
+                None,
+            )));
+
+        if let Some(agentic) = &mut session.agentic {
+            let _ = agentic.add_runtime_allow("Bash", &serde_json::json!({"command": "echo hi"}));
+        }
+
+        assert_eq!(first_pending_permission(&sm), Some(next_id));
+        assert_eq!(pending_permission(&sm).map(|req| req.id), Some(next_id));
+        assert!(has_pending_question(&sm));
     }
 
     /// clone_session must preserve the source session's model override
@@ -1543,7 +1640,7 @@ mod tests {
         );
 
         let mut collapse = CollapseState::new();
-        collapse.toggle_cwd("remote-a", "/srv/hidden");
+        collapse.toggle_cwd("remote-a", std::path::Path::new("/srv/hidden"));
 
         focus_queue.enqueue(hidden_id, FocusPriority::NeedsInput);
         focus_queue.enqueue(visible_id, FocusPriority::Error);
@@ -1611,6 +1708,286 @@ mod tests {
         assert_eq!(
             focus_queue.current().map(|entry| entry.session_id),
             Some(visible_done)
+        );
+    }
+
+    #[test]
+    fn remote_permission_response_without_publish_metadata_keeps_request_pending() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_remote_agent_session(&mut sm, &mut picker, &mut scene);
+        let request_id = uuid::Uuid::new_v4();
+
+        let session = sm.get_mut(id).expect("session should exist");
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::new(
+                request_id,
+                "Bash".to_owned(),
+                serde_json::json!({"command": "echo hi"}),
+                Some(PermissionView::RawFallback),
+                None,
+                None,
+            )));
+
+        let publish = handle_permission_response(
+            &mut sm,
+            request_id,
+            PermissionResponse::Allow {
+                message: Some("ack".to_owned()),
+            },
+        );
+        assert!(
+            publish.is_none(),
+            "remote response without metadata should not publish"
+        );
+
+        let session = sm.get(id).expect("session should exist");
+        let req = find_permission_request(session, request_id);
+        assert_eq!(
+            req.response, None,
+            "missing metadata must not resolve the request locally"
+        );
+        assert!(
+            !session
+                .agentic
+                .as_ref()
+                .expect("agentic session")
+                .permissions
+                .responded
+                .contains_key(&request_id),
+            "missing metadata must not mark request as responded"
+        );
+    }
+
+    #[test]
+    fn local_permission_response_with_publish_metadata_returns_publish() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_named_agent_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            "localhost",
+            "/tmp",
+            "Local",
+        );
+        let request_id = uuid::Uuid::new_v4();
+        let request_note_id = [7_u8; 32];
+
+        let session = sm.get_mut(id).expect("session should exist");
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::new(
+                request_id,
+                "Bash".to_owned(),
+                serde_json::json!({"command": "echo hi"}),
+                Some(PermissionView::RawFallback),
+                None,
+                None,
+            )));
+        let expected_event_session_id = session
+            .agentic
+            .as_ref()
+            .expect("agentic session")
+            .event_session_id()
+            .to_owned();
+        session
+            .agentic
+            .as_mut()
+            .expect("agentic session")
+            .permissions
+            .request_note_ids
+            .insert(request_id, request_note_id);
+
+        let publish = handle_permission_response(
+            &mut sm,
+            request_id,
+            PermissionResponse::Allow { message: None },
+        )
+        .expect("local response with metadata should return publish payload");
+        assert_eq!(publish.perm_id, request_id);
+        assert_eq!(publish.event_session_id, expected_event_session_id);
+        assert_eq!(publish.request_note_id, request_note_id);
+        assert!(publish.allowed);
+        assert_eq!(publish.message, None);
+        assert!(!publish.cancel_turn);
+
+        let session = sm.get(id).expect("session should exist");
+        let req = find_permission_request(session, request_id);
+        assert_eq!(
+            req.response,
+            Some(crate::messages::PermissionResponseType::Allowed)
+        );
+    }
+
+    #[test]
+    fn remote_question_response_without_publish_metadata_keeps_request_pending() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_remote_agent_session(&mut sm, &mut picker, &mut scene);
+        let request_id = uuid::Uuid::new_v4();
+
+        let session = sm.get_mut(id).expect("session should exist");
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::new(
+                request_id,
+                "AskUserQuestion".to_owned(),
+                serde_json::json!({}),
+                Some(PermissionView::QuestionSet(
+                    crate::messages::QuestionSetInput {
+                        questions: vec![crate::messages::UserQuestion {
+                            question: "Pick one".to_owned(),
+                            header: "choice".to_owned(),
+                            multi_select: false,
+                            options: vec![crate::messages::QuestionOption {
+                                label: "A".to_owned(),
+                                description: "Option A".to_owned(),
+                            }],
+                        }],
+                    },
+                )),
+                None,
+                None,
+            )));
+        if let Some(agentic) = &mut session.agentic {
+            agentic.question_answers.insert(
+                request_id,
+                vec![QuestionAnswer {
+                    selected: vec![0],
+                    other_text: None,
+                }],
+            );
+            agentic.question_index.insert(request_id, 0);
+        }
+
+        let publish = handle_question_response(
+            &mut sm,
+            request_id,
+            vec![QuestionAnswer {
+                selected: vec![0],
+                other_text: None,
+            }],
+        );
+        assert!(
+            publish.is_none(),
+            "remote question response without metadata should not publish"
+        );
+
+        let session = sm.get(id).expect("session should exist");
+        let req = find_permission_request(session, request_id);
+        assert_eq!(
+            req.response, None,
+            "missing metadata must not resolve question request locally"
+        );
+        let agentic = session.agentic.as_ref().expect("agentic session");
+        assert!(
+            !agentic.permissions.responded.contains_key(&request_id),
+            "missing metadata must not mark question request as responded"
+        );
+        assert!(
+            agentic.question_answers.contains_key(&request_id),
+            "missing metadata should keep staged answers for retry"
+        );
+        assert!(
+            agentic.question_index.contains_key(&request_id),
+            "missing metadata should keep staged question index for retry"
+        );
+    }
+
+    #[test]
+    fn local_question_response_with_publish_metadata_returns_publish() {
+        let mut sm = SessionManager::new();
+        let mut picker = DirectoryPicker::new();
+        let mut scene = AgentScene::new();
+        let id = create_named_agent_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            "localhost",
+            "/tmp",
+            "Local Question",
+        );
+        let request_id = uuid::Uuid::new_v4();
+        let request_note_id = [9_u8; 32];
+
+        let session = sm.get_mut(id).expect("session should exist");
+        session
+            .chat
+            .push(Message::PermissionRequest(PermissionRequest::new(
+                request_id,
+                "AskUserQuestion".to_owned(),
+                serde_json::json!({}),
+                Some(PermissionView::QuestionSet(
+                    crate::messages::QuestionSetInput {
+                        questions: vec![crate::messages::UserQuestion {
+                            question: "Pick one".to_owned(),
+                            header: "choice".to_owned(),
+                            multi_select: false,
+                            options: vec![crate::messages::QuestionOption {
+                                label: "A".to_owned(),
+                                description: "Option A".to_owned(),
+                            }],
+                        }],
+                    },
+                )),
+                None,
+                None,
+            )));
+        let expected_event_session_id = session
+            .agentic
+            .as_ref()
+            .expect("agentic session")
+            .event_session_id()
+            .to_owned();
+        session
+            .agentic
+            .as_mut()
+            .expect("agentic session")
+            .permissions
+            .request_note_ids
+            .insert(request_id, request_note_id);
+
+        let publish = handle_question_response(
+            &mut sm,
+            request_id,
+            vec![QuestionAnswer {
+                selected: vec![0],
+                other_text: None,
+            }],
+        )
+        .expect("local question response with metadata should return publish payload");
+        assert_eq!(publish.perm_id, request_id);
+        assert_eq!(publish.event_session_id, expected_event_session_id);
+        assert_eq!(publish.request_note_id, request_note_id);
+        assert!(publish.allowed);
+        assert!(!publish.cancel_turn);
+
+        let payload = publish
+            .message
+            .expect("question response should have payload");
+        let value: serde_json::Value =
+            serde_json::from_str(&payload).expect("payload should be valid json");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "answers": {
+                    "choice": {
+                        "selected": ["A"]
+                    }
+                }
+            })
+        );
+
+        let session = sm.get(id).expect("session should exist");
+        let req = find_permission_request(session, request_id);
+        assert_eq!(
+            req.response,
+            Some(crate::messages::PermissionResponseType::Allowed)
         );
     }
 

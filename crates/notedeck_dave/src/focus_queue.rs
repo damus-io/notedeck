@@ -269,9 +269,10 @@ impl FocusQueue {
         priority: FocusPriority,
         visible: &[SessionId],
     ) -> Option<usize> {
-        self.entries
-            .iter()
-            .position(|e| e.priority == priority && visible.contains(&e.session_id))
+        visible.iter().find_map(|session_id| {
+            let idx = self.find(*session_id)?;
+            (self.entries[idx].priority == priority).then_some(idx)
+        })
     }
 
     pub fn ui_info(&self) -> Option<(usize, usize, FocusPriority)> {
@@ -596,5 +597,21 @@ mod tests {
         assert!(!update.new_needs_input);
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.current().unwrap().session_id, session(1));
+    }
+
+    #[test]
+    fn test_first_visible_index_honors_visible_order() {
+        let mut queue = FocusQueue::new();
+        queue.enqueue(session(10), FocusPriority::NeedsInput);
+        queue.enqueue(session(20), FocusPriority::NeedsInput);
+        queue.enqueue(session(30), FocusPriority::Done);
+
+        // Queue order is [10, 20, 30], but UI-visible order can differ.
+        let visible = vec![session(20), session(10), session(30)];
+
+        let idx = queue
+            .first_visible_index(FocusPriority::NeedsInput, &visible)
+            .expect("expected visible NeedsInput entry");
+        assert_eq!(queue.entries[idx].session_id, session(20));
     }
 }

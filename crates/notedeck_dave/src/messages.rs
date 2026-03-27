@@ -160,7 +160,9 @@ impl PermissionView {
 
         if tool_name == "AskUserQuestion" {
             if let Ok(questions) = serde_json::from_value::<QuestionSetInput>(tool_input.clone()) {
-                return Self::QuestionSet(questions);
+                if !questions.questions.is_empty() {
+                    return Self::QuestionSet(questions);
+                }
             }
         }
 
@@ -761,5 +763,11 @@ mod tests {
         }
 
         assert_eq!(request.response, Some(PermissionResponseType::Denied));
+    }
+
+    #[test]
+    fn permission_view_empty_question_set_falls_back_to_raw() {
+        let view = PermissionView::infer("AskUserQuestion", &json!({ "questions": [] }));
+        assert!(matches!(view, PermissionView::RawFallback));
     }
 }

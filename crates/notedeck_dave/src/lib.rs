@@ -641,8 +641,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Toggle a cwd collapse state, persist it, and re-arm auto-steal if needed.
-    fn toggle_cwd_collapse(&mut self, hostname: &str, display_cwd: &str) {
-        self.collapse_state.toggle_cwd(hostname, display_cwd);
+    fn toggle_cwd_collapse(&mut self, hostname: &str, cwd: &std::path::Path) {
+        self.collapse_state.toggle_cwd(hostname, cwd);
         self.collapse_serializer
             .try_save(self.collapse_state.clone());
         if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
@@ -1284,8 +1284,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::ToggleHostCollapse(hostname) => {
                     self.toggle_host_collapse(&hostname);
                 }
-                SessionListAction::ToggleCwdCollapse(hostname, display_cwd) => {
-                    self.toggle_cwd_collapse(&hostname, &display_cwd);
+                SessionListAction::ToggleCwdCollapse(hostname, cwd) => {
+                    self.toggle_cwd_collapse(&hostname, &cwd);
                 }
                 SessionListAction::NewSessionInCwd(hostname, cwd) => {
                     let target_host = if hostname.is_empty() {
@@ -1377,8 +1377,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 SessionListAction::ToggleHostCollapse(hostname) => {
                     self.toggle_host_collapse(&hostname);
                 }
-                SessionListAction::ToggleCwdCollapse(hostname, display_cwd) => {
-                    self.toggle_cwd_collapse(&hostname, &display_cwd);
+                SessionListAction::ToggleCwdCollapse(hostname, cwd) => {
+                    self.toggle_cwd_collapse(&hostname, &cwd);
                 }
                 SessionListAction::NewSessionInCwd(hostname, cwd) => {
                     let target_host = if hostname.is_empty() {
@@ -1745,7 +1745,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Build and queue permission response events from remote sessions.
+    /// Build and queue permission response events.
     /// Called in the update loop where AppContext is available.
     fn publish_pending_perm_responses(&mut self, ctx: &AppContext<'_>) {
         if self.pending_perm_responses.is_empty() {
@@ -1772,7 +1772,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     &sk,
                 ),
                 &format!(
-                    "queued remote permission response for {} ({})",
+                    "queued permission response for {} ({})",
                     resp.perm_id,
                     if resp.allowed { "allow" } else { "deny" }
                 ),
@@ -4726,14 +4726,14 @@ mod tests {
         .with_delay(Duration::ZERO);
 
         dave.toggle_host_collapse("remote-a");
-        dave.toggle_cwd_collapse("remote-b", "/srv/api");
+        dave.toggle_cwd_collapse("remote-b", std::path::Path::new("/srv/api"));
 
         let persisted = dave
             .collapse_serializer
             .get_item()
             .expect("collapse state should be persisted");
         assert!(persisted.is_host_collapsed("remote-a"));
-        assert!(persisted.is_cwd_collapsed("remote-b", "/srv/api"));
+        assert!(persisted.is_cwd_collapsed("remote-b", std::path::Path::new("/srv/api")));
 
         drop(dave);
 
@@ -4741,7 +4741,7 @@ mod tests {
         assert!(restored.collapse_state.is_host_collapsed("remote-a"));
         assert!(restored
             .collapse_state
-            .is_cwd_collapsed("remote-b", "/srv/api"));
+            .is_cwd_collapsed("remote-b", std::path::Path::new("/srv/api")));
     }
 
     #[test]
@@ -4762,7 +4762,7 @@ mod tests {
         assert!(
             !restored
                 .collapse_state
-                .is_cwd_collapsed("remote-a", "/srv/api"),
+                .is_cwd_collapsed("remote-a", std::path::Path::new("/srv/api")),
             "invalid saved state should not restore any collapsed cwd entries"
         );
     }
@@ -4792,13 +4792,13 @@ mod tests {
             .expect("collapse state should be saved");
         assert!(persisted.is_host_collapsed("remote-a"));
 
-        dave.toggle_cwd_collapse("remote-a", "/srv/api");
+        dave.toggle_cwd_collapse("remote-a", std::path::Path::new("/srv/api"));
 
         let persisted = dave
             .collapse_serializer
             .get_item()
             .expect("collapse state should stay saved");
         assert!(persisted.is_host_collapsed("remote-a"));
-        assert!(persisted.is_cwd_collapsed("remote-a", "/srv/api"));
+        assert!(persisted.is_cwd_collapsed("remote-a", std::path::Path::new("/srv/api")));
     }
 }

@@ -78,6 +78,21 @@ fn cancelled_turn_message_action(message: &ClaudeMessage) -> CancelledTurnMessag
     }
 }
 
+/// Returns whether a cancelled-turn message should be suppressed from normal handling.
+///
+/// `FinishTurn` marks the stream done but still allows the message to flow
+/// through normal handlers (notably `ClaudeMessage::Result`) so final usage
+/// and completion events are emitted.
+fn should_suppress_cancelled_turn_message(message: &ClaudeMessage, stream_done: &mut bool) -> bool {
+    match cancelled_turn_message_action(message) {
+        CancelledTurnMessageAction::FinishTurn => {
+            *stream_done = true;
+            false
+        }
+        CancelledTurnMessageAction::Ignore => true,
+    }
+}
+
 pub struct ClaudeBackend {
     /// Registry of active sessions (using dashmap for lock-free access)
     sessions: DashMap<String, SessionHandle>,
@@ -422,18 +437,16 @@ async fn session_actor(
                         stream_result = stream.next() => {
                             match stream_result {
                                 Some(Ok(message)) => {
-                                    if cancel_current_turn {
-                                        match cancelled_turn_message_action(&message) {
-                                            CancelledTurnMessageAction::FinishTurn => {
-                                                stream_done = true;
-                                            }
-                                            CancelledTurnMessageAction::Ignore => {
-                                                tracing::debug!(
-                                                    "Suppressing Claude message after cancelled turn: {:?}",
-                                                    std::mem::discriminant(&message)
-                                                );
-                                            }
-                                        }
+                                    if cancel_current_turn
+                                        && should_suppress_cancelled_turn_message(
+                                            &message,
+                                            &mut stream_done,
+                                        )
+                                    {
+                                        tracing::debug!(
+                                            "Suppressing Claude message after cancelled turn: {:?}",
+                                            std::mem::discriminant(&message)
+                                        );
                                         continue;
                                     }
                                     match message {
@@ -859,6 +872,30 @@ mod tests {
         assert_eq!(
             cancelled_turn_message_action(&result),
             CancelledTurnMessageAction::FinishTurn
+        );
+    }
+
+    #[test]
+    fn cancelled_turn_finish_turn_is_not_suppressed() {
+        let result = serde_json::from_value::<ClaudeMessage>(serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "duration_ms": 1,
+            "duration_api_ms": 1,
+            "is_error": false,
+            "num_turns": 1,
+            "session_id": "sess-1"
+        }))
+        .expect("result message should deserialize");
+
+        let mut stream_done = false;
+        assert!(!should_suppress_cancelled_turn_message(
+            &result,
+            &mut stream_done
+        ));
+        assert!(
+            stream_done,
+            "result should mark the stream done without being suppressed"
         );
     }
 

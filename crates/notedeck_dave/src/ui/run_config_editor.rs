@@ -232,32 +232,36 @@ pub(crate) fn run_config_editor_overlay_ui(
 
                         let text_color = ui.visuals().text_color();
                         let dim = ui.visuals().weak_text_color();
-                        for suggestion in &editor.suggestions {
-                            let mut job = egui::text::LayoutJob::default();
-                            job.append(
-                                &suggestion.name,
-                                0.0,
-                                egui::TextFormat {
-                                    font_id: egui::FontId::proportional(12.0),
-                                    color: text_color,
-                                    ..Default::default()
-                                },
-                            );
-                            job.append(
-                                &suggestion.command,
-                                8.0,
-                                egui::TextFormat {
-                                    font_id: egui::FontId::monospace(11.0),
-                                    color: dim,
-                                    ..Default::default()
-                                },
-                            );
+                        egui::ScrollArea::vertical()
+                            .max_height(140.0)
+                            .show(ui, |ui| {
+                                for suggestion in &editor.suggestions {
+                                    let mut job = egui::text::LayoutJob::default();
+                                    job.append(
+                                        &suggestion.name,
+                                        0.0,
+                                        egui::TextFormat {
+                                            font_id: egui::FontId::proportional(12.0),
+                                            color: text_color,
+                                            ..Default::default()
+                                        },
+                                    );
+                                    job.append(
+                                        &suggestion.command,
+                                        8.0,
+                                        egui::TextFormat {
+                                            font_id: egui::FontId::monospace(11.0),
+                                            color: dim,
+                                            ..Default::default()
+                                        },
+                                    );
 
-                            if ui.add(egui::SelectableLabel::new(false, job)).clicked() {
-                                editor.name.clone_from(&suggestion.name);
-                                editor.command.clone_from(&suggestion.command);
-                            }
-                        }
+                                    if ui.add(egui::SelectableLabel::new(false, job)).clicked() {
+                                        editor.name.clone_from(&suggestion.name);
+                                        editor.command.clone_from(&suggestion.command);
+                                    }
+                                }
+                            });
                     }
 
                     ui.add_space(16.0);

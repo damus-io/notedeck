@@ -1173,13 +1173,15 @@ impl SessionManager {
 
     /// Collect unique remote hostnames from all sessions.
     pub fn remote_hostnames(&self) -> Vec<String> {
-        let mut hosts = Vec::new();
-        for session in self.sessions.values() {
-            let h = &session.details.hostname;
-            if !h.is_empty() && !hosts.contains(h) {
-                hosts.push(h.clone());
-            }
-        }
+        let mut hosts: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|session| session.is_remote())
+            .map(|session| session.details.hostname.clone())
+            .filter(|hostname| !hostname.is_empty())
+            .collect();
+        hosts.sort_unstable();
+        hosts.dedup();
         hosts
     }
 
@@ -1202,7 +1204,7 @@ impl SessionManager {
                 continue;
             }
             for cwd_group in &host_group.cwd_groups {
-                if collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.display_cwd) {
+                if collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd) {
                     continue;
                 }
                 ids.extend_from_slice(&cwd_group.session_ids);
@@ -1234,6 +1236,7 @@ impl SessionManager {
 
                 let hostname = session.details.hostname.clone();
                 let cwd = session.cwd().or(session.details.cwd.as_ref());
+                let raw_cwd = cwd.cloned().unwrap_or_default();
                 let cwd_display = match cwd {
                     Some(cwd) => {
                         let home = &session.details.home_dir;
@@ -1265,11 +1268,10 @@ impl SessionManager {
                 if let Some(cg) = host_group
                     .cwd_groups
                     .iter_mut()
-                    .find(|cg| cg.display_cwd == cwd_display)
+                    .find(|cg| cg.cwd == raw_cwd)
                 {
                     cg.session_ids.push(id);
                 } else {
-                    let raw_cwd = cwd.cloned().unwrap_or_default();
                     host_group.cwd_groups.push(CwdGroup {
                         display_cwd: cwd_display,
                         cwd: raw_cwd,
@@ -2437,6 +2439,40 @@ mod tests {
     }
 
     #[test]
+    fn remote_hostnames_only_returns_unique_sorted_remote_hosts() {
+        let mut mgr = SessionManager::new();
+
+        let local_id =
+            create_grouped_session(&mut mgr, "local-host", "/work/a", "Local", AiMode::Agentic);
+        let remote_b =
+            create_grouped_session(&mut mgr, "beta-host", "/srv/b", "Remote B", AiMode::Agentic);
+        let remote_a = create_grouped_session(
+            &mut mgr,
+            "alpha-host",
+            "/srv/a",
+            "Remote A",
+            AiMode::Agentic,
+        );
+        let remote_dup = create_grouped_session(
+            &mut mgr,
+            "beta-host",
+            "/srv/other",
+            "Remote B 2",
+            AiMode::Agentic,
+        );
+
+        mgr.get_mut(local_id).expect("local session").source = SessionSource::Local;
+        mgr.get_mut(remote_a).expect("remote session").source = SessionSource::Remote;
+        mgr.get_mut(remote_b).expect("remote session").source = SessionSource::Remote;
+        mgr.get_mut(remote_dup).expect("remote session").source = SessionSource::Remote;
+
+        assert_eq!(
+            mgr.remote_hostnames(),
+            vec!["alpha-host".to_string(), "beta-host".to_string()]
+        );
+    }
+
+    #[test]
     fn remote_dispatch_idle_with_user_message() {
         let mut session = test_remote_session();
         session.chat.push(Message::User("hello".into()));
@@ -2941,7 +2977,7 @@ mod tests {
         mgr.rebuild_cwd_groups();
 
         let mut collapse = CollapseState::new();
-        collapse.toggle_cwd("", "/work/a");
+        collapse.toggle_cwd("", std::path::Path::new("/work/a"));
         collapse.toggle_host("remote-b");
 
         assert_eq!(

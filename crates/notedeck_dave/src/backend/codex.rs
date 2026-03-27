@@ -45,19 +45,21 @@ const JSON_RPC_INVALID_PARAMS_CODE: i64 = -32602;
 // Session actor
 // ---------------------------------------------------------------------------
 
-/// Per-question accept/decline labels extracted from the incoming request.
+/// Per-question option mapping for `requestUserInput`.
 struct QuestionAnswer {
     question_id: String,
-    accept_label: String,
-    decline_label: String,
+    options: Vec<String>,
+    accept_index: usize,
+    decline_index: usize,
+    cancel_index: usize,
 }
 
 /// How to format the approval response sent back to Codex.
 enum ResponseKind {
     /// Standard approval — `{ "decision": "accept" | "decline" | "cancel" }`.
     Standard,
-    /// `requestUserInput` answer — stores labels for every question so we can
-    /// build the full response based on the user's accept/decline decision.
+    /// `requestUserInput` answer — stores exact options for every question so we
+    /// can round-trip the original labels without guessing.
     UserInput(Vec<QuestionAnswer>),
 }
 
@@ -1039,36 +1041,139 @@ fn extract_mcp_tool_name(question_text: &str) -> Option<&str> {
     Some(&after[..end])
 }
 
-/// Extract the accept/decline labels from a question's options list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OptionIntent {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+fn classify_option_intent(label: &str) -> Option<OptionIntent> {
+    let lower = label.to_ascii_lowercase();
+    if lower.contains("cancel") || lower.contains("abort") {
+        return Some(OptionIntent::Cancel);
+    }
+    if lower.contains("deny") || lower.contains("decline") || lower.contains("reject") {
+        return Some(OptionIntent::Decline);
+    }
+    if lower.contains("approve") || lower.contains("allow") {
+        return Some(OptionIntent::Accept);
+    }
+    None
+}
+
+/// Resolve a single approval question into an exact option-index mapping for
+/// accept/decline/cancel decisions.
 ///
-/// Falls back to `"Approve Once"` / `"Cancel"` if the options aren't present
-/// or don't contain a recognizable label.
-fn extract_option_labels(question: &UserInputQuestion) -> (String, String) {
-    let opts = question.options.as_deref().unwrap_or(&[]);
+/// Returns `None` when the question cannot be represented losslessly in Dave's
+/// 3-button approval UI (Allow, Deny, Exit).
+fn resolve_question_answer(question: &UserInputQuestion) -> Option<QuestionAnswer> {
+    if question.is_secret == Some(true) || question.is_other == Some(true) {
+        return None;
+    }
 
-    // Accept = first option whose label contains "approve" (case-insensitive).
-    let accept = opts
-        .iter()
-        .find(|o| o.label.to_ascii_lowercase().contains("approve"))
-        .map(|o| o.label.clone())
-        .unwrap_or_else(|| {
-            opts.first()
-                .map(|o| o.label.clone())
-                .unwrap_or_else(|| "Approve Once".to_string())
-        });
+    let options = question.options.as_deref()?;
+    if options.is_empty() {
+        return None;
+    }
 
-    // Decline = first option whose label contains "cancel" (case-insensitive).
-    let decline = opts
-        .iter()
-        .find(|o| o.label.to_ascii_lowercase().contains("cancel"))
-        .map(|o| o.label.clone())
-        .unwrap_or_else(|| {
-            opts.last()
-                .map(|o| o.label.clone())
-                .unwrap_or_else(|| "Cancel".to_string())
-        });
+    let mut accepts = Vec::new();
+    let mut declines = Vec::new();
+    let mut cancels = Vec::new();
 
-    (accept, decline)
+    for (idx, option) in options.iter().enumerate() {
+        match classify_option_intent(&option.label) {
+            Some(OptionIntent::Accept) => accepts.push(idx),
+            Some(OptionIntent::Decline) => declines.push(idx),
+            Some(OptionIntent::Cancel) => cancels.push(idx),
+            None => {
+                tracing::warn!(
+                    "requestUserInput question {} has unsupported option label {:?}",
+                    question.id,
+                    option.label
+                );
+                return None;
+            }
+        }
+    }
+
+    // Prefer an explicit "once" approval label when there are multiple allow
+    // choices (e.g. "Approve Once" + "Approve this session").
+    let accept_index = if accepts.len() == 1 {
+        accepts[0]
+    } else if let Some(index) = accepts.iter().copied().find(|idx| {
+        let lower = options[*idx].label.to_ascii_lowercase();
+        lower.contains("once") && (lower.contains("approve") || lower.contains("allow"))
+    }) {
+        index
+    } else {
+        let labels: Vec<&str> = accepts
+            .iter()
+            .map(|idx| options[*idx].label.as_str())
+            .collect();
+        tracing::warn!(
+            "requestUserInput question {} has ambiguous accept options: {:?}",
+            question.id,
+            labels
+        );
+        return None;
+    };
+
+    if declines.len() > 1 {
+        let labels: Vec<&str> = declines
+            .iter()
+            .map(|idx| options[*idx].label.as_str())
+            .collect();
+        tracing::warn!(
+            "requestUserInput question {} has ambiguous decline options: {:?}",
+            question.id,
+            labels
+        );
+        return None;
+    }
+    if cancels.len() > 1 {
+        let labels: Vec<&str> = cancels
+            .iter()
+            .map(|idx| options[*idx].label.as_str())
+            .collect();
+        tracing::warn!(
+            "requestUserInput question {} has ambiguous cancel options: {:?}",
+            question.id,
+            labels
+        );
+        return None;
+    }
+
+    let decline_index = match (declines.first(), cancels.first()) {
+        (Some(label), _) => *label,
+        (None, Some(label)) => *label,
+        (None, None) => {
+            tracing::warn!(
+                "requestUserInput question {} has no decline/cancel option",
+                question.id
+            );
+            return None;
+        }
+    };
+    let cancel_index = match (cancels.first(), declines.first()) {
+        (Some(label), _) => *label,
+        (None, Some(label)) => *label,
+        (None, None) => {
+            tracing::warn!(
+                "requestUserInput question {} has no cancel/decline option",
+                question.id
+            );
+            return None;
+        }
+    };
+
+    Some(QuestionAnswer {
+        question_id: question.id.clone(),
+        options: options.iter().map(|o| o.label.clone()).collect(),
+        accept_index,
+        decline_index,
+        cancel_index,
+    })
 }
 
 /// Returns `true` if a question looks like a binary approval prompt that we
@@ -1077,34 +1182,12 @@ fn extract_option_labels(question: &UserInputQuestion) -> (String, String) {
 /// Rejects questions that are free-text, secret, have no options, or have
 /// options that don't clearly map to approve/cancel semantics.
 fn is_approval_shaped(question: &UserInputQuestion) -> bool {
-    if question.is_secret == Some(true) || question.is_other == Some(true) {
-        return false;
-    }
-    let opts = match &question.options {
-        Some(opts) if !opts.is_empty() => opts,
-        _ => return false,
-    };
-    let labels_lower: Vec<String> = opts.iter().map(|o| o.label.to_ascii_lowercase()).collect();
-    let has_approve = labels_lower.iter().any(|l| l.contains("approve"));
-    let has_cancel = labels_lower
-        .iter()
-        .any(|l| l.contains("cancel") || l.contains("deny"));
-    has_approve && has_cancel
+    resolve_question_answer(question).is_some()
 }
 
 /// Build `QuestionAnswer` entries for every question in the request.
-fn build_question_answers(questions: &[UserInputQuestion]) -> Vec<QuestionAnswer> {
-    questions
-        .iter()
-        .map(|q| {
-            let (accept_label, decline_label) = extract_option_labels(q);
-            QuestionAnswer {
-                question_id: q.id.clone(),
-                accept_label,
-                decline_label,
-            }
-        })
-        .collect()
+fn build_question_answers(questions: &[UserInputQuestion]) -> Option<Vec<QuestionAnswer>> {
+    questions.iter().map(resolve_question_answer).collect()
 }
 
 /// Build the compact approval prompt view payload used by the shared permission UI.
@@ -1128,6 +1211,22 @@ fn build_approval_prompt(
                 "header": q.header,
             })
         }).collect::<Vec<_>>(),
+        "options": questions
+            .iter()
+            .map(|q| {
+                q.options
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|o| {
+                        serde_json::json!({
+                            "label": o.label,
+                            "description": o.description,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>(),
     });
 
     (prompt, tool_input)
@@ -1201,7 +1300,22 @@ fn handle_request_user_input(
         );
 
         // Build answers for ALL questions so the response is complete.
-        let kind = ResponseKind::UserInput(build_question_answers(&input_req.questions));
+        let Some(kind_questions) = build_question_answers(&input_req.questions) else {
+            tracing::warn!(
+                "MCP requestUserInput contains non-lossless answer options, rejecting: {:?}",
+                input_req
+                    .questions
+                    .iter()
+                    .map(|q| q.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+            return HandleResult::Rejected {
+                rpc_id,
+                message: "MCP approval request contains ambiguous or unsupported options"
+                    .to_string(),
+            };
+        };
+        let kind = ResponseKind::UserInput(kind_questions);
 
         // Check auto-accept. MCP write tools won't match read-only rules,
         // so they'll be forwarded to the UI for approval.
@@ -1234,7 +1348,13 @@ fn handle_request_user_input(
             input_req.questions.len()
         );
 
-        let kind = ResponseKind::UserInput(build_question_answers(&input_req.questions));
+        let Some(kind_questions) = build_question_answers(&input_req.questions) else {
+            return HandleResult::Rejected {
+                rpc_id,
+                message: "Approval prompt contains ambiguous or unsupported options".to_string(),
+            };
+        };
+        let kind = ResponseKind::UserInput(kind_questions);
 
         match shared::forward_permission_to_ui_with_view(
             display_name,
@@ -1457,12 +1577,20 @@ async fn send_approval<W: AsyncWrite + Unpin>(
         ResponseKind::UserInput(questions) => {
             let mut answers_map = serde_json::Map::new();
             for q in questions {
-                let answer = match decision {
-                    ApprovalDecision::Accept => q.accept_label.as_str(),
-                    ApprovalDecision::Decline | ApprovalDecision::Cancel => {
-                        q.decline_label.as_str()
-                    }
+                let answer_index = match decision {
+                    ApprovalDecision::Accept => q.accept_index,
+                    ApprovalDecision::Decline => q.decline_index,
+                    ApprovalDecision::Cancel => q.cancel_index,
                 };
+                let answer = q.options.get(answer_index).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "question {} missing option index {}",
+                            q.question_id, answer_index
+                        ),
+                    )
+                })?;
                 answers_map.insert(
                     q.question_id.clone(),
                     serde_json::json!({ "answers": [answer] }),
@@ -2418,8 +2546,9 @@ mod tests {
                 assert_eq!(rpc_id, 200);
                 assert_eq!(answers.len(), 1);
                 assert_eq!(answers[0].question_id, "mcp_tool_call_approval_call_abc123");
-                assert_eq!(answers[0].accept_label, "Approve Once");
-                assert_eq!(answers[0].decline_label, "Cancel");
+                assert_eq!(answers[0].options[answers[0].accept_index], "Approve Once");
+                assert_eq!(answers[0].options[answers[0].decline_index], "Cancel");
+                assert_eq!(answers[0].options[answers[0].cancel_index], "Cancel");
             }
             other => panic!(
                 "Expected NeedsApproval+UserInput, got {:?}",
@@ -2640,6 +2769,33 @@ mod tests {
     }
 
     #[test]
+    fn test_request_user_input_non_mcp_ambiguous_approval_rejected() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            211,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "ambiguous_approval",
+                    "question": "Do you want to continue?",
+                    "options": [
+                        {"label": "Approve"},
+                        {"label": "Allow"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 211, .. }));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn test_request_user_input_non_mcp_approval_shaped_forwards_to_ui() {
         let (tx, rx) = mpsc::channel();
         let ctx = egui::Context::default();
@@ -2672,8 +2828,8 @@ mod tests {
                 assert_eq!(rpc_id, 203);
                 assert_eq!(answers.len(), 1);
                 assert_eq!(answers[0].question_id, "some_approval_question");
-                assert_eq!(answers[0].accept_label, "Approve Once");
-                assert_eq!(answers[0].decline_label, "Cancel");
+                assert_eq!(answers[0].options[answers[0].accept_index], "Approve Once");
+                assert_eq!(answers[0].options[answers[0].decline_index], "Cancel");
             }
             other => panic!(
                 "Expected NeedsApproval+UserInput, got {:?}",
@@ -2780,7 +2936,7 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_option_labels_from_options() {
+    fn test_resolve_question_answer_from_options() {
         let question = UserInputQuestion {
             id: "test".to_string(),
             header: None,
@@ -2802,13 +2958,15 @@ mod tests {
                 },
             ]),
         };
-        let (accept, decline) = extract_option_labels(&question);
-        assert_eq!(accept, "Approve Once");
-        assert_eq!(decline, "Cancel");
+        let answer = resolve_question_answer(&question).expect("should resolve");
+        assert_eq!(answer.question_id, "test");
+        assert_eq!(answer.options[answer.accept_index], "Approve Once");
+        assert_eq!(answer.options[answer.decline_index], "Cancel");
+        assert_eq!(answer.options[answer.cancel_index], "Cancel");
     }
 
     #[test]
-    fn test_extract_option_labels_no_options() {
+    fn test_resolve_question_answer_no_options() {
         let question = UserInputQuestion {
             id: "test".to_string(),
             header: None,
@@ -2817,13 +2975,11 @@ mod tests {
             is_secret: None,
             options: None,
         };
-        let (accept, decline) = extract_option_labels(&question);
-        assert_eq!(accept, "Approve Once");
-        assert_eq!(decline, "Cancel");
+        assert!(resolve_question_answer(&question).is_none());
     }
 
     #[test]
-    fn test_extract_option_labels_custom_wording() {
+    fn test_resolve_question_answer_custom_wording() {
         let question = UserInputQuestion {
             id: "test".to_string(),
             header: None,
@@ -2841,9 +2997,64 @@ mod tests {
                 },
             ]),
         };
-        let (accept, decline) = extract_option_labels(&question);
-        assert_eq!(accept, "Yes, approve it");
-        assert_eq!(decline, "No, cancel this");
+        let answer = resolve_question_answer(&question).expect("should resolve");
+        assert_eq!(answer.options[answer.accept_index], "Yes, approve it");
+        assert_eq!(answer.options[answer.decline_index], "No, cancel this");
+    }
+
+    #[test]
+    fn test_resolve_question_answer_rejects_ambiguous_accept_options() {
+        let question = UserInputQuestion {
+            id: "test".to_string(),
+            header: None,
+            question: None,
+            is_other: None,
+            is_secret: None,
+            options: Some(vec![
+                UserInputOption {
+                    label: "Approve".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Allow".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Cancel".to_string(),
+                    description: None,
+                },
+            ]),
+        };
+        assert!(resolve_question_answer(&question).is_none());
+    }
+
+    #[test]
+    fn test_resolve_question_answer_keeps_distinct_deny_and_cancel() {
+        let question = UserInputQuestion {
+            id: "test".to_string(),
+            header: None,
+            question: None,
+            is_other: None,
+            is_secret: None,
+            options: Some(vec![
+                UserInputOption {
+                    label: "Approve Once".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Deny".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Cancel".to_string(),
+                    description: None,
+                },
+            ]),
+        };
+        let answer = resolve_question_answer(&question).expect("should resolve");
+        assert_eq!(answer.options[answer.accept_index], "Approve Once");
+        assert_eq!(answer.options[answer.decline_index], "Deny");
+        assert_eq!(answer.options[answer.cancel_index], "Cancel");
     }
 
     // -----------------------------------------------------------------------
@@ -2891,6 +3102,12 @@ mod tests {
             &["Approve Once", "Approve this session", "Cancel"],
         );
         assert!(is_approval_shaped(&q));
+    }
+
+    #[test]
+    fn test_is_approval_shaped_rejects_ambiguous_accept_options() {
+        let q = make_question(None, None, &["Approve", "Allow", "Cancel"]);
+        assert!(!is_approval_shaped(&q));
     }
 
     #[test]

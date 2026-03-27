@@ -24,7 +24,7 @@ pub enum SessionListAction {
     NewWorktree(SessionId),
     DeleteWorktree(SessionId),
     ToggleHostCollapse(String),
-    ToggleCwdCollapse(String, String),
+    ToggleCwdCollapse(String, PathBuf),
     NewSessionInCwd(String, PathBuf),
 }
 
@@ -132,13 +132,13 @@ impl<'a> SessionListUi<'a> {
             for cwd_group in &host_group.cwd_groups {
                 let collapsed = self
                     .collapse_state
-                    .is_cwd_collapsed(&host_group.hostname, &cwd_group.display_cwd);
+                    .is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd);
 
                 let header_response = cwd_folder_header(ui, &cwd_group.display_cwd, collapsed);
                 if header_response.clicked() {
                     action = Some(SessionListAction::ToggleCwdCollapse(
                         host_group.hostname.clone(),
-                        cwd_group.display_cwd.clone(),
+                        cwd_group.cwd.clone(),
                     ));
                 }
 
