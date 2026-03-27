@@ -2,7 +2,7 @@
 
 mod harness;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -27,12 +27,12 @@ use harness::{
     cluster_converged_on, init_tracing, local_chat_message_count, local_chat_messages,
     publish_note_via_device, select_account_on_device, shutdown_messages_device, step_clusters,
     step_device_frames, step_device_group, step_devices, wait_for_cluster_convergence,
-    wait_for_convergence, wait_for_device_group_messages,
+    wait_for_convergence, wait_for_device_giftwrap_subs_ready, wait_for_device_group_messages,
     wait_for_device_group_messages_while_flushing, wait_for_device_messages,
-    wait_for_device_messages_while_flushing, wait_for_devices_messages, warm_up_clusters,
-    DeviceHarness, LocalRelayExt, TEST_TIMEOUT,
+    wait_for_device_messages_while_flushing, wait_for_devices_messages,
+    wait_for_giftwrap_subs_ready, warm_up_clusters, DeviceHarness, LocalRelayExt, TEST_TIMEOUT,
 };
-use nostr::{nips::nip17, Event, Filter as NostrFilter, JsonUtil, Kind as NostrKind};
+use nostr::{nips::nip17, Event, EventId, Filter as NostrFilter, JsonUtil, Kind as NostrKind};
 use nostr_relay_builder::{
     builder::RateLimit,
     prelude::{MemoryDatabase, MemoryDatabaseOptions, NostrEventsDatabase},
@@ -87,13 +87,26 @@ fn seed_local_chat_history_via_messages_host(
     shutdown_messages_device(device, context);
 }
 
-/// Waits until the relay database stores the expected number of giftwrap events.
+/// Snapshots the current set of giftwrap event IDs on the relay.
+async fn snapshot_relay_giftwrap_ids(relay_db: &MemoryDatabase) -> HashSet<EventId> {
+    let filter = NostrFilter::new().kind(NostrKind::GiftWrap);
+    relay_db
+        .query(vec![filter])
+        .await
+        .expect("snapshot relay giftwrap ids")
+        .into_iter()
+        .map(|e| e.id)
+        .collect()
+}
+
+/// Waits until at least `n` new giftwrap events (not in `before`) appear on the relay.
 ///
 /// Any `senders` are stepped each iteration so their outbox continues
 /// flushing events to the relay while we poll.
-async fn wait_for_relay_giftwrap_count(
+async fn wait_for_n_new_relay_giftwraps(
     relay_db: &MemoryDatabase,
-    expected_count: usize,
+    before: &HashSet<EventId>,
+    n: usize,
     timeout: Duration,
     context: &str,
     senders: &mut [&mut DeviceHarness],
@@ -106,57 +119,66 @@ async fn wait_for_relay_giftwrap_count(
             sender.step();
         }
 
-        let actual = relay_db
-            .count(vec![filter.clone()])
+        let current: HashSet<EventId> = relay_db
+            .query(vec![filter.clone()])
             .await
-            .expect("query relay giftwrap count");
-        if actual == expected_count {
+            .expect("query relay giftwrap events")
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        let new_count = current.difference(before).count();
+        if new_count >= n {
             return;
         }
 
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for {context}; expected relay giftwrap count {}, actual {}",
-            expected_count,
-            actual
+            "timed out waiting for {context}; expected at least {n} new giftwraps, \
+             got {new_count} (before: {}, current: {})",
+            before.len(),
+            current.len()
         );
 
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
-/// Waits until the relay database stores at least the expected number of events matching `filter`.
+/// Waits until at least one new giftwrap event (not in `before`) appears on the relay.
 ///
 /// Any `senders` are stepped each iteration so their outbox continues
 /// flushing events to the relay while we poll.
-async fn wait_for_relay_count_at_least(
+async fn wait_for_new_relay_giftwrap(
     relay_db: &MemoryDatabase,
-    filter: NostrFilter,
-    expected_min_count: usize,
+    before: &HashSet<EventId>,
     timeout: Duration,
     context: &str,
     senders: &mut [&mut DeviceHarness],
 ) {
     let deadline = Instant::now() + timeout;
+    let filter = NostrFilter::new().kind(NostrKind::GiftWrap);
 
     loop {
         for sender in senders.iter_mut() {
             sender.step();
         }
 
-        let actual = relay_db
-            .count(vec![filter.clone()])
+        let current: HashSet<EventId> = relay_db
+            .query(vec![filter.clone()])
             .await
-            .expect("query relay giftwrap count");
-        if actual >= expected_min_count {
+            .expect("query relay giftwrap events")
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        if current.difference(before).count() > 0 {
             return;
         }
 
         assert!(
             Instant::now() < deadline,
-            "timed out waiting for {context}; expected relay giftwrap count at least {}, actual {}",
-            expected_min_count,
-            actual
+            "timed out waiting for {context}; no new giftwrap appeared on relay \
+             (before: {}, current: {})",
+            before.len(),
+            current.len()
         );
 
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -219,7 +241,7 @@ async fn relay_dm_relay_list_relays(
 }
 
 /// Verifies that multiple devices on the same account converge on messages sent from another user.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_converge_on_sent_messages_e2e() {
     init_tracing();
 
@@ -253,6 +275,12 @@ async fn same_account_devices_converge_on_sent_messages_e2e() {
     sender_device.step();
     step_devices(&mut devices);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = vec![&mut sender_device];
+        all.extend(devices.iter_mut());
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
 
     let expected = BTreeSet::from([
@@ -277,7 +305,7 @@ async fn same_account_devices_converge_on_sent_messages_e2e() {
 }
 
 /// Verifies that a cold-start account backfills giftwrapped DMs already present on the relay.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_backfill_preexisting_giftwraps_e2e() {
     init_tracing();
 
@@ -300,6 +328,7 @@ async fn same_account_devices_backfill_preexisting_giftwraps_e2e() {
     sender_device.step();
     std::thread::sleep(Duration::from_millis(100));
     sender_device.step();
+    wait_for_device_giftwrap_subs_ready(&mut [&mut sender_device], TEST_TIMEOUT);
 
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
 
@@ -333,7 +362,7 @@ async fn same_account_devices_backfill_preexisting_giftwraps_e2e() {
 }
 
 /// Verifies a paused same-account device can catch up from relay history after other devices stay current.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_catch_up_after_one_device_falls_behind_e2e() {
     init_tracing();
 
@@ -362,6 +391,15 @@ async fn same_account_devices_catch_up_after_one_device_falls_behind_e2e() {
     std::thread::sleep(Duration::from_millis(100));
     sender_device.step();
     step_device_group(&mut [&mut live_device_a, &mut live_device_b, &mut lagging_device]);
+    wait_for_device_giftwrap_subs_ready(
+        &mut [
+            &mut sender_device,
+            &mut live_device_a,
+            &mut live_device_b,
+            &mut lagging_device,
+        ],
+        TEST_TIMEOUT,
+    );
 
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
 
@@ -410,7 +448,7 @@ async fn same_account_devices_catch_up_after_one_device_falls_behind_e2e() {
 }
 
 /// Verifies that devices with divergent local NostrDB history reconcile to the same relay-backed set on startup.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_reconcile_divergent_local_history_e2e() {
     init_tracing();
 
@@ -430,6 +468,7 @@ async fn same_account_devices_reconcile_divergent_local_history_e2e() {
     sender_device.step();
     std::thread::sleep(Duration::from_millis(100));
     sender_device.step();
+    wait_for_device_giftwrap_subs_ready(&mut [&mut sender_device], TEST_TIMEOUT);
 
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
 
@@ -533,7 +572,7 @@ async fn same_account_devices_reconcile_divergent_local_history_e2e() {
 }
 
 /// Verifies a restarted same-account device recovers missed relay history from its existing on-disk DB.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
     init_tracing();
 
@@ -568,6 +607,14 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
     std::thread::sleep(Duration::from_millis(100));
     sender_device.step();
     step_device_group(&mut [&mut stable_device, &mut restarting_device]);
+    wait_for_device_giftwrap_subs_ready(
+        &mut [
+            &mut sender_device,
+            &mut stable_device,
+            &mut restarting_device,
+        ],
+        TEST_TIMEOUT,
+    );
 
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
 
@@ -575,10 +622,7 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
     let mut sender_expected = BTreeSet::new();
     for message in &initial {
         sender_expected.insert(message.clone());
-        let relay_giftwrap_count_before = relay_db
-            .count(vec![NostrFilter::new().kind(NostrKind::GiftWrap)])
-            .await
-            .expect("query relay giftwrap count before initial restart send");
+        let before = snapshot_relay_giftwrap_ids(&relay_db).await;
         send_message_via_ui(&mut sender_device, message);
         wait_for_device_messages(
             &mut sender_device,
@@ -586,10 +630,9 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
             TEST_TIMEOUT,
             "sender self-copy before restart",
         );
-        wait_for_relay_count_at_least(
+        wait_for_new_relay_giftwrap(
             &relay_db,
-            NostrFilter::new().kind(NostrKind::GiftWrap),
-            relay_giftwrap_count_before + 2,
+            &before,
             TEST_TIMEOUT,
             "initial restart giftwraps to land on the relay",
             &mut [&mut sender_device],
@@ -621,10 +664,7 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
     sender_expected = initial.clone();
     for message in ["restart-03", "restart-04", "restart-05"] {
         sender_expected.insert(message.to_owned());
-        let relay_giftwrap_count_before = relay_db
-            .count(vec![NostrFilter::new().kind(NostrKind::GiftWrap)])
-            .await
-            .expect("query relay giftwrap count during restart gap");
+        let before = snapshot_relay_giftwrap_ids(&relay_db).await;
         send_message_via_ui(&mut sender_device, message);
         wait_for_device_messages(
             &mut sender_device,
@@ -632,10 +672,9 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
             TEST_TIMEOUT,
             "sender self-copy during restart gap",
         );
-        wait_for_relay_count_at_least(
+        wait_for_new_relay_giftwrap(
             &relay_db,
-            NostrFilter::new().kind(NostrKind::GiftWrap),
-            relay_giftwrap_count_before + 2,
+            &before,
             TEST_TIMEOUT,
             "restart gap giftwraps to land on the relay",
             &mut [&mut sender_device],
@@ -668,7 +707,7 @@ async fn same_account_device_restart_catches_up_from_existing_db_e2e() {
 }
 
 /// Verifies same-account devices converge when many different direct-message conversations update at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_converge_across_many_direct_conversations_e2e() {
     init_tracing();
 
@@ -714,6 +753,12 @@ async fn same_account_devices_converge_across_many_direct_conversations_e2e() {
     step_devices(&mut sender_devices);
     step_devices(&mut recipient_devices);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = sender_devices.iter_mut().collect();
+        all.extend(recipient_devices.iter_mut());
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     for sender_device in &mut sender_devices {
         open_conversation_via_ui(sender_device, &recipient_npub);
     }
@@ -725,11 +770,12 @@ async fn same_account_devices_converge_across_many_direct_conversations_e2e() {
 
         for message in batch {
             expected.insert(message.clone());
+            let before = snapshot_relay_giftwrap_ids(&relay_db).await;
             send_message_via_ui(sender_device, &message);
             sender_device.step();
-            wait_for_relay_giftwrap_count(
+            wait_for_new_relay_giftwrap(
                 &relay_db,
-                expected.len() * 2,
+                &before,
                 TEST_TIMEOUT,
                 "giftwraps to land on relay before recipient step",
                 &mut [],
@@ -756,7 +802,7 @@ async fn same_account_devices_converge_across_many_direct_conversations_e2e() {
 }
 
 /// Verifies cold-start same-account devices backfill many pre-existing direct-message conversations at once.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_backfill_many_preexisting_conversations_e2e() {
     init_tracing();
 
@@ -792,6 +838,11 @@ async fn same_account_devices_backfill_many_preexisting_conversations_e2e() {
     std::thread::sleep(Duration::from_millis(100));
     step_devices(&mut sender_devices);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = sender_devices.iter_mut().collect();
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     for sender_device in &mut sender_devices {
         open_conversation_via_ui(sender_device, &recipient_npub);
     }
@@ -803,11 +854,12 @@ async fn same_account_devices_backfill_many_preexisting_conversations_e2e() {
 
         for message in batch {
             expected.insert(message.clone());
+            let before = snapshot_relay_giftwrap_ids(&relay_db).await;
             send_message_via_ui(sender_device, &message);
             sender_device.step();
-            wait_for_relay_giftwrap_count(
+            wait_for_new_relay_giftwrap(
                 &relay_db,
-                expected.len() * 2,
+                &before,
                 TEST_TIMEOUT,
                 "giftwraps to land on relay before creating cold-start recipients",
                 &mut [],
@@ -842,7 +894,7 @@ async fn same_account_devices_backfill_many_preexisting_conversations_e2e() {
 }
 
 /// Verifies a restarted same-account device catches up across many different direct-message conversations.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_device_restart_catches_up_across_many_direct_conversations_e2e() {
     init_tracing();
 
@@ -886,6 +938,13 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
     step_devices(&mut sender_devices);
     step_device_group(&mut [&mut stable_device, &mut restarting_device]);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = sender_devices.iter_mut().collect();
+        all.push(&mut stable_device);
+        all.push(&mut restarting_device);
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     for sender_device in &mut sender_devices {
         open_conversation_via_ui(sender_device, &recipient_npub);
     }
@@ -899,10 +958,7 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
         for message in batch {
             initial_expected.insert(message.clone());
             sender_expected[idx].insert(message.clone());
-            let relay_giftwrap_count_before = relay_db
-                .count(vec![NostrFilter::new().kind(NostrKind::GiftWrap)])
-                .await
-                .expect("query relay giftwrap count before many-conversation restart send");
+            let before = snapshot_relay_giftwrap_ids(&relay_db).await;
             send_message_via_ui(sender_device, &message);
             wait_for_device_messages(
                 sender_device,
@@ -910,10 +966,9 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
                 TEST_TIMEOUT,
                 "sender self-copy before many-conversation restart",
             );
-            wait_for_relay_count_at_least(
+            wait_for_new_relay_giftwrap(
                 &relay_db,
-                NostrFilter::new().kind(NostrKind::GiftWrap),
-                relay_giftwrap_count_before + 2,
+                &before,
                 TEST_TIMEOUT,
                 "many-conversation pre-restart giftwraps to land on the relay",
                 &mut [sender_device],
@@ -944,10 +999,7 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
         for message in batch {
             expected.insert(message.clone());
             sender_expected[idx].insert(message.clone());
-            let relay_giftwrap_count_before = relay_db
-                .count(vec![NostrFilter::new().kind(NostrKind::GiftWrap)])
-                .await
-                .expect("query relay giftwrap count during many-conversation restart gap");
+            let before = snapshot_relay_giftwrap_ids(&relay_db).await;
             send_message_via_ui(sender_device, &message);
             wait_for_device_messages(
                 sender_device,
@@ -955,10 +1007,9 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
                 TEST_TIMEOUT,
                 "sender self-copy during many-conversation restart gap",
             );
-            wait_for_relay_count_at_least(
+            wait_for_new_relay_giftwrap(
                 &relay_db,
-                NostrFilter::new().kind(NostrKind::GiftWrap),
-                relay_giftwrap_count_before + 2,
+                &before,
                 TEST_TIMEOUT,
                 "many-conversation restart gap giftwraps to land on the relay",
                 &mut [sender_device],
@@ -992,7 +1043,7 @@ async fn same_account_device_restart_catches_up_across_many_direct_conversations
 }
 
 /// Verifies interleaved sends across many conversations still converge on every same-account device.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_converge_during_interleaved_multi_conversation_sends_e2e() {
     init_tracing();
 
@@ -1037,6 +1088,12 @@ async fn same_account_devices_converge_during_interleaved_multi_conversation_sen
     step_devices(&mut sender_devices);
     step_devices(&mut recipient_devices);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = sender_devices.iter_mut().collect();
+        all.extend(recipient_devices.iter_mut());
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     for sender_device in &mut sender_devices {
         open_conversation_via_ui(sender_device, &recipient_npub);
     }
@@ -1046,11 +1103,12 @@ async fn same_account_devices_converge_during_interleaved_multi_conversation_sen
         for (idx, sender_device) in sender_devices.iter_mut().enumerate() {
             let message = format!("interleave-s{}:{round:02}", idx + 1);
             expected.insert(message.clone());
+            let before = snapshot_relay_giftwrap_ids(&relay_db).await;
             send_message_via_ui(sender_device, &message);
             step_device_frames(sender_device, 3);
-            wait_for_relay_giftwrap_count(
+            wait_for_new_relay_giftwrap(
                 &relay_db,
-                expected.len() * 2,
+                &before,
                 TEST_TIMEOUT,
                 "interleaved giftwraps to land on relay",
                 &mut [],
@@ -1077,7 +1135,7 @@ async fn same_account_devices_converge_during_interleaved_multi_conversation_sen
 }
 
 /// Verifies startup can merge backfill from old conversations with live delivery from new conversations.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_merge_startup_backfill_with_live_multi_conversation_delivery_e2e() {
     init_tracing();
 
@@ -1089,7 +1147,6 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
         .await
         .expect("start local relay");
     let relay_url = relay.url().to_owned();
-    let giftwrap_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
 
     let recipient = FullKeypair::generate();
     let recipient_npub = recipient.pubkey.npub().expect("recipient npub");
@@ -1109,14 +1166,16 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
     std::thread::sleep(Duration::from_millis(100));
     step_devices(&mut history_sender_devices);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = history_sender_devices.iter_mut().collect();
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     for sender_device in &mut history_sender_devices {
         open_conversation_via_ui(sender_device, &recipient_npub);
     }
 
-    let history_relay_count_before = relay_db
-        .count(vec![giftwrap_filter.clone()])
-        .await
-        .expect("query relay giftwrap count before startup-history sends");
+    let history_before = snapshot_relay_giftwrap_ids(&relay_db).await;
     let mut expected = BTreeSet::new();
     for (idx, sender_device) in history_sender_devices.iter_mut().enumerate() {
         for message in build_direct_message_batch(&format!("startup-history-{}", idx + 1), "dm", 2)
@@ -1136,10 +1195,10 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
     {
         let mut history_sender_refs: Vec<&mut DeviceHarness> =
             history_sender_devices.iter_mut().collect();
-        wait_for_relay_count_at_least(
+        wait_for_n_new_relay_giftwraps(
             &relay_db,
-            giftwrap_filter.clone(),
-            history_relay_count_before + history_message_count * 2,
+            &history_before,
+            history_message_count,
             TEST_TIMEOUT,
             "startup-history giftwraps to land on relay",
             history_sender_refs.as_mut_slice(),
@@ -1162,6 +1221,11 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
     std::thread::sleep(Duration::from_millis(100));
     step_devices(&mut live_sender_devices);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = live_sender_devices.iter_mut().collect();
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     for sender_device in &mut live_sender_devices {
         open_conversation_via_ui(sender_device, &recipient_npub);
         step_device_frames(sender_device, 3);
@@ -1180,10 +1244,13 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
     std::thread::sleep(Duration::from_millis(100));
     step_devices(&mut recipient_devices);
 
-    let live_relay_count_before = relay_db
-        .count(vec![giftwrap_filter.clone()])
-        .await
-        .expect("query relay giftwrap count before startup-live sends");
+    {
+        let mut all: Vec<&mut DeviceHarness> = live_sender_devices.iter_mut().collect();
+        all.extend(recipient_devices.iter_mut());
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
+    let live_before = snapshot_relay_giftwrap_ids(&relay_db).await;
     for (idx, sender_device) in live_sender_devices.iter_mut().enumerate() {
         for message in build_direct_message_batch(&format!("startup-live-{}", idx + 1), "dm", 2) {
             expected.insert(message.clone());
@@ -1198,10 +1265,10 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
     {
         let mut live_sender_refs: Vec<&mut DeviceHarness> =
             live_sender_devices.iter_mut().collect();
-        wait_for_relay_count_at_least(
+        wait_for_n_new_relay_giftwraps(
             &relay_db,
-            giftwrap_filter.clone(),
-            live_relay_count_before + live_message_count * 2,
+            &live_before,
+            live_message_count,
             TEST_TIMEOUT,
             "startup-live giftwraps to land on relay",
             live_sender_refs.as_mut_slice(),
@@ -1232,7 +1299,7 @@ async fn same_account_devices_merge_startup_backfill_with_live_multi_conversatio
 }
 
 /// Verifies high-volume fan-in across many conversations still converges on every same-account device.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_handle_high_volume_multi_conversation_fan_in_e2e() {
     init_tracing();
 
@@ -1286,6 +1353,12 @@ async fn same_account_devices_handle_high_volume_multi_conversation_fan_in_e2e()
     step_devices(&mut sender_devices);
     step_devices(&mut recipient_devices);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = sender_devices.iter_mut().collect();
+        all.extend(recipient_devices.iter_mut());
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     for sender_device in &mut sender_devices {
         open_conversation_via_ui(sender_device, &recipient_npub);
     }
@@ -1306,11 +1379,12 @@ async fn same_account_devices_handle_high_volume_multi_conversation_fan_in_e2e()
         for (sender_device, batch) in sender_devices.iter_mut().zip(&batches) {
             let message = batch[round].clone();
             expected.insert(message.clone());
+            let before = snapshot_relay_giftwrap_ids(&relay_db).await;
             send_message_via_ui(sender_device, &message);
             step_device_frames(sender_device, 3);
-            wait_for_relay_giftwrap_count(
+            wait_for_new_relay_giftwrap(
                 &relay_db,
-                expected.len() * 2,
+                &before,
                 TEST_TIMEOUT,
                 "high-volume giftwraps to land on relay",
                 &mut [],
@@ -1337,7 +1411,7 @@ async fn same_account_devices_handle_high_volume_multi_conversation_fan_in_e2e()
 }
 
 /// Verifies mixed explicit and fallback relay routing still delivers across many conversations.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_handle_partial_participant_relay_knowledge_across_conversations_e2e()
 {
     init_tracing();
@@ -1364,15 +1438,16 @@ async fn same_account_devices_handle_partial_participant_relay_knowledge_across_
     let mut recipient_device_fallback =
         build_messages_device_with_relays(&[&relay_a_url, &relay_b_url], &recipient_fallback);
 
+    let seed_ts = Some(notedeck::unix_time_secs() as u64 + 600);
     for sender_device in [&mut sender_primary, &mut sender_peer] {
         seed_local_dm_relay_list_with_relays(
             sender_device,
             &sender,
             &[&relay_a_url, &relay_b_url],
-            None,
+            seed_ts,
         );
-        seed_local_dm_relay_list_with_relays(sender_device, &recipient_a, &[&relay_a_url], None);
-        seed_local_dm_relay_list_with_relays(sender_device, &recipient_b, &[&relay_b_url], None);
+        seed_local_dm_relay_list(sender_device, &recipient_a, &relay_a_url);
+        seed_local_dm_relay_list(sender_device, &recipient_b, &relay_b_url);
         seed_local_profile_metadata(sender_device, &recipient_a, "recipient-a");
         seed_local_profile_metadata(sender_device, &recipient_b, "recipient-b");
         seed_local_profile_metadata(sender_device, &recipient_fallback, "recipient-fallback");
@@ -1383,7 +1458,7 @@ async fn same_account_devices_handle_partial_participant_relay_knowledge_across_
         &mut recipient_device_fallback,
         &recipient_fallback,
         &[&relay_a_url, &relay_b_url],
-        None,
+        seed_ts,
     );
 
     step_device_group(&mut [
@@ -1401,6 +1476,16 @@ async fn same_account_devices_handle_partial_participant_relay_knowledge_across_
         &mut recipient_device_b,
         &mut recipient_device_fallback,
     ]);
+    wait_for_device_giftwrap_subs_ready(
+        &mut [
+            &mut sender_primary,
+            &mut sender_peer,
+            &mut recipient_device_a,
+            &mut recipient_device_b,
+            &mut recipient_device_fallback,
+        ],
+        TEST_TIMEOUT,
+    );
 
     send_direct_message(
         &mut sender_primary,
@@ -1458,7 +1543,7 @@ async fn same_account_devices_handle_partial_participant_relay_knowledge_across_
 }
 
 /// Verifies a restarted same-account device can recover while new conversations continue to update.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_device_restart_recovers_during_active_multi_conversation_delivery_e2e() {
     init_tracing();
 
@@ -1502,6 +1587,13 @@ async fn same_account_device_restart_recovers_during_active_multi_conversation_d
     step_devices(&mut sender_devices);
     step_device_group(&mut [&mut stable_device, &mut restarting_device]);
 
+    {
+        let mut all: Vec<&mut DeviceHarness> = sender_devices.iter_mut().collect();
+        all.push(&mut stable_device);
+        all.push(&mut restarting_device);
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
+
     for sender_device in &mut sender_devices {
         open_conversation_via_ui(sender_device, &recipient_npub);
     }
@@ -1516,10 +1608,7 @@ async fn same_account_device_restart_recovers_during_active_multi_conversation_d
     for (idx, sender_device) in sender_devices.iter_mut().enumerate() {
         let message = format!("restart-active-s{}:pre", idx + 1);
         expected.insert(message.clone());
-        let relay_giftwrap_count_before = relay_db
-            .count(vec![NostrFilter::new().kind(NostrKind::GiftWrap)])
-            .await
-            .expect("query relay giftwrap count before pre-restart send");
+        let before = snapshot_relay_giftwrap_ids(&relay_db).await;
         send_message_via_ui(sender_device, &message);
         sender_device.step();
         if idx == 2 {
@@ -1530,10 +1619,9 @@ async fn same_account_device_restart_recovers_during_active_multi_conversation_d
                 "third sender to persist its own pre-restart self-copy",
             );
         }
-        wait_for_relay_count_at_least(
+        wait_for_new_relay_giftwrap(
             &relay_db,
-            NostrFilter::new().kind(NostrKind::GiftWrap),
-            relay_giftwrap_count_before + 2,
+            &before,
             TEST_TIMEOUT,
             "pre-restart giftwraps to land on the relay",
             &mut [sender_device],
@@ -1591,7 +1679,7 @@ async fn same_account_device_restart_recovers_during_active_multi_conversation_d
 
 /// Verifies startup backfills a relay giftwrap whose wrapper timestamp is older
 /// than a wrapper already present in the local NostrDB.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_backfills_relay_giftwrap_older_than_local_wrapper_created_at_e2e() {
     init_tracing();
 
@@ -1665,7 +1753,7 @@ async fn startup_backfills_relay_giftwrap_older_than_local_wrapper_created_at_e2
 }
 
 /// Verifies cold-start history sync unions pre-existing giftwraps spread across multiple relays.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_backfill_split_history_across_relays_e2e() {
     init_tracing();
 
@@ -1691,6 +1779,7 @@ async fn same_account_devices_backfill_split_history_across_relays_e2e() {
 
     step_device_frames(&mut sender_a, 2);
     step_device_frames(&mut sender_b, 2);
+    wait_for_device_giftwrap_subs_ready(&mut [&mut sender_a, &mut sender_b], TEST_TIMEOUT);
 
     open_conversation_via_ui(&mut sender_a, &recipient_npub);
     open_conversation_via_ui(&mut sender_b, &recipient_npub);
@@ -1730,7 +1819,7 @@ async fn same_account_devices_backfill_split_history_across_relays_e2e() {
 }
 
 /// Verifies same-account devices recover to the union of history after startup with expanded relay visibility.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_converge_after_expanded_relay_visibility_startup_e2e() {
     init_tracing();
 
@@ -1865,7 +1954,7 @@ async fn same_account_devices_converge_after_expanded_relay_visibility_startup_e
 }
 
 /// Verifies the same giftwrap seen on multiple relays only produces one local chat note.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn duplicate_giftwrap_across_relays_is_deduped_e2e() {
     init_tracing();
 
@@ -1906,7 +1995,7 @@ async fn duplicate_giftwrap_across_relays_is_deduped_e2e() {
 }
 
 /// Verifies one malformed giftwrap does not block neighboring valid history from being processed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn invalid_giftwrap_does_not_block_valid_history_e2e() {
     init_tracing();
 
@@ -1944,7 +2033,7 @@ async fn invalid_giftwrap_does_not_block_valid_history_e2e() {
 }
 
 /// Verifies multiple giftwrap failure modes do not block neighboring valid history from processing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mixed_giftwrap_failures_do_not_block_valid_history_e2e() {
     init_tracing();
 
@@ -1999,7 +2088,7 @@ async fn mixed_giftwrap_failures_do_not_block_valid_history_e2e() {
 }
 
 /// Verifies the latest locally-known participant kind `10050` wins over older relay-list history.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn latest_local_participant_dm_relay_list_wins_e2e() {
     init_tracing();
 
@@ -2075,7 +2164,7 @@ async fn latest_local_participant_dm_relay_list_wins_e2e() {
 }
 
 /// Verifies a fresh account publishes a default DM relay-list note after startup all-EOSE.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_publishes_default_dm_relay_list_when_missing_e2e() {
     init_tracing();
 
@@ -2116,7 +2205,7 @@ async fn startup_publishes_default_dm_relay_list_when_missing_e2e() {
 }
 
 /// Verifies sending uses the latest locally-known participant DM relay list, not a stale one.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sending_uses_latest_participant_dm_relay_list_e2e() {
     init_tracing();
 
@@ -2162,6 +2251,7 @@ async fn sending_uses_latest_participant_dm_relay_list_e2e() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+    wait_for_device_giftwrap_subs_ready(&mut [&mut sender_device], TEST_TIMEOUT);
 
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
     send_message_via_ui(&mut sender_device, "route-a");
@@ -2220,7 +2310,7 @@ async fn sending_uses_latest_participant_dm_relay_list_e2e() {
 }
 
 /// Verifies account switching isolates local Messages state and backfills the newly selected account.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn switching_accounts_isolates_messages_state_e2e() {
     init_tracing();
 
@@ -2245,6 +2335,11 @@ async fn switching_accounts_isolates_messages_state_e2e() {
     seed_local_dm_relay_list(&mut sender_to_b, &sender, &relay_url);
     seed_local_dm_relay_list(&mut sender_to_a, &account_a, &relay_url);
     seed_local_dm_relay_list(&mut sender_to_b, &account_b, &relay_url);
+
+    wait_for_device_giftwrap_subs_ready(
+        &mut [&mut switching_device, &mut sender_to_a, &mut sender_to_b],
+        TEST_TIMEOUT,
+    );
 
     open_conversation_via_ui(
         &mut sender_to_b,
@@ -2286,7 +2381,7 @@ async fn switching_accounts_isolates_messages_state_e2e() {
 }
 
 /// Verifies concurrent sends from two same-account devices converge inside one DM thread.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_sender_devices_converge_after_concurrent_same_thread_sends_e2e() {
     init_tracing();
 
@@ -2319,6 +2414,12 @@ async fn same_account_sender_devices_converge_after_concurrent_same_thread_sends
     std::thread::sleep(Duration::from_millis(100));
     step_device_group(&mut [&mut sender_device_a, &mut sender_device_b]);
     step_devices(&mut recipient_devices);
+
+    {
+        let mut all: Vec<&mut DeviceHarness> = vec![&mut sender_device_a, &mut sender_device_b];
+        all.extend(recipient_devices.iter_mut());
+        wait_for_device_giftwrap_subs_ready(&mut all, TEST_TIMEOUT);
+    }
 
     open_conversation_via_ui(&mut sender_device_a, &recipient_npub);
     open_conversation_via_ui(&mut sender_device_b, &recipient_npub);
@@ -2362,7 +2463,7 @@ async fn same_account_sender_devices_converge_after_concurrent_same_thread_sends
 /// 1. Recipient sees initial messages from both senders on both relays.
 /// 2. Recipient goes offline (dropped).  Messages are sent while it's down.
 /// 3. Recipient restarts with both relays and catches up on everything.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_device_recovers_missed_messages_after_offline_restart_e2e() {
     init_tracing();
 
@@ -2419,6 +2520,10 @@ async fn same_account_device_recovers_missed_messages_after_offline_restart_e2e(
         );
         std::thread::sleep(Duration::from_millis(25));
     }
+    wait_for_device_giftwrap_subs_ready(
+        &mut [&mut sender_a, &mut sender_b, &mut recipient_device],
+        TEST_TIMEOUT,
+    );
 
     open_conversation_via_ui(&mut sender_a, &recipient_npub);
     open_conversation_via_ui(&mut sender_b, &recipient_npub);
@@ -2445,18 +2550,14 @@ async fn same_account_device_recovers_missed_messages_after_offline_restart_e2e(
 
     send_message_via_ui(&mut sender_b, "during-outage-b");
 
-    let relay_a_count_before = relay_a_db
-        .count(vec![NostrFilter::new().kind(NostrKind::GiftWrap)])
-        .await
-        .expect("query relay a giftwrap count before outage send");
+    let before = snapshot_relay_giftwrap_ids(&relay_a_db).await;
     send_message_via_ui(&mut sender_a, "during-outage-a");
 
-    // Wait for at least 2 new giftwraps on relay-a (one per participant)
+    // Wait for at least 1 new giftwrap on relay-a (the recipient copy)
     // before restarting the recipient.
-    wait_for_relay_count_at_least(
+    wait_for_new_relay_giftwrap(
         &relay_a_db,
-        NostrFilter::new().kind(NostrKind::GiftWrap),
-        relay_a_count_before + 2,
+        &before,
         TEST_TIMEOUT,
         "relay a to store the outage-window giftwraps",
         &mut [&mut sender_a, &mut sender_b],
@@ -2487,7 +2588,7 @@ async fn same_account_device_recovers_missed_messages_after_offline_restart_e2e(
 }
 
 /// Verifies an offline same-account sender refreshes stale participant relay-list state after restart.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn offline_same_account_sender_refreshes_stale_participant_relay_list_after_restart_e2e() {
     init_tracing();
 
@@ -2518,6 +2619,12 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
     let mut recipient_b = build_messages_device(&relay_b_url, &recipient);
 
     for sender_device in [&mut sender_current, &mut sender_offline] {
+        seed_local_dm_relay_list_with_relays(
+            sender_device,
+            &sender,
+            &[&relay_a_url, &relay_b_url],
+            None,
+        );
         seed_local_dm_relay_list_with_relays(
             sender_device,
             &recipient,
@@ -2552,6 +2659,15 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &mut recipient_a,
         &mut recipient_b,
     ]);
+    wait_for_device_giftwrap_subs_ready(
+        &mut [
+            &mut sender_current,
+            &mut sender_offline,
+            &mut recipient_a,
+            &mut recipient_b,
+        ],
+        TEST_TIMEOUT,
+    );
 
     let expected_route_a = vec![relay_a_url.trim_end_matches('/').to_owned()];
     wait_for_participant_route_relays(
@@ -2683,7 +2799,7 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
 }
 
 /// Verifies restart alone does not refresh a known participant's newer DM relay-list note.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
     init_tracing();
 
@@ -2748,6 +2864,15 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &mut recipient_a,
         &mut recipient_b,
     ]);
+    wait_for_device_giftwrap_subs_ready(
+        &mut [
+            &mut sender_current,
+            &mut sender_offline,
+            &mut recipient_a,
+            &mut recipient_b,
+        ],
+        TEST_TIMEOUT,
+    );
 
     let expected_a = vec![relay_a_url.trim_end_matches('/').to_owned()];
     let initial_deadline = Instant::now() + TEST_TIMEOUT;
@@ -2843,7 +2968,7 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
 }
 
 /// Verifies startup relay replay does not duplicate already-ingested local giftwrap history.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_relay_replay_is_deduped_against_local_giftwrap_history_e2e() {
     init_tracing();
 
@@ -2909,7 +3034,7 @@ async fn startup_relay_replay_is_deduped_against_local_giftwrap_history_e2e() {
 }
 
 /// Verifies repeated same-account stop-start cycles preserve history without gaps or duplicates.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
     init_tracing();
 
@@ -2956,6 +3081,16 @@ async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
             .as_mut()
             .expect("flapping device for warmup"),
     ]);
+    wait_for_device_giftwrap_subs_ready(
+        &mut [
+            &mut sender_device,
+            &mut stable_device,
+            flapping_device
+                .as_mut()
+                .expect("flapping device for giftwrap readiness"),
+        ],
+        TEST_TIMEOUT,
+    );
 
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
 
@@ -3040,7 +3175,7 @@ async fn repeated_same_account_restart_cycles_preserve_message_history_e2e() {
 }
 
 /// Verifies both sides of a DM thread see the full interleaved history when both parties reply.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bidirectional_dm_thread_converges_across_devices_e2e() {
     init_tracing();
 
@@ -3076,6 +3211,7 @@ async fn bidirectional_dm_thread_converges_across_devices_e2e() {
     seed_cluster_known_profiles(&mut bob, &profiles);
 
     warm_up_clusters(&mut [&mut alice, &mut bob]);
+    wait_for_giftwrap_subs_ready(&mut [&mut alice, &mut bob], TEST_TIMEOUT);
     let route_seed_created_at = Some(unix_time_secs() + 60);
     for device in &mut alice.devices {
         seed_local_dm_relay_list_ndb_only_with_relays(
@@ -3127,15 +3263,11 @@ async fn bidirectional_dm_thread_converges_across_devices_e2e() {
     }
 
     let mut expected = BTreeSet::new();
-    let giftwrap_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
 
     for round in 1..=4 {
         let alice_msg = format!("alice->bob:{round:02}");
         expected.insert(alice_msg.clone());
-        let relay_giftwrap_count_before = relay_db
-            .count(vec![giftwrap_filter.clone()])
-            .await
-            .expect("query relay giftwrap count before alice send");
+        let before_alice = snapshot_relay_giftwrap_ids(&relay_db).await;
         if round == 1 {
             // First round: open conversation via profile search + send
             send_direct_message(alice.device(0), &bob.npub, &alice_msg);
@@ -3145,10 +3277,9 @@ async fn bidirectional_dm_thread_converges_across_devices_e2e() {
             alice.device(0).step();
             std::thread::sleep(Duration::from_millis(25));
         }
-        wait_for_relay_count_at_least(
+        wait_for_new_relay_giftwrap(
             &relay_db,
-            giftwrap_filter.clone(),
-            relay_giftwrap_count_before + 2,
+            &before_alice,
             TEST_TIMEOUT,
             "alice send giftwrap to land on relay",
             &mut [alice.device(0)],
@@ -3158,10 +3289,7 @@ async fn bidirectional_dm_thread_converges_across_devices_e2e() {
 
         let bob_msg = format!("bob->alice:{round:02}");
         expected.insert(bob_msg.clone());
-        let relay_giftwrap_count_before = relay_db
-            .count(vec![giftwrap_filter.clone()])
-            .await
-            .expect("query relay giftwrap count before bob send");
+        let before_bob = snapshot_relay_giftwrap_ids(&relay_db).await;
         if round == 1 {
             send_direct_message(bob.device(0), &alice.npub, &bob_msg);
         } else {
@@ -3169,10 +3297,9 @@ async fn bidirectional_dm_thread_converges_across_devices_e2e() {
             bob.device(0).step();
             std::thread::sleep(Duration::from_millis(25));
         }
-        wait_for_relay_count_at_least(
+        wait_for_new_relay_giftwrap(
             &relay_db,
-            giftwrap_filter.clone(),
-            relay_giftwrap_count_before + 2,
+            &before_bob,
             TEST_TIMEOUT,
             "bob send giftwrap to land on relay",
             &mut [bob.device(0)],
@@ -3213,7 +3340,7 @@ async fn bidirectional_dm_thread_converges_across_devices_e2e() {
 /// When a device connects to multiple relays and one is unreachable, the relay-list ensure
 /// state machine should not stall forever waiting for all-EOSE. After a timeout it should
 /// publish a backdated default list so the account can send and receive immediately.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ensure_dm_relay_list_publishes_default_despite_partial_eose_e2e() {
     init_tracing();
 
@@ -3262,7 +3389,7 @@ async fn ensure_dm_relay_list_publishes_default_despite_partial_eose_e2e() {
 
 /// Verifies that after the timeout fallback publishes a backdated default relay list,
 /// a later real selected-account relay list arriving locally is republished to relays.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ensure_dm_relay_list_republishes_late_real_list_after_timeout_fallback_e2e() {
     init_tracing();
 
@@ -3355,7 +3482,7 @@ async fn ensure_dm_relay_list_republishes_late_real_list_after_timeout_fallback_
 }
 
 /// Verifies that three accounts can exchange direct messages pairwise and still converge per account.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     init_tracing();
 
@@ -3368,7 +3495,6 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
         .await
         .expect("start local relay");
     let relay_url = relay.url().to_owned();
-    let giftwrap_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
 
     let mut alice = build_messages_cluster("alice", &relay_url, 2);
     let mut bob = build_messages_cluster("bob", &relay_url, 2);
@@ -3400,6 +3526,7 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     seed_cluster_known_profiles(&mut carol, &profiles);
 
     warm_up_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+    wait_for_giftwrap_subs_ready(&mut [&mut alice, &mut bob, &mut carol], TEST_TIMEOUT);
     let expected_relay = vec![relay_url.trim_end_matches('/').to_owned()];
     for device in &mut alice.devices {
         wait_for_participant_route_relays(
@@ -3450,11 +3577,6 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
         );
     }
 
-    let relay_giftwrap_count_before = relay_db
-        .count(vec![giftwrap_filter.clone()])
-        .await
-        .expect("query relay giftwrap count before pairwise mesh");
-
     let alice_to_bob = "alice->bob:01".to_owned();
     let bob_to_alice = "bob->alice:01".to_owned();
     let alice_to_carol = "alice->carol:01".to_owned();
@@ -3462,14 +3584,11 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     let bob_to_carol = "bob->carol:01".to_owned();
     let carol_to_bob = "carol->bob:01".to_owned();
 
-    let mut expected_relay_giftwraps = relay_giftwrap_count_before;
-
+    let before = snapshot_relay_giftwrap_ids(&relay_db).await;
     send_direct_message(alice.device(0), &bob.npub, &alice_to_bob);
-    expected_relay_giftwraps += 2;
-    wait_for_relay_count_at_least(
+    wait_for_new_relay_giftwrap(
         &relay_db,
-        giftwrap_filter.clone(),
-        expected_relay_giftwraps,
+        &before,
         TEST_TIMEOUT,
         "pairwise mesh alice->bob giftwraps to persist",
         &mut [alice.device(0)],
@@ -3477,12 +3596,11 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     .await;
     step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
+    let before = snapshot_relay_giftwrap_ids(&relay_db).await;
     send_direct_message(alice.device(1), &carol.npub, &alice_to_carol);
-    expected_relay_giftwraps += 2;
-    wait_for_relay_count_at_least(
+    wait_for_new_relay_giftwrap(
         &relay_db,
-        giftwrap_filter.clone(),
-        expected_relay_giftwraps,
+        &before,
         TEST_TIMEOUT,
         "pairwise mesh alice->carol giftwraps to persist",
         &mut [alice.device(1)],
@@ -3490,12 +3608,11 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     .await;
     step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
+    let before = snapshot_relay_giftwrap_ids(&relay_db).await;
     send_direct_message(bob.device(0), &alice.npub, &bob_to_alice);
-    expected_relay_giftwraps += 2;
-    wait_for_relay_count_at_least(
+    wait_for_new_relay_giftwrap(
         &relay_db,
-        giftwrap_filter.clone(),
-        expected_relay_giftwraps,
+        &before,
         TEST_TIMEOUT,
         "pairwise mesh bob->alice giftwraps to persist",
         &mut [bob.device(0)],
@@ -3503,12 +3620,11 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     .await;
     step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
+    let before = snapshot_relay_giftwrap_ids(&relay_db).await;
     send_direct_message(bob.device(1), &carol.npub, &bob_to_carol);
-    expected_relay_giftwraps += 2;
-    wait_for_relay_count_at_least(
+    wait_for_new_relay_giftwrap(
         &relay_db,
-        giftwrap_filter.clone(),
-        expected_relay_giftwraps,
+        &before,
         TEST_TIMEOUT,
         "pairwise mesh bob->carol giftwraps to persist",
         &mut [bob.device(1)],
@@ -3516,12 +3632,11 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     .await;
     step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
+    let before = snapshot_relay_giftwrap_ids(&relay_db).await;
     send_direct_message(carol.device(0), &alice.npub, &carol_to_alice);
-    expected_relay_giftwraps += 2;
-    wait_for_relay_count_at_least(
+    wait_for_new_relay_giftwrap(
         &relay_db,
-        giftwrap_filter.clone(),
-        expected_relay_giftwraps,
+        &before,
         TEST_TIMEOUT,
         "pairwise mesh carol->alice giftwraps to persist",
         &mut [carol.device(0)],
@@ -3529,12 +3644,11 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
     .await;
     step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
+    let before = snapshot_relay_giftwrap_ids(&relay_db).await;
     send_direct_message(carol.device(1), &bob.npub, &carol_to_bob);
-    expected_relay_giftwraps += 2;
-    wait_for_relay_count_at_least(
+    wait_for_new_relay_giftwrap(
         &relay_db,
-        giftwrap_filter.clone(),
-        expected_relay_giftwraps,
+        &before,
         TEST_TIMEOUT,
         "pairwise mesh carol->bob giftwraps to persist",
         &mut [carol.device(1)],
@@ -3579,7 +3693,7 @@ async fn three_accounts_pairwise_mesh_converges_across_devices_e2e() {
 }
 
 /// Verifies sustained high-volume pairwise traffic delivers every expected message to every device.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     init_tracing();
 
@@ -3630,6 +3744,7 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     seed_cluster_known_profiles(&mut carol, &profiles);
 
     warm_up_clusters(&mut [&mut alice, &mut bob, &mut carol]);
+    wait_for_giftwrap_subs_ready(&mut [&mut alice, &mut bob, &mut carol], TEST_TIMEOUT);
 
     open_conversation_via_ui(alice.device(0), &bob.npub);
     open_conversation_via_ui(alice.device(1), &carol.npub);
@@ -3648,11 +3763,7 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     let bob_to_carol = build_direct_message_batch("bob", "carol", MESSAGES_PER_DIRECTION);
     let carol_to_alice = build_direct_message_batch("carol", "alice", MESSAGES_PER_DIRECTION);
     let carol_to_bob = build_direct_message_batch("carol", "bob", MESSAGES_PER_DIRECTION);
-    let giftwrap_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
-    let relay_giftwrap_count_before = relay_db
-        .count(vec![giftwrap_filter.clone()])
-        .await
-        .expect("query relay giftwrap count before high-volume mesh");
+    let high_volume_before = snapshot_relay_giftwrap_ids(&relay_db).await;
 
     for idx in 0..MESSAGES_PER_DIRECTION {
         send_message_via_ui(alice.device(0), &alice_to_bob[idx]);
@@ -3675,25 +3786,32 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
     }
 
     const DIRECTIONS_PER_ROUND: usize = 6;
-    let expected_giftwrap_delta = MESSAGES_PER_DIRECTION * DIRECTIONS_PER_ROUND * 2;
+    let expected_new_giftwraps = MESSAGES_PER_DIRECTION * DIRECTIONS_PER_ROUND * 2;
+    let giftwrap_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
     let relay_count_deadline = Instant::now() + TEST_TIMEOUT;
     loop {
         step_clusters(&mut [&mut alice, &mut bob, &mut carol]);
 
-        let relay_actual = relay_db
-            .count(vec![giftwrap_filter.clone()])
+        let current: HashSet<EventId> = relay_db
+            .query(vec![giftwrap_filter.clone()])
             .await
-            .expect("query relay giftwrap count during high-volume mesh");
-        if relay_actual >= relay_giftwrap_count_before + expected_giftwrap_delta {
+            .expect("query relay giftwrap events during high-volume mesh")
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        let new_count = current.difference(&high_volume_before).count();
+        if new_count >= expected_new_giftwraps {
             break;
         }
 
         assert!(
             Instant::now() < relay_count_deadline,
             "timed out waiting for high-volume mesh giftwraps to persist; \
-             expected at least {}, actual {}",
-            relay_giftwrap_count_before + expected_giftwrap_delta,
-            relay_actual
+             expected at least {} new, got {} (before: {}, current: {})",
+            expected_new_giftwraps,
+            new_count,
+            high_volume_before.len(),
+            current.len()
         );
 
         std::thread::sleep(Duration::from_millis(20));
@@ -3740,7 +3858,7 @@ async fn three_accounts_high_volume_pairwise_mesh_delivers_every_message_e2e() {
 
 /// Verifies that a cold-start device successfully backfills more than 500 messages from a relay
 /// by injecting data directly into the relay's memory database to confirm reliability.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires negentropy to sync beyond the giftwrap limit:500 filter"]
 async fn messages_backfill_reliability_limit_e2e() {
     init_tracing();
@@ -3994,7 +4112,7 @@ impl TcpProxy {
 /// 5. Bob's device should detect the disconnect, reconnect, and receive new messages
 ///
 /// Assertion: Bob's device ends up with both the original and new messages.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn messages_recover_after_relay_restart_e2e() {
     init_tracing();
 
@@ -4025,6 +4143,7 @@ async fn messages_recover_after_relay_restart_e2e() {
     std::thread::sleep(Duration::from_millis(100));
     alice_device.step();
     bob_device.step();
+    wait_for_device_giftwrap_subs_ready(&mut [&mut alice_device, &mut bob_device], TEST_TIMEOUT);
 
     // Phase 1: Alice sends initial messages, Bob converges
     open_conversation_via_ui(&mut alice_device, &bob_npub);
@@ -4109,7 +4228,7 @@ async fn messages_recover_after_relay_restart_e2e() {
 /// Currently expected to FAIL: the app has no pong-timeout detection, so
 /// the stale connection is never detected and the device never reconnects.
 /// When the fix is implemented, this test should pass.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stale_connection_detected_after_silent_stall_e2e() {
     init_tracing();
 
@@ -4153,6 +4272,7 @@ async fn stale_connection_detected_after_silent_stall_e2e() {
     std::thread::sleep(Duration::from_millis(100));
     alice_device.step();
     bob_device.step();
+    wait_for_device_giftwrap_subs_ready(&mut [&mut alice_device, &mut bob_device], TEST_TIMEOUT);
 
     // Phase 1: Alice sends initial messages through the proxy, Bob converges
     open_conversation_via_ui(&mut alice_device, &bob_npub);

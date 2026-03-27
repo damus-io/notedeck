@@ -541,6 +541,16 @@ fn account_remote_sub_key(kind: AccountRemoteSubKind) -> SubKey {
     SubKey::new(kind)
 }
 
+/// Returns the [`ScopedSubIdentity`] used for the account giftwrap subscription.
+///
+/// Useful for test harnesses that need to verify the giftwrap subscription
+/// has reached EOSE before sending messages.
+pub fn giftwrap_sub_identity() -> ScopedSubIdentity {
+    let owner = account_remote_owner_key();
+    let key = account_remote_sub_key(AccountRemoteSubKind::Giftwrap);
+    ScopedSubIdentity::account(owner, key)
+}
+
 fn make_account_remote_config(filters: Vec<Filter>, use_transparent: bool) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
