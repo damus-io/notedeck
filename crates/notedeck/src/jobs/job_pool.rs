@@ -6,6 +6,18 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 
 pub struct JobPool {
     tx: channel::Sender<Job>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for JobPool {
+    fn drop(&mut self) {
+        // Drop the sender first so worker threads see the channel close
+        // and exit their `for job in rx.iter()` loops.
+        let _ = std::mem::replace(&mut self.tx, channel::unbounded::<Job>().0);
+        for worker in self.workers.drain(..) {
+            worker.join().ok();
+        }
+    }
 }
 
 impl Default for JobPool {
@@ -17,18 +29,23 @@ impl Default for JobPool {
 impl JobPool {
     pub fn new(num_threads: usize) -> Self {
         let (tx, rx) = channel::unbounded::<Job>();
+        let mut workers = Vec::with_capacity(num_threads);
         for i in 0..num_threads {
             let rx = rx.clone();
-            std::thread::spawn(move || {
-                for job in rx.iter() {
-                    tracing::trace!("Starting job on thread {i}");
-                    job();
-                    tracing::trace!("Finished job on thread {i}");
-                }
-            });
+            let handle = std::thread::Builder::new()
+                .name(format!("job-pool-{i}"))
+                .spawn(move || {
+                    for job in rx.iter() {
+                        tracing::trace!("Starting job on thread {i}");
+                        job();
+                        tracing::trace!("Finished job on thread {i}");
+                    }
+                })
+                .expect("failed to spawn job pool worker");
+            workers.push(handle);
         }
 
-        Self { tx }
+        Self { tx, workers }
     }
 
     pub fn schedule<F, T>(&self, job: F) -> impl Future<Output = T>

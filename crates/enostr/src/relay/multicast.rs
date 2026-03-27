@@ -3,6 +3,8 @@ use mio::net::UdpSocket;
 use std::io;
 use std::net::IpAddr;
 use std::net::{SocketAddr, SocketAddrV4};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::relay::{BroadcastCache, BroadcastRelay, RawEventData, RelayImplType};
@@ -16,6 +18,17 @@ pub struct MulticastRelay {
     address: SocketAddrV4,
     socket: UdpSocket,
     interface: Ipv4Addr,
+    poller_stop: Arc<AtomicBool>,
+    poller_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for MulticastRelay {
+    fn drop(&mut self) {
+        self.poller_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.poller_handle.take() {
+            handle.join().ok();
+        }
+    }
 }
 
 impl MulticastRelay {
@@ -28,6 +41,8 @@ impl MulticastRelay {
             socket,
             interface,
             last_join,
+            poller_stop: Arc::new(AtomicBool::new(false)),
+            poller_handle: None,
         }
     }
 
@@ -147,21 +162,35 @@ pub fn setup_multicast_relay(
         Interest::READABLE | Interest::WRITABLE,
     )?;
 
-    // wakeup our render thread when we have new stuff on the socket
-    std::thread::spawn(move || {
-        let mut events = Events::with_capacity(1);
-        loop {
-            if let Err(err) = poll.poll(&mut events, None) {
-                error!("multicast socket poll error: {err}. ending multicast poller.");
-                return;
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = stop.clone();
+
+    let handle = std::thread::Builder::new()
+        .name("multicast-poll".to_string())
+        .spawn(move || {
+            let mut events = Events::with_capacity(1);
+            let poll_timeout = Some(Duration::from_millis(100));
+            loop {
+                if stop_thread.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Err(err) = poll.poll(&mut events, poll_timeout) {
+                    error!("multicast socket poll error: {err}. ending multicast poller.");
+                    return;
+                }
+                if !events.is_empty() {
+                    wakeup();
+                }
+                std::thread::yield_now();
             }
-            wakeup();
+        })
+        .map_err(|e| crate::Error::Generic(e.to_string()))?;
 
-            std::thread::yield_now();
-        }
-    });
+    let mut relay = MulticastRelay::new(multicast_address, socket, interface);
+    relay.poller_stop = stop;
+    relay.poller_handle = Some(handle);
 
-    Ok(MulticastRelay::new(multicast_address, socket, interface))
+    Ok(relay)
 }
 /// MulticastRelayCache lazily initializes the multicast connection and buffers
 /// outbound events until a connection is available.

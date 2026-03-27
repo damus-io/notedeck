@@ -96,6 +96,17 @@ pub struct MediaCache {
     pub cache_dir: path::PathBuf,
     pub cache_type: MediaCacheType,
     pub cache_size: Arc<Mutex<Option<u64>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    size_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for MediaCache {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(handle) = self.size_thread.take() {
+            handle.join().ok();
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -111,24 +122,40 @@ impl MediaCache {
         let cache_dir_clone = cache_dir.clone();
         let cache_size = Arc::new(Mutex::new(None));
         let cache_size_clone = Arc::clone(&cache_size);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_clone = stop.clone();
 
-        thread::spawn(move || {
-            let mut last_checked = Instant::now() - Duration::from_secs(999);
-            loop {
-                // check cache folder size every 60 s
-                if last_checked.elapsed() >= Duration::from_secs(60) {
-                    let size = compute_folder_size(&cache_dir_clone);
-                    *cache_size_clone.lock().unwrap() = Some(size);
-                    last_checked = Instant::now();
+        let size_thread = thread::Builder::new()
+            .name(format!("media-cache-{cache_type:?}"))
+            .spawn(move || {
+                let mut last_checked = Instant::now() - Duration::from_secs(999);
+                loop {
+                    if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    // check cache folder size every 60 s
+                    if last_checked.elapsed() >= Duration::from_secs(60) {
+                        let size = compute_folder_size(&cache_dir_clone);
+                        *cache_size_clone.lock().unwrap() = Some(size);
+                        last_checked = Instant::now();
+                    }
+                    // Sleep in short intervals so we can check the stop flag
+                    for _ in 0..50 {
+                        if stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                            return;
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
                 }
-                thread::sleep(Duration::from_secs(5));
-            }
-        });
+            })
+            .ok();
 
         Self {
             cache_dir,
             cache_type,
             cache_size,
+            stop,
+            size_thread,
         }
     }
 
