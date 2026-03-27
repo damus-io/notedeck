@@ -70,7 +70,7 @@ impl Updater {
         let (tx, rx) = mpsc::channel();
         let staging_dir = data_path.path(DataPathType::Update);
         let _ = std::fs::create_dir_all(&staging_dir);
-        let filters = nostr::release_filter(&release_pubkey, channel);
+        let filters = nostr::release_filter(&release_pubkey);
         let release_sub = ndb.subscribe(&filters).expect("release subscription");
 
         Self {
@@ -168,22 +168,23 @@ impl Updater {
     }
 
     /// Unsubscribe from the current release filter and resubscribe with
-    /// the current pubkey and channel.
+    /// the current pubkey.
+    #[cfg(feature = "snapshot-testing")]
     fn resubscribe(&mut self, ndb: &mut Ndb) {
         let _ = ndb.unsubscribe(self.release_sub);
-        let filters = nostr::release_filter(&self.release_pubkey, self.channel);
+        let filters = nostr::release_filter(&self.release_pubkey);
         self.release_sub = ndb.subscribe(&filters).expect("release subscription");
         self.sent_relay_filter = false;
     }
 
-    /// Change the release channel and resubscribe
-    pub fn set_channel(&mut self, ndb: &mut Ndb, channel: nostr::ReleaseChannel) {
+    /// Change the release channel. Since channel filtering is done client-side
+    /// via semver, no resubscription is needed — just reset state to re-evaluate.
+    pub fn set_channel(&mut self, channel: nostr::ReleaseChannel) {
         if self.channel == channel {
             return;
         }
         self.channel = channel;
-        self.resubscribe(ndb);
-        // Reset to re-check with the new channel
+        // Reset to re-check with the new channel acceptance criteria
         if matches!(
             self.state,
             UpdateState::UpToDate | UpdateState::WaitingForRelease

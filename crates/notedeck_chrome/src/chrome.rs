@@ -635,14 +635,13 @@ fn poll_updater(updater: &mut notedeck::updater::Updater, ctx: &mut notedeck::Ap
     let setting_str = ctx.settings.release_channel();
     if setting_str != updater.channel().as_str() {
         if let Some(ch) = notedeck::updater::nostr::ReleaseChannel::parse(setting_str) {
-            updater.set_channel(ctx.ndb, ch);
+            updater.set_channel(ch);
         }
     }
 
     if updater.needs_relay_sub() {
         let release_pubkey = *updater.release_pubkey();
-        let channel = updater.channel();
-        let filters = notedeck::updater::nostr::release_filter(&release_pubkey, channel);
+        let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
         let mut oneshot = ctx.remote.oneshot(ctx.accounts);
         oneshot.oneshot(filters);
     }

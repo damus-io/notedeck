@@ -53,6 +53,45 @@ impl ReleaseChannel {
     pub fn from_setting(s: &str) -> Self {
         Self::parse(s).unwrap_or_default()
     }
+
+    /// Derive the release channel from a semver version string.
+    /// - No prerelease → Main (e.g. `1.0.0`)
+    /// - Prerelease starting with "beta" → Beta (e.g. `1.0.0-beta.1`)
+    /// - Prerelease starting with "nightly" → Nightly (e.g. `1.0.0-nightly.20260327`)
+    /// - Prerelease starting with "dev" → Dev (e.g. `1.0.0-dev.123`)
+    /// - Unknown prerelease → Dev (most permissive)
+    pub fn from_version(version: &semver::Version) -> Self {
+        if version.pre.is_empty() {
+            return Self::Main;
+        }
+        let pre = version.pre.as_str();
+        if pre.starts_with("beta") {
+            Self::Beta
+        } else if pre.starts_with("nightly") {
+            Self::Nightly
+        } else if pre.starts_with("dev") {
+            Self::Dev
+        } else {
+            // Unknown prerelease identifiers are treated as dev
+            Self::Dev
+        }
+    }
+
+    /// Whether this channel setting accepts releases from the given channel.
+    /// Hierarchy: Dev > Nightly > Beta > Main
+    /// e.g. Beta accepts Beta and Main releases, but not Nightly or Dev.
+    pub fn accepts(&self, release_channel: ReleaseChannel) -> bool {
+        self.tier() >= release_channel.tier()
+    }
+
+    fn tier(&self) -> u8 {
+        match self {
+            Self::Main => 0,
+            Self::Beta => 1,
+            Self::Nightly => 2,
+            Self::Dev => 3,
+        }
+    }
 }
 
 /// Returns the expected asset name for the current platform/arch
@@ -121,15 +160,17 @@ pub fn target_platform_tag() -> &'static str {
 
 /// Build nostrdb filters for NIP-82 release events and asset events from the given pubkey.
 /// Returns two filters: one for kind 30063 (releases) and one for kind 3063 (assets).
-pub fn release_filter(pubkey: &[u8; 32], channel: ReleaseChannel) -> Vec<Filter> {
+/// Channel filtering is done client-side via semver prerelease identifiers after
+/// parsing the version tag from release events.
+pub fn release_filter(pubkey: &[u8; 32]) -> Vec<Filter> {
     vec![
-        // Kind 30063: Software Release events filtered by app id and channel
+        // Kind 30063: Software Release events filtered by app id.
+        // Generous limit so prereleases don't push stable out of results.
         Filter::new()
             .authors([pubkey])
             .kinds([RELEASE_KIND])
             .tags([APP_ID], 'i')
-            .tags([channel.as_str()], 'c')
-            .limit(10)
+            .limit(200)
             .build(),
         // Kind 3063: Software Asset events (we need these to resolve release references)
         Filter::new()
@@ -289,9 +330,9 @@ pub fn find_latest_release(
     pubkey: &[u8; 32],
     channel: ReleaseChannel,
 ) -> Option<ReleaseInfo> {
-    let filters = release_filter(pubkey, channel);
+    let filters = release_filter(pubkey);
 
-    let results = match ndb.query(txn, &filters, 50) {
+    let results = match ndb.query(txn, &filters, 200) {
         Ok(r) => r,
         Err(e) => {
             warn!("failed to query ndb for release events: {e}");
@@ -312,12 +353,21 @@ pub fn find_latest_release(
             Err(_) => continue,
         };
 
+        // Derive channel from semver prerelease and check hierarchy
+        let remote_version = match semver::Version::parse(&release_info.version) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let release_ch = ReleaseChannel::from_version(&remote_version);
+        if !channel.accepts(release_ch) {
+            continue;
+        }
+
         // Check if this version is better than our current best
         let dominated = best.as_ref().is_some_and(|b| {
-            semver::Version::parse(&release_info.version)
+            semver::Version::parse(&b.version)
                 .ok()
-                .zip(semver::Version::parse(&b.version).ok())
-                .is_some_and(|(new, old)| new <= old)
+                .is_some_and(|old| remote_version <= old)
         });
 
         if dominated {
@@ -571,8 +621,50 @@ mod tests {
     }
 
     #[test]
+    fn test_release_channel_from_version() {
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        assert_eq!(
+            ReleaseChannel::from_version(&v("1.0.0")),
+            ReleaseChannel::Main
+        );
+        assert_eq!(
+            ReleaseChannel::from_version(&v("1.0.0-beta.1")),
+            ReleaseChannel::Beta
+        );
+        assert_eq!(
+            ReleaseChannel::from_version(&v("1.0.0-nightly.20260327")),
+            ReleaseChannel::Nightly
+        );
+        assert_eq!(
+            ReleaseChannel::from_version(&v("1.0.0-dev.123")),
+            ReleaseChannel::Dev
+        );
+        // Unknown prerelease → Dev
+        assert_eq!(
+            ReleaseChannel::from_version(&v("1.0.0-rc.1")),
+            ReleaseChannel::Dev
+        );
+    }
+
+    #[test]
+    fn test_release_channel_accepts_hierarchy() {
+        // Main only accepts Main
+        assert!(ReleaseChannel::Main.accepts(ReleaseChannel::Main));
+        assert!(!ReleaseChannel::Main.accepts(ReleaseChannel::Beta));
+
+        // Beta accepts Main + Beta
+        assert!(ReleaseChannel::Beta.accepts(ReleaseChannel::Main));
+        assert!(ReleaseChannel::Beta.accepts(ReleaseChannel::Beta));
+        assert!(!ReleaseChannel::Beta.accepts(ReleaseChannel::Nightly));
+
+        // Dev accepts everything
+        assert!(ReleaseChannel::Dev.accepts(ReleaseChannel::Main));
+        assert!(ReleaseChannel::Dev.accepts(ReleaseChannel::Dev));
+    }
+
+    #[test]
     fn test_release_filter_builds() {
-        let filters = release_filter(&DEFAULT_RELEASE_PUBKEY, ReleaseChannel::Main);
+        let filters = release_filter(&DEFAULT_RELEASE_PUBKEY);
         assert_eq!(filters.len(), 2, "should have release + asset filters");
     }
 
