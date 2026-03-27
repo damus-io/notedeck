@@ -345,13 +345,18 @@ fn total_over(cache: &RollingCache) -> u64 {
 }
 
 pub fn dashboard_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
-    egui::Frame::new()
-        .inner_margin(egui::Margin::same(tokens::SPACING_XL as i8))
-        .show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                dashboard_ui_inner(dashboard, ui, ctx);
+    let max_width = 1200.0;
+
+    ui.vertical_centered(|ui| {
+        ui.set_max_width(max_width);
+        egui::Frame::new()
+            .inner_margin(egui::Margin::same(tokens::SPACING_XL as i8))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    dashboard_ui_inner(dashboard, ui, ctx);
+                });
             });
-        });
+    });
 }
 
 fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {

@@ -94,6 +94,7 @@ const SIZES: &[(&str, f32, f32)] = &[
     ("dashboard_mobile", 400.0, 900.0),
     ("dashboard_tablet", 800.0, 600.0),
     ("dashboard_desktop", 1200.0, 800.0),
+    ("dashboard_wide", 1800.0, 800.0),
 ];
 
 #[test]
