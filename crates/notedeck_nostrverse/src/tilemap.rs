@@ -465,18 +465,18 @@ impl TileImageCache {
                 matches!(status, TileFetchStatus::Downloading(p) if p.ready().is_some())
             };
 
-            if needs_transition {
-                if let Some(TileFetchStatus::Downloading(promise)) = self.fetches.remove(&url) {
-                    match promise.block_and_take() {
-                        Ok(pixels) => {
-                            tile_images.insert(url.clone(), pixels);
-                            self.fetches.insert(url, TileFetchStatus::Ready);
-                            any_ready = true;
-                        }
-                        Err(e) => {
-                            tracing::warn!("Tile image download failed for {}: {}", url, e);
-                            self.fetches.insert(url, TileFetchStatus::Failed);
-                        }
+            if needs_transition
+                && let Some(TileFetchStatus::Downloading(promise)) = self.fetches.remove(&url)
+            {
+                match promise.block_and_take() {
+                    Ok(pixels) => {
+                        tile_images.insert(url.clone(), pixels);
+                        self.fetches.insert(url, TileFetchStatus::Ready);
+                        any_ready = true;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Tile image download failed for {}: {}", url, e);
+                        self.fetches.insert(url, TileFetchStatus::Failed);
                     }
                 }
             }

@@ -123,7 +123,7 @@ async fn setup_home_timeline_fixture() -> HomeTimelineFixture {
         let bob_note = build_text_note(&bob, &format!("bob note {i}"), 1_700_000_000 + i);
         let carol_note = build_text_note(&carol, &format!("carol note {i}"), 1_700_000_000 + i);
         for note in [&bob_note, &carol_note] {
-            let event = Event::from_json(&note.json().expect("json")).expect("parse event");
+            let event = Event::from_json(note.json().expect("json")).expect("parse event");
             relay_db.save_event(&event).await.expect("save event");
         }
     }
@@ -131,7 +131,7 @@ async fn setup_home_timeline_fixture() -> HomeTimelineFixture {
     // Seed alice's contact list
     let contact_list = build_contact_list_note(&alice, &[&bob, &carol]);
     let contact_event =
-        Event::from_json(&contact_list.json().expect("json")).expect("parse contact list");
+        Event::from_json(contact_list.json().expect("json")).expect("parse contact list");
     relay_db
         .save_event(&contact_event)
         .await
@@ -145,7 +145,7 @@ async fn setup_home_timeline_fixture() -> HomeTimelineFixture {
             .sign(&account.secret_key.secret_bytes())
             .build()
             .expect("profile note");
-        let event = Event::from_json(&profile.json().expect("json")).expect("parse profile");
+        let event = Event::from_json(profile.json().expect("json")).expect("parse profile");
         relay_db.save_event(&event).await.expect("save profile");
     }
 

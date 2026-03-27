@@ -1155,7 +1155,7 @@ mod tests {
 
     #[test]
     fn test_seq_counter_increments() {
-        let lines = vec![
+        let lines = [
             r#"{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"s","timestamp":"2026-02-09T20:00:00Z","cwd":"/tmp","version":"2.0.64","message":{"role":"user","content":"hello"}}"#,
             r#"{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s","timestamp":"2026-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}"#,
         ];
@@ -1271,7 +1271,7 @@ mod tests {
             let line = JsonlLine::parse(line_str).unwrap();
             let events = build_events(&line, &mut threading, &sk).unwrap();
             for event in &events {
-                let sub_id = ndb.subscribe(&[filter.clone()]).unwrap();
+                let sub_id = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
                 ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                     .expect("ingest failed");
                 let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();
@@ -1321,7 +1321,7 @@ mod tests {
         // file-history-snapshot lines lack sessionId and top-level timestamp.
         // They should inherit session_id from a prior line and get timestamp
         // from snapshot.timestamp.
-        let lines = vec![
+        let lines = [
             r#"{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"ctx-test","timestamp":"2026-02-09T20:00:00Z","cwd":"/tmp","version":"2.0.64","message":{"role":"user","content":"hello"}}"#,
             r#"{"type":"file-history-snapshot","messageId":"abc","snapshot":{"messageId":"abc","trackedFileBackups":{},"timestamp":"2026-02-11T01:29:31.555Z"},"isSnapshotUpdate":false}"#,
         ];
@@ -1657,7 +1657,7 @@ mod tests {
 
         // Ingest in reverse to simulate out-of-order relay delivery
         for event in all_events.iter().rev() {
-            let sub_id = ndb.subscribe(&[filter.clone()]).unwrap();
+            let sub_id = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
             ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
             let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();

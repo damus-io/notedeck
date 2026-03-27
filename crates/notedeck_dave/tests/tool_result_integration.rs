@@ -40,9 +40,7 @@ fn test_tool_use_result_correlation() {
     if let Some((tool_name, _tool_input)) = pending_tools.remove(&tool_result.tool_use_id) {
         let response = match &tool_result.content {
             Some(ToolResultContent::Text(s)) => serde_json::Value::String(s.clone()),
-            Some(ToolResultContent::Blocks(blocks)) => {
-                serde_json::Value::Array(blocks.iter().cloned().collect())
-            }
+            Some(ToolResultContent::Blocks(blocks)) => serde_json::Value::Array(blocks.to_vec()),
             None => serde_json::Value::Null,
         };
         tool_results.push((tool_name, tool_result.tool_use_id.clone(), response));

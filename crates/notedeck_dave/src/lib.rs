@@ -4334,7 +4334,7 @@ mod tests {
 
         // Ingest in REVERSED order to simulate out-of-order relay delivery
         for event in [&tool_result_evt, &perm_evt, &tool_call_evt] {
-            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
             ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
             let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
@@ -4352,7 +4352,7 @@ mod tests {
         // First pass: query, process, and verify ordering
         {
             let txn = Transaction::new(&ndb).unwrap();
-            let results = ndb.query(&txn, &[filter.clone()], 128).unwrap();
+            let results = ndb.query(&txn, std::slice::from_ref(&filter), 128).unwrap();
             let notes: Vec<_> = results
                 .iter()
                 .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
@@ -4460,7 +4460,7 @@ mod tests {
 
         // Ingest both events
         for event in [&perm_req_evt, &perm_resp_evt] {
-            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
             ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
             let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
@@ -4479,7 +4479,7 @@ mod tests {
         // gets a pending PermissionRequest with response=None.
         {
             let txn = Transaction::new(&ndb).unwrap();
-            let results = ndb.query(&txn, &[filter.clone()], 128).unwrap();
+            let results = ndb.query(&txn, std::slice::from_ref(&filter), 128).unwrap();
             let notes: Vec<_> = results
                 .iter()
                 .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
@@ -4580,7 +4580,7 @@ mod tests {
             .build();
 
         for event in [&perm_req_evt, &perm_resp_evt] {
-            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
             ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
             let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();

@@ -151,7 +151,7 @@ async fn test_empty_prompt_handled() {
     // Empty prompt should either work or fail gracefully - either is acceptable
     if let Ok(mut stream) = result {
         // Consume the stream - we just care it doesn't panic
-        while let Some(_) = stream.next().await {}
+        while (stream.next().await).is_some() {}
     }
     // If result is Err, that's also fine - as long as we didn't panic
 }
@@ -370,7 +370,7 @@ async fn test_separate_sessions_have_separate_context() {
 
     {
         let mut stream = client.receive_response();
-        while let Some(_) = stream.next().await {}
+        while (stream.next().await).is_some() {}
     }
 
     // Different session - should NOT know the secret
@@ -536,15 +536,12 @@ async fn test_can_use_tool_deny_prevents_execution() {
     let mut response_text = String::new();
     let mut stream = client.receive_response();
     while let Some(result) = stream.next().await {
-        match result {
-            Ok(ClaudeMessage::Assistant(msg)) => {
-                for block in &msg.message.content {
-                    if let ContentBlock::Text(TextBlock { text }) = block {
-                        response_text.push_str(text);
-                    }
+        if let Ok(ClaudeMessage::Assistant(msg)) = result {
+            for block in &msg.message.content {
+                if let ContentBlock::Text(TextBlock { text }) = block {
+                    response_text.push_str(text);
                 }
             }
-            _ => {}
         }
     }
 
