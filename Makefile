@@ -47,11 +47,10 @@ android-tracy: fake
 test-messages-docker:
 	docker build -f crates/notedeck_testing/Dockerfile -t notedeck-test-base .
 	docker run --rm \
-	  --cpus=2 --memory=6g --memory-swap=6g \
-	  --ulimit nofile=256:256 \
+	  --cpus=2 --memory=7g \
 	  -v "$$PWD":/work -w /work \
 	  -v cargo-registry:/root/.cargo/registry \
 	  -v cargo-git:/root/.cargo/git \
 	  -v cargo-target:/target \
 	  -e CARGO_TARGET_DIR=/target \
-	  notedeck-test-base bash -lc 'cargo test -p notedeck_messages --test messages_e2e -- --test-threads=1'
+	  notedeck-test-base bash -lc '$${STRESS_CMD:+stress-ng --cpu 2 --cpu-load $${STRESS_CPU_LOAD:-70} &} cargo test -p notedeck_messages --test messages_e2e -- --test-threads=1'

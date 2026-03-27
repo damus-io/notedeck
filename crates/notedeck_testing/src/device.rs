@@ -35,8 +35,7 @@ pub enum DeviceDataDir {
 pub type DeviceHarness = Harness<'static, DeviceState>;
 
 /// Shuts down one device deterministically before dropping the harness.
-pub fn shutdown_device(mut device: DeviceHarness) {
-    device.state_mut().notedeck.shutdown_app();
+pub fn shutdown_device(device: DeviceHarness) {
     drop(device);
 }
 
