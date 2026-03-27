@@ -3,9 +3,22 @@ use tracing::info;
 
 /// Install the downloaded update and relaunch the application.
 ///
-/// `staged_path` is the path to the new binary (or .app bundle on macOS)
-/// that has been extracted from the downloaded archive.
+/// `staged_path` is the path to the new binary (or .app bundle on macOS,
+/// or .apk on Android) that has been extracted from the downloaded archive.
 pub fn install_and_restart(staged_path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        install_apk_android(staged_path)
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        install_and_restart_desktop(staged_path)
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+fn install_and_restart_desktop(staged_path: &Path) -> Result<(), String> {
     let current_exe =
         std::env::current_exe().map_err(|e| format!("Failed to get current exe: {e}"))?;
 
@@ -26,6 +39,42 @@ pub fn install_and_restart(staged_path: &Path) -> Result<(), String> {
     }
 
     relaunch(&current_exe)
+}
+
+/// On Android, call into Java to fire ACTION_VIEW intent with the APK.
+/// The system package installer handles the rest.
+#[cfg(target_os = "android")]
+fn install_apk_android(apk_path: &Path) -> Result<(), String> {
+    use jni::objects::{JObject, JValue};
+
+    info!("installing APK update from '{}'", apk_path.display());
+
+    let path_str = apk_path
+        .to_str()
+        .ok_or_else(|| "APK path is not valid UTF-8".to_string())?;
+
+    let vm = unsafe { jni::JavaVM::from_raw(ndk_context::android_context().vm().cast()) }
+        .map_err(|e| format!("Failed to get JavaVM: {e}"))?;
+
+    let mut env = vm
+        .attach_current_thread()
+        .map_err(|e| format!("Failed to attach JNI thread: {e}"))?;
+
+    let context = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+
+    let jpath = env
+        .new_string(path_str)
+        .map_err(|e| format!("Failed to create JNI string: {e}"))?;
+
+    env.call_method(
+        context,
+        "installApk",
+        "(Ljava/lang/String;)V",
+        &[JValue::Object(&jpath.into())],
+    )
+    .map_err(|e| format!("Failed to call installApk: {e}"))?;
+
+    Ok(())
 }
 
 /// On macOS, replace the entire .app bundle to preserve code signing.
@@ -127,7 +176,12 @@ pub fn extract_archive(archive_path: &Path, staging_dir: &Path) -> Result<PathBu
         .and_then(|n| n.to_str())
         .unwrap_or_default();
 
-    if file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz") {
+    if file_name.ends_with(".apk") {
+        // APK is the final artifact — no extraction needed
+        let dest = staging_dir.join(file_name);
+        std::fs::copy(archive_path, &dest).map_err(|e| format!("Failed to copy APK: {e}"))?;
+        return Ok(dest);
+    } else if file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz") {
         extract_tar_gz(archive_path, staging_dir)
     } else if file_name.ends_with(".zip") {
         extract_zip(archive_path, staging_dir)

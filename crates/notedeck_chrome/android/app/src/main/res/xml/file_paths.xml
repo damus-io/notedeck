@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Exposes app-private internal files dir for APK updates.
+         The updater stages APKs under {filesDir}/notedeck/update/ -->
+    <files-path name="updates" path="update/" />
+</paths>

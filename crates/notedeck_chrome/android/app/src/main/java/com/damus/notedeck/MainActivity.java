@@ -4,16 +4,19 @@ import android.content.ClipData;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 
+import androidx.core.content.FileProvider;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
@@ -23,12 +26,15 @@ import androidx.core.view.WindowInsetsControllerCompat;
 import com.google.androidgamesdk.GameActivity;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InputStream;
 
 public class MainActivity extends GameActivity {
     static final int REQUEST_CODE_PICK_FILE = 420;
+    static final int REQUEST_CODE_INSTALL_PERMISSION = 421;
+    private String pendingApkPath = null;
 
   private native void nativeOnFilePickedFailed(String uri, String e);
   private native void nativeOnFilePickedWithContent(Object[] uri_info, byte[] content);
@@ -40,6 +46,30 @@ public class MainActivity extends GameActivity {
                 durationMs, VibrationEffect.DEFAULT_AMPLITUDE);
             vibrator.vibrate(effect);
         }
+  }
+
+  public void installApk(String path) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                && !getPackageManager().canRequestPackageInstalls()) {
+            pendingApkPath = path;
+            Intent settingsIntent = new Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName()));
+            startActivityForResult(settingsIntent, REQUEST_CODE_INSTALL_PERMISSION);
+            return;
+        }
+        launchApkInstall(path);
+  }
+
+  private void launchApkInstall(String path) {
+        File apkFile = new File(path);
+        Uri apkUri = FileProvider.getUriForFile(this,
+                getPackageName() + ".fileprovider", apkFile);
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+        intent.setFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                | Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
   }
 
   public void openFilePicker() {
@@ -176,6 +206,19 @@ public class MainActivity extends GameActivity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == REQUEST_CODE_INSTALL_PERMISSION) {
+            if (pendingApkPath != null) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O
+                        || getPackageManager().canRequestPackageInstalls()) {
+                    launchApkInstall(pendingApkPath);
+                } else {
+                    Log.w("MainActivity", "Install permission still not granted");
+                }
+                pendingApkPath = null;
+            }
+            return;
+        }
 
         if (requestCode == REQUEST_CODE_PICK_FILE && resultCode == RESULT_OK) {
             if (data == null) return;

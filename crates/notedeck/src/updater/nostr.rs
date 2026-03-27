@@ -76,6 +76,10 @@ pub fn target_asset_name() -> &'static str {
     {
         "notedeck-aarch64-windows.zip"
     }
+    #[cfg(target_os = "android")]
+    {
+        "notedeck.apk"
+    }
 }
 
 /// Returns the platform tag value for the current platform/arch (NIP-82 "f" tag)
@@ -103,6 +107,10 @@ pub fn target_platform_tag() -> &'static str {
     #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
     {
         "windows-aarch64"
+    }
+    #[cfg(target_os = "android")]
+    {
+        "android-aarch64"
     }
 }
 

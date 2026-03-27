@@ -30,7 +30,9 @@ fn usage() {
 const GITHUB_REPO: &str = "damus-io/notedeck";
 
 /// File extensions recognized as release artifacts
-const ARTIFACT_EXTENSIONS: &[&str] = &[".tar.gz", ".zip", ".dmg", ".deb", ".rpm", ".exe", ".msi"];
+const ARTIFACT_EXTENSIONS: &[&str] = &[
+    ".tar.gz", ".zip", ".dmg", ".deb", ".rpm", ".exe", ".msi", ".apk",
+];
 
 /// Valid release channels
 const VALID_CHANNELS: &[&str] = &["main", "beta", "nightly", "dev"];
@@ -48,6 +50,8 @@ fn mime_for_artifact(name: &str) -> &'static str {
         "application/zip"
     } else if name.ends_with(".dmg") {
         "application/x-apple-diskimage"
+    } else if name.ends_with(".apk") {
+        "application/vnd.android.package-archive"
     } else {
         "application/octet-stream"
     }
@@ -77,6 +81,11 @@ fn normalize_arch(arch: &str) -> Option<&'static str> {
 ///   notedeck-0.8.0-1.x86_64.rpm    → linux-x86_64    (rpm implies linux)
 ///   notedeck_0.8.0-1_amd64.deb     → linux-x86_64    (deb implies linux, amd64=x86_64)
 fn platform_tag_from_name(name: &str) -> Option<String> {
+    // .apk → android (currently only aarch64 builds)
+    if name.ends_with(".apk") {
+        return Some("android-aarch64".to_string());
+    }
+
     // .exe / .msi → windows (currently only x86_64 builds)
     if name.ends_with(".exe") || name.ends_with(".msi") {
         return Some("windows-x86_64".to_string());
