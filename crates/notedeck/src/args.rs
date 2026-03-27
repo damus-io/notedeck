@@ -13,6 +13,7 @@ pub struct Args {
     pub options: NotedeckOptions,
     pub dbpath: Option<String>,
     pub datapath: Option<String>,
+    pub title: Option<String>,
 }
 
 impl Args {
@@ -39,6 +40,7 @@ impl Args {
             dbpath: None,
             datapath: None,
             locale: None,
+            title: None,
         };
 
         let mut i = 0;
@@ -139,6 +141,16 @@ impl Args {
                 res.options.set(NotedeckOptions::UseKeystore, false);
             } else if arg == "--relay-debug" {
                 res.options.set(NotedeckOptions::RelayDebug, true);
+            } else if arg == "--title" {
+                i += 1;
+                let title = if let Some(next_arg) = args.get(i) {
+                    next_arg
+                } else {
+                    error!("title argument missing?");
+                    continue;
+                };
+                res.title = Some(title.clone());
+                res.options.set(NotedeckOptions::ShowTitle, true);
             } else {
                 unrecognized_args.insert(arg.clone());
             }
@@ -153,6 +165,42 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_args(args: &[&str]) -> Args {
+        let owned: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+        let (parsed, unrecognized) = Args::parse(&owned);
+        assert!(
+            unrecognized.is_empty(),
+            "expected all args to be recognized, got {unrecognized:?}"
+        );
+        parsed
+    }
+
+    #[test]
+    fn parse_title_variants() {
+        let cases = [
+            (
+                vec!["--title", "feature branch"],
+                Some("feature branch"),
+                true,
+            ),
+            (
+                vec!["--title", "first", "--title", "second"],
+                Some("second"),
+                true,
+            ),
+            (vec!["--title"], None, false),
+        ];
+
+        for (args, expected_title, expected_show_title) in cases {
+            let parsed = parse_args(&args);
+            assert_eq!(parsed.title.as_deref(), expected_title);
+            assert_eq!(
+                parsed.options.contains(NotedeckOptions::ShowTitle),
+                expected_show_title
+            );
+        }
+    }
 
     /// Verifies `--no-keystore` disables OS-backed secure storage.
     #[test]

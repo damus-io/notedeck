@@ -506,10 +506,10 @@ impl NostrverseApp {
                 }
             }
             // Remove old tilemap scene object — will be rebuilt from new data
-            if let Some(tm) = self.state.tilemap() {
-                if let Some(scene_id) = tm.scene_object_id {
-                    r.remove_object(scene_id);
-                }
+            if let Some(tm) = self.state.tilemap()
+                && let Some(scene_id) = tm.scene_object_id
+            {
+                r.remove_object(scene_id);
             }
         }
 

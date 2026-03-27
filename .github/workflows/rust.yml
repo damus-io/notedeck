@@ -52,6 +52,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - run: |
           cargo fmt --all -- --check
           cargo clippy
@@ -64,6 +66,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
       - name: Setup Java JDK
         uses: actions/setup-java@v4.5.0
         with:
@@ -84,7 +87,7 @@ jobs:
     with:
       os: ubuntu-22.04
       additional-setup: |
-        sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev
+        sudo apt-get install libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev libasound2-dev
 
   snapshot-test:
     name: Snapshot Tests
@@ -92,10 +95,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev mesa-vulkan-drivers
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libspeechd-dev libxkbcommon-dev libssl-dev libasound2-dev mesa-vulkan-drivers
       - name: Run snapshot tests
         run: ./scripts/snapshot-test
 
@@ -127,10 +131,13 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - uses: Swatinem/rust-cache@v2
+
       # Install Packaging Tools
       - name: Install Packaging Tools
         run: |
           sudo apt-get update
+          sudo apt-get install -y libasound2-dev
           if [ "${{ matrix.arch }}" != "$(uname -m)" ]; then
             sudo apt-get install -y gcc-${{ matrix.arch }}-linux-gnu g++-aarch64-linux-gnu
             rustup target add ${{ matrix.arch }}-unknown-linux-gnu

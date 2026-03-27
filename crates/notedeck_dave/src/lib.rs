@@ -2,6 +2,7 @@ mod agent_status;
 mod auto_accept;
 mod avatar;
 pub mod backend;
+pub(crate) mod collapse_state;
 pub mod config;
 pub mod events;
 pub mod file_update;
@@ -48,8 +49,8 @@ use std::time::Instant;
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use messages::{
-    AskUserQuestionInput, AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment,
-    Message, PermissionResponse, PermissionResponseType, QuestionAnswer, SessionInfo, SubagentInfo,
+    AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
+    PermissionResponseType, QuestionAnswer, QuestionSetInput, SessionInfo, SubagentInfo,
     SubagentStatus, UserMessage,
 };
 pub use quaternion::Quaternion;
@@ -126,6 +127,8 @@ pub enum DaveOverlay {
     /// Directory chosen; waiting for user to pick a backend and model.
     BackendPicker {
         cwd: PathBuf,
+        /// Optional remote host to spawn on after backend/model selection.
+        target_host: Option<String>,
         /// Per-backend selected model index (persists across frames).
         selected_models: HashMap<BackendType, usize>,
     },
@@ -165,6 +168,9 @@ pub struct Dave {
     interrupt_pending_since: Option<Instant>,
     /// Focus queue for agents needing attention
     focus_queue: FocusQueue,
+    /// Tracks which host/cwd folders are collapsed in the session list
+    collapse_state: collapse_state::CollapseState,
+    collapse_serializer: TimedSerializer<collapse_state::CollapseState>,
     /// Auto-steal focus state: Disabled, Idle (enabled, nothing pending),
     /// or Pending (enabled, waiting to fire / retrying).
     auto_steal: focus_queue::AutoStealState,
@@ -450,6 +456,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let settings_serializer =
             TimedSerializer::new(path, DataPathType::Setting, "dave_settings.json".to_owned());
 
+        let collapse_serializer = TimedSerializer::new(
+            path,
+            DataPathType::Setting,
+            "collapse_state.json".to_owned(),
+        );
+        let collapse_state = collapse_serializer.get_item().unwrap_or_default();
+
         // Load saved settings, falling back to env-var-based defaults
         let (model_config, settings) = if let Some(saved_settings) = settings_serializer.get_item()
         {
@@ -539,7 +552,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 if let Some(session) = manager.get_mut(sid) {
                     session.details.hostname = hostname.clone();
                 }
-                manager.rebuild_host_groups();
+                manager.rebuild_cwd_groups();
                 (manager, DaveOverlay::None)
             }
             AiMode::Agentic => (SessionManager::new(), DaveOverlay::DirectoryPicker),
@@ -563,6 +576,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             show_scene: false, // Default to list view
             interrupt_pending_since: None,
             focus_queue: FocusQueue::new(),
+            collapse_state,
+            collapse_serializer,
             auto_steal: focus_queue::AutoStealState::Disabled,
             home_session: None,
             directory_picker,
@@ -613,6 +628,26 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         );
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
+    }
+
+    /// Toggle a host collapse state, persist it, and re-arm auto-steal if needed.
+    fn toggle_host_collapse(&mut self, hostname: &str) {
+        self.collapse_state.toggle_host(hostname);
+        self.collapse_serializer
+            .try_save(self.collapse_state.clone());
+        if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
+            self.auto_steal = focus_queue::AutoStealState::Pending;
+        }
+    }
+
+    /// Toggle a cwd collapse state, persist it, and re-arm auto-steal if needed.
+    fn toggle_cwd_collapse(&mut self, hostname: &str, cwd: &std::path::Path) {
+        self.collapse_state.toggle_cwd(hostname, cwd);
+        self.collapse_serializer
+            .try_save(self.collapse_state.clone());
+        if self.auto_steal.is_enabled() && !self.focus_queue.is_empty() {
+            self.auto_steal = focus_queue::AutoStealState::Pending;
+        }
     }
 
     /// Queue a thread summary request. The thread is fetched and formatted
@@ -982,7 +1017,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             );
                         } else {
                             tracing::info!("directory selected: {:?}", path);
-                            self.create_or_pick_backend(path);
+                            self.create_or_pick_backend(path, None);
                         }
                     }
                     OverlayResult::Close => {
@@ -1034,6 +1069,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
             DaveOverlay::BackendPicker {
                 cwd,
+                target_host,
                 mut selected_models,
             } => {
                 if let Some((bt, model)) = ui::backend_picker_overlay_ui(
@@ -1042,10 +1078,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     ui,
                 ) {
                     tracing::info!("backend selected: {:?}, model: {:?}", bt, model);
-                    self.create_or_resume_session(cwd, bt, model);
+                    if let Some(host) = target_host {
+                        self.queue_spawn_command(&host, &cwd, bt);
+                    } else {
+                        self.create_or_resume_session(cwd, bt, model);
+                    }
                 } else {
                     self.active_overlay = DaveOverlay::BackendPicker {
                         cwd,
+                        target_host,
                         selected_models,
                     };
                 }
@@ -1177,6 +1218,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let (chat_response, session_action, toggle_scene) = ui::desktop_ui(
             &mut self.session_manager,
             &self.focus_queue,
+            &self.collapse_state,
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
@@ -1239,6 +1281,20 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             .push(PendingWorktreeRemoval::spawn(session_id, cwd));
                     }
                 }
+                SessionListAction::ToggleHostCollapse(hostname) => {
+                    self.toggle_host_collapse(&hostname);
+                }
+                SessionListAction::ToggleCwdCollapse(hostname, cwd) => {
+                    self.toggle_cwd_collapse(&hostname, &cwd);
+                }
+                SessionListAction::NewSessionInCwd(hostname, cwd) => {
+                    let target_host = if hostname.is_empty() {
+                        None
+                    } else {
+                        Some(hostname)
+                    };
+                    self.create_or_pick_backend(cwd, target_host);
+                }
             }
         }
 
@@ -1251,6 +1307,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let (dave_response, session_action) = ui::narrow_ui(
             &mut self.session_manager,
             &self.focus_queue,
+            &self.collapse_state,
             &self.model_config,
             is_interrupt_pending,
             self.auto_steal.is_enabled(),
@@ -1317,6 +1374,21 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             .push(PendingWorktreeRemoval::spawn(session_id, cwd));
                     }
                 }
+                SessionListAction::ToggleHostCollapse(hostname) => {
+                    self.toggle_host_collapse(&hostname);
+                }
+                SessionListAction::ToggleCwdCollapse(hostname, cwd) => {
+                    self.toggle_cwd_collapse(&hostname, &cwd);
+                }
+                SessionListAction::NewSessionInCwd(hostname, cwd) => {
+                    let target_host = if hostname.is_empty() {
+                        None
+                    } else {
+                        Some(hostname)
+                    };
+                    self.create_or_pick_backend(cwd, target_host);
+                    self.show_session_list = false;
+                }
             }
         }
 
@@ -1342,15 +1414,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Collect remote hostnames from session host_groups and directory picker's
+    /// Collect remote hostnames from sessions and directory picker's
     /// event-sourced paths. Excludes the local hostname.
     fn known_remote_hosts(&self) -> Vec<String> {
         let mut hosts: Vec<String> = Vec::new();
 
-        // From active session groups
-        for (hostname, _) in self.session_manager.host_groups() {
-            if hostname != &self.hostname && !hosts.contains(hostname) {
-                hosts.push(hostname.clone());
+        // From active sessions
+        for hostname in self.session_manager.remote_hostnames() {
+            if hostname != self.hostname && !hosts.contains(&hostname) {
+                hosts.push(hostname);
             }
         }
 
@@ -1453,7 +1525,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
             }
-            self.session_manager.rebuild_host_groups();
+            self.session_manager.rebuild_cwd_groups();
 
             // Close directory picker if open
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
@@ -1673,7 +1745,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Build and queue permission response events from remote sessions.
+    /// Build and queue permission response events.
     /// Called in the update loop where AppContext is available.
     fn publish_pending_perm_responses(&mut self, ctx: &AppContext<'_>) {
         if self.pending_perm_responses.is_empty() {
@@ -1688,37 +1760,19 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         let pending = std::mem::take(&mut self.pending_perm_responses);
 
-        // Get session info from the active session
-        let session = match self.session_manager.get_active() {
-            Some(s) => s,
-            None => return,
-        };
-        let agentic = match &session.agentic {
-            Some(a) => a,
-            None => return,
-        };
-        let session_id = agentic.event_session_id().to_string();
-
         for resp in pending {
-            let request_note_id = match agentic.permissions.request_note_ids.get(&resp.perm_id) {
-                Some(id) => id,
-                None => {
-                    tracing::warn!("no request note_id for perm_id {}", resp.perm_id);
-                    continue;
-                }
-            };
-
             queue_built_event(
                 session_events::build_permission_response_event(
                     &resp.perm_id,
-                    request_note_id,
+                    &resp.request_note_id,
                     resp.allowed,
                     resp.message.as_deref(),
-                    &session_id,
+                    resp.cancel_turn,
+                    &resp.event_session_id,
                     &sk,
                 ),
                 &format!(
-                    "queued remote permission response for {} ({})",
+                    "queued permission response for {} ({})",
                     resp.perm_id,
                     if resp.allowed { "allow" } else { "deny" }
                 ),
@@ -1877,7 +1931,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
-        self.session_manager.rebuild_host_groups();
+        self.session_manager.rebuild_cwd_groups();
 
         // Seed per-host recent paths from session state events
         let host_paths = session_loader::load_recent_paths_by_host(ctx.ndb, &txn);
@@ -2006,7 +2060,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                 }
-                self.session_manager.rebuild_host_groups();
+                self.session_manager.rebuild_cwd_groups();
                 continue;
             }
 
@@ -2142,7 +2196,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 }
             }
 
-            self.session_manager.rebuild_host_groups();
+            self.session_manager.rebuild_cwd_groups();
 
             // If we were showing the directory picker, switch to showing sessions
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
@@ -2487,6 +2541,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
+    /// Collect all existing run configs as editor suggestions.
+    fn collect_run_config_suggestions(&self, exclude_id: Option<&str>) -> Vec<RunConfig> {
+        ui::run_config_editor::collect_run_config_suggestions(&self.run_configs, exclude_id)
+    }
+
     /// Build and queue a kind-31991 event for a single run config.
     fn publish_run_config(
         &mut self,
@@ -2569,18 +2628,31 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.active_overlay = DaveOverlay::None;
     }
 
-    fn create_or_pick_backend(&mut self, cwd: PathBuf) {
+    fn create_or_pick_backend(&mut self, cwd: PathBuf, target_host: Option<String>) {
         tracing::info!(
-            "create_or_pick_backend: {} available backends: {:?}",
+            "create_or_pick_backend: {} available backends: {:?} target_host={:?}",
             self.available_backends.len(),
-            self.available_backends
+            self.available_backends,
+            target_host
         );
+        let remote_target = target_host
+            .filter(|host| !host.is_empty())
+            .filter(|host| host != &self.hostname);
+
         if let Some(bt) = self.single_agentic_backend() {
             tracing::info!("single backend detected, skipping picker: {:?}", bt);
-            self.create_or_resume_session(cwd, bt, Model::Default);
+            if let Some(host) = remote_target.as_deref() {
+                self.queue_spawn_command(host, &cwd, bt);
+            } else {
+                self.create_or_resume_session(cwd, bt, Model::Default);
+            }
         } else if self.available_backends.is_empty() {
             // No agentic backends — fall back to configured backend
-            self.create_or_resume_session(cwd, self.model_config.backend, Model::Default);
+            if let Some(host) = remote_target.as_deref() {
+                self.queue_spawn_command(host, &cwd, self.model_config.backend);
+            } else {
+                self.create_or_resume_session(cwd, self.model_config.backend, Model::Default);
+            }
         } else {
             tracing::info!(
                 "multiple backends available, showing backend picker: {:?}",
@@ -2588,6 +2660,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
             self.active_overlay = DaveOverlay::BackendPicker {
                 cwd,
+                target_host: remote_target,
                 selected_models: HashMap::new(),
             };
         }
@@ -2621,7 +2694,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         update::first_pending_permission(&self.session_manager)
     }
 
-    /// Check if the first pending permission is an AskUserQuestion tool call
+    /// Check if the first pending permission is a shared question-set prompt
     fn has_pending_question(&self) -> bool {
         update::has_pending_question(&self.session_manager)
     }
@@ -2665,6 +2738,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &mut self.session_manager,
             &mut self.scene,
             &mut self.focus_queue,
+            &self.collapse_state,
             get_backend(&self.backends, bt),
             self.show_scene,
             self.auto_steal.is_enabled(),
@@ -2812,8 +2886,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                 }
                 RunAction::OpenNew { cwd } => {
-                    self.active_overlay =
-                        DaveOverlay::RunConfigEditor(Box::new(RunConfigEditor::new_config(cwd)));
+                    let suggestions = self.collect_run_config_suggestions(None);
+                    self.active_overlay = DaveOverlay::RunConfigEditor(Box::new(
+                        RunConfigEditor::new_config(cwd, suggestions),
+                    ));
                 }
                 RunAction::OpenEdit { cwd, config_id } => {
                     let existing = self
@@ -2822,8 +2898,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         .and_then(|cfgs| cfgs.iter().find(|c| c.id == config_id))
                         .cloned();
                     if let Some(config) = existing {
+                        let suggestions = self.collect_run_config_suggestions(Some(&config_id));
                         self.active_overlay = DaveOverlay::RunConfigEditor(Box::new(
-                            RunConfigEditor::edit_config(cwd, config),
+                            RunConfigEditor::edit_config(cwd, config, suggestions),
                         ));
                     }
                 }
@@ -2880,6 +2957,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 crate::update::focus_queue_next(
                     &mut self.session_manager,
                     &mut self.focus_queue,
+                    &self.collapse_state,
                     &mut self.scene,
                     self.show_scene,
                 );
@@ -3521,6 +3599,7 @@ impl notedeck::App for Dave {
                 let stole_focus = update::process_auto_steal_focus(
                     &mut self.session_manager,
                     &mut self.focus_queue,
+                    &self.collapse_state,
                     &mut self.scene,
                     self.show_scene,
                     true,
@@ -3866,7 +3945,7 @@ pub(crate) fn process_conversation_notes<'a>(
                 // Track that this permission was responded to
                 if let Some(perm_id_str) = session_events::get_tag_value(note, "perm-id") {
                     if let Ok(perm_id) = uuid::Uuid::parse_str(perm_id_str) {
-                        let (response_type, _) =
+                        let (response_type, _, _) =
                             session_events::decode_permission_response(content);
                         agentic.permissions.responded.insert(perm_id, response_type);
                         // Update the matching PermissionRequest in chat
@@ -3978,6 +4057,7 @@ fn handle_remote_permission_request(
                 note.id(),
                 true,
                 None,
+                false,
                 sid,
                 sk,
             ) {
@@ -3985,14 +4065,14 @@ fn handle_remote_permission_request(
             }
         }
         chat.push(Message::PermissionRequest(
-            crate::messages::PermissionRequest {
-                id: perm_id,
+            crate::messages::PermissionRequest::new(
+                perm_id,
                 tool_name,
                 tool_input,
-                response: Some(crate::messages::PermissionResponseType::Allowed),
-                answer_summary: None,
-                cached_plan: None,
-            },
+                None,
+                Some(crate::messages::PermissionResponseType::Allowed),
+                None,
+            ),
         ));
         return;
     }
@@ -4000,25 +4080,10 @@ fn handle_remote_permission_request(
     // Check if we already responded
     let response = agentic.permissions.responded.get(&perm_id).copied();
 
-    // Parse plan markdown for ExitPlanMode requests
-    let cached_plan = if tool_name == "ExitPlanMode" {
-        tool_input
-            .get("plan")
-            .and_then(|v| v.as_str())
-            .map(crate::messages::ParsedMarkdown::parse)
-    } else {
-        None
-    };
-
     chat.push(Message::PermissionRequest(
-        crate::messages::PermissionRequest {
-            id: perm_id,
-            tool_name,
-            tool_input,
-            response,
-            answer_summary: None,
-            cached_plan,
-        },
+        crate::messages::PermissionRequest::new(
+            perm_id, tool_name, tool_input, None, response, None,
+        ),
     ));
 }
 
@@ -4037,12 +4102,17 @@ fn handle_remote_permission_response(
         return;
     };
 
-    let (response_type, message) = session_events::decode_permission_response(note.content());
+    let (response_type, message, cancel_turn) =
+        session_events::decode_permission_response(note.content());
     let allowed = response_type == crate::messages::PermissionResponseType::Allowed;
 
     if let Some(sender) = agentic.permissions.pending.remove(&perm_id) {
         let response = if allowed {
             PermissionResponse::Allow { message }
+        } else if cancel_turn {
+            PermissionResponse::Cancel {
+                reason: message.unwrap_or_else(|| "Tool call exited by remote".to_string()),
+            }
         } else {
             PermissionResponse::Deny {
                 reason: message.unwrap_or_else(|| "Denied by remote".to_string()),
@@ -4269,13 +4339,21 @@ mod tests {
     use crate::session::SessionSource;
     use crate::session_events::{build_live_event, build_permission_request_event, ThreadingState};
     use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+    use notedeck::timed_serializer::TimedSerializer;
     use std::path::PathBuf;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     fn test_secret_key() -> [u8; 32] {
         let mut key = [0u8; 32];
         key[0] = 1;
         key
+    }
+
+    fn test_dave(data_path: &DataPath) -> Dave {
+        let ndb_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        Dave::new(None, ndb, egui::Context::default(), data_path)
     }
 
     /// Integration test: events ingested out of order into ndb are sorted
@@ -4334,7 +4412,7 @@ mod tests {
 
         // Ingest in REVERSED order to simulate out-of-order relay delivery
         for event in [&tool_result_evt, &perm_evt, &tool_call_evt] {
-            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
             ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
             let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
@@ -4352,7 +4430,7 @@ mod tests {
         // First pass: query, process, and verify ordering
         {
             let txn = Transaction::new(&ndb).unwrap();
-            let results = ndb.query(&txn, &[filter.clone()], 128).unwrap();
+            let results = ndb.query(&txn, std::slice::from_ref(&filter), 128).unwrap();
             let notes: Vec<_> = results
                 .iter()
                 .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
@@ -4445,6 +4523,7 @@ mod tests {
             &[0u8; 32], // dummy request note id
             false,      // DENIED
             Some("too dangerous"),
+            false,
             session_id_str,
             &sk,
         )
@@ -4460,7 +4539,7 @@ mod tests {
 
         // Ingest both events
         for event in [&perm_req_evt, &perm_resp_evt] {
-            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
             ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
             let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
@@ -4479,7 +4558,7 @@ mod tests {
         // gets a pending PermissionRequest with response=None.
         {
             let txn = Transaction::new(&ndb).unwrap();
-            let results = ndb.query(&txn, &[filter.clone()], 128).unwrap();
+            let results = ndb.query(&txn, std::slice::from_ref(&filter), 128).unwrap();
             let notes: Vec<_> = results
                 .iter()
                 .filter_map(|qr| ndb.get_note_by_key(&txn, qr.note_key).ok())
@@ -4567,6 +4646,7 @@ mod tests {
             &[0u8; 32],
             false, // DENIED
             Some("too dangerous"),
+            false,
             session_id_str,
             &sk,
         )
@@ -4580,7 +4660,7 @@ mod tests {
             .build();
 
         for event in [&perm_req_evt, &perm_resp_evt] {
-            let sub = ndb.subscribe(&[filter.clone()]).unwrap();
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
             ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
             let _keys = ndb.wait_for_notes(sub, 1).await.unwrap();
@@ -4630,5 +4710,95 @@ mod tests {
             Some(crate::messages::PermissionResponseType::Denied),
             "single-batch denied response should not be marked Allowed"
         );
+    }
+
+    #[test]
+    fn collapse_state_persists_across_restart() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+
+        let mut dave = test_dave(&data_path);
+        dave.collapse_serializer = TimedSerializer::new(
+            &data_path,
+            DataPathType::Setting,
+            "collapse_state.json".to_owned(),
+        )
+        .with_delay(Duration::ZERO);
+
+        dave.toggle_host_collapse("remote-a");
+        dave.toggle_cwd_collapse("remote-b", std::path::Path::new("/srv/api"));
+
+        let persisted = dave
+            .collapse_serializer
+            .get_item()
+            .expect("collapse state should be persisted");
+        assert!(persisted.is_host_collapsed("remote-a"));
+        assert!(persisted.is_cwd_collapsed("remote-b", std::path::Path::new("/srv/api")));
+
+        drop(dave);
+
+        let restored = test_dave(&data_path);
+        assert!(restored.collapse_state.is_host_collapsed("remote-a"));
+        assert!(restored
+            .collapse_state
+            .is_cwd_collapsed("remote-b", std::path::Path::new("/srv/api")));
+    }
+
+    #[test]
+    fn invalid_collapse_state_file_falls_back_to_default() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+        let settings_dir = data_path.path(DataPathType::Setting);
+        std::fs::create_dir_all(&settings_dir).expect("settings dir should be created");
+        std::fs::write(settings_dir.join("collapse_state.json"), "{not valid json")
+            .expect("invalid collapse state should be written");
+
+        let restored = test_dave(&data_path);
+
+        assert!(
+            !restored.collapse_state.is_host_collapsed("remote-a"),
+            "invalid saved state should fall back to a clean default"
+        );
+        assert!(
+            !restored
+                .collapse_state
+                .is_cwd_collapsed("remote-a", std::path::Path::new("/srv/api")),
+            "invalid saved state should not restore any collapsed cwd entries"
+        );
+    }
+
+    #[test]
+    fn collapse_toggle_rearms_auto_steal_and_persists_current_state() {
+        let base_dir = TempDir::new().unwrap();
+        let data_path = DataPath::new(base_dir.path());
+
+        let mut dave = test_dave(&data_path);
+        dave.collapse_serializer = TimedSerializer::new(
+            &data_path,
+            DataPathType::Setting,
+            "collapse_state.json".to_owned(),
+        )
+        .with_delay(Duration::ZERO);
+        dave.auto_steal = focus_queue::AutoStealState::Idle;
+        dave.focus_queue
+            .enqueue(42, focus_queue::FocusPriority::NeedsInput);
+
+        dave.toggle_host_collapse("remote-a");
+
+        assert_eq!(dave.auto_steal, focus_queue::AutoStealState::Pending);
+        let persisted = dave
+            .collapse_serializer
+            .get_item()
+            .expect("collapse state should be saved");
+        assert!(persisted.is_host_collapsed("remote-a"));
+
+        dave.toggle_cwd_collapse("remote-a", std::path::Path::new("/srv/api"));
+
+        let persisted = dave
+            .collapse_serializer
+            .get_item()
+            .expect("collapse state should stay saved");
+        assert!(persisted.is_host_collapsed("remote-a"));
+        assert!(persisted.is_cwd_collapsed("remote-a", std::path::Path::new("/srv/api")));
     }
 }

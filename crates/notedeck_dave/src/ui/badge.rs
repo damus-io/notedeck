@@ -146,6 +146,8 @@ impl<'a> StatusBadge<'a> {
             Vec2::new(galley.size().x + keybind_extra, galley.size().y) + padding * 2.0;
 
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, self.text));
 
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();
@@ -259,6 +261,8 @@ impl<'a> ActionButton<'a> {
             Vec2::new(galley.size().x + keybind_extra, galley.size().y) + padding * 2.0;
 
         let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+        response
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, self.text));
 
         if ui.is_rect_visible(rect) {
             let painter = ui.painter();

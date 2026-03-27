@@ -255,6 +255,45 @@ pub struct FileChangeApprovalParams {
     pub grant_root: Option<String>,
 }
 
+/// `item/tool/requestUserInput` params — server asks client to answer one or
+/// more questions.  Used for MCP tool-call approvals (question id starts with
+/// `mcp_tool_call_approval_`) and potentially other interactive prompts.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestUserInputParams {
+    #[serde(default)]
+    pub thread_id: Option<String>,
+    #[serde(default)]
+    pub turn_id: Option<String>,
+    #[serde(default)]
+    pub item_id: Option<String>,
+    pub questions: Vec<UserInputQuestion>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputQuestion {
+    pub id: String,
+    #[serde(default)]
+    pub header: Option<String>,
+    #[serde(default)]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub is_other: Option<bool>,
+    #[serde(default)]
+    pub is_secret: Option<bool>,
+    #[serde(default)]
+    pub options: Option<Vec<UserInputOption>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInputOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// `turn/completed` params
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

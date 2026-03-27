@@ -6,8 +6,8 @@ use super::shared::{self, SessionCommand, SessionHandle};
 use crate::backend::traits::AiBackend;
 use crate::file_update::{FileUpdate, FileUpdateType};
 use crate::messages::{
-    CompactionInfo, DaveApiResponse, PermissionResponse, SessionInfo, SubagentInfo, SubagentStatus,
-    UsageInfo,
+    ApprovalPromptInput, ApprovalPromptQuestion, CompactionInfo, DaveApiResponse,
+    PermissionResponse, PermissionView, SessionInfo, SubagentInfo, SubagentStatus, UsageInfo,
 };
 use crate::tools::Tool;
 use crate::Message;
@@ -24,9 +24,51 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+/// Tracks whether the codex backend is mid-stream for agent-message deltas
+/// so we can inject paragraph breaks between separate agent messages.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TokenState {
+    /// No tokens received yet this turn.
+    Initial,
+    /// Actively receiving delta tokens.
+    Streaming,
+    /// Was streaming, then saw an item boundary — next delta burst gets a `\n\n`.
+    Paused,
+}
+
 // ---------------------------------------------------------------------------
+/// Question ID prefix Codex uses for MCP tool-call approval requests.
+const MCP_APPROVAL_PREFIX: &str = "mcp_tool_call_approval_";
+/// JSON-RPC error code for invalid method params.
+const JSON_RPC_INVALID_PARAMS_CODE: i64 = -32602;
+
 // Session actor
 // ---------------------------------------------------------------------------
+
+/// Per-question option mapping for `requestUserInput`.
+struct QuestionAnswer {
+    question_id: String,
+    options: Vec<String>,
+    accept_index: usize,
+    decline_index: usize,
+    cancel_index: usize,
+}
+
+/// How to format the approval response sent back to Codex.
+enum ResponseKind {
+    /// Standard approval — `{ "decision": "accept" | "decline" | "cancel" }`.
+    Standard,
+    /// `requestUserInput` answer — stores exact options for every question so we
+    /// can round-trip the original labels without guessing.
+    UserInput(Vec<QuestionAnswer>),
+}
+
+/// Pending approval state — stored while waiting for the user to respond.
+struct PendingApproval {
+    rpc_id: u64,
+    rx: oneshot::Receiver<PermissionResponse>,
+    kind: ResponseKind,
+}
 
 /// Result of processing a single Codex JSON-RPC message.
 enum HandleResult {
@@ -34,12 +76,15 @@ enum HandleResult {
     Continue,
     /// `turn/completed` received — this turn is done.
     TurnDone,
-    /// Auto-accept matched — send accept for this rpc_id immediately.
-    AutoAccepted(u64),
+    /// Auto-accept matched — send the approval immediately.
+    AutoAccepted { rpc_id: u64, kind: ResponseKind },
+    /// Unsupported or malformed request — send an RPC error to unblock Codex.
+    Rejected { rpc_id: u64, message: String },
     /// Needs UI approval — stash the receiver and wait for the user.
     NeedsApproval {
         rpc_id: u64,
         rx: oneshot::Receiver<PermissionResponse>,
+        kind: ResponseKind,
     },
 }
 
@@ -242,12 +287,12 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
 
                 // Stream notifications until turn/completed
                 let mut subagent_stack: Vec<String> = Vec::new();
+                let mut agent_token_state = TokenState::Initial;
                 let mut turn_done = false;
-                let mut pending_approval: Option<(u64, oneshot::Receiver<PermissionResponse>)> =
-                    None;
+                let mut pending_approval: Option<PendingApproval> = None;
 
                 while !turn_done {
-                    if let Some((rpc_id, mut rx)) = pending_approval.take() {
+                    if let Some(mut approval) = pending_approval.take() {
                         // ---- approval-wait state ----
                         // Codex is blocked waiting for our response, so no new
                         // lines will arrive. Select between the UI response and
@@ -260,7 +305,10 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                     SessionCommand::Interrupt { ctx: int_ctx } => {
                                         tracing::debug!("Session {} interrupted during approval", session_id);
                                         // Cancel the approval and interrupt the turn
-                                        let _ = send_approval_response(&mut writer, rpc_id, ApprovalDecision::Cancel).await;
+                                        let _ = send_approval(
+                                            &mut writer, approval.rpc_id,
+                                            ApprovalDecision::Cancel, &approval.kind,
+                                        ).await;
                                         if let Some(ref tid) = current_turn_id {
                                             request_counter += 1;
                                             let _ = send_turn_interrupt(&mut writer, request_counter, &thread_id, tid).await;
@@ -277,28 +325,43 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                             "Query already in progress".to_string(),
                                         ));
                                         // Restore the pending approval — still waiting
-                                        pending_approval = Some((rpc_id, rx));
+                                        pending_approval = Some(approval);
                                     }
                                     SessionCommand::SetPermissionMode { ctx: mode_ctx, .. } => {
                                         mode_ctx.request_repaint();
-                                        pending_approval = Some((rpc_id, rx));
+                                        pending_approval = Some(approval);
                                     }
                                     SessionCommand::Compact { response_tx: compact_tx, .. } => {
                                         let _ = compact_tx.send(DaveApiResponse::Failed(
                                             "Cannot compact during active turn".to_string(),
                                         ));
-                                        pending_approval = Some((rpc_id, rx));
+                                        pending_approval = Some(approval);
                                     }
                                 }
                             }
 
-                            result = &mut rx => {
+                            result = &mut approval.rx => {
                                 let decision = match result {
                                     Ok(PermissionResponse::Allow { .. }) => ApprovalDecision::Accept,
                                     Ok(PermissionResponse::Deny { .. }) => ApprovalDecision::Decline,
-                                    Err(_) => ApprovalDecision::Cancel,
+                                    Ok(PermissionResponse::Cancel { .. }) | Err(_) => ApprovalDecision::Cancel,
                                 };
-                                let _ = send_approval_response(&mut writer, rpc_id, decision).await;
+                                let _ = send_approval(
+                                    &mut writer, approval.rpc_id,
+                                    decision, &approval.kind,
+                                ).await;
+                                if matches!(decision, ApprovalDecision::Cancel) {
+                                    if let Some(ref tid) = current_turn_id {
+                                        request_counter += 1;
+                                        let _ = send_turn_interrupt(
+                                            &mut writer,
+                                            request_counter,
+                                            &thread_id,
+                                            tid,
+                                        )
+                                        .await;
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -357,18 +420,25 @@ async fn session_actor_loop<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin>(
                                             &ctx,
                                             &mut subagent_stack,
                                             &turn_count,
+                                            &mut agent_token_state,
                                         ) {
                                             HandleResult::Continue => {}
                                             HandleResult::TurnDone => {
                                                 turn_done = true;
                                             }
-                                            HandleResult::AutoAccepted(rpc_id) => {
-                                                let _ = send_approval_response(
-                                                    &mut writer, rpc_id, ApprovalDecision::Accept,
+                                            HandleResult::AutoAccepted { rpc_id, kind } => {
+                                                let _ = send_approval(
+                                                    &mut writer, rpc_id,
+                                                    ApprovalDecision::Accept, &kind,
                                                 ).await;
                                             }
-                                            HandleResult::NeedsApproval { rpc_id, rx } => {
-                                                pending_approval = Some((rpc_id, rx));
+                                            HandleResult::Rejected { rpc_id, message } => {
+                                                let _ = send_rpc_error(
+                                                    &mut writer, rpc_id, &message,
+                                                ).await;
+                                            }
+                                            HandleResult::NeedsApproval { rpc_id, rx, kind } => {
+                                                pending_approval = Some(PendingApproval { rpc_id, rx, kind });
                                             }
                                         }
                                     }
@@ -599,6 +669,7 @@ fn handle_codex_message(
     ctx: &egui::Context,
     subagent_stack: &mut Vec<String>,
     turn_count: &u32,
+    agent_token_state: &mut TokenState,
 ) -> HandleResult {
     let method = match &msg.method {
         Some(m) => m.as_str(),
@@ -615,10 +686,22 @@ fn handle_codex_message(
         msg.params.is_some()
     );
 
+    // If we were actively streaming and hit an item boundary, mark as
+    // paused so the next delta burst gets a paragraph separator.
+    if *agent_token_state == TokenState::Streaming
+        && (method == "item/started" || method == "item/completed")
+    {
+        *agent_token_state = TokenState::Paused;
+    }
+
     match method {
         "item/agentMessage/delta" => {
             if let Some(params) = msg.params {
                 if let Ok(delta) = serde_json::from_value::<AgentMessageDeltaParams>(params) {
+                    if *agent_token_state == TokenState::Paused {
+                        let _ = response_tx.send(DaveApiResponse::Token("\n\n".to_string()));
+                    }
+                    *agent_token_state = TokenState::Streaming;
                     let _ = response_tx.send(DaveApiResponse::Token(delta.delta));
                     ctx.request_repaint();
                 }
@@ -784,6 +867,33 @@ fn handle_codex_message(
             }
         }
 
+        "item/tool/requestUserInput" => match (msg.id, msg.params) {
+            (Some(rpc_id), Some(params)) => {
+                match serde_json::from_value::<RequestUserInputParams>(params) {
+                    Ok(input_req) => {
+                        return handle_request_user_input(rpc_id, input_req, response_tx, ctx);
+                    }
+                    Err(e) => {
+                        tracing::error!("requestUserInput deser FAILED: {}", e);
+                        return HandleResult::Rejected {
+                            rpc_id,
+                            message: format!("Invalid requestUserInput params: {e}"),
+                        };
+                    }
+                }
+            }
+            (Some(rpc_id), None) => {
+                tracing::warn!("requestUserInput missing params");
+                return HandleResult::Rejected {
+                    rpc_id,
+                    message: "requestUserInput missing params".to_string(),
+                };
+            }
+            (None, _) => {
+                tracing::warn!("requestUserInput missing id");
+            }
+        },
+
         "thread/tokenUsage/updated" => {
             if let Some(params) = msg.params {
                 if let Ok(usage) = serde_json::from_value::<TokenUsageParams>(params) {
@@ -892,7 +1002,7 @@ fn handle_codex_message(
 
 /// Check auto-accept rules. If matched, return `AutoAccepted`. Otherwise
 /// create a `PendingPermission`, send it to the UI, and return `NeedsApproval`
-/// with the oneshot receiver.
+/// with the oneshot receiver. If UI forwarding fails, reject the request.
 fn check_approval_or_forward(
     rpc_id: u64,
     tool_name: &str,
@@ -901,13 +1011,377 @@ fn check_approval_or_forward(
     ctx: &egui::Context,
 ) -> HandleResult {
     if shared::should_auto_accept(tool_name, &tool_input) {
-        return HandleResult::AutoAccepted(rpc_id);
+        return HandleResult::AutoAccepted {
+            rpc_id,
+            kind: ResponseKind::Standard,
+        };
     }
 
     match shared::forward_permission_to_ui(tool_name, tool_input, response_tx, ctx) {
-        Some(rx) => HandleResult::NeedsApproval { rpc_id, rx },
-        // Can't reach UI — auto-accept as fallback
-        None => HandleResult::AutoAccepted(rpc_id),
+        Some(rx) => HandleResult::NeedsApproval {
+            rpc_id,
+            rx,
+            kind: ResponseKind::Standard,
+        },
+        None => HandleResult::Rejected {
+            rpc_id,
+            message: format!("Approval UI unavailable for tool: {tool_name}"),
+        },
+    }
+}
+
+/// Extract the MCP tool name from a Codex approval question.
+///
+/// Codex formats these as:
+/// `"The <server> MCP server wants to run the tool \"<ToolName>\", ..."`
+fn extract_mcp_tool_name(question_text: &str) -> Option<&str> {
+    let start = question_text.find("the tool \"")?;
+    let after = &question_text[start + 10..];
+    let end = after.find('"')?;
+    Some(&after[..end])
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OptionIntent {
+    Accept,
+    Decline,
+    Cancel,
+}
+
+fn classify_option_intent(label: &str) -> Option<OptionIntent> {
+    let lower = label.to_ascii_lowercase();
+    if lower.contains("cancel") || lower.contains("abort") {
+        return Some(OptionIntent::Cancel);
+    }
+    if lower.contains("deny") || lower.contains("decline") || lower.contains("reject") {
+        return Some(OptionIntent::Decline);
+    }
+    if lower.contains("approve") || lower.contains("allow") {
+        return Some(OptionIntent::Accept);
+    }
+    None
+}
+
+/// Resolve a single approval question into an exact option-index mapping for
+/// accept/decline/cancel decisions.
+///
+/// Returns `None` when the question cannot be represented losslessly in Dave's
+/// 3-button approval UI (Allow, Deny, Exit).
+fn resolve_question_answer(question: &UserInputQuestion) -> Option<QuestionAnswer> {
+    if question.is_secret == Some(true) || question.is_other == Some(true) {
+        return None;
+    }
+
+    let options = question.options.as_deref()?;
+    if options.is_empty() {
+        return None;
+    }
+
+    let mut accepts = Vec::new();
+    let mut declines = Vec::new();
+    let mut cancels = Vec::new();
+
+    for (idx, option) in options.iter().enumerate() {
+        match classify_option_intent(&option.label) {
+            Some(OptionIntent::Accept) => accepts.push(idx),
+            Some(OptionIntent::Decline) => declines.push(idx),
+            Some(OptionIntent::Cancel) => cancels.push(idx),
+            None => {
+                tracing::warn!(
+                    "requestUserInput question {} has unsupported option label {:?}",
+                    question.id,
+                    option.label
+                );
+                return None;
+            }
+        }
+    }
+
+    // Prefer an explicit "once" approval label when there are multiple allow
+    // choices (e.g. "Approve Once" + "Approve this session").
+    let accept_index = if accepts.len() == 1 {
+        accepts[0]
+    } else if let Some(index) = accepts.iter().copied().find(|idx| {
+        let lower = options[*idx].label.to_ascii_lowercase();
+        lower.contains("once") && (lower.contains("approve") || lower.contains("allow"))
+    }) {
+        index
+    } else {
+        let labels: Vec<&str> = accepts
+            .iter()
+            .map(|idx| options[*idx].label.as_str())
+            .collect();
+        tracing::warn!(
+            "requestUserInput question {} has ambiguous accept options: {:?}",
+            question.id,
+            labels
+        );
+        return None;
+    };
+
+    if declines.len() > 1 {
+        let labels: Vec<&str> = declines
+            .iter()
+            .map(|idx| options[*idx].label.as_str())
+            .collect();
+        tracing::warn!(
+            "requestUserInput question {} has ambiguous decline options: {:?}",
+            question.id,
+            labels
+        );
+        return None;
+    }
+    if cancels.len() > 1 {
+        let labels: Vec<&str> = cancels
+            .iter()
+            .map(|idx| options[*idx].label.as_str())
+            .collect();
+        tracing::warn!(
+            "requestUserInput question {} has ambiguous cancel options: {:?}",
+            question.id,
+            labels
+        );
+        return None;
+    }
+
+    let decline_index = match (declines.first(), cancels.first()) {
+        (Some(label), _) => *label,
+        (None, Some(label)) => *label,
+        (None, None) => {
+            tracing::warn!(
+                "requestUserInput question {} has no decline/cancel option",
+                question.id
+            );
+            return None;
+        }
+    };
+    let cancel_index = match (cancels.first(), declines.first()) {
+        (Some(label), _) => *label,
+        (None, Some(label)) => *label,
+        (None, None) => {
+            tracing::warn!(
+                "requestUserInput question {} has no cancel/decline option",
+                question.id
+            );
+            return None;
+        }
+    };
+
+    Some(QuestionAnswer {
+        question_id: question.id.clone(),
+        options: options.iter().map(|o| o.label.clone()).collect(),
+        accept_index,
+        decline_index,
+        cancel_index,
+    })
+}
+
+/// Returns `true` if a question looks like a binary approval prompt that we
+/// can safely map to Allow/Deny through the permission UI.
+///
+/// Rejects questions that are free-text, secret, have no options, or have
+/// options that don't clearly map to approve/cancel semantics.
+fn is_approval_shaped(question: &UserInputQuestion) -> bool {
+    resolve_question_answer(question).is_some()
+}
+
+/// Build `QuestionAnswer` entries for every question in the request.
+fn build_question_answers(questions: &[UserInputQuestion]) -> Option<Vec<QuestionAnswer>> {
+    questions.iter().map(resolve_question_answer).collect()
+}
+
+/// Build the compact approval prompt view payload used by the shared permission UI.
+fn build_approval_prompt(
+    questions: &[UserInputQuestion],
+) -> (ApprovalPromptInput, serde_json::Value) {
+    let prompt = ApprovalPromptInput {
+        questions: questions
+            .iter()
+            .map(|q| ApprovalPromptQuestion {
+                header: q.header.clone(),
+                question: q.question.clone(),
+            })
+            .collect(),
+    };
+
+    let tool_input = serde_json::json!({
+        "questions": prompt.questions.iter().map(|q| {
+            serde_json::json!({
+                "question": q.question,
+                "header": q.header,
+            })
+        }).collect::<Vec<_>>(),
+        "options": questions
+            .iter()
+            .map(|q| {
+                q.options
+                    .as_deref()
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|o| {
+                        serde_json::json!({
+                            "label": o.label,
+                            "description": o.description,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>(),
+    });
+
+    (prompt, tool_input)
+}
+
+/// Handle an `item/tool/requestUserInput` message from Codex.
+///
+/// MCP tool-call approvals arrive as questions with ids starting with
+/// `MCP_APPROVAL_PREFIX`.  We extract the tool name from the question
+/// text, route through auto-accept / UI approval, and return the
+/// appropriate `HandleResult`.
+///
+/// Non-MCP questions are only handled if they are clearly approval-shaped
+/// (binary approve/cancel with no free-text or secret fields).  Everything
+/// else is declined to avoid fabricating user input.
+fn handle_request_user_input(
+    rpc_id: u64,
+    input_req: RequestUserInputParams,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    ctx: &egui::Context,
+) -> HandleResult {
+    if input_req.questions.is_empty() {
+        tracing::warn!("requestUserInput with empty questions array, rejecting");
+        return HandleResult::Rejected {
+            rpc_id,
+            message: "requestUserInput with empty questions array".to_string(),
+        };
+    }
+
+    // Find the first MCP tool-call approval question.
+    let mcp_question = input_req
+        .questions
+        .iter()
+        .find(|q| q.id.starts_with(MCP_APPROVAL_PREFIX));
+
+    if let Some(question) = mcp_question {
+        // Reject if any non-MCP question is not approval-shaped (e.g. secret,
+        // free-text, or ambiguous options). We refuse to fabricate answers for
+        // those alongside an MCP approval.
+        let non_mcp_safe = input_req
+            .questions
+            .iter()
+            .filter(|q| !q.id.starts_with(MCP_APPROVAL_PREFIX))
+            .all(is_approval_shaped);
+
+        if !non_mcp_safe {
+            let ids: Vec<&str> = input_req.questions.iter().map(|q| q.id.as_str()).collect();
+            tracing::warn!(
+                "MCP requestUserInput contains unsafe non-MCP questions, rejecting: {:?}",
+                ids
+            );
+            return HandleResult::Rejected {
+                rpc_id,
+                message: "MCP approval request contains unsupported non-MCP questions".to_string(),
+            };
+        }
+
+        let tool_name = question
+            .question
+            .as_deref()
+            .and_then(extract_mcp_tool_name)
+            .unwrap_or("mcp_tool");
+
+        let (prompt, tool_input) = build_approval_prompt(&input_req.questions);
+
+        tracing::info!(
+            "MCP TOOL APPROVAL via requestUserInput: tool={} question_id={} total_questions={}",
+            tool_name,
+            question.id,
+            input_req.questions.len()
+        );
+
+        // Build answers for ALL questions so the response is complete.
+        let Some(kind_questions) = build_question_answers(&input_req.questions) else {
+            tracing::warn!(
+                "MCP requestUserInput contains non-lossless answer options, rejecting: {:?}",
+                input_req
+                    .questions
+                    .iter()
+                    .map(|q| q.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+            return HandleResult::Rejected {
+                rpc_id,
+                message: "MCP approval request contains ambiguous or unsupported options"
+                    .to_string(),
+            };
+        };
+        let kind = ResponseKind::UserInput(kind_questions);
+
+        // Check auto-accept. MCP write tools won't match read-only rules,
+        // so they'll be forwarded to the UI for approval.
+        if shared::should_auto_accept(tool_name, &tool_input) {
+            return HandleResult::AutoAccepted { rpc_id, kind };
+        }
+
+        match shared::forward_permission_to_ui_with_view(
+            tool_name,
+            tool_input,
+            Some(PermissionView::Approval(prompt)),
+            response_tx,
+            ctx,
+        ) {
+            Some(rx) => HandleResult::NeedsApproval { rpc_id, rx, kind },
+            None => HandleResult::Rejected {
+                rpc_id,
+                message: format!("Approval UI unavailable for tool: {tool_name}"),
+            },
+        }
+    } else if input_req.questions.iter().all(is_approval_shaped) {
+        // All questions are binary approval-shaped — safe to route through
+        // the permission UI.
+        let first_q = &input_req.questions[0];
+        let display_name = first_q.header.as_deref().unwrap_or("Codex prompt");
+        let (prompt, tool_input) = build_approval_prompt(&input_req.questions);
+
+        tracing::info!(
+            "requestUserInput: {} approval-shaped non-MCP question(s), forwarding to UI",
+            input_req.questions.len()
+        );
+
+        let Some(kind_questions) = build_question_answers(&input_req.questions) else {
+            return HandleResult::Rejected {
+                rpc_id,
+                message: "Approval prompt contains ambiguous or unsupported options".to_string(),
+            };
+        };
+        let kind = ResponseKind::UserInput(kind_questions);
+
+        match shared::forward_permission_to_ui_with_view(
+            display_name,
+            tool_input,
+            Some(PermissionView::Approval(prompt)),
+            response_tx,
+            ctx,
+        ) {
+            Some(rx) => HandleResult::NeedsApproval { rpc_id, rx, kind },
+            None => HandleResult::Rejected {
+                rpc_id,
+                message: format!("Approval UI unavailable for prompt: {display_name}"),
+            },
+        }
+    } else {
+        // Unsupported interactive prompt — reject to avoid fabricating input.
+        let ids: Vec<&str> = input_req.questions.iter().map(|q| q.id.as_str()).collect();
+        tracing::warn!(
+            "requestUserInput contains unsupported question types (secret, free-text, \
+             or non-approval options), rejecting: {:?}",
+            ids
+        );
+        HandleResult::Rejected {
+            rpc_id,
+            message: "Unsupported interactive prompt (secret, free-text, or non-approval options)"
+                .to_string(),
+        }
     }
 }
 
@@ -1045,6 +1519,27 @@ async fn send_request<P: serde::Serialize, W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Send a JSON-RPC error response to unblock Codex without fabricating input.
+async fn send_rpc_error<W: AsyncWrite + Unpin>(
+    writer: &mut tokio::io::BufWriter<W>,
+    id: u64,
+    message: &str,
+) -> Result<(), std::io::Error> {
+    let resp = serde_json::json!({
+        "id": id,
+        "error": {
+            "code": JSON_RPC_INVALID_PARAMS_CODE,
+            "message": message
+        }
+    });
+    let mut line = serde_json::to_string(&resp)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    line.push('\n');
+    writer.write_all(line.as_bytes()).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 /// Send a JSON-RPC response (for approval requests).
 async fn send_rpc_response<W: AsyncWrite + Unpin>(
     writer: &mut tokio::io::BufWriter<W>,
@@ -1068,6 +1563,43 @@ async fn send_approval_response<W: AsyncWrite + Unpin>(
 ) -> Result<(), std::io::Error> {
     let result = serde_json::to_value(ApprovalResponse { decision }).unwrap();
     send_rpc_response(writer, rpc_id, result).await
+}
+
+/// Send the appropriate response for a pending approval, dispatching on `ResponseKind`.
+async fn send_approval<W: AsyncWrite + Unpin>(
+    writer: &mut tokio::io::BufWriter<W>,
+    rpc_id: u64,
+    decision: ApprovalDecision,
+    kind: &ResponseKind,
+) -> Result<(), std::io::Error> {
+    match kind {
+        ResponseKind::Standard => send_approval_response(writer, rpc_id, decision).await,
+        ResponseKind::UserInput(questions) => {
+            let mut answers_map = serde_json::Map::new();
+            for q in questions {
+                let answer_index = match decision {
+                    ApprovalDecision::Accept => q.accept_index,
+                    ApprovalDecision::Decline => q.decline_index,
+                    ApprovalDecision::Cancel => q.cancel_index,
+                };
+                let answer = q.options.get(answer_index).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "question {} missing option index {}",
+                            q.question_id, answer_index
+                        ),
+                    )
+                })?;
+                answers_map.insert(
+                    q.question_id.clone(),
+                    serde_json::json!({ "answers": [answer] }),
+                );
+            }
+            let result = serde_json::json!({ "answers": answers_map });
+            send_rpc_response(writer, rpc_id, result).await
+        }
+    }
 }
 
 /// Perform the `initialize` → `initialized` handshake.
@@ -1595,6 +2127,28 @@ mod tests {
         assert!(json.contains("\"decision\":\"decline\""));
     }
 
+    #[tokio::test]
+    async fn test_send_rpc_error_includes_code() {
+        let (writer_stream, reader_stream) = tokio::io::duplex(512);
+        let mut writer = tokio::io::BufWriter::new(writer_stream);
+        let mut reader = tokio::io::BufReader::new(reader_stream);
+
+        send_rpc_error(&mut writer, 321, "bad params")
+            .await
+            .unwrap();
+
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let value: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+
+        assert_eq!(value["id"], serde_json::json!(321));
+        assert_eq!(
+            value["error"]["code"],
+            serde_json::json!(JSON_RPC_INVALID_PARAMS_CODE)
+        );
+        assert_eq!(value["error"]["message"], serde_json::json!("bad params"));
+    }
+
     #[test]
     fn test_turn_input_serialization() {
         let input = TurnInput::Text {
@@ -1617,7 +2171,8 @@ mod tests {
 
         let msg = notification("item/agentMessage/delta", json!({ "delta": "Hello world" }));
 
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1628,13 +2183,67 @@ mod tests {
     }
 
     #[test]
+    fn test_handle_delta_inserts_paragraph_break_only_after_item_boundary() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+        let mut token_state = TokenState::Initial;
+
+        let first = notification("item/agentMessage/delta", json!({ "delta": "First" }));
+        let result = handle_codex_message(first, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(matches!(token_state, TokenState::Streaming));
+
+        let noise = notification("some/future/event", json!({}));
+        let result = handle_codex_message(noise, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(
+            matches!(token_state, TokenState::Streaming),
+            "non-item protocol noise should not force a paragraph break"
+        );
+
+        let continued = notification(
+            "item/agentMessage/delta",
+            json!({ "delta": " still first" }),
+        );
+        let result =
+            handle_codex_message(continued, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(matches!(token_state, TokenState::Streaming));
+
+        let boundary = notification(
+            "item/completed",
+            json!({ "item": { "id": "agent-1", "type": "agentMessage" } }),
+        );
+        let result =
+            handle_codex_message(boundary, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(matches!(token_state, TokenState::Paused));
+
+        let second = notification("item/agentMessage/delta", json!({ "delta": "Second" }));
+        let result = handle_codex_message(second, &tx, &ctx, &mut subagents, &0, &mut token_state);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(matches!(token_state, TokenState::Streaming));
+
+        let tokens: Vec<_> = rx
+            .try_iter()
+            .map(|response| match response {
+                DaveApiResponse::Token(token) => token,
+                other => panic!("Expected Token, got {:?}", std::mem::discriminant(&other)),
+            })
+            .collect();
+        assert_eq!(tokens, vec!["First", " still first", "\n\n", "Second"]);
+    }
+
+    #[test]
     fn test_handle_turn_completed_success() {
         let (tx, _rx) = mpsc::channel();
         let ctx = egui::Context::default();
         let mut subagents = Vec::new();
 
         let msg = notification("turn/completed", json!({ "status": "completed" }));
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::TurnDone));
     }
 
@@ -1648,7 +2257,8 @@ mod tests {
             "turn/completed",
             json!({ "status": "failed", "error": "rate limit exceeded" }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::TurnDone));
 
         let response = rx.try_recv().unwrap();
@@ -1672,7 +2282,8 @@ mod tests {
             error: None,
             params: None,
         };
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err()); // nothing sent
     }
@@ -1684,7 +2295,8 @@ mod tests {
         let mut subagents = Vec::new();
 
         let msg = notification("some/future/event", json!({}));
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
         assert!(rx.try_recv().is_err());
     }
@@ -1699,7 +2311,8 @@ mod tests {
             "codex/event/error",
             json!({ "message": "context window exceeded" }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1716,7 +2329,8 @@ mod tests {
         let mut subagents = Vec::new();
 
         let msg = notification("error", json!({ "message": "something broke" }));
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1733,7 +2347,8 @@ mod tests {
         let mut subagents = Vec::new();
 
         let msg = notification("codex/event/error", json!({}));
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1762,7 +2377,8 @@ mod tests {
                 "conversationId": "thread-1"
             }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1792,7 +2408,8 @@ mod tests {
                 "turnId": "1"
             }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
 
         let response = rx.try_recv().unwrap();
@@ -1816,7 +2433,8 @@ mod tests {
                 "name": "research agent"
             }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         assert!(matches!(result, HandleResult::Continue));
         assert_eq!(subagents.len(), 1);
         assert_eq!(subagents[0], "agent-1");
@@ -1846,9 +2464,10 @@ mod tests {
             "item/commandExecution/requestApproval",
             json!({ "command": "git status" }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         match result {
-            HandleResult::AutoAccepted(id) => assert_eq!(id, 99),
+            HandleResult::AutoAccepted { rpc_id, .. } => assert_eq!(rpc_id, 99),
             other => panic!(
                 "Expected AutoAccepted, got {:?}",
                 std::mem::discriminant(&other)
@@ -1870,7 +2489,8 @@ mod tests {
             "item/commandExecution/requestApproval",
             json!({ "command": "rm -rf /" }),
         );
-        let result = handle_codex_message(msg, &tx, &ctx, &mut subagents, &0);
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
         match result {
             HandleResult::NeedsApproval { rpc_id, .. } => assert_eq!(rpc_id, 100),
             other => panic!(
@@ -1882,6 +2502,642 @@ mod tests {
         // Permission request should have been sent to UI
         let response = rx.try_recv().unwrap();
         assert!(matches!(response, DaveApiResponse::PermissionRequest(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // MCP tool approval (requestUserInput) tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_request_user_input_mcp_approval_needs_ui() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            200,
+            "item/tool/requestUserInput",
+            json!({
+                "threadId": "t1",
+                "turnId": "turn1",
+                "itemId": "call_abc123",
+                "questions": [{
+                    "id": "mcp_tool_call_approval_call_abc123",
+                    "header": "Approve app tool call?",
+                    "question": "The linear MCP server wants to run the tool \"Save issue\", which may modify or delete data. Allow this action?",
+                    "isOther": false,
+                    "isSecret": false,
+                    "options": [
+                        {"label": "Approve Once", "description": "Run the tool and continue."},
+                        {"label": "Approve this session", "description": "Remember for session."},
+                        {"label": "Cancel", "description": "Cancel this tool call"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        match result {
+            HandleResult::NeedsApproval {
+                rpc_id,
+                kind: ResponseKind::UserInput(ref answers),
+                ..
+            } => {
+                assert_eq!(rpc_id, 200);
+                assert_eq!(answers.len(), 1);
+                assert_eq!(answers[0].question_id, "mcp_tool_call_approval_call_abc123");
+                assert_eq!(answers[0].options[answers[0].accept_index], "Approve Once");
+                assert_eq!(answers[0].options[answers[0].decline_index], "Cancel");
+                assert_eq!(answers[0].options[answers[0].cancel_index], "Cancel");
+            }
+            other => panic!(
+                "Expected NeedsApproval+UserInput, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+
+        // Permission request sent to UI with extracted tool name
+        let response = rx.try_recv().unwrap();
+        match response {
+            DaveApiResponse::PermissionRequest(pending) => {
+                assert_eq!(pending.request.tool_name, "Save issue");
+                assert!(matches!(pending.request.view, PermissionView::Approval(_)));
+            }
+            other => panic!(
+                "Expected PermissionRequest, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn test_request_user_input_mcp_approval_extracts_tool_name() {
+        let (tx, _rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        // When the tool name can't be parsed, falls back to "mcp_tool"
+        let msg = server_request(
+            201,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "mcp_tool_call_approval_call_xyz",
+                    "question": "Some unexpected format question",
+                    "options": [
+                        {"label": "Approve Once"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        match result {
+            HandleResult::NeedsApproval {
+                rpc_id,
+                kind: ResponseKind::UserInput(ref answers),
+                ..
+            } => {
+                assert_eq!(rpc_id, 201);
+                assert_eq!(answers.len(), 1);
+                assert_eq!(answers[0].question_id, "mcp_tool_call_approval_call_xyz");
+            }
+            other => panic!(
+                "Expected NeedsApproval+UserInput, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    #[test]
+    fn test_request_user_input_mcp_approval_rejects_when_ui_unavailable() {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            209,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "mcp_tool_call_approval_call_abc123",
+                    "question": "The linear MCP server wants to run the tool \"Save issue\", which may modify or delete data. Allow this action?",
+                    "options": [
+                        {"label": "Approve Once"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 209, .. }));
+    }
+
+    #[test]
+    fn test_request_user_input_mcp_with_unsafe_non_mcp_rejected() {
+        let (tx, _rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        // MCP approval + a secret question in the same request — should reject
+        let msg = server_request(
+            206,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [
+                    {
+                        "id": "mcp_tool_call_approval_call_abc",
+                        "question": "The linear MCP server wants to run the tool \"Save issue\"",
+                        "options": [
+                            {"label": "Approve Once"},
+                            {"label": "Cancel"}
+                        ]
+                    },
+                    {
+                        "id": "secret_input",
+                        "question": "Enter your API key",
+                        "isSecret": true,
+                        "options": [
+                            {"label": "Approve Once"},
+                            {"label": "Cancel"}
+                        ]
+                    }
+                ]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 206, .. }));
+    }
+
+    #[test]
+    fn test_request_user_input_missing_id_ignored() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        // Notification (no id) — should be ignored
+        let msg = notification(
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "mcp_tool_call_approval_call_foo",
+                    "question": "Approve?",
+                    "options": [{"label": "Approve Once"}, {"label": "Cancel"}]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Continue));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_request_user_input_missing_params_rejected() {
+        let (tx, _rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = RpcMessage {
+            id: Some(207),
+            method: Some("item/tool/requestUserInput".to_string()),
+            result: None,
+            error: None,
+            params: None,
+        };
+
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 207, .. }));
+    }
+
+    #[test]
+    fn test_request_user_input_invalid_params_rejected() {
+        let (tx, _rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            208,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": "not-an-array"
+            }),
+        );
+
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 208, .. }));
+    }
+
+    #[test]
+    fn test_request_user_input_non_mcp_non_approval_declined() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        // Non-MCP question with non-approval options — should be declined
+        let msg = server_request(
+            202,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "some_other_question",
+                    "question": "Pick a color",
+                    "options": [{"label": "Red"}, {"label": "Blue"}]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        match result {
+            HandleResult::Rejected { rpc_id, .. } => {
+                assert_eq!(rpc_id, 202);
+            }
+            other => panic!(
+                "Expected Rejected, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+
+        // No permission request sent — rejected without UI interaction
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_request_user_input_non_mcp_ambiguous_approval_rejected() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            211,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "ambiguous_approval",
+                    "question": "Do you want to continue?",
+                    "options": [
+                        {"label": "Approve"},
+                        {"label": "Allow"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 211, .. }));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_request_user_input_non_mcp_approval_shaped_forwards_to_ui() {
+        let (tx, rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        // Non-MCP but approval-shaped (has approve/cancel options)
+        let msg = server_request(
+            203,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "some_approval_question",
+                    "header": "Confirm action",
+                    "question": "Do you want to proceed?",
+                    "options": [
+                        {"label": "Approve Once"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        match result {
+            HandleResult::NeedsApproval {
+                rpc_id,
+                kind: ResponseKind::UserInput(ref answers),
+                ..
+            } => {
+                assert_eq!(rpc_id, 203);
+                assert_eq!(answers.len(), 1);
+                assert_eq!(answers[0].question_id, "some_approval_question");
+                assert_eq!(answers[0].options[answers[0].accept_index], "Approve Once");
+                assert_eq!(answers[0].options[answers[0].decline_index], "Cancel");
+            }
+            other => panic!(
+                "Expected NeedsApproval+UserInput, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+
+        // Permission request sent to UI
+        let response = rx.try_recv().unwrap();
+        assert!(matches!(response, DaveApiResponse::PermissionRequest(_)));
+    }
+
+    #[test]
+    fn test_request_user_input_non_mcp_approval_rejects_when_ui_unavailable() {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            210,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "some_approval_question",
+                    "header": "Confirm action",
+                    "question": "Do you want to proceed?",
+                    "options": [
+                        {"label": "Approve Once"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 210, .. }));
+    }
+
+    #[test]
+    fn test_request_user_input_secret_declined() {
+        let (tx, _rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        // Secret input — should be declined even with approve/cancel options
+        let msg = server_request(
+            204,
+            "item/tool/requestUserInput",
+            json!({
+                "questions": [{
+                    "id": "secret_question",
+                    "question": "Enter your API key",
+                    "isSecret": true,
+                    "options": [
+                        {"label": "Approve Once"},
+                        {"label": "Cancel"}
+                    ]
+                }]
+            }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 204, .. }));
+    }
+
+    #[test]
+    fn test_request_user_input_empty_questions() {
+        let (tx, _rx) = mpsc::channel();
+        let ctx = egui::Context::default();
+        let mut subagents = Vec::new();
+
+        let msg = server_request(
+            205,
+            "item/tool/requestUserInput",
+            json!({ "questions": [] }),
+        );
+        let result =
+            handle_codex_message(msg, &tx, &ctx, &mut subagents, &0, &mut TokenState::Initial);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 205, .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_mcp_tool_name_standard_format() {
+        let text =
+            r#"The linear MCP server wants to run the tool "Save issue", which may modify data."#;
+        assert_eq!(extract_mcp_tool_name(text), Some("Save issue"));
+    }
+
+    #[test]
+    fn test_extract_mcp_tool_name_different_server() {
+        let text = r#"The kanboard MCP server wants to run the tool "create_task", which may modify data."#;
+        assert_eq!(extract_mcp_tool_name(text), Some("create_task"));
+    }
+
+    #[test]
+    fn test_extract_mcp_tool_name_no_match() {
+        assert_eq!(extract_mcp_tool_name("Some unrelated question text"), None);
+        assert_eq!(extract_mcp_tool_name(""), None);
+    }
+
+    #[test]
+    fn test_resolve_question_answer_from_options() {
+        let question = UserInputQuestion {
+            id: "test".to_string(),
+            header: None,
+            question: None,
+            is_other: None,
+            is_secret: None,
+            options: Some(vec![
+                UserInputOption {
+                    label: "Approve Once".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Approve this session".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Cancel".to_string(),
+                    description: None,
+                },
+            ]),
+        };
+        let answer = resolve_question_answer(&question).expect("should resolve");
+        assert_eq!(answer.question_id, "test");
+        assert_eq!(answer.options[answer.accept_index], "Approve Once");
+        assert_eq!(answer.options[answer.decline_index], "Cancel");
+        assert_eq!(answer.options[answer.cancel_index], "Cancel");
+    }
+
+    #[test]
+    fn test_resolve_question_answer_no_options() {
+        let question = UserInputQuestion {
+            id: "test".to_string(),
+            header: None,
+            question: None,
+            is_other: None,
+            is_secret: None,
+            options: None,
+        };
+        assert!(resolve_question_answer(&question).is_none());
+    }
+
+    #[test]
+    fn test_resolve_question_answer_custom_wording() {
+        let question = UserInputQuestion {
+            id: "test".to_string(),
+            header: None,
+            question: None,
+            is_other: None,
+            is_secret: None,
+            options: Some(vec![
+                UserInputOption {
+                    label: "Yes, approve it".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "No, cancel this".to_string(),
+                    description: None,
+                },
+            ]),
+        };
+        let answer = resolve_question_answer(&question).expect("should resolve");
+        assert_eq!(answer.options[answer.accept_index], "Yes, approve it");
+        assert_eq!(answer.options[answer.decline_index], "No, cancel this");
+    }
+
+    #[test]
+    fn test_resolve_question_answer_rejects_ambiguous_accept_options() {
+        let question = UserInputQuestion {
+            id: "test".to_string(),
+            header: None,
+            question: None,
+            is_other: None,
+            is_secret: None,
+            options: Some(vec![
+                UserInputOption {
+                    label: "Approve".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Allow".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Cancel".to_string(),
+                    description: None,
+                },
+            ]),
+        };
+        assert!(resolve_question_answer(&question).is_none());
+    }
+
+    #[test]
+    fn test_resolve_question_answer_keeps_distinct_deny_and_cancel() {
+        let question = UserInputQuestion {
+            id: "test".to_string(),
+            header: None,
+            question: None,
+            is_other: None,
+            is_secret: None,
+            options: Some(vec![
+                UserInputOption {
+                    label: "Approve Once".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Deny".to_string(),
+                    description: None,
+                },
+                UserInputOption {
+                    label: "Cancel".to_string(),
+                    description: None,
+                },
+            ]),
+        };
+        let answer = resolve_question_answer(&question).expect("should resolve");
+        assert_eq!(answer.options[answer.accept_index], "Approve Once");
+        assert_eq!(answer.options[answer.decline_index], "Deny");
+        assert_eq!(answer.options[answer.cancel_index], "Cancel");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_approval_shaped tests
+    // -----------------------------------------------------------------------
+
+    fn make_question(
+        is_secret: Option<bool>,
+        is_other: Option<bool>,
+        labels: &[&str],
+    ) -> UserInputQuestion {
+        UserInputQuestion {
+            id: "test".to_string(),
+            header: None,
+            question: None,
+            is_other,
+            is_secret,
+            options: if labels.is_empty() {
+                None
+            } else {
+                Some(
+                    labels
+                        .iter()
+                        .map(|l| UserInputOption {
+                            label: l.to_string(),
+                            description: None,
+                        })
+                        .collect(),
+                )
+            },
+        }
+    }
+
+    #[test]
+    fn test_is_approval_shaped_standard() {
+        let q = make_question(None, None, &["Approve Once", "Cancel"]);
+        assert!(is_approval_shaped(&q));
+    }
+
+    #[test]
+    fn test_is_approval_shaped_with_session_option() {
+        let q = make_question(
+            None,
+            None,
+            &["Approve Once", "Approve this session", "Cancel"],
+        );
+        assert!(is_approval_shaped(&q));
+    }
+
+    #[test]
+    fn test_is_approval_shaped_rejects_ambiguous_accept_options() {
+        let q = make_question(None, None, &["Approve", "Allow", "Cancel"]);
+        assert!(!is_approval_shaped(&q));
+    }
+
+    #[test]
+    fn test_is_approval_shaped_deny_variant() {
+        let q = make_question(None, None, &["Approve", "Deny"]);
+        assert!(is_approval_shaped(&q));
+    }
+
+    #[test]
+    fn test_is_approval_shaped_rejects_non_approval_options() {
+        let q = make_question(None, None, &["Red", "Blue"]);
+        assert!(!is_approval_shaped(&q));
+    }
+
+    #[test]
+    fn test_is_approval_shaped_rejects_secret() {
+        let q = make_question(Some(true), None, &["Approve Once", "Cancel"]);
+        assert!(!is_approval_shaped(&q));
+    }
+
+    #[test]
+    fn test_is_approval_shaped_rejects_free_text() {
+        let q = make_question(None, Some(true), &["Approve Once", "Cancel"]);
+        assert!(!is_approval_shaped(&q));
+    }
+
+    #[test]
+    fn test_is_approval_shaped_rejects_no_options() {
+        let q = make_question(None, None, &[]);
+        assert!(!is_approval_shaped(&q));
     }
 
     // -----------------------------------------------------------------------
@@ -2109,7 +3365,10 @@ mod tests {
 
         // Glob/Grep/Read are always auto-accepted
         let result = check_approval_or_forward(1, "Glob", json!({"pattern": "*.rs"}), &tx, &ctx);
-        assert!(matches!(result, HandleResult::AutoAccepted(1)));
+        assert!(matches!(
+            result,
+            HandleResult::AutoAccepted { rpc_id: 1, .. }
+        ));
         assert!(rx.try_recv().is_err()); // no UI request
     }
 
@@ -2139,6 +3398,17 @@ mod tests {
                 std::mem::discriminant(&other)
             ),
         }
+    }
+
+    #[test]
+    fn test_approval_rejects_when_ui_channel_closed() {
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let ctx = egui::Context::default();
+
+        let result =
+            check_approval_or_forward(43, "Bash", json!({"command": "sudo rm -rf /"}), &tx, &ctx);
+        assert!(matches!(result, HandleResult::Rejected { rpc_id: 43, .. }));
     }
 
     // -----------------------------------------------------------------------
@@ -2603,6 +3873,51 @@ mod tests {
         assert_eq!(result["decision"], "decline");
 
         mock.send_turn_completed("completed").await;
+        drop(command_tx);
+        handle.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_integration_approval_cancel() {
+        let (mut mock, command_tx, handle) = setup_integration_test();
+
+        mock.handle_init().await;
+        mock.handle_thread_start().await;
+
+        let response_rx = send_query(&command_tx, "dangerous").await;
+        mock.handle_turn_start().await;
+        drain_session_info(&response_rx);
+
+        mock.send_approval_request(
+            77,
+            "item/commandExecution/requestApproval",
+            json!({ "command": "sudo rm -rf /" }),
+        )
+        .await;
+
+        let resp = response_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("timed out waiting for PermissionRequest");
+        let pending = match resp {
+            DaveApiResponse::PermissionRequest(p) => p,
+            _ => panic!("Expected PermissionRequest"),
+        };
+
+        pending
+            .response_tx
+            .send(PermissionResponse::Cancel {
+                reason: "user exited".to_string(),
+            })
+            .unwrap();
+
+        let cancel_msg = mock.read_message().await;
+        assert_eq!(cancel_msg.id, Some(77));
+        assert_eq!(cancel_msg.result.unwrap()["decision"], "cancel");
+
+        let interrupt_msg = mock.read_message().await;
+        assert_eq!(interrupt_msg.method.as_deref(), Some("turn/interrupt"));
+
+        mock.send_turn_completed("interrupted").await;
         drop(command_tx);
         handle.await.unwrap();
     }

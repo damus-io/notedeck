@@ -434,7 +434,7 @@ mod tests {
 
             let id = Uuid::new_v4().to_string();
             self.frags
-                .insert(id.clone(), NoteUnitFragment::Single(note_ref.clone()));
+                .insert(id.clone(), NoteUnitFragment::Single(note_ref));
 
             self.units.merge_single_unit(note_ref);
 
@@ -467,7 +467,7 @@ mod tests {
             NoteUnit::Composite(CompositeUnit::Reaction(ReactionUnit {
                 note_reacted_to: reaction_id.unwrap(),
                 reactions,
-                senders: senders,
+                senders,
             }))
         }
 

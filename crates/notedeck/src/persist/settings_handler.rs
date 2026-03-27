@@ -46,10 +46,22 @@ pub struct Settings {
     pub tos_version: String,
     #[serde(default)]
     pub age_verified: bool,
+    #[serde(default = "default_sounds_enabled")]
+    pub sounds_enabled: bool,
+    #[serde(default = "default_sound_volume")]
+    pub sound_volume: f32,
 }
 
 fn default_animate_nav_transitions() -> bool {
     true
+}
+
+fn default_sounds_enabled() -> bool {
+    true
+}
+
+fn default_sound_volume() -> f32 {
+    0.5
 }
 
 fn default_tos_version() -> String {
@@ -71,6 +83,8 @@ impl Default for Settings {
             tos_accepted_at: None,
             tos_version: default_tos_version(),
             age_verified: false,
+            sounds_enabled: default_sounds_enabled(),
+            sound_volume: default_sound_volume(),
         }
     }
 }
@@ -217,6 +231,16 @@ impl SettingsHandler {
 
     pub fn set_max_hashtags_per_note(&mut self, value: usize) {
         self.get_settings_mut().max_hashtags_per_note = value;
+        self.try_save_settings();
+    }
+
+    pub fn set_sounds_enabled(&mut self, value: bool) {
+        self.get_settings_mut().sounds_enabled = value;
+        self.try_save_settings();
+    }
+
+    pub fn set_sound_volume(&mut self, value: f32) {
+        self.get_settings_mut().sound_volume = value;
         self.try_save_settings();
     }
 

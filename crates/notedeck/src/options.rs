@@ -22,6 +22,9 @@ bitflags! {
 
         /// Simulate is_compiled_as_mobile ?
         const Mobile = 1 << 6;
+
+        /// Show the native window titlebar?
+        const ShowTitle = 1 << 7;
     }
 }
 

@@ -41,6 +41,7 @@ mod scoped_sub_owners;
 mod scoped_sub_state;
 mod scoped_subs;
 mod setup;
+pub mod sound;
 pub mod storage;
 mod style;
 pub mod theme;
@@ -57,7 +58,7 @@ mod user_account;
 mod wallet;
 mod zaps;
 
-pub use account::accounts::{AccountData, Accounts};
+pub use account::accounts::{giftwrap_sub_identity, AccountData, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;
 pub use account::FALLBACK_PUBKEY;
@@ -177,6 +178,7 @@ pub fn software_renderer() -> egui_kittest::wgpu::WgpuTestRenderer {
 pub use enostr;
 pub use nostrdb;
 
+pub use sound::{hover_entered, state_entered, SoundEffect, SoundManager};
 pub use zaps::Zaps;
 
 pub type Outbox<'a> = OutboxSessionHandler<'a, EguiWakeup>;

@@ -535,6 +535,7 @@ impl<'a, 'd> PostView<'a, 'd> {
             if post_button_clicked
                 || (!self.draft.buffer.is_empty() && shortcut_pressed && self.focused(ui))
             {
+                self.note_context.sound.play(notedeck::SoundEffect::Send);
                 let output = self.draft.buffer.output();
                 let new_post = NewPost::new(
                     output.text,
@@ -912,6 +913,7 @@ mod preview {
                 nip05_cache: app.nip05_cache,
                 clipboard: app.clipboard,
                 i18n: app.i18n,
+                sound: app.sound,
             };
 
             PostView::new(

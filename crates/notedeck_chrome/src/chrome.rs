@@ -703,6 +703,8 @@ fn update_sidebar_item_ui(
 
 impl notedeck::App for Chrome {
     fn update(&mut self, ctx: &mut notedeck::AppContext, _egui_ctx: &egui::Context) {
+        ctx.sound.update();
+
         #[cfg(feature = "auto-update")]
         poll_updater(&mut self.updater, ctx);
 
@@ -1033,7 +1035,7 @@ fn chrome_handle_app_action(
             if let Some(action) = m_action {
                 let col = cols.selected_mut();
 
-                action.process_router_action(&mut col.router, &mut col.sheet_router);
+                action.process_router_action(&mut col.router, &mut col.sheet_router, ctx.sound);
             }
         }
     }
@@ -1090,7 +1092,7 @@ fn columns_route_to_profile(
     if let Some(action) = m_action {
         let col = cols.selected_mut();
 
-        action.process_router_action(&mut col.router, &mut col.sheet_router);
+        action.process_router_action(&mut col.router, &mut col.sheet_router, ctx.sound);
     }
 }
 

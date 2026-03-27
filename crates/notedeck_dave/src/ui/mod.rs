@@ -567,6 +567,7 @@ pub fn scene_ui(
 pub fn desktop_ui(
     session_manager: &mut SessionManager,
     focus_queue: &FocusQueue,
+    collapse_state: &crate::collapse_state::CollapseState,
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
@@ -616,7 +617,8 @@ pub fn desktop_ui(
                         });
                         ui.separator();
                     }
-                    SessionListUi::new(session_manager, focus_queue, ctrl_held).ui(ui)
+                    SessionListUi::new(session_manager, focus_queue, collapse_state, ctrl_held)
+                        .ui(ui)
                 })
                 .inner
         })
@@ -648,6 +650,7 @@ pub fn desktop_ui(
 pub fn narrow_ui(
     session_manager: &mut SessionManager,
     focus_queue: &FocusQueue,
+    collapse_state: &crate::collapse_state::CollapseState,
     model_config: &ModelConfig,
     is_interrupt_pending: bool,
     auto_steal_focus: bool,
@@ -663,7 +666,7 @@ pub fn narrow_ui(
             .fill(ui.visuals().faint_bg_color)
             .inner_margin(egui::Margin::symmetric(8, 12))
             .show(ui, |ui| {
-                SessionListUi::new(session_manager, focus_queue, ctrl_held).ui(ui)
+                SessionListUi::new(session_manager, focus_queue, collapse_state, ctrl_held).ui(ui)
             })
             .inner;
         (DaveResponse::default(), session_action)
@@ -710,6 +713,7 @@ pub fn handle_key_action(
     session_manager: &mut SessionManager,
     scene: &mut AgentScene,
     focus_queue: &mut FocusQueue,
+    collapse_state: &crate::collapse_state::CollapseState,
     backend: &dyn crate::backend::AiBackend,
     show_scene: bool,
     auto_steal_focus: bool,
@@ -790,15 +794,21 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         KeyAction::SwitchToAgent(index) => {
-            update::switch_to_agent_by_index(session_manager, scene, show_scene, index);
+            update::switch_to_agent_by_index(
+                session_manager,
+                collapse_state,
+                scene,
+                show_scene,
+                index,
+            );
             KeyActionResult::None
         }
         KeyAction::NextAgent => {
-            update::cycle_next_agent(session_manager, scene, show_scene);
+            update::cycle_next_agent(session_manager, collapse_state, scene, show_scene);
             KeyActionResult::None
         }
         KeyAction::PreviousAgent => {
-            update::cycle_prev_agent(session_manager, scene, show_scene);
+            update::cycle_prev_agent(session_manager, collapse_state, scene, show_scene);
             KeyActionResult::None
         }
         KeyAction::NewAgent => KeyActionResult::NewAgent,
@@ -834,11 +844,23 @@ pub fn handle_key_action(
             KeyActionResult::None
         }
         KeyAction::FocusQueueNext => {
-            update::focus_queue_next(session_manager, focus_queue, scene, show_scene);
+            update::focus_queue_next(
+                session_manager,
+                focus_queue,
+                collapse_state,
+                scene,
+                show_scene,
+            );
             KeyActionResult::None
         }
         KeyAction::FocusQueuePrev => {
-            update::focus_queue_prev(session_manager, focus_queue, scene, show_scene);
+            update::focus_queue_prev(
+                session_manager,
+                focus_queue,
+                collapse_state,
+                scene,
+                show_scene,
+            );
             KeyActionResult::None
         }
         KeyAction::FocusQueueToggleDone => {
@@ -858,6 +880,24 @@ pub fn handle_key_action(
         KeyAction::OpenExternalEditor => {
             update::open_external_editor(session_manager);
             KeyActionResult::None
+        }
+        KeyAction::OpenTerminal => {
+            dispatch_open_terminal(session_manager, update::open_terminal);
+            KeyActionResult::None
+        }
+    }
+}
+
+fn dispatch_open_terminal(
+    session_manager: &SessionManager,
+    mut open_terminal: impl FnMut(&std::path::Path),
+) {
+    if let Some(session) = session_manager.get_active() {
+        if session.is_remote() {
+            return;
+        }
+        if let Some(cwd) = session.cwd() {
+            open_terminal(cwd);
         }
     }
 }
@@ -991,6 +1031,12 @@ pub fn handle_ui_action(
             update::execute_interrupt(session_manager, backend, ctx);
             UiActionResult::Handled
         }
+        DaveAction::ExitToolCall { request_id } => {
+            update::exit_tool_call(session_manager, request_id).map_or(
+                UiActionResult::Handled,
+                UiActionResult::PublishPermissionResponse,
+            )
+        }
         DaveAction::TentativeAccept => {
             set_tentative_state(session_manager, PermissionMessageState::TentativeAccept);
             UiActionResult::Handled
@@ -1083,5 +1129,55 @@ pub fn handle_ui_action(
         DaveAction::Compact => UiActionResult::Compact,
         // All run actions are intercepted and handled in lib.rs before reaching here
         DaveAction::Run(_) => UiActionResult::Handled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dispatch_open_terminal;
+    use crate::config::AiMode;
+    use crate::session::SessionManager;
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn open_terminal_key_action_dispatches_active_session_cwd() {
+        let mut session_manager = SessionManager::new();
+        let expected_cwd = PathBuf::from("/tmp/terminal-cwd");
+        let session_id = session_manager.new_session(
+            expected_cwd.clone(),
+            AiMode::Agentic,
+            crate::backend::BackendType::Claude,
+        );
+        session_manager.switch_to(session_id);
+
+        let launched_cwd = RefCell::new(None::<PathBuf>);
+        dispatch_open_terminal(&session_manager, |cwd: &Path| {
+            launched_cwd.replace(Some(cwd.to_path_buf()));
+        });
+
+        assert_eq!(launched_cwd.into_inner(), Some(expected_cwd));
+    }
+
+    #[test]
+    fn open_terminal_key_action_ignores_remote_sessions() {
+        let mut session_manager = SessionManager::new();
+        let session_id = session_manager.new_session(
+            PathBuf::from("/tmp/remote-cwd"),
+            AiMode::Agentic,
+            crate::backend::BackendType::Claude,
+        );
+        let session = session_manager
+            .get_mut(session_id)
+            .expect("remote test session should exist");
+        session.source = crate::session::SessionSource::Remote;
+        session_manager.switch_to(session_id);
+
+        let launched_cwd = RefCell::new(None::<PathBuf>);
+        dispatch_open_terminal(&session_manager, |cwd: &Path| {
+            launched_cwd.replace(Some(cwd.to_path_buf()));
+        });
+
+        assert!(launched_cwd.into_inner().is_none());
     }
 }

@@ -220,7 +220,7 @@ fn try_process_event(
             // only thread timelines are reversed
             let reversed = false;
 
-            if let Err(err) = timeline.poll_notes_into_view(
+            match timeline.poll_notes_into_view(
                 &selected_account_pk,
                 app_ctx.ndb,
                 &txn,
@@ -228,7 +228,16 @@ fn try_process_event(
                 app_ctx.note_cache,
                 reversed,
             ) {
-                error!("poll_notes_into_view: {err}");
+                Ok(has_new) => {
+                    if has_new && matches!(kind, TimelineKind::Notifications(_)) {
+                        app_ctx
+                            .sound
+                            .play_debounced(notedeck::SoundEffect::Notification, 2000);
+                    }
+                }
+                Err(err) => {
+                    error!("poll_notes_into_view: {err}");
+                }
             }
         } else {
             // TODO: show loading?

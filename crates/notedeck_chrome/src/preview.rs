@@ -27,7 +27,7 @@ impl PreviewRunner {
 
         let _res = eframe::run_native(
             "Notedeck Preview",
-            generate_native_options(path),
+            generate_native_options(path, false),
             Box::new(|cc| {
                 let args: Vec<String> = std::env::args().collect();
                 let ctx = &cc.egui_ctx;

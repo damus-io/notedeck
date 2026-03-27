@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use enostr::FullKeypair;
 use nostrdb::Transaction;
+use notedeck::{giftwrap_sub_identity, ScopedSubEoseStatus};
 use notedeck_messages::{
     nip17::{conversation_filter, parse_chat_message},
     MessagesApp,
@@ -451,4 +452,67 @@ fn cluster_delivery_report(cluster: &mut AccountCluster, expected: &BTreeSet<Str
         })
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// Returns `true` when a device's giftwrap subscription is live with ALL relays at EOSE.
+pub fn device_giftwrap_sub_ready(device: &mut DeviceHarness) -> bool {
+    let ctx = device.ctx.clone();
+    let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+    let status = app_ctx
+        .remote
+        .scoped_subs(app_ctx.accounts)
+        .sub_eose_status(giftwrap_sub_identity());
+    matches!(
+        status,
+        ScopedSubEoseStatus::Live(live) if live.all_eosed
+    )
+}
+
+/// Steps all clusters until every device has its giftwrap subscription live with EOSE, or panics on timeout.
+pub fn wait_for_giftwrap_subs_ready(clusters: &mut [&mut AccountCluster], timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        step_clusters(clusters);
+
+        let all_ready = clusters.iter_mut().all(|cluster| {
+            cluster
+                .devices
+                .iter_mut()
+                .all(|d| device_giftwrap_sub_ready(d))
+        });
+
+        if all_ready {
+            return;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for giftwrap subscriptions to reach EOSE on all devices"
+        );
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Steps all devices until every one has its giftwrap subscription live with EOSE, or panics on timeout.
+pub fn wait_for_device_giftwrap_subs_ready(devices: &mut [&mut DeviceHarness], timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        for device in devices.iter_mut() {
+            device.step();
+        }
+
+        if devices.iter_mut().all(|d| device_giftwrap_sub_ready(d)) {
+            return;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for giftwrap subscriptions to reach EOSE on all devices"
+        );
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

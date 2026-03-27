@@ -936,12 +936,30 @@ pub struct SessionManager {
     next_id: SessionId,
     /// Pending external editor job (only one at a time)
     pub pending_editor: Option<EditorJob>,
-    /// Cached agent grouping by hostname. Each entry is (hostname, session IDs
-    /// in recency order). Rebuilt via `rebuild_host_groups()` when sessions or
-    /// hostnames change.
-    host_groups: Vec<(String, Vec<SessionId>)>,
-    /// Cached chat session IDs in recency order. Rebuilt alongside host_groups.
+    /// Cached agent grouping: host → cwd → sessions.
+    /// Rebuilt via `rebuild_cwd_groups()` when sessions change.
+    host_cwd_groups: Vec<HostGroup>,
+    /// Whether host/cwd grouping cache must be rebuilt before reads.
+    host_cwd_groups_dirty: bool,
+    /// Cached chat session IDs in recency order.
     chat_ids: Vec<SessionId>,
+    /// Whether chat ID cache must be rebuilt before reads.
+    chat_ids_dirty: bool,
+}
+
+/// A group of sessions under a single hostname.
+#[derive(Clone)]
+pub struct HostGroup {
+    pub hostname: String,
+    pub cwd_groups: Vec<CwdGroup>,
+}
+
+/// A group of sessions sharing a working directory.
+#[derive(Clone)]
+pub struct CwdGroup {
+    pub display_cwd: String,
+    pub cwd: PathBuf,
+    pub session_ids: Vec<SessionId>,
 }
 
 impl Default for SessionManager {
@@ -958,8 +976,10 @@ impl SessionManager {
             active: None,
             next_id: 1,
             pending_editor: None,
-            host_groups: Vec::new(),
+            host_cwd_groups: Vec::new(),
+            host_cwd_groups_dirty: false,
             chat_ids: Vec::new(),
+            chat_ids_dirty: false,
         }
     }
 
@@ -977,7 +997,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
-        self.rebuild_host_groups();
+        self.rebuild_cwd_groups();
 
         id
     }
@@ -999,7 +1019,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id); // Most recent first
         self.active = Some(id);
-        self.rebuild_host_groups();
+        self.rebuild_cwd_groups();
 
         id
     }
@@ -1020,7 +1040,7 @@ impl SessionManager {
         self.sessions.insert(id, session);
         self.order.insert(0, id);
         self.active = Some(id);
-        self.rebuild_host_groups();
+        self.rebuild_cwd_groups();
 
         id
     }
@@ -1032,6 +1052,7 @@ impl SessionManager {
 
     /// Get a mutable reference to the active session
     pub fn get_active_mut(&mut self) -> Option<&mut ChatSession> {
+        self.mark_grouping_cache_dirty();
         self.active.and_then(|id| self.sessions.get_mut(&id))
     }
 
@@ -1062,7 +1083,7 @@ impl SessionManager {
             if self.active == Some(id) {
                 self.active = self.order.first().copied();
             }
-            self.rebuild_host_groups();
+            self.rebuild_cwd_groups();
             true
         } else {
             false
@@ -1082,6 +1103,7 @@ impl SessionManager {
         if self.sessions.contains_key(&id) {
             self.order.retain(|&x| x != id);
             self.order.insert(0, id);
+            self.mark_grouping_cache_dirty();
         }
     }
 
@@ -1102,6 +1124,7 @@ impl SessionManager {
 
     /// Get a mutable reference to a session by ID
     pub fn get_mut(&mut self, id: SessionId) -> Option<&mut ChatSession> {
+        self.mark_grouping_cache_dirty();
         self.sessions.get_mut(&id)
     }
 
@@ -1112,6 +1135,7 @@ impl SessionManager {
 
     /// Iterate over all sessions mutably
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut ChatSession> {
+        self.mark_grouping_cache_dirty();
         self.sessions.values_mut()
     }
 
@@ -1141,23 +1165,50 @@ impl SessionManager {
         self.order.clone()
     }
 
-    /// Get cached agent session groups by hostname.
-    /// Each entry is (hostname, session IDs in recency order).
-    pub fn host_groups(&self) -> &[(String, Vec<SessionId>)] {
-        &self.host_groups
+    /// Get cached agent session groups: host → cwd → sessions.
+    pub fn host_cwd_groups(&mut self) -> &[HostGroup] {
+        self.ensure_grouping_cache();
+        &self.host_cwd_groups
+    }
+
+    /// Collect unique remote hostnames from all sessions.
+    pub fn remote_hostnames(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|session| session.is_remote())
+            .map(|session| session.details.hostname.clone())
+            .filter(|hostname| !hostname.is_empty())
+            .collect();
+        hosts.sort_unstable();
+        hosts.dedup();
+        hosts
     }
 
     /// Get cached chat session IDs in recency order.
-    pub fn chat_ids(&self) -> &[SessionId] {
+    pub fn chat_ids(&mut self) -> &[SessionId] {
+        self.ensure_grouping_cache();
         &self.chat_ids
     }
 
-    /// Session IDs in visual/display order (host groups then chats).
-    /// Keybinding numbers (Ctrl+1-9) map to this order.
-    pub fn visual_order(&self) -> Vec<SessionId> {
+    /// Session IDs in visual/display order (host/cwd groups then chats),
+    /// filtered by collapse state. Collapsed host/cwd groups are excluded.
+    pub fn visual_order(
+        &mut self,
+        collapse: &crate::collapse_state::CollapseState,
+    ) -> Vec<SessionId> {
+        self.ensure_grouping_cache();
         let mut ids = Vec::new();
-        for (_, group_ids) in &self.host_groups {
-            ids.extend_from_slice(group_ids);
+        for host_group in &self.host_cwd_groups {
+            if collapse.is_host_collapsed(&host_group.hostname) {
+                continue;
+            }
+            for cwd_group in &host_group.cwd_groups {
+                if collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd) {
+                    continue;
+                }
+                ids.extend_from_slice(&cwd_group.session_ids);
+            }
         }
         ids.extend_from_slice(&self.chat_ids);
         ids
@@ -1168,10 +1219,10 @@ impl SessionManager {
         self.order.iter().position(|&oid| oid == id)
     }
 
-    /// Rebuild the cached hostname groups from current sessions and order.
-    /// Call after adding/removing sessions or changing a session's hostname.
-    pub fn rebuild_host_groups(&mut self) {
-        self.host_groups.clear();
+    /// Rebuild the cached host/cwd groups from current sessions.
+    /// Call after adding/removing sessions or changing a session's cwd.
+    pub fn rebuild_cwd_groups(&mut self) {
+        self.host_cwd_groups.clear();
         self.chat_ids.clear();
 
         for &id in &self.order {
@@ -1182,17 +1233,96 @@ impl SessionManager {
                     }
                     continue;
                 }
-                let hostname = &session.details.hostname;
-                if let Some(group) = self.host_groups.iter_mut().find(|(h, _)| h == hostname) {
-                    group.1.push(id);
+
+                let hostname = session.details.hostname.clone();
+                let cwd = session.cwd().or(session.details.cwd.as_ref());
+                let raw_cwd = cwd.cloned().unwrap_or_default();
+                let cwd_display = match cwd {
+                    Some(cwd) => {
+                        let home = &session.details.home_dir;
+                        if home.is_empty() {
+                            crate::path_utils::abbreviate_path(cwd)
+                        } else {
+                            crate::path_utils::abbreviate_with_home(cwd, home)
+                        }
+                    }
+                    None => "(unknown)".to_string(),
+                };
+
+                // Find or create host group
+                let host_group = if let Some(hg) = self
+                    .host_cwd_groups
+                    .iter_mut()
+                    .find(|hg| hg.hostname == hostname)
+                {
+                    hg
                 } else {
-                    self.host_groups.push((hostname.clone(), vec![id]));
+                    self.host_cwd_groups.push(HostGroup {
+                        hostname: hostname.clone(),
+                        cwd_groups: Vec::new(),
+                    });
+                    self.host_cwd_groups.last_mut().unwrap()
+                };
+
+                // Find or create cwd group within host
+                if let Some(cg) = host_group
+                    .cwd_groups
+                    .iter_mut()
+                    .find(|cg| cg.cwd == raw_cwd)
+                {
+                    cg.session_ids.push(id);
+                } else {
+                    host_group.cwd_groups.push(CwdGroup {
+                        display_cwd: cwd_display,
+                        cwd: raw_cwd,
+                        session_ids: vec![id],
+                    });
                 }
             }
         }
 
-        // Sort groups by hostname for stable ordering
-        self.host_groups.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort host groups alphabetically (empty hostname = local, sorts first)
+        self.host_cwd_groups
+            .sort_by(|a, b| a.hostname.cmp(&b.hostname));
+
+        // Sort cwd groups and sessions within each
+        for host_group in &mut self.host_cwd_groups {
+            host_group
+                .cwd_groups
+                .sort_by(|a, b| a.display_cwd.cmp(&b.display_cwd));
+
+            for cwd_group in &mut host_group.cwd_groups {
+                cwd_group.session_ids.sort_by(|a, b| {
+                    let title_a = self
+                        .sessions
+                        .get(a)
+                        .map(|s| s.details.display_title())
+                        .unwrap_or("");
+                    let title_b = self
+                        .sessions
+                        .get(b)
+                        .map(|s| s.details.display_title())
+                        .unwrap_or("");
+                    title_a.cmp(title_b).then(a.cmp(b))
+                });
+            }
+        }
+
+        self.host_cwd_groups_dirty = false;
+        self.chat_ids_dirty = false;
+    }
+
+    /// Mark cached grouping state dirty after mutable session access.
+    fn mark_grouping_cache_dirty(&mut self) {
+        self.host_cwd_groups_dirty = true;
+        self.chat_ids_dirty = true;
+    }
+
+    /// Ensure host/cwd and chat caches are rebuilt before read access.
+    fn ensure_grouping_cache(&mut self) {
+        if self.host_cwd_groups_dirty || self.chat_ids_dirty {
+            self.rebuild_cwd_groups();
+        }
     }
 }
 
@@ -1378,6 +1508,7 @@ impl ChatSession {
 mod tests {
     use super::*;
     use crate::backend::BackendType;
+    use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
     use crate::messages::AssistantMessage;
     use std::sync::mpsc;
@@ -1389,6 +1520,26 @@ mod tests {
             AiMode::Agentic,
             BackendType::Claude,
         )
+    }
+
+    fn create_grouped_session(
+        mgr: &mut SessionManager,
+        hostname: &str,
+        cwd: &str,
+        title: &str,
+        ai_mode: AiMode,
+    ) -> SessionId {
+        let backend = match ai_mode {
+            AiMode::Agentic => BackendType::Claude,
+            AiMode::Chat => BackendType::OpenAI,
+        };
+        let id = mgr.new_session(PathBuf::from(cwd), ai_mode, backend);
+        let session = mgr.get_mut(id).expect("session should exist");
+        session.details.hostname = hostname.to_string();
+        session.details.title = title.to_string();
+        session.details.custom_title = None;
+        session.details.home_dir = "/home/tester".to_string();
+        id
     }
 
     #[test]
@@ -2288,6 +2439,40 @@ mod tests {
     }
 
     #[test]
+    fn remote_hostnames_only_returns_unique_sorted_remote_hosts() {
+        let mut mgr = SessionManager::new();
+
+        let local_id =
+            create_grouped_session(&mut mgr, "local-host", "/work/a", "Local", AiMode::Agentic);
+        let remote_b =
+            create_grouped_session(&mut mgr, "beta-host", "/srv/b", "Remote B", AiMode::Agentic);
+        let remote_a = create_grouped_session(
+            &mut mgr,
+            "alpha-host",
+            "/srv/a",
+            "Remote A",
+            AiMode::Agentic,
+        );
+        let remote_dup = create_grouped_session(
+            &mut mgr,
+            "beta-host",
+            "/srv/other",
+            "Remote B 2",
+            AiMode::Agentic,
+        );
+
+        mgr.get_mut(local_id).expect("local session").source = SessionSource::Local;
+        mgr.get_mut(remote_a).expect("remote session").source = SessionSource::Remote;
+        mgr.get_mut(remote_b).expect("remote session").source = SessionSource::Remote;
+        mgr.get_mut(remote_dup).expect("remote session").source = SessionSource::Remote;
+
+        assert_eq!(
+            mgr.remote_hostnames(),
+            vec!["alpha-host".to_string(), "beta-host".to_string()]
+        );
+    }
+
+    #[test]
     fn remote_dispatch_idle_with_user_message() {
         let mut session = test_remote_session();
         session.chat.push(Message::User("hello".into()));
@@ -2621,5 +2806,183 @@ mod tests {
 
         // Verify all three are still present
         assert_eq!(ordered.len(), 3);
+    }
+
+    #[test]
+    fn chat_id_cache_refreshes_after_touch_without_manual_rebuild() {
+        let mut mgr = SessionManager::new();
+        let id1 = mgr.new_session(PathBuf::from("/tmp/one"), AiMode::Chat, BackendType::OpenAI);
+        let id2 = mgr.new_session(PathBuf::from("/tmp/two"), AiMode::Chat, BackendType::OpenAI);
+
+        assert_eq!(mgr.chat_ids(), &[id2, id1]);
+
+        mgr.touch(id1);
+        assert_eq!(mgr.chat_ids(), &[id1, id2]);
+    }
+
+    #[test]
+    fn host_group_cache_refreshes_after_get_mut_hostname_change() {
+        let mut mgr = SessionManager::new();
+        let id = mgr.new_session(
+            PathBuf::from("/tmp/work"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+
+        {
+            let session = mgr.get_mut(id).expect("session should exist");
+            session.details.hostname = "remote-a".to_string();
+        }
+
+        let groups = mgr.host_cwd_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].hostname, "remote-a");
+    }
+
+    #[test]
+    fn pending_placeholder_group_uses_requested_cwd() {
+        let mut mgr = SessionManager::new();
+        let requested_cwd = PathBuf::from("/srv/project");
+        mgr.new_pending_placeholder(
+            requested_cwd.clone(),
+            "remote-a".to_string(),
+            BackendType::Claude,
+            "spawn-1".to_string(),
+        );
+
+        let groups = mgr.host_cwd_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].hostname, "remote-a");
+        assert_eq!(groups[0].cwd_groups.len(), 1);
+        assert_eq!(groups[0].cwd_groups[0].cwd, requested_cwd);
+        assert_eq!(groups[0].cwd_groups[0].display_cwd, "/srv/project");
+    }
+
+    #[test]
+    fn rebuild_cwd_groups_groups_hosts_cwds_and_sessions_deterministically() {
+        let mut mgr = SessionManager::new();
+
+        let local_zulu =
+            create_grouped_session(&mut mgr, "", "/work/alpha", "Zulu task", AiMode::Agentic);
+        let local_alpha =
+            create_grouped_session(&mut mgr, "", "/work/alpha", "Alpha task", AiMode::Agentic);
+        let remote_beta = create_grouped_session(
+            &mut mgr,
+            "beta-host",
+            "/srv/backend",
+            "Beta host task",
+            AiMode::Agentic,
+        );
+        let remote_zulu = create_grouped_session(
+            &mut mgr,
+            "zulu-host",
+            "/srv/api",
+            "Zulu host task",
+            AiMode::Agentic,
+        );
+        let chat_id = create_grouped_session(&mut mgr, "", "/chat/ignored", "Chat", AiMode::Chat);
+
+        mgr.rebuild_cwd_groups();
+
+        let groups = mgr.host_cwd_groups();
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].hostname, "");
+        assert_eq!(groups[1].hostname, "beta-host");
+        assert_eq!(groups[2].hostname, "zulu-host");
+
+        let local_group = &groups[0];
+        assert_eq!(local_group.cwd_groups.len(), 1);
+        assert_eq!(local_group.cwd_groups[0].display_cwd, "/work/alpha");
+        assert_eq!(
+            local_group.cwd_groups[0].session_ids,
+            vec![local_alpha, local_zulu]
+        );
+
+        assert_eq!(groups[1].cwd_groups[0].session_ids, vec![remote_beta]);
+        assert_eq!(groups[2].cwd_groups[0].session_ids, vec![remote_zulu]);
+
+        assert_eq!(
+            mgr.visual_order(&CollapseState::new()),
+            vec![local_alpha, local_zulu, remote_beta, remote_zulu, chat_id]
+        );
+    }
+
+    #[test]
+    fn rebuild_cwd_groups_sorts_multiple_cwds_within_a_host() {
+        let mut mgr = SessionManager::new();
+
+        let alpha_first = create_grouped_session(
+            &mut mgr,
+            "remote-a",
+            "/srv/alpha",
+            "Alpha first",
+            AiMode::Agentic,
+        );
+        let zeta_only = create_grouped_session(
+            &mut mgr,
+            "remote-a",
+            "/srv/zeta",
+            "Zeta only",
+            AiMode::Agentic,
+        );
+        let alpha_second = create_grouped_session(
+            &mut mgr,
+            "remote-a",
+            "/srv/alpha",
+            "Alpha second",
+            AiMode::Agentic,
+        );
+
+        mgr.rebuild_cwd_groups();
+
+        let groups = mgr.host_cwd_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].hostname, "remote-a");
+        assert_eq!(groups[0].cwd_groups.len(), 2);
+        assert_eq!(groups[0].cwd_groups[0].display_cwd, "/srv/alpha");
+        assert_eq!(groups[0].cwd_groups[1].display_cwd, "/srv/zeta");
+        assert_eq!(
+            groups[0].cwd_groups[0].session_ids,
+            vec![alpha_first, alpha_second]
+        );
+        assert_eq!(groups[0].cwd_groups[1].session_ids, vec![zeta_only]);
+        assert_eq!(
+            mgr.visual_order(&CollapseState::new()),
+            vec![alpha_first, alpha_second, zeta_only]
+        );
+    }
+
+    #[test]
+    fn visual_order_skips_collapsed_hosts_and_cwds_but_keeps_chats() {
+        let mut mgr = SessionManager::new();
+
+        let _local_a = create_grouped_session(&mut mgr, "", "/work/a", "Local A", AiMode::Agentic);
+        let local_b = create_grouped_session(&mut mgr, "", "/work/b", "Local B", AiMode::Agentic);
+        let remote_a = create_grouped_session(
+            &mut mgr,
+            "remote-a",
+            "/srv/keep",
+            "Remote A",
+            AiMode::Agentic,
+        );
+        let _remote_b = create_grouped_session(
+            &mut mgr,
+            "remote-b",
+            "/srv/hide",
+            "Remote B",
+            AiMode::Agentic,
+        );
+        let chat_id = create_grouped_session(&mut mgr, "", "/chat/ignored", "Chat", AiMode::Chat);
+
+        mgr.rebuild_cwd_groups();
+
+        let mut collapse = CollapseState::new();
+        collapse.toggle_cwd("", std::path::Path::new("/work/a"));
+        collapse.toggle_host("remote-b");
+
+        assert_eq!(
+            mgr.visual_order(&collapse),
+            vec![local_b, remote_a, chat_id]
+        );
     }
 }

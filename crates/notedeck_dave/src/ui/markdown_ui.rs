@@ -223,7 +223,8 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: 
             }
 
             InlineElement::LineBreak => {
-                job.append("\n", 0.0, text_fmt.clone());
+                flush_job(&mut job, ui);
+                ui.end_row();
             }
         }
     }
@@ -614,6 +615,8 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::{kittest::Queryable, Harness};
+    use md_stream::{InlineElement, Span};
 
     /// Helper: collect (token, text) pairs
     fn tokens<'a>(code: &'a str, lang: &str) -> Vec<(SandToken, &'a str)> {
@@ -749,6 +752,34 @@ mod tests {
         // Ensure multi-byte chars don't cause panics from byte indexing
         let toks = tokens("→", "rust");
         assert_eq!(toks, vec![(SandToken::Punctuation, "→")]);
+    }
+
+    #[test]
+    fn test_hard_line_break_renders_on_a_new_row() {
+        let buffer = "alpha  \nbeta";
+        let inlines = vec![
+            InlineElement::Text(Span::new(0, 5)),
+            InlineElement::LineBreak,
+            InlineElement::Text(Span::new(8, 12)),
+        ];
+
+        let mut harness = Harness::new_ui(move |ui| {
+            let theme = MdTheme::from_visuals(ui.visuals());
+            ui.horizontal_wrapped(|ui| {
+                render_inlines(&inlines, &theme, buffer, ui);
+            });
+        });
+
+        harness.run();
+
+        let alpha = harness.get_by_label("alpha");
+        let beta = harness.get_by_label("beta");
+        let alpha_bounds = alpha.raw_bounds().expect("alpha bounds");
+        let beta_bounds = beta.raw_bounds().expect("beta bounds");
+        assert!(
+            beta_bounds.y0 > alpha_bounds.y1,
+            "hard line breaks should render the following text on a later row"
+        );
     }
 
     #[test]

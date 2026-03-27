@@ -27,6 +27,7 @@ mkShell ({
     #gdb
     #heaptrack
   ] ++ lib.optionals (!stdenv.isDarwin) [
+    alsa-lib
     zenity
   ] ++ lib.optionals use_android [
     gradle

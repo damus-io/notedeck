@@ -701,12 +701,16 @@ pub fn build_permission_response_event(
     request_note_id: &[u8; 32],
     allowed: bool,
     message: Option<&str>,
+    cancel_turn: bool,
     session_id: &str,
     secret_key: &[u8; 32],
 ) -> Result<BuiltEvent, EventBuildError> {
+    // Keep the legacy `interrupt` key on the wire for compatibility with
+    // sessions that may still decode the earlier payload shape.
     let content = serde_json::json!({
         "decision": if allowed { "allow" } else { "deny" },
         "message": message.unwrap_or(""),
+        "interrupt": cancel_turn,
     })
     .to_string();
 
@@ -741,11 +745,16 @@ pub fn build_permission_response_event(
 /// Decode a permission response from its JSON content string.
 ///
 /// Returns the decision as a `PermissionResponseType` and an optional
-/// human-readable message. Defaults to `Denied` if the content cannot
-/// be parsed or has no `"decision"` field.
+/// human-readable message plus whether the denial should interrupt the
+/// current turn. Defaults to `Denied`/`false` if the content cannot be
+/// parsed or has no `"decision"` field.
 pub fn decode_permission_response(
     content: &str,
-) -> (crate::messages::PermissionResponseType, Option<String>) {
+) -> (
+    crate::messages::PermissionResponseType,
+    Option<String>,
+    bool,
+) {
     use crate::messages::PermissionResponseType;
 
     match serde_json::from_str::<serde_json::Value>(content) {
@@ -756,14 +765,18 @@ pub fn decode_permission_response(
                 .and_then(|m| m.as_str())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            let cancel_turn = v
+                .get("interrupt")
+                .and_then(|i| i.as_bool())
+                .unwrap_or(false);
             let response_type = if allowed {
                 PermissionResponseType::Allowed
             } else {
                 PermissionResponseType::Denied
             };
-            (response_type, message)
+            (response_type, message, cancel_turn)
         }
-        Err(_) => (PermissionResponseType::Denied, None),
+        Err(_) => (PermissionResponseType::Denied, None, false),
     }
 }
 
@@ -1155,7 +1168,7 @@ mod tests {
 
     #[test]
     fn test_seq_counter_increments() {
-        let lines = vec![
+        let lines = [
             r#"{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"s","timestamp":"2026-02-09T20:00:00Z","cwd":"/tmp","version":"2.0.64","message":{"role":"user","content":"hello"}}"#,
             r#"{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"s","timestamp":"2026-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}"#,
         ];
@@ -1271,7 +1284,7 @@ mod tests {
             let line = JsonlLine::parse(line_str).unwrap();
             let events = build_events(&line, &mut threading, &sk).unwrap();
             for event in &events {
-                let sub_id = ndb.subscribe(&[filter.clone()]).unwrap();
+                let sub_id = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
                 ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                     .expect("ingest failed");
                 let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();
@@ -1321,7 +1334,7 @@ mod tests {
         // file-history-snapshot lines lack sessionId and top-level timestamp.
         // They should inherit session_id from a prior line and get timestamp
         // from snapshot.timestamp.
-        let lines = vec![
+        let lines = [
             r#"{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"ctx-test","timestamp":"2026-02-09T20:00:00Z","cwd":"/tmp","version":"2.0.64","message":{"role":"user","content":"hello"}}"#,
             r#"{"type":"file-history-snapshot","messageId":"abc","snapshot":{"messageId":"abc","trackedFileBackups":{},"timestamp":"2026-02-11T01:29:31.555Z"},"isSnapshotUpdate":false}"#,
         ];
@@ -1450,6 +1463,7 @@ mod tests {
             &request_note_id,
             true,
             Some("looks safe"),
+            false,
             "sess-perm-test",
             &sk,
         )
@@ -1478,6 +1492,7 @@ mod tests {
             &request_note_id,
             false,
             Some("too dangerous"),
+            true,
             "sess-perm-test",
             &sk,
         )
@@ -1486,6 +1501,25 @@ mod tests {
         let json = &event.note_json;
         assert!(json.contains("deny"));
         assert!(json.contains("too dangerous"));
+        let parsed: serde_json::Value = serde_json::from_str(json).expect("valid event json");
+        let content = parsed["content"]
+            .as_str()
+            .expect("event content should be a string");
+        assert!(content.contains(r#""interrupt":true"#));
+    }
+
+    #[test]
+    fn test_decode_permission_response_interrupt() {
+        let (response_type, message, cancel_turn) = decode_permission_response(
+            r#"{"decision":"deny","message":"stop here","interrupt":true}"#,
+        );
+
+        assert_eq!(
+            response_type,
+            crate::messages::PermissionResponseType::Denied
+        );
+        assert_eq!(message.as_deref(), Some("stop here"));
+        assert!(cancel_turn);
     }
 
     #[test]
@@ -1657,7 +1691,7 @@ mod tests {
 
         // Ingest in reverse to simulate out-of-order relay delivery
         for event in all_events.iter().rev() {
-            let sub_id = ndb.subscribe(&[filter.clone()]).unwrap();
+            let sub_id = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
             ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
                 .expect("ingest failed");
             let _keys = ndb.wait_for_notes(sub_id, 1).await.unwrap();

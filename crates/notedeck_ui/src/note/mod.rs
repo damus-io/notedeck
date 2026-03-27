@@ -499,6 +499,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                             self.note_context.accounts.selected_account_pubkey(),
                             note_key,
                             self.note_context.i18n,
+                            self.note_context.sound,
                         )
                     })
                     .inner
@@ -597,6 +598,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                                 self.note_context.accounts.selected_account_pubkey(),
                                 note_key,
                                 self.note_context.i18n,
+                                self.note_context.sound,
                             )
                         })
                         .inner
@@ -864,6 +866,7 @@ fn zap_actionbar_button(
     note_pubkey: &[u8; 32],
     zapper: Option<Zapper<'_>>,
     i18n: &mut Localization,
+    sound: &notedeck::SoundManager,
 ) -> Option<NoteAction> {
     let mut action: Option<NoteAction> = None;
     let Zapper { zaps, cur_acc } = zapper?;
@@ -884,13 +887,31 @@ fn zap_actionbar_button(
 
     match zap_state {
         Ok(any_zap_state) => {
+            // Play sound on transition to confirmed/local-confirmed
+            let is_confirmed = matches!(
+                any_zap_state,
+                AnyZapState::Confirmed | AnyZapState::LocalOnly
+            );
+            if notedeck::state_entered(
+                ui.ctx(),
+                egui::Id::new(("zap_confirm_sound", note_id)),
+                is_confirmed,
+            ) {
+                sound.play(notedeck::SoundEffect::ZapConfirm);
+            }
+
             let zap_resp = ui.add(zap_button(i18n, any_zap_state, note_id));
 
             if zap_resp.secondary_clicked() {
                 action = Some(NoteAction::Zap(ZapAction::CustomizeAmount(target.clone())));
             }
 
+            if notedeck::hover_entered(ui, zap_resp.id, zap_resp.hovered()) {
+                sound.play(notedeck::SoundEffect::Hover);
+            }
+
             if zap_resp.clicked() {
+                sound.play(notedeck::SoundEffect::Zap);
                 action = Some(NoteAction::Zap(ZapAction::Send(ZapTargetAmount {
                     target,
                     specified_msats: None,
@@ -929,6 +950,7 @@ fn is_root_note(note: &Note) -> bool {
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 #[profiling::function]
 fn actionbar_ui(
     ui: &mut egui::Ui,
@@ -938,6 +960,7 @@ fn actionbar_ui(
     current_user_pubkey: &Pubkey,
     note_key: NoteKey,
     i18n: &mut Localization,
+    sound: &notedeck::SoundManager,
 ) -> Option<NoteAction> {
     let mut action = None;
     let spacing = notedeck::tokens::SPACING_XL;
@@ -992,11 +1015,20 @@ fn actionbar_ui(
 
     ui.add_space(spacing);
 
+    // Hover-enter sound on action bar buttons
+    for resp in [&reply_resp, &like_resp, &quote_resp] {
+        if notedeck::hover_entered(ui, resp.id, resp.hovered()) {
+            sound.play(notedeck::SoundEffect::Hover);
+        }
+    }
+
     if reply_resp.clicked() {
+        sound.play(notedeck::SoundEffect::Click);
         action = Some(NoteAction::Reply(NoteId::new(*note.id())));
     }
 
     if like_resp.clicked() {
+        sound.play(notedeck::SoundEffect::Like);
         action = Some(NoteAction::React(ReactAction::new(
             NoteId::new(*note.id()),
             "🤙🏻",
@@ -1004,10 +1036,11 @@ fn actionbar_ui(
     }
 
     if quote_resp.clicked() {
+        sound.play(notedeck::SoundEffect::Repost);
         action = Some(NoteAction::Repost(NoteId::new(*note.id())));
     }
 
-    action = zap_actionbar_button(ui, note.id(), note.pubkey(), zapper, i18n).or(action);
+    action = zap_actionbar_button(ui, note.id(), note.pubkey(), zapper, i18n, sound).or(action);
 
     action
 }

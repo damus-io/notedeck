@@ -96,8 +96,12 @@ pub fn local_giftwrap_created_ats_in_data_dir(data_dir: &Path, account: &FullKey
 }
 
 /// Seeds a local-only kind `10050` DM relay-list note through the app's real path.
+///
+/// Uses a future timestamp so the seeded list always supersedes any default
+/// relay list that `relay_ensure` might publish during device initialization.
 pub fn seed_local_dm_relay_list(device: &mut DeviceHarness, account: &FullKeypair, relay: &str) {
-    seed_local_dm_relay_list_with_relays(device, account, &[relay], None);
+    let future_ts = Some(notedeck::unix_time_secs() as u64 + 600);
+    seed_local_dm_relay_list_with_relays(device, account, &[relay], future_ts);
 }
 
 /// Seeds a local-only kind `10050` DM relay-list note with explicit relay URLs and timestamp.

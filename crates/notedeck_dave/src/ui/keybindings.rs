@@ -44,6 +44,8 @@ pub enum KeyAction {
     ToggleAutoSteal,
     /// Open external editor for composing input (Ctrl+G)
     OpenExternalEditor,
+    /// Open a new terminal window (Ctrl+`)
+    OpenTerminal,
     /// Clone the active agent with the same working directory (Ctrl+Shift+T)
     CloneAgent,
     /// Clear the active agent (Ctrl+Shift+C)
@@ -138,6 +140,11 @@ pub fn check_keybindings(
     // Ctrl+G to open external editor for composing input
     if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::G)) {
         return Some(KeyAction::OpenExternalEditor);
+    }
+
+    // Ctrl+` to open a new terminal window
+    if ctx.input(|i| i.modifiers.matches_exact(ctrl) && i.key_pressed(Key::Backtick)) {
+        return Some(KeyAction::OpenTerminal);
     }
 
     // Ctrl+M to cycle permission mode - agentic only

@@ -37,6 +37,8 @@ pub enum SettingsAction {
     OpenCacheFolder,
     ClearCacheFolder,
     CompactDatabase,
+    SetSoundsEnabled(bool),
+    SetSoundVolume(f32),
 }
 
 impl SettingsAction {
@@ -83,6 +85,14 @@ impl SettingsAction {
             Self::SetMaxHashtagsPerNote(value) => {
                 app_ctx.settings.set_max_hashtags_per_note(value);
                 app_ctx.accounts.update_max_hashtags_per_note(value);
+            }
+            Self::SetSoundsEnabled(value) => {
+                app_ctx.sound.set_enabled(value);
+                app_ctx.settings.set_sounds_enabled(value);
+            }
+            Self::SetSoundVolume(value) => {
+                app_ctx.sound.set_volume(value);
+                app_ctx.settings.set_sound_volume(value);
             }
             Self::CompactDatabase => {
                 let own_pubkeys: Vec<[u8; 32]> = app_ctx
@@ -552,6 +562,48 @@ impl<'a> SettingsView<'a> {
         action
     }
 
+    fn sound_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
+        let mut action = None;
+
+        settings_group(ui, "Sound", |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(richtext_small("Sound effects:"));
+
+                let label = if self.settings.sounds_enabled {
+                    "On"
+                } else {
+                    "Off"
+                };
+                if ui
+                    .toggle_value(
+                        &mut self.settings.sounds_enabled,
+                        RichText::new(label).text_style(NotedeckTextStyle::Small.text_style()),
+                    )
+                    .changed()
+                {
+                    action = Some(SettingsAction::SetSoundsEnabled(
+                        self.settings.sounds_enabled,
+                    ));
+                }
+            });
+
+            if self.settings.sounds_enabled {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(richtext_small("Volume:"));
+
+                    if ui
+                        .add(egui::Slider::new(&mut self.settings.sound_volume, 0.0..=1.0).text(""))
+                        .changed()
+                    {
+                        action = Some(SettingsAction::SetSoundVolume(self.settings.sound_volume));
+                    }
+                });
+            }
+        });
+
+        action
+    }
+
     fn other_options_section(&mut self, ui: &mut egui::Ui) -> Option<SettingsAction> {
         let mut action = None;
 
@@ -846,6 +898,12 @@ impl<'a> SettingsView<'a> {
                     ui.add_space(5.0);
 
                     self.keys_section(ui);
+
+                    ui.add_space(5.0);
+
+                    if let Some(new_action) = self.sound_section(ui) {
+                        action = Some(new_action);
+                    }
 
                     ui.add_space(5.0);
 
