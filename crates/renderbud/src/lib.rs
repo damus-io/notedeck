@@ -639,16 +639,6 @@ impl Renderer {
 
         let (depth_tex, depth_view) = create_depth(device, width, height);
 
-        /* TODO: move to example
-        let model = load_gltf_model(
-            &device,
-            &queue,
-            &material_bgl,
-            "/home/jb55/var/models/ironwood/ironwood.glb",
-        )
-        .unwrap();
-        */
-
         let model_ids = 0;
 
         let world = World::new(camera);

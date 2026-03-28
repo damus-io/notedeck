@@ -204,22 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_real_space_file() {
-        // Parse the actual .space file from the protoverse repo
-        let path = "/home/jb55/src/c/protoverse/satoshis-citadel.space";
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let space = parse(&content).unwrap();
-            assert_eq!(space.cell(space.root).cell_type, CellType::Space);
-            assert_eq!(space.name(space.root), Some("Satoshi's Den"));
-
-            // Verify round-trip
-            let serialized = serialize(&space);
-            let space2 = parse(&serialized).unwrap();
-            assert_eq!(space.cells.len(), space2.cells.len());
-        }
-    }
-
-    #[test]
     fn test_parent_references() {
         let space = parse(SATOSHIS_CITADEL).unwrap();
 
