@@ -273,6 +273,16 @@ pub enum InsertManyResponse {
     },
 }
 
+impl InsertManyResponse {
+    pub fn is_front_insert(&self) -> bool {
+        if let Self::Some { merge_kind, .. } = self {
+            matches!(merge_kind, MergeKind::FrontInsert)
+        } else {
+            false
+        }
+    }
+}
+
 pub struct Values<'a> {
     set: &'a NoteUnits,
     front: usize,

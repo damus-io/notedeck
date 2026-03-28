@@ -529,17 +529,18 @@ impl Timeline {
     /// inserting into multiple views if we have them. All timeline note
     /// insertions should use this function.
     #[profiling::function]
-    pub fn insert(
+    pub fn insert<'txn>(
         &mut self,
         new_note_ids: &[NoteKey],
         ndb: &Ndb,
-        txn: &Transaction,
+        txn: &'txn Transaction,
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
         reversed: bool,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut payloads: Vec<NotePayload> = Vec::with_capacity(new_note_ids.len());
         let now = unix_time_secs();
+        let mut any_front_insert = false;
 
         for key in new_note_ids {
             let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
@@ -582,12 +583,14 @@ impl Timeline {
                 self.enable_front_insert,
             );
 
+            any_front_insert = any_front_insert || res.insertion_response.is_front_insert();
+
             if let Some(unknown_pks) = res.tl_response {
                 unknown_pks.process_unknown_pks(unknown_ids, ndb, txn);
             }
         }
 
-        Ok(())
+        Ok(any_front_insert)
     }
 
     #[profiling::function]
@@ -616,13 +619,24 @@ impl Timeline {
             profiling::scope!("big ndb poll");
             ndb.poll_for_notes(sub, 500)
         };
+
         if new_note_ids.is_empty() {
             return Ok(false);
-        } else {
+        };
+
+        let any_front_insert =
+            self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)?;
+
+        if any_front_insert {
+            // front inserts (not merged insert) typically mean we have something new to notify on,
+            // otherwise its likely just an old note that slid into the notification timeline
+            // somewhere
+            //
+            // While this isn't perfect, since we might have a notification that slid in just
+            // behind the latest, it is a pragmatic heuristic for now.
             self.seen_latest_notes = false;
         }
 
-        self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)?;
         Ok(true)
     }
 
