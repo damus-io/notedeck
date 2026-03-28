@@ -38,7 +38,7 @@ mod unit;
 pub use cache::TimelineCache;
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
-pub use timeline_units::{TimelineUnits, UnknownPks};
+pub use timeline_units::{MergeResponse, TimelineUnits, UnknownPks};
 pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -235,9 +235,9 @@ impl TimelineTab {
         txn: &Transaction,
         reversed: bool,
         use_front_insert: bool,
-    ) -> Option<UnknownPks<'a>> {
+    ) -> MergeResponse<'a> {
         if payloads.is_empty() {
-            return None;
+            return MergeResponse::empty();
         }
 
         let num_refs = payloads.len();
@@ -247,9 +247,9 @@ impl TimelineTab {
         let InsertManyResponse::Some {
             entries_merged,
             merge_kind,
-        } = resp.insertion_response
+        } = &resp.insertion_response
         else {
-            return resp.tl_response;
+            return resp;
         };
 
         let mut list = self.list.borrow_mut();
@@ -272,12 +272,12 @@ impl TimelineTab {
                 // default is reverse-chronological. yeah it's confusing.
                 if !reversed {
                     debug!("inserting {num_refs} new notes at start");
-                    list.items_inserted_at_start(entries_merged);
+                    list.items_inserted_at_start(*entries_merged);
                 }
             }
         };
 
-        resp.tl_response
+        resp
     }
 
     pub fn select_down(&mut self) {
@@ -300,7 +300,7 @@ impl TimelineTab {
 }
 
 impl<'a> UnknownPks<'a> {
-    pub fn process(&self, unknown_ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
+    pub fn process_unknown_pks(&self, unknown_ids: &mut UnknownIds, ndb: &Ndb, txn: &Transaction) {
         for pk in &self.unknown_pks {
             unknown_ids.add_pubkey_if_missing(ndb, txn, pk);
         }
@@ -574,14 +574,16 @@ impl Timeline {
                 }
             }
 
-            if let Some(res) = view.insert(
+            let res = view.insert(
                 filtered_payloads,
                 ndb,
                 txn,
                 reversed,
                 self.enable_front_insert,
-            ) {
-                res.process(unknown_ids, ndb, txn);
+            );
+
+            if let Some(unknown_pks) = res.tl_response {
+                unknown_pks.process_unknown_pks(unknown_ids, ndb, txn);
             }
         }
 

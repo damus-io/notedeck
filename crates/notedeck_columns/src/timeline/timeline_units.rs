@@ -89,6 +89,15 @@ pub struct MergeResponse<'a> {
     pub tl_response: Option<UnknownPks<'a>>,
 }
 
+impl<'a> MergeResponse<'a> {
+    pub fn empty() -> Self {
+        Self {
+            insertion_response: InsertManyResponse::Zero,
+            tl_response: None,
+        }
+    }
+}
+
 pub struct UnknownPks<'a> {
     pub(crate) unknown_pks: HashSet<&'a [u8; 32]>,
 }
