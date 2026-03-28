@@ -271,6 +271,11 @@ impl Chrome {
 
         chrome.set_active(0);
 
+        notedeck_ref
+            .app_ctx
+            .sound
+            .play(notedeck::SoundEffect::Startup);
+
         Ok(chrome)
     }
 

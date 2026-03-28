@@ -25,6 +25,7 @@ pub enum SoundEffect {
     Notification,
     Opened,
     Closed,
+    Startup,
 }
 
 #[cfg(feature = "sound")]
@@ -100,6 +101,10 @@ mod inner {
             sounds.insert(
                 SoundEffect::Closed,
                 include_bytes!("../../../assets/sounds/close.mp3").as_slice(),
+            );
+            sounds.insert(
+                SoundEffect::Startup,
+                include_bytes!("../../../assets/sounds/startup.mp3").as_slice(),
             );
 
             let pending: HashMap<SoundEffect, AtomicU64> =
