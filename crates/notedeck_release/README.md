@@ -12,7 +12,7 @@ Follows the zapstore convention with two event kinds:
   "kind": 3063,
   "content": "",
   "tags": [
-    ["i", "io.damus.notedeck"],
+    ["i", "com.damus.notedeck"],
     ["url", "https://github.com/damus-io/notedeck/releases/download/v1.2.0/notedeck-x86_64-linux.tar.gz"],
     ["x", "<sha256_hex>"],
     ["version", "1.2.0"],
@@ -30,8 +30,8 @@ Follows the zapstore convention with two event kinds:
   "kind": 30063,
   "content": "",
   "tags": [
-    ["d", "io.damus.notedeck@1.2.0"],
-    ["i", "io.damus.notedeck"],
+    ["d", "com.damus.notedeck@1.2.0"],
+    ["i", "com.damus.notedeck"],
     ["version", "1.2.0"],
     ["c", "main"],
     ["e", "<asset_event_id_1>"],

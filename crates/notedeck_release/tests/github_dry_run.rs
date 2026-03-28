@@ -106,7 +106,7 @@ fn test_github_dry_run() {
             .expect("i tag");
         assert_eq!(
             i_tag[1].as_str().unwrap(),
-            "io.damus.notedeck",
+            "com.damus.notedeck",
             "app id mismatch"
         );
 

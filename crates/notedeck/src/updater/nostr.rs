@@ -10,7 +10,7 @@ const RELEASE_KIND: u64 = 30063;
 const ASSET_KIND: u64 = 3063;
 
 /// The app identifier used in NIP-82 "i" tags
-pub const APP_ID: &str = "io.damus.notedeck";
+pub const APP_ID: &str = "com.damus.notedeck";
 
 /// Default trusted release signing pubkey
 /// TODO: Replace with the actual release signing pubkey before shipping

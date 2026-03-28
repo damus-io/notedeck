@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tungstenite::{connect, Message};
 
 /// NIP-82 app identifier
-const APP_ID: &str = "io.damus.notedeck";
+const APP_ID: &str = "com.damus.notedeck";
 
 fn usage() {
     eprintln!(
