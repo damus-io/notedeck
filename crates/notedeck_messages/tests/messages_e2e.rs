@@ -2605,6 +2605,7 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
     let recipient = FullKeypair::generate();
     let recipient_npub = recipient.pubkey.npub().expect("recipient npub");
     let now = unix_time_secs();
+    let initial_route_a_ts = now.saturating_add(600);
 
     let mut sender_current =
         build_messages_device_with_relays(&[&relay_a_url, &relay_b_url], &sender);
@@ -2629,7 +2630,7 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
             sender_device,
             &recipient,
             &[&relay_a_url],
-            Some(now.saturating_sub(60)),
+            Some(initial_route_a_ts),
         );
         seed_local_profile_metadata(sender_device, &recipient, "relay-list-recipient");
     }
@@ -2637,13 +2638,13 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &mut recipient_a,
         &recipient,
         &[&relay_a_url],
-        Some(now.saturating_sub(60)),
+        Some(initial_route_a_ts),
     );
     seed_local_dm_relay_list_with_relays(
         &mut recipient_b,
         &recipient,
         &[&relay_a_url],
-        Some(now.saturating_sub(60)),
+        Some(initial_route_a_ts),
     );
 
     step_device_group(&mut [
@@ -2707,7 +2708,7 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &mut recipient_b,
         &recipient,
         &[&relay_b_url],
-        Some(now.saturating_add(1)),
+        Some(initial_route_a_ts.saturating_add(1)),
     );
     step_device_group(&mut [&mut sender_current, &mut recipient_b]);
     std::thread::sleep(Duration::from_millis(100));
@@ -2719,7 +2720,7 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         &offline_path,
     );
     let expected_new_version = (
-        now.saturating_add(1),
+        initial_route_a_ts.saturating_add(1),
         vec![relay_b_url.trim_end_matches('/').to_owned()],
     );
     let local_version_deadline = Instant::now() + TEST_TIMEOUT;
@@ -2816,6 +2817,7 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
     let recipient = FullKeypair::generate();
     let recipient_npub = recipient.pubkey.npub().expect("recipient npub");
     let now = unix_time_secs();
+    let initial_route_a_ts = now.saturating_add(600);
 
     let mut sender_current =
         build_messages_device_with_relays(&[&relay_a_url, &relay_b_url], &sender);
@@ -2832,9 +2834,15 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
     for sender_device in [&mut sender_current, &mut sender_offline] {
         seed_local_dm_relay_list_with_relays(
             sender_device,
+            &sender,
+            &[&relay_a_url, &relay_b_url],
+            None,
+        );
+        seed_local_dm_relay_list_with_relays(
+            sender_device,
             &recipient,
             &[&relay_a_url],
-            Some(now.saturating_sub(60)),
+            Some(initial_route_a_ts),
         );
         seed_local_profile_metadata(sender_device, &recipient, "relay-prefetch-recipient");
     }
@@ -2842,13 +2850,13 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &mut recipient_a,
         &recipient,
         &[&relay_a_url],
-        Some(now.saturating_sub(60)),
+        Some(initial_route_a_ts),
     );
     seed_local_dm_relay_list_with_relays(
         &mut recipient_b,
         &recipient,
         &[&relay_a_url],
-        Some(now.saturating_sub(60)),
+        Some(initial_route_a_ts),
     );
 
     step_device_group(&mut [
@@ -2916,7 +2924,7 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &mut recipient_b,
         &recipient,
         &[&relay_b_url],
-        Some(now.saturating_add(1)),
+        Some(initial_route_a_ts.saturating_add(1)),
     );
     step_device_group(&mut [&mut sender_current, &mut recipient_b]);
     std::thread::sleep(Duration::from_millis(100));
@@ -2928,7 +2936,7 @@ async fn restart_should_prefetch_newer_known_participant_relay_list_e2e() {
         &offline_path,
     );
     let expected_new_version = (
-        now.saturating_add(1),
+        initial_route_a_ts.saturating_add(1),
         vec![relay_b_url.trim_end_matches('/').to_owned()],
     );
     let local_version_deadline = Instant::now() + TEST_TIMEOUT;
