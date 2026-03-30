@@ -6,7 +6,12 @@ use nostrdb::{Ndb, Subscription};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 use tracing::{error, info};
+
+/// How long to wait after receiving the first release event before
+/// picking the best version. Gives slower relays time to respond.
+const GATHER_DEBOUNCE: Duration = Duration::from_secs(3);
 
 /// Information about a release asset available for download
 #[derive(Debug, Clone)]
@@ -29,6 +34,8 @@ enum UpdateState {
     Idle,
     /// Waiting for a release event from ndb
     WaitingForRelease,
+    /// Got at least one release event, waiting for more relays to respond
+    GatheringReleases { deadline: Instant },
     /// Downloading the update archive
     Downloading { version: String },
     /// Downloaded and ready to install
@@ -118,9 +125,12 @@ impl Updater {
         }
     }
 
-    /// Whether the updater is waiting for a release to be provided
+    /// Whether the updater is listening for release events
     pub fn wants_release(&self) -> bool {
-        matches!(self.state, UpdateState::WaitingForRelease)
+        matches!(
+            self.state,
+            UpdateState::WaitingForRelease | UpdateState::GatheringReleases { .. }
+        )
     }
 
     /// Whether the release filter needs to be sent to remote relays.
@@ -133,14 +143,45 @@ impl Updater {
         true
     }
 
-    /// Provide a verified release (from a signed Nostr event) to begin downloading
-    pub fn provide_release(&mut self, release: ReleaseInfo) {
-        if !self.wants_release() {
+    /// Signal that new release events have arrived. Starts or resets the
+    /// debounce timer so slower relays have time to deliver their events.
+    pub fn note_received(&mut self) {
+        match self.state {
+            UpdateState::WaitingForRelease | UpdateState::GatheringReleases { .. } => {
+                self.state = UpdateState::GatheringReleases {
+                    deadline: Instant::now() + GATHER_DEBOUNCE,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Check if the gathering debounce has expired. If so, query ndb for
+    /// the best release and start downloading. Call this every frame.
+    pub fn check_gathering(&mut self, ndb: &Ndb) {
+        let deadline = match self.state {
+            UpdateState::GatheringReleases { deadline } => deadline,
+            _ => return,
+        };
+
+        if Instant::now() < deadline {
             return;
         }
 
-        info!("update available: v{}", release.version);
-        self.start_download(release);
+        let channel = self.channel;
+        if let Ok(txn) = nostrdb::Transaction::new(ndb) {
+            if let Some(release) =
+                nostr::find_latest_release(ndb, &txn, &self.release_pubkey, channel)
+            {
+                info!("update available: v{}", release.version);
+                self.start_download(release);
+                return;
+            }
+        }
+
+        // No valid release found after gathering — go back to waiting
+        info!("updater: no matching release found after debounce, continuing to wait");
+        self.state = UpdateState::WaitingForRelease;
     }
 
     /// Returns the new version string if an update is ready to install.
@@ -187,7 +228,9 @@ impl Updater {
         // Reset to re-check with the new channel acceptance criteria
         if matches!(
             self.state,
-            UpdateState::UpToDate | UpdateState::WaitingForRelease
+            UpdateState::UpToDate
+                | UpdateState::WaitingForRelease
+                | UpdateState::GatheringReleases { .. }
         ) {
             self.state = UpdateState::Idle;
         }

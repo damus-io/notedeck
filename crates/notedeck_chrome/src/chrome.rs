@@ -650,20 +650,10 @@ fn poll_updater(updater: &mut notedeck::updater::Updater, ctx: &mut notedeck::Ap
         let release_sub = updater.release_sub();
         let nks = ctx.ndb.poll_for_notes(release_sub, 10);
         if !nks.is_empty() {
-            let release_pubkey = *updater.release_pubkey();
-            let channel = updater.channel();
-            if let Ok(txn) = nostrdb::Transaction::new(ctx.ndb) {
-                if let Some(release) = notedeck::updater::nostr::find_latest_release(
-                    ctx.ndb,
-                    &txn,
-                    &release_pubkey,
-                    channel,
-                ) {
-                    updater.provide_release(release);
-                }
-            }
+            updater.note_received();
         }
     }
+    updater.check_gathering(ctx.ndb);
     updater.poll();
 }
 
