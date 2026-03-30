@@ -10,7 +10,7 @@ if (keystorePropertiesFile.exists()) {
 
 android {
     namespace "com.damus.notedeck"
-    compileSdk 31
+    compileSdk 34
 
     defaultConfig {
         minSdk 19

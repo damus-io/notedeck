@@ -1,5 +1,5 @@
 { pkgs ? import <nixpkgs> { }
-, android ? "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2025-01-27.tar.gz"
+, android ? "https://github.com/tadfisher/android-nixpkgs/archive/refs/tags/2026-03-28.tar.gz"
 , use_android ? true
 , android_emulator ? false
 }:
@@ -54,15 +54,15 @@ mkShell ({
     let
       android-nixpkgs = callPackage (fetchTarball android) { };
       #ndk-version = "24.0.8215888";
-      ndk-version = "27.2.12479018";
-      android-version = "31";
+      ndk-version = "29.0.14206865";
+      android-version = "34";
 
       android-sdk = android-nixpkgs.sdk (sdkPkgs: with sdkPkgs; [
         cmdline-tools-latest
         build-tools-34-0-0
         platform-tools
-        platforms-android-31
-        ndk-27-2-12479018
+        platforms-android-34
+        ndk-29-0-14206865
         #ndk-24-0-8215888
       ] ++ lib.optional android_emulator emulator);
 
