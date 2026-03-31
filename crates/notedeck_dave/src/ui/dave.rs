@@ -1060,7 +1060,7 @@ impl<'a> DaveUi<'a> {
                     let in_tentative =
                         self.permission_message_state != PermissionMessageState::None;
 
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if in_tentative {
                             tentative_send_ui(
                                 self.permission_message_state,

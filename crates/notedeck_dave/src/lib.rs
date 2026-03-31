@@ -423,12 +423,84 @@ impl Dave {
         self.avatar.as_mut()
     }
 
-    pub fn session_manager_mut(&mut self) -> &mut SessionManager {
-        &mut self.session_manager
+    /// Create a new session while keeping Dave's derived session state in sync.
+    pub fn create_session_with_cwd(
+        &mut self,
+        cwd: PathBuf,
+        backend_type: BackendType,
+        model: Model,
+    ) -> SessionId {
+        update::create_session_with_cwd(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+            cwd,
+            &self.hostname,
+            backend_type,
+            None,
+            model,
+        )
+    }
+
+    /// Append and finalize an assistant message for an existing session.
+    pub fn append_assistant_message_for_session(&mut self, sid: SessionId, text: &str) -> bool {
+        let Some(session) = self.session_manager.get_mut(sid) else {
+            return false;
+        };
+
+        session.append_token(text);
+        session.finalize_last_assistant();
+        true
+    }
+
+    /// Push a tool response into an existing session transcript.
+    pub fn push_tool_response_for_session(
+        &mut self,
+        sid: SessionId,
+        tool_response: ToolResponse,
+    ) -> bool {
+        let Some(session) = self.session_manager.get_mut(sid) else {
+            return false;
+        };
+
+        session.chat.push(Message::ToolResponse(tool_response));
+        true
+    }
+
+    /// Push a pending permission request into an existing session transcript.
+    pub fn push_permission_request_for_session(
+        &mut self,
+        sid: SessionId,
+        request: PermissionRequest,
+    ) -> bool {
+        let Some(session) = self.session_manager.get_mut(sid) else {
+            return false;
+        };
+
+        session.chat.push(Message::PermissionRequest(request));
+        true
     }
 
     /// Dismiss any active overlay (e.g. the directory picker).
     pub fn clear_overlay(&mut self) {
+        let overlay = std::mem::take(&mut self.active_overlay);
+        self.dismiss_overlay(overlay);
+    }
+
+    /// Close an overlay and run any overlay-specific teardown first.
+    fn dismiss_overlay(&mut self, overlay: DaveOverlay) {
+        match overlay {
+            DaveOverlay::DirectoryPicker => {
+                self.directory_picker.target_host = None;
+            }
+            DaveOverlay::SessionPicker { .. } => {
+                self.session_picker.close();
+            }
+            _ => {}
+        }
+
         self.active_overlay = DaveOverlay::None;
     }
 
@@ -986,7 +1058,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         self.apply_settings(new_settings.clone());
                         return DaveResponse::new(DaveAction::UpdateSettings(new_settings));
                     }
-                    OverlayResult::Close => {}
+                    OverlayResult::Close => {
+                        self.dismiss_overlay(DaveOverlay::Settings);
+                    }
                     _ => {
                         self.active_overlay = DaveOverlay::Settings;
                     }
@@ -1001,7 +1075,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         self.directory_picker.target_host = host;
                         self.active_overlay = DaveOverlay::DirectoryPicker;
                     }
-                    OverlayResult::Close => {}
+                    OverlayResult::Close => {
+                        self.dismiss_overlay(DaveOverlay::HostPicker);
+                    }
                     _ => {
                         self.active_overlay = DaveOverlay::HostPicker;
                     }
@@ -1030,7 +1106,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                     OverlayResult::Close => {
-                        self.directory_picker.target_host = None;
+                        self.dismiss_overlay(DaveOverlay::DirectoryPicker);
                     }
                     _ => {
                         self.active_overlay = DaveOverlay::DirectoryPicker;
@@ -1069,6 +1145,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     OverlayResult::BackToDirectoryPicker => {
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::DirectoryPicker;
+                    }
+                    OverlayResult::Close => {
+                        self.dismiss_overlay(DaveOverlay::SessionPicker { backend, model });
                     }
                     _ => {
                         self.active_overlay = DaveOverlay::SessionPicker { backend, model };
@@ -1446,22 +1525,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         hosts
     }
 
-    /// Create a new session with the given cwd (called after directory picker selection)
-    fn create_session_with_cwd(&mut self, cwd: PathBuf, backend_type: BackendType, model: Model) {
-        update::create_session_with_cwd(
-            &mut self.session_manager,
-            &mut self.directory_picker,
-            &mut self.scene,
-            self.show_scene,
-            self.ai_mode,
-            cwd,
-            &self.hostname,
-            backend_type,
-            None,
-            model,
-        );
-    }
-
     /// Create a new session that resumes an existing Claude conversation
     fn create_resumed_session_with_cwd(
         &mut self,
@@ -1509,12 +1572,18 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Poll for IPC spawn-agent commands from external tools
     fn poll_ipc_commands(&mut self) {
-        let Some(listener) = self.ipc_listener.as_ref() else {
-            return;
-        };
-
         // Drain all pending connections (non-blocking)
-        while let Some(mut pending) = listener.try_recv() {
+        loop {
+            let pending = {
+                let Some(listener) = self.ipc_listener.as_ref() else {
+                    return;
+                };
+                listener.try_recv()
+            };
+            let Some(mut pending) = pending else {
+                break;
+            };
+
             // Create the session and get its ID
             let id = self.session_manager.new_session(
                 pending.cwd.clone(),
@@ -1538,7 +1607,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             // Close directory picker if open
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
-                self.active_overlay = DaveOverlay::None;
+                self.clear_overlay();
             }
 
             // Send success response back to the client
@@ -2209,7 +2278,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             // If we were showing the directory picker, switch to showing sessions
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
-                self.active_overlay = DaveOverlay::None;
+                self.clear_overlay();
             }
         }
     }

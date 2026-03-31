@@ -8,8 +8,8 @@
 
 use egui_kittest::kittest::Queryable;
 use notedeck::{App, AppContext, AppResponse};
-use notedeck_dave::backend::traits::BackendType;
-use notedeck_dave::{AiMode, Dave, ExecutedTool, Message, PermissionRequest, ToolResponse};
+use notedeck_dave::backend::traits::{BackendType, Model};
+use notedeck_dave::{Dave, ExecutedTool, PermissionRequest, ToolResponse};
 use notedeck_testing::device::{build_device_minimal, DeviceHarness};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -29,6 +29,7 @@ use tempfile::TempDir;
 /// overflow bugs that only appear in the real app path.
 struct ChromeStripWrapper {
     dave: Dave,
+    _work_dir_guard: Arc<TempDir>,
 }
 
 impl App for ChromeStripWrapper {
@@ -61,6 +62,7 @@ impl App for ChromeStripWrapper {
 struct DaveChromeLikeWrapper {
     dave: Dave,
     sidebar_width: f32,
+    _work_dir_guard: Arc<TempDir>,
 }
 
 impl App for DaveChromeLikeWrapper {
@@ -85,6 +87,23 @@ impl App for DaveChromeLikeWrapper {
                 .inner;
         });
         response
+    }
+}
+
+/// Minimal wrapper that keeps the seeded Dave workdir alive for the full
+/// harness lifetime.
+struct DaveWorkdirWrapper {
+    dave: Dave,
+    _work_dir_guard: Arc<TempDir>,
+}
+
+impl App for DaveWorkdirWrapper {
+    fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        self.dave.update(ctx, egui_ctx);
+    }
+
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        self.dave.render(ctx, ui)
     }
 }
 
@@ -151,49 +170,64 @@ fn inject_transcript(
                 let _ = dave.add_user_message_for_session(sid, &app_ctx, text, Vec::new());
             }
             TranscriptTurn::Assistant(text) => {
-                if let Some(session) = dave.session_manager_mut().get_mut(sid) {
-                    session.append_token(&text);
-                    session.finalize_last_assistant();
-                }
+                let _ = dave.append_assistant_message_for_session(sid, &text);
             }
             TranscriptTurn::ToolResult { tool_name, summary } => {
-                if let Some(session) = dave.session_manager_mut().get_mut(sid) {
-                    let result = ExecutedTool {
-                        tool_name,
-                        summary,
-                        parent_task_id: None,
-                        file_update: None,
-                    };
-                    let tool_resp = ToolResponse::executed_tool(result);
-                    session.chat.push(Message::ToolResponse(tool_resp));
-                }
+                let result = ExecutedTool {
+                    tool_name,
+                    summary,
+                    parent_task_id: None,
+                    file_update: None,
+                };
+                let tool_resp = ToolResponse::executed_tool(result);
+                let _ = dave.push_tool_response_for_session(sid, tool_resp);
             }
             TranscriptTurn::Permission {
                 tool_name,
                 tool_input,
             } => {
-                if let Some(session) = dave.session_manager_mut().get_mut(sid) {
-                    let req = PermissionRequest::new(
-                        uuid::Uuid::new_v4(),
-                        tool_name,
-                        tool_input,
-                        None,
-                        None,
-                        None,
-                    );
-                    session.chat.push(Message::PermissionRequest(req));
-                }
+                let req = PermissionRequest::new(
+                    uuid::Uuid::new_v4(),
+                    tool_name,
+                    tool_input,
+                    None,
+                    None,
+                    None,
+                );
+                let _ = dave.push_permission_request_for_session(sid, req);
             }
         }
     }
 }
 
-/// Create a temp working directory that stays alive when moved into a closure.
-/// Returns `(path, guard)` — move `guard` into the closure to prevent early cleanup.
+/// Create a temp working directory for seeded Dave sessions.
+/// Returns `(path, guard)`; the caller must store `guard` on the installed app
+/// wrapper so the directory survives for the full harness lifetime.
 fn work_dir_pair() -> (std::path::PathBuf, Arc<TempDir>) {
     let dir = Arc::new(TempDir::new().expect("work tmpdir"));
     let path = dir.path().to_path_buf();
     (path, dir)
+}
+
+/// Build a Dave app seeded with a fresh agentic session rooted at `work_path`.
+fn seeded_dave(
+    notedeck: &mut notedeck::Notedeck,
+    ctx: &egui::Context,
+    work_path: std::path::PathBuf,
+) -> (Dave, notedeck_dave::SessionId) {
+    let ndb = {
+        let app_ctx = notedeck.app_context(ctx);
+        app_ctx.ndb.clone()
+    };
+    let path = {
+        let app_ctx = notedeck.app_context(ctx);
+        app_ctx.path.clone()
+    };
+
+    let mut dave = Dave::new(None, ndb, ctx.clone(), &path);
+    let sid = dave.create_session_with_cwd(work_path, BackendType::Claude, Model::Default);
+    dave.clear_overlay();
+    (dave, sid)
 }
 
 // ---------------------------------------------------------------------------
@@ -207,27 +241,12 @@ fn render_chat_harness(turns: Vec<TranscriptTurn>, width: f32) -> DeviceHarness 
     let mut harness = build_device_minimal(
         egui::Vec2::new(width, 800.0),
         Box::new(move |notedeck, ctx| {
-            let _keep = guard;
-            let ndb = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.ndb.clone()
-            };
-            let path = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.path.clone()
-            };
-
-            let mut dave = Dave::new(None, ndb, ctx.clone(), &path);
-            let sid = dave.session_manager_mut().new_session(
-                work_path,
-                AiMode::Agentic,
-                BackendType::Claude,
-            );
-
+            let (mut dave, sid) = seeded_dave(notedeck, ctx, work_path);
             inject_transcript(&mut dave, notedeck, ctx, sid, turns);
-
-            dave.clear_overlay();
-            notedeck.set_app(dave);
+            notedeck.set_app(DaveWorkdirWrapper {
+                dave,
+                _work_dir_guard: guard,
+            });
         }),
     );
 
@@ -249,29 +268,13 @@ fn render_chat_harness_with_ppp(
     let mut harness = build_device_minimal(
         egui::Vec2::new(width, 800.0),
         Box::new(move |notedeck, ctx| {
-            let _keep = guard;
             ctx.set_pixels_per_point(pixels_per_point);
-
-            let ndb = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.ndb.clone()
-            };
-            let path = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.path.clone()
-            };
-
-            let mut dave = Dave::new(None, ndb, ctx.clone(), &path);
-            let sid = dave.session_manager_mut().new_session(
-                work_path,
-                AiMode::Agentic,
-                BackendType::Claude,
-            );
-
+            let (mut dave, sid) = seeded_dave(notedeck, ctx, work_path);
             inject_transcript(&mut dave, notedeck, ctx, sid, turns);
-
-            dave.clear_overlay();
-            notedeck.set_app(dave);
+            notedeck.set_app(DaveWorkdirWrapper {
+                dave,
+                _work_dir_guard: guard,
+            });
         }),
     );
 
@@ -294,24 +297,11 @@ fn render_empty_chat_harness(width: f32) -> DeviceHarness {
     let mut harness = build_device_minimal(
         egui::Vec2::new(width, 800.0),
         Box::new(move |notedeck, ctx| {
-            let _keep = guard;
-            let ndb = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.ndb.clone()
-            };
-            let path = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.path.clone()
-            };
-
-            let mut dave = Dave::new(None, ndb, ctx.clone(), &path);
-            let _sid = dave.session_manager_mut().new_session(
-                work_path,
-                AiMode::Agentic,
-                BackendType::Claude,
-            );
-            dave.clear_overlay();
-            notedeck.set_app(dave);
+            let (dave, _) = seeded_dave(notedeck, ctx, work_path);
+            notedeck.set_app(DaveWorkdirWrapper {
+                dave,
+                _work_dir_guard: guard,
+            });
         }),
     );
 
@@ -329,27 +319,11 @@ fn render_empty_wrapped_chat_harness(width: f32, sidebar_width: f32) -> DeviceHa
     let mut harness = build_device_minimal(
         egui::Vec2::new(width, 800.0),
         Box::new(move |notedeck, ctx| {
-            let _keep = guard;
-            let ndb = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.ndb.clone()
-            };
-            let path = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.path.clone()
-            };
-
-            let mut dave = Dave::new(None, ndb, ctx.clone(), &path);
-            let _sid = dave.session_manager_mut().new_session(
-                work_path,
-                AiMode::Agentic,
-                BackendType::Claude,
-            );
-            dave.clear_overlay();
-
+            let (dave, _) = seeded_dave(notedeck, ctx, work_path);
             notedeck.set_app(DaveChromeLikeWrapper {
                 dave,
                 sidebar_width,
+                _work_dir_guard: guard,
             });
         }),
     );
@@ -364,6 +338,15 @@ fn render_empty_wrapped_chat_harness(width: f32, sidebar_width: f32) -> DeviceHa
 // ---------------------------------------------------------------------------
 // Assertion helpers
 // ---------------------------------------------------------------------------
+
+/// Resize the live harness and step a few frames so the new geometry propagates
+/// through the real Notedeck -> Dave -> DaveUi render path.
+fn resize_harness(harness: &mut DeviceHarness, width: f32, height: f32, settle_frames: usize) {
+    harness.set_size(egui::vec2(width, height));
+    for _ in 0..settle_frames {
+        harness.step();
+    }
+}
 
 /// Return every queryable node with horizontal bounds that escapes the viewport.
 /// The chat frame's right margin — content must stop this far inside the
@@ -578,27 +561,12 @@ fn render_chat_harness_sized(turns: Vec<TranscriptTurn>, width: f32, height: f32
     let mut harness = build_device_minimal(
         egui::Vec2::new(width, height),
         Box::new(move |notedeck, ctx| {
-            let _keep = guard;
-            let ndb = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.ndb.clone()
-            };
-            let path = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.path.clone()
-            };
-
-            let mut dave = Dave::new(None, ndb, ctx.clone(), &path);
-            let sid = dave.session_manager_mut().new_session(
-                work_path,
-                AiMode::Agentic,
-                BackendType::Claude,
-            );
-
+            let (mut dave, sid) = seeded_dave(notedeck, ctx, work_path);
             inject_transcript(&mut dave, notedeck, ctx, sid, turns);
-
-            dave.clear_overlay();
-            notedeck.set_app(dave);
+            notedeck.set_app(DaveWorkdirWrapper {
+                dave,
+                _work_dir_guard: guard,
+            });
         }),
     );
 
@@ -619,27 +587,12 @@ fn render_chat_harness_chrome(turns: Vec<TranscriptTurn>, width: f32) -> DeviceH
     let mut harness = build_device_minimal(
         egui::Vec2::new(width, 800.0),
         Box::new(move |notedeck, ctx| {
-            let _keep = guard;
-            let ndb = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.ndb.clone()
-            };
-            let path = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.path.clone()
-            };
-
-            let mut dave = Dave::new(None, ndb, ctx.clone(), &path);
-            let sid = dave.session_manager_mut().new_session(
-                work_path,
-                AiMode::Agentic,
-                BackendType::Claude,
-            );
-
+            let (mut dave, sid) = seeded_dave(notedeck, ctx, work_path);
             inject_transcript(&mut dave, notedeck, ctx, sid, turns);
-
-            dave.clear_overlay();
-            notedeck.set_app(ChromeStripWrapper { dave });
+            notedeck.set_app(ChromeStripWrapper {
+                dave,
+                _work_dir_guard: guard,
+            });
         }),
     );
 
@@ -658,14 +611,23 @@ fn assert_markdown_has_no_horizontal_overflow(md: &str, widths: &[f32]) {
 
 /// Render a full mixed chat transcript and assert no widget escapes the viewport.
 fn assert_chat_has_no_horizontal_overflow(turns: Vec<TranscriptTurn>, widths: &[f32]) {
-    for width in widths {
-        let harness = render_chat_harness(turns.clone(), *width);
-        let overflows = horizontal_overflows(&harness, *width);
+    let Some((&first_width, remaining_widths)) = widths.split_first() else {
+        return;
+    };
+    let mut harness = render_chat_harness(turns, first_width);
+    let assert_width = |harness: &DeviceHarness, width: f32| {
+        let overflows = horizontal_overflows(harness, width);
         assert!(
             overflows.is_empty(),
             "found horizontal overflow at width {width}: {:?}",
             overflows
         );
+    };
+
+    assert_width(&harness, first_width);
+    for &width in remaining_widths {
+        resize_harness(&mut harness, width, 800.0, 3);
+        assert_width(&harness, width);
     }
 }
 
@@ -678,14 +640,23 @@ fn assert_chat_has_no_horizontal_overflow_with_scrolling(
 ) {
     // Use a short viewport (300px) so the chat content triggers vertical
     // scrolling and the scrollbar eats into horizontal space.
-    for width in widths {
-        let harness = render_chat_harness_sized(turns.clone(), *width, 300.0);
-        let overflows = horizontal_overflows(&harness, *width);
+    let Some((&first_width, remaining_widths)) = widths.split_first() else {
+        return;
+    };
+    let mut harness = render_chat_harness_sized(turns, first_width, 300.0);
+    let assert_width = |harness: &DeviceHarness, width: f32| {
+        let overflows = horizontal_overflows(harness, width);
         assert!(
             overflows.is_empty(),
             "found horizontal overflow at width {width} with scrolling: {:?}",
             overflows
         );
+    };
+
+    assert_width(&harness, first_width);
+    for &width in remaining_widths {
+        resize_harness(&mut harness, width, 300.0, 3);
+        assert_width(&harness, width);
     }
 }
 
@@ -700,27 +671,12 @@ fn render_chat_harness_chrome_sized(
     let mut harness = build_device_minimal(
         egui::Vec2::new(width, height),
         Box::new(move |notedeck, ctx| {
-            let _keep = guard;
-            let ndb = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.ndb.clone()
-            };
-            let path = {
-                let app_ctx = notedeck.app_context(ctx);
-                app_ctx.path.clone()
-            };
-
-            let mut dave = Dave::new(None, ndb, ctx.clone(), &path);
-            let sid = dave.session_manager_mut().new_session(
-                work_path,
-                AiMode::Agentic,
-                BackendType::Claude,
-            );
-
+            let (mut dave, sid) = seeded_dave(notedeck, ctx, work_path);
             inject_transcript(&mut dave, notedeck, ctx, sid, turns);
-
-            dave.clear_overlay();
-            notedeck.set_app(ChromeStripWrapper { dave });
+            notedeck.set_app(ChromeStripWrapper {
+                dave,
+                _work_dir_guard: guard,
+            });
         }),
     );
 
@@ -736,14 +692,23 @@ fn assert_chat_has_no_horizontal_overflow_chrome_scrolling(
     turns: Vec<TranscriptTurn>,
     widths: &[f32],
 ) {
-    for width in widths {
-        let harness = render_chat_harness_chrome_sized(turns.clone(), *width, 300.0);
-        let overflows = horizontal_overflows(&harness, *width);
+    let Some((&first_width, remaining_widths)) = widths.split_first() else {
+        return;
+    };
+    let mut harness = render_chat_harness_chrome_sized(turns, first_width, 300.0);
+    let assert_width = |harness: &DeviceHarness, width: f32| {
+        let overflows = horizontal_overflows(harness, width);
         assert!(
             overflows.is_empty(),
             "found horizontal overflow at chrome width {width} with scrolling: {:?}",
             overflows
         );
+    };
+
+    assert_width(&harness, first_width);
+    for &width in remaining_widths {
+        resize_harness(&mut harness, width, 300.0, 3);
+        assert_width(&harness, width);
     }
 }
 
@@ -1124,15 +1089,18 @@ async fn seeded_user_message_does_not_clip_on_right_edge() {
          restart_should_prefetch_newer_known_participant_relay_list_e2e now waits correctly."
     );
 
-    for width in [
+    let widths = [
         320.0, 300.0, 280.0, 260.0, 240.0, 220.0, 200.0, 190.0, 180.0,
-    ] {
-        let harness = render_chat_harness(vec![user_msg(user_text.clone())], width);
-        let right_edge = chat_right_edge(width);
-        let clipped = marker_right_edge_clips(&harness, right_edge, marker);
+    ];
+    let mut harness = render_chat_harness(vec![user_msg(user_text)], widths[0]);
+
+    for &width in &widths {
+        resize_harness(&mut harness, width, 800.0, 3);
+        let clipped = marker_right_edge_clips(&harness, chat_right_edge(width), marker);
         assert!(
             clipped.is_empty(),
-            "seeded user message clipped at width {width} (edge={right_edge:.1}): {clipped:?}"
+            "seeded user message clipped at width {width} (edge={:.1}): {clipped:?}",
+            chat_right_edge(width),
         );
     }
 }
@@ -1181,15 +1149,18 @@ async fn seeded_user_message_does_not_clip_on_right_edge_high_dpi() {
          the viewport width changes."
     );
 
-    for width in [
+    let widths = [
         321.0, 301.0, 281.0, 261.0, 241.0, 221.0, 201.0, 191.0, 181.0,
-    ] {
-        let harness = render_chat_harness_with_ppp(vec![user_msg(user_text.clone())], width, 2.0);
-        let right_edge = chat_right_edge(width);
-        let clipped = marker_right_edge_clips(&harness, right_edge, marker);
+    ];
+    let mut harness = render_chat_harness_with_ppp(vec![user_msg(user_text)], widths[0], 2.0);
+
+    for &width in &widths {
+        resize_harness(&mut harness, width, 800.0, 3);
+        let clipped = marker_right_edge_clips(&harness, chat_right_edge(width), marker);
         assert!(
             clipped.is_empty(),
-            "seeded high-dpi user message clipped at width {width} (edge={right_edge:.1}): {clipped:?}"
+            "seeded high-dpi user message clipped at width {width} (edge={:.1}): {clipped:?}",
+            chat_right_edge(width),
         );
     }
 }
@@ -1217,13 +1188,7 @@ async fn typed_user_message_does_not_clip_after_runtime_resize() {
     }
 
     for width in [300.0, 260.0, 220.0, 200.0, 190.0, 180.0] {
-        harness.input_mut().screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(width, 800.0),
-        ));
-        for _ in 0..3 {
-            harness.step();
-        }
+        resize_harness(&mut harness, width, 800.0, 3);
 
         let clipped = marker_right_edge_clips(&harness, chat_right_edge(width), marker);
         assert!(
@@ -1258,13 +1223,7 @@ async fn typed_user_message_does_not_clip_after_runtime_resize_chrome_like_wrapp
     for width in [
         320.0, 300.0, 280.0, 260.0, 240.0, 220.0, 200.0, 190.0, 180.0,
     ] {
-        harness.input_mut().screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(width, 800.0),
-        ));
-        for _ in 0..3 {
-            harness.step();
-        }
+        resize_harness(&mut harness, width, 800.0, 3);
 
         let clipped = marker_right_edge_clips(&harness, chat_right_edge(width), marker);
         assert!(
@@ -1342,13 +1301,7 @@ async fn typed_user_message_with_codeblock_does_not_clip_after_hidpi_runtime_res
     for width in [
         341.0, 321.0, 301.0, 281.0, 261.0, 241.0, 221.0, 201.0, 191.0,
     ] {
-        harness.input_mut().screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(width, 800.0),
-        ));
-        for _ in 0..4 {
-            harness.step();
-        }
+        resize_harness(&mut harness, width, 800.0, 4);
 
         let right_edge = chat_right_edge(width);
         let clipped = marker_textshape_rows_touch_clip_right(&harness, marker, 1.0);
@@ -1384,13 +1337,7 @@ async fn typed_user_message_short_text_has_right_edge_headroom_across_width_and_
 
         for width in (181..=361).rev().step_by(2) {
             let width = width as f32;
-            harness.input_mut().screen_rect = Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(width, 800.0),
-            ));
-            for _ in 0..2 {
-                harness.step();
-            }
+            resize_harness(&mut harness, width, 800.0, 2);
 
             let clipped = marker_textshape_rows_touch_clip_right(&harness, marker, 1.0);
             if !clipped.is_empty() {
@@ -1874,14 +1821,23 @@ async fn long_user_message_then_assistant_no_overflow() {
 /// Render a chat transcript through the Chrome-wrapped Dave pipeline and assert
 /// no widget escapes the viewport at the given widths.
 fn assert_chat_has_no_horizontal_overflow_chrome(turns: Vec<TranscriptTurn>, widths: &[f32]) {
-    for width in widths {
-        let harness = render_chat_harness_chrome(turns.clone(), *width);
-        let overflows = horizontal_overflows(&harness, *width);
+    let Some((&first_width, remaining_widths)) = widths.split_first() else {
+        return;
+    };
+    let mut harness = render_chat_harness_chrome(turns, first_width);
+    let assert_width = |harness: &DeviceHarness, width: f32| {
+        let overflows = horizontal_overflows(harness, width);
         assert!(
             overflows.is_empty(),
             "found horizontal overflow in Chrome wrapper at width {width}: {:?}",
             overflows
         );
+    };
+
+    assert_width(&harness, first_width);
+    for &width in remaining_widths {
+        resize_harness(&mut harness, width, 800.0, 3);
+        assert_width(&harness, width);
     }
 }
 
@@ -2084,6 +2040,23 @@ async fn permission_buttons_no_overflow_on_narrow() {
             serde_json::json!({
                 "description": "Fetch Anthropic messages API docs",
                 "command": "curl -s \"https://docs.anthropic.com/en/api/messages\" | head -200 2>/dev/null || echo \"curl failed\""
+            }),
+        ),
+    ];
+    assert_chat_has_no_horizontal_overflow(turns.clone(), &[400.0, 360.0, 320.0, 280.0]);
+    assert_chat_has_no_horizontal_overflow_chrome(turns, &[400.0, 360.0, 320.0, 280.0]);
+}
+
+/// Exit-plan approval rows must wrap on narrow widths just like ordinary
+/// permission prompts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exit_plan_mode_buttons_no_overflow_on_narrow() {
+    let turns = vec![
+        user_msg("sketch an implementation plan"),
+        permission(
+            "ExitPlanMode",
+            serde_json::json!({
+                "plan": "1. Audit the markdown renderer for overflow regressions.\n2. Fix the inline link layout and hit-testing path.\n3. Add narrow-width E2E coverage for the plan approval row.\n4. Re-run focused Dave UI tests before landing."
             }),
         ),
     ];

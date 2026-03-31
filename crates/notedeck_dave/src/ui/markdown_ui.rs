@@ -127,18 +127,20 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
     }
 }
 
-/// A link embedded in a LayoutJob, tracked by byte range so we can detect
-/// clicks after the label is rendered.
+/// A link embedded in a LayoutJob, tracked by character range so hit-testing
+/// matches egui's character-based cursors.
 struct InlineLink {
-    /// Byte range in the LayoutJob text.
-    byte_range: std::ops::Range<usize>,
+    /// Character range in the LayoutJob text.
+    char_range: std::ops::Range<usize>,
     /// URL to open on click.
     url: String,
+    /// Human-readable link text used for accessibility metadata.
+    label: String,
 }
 
 /// Flush a LayoutJob as a wrapped label if it has any content.
 /// When `links` is non-empty, the label is made clickable and any click on a
-/// link byte range opens the corresponding URL.
+/// link character range opens the corresponding URL.
 fn flush_job(job: &mut LayoutJob, links: &mut Vec<InlineLink>, ui: &mut Ui) {
     if job.text.is_empty() {
         return;
@@ -149,39 +151,91 @@ fn flush_job(job: &mut LayoutJob, links: &mut Vec<InlineLink>, ui: &mut Ui) {
 
     if links.is_empty() {
         ui.add(egui::Label::new(std::mem::take(job)).wrap());
-    } else {
-        // Layout the job manually so we get the galley for hit-testing links.
-        let galley = ui.fonts(|f| f.layout_job(std::mem::take(job)));
-        let desired_size = egui::vec2(ui.available_width().min(galley.size().x), galley.size().y);
-        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
-        ui.painter()
-            .galley(rect.min, galley.clone(), ui.visuals().text_color());
-
-        if response.clicked() {
-            if let Some(pos) = response.interact_pointer_pos() {
-                let local_pos = pos - rect.min;
-                let offset = galley.cursor_from_pos(local_pos).pcursor.offset;
-                for link in links.iter() {
-                    if link.byte_range.contains(&offset) {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
-                        break;
-                    }
-                }
-            }
-        }
-
-        if response.hovered() {
-            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
-                let local_pos = pos - rect.min;
-                let offset = galley.cursor_from_pos(local_pos).pcursor.offset;
-                if links.iter().any(|l| l.byte_range.contains(&offset)) {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-            }
-        }
-
-        links.clear();
+        return;
     }
+
+    let galley = ui.fonts(|f| f.layout_job(std::mem::take(job)));
+    let galley_response = ui.add(
+        egui::Label::new(egui::WidgetText::Galley(galley.clone())).sense(egui::Sense::hover()),
+    );
+    let galley_origin = galley_response.rect.min;
+
+    for (link_index, link) in links.iter().enumerate() {
+        let segment_rects = link_segment_rects(&galley, &link.char_range, galley_origin);
+        if segment_rects.is_empty() {
+            continue;
+        }
+
+        let mut clicked = false;
+        let mut hovered = false;
+
+        for (segment_index, rect) in segment_rects.into_iter().enumerate() {
+            let response = ui.interact(
+                rect,
+                ui.id()
+                    .with("inline_link")
+                    .with(link_index)
+                    .with(segment_index),
+                egui::Sense::click(),
+            );
+
+            if segment_index == 0 {
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), &link.label)
+                });
+            }
+
+            let response = response.on_hover_text(&link.url);
+            clicked |= response.clicked();
+            hovered |= response.hovered();
+        }
+
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        if clicked {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+        }
+    }
+
+    links.clear();
+}
+
+/// Convert a link character range into one or more on-screen rects, one per
+/// wrapped galley row the link spans.
+fn link_segment_rects(
+    galley: &egui::Galley,
+    char_range: &std::ops::Range<usize>,
+    galley_origin: egui::Pos2,
+) -> Vec<egui::Rect> {
+    let mut rects = Vec::new();
+    let mut row_start = 0;
+
+    for row in &galley.rows {
+        let row_end = row_start + row.char_count_excluding_newline();
+        let segment_start = char_range.start.max(row_start);
+        let segment_end = char_range.end.min(row_end);
+
+        if segment_start < segment_end {
+            let start_col = segment_start - row_start;
+            let end_col = segment_end - row_start;
+            rects.push(egui::Rect::from_min_max(
+                egui::pos2(
+                    galley_origin.x + row.x_offset(start_col),
+                    galley_origin.y + row.min_y(),
+                ),
+                egui::pos2(
+                    galley_origin.x + row.x_offset(end_col),
+                    galley_origin.y + row.max_y(),
+                ),
+            ));
+        }
+
+        row_start = row_end + usize::from(row.ends_with_newline);
+    }
+
+    rects
 }
 
 /// Insert invisible wrap opportunities after code-like separators without
@@ -245,9 +299,16 @@ fn soft_wrap_text(text: &str) -> Cow<'_, str> {
 
 /// Append text to a layout job while preserving normal word wrapping and
 /// enabling breaks inside long code-like identifiers and paths.
-fn append_wrapped_text(job: &mut LayoutJob, text: &str, format: TextFormat) {
+fn append_wrapped_text(
+    job: &mut LayoutJob,
+    text: &str,
+    format: TextFormat,
+) -> std::ops::Range<usize> {
+    let start = job.text.chars().count();
     let wrapped = soft_wrap_text(text);
     job.append(&wrapped, 0.0, format);
+    let end = job.text.chars().count();
+    start..end
 }
 
 /// Render inline elements inside a width-constrained wrapper that prevents
@@ -360,23 +421,21 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: 
 
             InlineElement::Link { text, url } => {
                 let link_text = text.resolve(buffer);
-                let start = job.text.len();
-                append_wrapped_text(&mut job, link_text, link_fmt.clone());
-                let end = job.text.len();
+                let char_range = append_wrapped_text(&mut job, link_text, link_fmt.clone());
                 links.push(InlineLink {
-                    byte_range: start..end,
+                    char_range,
                     url: url.resolve(buffer).to_owned(),
+                    label: link_text.to_owned(),
                 });
             }
 
             InlineElement::Image { alt, url } => {
                 let alt_text = format!("[Image: {}]", alt.resolve(buffer));
-                let start = job.text.len();
-                append_wrapped_text(&mut job, &alt_text, link_fmt.clone());
-                let end = job.text.len();
+                let char_range = append_wrapped_text(&mut job, &alt_text, link_fmt.clone());
                 links.push(InlineLink {
-                    byte_range: start..end,
+                    char_range,
                     url: url.resolve(buffer).to_owned(),
+                    label: alt_text,
                 });
             }
 
@@ -939,10 +998,8 @@ mod tests {
 
     #[test]
     fn inline_link_stays_on_same_row_as_surrounding_text_when_width_allows() {
-        // Links are now embedded in a single LayoutJob galley alongside their
-        // surrounding text, so they inherently stay on the same row.  Verify
-        // the rendered content fits within a single line height by checking the
-        // container node bounds.
+        // Links stay inside the same wrapped galley as their surrounding text,
+        // so when width allows they should remain on a single row.
         let markdown = "Renderer-level in [markdown_ui.rs](https://example.com): keep this inline.";
         let parsed = ParsedMarkdown::parse(markdown);
 
@@ -956,20 +1013,81 @@ mod tests {
 
         harness.run();
 
-        // The manually-painted galley doesn't expose per-text accessibility
-        // nodes, but the container node's bounds reflect the laid-out size.
-        // At 800px the whole sentence fits on one row (~20px high).
-        // The full-app E2E test `full_app_inline_link_stays_on_same_row_when_width_allows`
-        // provides deeper coverage of this behavior.
-        let container = harness.get_by(|node| {
-            node.raw_bounds()
-                .is_some_and(|b| b.width() > 100.0 && b.height() > 0.0)
-        });
+        let container = harness.get_by_role_and_label(
+            egui::accesskit::Role::Label,
+            "Renderer-level in markdown_ui.rs: keep this inline.",
+        );
         let bounds = container.raw_bounds().expect("container bounds");
         assert!(
             bounds.height() < 40.0,
             "paragraph with inline link should render on a single row at 800px, got height {}",
             bounds.height()
+        );
+    }
+
+    #[test]
+    fn inline_link_exposes_accessible_link_role() {
+        let markdown = "Open [markdown_ui.rs](https://example.com) from the renderer.";
+        let parsed = ParsedMarkdown::parse(markdown);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(500.0, 200.0))
+            .build_ui(move |ui| {
+                ui.allocate_ui(egui::vec2(500.0, 200.0), |ui| {
+                    render_assistant_message(&parsed.elements, None, &parsed.source, ui);
+                });
+            });
+
+        harness.run();
+
+        harness.get_by_role_and_label(egui::accesskit::Role::Link, "markdown_ui.rs");
+    }
+
+    #[test]
+    fn inline_link_hit_testing_uses_character_ranges_after_unicode_prefix() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let prefix = "Prefix: Привет ";
+        let link_label = "markdown_ui.rs";
+
+        let cursor_offset = Rc::new(RefCell::new(None));
+        let cursor_offset_out = cursor_offset.clone();
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(500.0, 100.0))
+            .build_ui(move |ui| {
+                let mut job = LayoutJob::default();
+                let _ = append_wrapped_text(&mut job, prefix, TextFormat::default());
+                let char_range = append_wrapped_text(&mut job, link_label, TextFormat::default());
+                job.wrap.max_width = 500.0;
+
+                let galley = ui.fonts(|fonts| fonts.layout_job(job));
+                let click_pos = galley
+                    .pos_from_pcursor(egui::epaint::text::cursor::PCursor {
+                        paragraph: 0,
+                        offset: char_range.start,
+                        prefer_next_row: false,
+                    })
+                    .center()
+                    .to_vec2();
+                *cursor_offset_out.borrow_mut() =
+                    Some((galley.cursor_from_pos(click_pos).pcursor.offset, char_range));
+            });
+        harness.run();
+
+        let (cursor_offset, char_range) = cursor_offset
+            .borrow()
+            .clone()
+            .expect("cursor offset should be captured");
+        let old_byte_range = prefix.len()..prefix.len() + link_label.len();
+        assert!(
+            !old_byte_range.contains(&cursor_offset),
+            "cursor offset {cursor_offset} should not match the old byte range {old_byte_range:?}",
+        );
+        assert!(
+            char_range.contains(&cursor_offset),
+            "cursor offset {cursor_offset} should fall inside the character range {char_range:?}",
         );
     }
 
