@@ -366,6 +366,7 @@ impl CoordinationData {
 
         let mut eose_delta = IngestExecutor::new(self, subs).execute(plan);
         eose_delta.invalidated_sub_ids = self.drain_tracker_invalidations();
+        eose_delta.normalize();
         IngestSessionResult {
             eose_delta,
             has_pending_eose: !self.eose_queue.is_empty(),
@@ -544,6 +545,7 @@ impl CoordinationData {
         transparent.unsubscribe(id);
     }
 
+    /// Sends one outbound event message through this relay's broadcast path.
     pub fn send_event(&mut self, msg: EventClientMessage) {
         BroadcastRelay::websocket(self.websocket.as_mut(), &mut self.broadcast_cache)
             .broadcast(msg);
@@ -710,6 +712,8 @@ impl CoordinationData {
         std::mem::take(&mut self.pending_tracker_invalidations)
     }
 
+    /// Returns the current request status for `id` if this coordinator still
+    /// owns a relay leg for that subscription.
     pub fn req_status(&self, id: &OutboxSubId) -> Option<RelayReqStatus> {
         match self.coordination.get(id)? {
             RelayType::Compaction => self.compaction_data.req_status(id),
@@ -773,28 +777,7 @@ impl CoordinationData {
                 websocket.conn.set_status(RelayStatus::Disconnected);
                 None
             }
-            WsEvent::Message(ws_message) => match ws_message {
-                #[cfg(not(target_arch = "wasm32"))]
-                WsMessage::Ping(bs) => {
-                    websocket.conn.sender.send(WsMessage::Pong(bs.clone()));
-                    None
-                }
-                WsMessage::Text(text) => {
-                    tracing::trace!("relay {} received text: {}", websocket.conn.url, text);
-                    match RelayMessage::from_json(text) {
-                        Ok(msg) => Some(msg),
-                        Err(err) => {
-                            tracing::error!(
-                                "relay {} message decode error: {:?}",
-                                websocket.conn.url,
-                                err
-                            );
-                            None
-                        }
-                    }
-                }
-                _ => None,
-            },
+            WsEvent::Message(ws_message) => handle_websocket_message(websocket, ws_message),
         };
 
         let mut resp = RecvResponse::received();
@@ -838,6 +821,40 @@ impl CoordinationData {
     }
 }
 
+/// Handles one raw websocket frame and returns a decoded relay message when the
+/// frame carries Nostr payload data.
+fn handle_websocket_message<'a>(
+    websocket: &mut WebsocketRelay,
+    ws_message: &'a WsMessage,
+) -> Option<RelayMessage<'a>> {
+    match ws_message {
+        #[cfg(not(target_arch = "wasm32"))]
+        WsMessage::Ping(bs) => {
+            websocket.conn.sender.send(WsMessage::Pong(bs.clone()));
+            None
+        }
+        WsMessage::Pong(_) => {
+            websocket.last_pong = std::time::Instant::now();
+            None
+        }
+        WsMessage::Text(text) => {
+            tracing::trace!("relay {} received text: {}", websocket.conn.url, text);
+            match RelayMessage::from_json(text) {
+                Ok(msg) => Some(msg),
+                Err(err) => {
+                    tracing::error!(
+                        "relay {} message decode error: {:?}",
+                        websocket.conn.url,
+                        err
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 /// Non-blocking receive outcome for one `CoordinationData::try_recv` poll.
 pub struct RecvResponse {
@@ -850,6 +867,8 @@ pub struct RecvResponse {
 }
 
 impl RecvResponse {
+    /// Returns the baseline outcome for a poll that consumed one websocket
+    /// frame but has not yet classified any relay-side effects.
     pub fn received() -> Self {
         RecvResponse {
             received_event: true,
@@ -867,8 +886,26 @@ pub struct IngestSessionResult {
 
 #[derive(Default)]
 pub struct RelayEoseDelta {
+    /// Subscriptions that reached EOSE for the current relay-query epoch.
     pub sub_ids: HashSet<OutboxSubId>,
+    /// Subscriptions whose prior relay-query epoch was reset during this ingest.
+    ///
+    /// Invalidation wins over any stale queued EOSE resolved earlier in the same
+    /// ingest, so this set must remain disjoint from `sub_ids`.
     pub invalidated_sub_ids: HashSet<OutboxSubId>,
+}
+
+impl RelayEoseDelta {
+    /// Removes stale queued EOSE completions for subscriptions invalidated in
+    /// the same coordinator ingest.
+    fn normalize(&mut self) {
+        self.sub_ids
+            .retain(|id| !self.invalidated_sub_ids.contains(id));
+        debug_assert!(
+            self.sub_ids.is_disjoint(&self.invalidated_sub_ids),
+            "RelayEoseDelta must not contain overlapping EOSE and invalidation IDs"
+        );
+    }
 }
 
 fn handle_relay_open(
@@ -919,7 +956,10 @@ impl CoordinationSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::test_utils::{insert_sub_with_policy, MockWakeup};
+    use crate::relay::{
+        test_utils::{insert_sub_with_policy, MockWakeup},
+        WebsocketConn,
+    };
 
     /// Returns the task held for `id`, panicking when no matching task exists.
     #[track_caller]
@@ -1051,6 +1091,22 @@ mod tests {
         let delta = RelayEoseDelta::default();
         assert!(delta.sub_ids.is_empty());
         assert!(delta.invalidated_sub_ids.is_empty());
+    }
+
+    #[test]
+    fn relay_eose_delta_normalize_drops_invalidated_stale_eose() {
+        let keep = OutboxSubId(1);
+        let overlap = OutboxSubId(2);
+        let mut delta = RelayEoseDelta {
+            sub_ids: HashSet::from([keep, overlap]),
+            invalidated_sub_ids: HashSet::from([overlap]),
+        };
+
+        delta.normalize();
+
+        assert_eq!(delta.sub_ids, HashSet::from([keep]));
+        assert_eq!(delta.invalidated_sub_ids, HashSet::from([overlap]));
+        assert!(delta.sub_ids.is_disjoint(&delta.invalidated_sub_ids));
     }
 
     fn coordinator_with_limit(maximum_subs: usize) -> CoordinationData {
@@ -1562,5 +1618,24 @@ mod tests {
             .compaction_data
             .req_status(&id_preferred)
             .is_none());
+    }
+
+    #[test]
+    fn websocket_pong_refreshes_last_pong() {
+        let mut websocket = WebsocketRelay::new(
+            WebsocketConn::from_wakeup(
+                nostr::RelayUrl::parse("wss://relay-coordinator-pong.example.com").unwrap(),
+                MockWakeup::default(),
+            )
+            .unwrap(),
+        );
+        websocket.last_pong = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let before = websocket.last_pong;
+
+        let pong = WsMessage::Pong(vec![]);
+        let msg = handle_websocket_message(&mut websocket, &pong);
+
+        assert!(msg.is_none());
+        assert!(websocket.last_pong > before);
     }
 }

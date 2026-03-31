@@ -77,6 +77,56 @@ pub(super) struct EoseTracker {
 }
 
 impl EoseTracker {
+    /// Reconciles one subscription's cached completion state against its
+    /// current relay set and queues a ready transition on `false -> true`.
+    fn reconcile_sub(&mut self, subs: &OutboxSubscriptions, id: OutboxSubId) {
+        let Some(sub) = subs.get(&id) else {
+            self.remove_sub(&id);
+            return;
+        };
+
+        let was_fully_eosed = self.fully_eosed.contains(&id);
+        let now_fully_eosed = {
+            let Some(relays) = self.by_sub.get_mut(&id) else {
+                self.fully_eosed.remove(&id);
+                self.ready_fully_eosed.remove(&id);
+                return;
+            };
+
+            relays.retain(|relay| sub.relays.contains(relay));
+            !sub.relays.is_empty() && relays.len() == sub.relays.len()
+        };
+
+        if self.by_sub.get(&id).is_some_and(HashSet::is_empty) {
+            self.by_sub.remove(&id);
+        }
+
+        if now_fully_eosed {
+            self.fully_eosed.insert(id);
+            if !was_fully_eosed {
+                self.ready_fully_eosed.insert(id);
+            }
+            return;
+        }
+
+        self.fully_eosed.remove(&id);
+        self.ready_fully_eosed.remove(&id);
+    }
+
+    /// Computes full-EOSE status from the tracker source of truth.
+    fn computed_fully_eosed(&self, subs: &OutboxSubscriptions, id: &OutboxSubId) -> bool {
+        let Some(sub) = subs.get(id) else {
+            return false;
+        };
+        if sub.relays.is_empty() {
+            return false;
+        }
+
+        self.by_sub
+            .get(id)
+            .is_some_and(|relays| sub.relays.iter().all(|relay| relays.contains(relay)))
+    }
+
     /// Marks one relay as having pending EOSE entries to ingest.
     pub(super) fn note_relay_pending(&mut self, relay: &NormRelayUrl) {
         if !self.pending_relays.contains(relay) {
@@ -117,10 +167,7 @@ impl EoseTracker {
             return;
         }
 
-        if eosed_relays.len() == sub.relays.len() {
-            self.fully_eosed.insert(id);
-            self.ready_fully_eosed.insert(id);
-        }
+        self.reconcile_sub(subs, id);
     }
 
     /// Returns and clears fully-EOSE subscriptions pending post-processing.
@@ -128,17 +175,19 @@ impl EoseTracker {
         std::mem::take(&mut self.ready_fully_eosed)
     }
 
-    /// Clears one relay leg EOSE mark after subscribe/unsubscribe restaging.
-    pub(super) fn clear_relay(&mut self, relay: &NormRelayUrl, id: OutboxSubId) {
+    /// Invalidates one relay leg after subscribe/unsubscribe restaging and
+    /// reconciles the subscription against its current relay set.
+    pub(super) fn invalidate_relay_leg(
+        &mut self,
+        relay: &NormRelayUrl,
+        id: OutboxSubId,
+        subs: &OutboxSubscriptions,
+    ) {
         let Some(relays) = self.by_sub.get_mut(&id) else {
             return;
         };
         relays.remove(relay);
-        if relays.is_empty() {
-            self.by_sub.remove(&id);
-        }
-        self.fully_eosed.remove(&id);
-        self.ready_fully_eosed.remove(&id);
+        self.reconcile_sub(subs, id);
     }
 
     /// Removes all EOSE state for a subscription when it is dropped.
@@ -150,14 +199,13 @@ impl EoseTracker {
 
     /// True when every currently routed relay leg has reached EOSE.
     pub(super) fn is_fully_eosed(&self, subs: &OutboxSubscriptions, id: &OutboxSubId) -> bool {
-        let Some(sub) = subs.get(id) else {
-            return false;
-        };
-        if sub.relays.is_empty() {
-            return false;
-        }
-
-        self.fully_eosed.contains(id)
+        let computed = self.computed_fully_eosed(subs, id);
+        debug_assert_eq!(
+            self.fully_eosed.contains(id),
+            computed,
+            "fully_eosed cache must match current relay-set reconciliation"
+        );
+        computed
     }
 
     /// True once at least one relay leg has reached EOSE for this subscription.

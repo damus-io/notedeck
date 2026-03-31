@@ -11,6 +11,9 @@ use crate::{
 };
 
 /// TransparentData tracks the outstanding transparent REQs and their metadata.
+///
+/// One `OutboxSubId` may be queued for retry, active on the relay, or absent.
+/// It must never remain both queued and active at the same time.
 #[derive(Default)]
 pub struct TransparentData {
     request_to_sid: HashMap<OutboxSubId, RelayReqId>,
@@ -112,6 +115,8 @@ impl<'a> TransparentRelay<'a> {
     /// Try to place this subscription on transparent without mutating the retry queue.
     pub fn try_subscribe(&mut self, view: SubscriptionView) -> TransparentPlaceResult {
         let req_id = view.id;
+        self.data.queue.cancel(req_id);
+
         if let Some(existing_sid) = self.data.request_to_sid.get(&req_id).cloned() {
             if let Some(sub_data) = self.data.sid_status.get_mut(&existing_sid) {
                 // we're replacing the existing sub with new filters
@@ -148,8 +153,9 @@ impl<'a> TransparentRelay<'a> {
     }
 
     pub fn unsubscribe(&mut self, req_id: OutboxSubId) {
+        self.data.queue.cancel(req_id);
+
         let Some(sid) = self.data.request_to_sid.remove(&req_id) else {
-            self.data.queue.cancel(req_id);
             return;
         };
 
@@ -481,6 +487,61 @@ mod tests {
         // Should now be active
         assert!(data.queue.is_empty());
         assert!(data.contains(&OutboxSubId(0)));
+    }
+
+    #[test]
+    fn transparent_relay_try_subscribe_clears_stale_queued_retry() {
+        let mut data = TransparentData::default();
+        let mut guardian = SubPassGuardian::new(1);
+        let subs = create_subs_with_filter(OutboxSubId(0), trivial_filter());
+
+        {
+            let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
+            relay.queue_subscribe(OutboxSubId(0));
+        }
+
+        assert_eq!(data.queue.len(), 1);
+
+        {
+            let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
+            let placed = relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            assert!(matches!(placed, TransparentPlaceResult::Placed));
+        }
+
+        assert!(
+            data.queue.is_empty(),
+            "successful placement must consume any stale queued retry"
+        );
+        assert!(data.contains(&OutboxSubId(0)));
+    }
+
+    #[test]
+    fn transparent_relay_unsubscribe_clears_stale_queued_retry_for_active_sub() {
+        let mut data = TransparentData::default();
+        let mut guardian = SubPassGuardian::new(1);
+        let subs = create_subs_with_filter(OutboxSubId(0), trivial_filter());
+
+        {
+            let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
+            let placed = relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap());
+            assert!(matches!(placed, TransparentPlaceResult::Placed));
+            relay.queue_subscribe(OutboxSubId(0));
+        }
+
+        assert!(data.contains(&OutboxSubId(0)));
+        assert_eq!(data.queue.len(), 1);
+
+        {
+            let mut relay = TransparentRelay::new(None, &mut data, &mut guardian);
+            relay.unsubscribe(OutboxSubId(0));
+        }
+
+        assert!(!data.contains(&OutboxSubId(0)));
+        assert!(
+            data.queue.is_empty(),
+            "removing a transparent sub must clear any stale queued retry"
+        );
+        assert_eq!(guardian.available_passes(), 1);
     }
 
     #[test]

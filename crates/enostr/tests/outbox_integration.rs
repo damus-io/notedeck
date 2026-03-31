@@ -607,24 +607,12 @@ async fn oneshot_subscription_removed_after_eose() {
         "oneshot subscription should exist before EOSE"
     );
 
-    // Wait for EOSE
-    let got_eose = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
-        pool.has_eose(&id)
+    // Receive-path EOSE processing should remove the oneshot immediately.
+    let removed = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        pool.filters(&id).is_none() && pool.status(&id).is_empty()
     })
     .await;
-    assert!(got_eose, "should receive EOSE for oneshot subscription");
-
-    // Trigger EOSE processing by starting an empty session
-    {
-        let _ = pool.start_session(MockWakeup::default());
-    }
-
-    // Verify subscription was removed
-    let filters_after = pool.filters(&id);
-    assert!(
-        filters_after.is_none(),
-        "oneshot subscription should be removed after EOSE"
-    );
+    assert!(removed, "oneshot subscription should be removed after EOSE");
 }
 
 /// Oneshot subscriptions across multiple relays should fully clean up after all EOSEs.
@@ -653,23 +641,13 @@ async fn oneshot_multi_relay_fully_removed_after_eose() {
         id
     };
 
-    let got_all_eose = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
-        pool.all_have_eose(&id)
+    let removed = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+        pool.filters(&id).is_none() && pool.status(&id).is_empty()
     })
     .await;
-    assert!(got_all_eose, "oneshot should receive EOSE from all relays");
-
-    {
-        let _ = pool.start_session(MockWakeup::default());
-    }
-
     assert!(
-        pool.filters(&id).is_none(),
-        "oneshot metadata should be removed after EOSE processing"
-    );
-    assert!(
-        pool.status(&id).is_empty(),
-        "oneshot should be fully unsubscribed on all relays after EOSE processing"
+        removed,
+        "oneshot should be fully removed on all relays after all EOSE processing"
     );
 }
 
