@@ -83,6 +83,22 @@ impl OutboxPool {
         }
     }
 
+    /// Drains tracker-ready full-EOSE completions and applies their derived
+    /// subscription side effects immediately.
+    fn flush_fully_eosed_effects(&mut self) {
+        let fully_eosed = self.eose_tracker.drain_fully_eosed();
+        if fully_eosed.is_empty() {
+            return;
+        }
+
+        let effects = plan_fully_eosed_effects(&self.subs, fully_eosed, unix_now_secs());
+        if effects.is_empty() {
+            return;
+        }
+
+        self.apply_fully_eosed_effects(effects);
+    }
+
     #[profiling::function]
     fn ingest_session<W>(&mut self, session: OutboxSession, wakeup: &W)
     where
@@ -94,20 +110,11 @@ impl OutboxPool {
             &session_delta.changed_legs,
             &session_delta.removed_subs,
         ));
-        let mut fully_eosed = self.eose_tracker.drain_fully_eosed();
+        self.flush_fully_eosed_effects();
         if !session_delta.sessions.is_empty() {
             self.process_relay_work(session_delta.sessions, wakeup);
-            fully_eosed.extend(self.eose_tracker.drain_fully_eosed());
+            self.flush_fully_eosed_effects();
         }
-        if fully_eosed.is_empty() {
-            return;
-        }
-
-        let effects = plan_fully_eosed_effects(&self.subs, fully_eosed, unix_now_secs());
-        if effects.is_empty() {
-            return;
-        }
-        self.apply_fully_eosed_effects(effects);
     }
 
     /// Translates a session's queued tasks into per-relay coordination sessions.
@@ -217,7 +224,8 @@ impl OutboxPool {
     /// Applies tracker invalidation changes prepared from the latest session delta.
     fn apply_tracker_invalidation(&mut self, plan: TrackerInvalidationPlan<'_>) {
         for leg in plan.changed_legs {
-            self.eose_tracker.clear_relay(&leg.relay, leg.sub_id);
+            self.eose_tracker
+                .invalidate_relay_leg(&leg.relay, leg.sub_id, &self.subs);
         }
         for id in plan.removed_subs {
             self.eose_tracker.remove_sub(id);
@@ -307,7 +315,8 @@ impl OutboxPool {
         invalidated_sub_ids: HashSet<OutboxSubId>,
     ) {
         for id in invalidated_sub_ids {
-            self.eose_tracker.clear_relay(relay_id, id);
+            self.eose_tracker
+                .invalidate_relay_leg(relay_id, id, &self.subs);
         }
     }
 
@@ -623,15 +632,13 @@ impl OutboxPool {
     /// Processes relay-local EOSE queues accumulated during receive polling.
     fn process_pending_eose_relays(&mut self) {
         let relays = self.eose_tracker.drain_pending_relays();
-        if relays.is_empty() {
-            return;
-        }
-
         for relay_id in relays {
             let has_pending = self.ingest_relay_session(&relay_id, CoordinationSession::default());
             self.eose_tracker
                 .set_relay_pending_state(&relay_id, has_pending);
         }
+
+        self.flush_fully_eosed_effects();
     }
 }
 
@@ -828,7 +835,7 @@ mod tests {
 
     /// Clearing one routed relay should invalidate cached fully-EOSE completion for that sub.
     #[test]
-    fn eose_tracker_clear_relay_invalidates_cached_completion() {
+    fn eose_tracker_invalidate_relay_leg_invalidates_cached_completion() {
         let relay_a = NormRelayUrl::new("wss://relay-eose-clear-a.example.com").unwrap();
         let relay_b = NormRelayUrl::new("wss://relay-eose-clear-b.example.com").unwrap();
         let id = OutboxSubId(2);
@@ -853,11 +860,88 @@ mod tests {
         tracker.mark_relay_eose(&relay_b, id, &subs);
         assert!(tracker.is_fully_eosed(&subs, &id));
 
-        tracker.clear_relay(&relay_a, id);
+        tracker.invalidate_relay_leg(&relay_a, id, &subs);
         assert!(
             !tracker.is_fully_eosed(&subs, &id),
             "clearing one routed relay must drop cached completion"
         );
+    }
+
+    /// Shrinking a subscription's relay set can complete it immediately if all
+    /// remaining relays had already reached EOSE.
+    #[test]
+    fn eose_tracker_reconciles_completion_when_relay_set_shrinks() {
+        let relay_a = NormRelayUrl::new("wss://relay-eose-shrink-a.example.com").unwrap();
+        let relay_b = NormRelayUrl::new("wss://relay-eose-shrink-b.example.com").unwrap();
+        let id = OutboxSubId(22);
+        let mut relays = HashSet::new();
+        relays.insert(relay_a.clone());
+        relays.insert(relay_b.clone());
+
+        let mut subs = OutboxSubscriptions::default();
+        subs.new_subscription(
+            id,
+            SubscribeTask {
+                filters: trivial_filter(),
+                relays: RelayUrlPkgs::new(relays),
+            },
+            false,
+        );
+        let mut tracker = EoseTracker::default();
+
+        tracker.mark_relay_eose(&relay_a, id, &subs);
+        assert!(!tracker.is_fully_eosed(&subs, &id));
+
+        subs.get_mut(&id).unwrap().relays.remove(&relay_b);
+        tracker.invalidate_relay_leg(&relay_b, id, &subs);
+
+        assert!(tracker.is_fully_eosed(&subs, &id));
+        assert!(
+            tracker.drain_fully_eosed().contains(&id),
+            "shrink-induced completion must queue ready_fully_eosed"
+        );
+    }
+
+    /// Expanding a subscription's relay set should drop full completion until
+    /// the newly added relay also reaches EOSE.
+    #[test]
+    fn eose_tracker_reconciles_incomplete_when_relay_set_expands() {
+        let relay_a = NormRelayUrl::new("wss://relay-eose-expand-a.example.com").unwrap();
+        let relay_b = NormRelayUrl::new("wss://relay-eose-expand-b.example.com").unwrap();
+        let id = OutboxSubId(23);
+        let mut relays = HashSet::new();
+        relays.insert(relay_a.clone());
+
+        let mut subs = OutboxSubscriptions::default();
+        subs.new_subscription(
+            id,
+            SubscribeTask {
+                filters: trivial_filter(),
+                relays: RelayUrlPkgs::new(relays),
+            },
+            false,
+        );
+        let mut tracker = EoseTracker::default();
+
+        tracker.mark_relay_eose(&relay_a, id, &subs);
+        assert!(tracker.is_fully_eosed(&subs, &id));
+        assert!(tracker.drain_fully_eosed().contains(&id));
+
+        subs.get_mut(&id).unwrap().relays.insert(relay_b.clone());
+        tracker.invalidate_relay_leg(&relay_b, id, &subs);
+
+        assert!(
+            !tracker.is_fully_eosed(&subs, &id),
+            "adding a new relay must invalidate full completion until it EOSEs"
+        );
+        assert!(
+            !tracker.drain_fully_eosed().contains(&id),
+            "expansion must not queue a ready transition"
+        );
+
+        tracker.mark_relay_eose(&relay_b, id, &subs);
+        assert!(tracker.is_fully_eosed(&subs, &id));
+        assert!(tracker.drain_fully_eosed().contains(&id));
     }
 
     /// Coordinator-reported relay-leg invalidations must clear stale durable
@@ -892,6 +976,35 @@ mod tests {
         assert!(
             !pool.all_have_eose(&id),
             "a fresh internally issued REQ must clear prior durable EOSE state"
+        );
+    }
+
+    /// Receive-driven EOSE processing must apply ready fully-EOSE effects in
+    /// the same frame, including oneshot cleanup.
+    #[test]
+    fn process_pending_eose_relays_applies_ready_fully_eosed_effects() {
+        let relay = NormRelayUrl::new("wss://relay-eose-pending-effects.example.com").unwrap();
+        let id = OutboxSubId(24);
+        let mut relays = HashSet::new();
+        relays.insert(relay.clone());
+
+        let mut pool = OutboxPool::default();
+        pool.subs.new_subscription(
+            id,
+            SubscribeTask {
+                filters: trivial_filter(),
+                relays: RelayUrlPkgs::new(relays),
+            },
+            true,
+        );
+
+        pool.eose_tracker.mark_relay_eose(&relay, id, &pool.subs);
+        pool.eose_tracker.note_relay_pending(&relay);
+        pool.process_pending_eose_relays();
+
+        assert!(
+            pool.subs.get(&id).is_none(),
+            "oneshot should be removed as soon as receive-path EOSE processing completes"
         );
     }
 
@@ -1113,9 +1226,9 @@ mod tests {
         ));
     }
 
-    /// Oneshot requests route to transparent mode by default.
+    /// Oneshot requests use the default prefer-dedicated routing policy.
     #[test]
-    fn oneshot_routes_to_transparent() {
+    fn oneshot_routes_to_prefer_dedicated() {
         let mut pool = OutboxPool::default();
         let relay = NormRelayUrl::new("wss://relay-oneshot.example.com").unwrap();
         let mut relays = HashSet::new();
