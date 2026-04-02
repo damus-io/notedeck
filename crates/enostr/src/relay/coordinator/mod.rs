@@ -721,8 +721,8 @@ impl CoordinationData {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn effective_route(&self, id: &OutboxSubId) -> Option<RelayType> {
+    /// Returns which relay engine currently owns this subscription, if any.
+    pub(crate) fn route_type(&self, id: &OutboxSubId) -> Option<RelayType> {
         self.coordination.get(id).copied()
     }
 
@@ -1186,11 +1186,11 @@ mod tests {
         coordinator.ingest_session(&subs, seed);
 
         assert_eq!(
-            coordinator.effective_route(&id_default),
+            coordinator.route_type(&id_default),
             Some(RelayType::Transparent)
         );
         assert_eq!(
-            coordinator.effective_route(&id_preferred),
+            coordinator.route_type(&id_preferred),
             Some(RelayType::Transparent)
         );
 
@@ -1199,15 +1199,15 @@ mod tests {
         coordinator.ingest_session(&subs, second);
 
         assert_eq!(
-            coordinator.effective_route(&id_default),
+            coordinator.route_type(&id_default),
             Some(RelayType::Compaction)
         );
         assert_eq!(
-            coordinator.effective_route(&id_preferred),
+            coordinator.route_type(&id_preferred),
             Some(RelayType::Transparent)
         );
         assert_eq!(
-            coordinator.effective_route(&id_incoming),
+            coordinator.route_type(&id_incoming),
             Some(RelayType::Transparent)
         );
         assert!(!coordinator.transparent_data.contains(&id_default));
@@ -1237,14 +1237,8 @@ mod tests {
         second.subscribe(id_b, RelayRoutingPreference::PreferDedicated);
         coordinator.ingest_session(&subs, second);
 
-        assert_eq!(
-            coordinator.effective_route(&id_a),
-            Some(RelayType::Transparent)
-        );
-        assert_eq!(
-            coordinator.effective_route(&id_b),
-            Some(RelayType::Compaction)
-        );
+        assert_eq!(coordinator.route_type(&id_a), Some(RelayType::Transparent));
+        assert_eq!(coordinator.route_type(&id_b), Some(RelayType::Compaction));
         assert!(coordinator.transparent_data.contains(&id_a));
         assert!(!coordinator.transparent_data.contains(&id_b));
         assert!(coordinator.compaction_data.req_status(&id_a).is_none());
@@ -1269,14 +1263,8 @@ mod tests {
         second.subscribe(id_b, RelayRoutingPreference::RequireDedicated);
         coordinator.ingest_session(&subs, second);
 
-        assert_eq!(
-            coordinator.effective_route(&id_a),
-            Some(RelayType::Transparent)
-        );
-        assert_eq!(
-            coordinator.effective_route(&id_b),
-            Some(RelayType::Transparent)
-        );
+        assert_eq!(coordinator.route_type(&id_a), Some(RelayType::Transparent));
+        assert_eq!(coordinator.route_type(&id_b), Some(RelayType::Transparent));
         assert!(coordinator.transparent_data.contains(&id_a));
         assert!(!coordinator.transparent_data.contains(&id_b));
         assert!(coordinator.compaction_data.req_status(&id_b).is_none());
@@ -1285,11 +1273,8 @@ mod tests {
         third.unsubscribe(id_a);
         coordinator.ingest_session(&subs, third);
 
-        assert_eq!(coordinator.effective_route(&id_a), None);
-        assert_eq!(
-            coordinator.effective_route(&id_b),
-            Some(RelayType::Transparent)
-        );
+        assert_eq!(coordinator.route_type(&id_a), None);
+        assert_eq!(coordinator.route_type(&id_b), Some(RelayType::Transparent));
         assert!(coordinator.transparent_data.contains(&id_b));
     }
 
@@ -1316,11 +1301,11 @@ mod tests {
         coordinator.ingest_session(&subs, second);
 
         assert_eq!(
-            coordinator.effective_route(&id_default),
+            coordinator.route_type(&id_default),
             Some(RelayType::Compaction)
         );
         assert_eq!(
-            coordinator.effective_route(&id_required),
+            coordinator.route_type(&id_required),
             Some(RelayType::Transparent)
         );
         assert!(!coordinator.transparent_data.contains(&id_default));
@@ -1351,7 +1336,7 @@ mod tests {
         coordinator.ingest_session(&subs, second);
 
         assert_eq!(
-            coordinator.effective_route(&id_incoming),
+            coordinator.route_type(&id_incoming),
             Some(RelayType::Compaction)
         );
         assert!(!coordinator.transparent_data.contains(&id_incoming));
@@ -1395,17 +1380,14 @@ mod tests {
             2
         );
         assert_eq!(
-            [
-                coordinator.effective_route(&id_a),
-                coordinator.effective_route(&id_b)
-            ]
-            .into_iter()
-            .filter(|route| *route == Some(RelayType::Compaction))
-            .count(),
+            [coordinator.route_type(&id_a), coordinator.route_type(&id_b)]
+                .into_iter()
+                .filter(|route| *route == Some(RelayType::Compaction))
+                .count(),
             0
         );
         assert_eq!(
-            coordinator.effective_route(&id_compaction),
+            coordinator.route_type(&id_compaction),
             Some(RelayType::Compaction)
         );
         assert_eq!(coordinator.transparent_data.queued_len_for_test(), 0);
@@ -1434,13 +1416,10 @@ mod tests {
         coordinator.set_max_size(&subs, 2);
 
         assert_eq!(
-            [
-                coordinator.effective_route(&id_a),
-                coordinator.effective_route(&id_b)
-            ]
-            .into_iter()
-            .filter(|route| *route == Some(RelayType::Transparent))
-            .count(),
+            [coordinator.route_type(&id_a), coordinator.route_type(&id_b)]
+                .into_iter()
+                .filter(|route| *route == Some(RelayType::Transparent))
+                .count(),
             2
         );
         assert_eq!(coordinator.compaction_data.num_subs(), 0);
@@ -1478,12 +1457,12 @@ mod tests {
         coordinator.set_max_size(&subs, 2);
 
         assert_eq!(
-            coordinator.effective_route(&id_required),
+            coordinator.route_type(&id_required),
             Some(RelayType::Transparent)
         );
         assert!(coordinator.transparent_data.contains(&id_required));
         assert_eq!(
-            coordinator.effective_route(&id_no_preference),
+            coordinator.route_type(&id_no_preference),
             Some(RelayType::Compaction)
         );
         assert!(!coordinator.transparent_data.contains(&id_no_preference));
@@ -1505,13 +1484,10 @@ mod tests {
         coordinator.set_max_size(&subs, 1);
 
         assert_eq!(
-            [
-                coordinator.effective_route(&id_a),
-                coordinator.effective_route(&id_b)
-            ]
-            .into_iter()
-            .filter(|route| *route == Some(RelayType::Transparent))
-            .count(),
+            [coordinator.route_type(&id_a), coordinator.route_type(&id_b)]
+                .into_iter()
+                .filter(|route| *route == Some(RelayType::Transparent))
+                .count(),
             2
         );
         assert_eq!(coordinator.transparent_data.num_subs(), 1);
@@ -1542,9 +1518,9 @@ mod tests {
         session.unsubscribe(id_transparent);
         coordinator.ingest_session(&subs, session);
 
-        assert_eq!(coordinator.effective_route(&id_transparent), None);
+        assert_eq!(coordinator.route_type(&id_transparent), None);
         assert_eq!(
-            coordinator.effective_route(&id_preferred),
+            coordinator.route_type(&id_preferred),
             Some(RelayType::Transparent)
         );
         assert!(coordinator.transparent_data.contains(&id_preferred));
@@ -1578,9 +1554,9 @@ mod tests {
         session.unsubscribe(id_transparent);
         coordinator.ingest_session(&subs, session);
 
-        assert_eq!(coordinator.effective_route(&id_transparent), None);
+        assert_eq!(coordinator.route_type(&id_transparent), None);
         assert_eq!(
-            coordinator.effective_route(&id_no_preference),
+            coordinator.route_type(&id_no_preference),
             Some(RelayType::Compaction)
         );
         assert!(!coordinator.transparent_data.contains(&id_no_preference));
@@ -1603,14 +1579,14 @@ mod tests {
         let mut coordinator = coordinator_with_limit(2);
         seed_compaction_route(&mut coordinator, &subs, id_preferred);
         assert_eq!(
-            coordinator.effective_route(&id_preferred),
+            coordinator.route_type(&id_preferred),
             Some(RelayType::Compaction)
         );
 
         coordinator.set_max_size(&subs, 3);
 
         assert_eq!(
-            coordinator.effective_route(&id_preferred),
+            coordinator.route_type(&id_preferred),
             Some(RelayType::Transparent)
         );
         assert!(coordinator.transparent_data.contains(&id_preferred));

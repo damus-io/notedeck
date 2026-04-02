@@ -26,6 +26,9 @@ pub(super) fn plan_tracker_invalidation<'a>(
 }
 
 /// Planned post-EOSE effects derived from fully completed subscription IDs.
+///
+/// Route-aware callers decide which fully completed subscriptions are safe to
+/// optimize with `since`; the tracker layer stays ignorant of routing mode.
 pub(super) struct FullyEosedEffectsPlan {
     pub(super) remove_oneshots: HashSet<OutboxSubId>,
     pub(super) optimize_since: HashSet<OutboxSubId>,
@@ -35,35 +38,6 @@ pub(super) struct FullyEosedEffectsPlan {
 impl FullyEosedEffectsPlan {
     pub(super) fn is_empty(&self) -> bool {
         self.remove_oneshots.is_empty() && self.optimize_since.is_empty()
-    }
-}
-
-/// Pure planning step that classifies fully-EOSE IDs into concrete side effects.
-pub(super) fn plan_fully_eosed_effects(
-    subs: &OutboxSubscriptions,
-    ids: HashSet<OutboxSubId>,
-    now: Option<u64>,
-) -> FullyEosedEffectsPlan {
-    let mut remove_oneshots = HashSet::new();
-    let mut optimize_since = HashSet::new();
-
-    for id in ids {
-        if subs.is_oneshot(&id) {
-            remove_oneshots.insert(id);
-            continue;
-        }
-
-        if subs.get(&id).is_some() {
-            optimize_since.insert(id);
-        }
-    }
-
-    let optimize_since_at = if optimize_since.is_empty() { None } else { now };
-
-    FullyEosedEffectsPlan {
-        remove_oneshots,
-        optimize_since,
-        optimize_since_at,
     }
 }
 
