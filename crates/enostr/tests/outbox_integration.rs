@@ -657,14 +657,13 @@ fn filter_has_since(filter: &Filter) -> bool {
     filter.since().is_some()
 }
 
-/// After EOSE is received, filters should have `since` applied for future re-subscriptions.
+/// After EOSE is received on a dedicated subscription, filters should keep
+/// their original shape; `since` optimization is reserved for compaction.
 #[tokio::test]
-async fn eose_applies_since_to_filters() {
+async fn dedicated_eose_does_not_apply_since_to_filters() {
     let (_relay, url) = create_test_relay().await;
-
     let mut pool = OutboxPool::default();
 
-    // Subscribe with transparent mode (faster EOSE)
     let mut urls = HashSet::new();
     urls.insert(url.clone());
     let mut url_pkgs = RelayUrlPkgs::new(urls);
@@ -678,7 +677,6 @@ async fn eose_applies_since_to_filters() {
         )
     };
 
-    // Verify filters don't have since initially
     let initial_filters = pool.filters(&id).expect("subscription exists");
     assert!(
         !filter_has_since(&initial_filters[0]),
@@ -695,12 +693,12 @@ async fn eose_applies_since_to_filters() {
         let _ = pool.start_session(MockWakeup::default());
     }
 
-    // After EOSE processing, filters should have since applied
+    // After EOSE processing, dedicated filters should remain unchanged.
     let optimized_filters = pool.filters(&id).expect("subscription still exists");
 
     assert!(
-        filter_has_since(&optimized_filters[0]),
-        "filters should have since after EOSE"
+        !filter_has_since(&optimized_filters[0]),
+        "dedicated filters should not gain since after EOSE"
     );
 }
 

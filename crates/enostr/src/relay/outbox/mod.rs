@@ -12,7 +12,7 @@ use crate::{
         websocket::WebsocketRelay,
         ModifyTask, MulticastRelayCache, Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw,
         NormRelayUrl, OutboxSubId, OutboxSubscriptions, OutboxTask, RawEventData, RelayId,
-        RelayLimitations, RelayReqStatus, RelayRoutingPreference, RelayStatus,
+        RelayLimitations, RelayReqStatus, RelayRoutingPreference, RelayStatus, RelayType,
     },
     EventClientMessage, Wakeup,
 };
@@ -22,8 +22,8 @@ mod handler;
 mod session;
 
 use eose::{
-    plan_fully_eosed_effects, plan_tracker_invalidation, ChangedRelayLeg, EoseTracker,
-    FullyEosedEffectsPlan, TrackerInvalidationPlan,
+    plan_tracker_invalidation, ChangedRelayLeg, EoseTracker, FullyEosedEffectsPlan,
+    TrackerInvalidationPlan,
 };
 pub use handler::OutboxSessionHandler;
 pub use session::OutboxSession;
@@ -83,6 +83,57 @@ impl OutboxPool {
         }
     }
 
+    /// Returns true when every currently requested relay leg for this
+    /// subscription is owned by compaction, making `since` advancement safe.
+    fn is_fully_compaction_routed(&self, id: OutboxSubId) -> bool {
+        let Some(sub) = self.subs.get(&id) else {
+            return false;
+        };
+        if sub.relays.is_empty() {
+            return false;
+        }
+
+        sub.relays.iter().all(|relay_id| {
+            self.relays
+                .get(relay_id)
+                .and_then(|relay| relay.route_type(&id))
+                == Some(RelayType::Compaction)
+        })
+    }
+
+    /// Classifies fully-EOSE subscriptions into concrete lifecycle effects.
+    ///
+    /// Fully completed oneshots are removed immediately. `since` advancement is
+    /// only safe for subscriptions whose entire current relay set is routed
+    /// through compaction.
+    fn plan_fully_eosed_effects(&self, ids: HashSet<OutboxSubId>) -> FullyEosedEffectsPlan {
+        let mut remove_oneshots = HashSet::new();
+        let mut optimize_since = HashSet::new();
+
+        for id in ids {
+            if self.subs.is_oneshot(&id) {
+                remove_oneshots.insert(id);
+                continue;
+            }
+
+            if self.is_fully_compaction_routed(id) {
+                optimize_since.insert(id);
+            }
+        }
+
+        let optimize_since_at = if optimize_since.is_empty() {
+            None
+        } else {
+            unix_now_secs()
+        };
+
+        FullyEosedEffectsPlan {
+            remove_oneshots,
+            optimize_since,
+            optimize_since_at,
+        }
+    }
+
     /// Drains tracker-ready full-EOSE completions and applies their derived
     /// subscription side effects immediately.
     fn flush_fully_eosed_effects(&mut self) {
@@ -91,7 +142,7 @@ impl OutboxPool {
             return;
         }
 
-        let effects = plan_fully_eosed_effects(&self.subs, fully_eosed, unix_now_secs());
+        let effects = self.plan_fully_eosed_effects(fully_eosed);
         if effects.is_empty() {
             return;
         }
@@ -763,6 +814,10 @@ mod tests {
         RelayRoutingPreference, RelayType, RelayUrlPkgs, SubscribeTask,
     };
 
+    fn filter_has_since(filter: &Filter) -> bool {
+        filter.json().expect("filter json").contains("\"since\"")
+    }
+
     /// Ensures the subscription registry always yields unique IDs.
     #[test]
     fn registry_generates_unique_ids() {
@@ -1005,6 +1060,153 @@ mod tests {
         assert!(
             pool.subs.get(&id).is_none(),
             "oneshot should be removed as soon as receive-path EOSE processing completes"
+        );
+    }
+
+    /// Fully EOSE'd dedicated routes should keep their original filters instead
+    /// of advancing `since`, which is only safe for compaction.
+    #[test]
+    fn fully_eosed_dedicated_route_does_not_optimize_since() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-since-dedicated.example.com").unwrap();
+        let filter = Filter::new().kinds(vec![1]).limit(2).build();
+
+        let id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let mut pkgs = RelayUrlPkgs::new(relays);
+            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let mut handler = pool.start_session(wakeup);
+            handler.subscribe(vec![filter], pkgs)
+        };
+
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.route_type(&id), Some(RelayType::Transparent));
+
+        pool.eose_tracker.mark_relay_eose(&relay, id, &pool.subs);
+        pool.flush_fully_eosed_effects();
+
+        let filter = &pool
+            .subs
+            .view(&id)
+            .expect("subscription")
+            .filters
+            .get_filters()[0];
+        assert!(
+            !filter_has_since(filter),
+            "dedicated routes must not rewrite filters with a synthetic since cursor"
+        );
+    }
+
+    /// Fully EOSE'd compaction routes should advance `since` so future shared
+    /// REQs do not re-fetch the same history.
+    #[test]
+    fn fully_eosed_compaction_route_optimizes_since() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-since-compaction.example.com").unwrap();
+        let filter = Filter::new().kinds(vec![1]).limit(2).build();
+
+        let _ = pool.ensure_relay(&relay, &wakeup);
+        {
+            let (subs, relays) = (&pool.subs, &mut pool.relays);
+            relays.get_mut(&relay).expect("coordinator").set_limits(
+                subs,
+                RelayLimitations {
+                    maximum_subs: 0,
+                    max_json_bytes: RelayLimitations::default().max_json_bytes,
+                },
+            );
+        }
+
+        let id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let mut pkgs = RelayUrlPkgs::new(relays);
+            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let mut handler = pool.start_session(wakeup);
+            handler.subscribe(vec![filter], pkgs)
+        };
+
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.route_type(&id), Some(RelayType::Compaction));
+
+        pool.eose_tracker.mark_relay_eose(&relay, id, &pool.subs);
+        pool.flush_fully_eosed_effects();
+
+        let filter = &pool
+            .subs
+            .view(&id)
+            .expect("subscription")
+            .filters
+            .get_filters()[0];
+        assert!(
+            filter_has_since(filter),
+            "compaction routes should advance since after fully catching up"
+        );
+    }
+
+    /// Mixed routing should refuse `since` optimization until every relay leg
+    /// for the subscription is owned by compaction.
+    #[test]
+    fn fully_eosed_mixed_routes_do_not_optimize_since() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay_dedicated =
+            NormRelayUrl::new("wss://relay-since-mixed-dedicated.example.com").unwrap();
+        let relay_compaction =
+            NormRelayUrl::new("wss://relay-since-mixed-compaction.example.com").unwrap();
+        let filter = Filter::new().kinds(vec![1]).limit(2).build();
+
+        let _ = pool.ensure_relay(&relay_compaction, &wakeup);
+        {
+            let (subs, relays) = (&pool.subs, &mut pool.relays);
+            relays
+                .get_mut(&relay_compaction)
+                .expect("coordinator")
+                .set_limits(
+                    subs,
+                    RelayLimitations {
+                        maximum_subs: 0,
+                        max_json_bytes: RelayLimitations::default().max_json_bytes,
+                    },
+                );
+        }
+
+        let id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay_dedicated.clone());
+            relays.insert(relay_compaction.clone());
+            let mut pkgs = RelayUrlPkgs::new(relays);
+            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let mut handler = pool.start_session(wakeup);
+            handler.subscribe(vec![filter], pkgs)
+        };
+
+        let dedicated = pool.relays.get(&relay_dedicated).expect("dedicated relay");
+        assert_eq!(dedicated.route_type(&id), Some(RelayType::Transparent));
+        let compaction = pool
+            .relays
+            .get(&relay_compaction)
+            .expect("compaction relay");
+        assert_eq!(compaction.route_type(&id), Some(RelayType::Compaction));
+
+        pool.eose_tracker
+            .mark_relay_eose(&relay_dedicated, id, &pool.subs);
+        pool.eose_tracker
+            .mark_relay_eose(&relay_compaction, id, &pool.subs);
+        pool.flush_fully_eosed_effects();
+
+        let filter = &pool
+            .subs
+            .view(&id)
+            .expect("subscription")
+            .filters
+            .get_filters()[0];
+        assert!(
+            !filter_has_since(filter),
+            "a mixed dedicated/compaction subscription must not advance since"
         );
     }
 
@@ -1597,11 +1799,11 @@ mod tests {
 
         let coordinator = pool.relays.get(&relay).expect("coordinator should exist");
         assert_eq!(
-            coordinator.effective_route(&id_first),
+            coordinator.route_type(&id_first),
             Some(RelayType::Transparent)
         );
         assert_eq!(
-            coordinator.effective_route(&id_second),
+            coordinator.route_type(&id_second),
             Some(RelayType::Compaction)
         );
     }
