@@ -869,7 +869,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     }
                     DaveApiResponse::CompactionStarted => {
                         if let Some(agentic) = &mut session.agentic {
-                            agentic.is_compacting = true;
+                            if agentic.compact_intent.is_none() {
+                                agentic.compact_intent = Some(session::CompactIntent::Manual);
+                            }
                         }
                     }
                     DaveApiResponse::CompactionComplete(info) => {
@@ -913,7 +915,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         // can be legitimately silent for a long time while the
                         // LLM provider compacts the context window.
                         let is_compacting =
-                            session.agentic.as_ref().is_some_and(|a| a.is_compacting);
+                            session.agentic.as_ref().is_some_and(|a| a.is_compacting());
 
                         // Skip stall detection when a permission request is
                         // pending — the backend is legitimately blocked waiting
@@ -3977,10 +3979,11 @@ pub(crate) fn process_conversation_notes<'a>(
                 }
             }
             Some("compaction_started") => {
-                agentic.is_compacting = true;
+                if agentic.compact_intent.is_none() {
+                    agentic.compact_intent = Some(session::CompactIntent::Manual);
+                }
             }
             Some("compaction_complete") => {
-                agentic.is_compacting = false;
                 let pre_tokens = content.parse::<u64>().unwrap_or(0);
                 let info = crate::messages::CompactionInfo { pre_tokens };
                 agentic.last_compaction = Some(info.clone());
@@ -3989,11 +3992,13 @@ pub(crate) fn process_conversation_notes<'a>(
                 // Advance compact-and-proceed: for remote sessions,
                 // there's no stream-end to wait for, so go straight
                 // to ReadyToProceed and consume immediately.
-                if agentic.compact_and_proceed
-                    == crate::session::CompactAndProceedState::WaitingForCompaction
-                {
-                    agentic.compact_and_proceed =
-                        crate::session::CompactAndProceedState::ReadyToProceed;
+                match agentic.compact_intent {
+                    Some(session::CompactIntent::ProceedAfterCompaction) => {
+                        agentic.compact_intent = Some(session::CompactIntent::ReadyToProceed);
+                    }
+                    _ => {
+                        agentic.compact_intent = None;
+                    }
                 }
             }
             _ => {
@@ -4206,13 +4211,15 @@ fn handle_compaction_complete(
         info.pre_tokens
     );
     if let Some(agentic) = &mut session.agentic {
-        agentic.is_compacting = false;
         agentic.last_compaction = Some(info.clone());
 
-        if agentic.compact_and_proceed
-            == crate::session::CompactAndProceedState::WaitingForCompaction
-        {
-            agentic.compact_and_proceed = crate::session::CompactAndProceedState::ReadyToProceed;
+        match agentic.compact_intent {
+            Some(session::CompactIntent::ProceedAfterCompaction) => {
+                agentic.compact_intent = Some(session::CompactIntent::ReadyToProceed);
+            }
+            _ => {
+                agentic.compact_intent = None;
+            }
         }
     }
     session.chat.push(Message::CompactionComplete(info));
@@ -4322,7 +4329,7 @@ fn handle_stream_end(
     // Compact-and-proceed: if we were waiting for the stream to end
     // before dispatching the compact query, signal the caller now.
     if let Some(agentic) = &session.agentic {
-        if agentic.compact_and_proceed == session::CompactAndProceedState::WaitingForStreamEnd {
+        if agentic.compact_intent == Some(session::CompactIntent::ProceedAfterStreamEnd) {
             needs_compact.insert(session_id);
         }
     }
@@ -4378,8 +4385,7 @@ fn dispatch_compact_for_session(
             session.incoming_tokens = Some(rx);
             session.last_backend_msg = Some(std::time::Instant::now());
             if let Some(agentic) = &mut session.agentic {
-                agentic.is_compacting = true;
-                agentic.compact_and_proceed = session::CompactAndProceedState::WaitingForCompaction;
+                agentic.compact_intent = Some(session::CompactIntent::ProceedAfterCompaction);
             }
         }
     }
