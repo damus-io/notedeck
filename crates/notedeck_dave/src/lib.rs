@@ -4344,6 +4344,14 @@ mod tests {
     use std::time::Duration;
     use tempfile::TempDir;
 
+    fn test_config() -> Config {
+        if cfg!(target_os = "windows") {
+            Config::new().set_mapsize(32 * 1024 * 1024)
+        } else {
+            Config::new()
+        }
+    }
+
     fn test_secret_key() -> [u8; 32] {
         let mut key = [0u8; 32];
         key[0] = 1;
@@ -4352,7 +4360,7 @@ mod tests {
 
     fn test_dave(data_path: &DataPath) -> Dave {
         let ndb_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
         Dave::new(None, ndb, egui::Context::default(), data_path)
     }
 
@@ -4404,7 +4412,7 @@ mod tests {
 
         // Set up ndb
         let tmp_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         let filter = nostrdb::Filter::new()
             .kinds([session_events::AI_CONVERSATION_KIND as u64])
@@ -4531,7 +4539,7 @@ mod tests {
 
         // Set up ndb
         let tmp_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         let filter = nostrdb::Filter::new()
             .kinds([session_events::AI_CONVERSATION_KIND as u64])
@@ -4653,7 +4661,7 @@ mod tests {
         .unwrap();
 
         let tmp_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         let filter = nostrdb::Filter::new()
             .kinds([session_events::AI_CONVERSATION_KIND as u64])

@@ -227,9 +227,10 @@ fn get_zap_tags(ev: nostrdb::Note) -> Option<ZapTags> {
 mod tests {
     use enostr::{NoteId, Pubkey};
 
-    use nostrdb::{Config, Filter, IngestMetadata, Ndb, Transaction};
+    use nostrdb::{Filter, IngestMetadata, Ndb, Transaction};
     use tempfile::TempDir;
 
+    use crate::test_util::test_config;
     use crate::zaps::zap::{valid_zap_request, Zap};
 
     // a random zap receipt
@@ -251,7 +252,7 @@ mod tests {
                 .unwrap();
 
         let tmp_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         let ev = format!(r#"["EVENT", "random_string", {ZAP_RECEIPT}]"#);
         let filter = Filter::new().authors([pk.bytes()]).build();

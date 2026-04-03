@@ -380,7 +380,8 @@ pub fn parse_chat_message<'a>(note: &Note<'a>) -> Option<Nip17ChatMessage<'a>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostrdb::{Config, Ndb, NoteBuilder, Transaction};
+    use nostrdb::{Ndb, NoteBuilder, Transaction};
+    use notedeck_testing::fixtures::test_config;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
@@ -461,7 +462,7 @@ mod tests {
     #[test]
     fn known_participant_dm_relay_list_authors_skips_selected_account() {
         let tempdir = tempdir().expect("tempdir");
-        let ndb = Ndb::new(tempdir.path().to_str().expect("db path"), &Config::new()).expect("ndb");
+        let ndb = Ndb::new(tempdir.path().to_str().expect("db path"), &test_config()).expect("ndb");
         let selected = FullKeypair::generate();
         let participant_a = FullKeypair::generate();
         let participant_b = FullKeypair::generate();

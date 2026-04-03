@@ -1010,6 +1010,14 @@ pub fn build_set_permission_mode_event(
 mod tests {
     use super::*;
 
+    fn test_config() -> nostrdb::Config {
+        if cfg!(target_os = "windows") {
+            nostrdb::Config::new().set_mapsize(32 * 1024 * 1024)
+        } else {
+            nostrdb::Config::new()
+        }
+    }
+
     // Test secret key (32 bytes, not for real use)
     fn test_secret_key() -> [u8; 32] {
         let mut key = [0u8; 32];
@@ -1254,7 +1262,7 @@ mod tests {
     #[tokio::test]
     async fn test_full_roundtrip() {
         use crate::session_reconstructor;
-        use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+        use nostrdb::{IngestMetadata, Ndb, Transaction};
         use serde_json::Value;
         use tempfile::TempDir;
 
@@ -1269,7 +1277,7 @@ mod tests {
 
         // Set up ndb
         let tmp_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         // Build and ingest events one at a time, waiting for each
         let sk = test_secret_key();
@@ -1631,7 +1639,7 @@ mod tests {
     /// are sorted correctly, simulating the mobile sync scenario.
     #[tokio::test]
     async fn test_reconstruction_ordering_with_permission_requests() {
-        use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+        use nostrdb::{IngestMetadata, Ndb, Transaction};
         use tempfile::TempDir;
 
         let sk = test_secret_key();
@@ -1683,7 +1691,7 @@ mod tests {
 
         // Ingest events into ndb in REVERSED order (simulating relay out-of-order delivery)
         let tmp_dir = TempDir::new().unwrap();
-        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
 
         let filter = nostrdb::Filter::new()
             .kinds([AI_CONVERSATION_KIND as u64])

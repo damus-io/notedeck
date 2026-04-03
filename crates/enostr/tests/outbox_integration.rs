@@ -9,9 +9,18 @@ use enostr::{
 };
 use hashbrown::HashSet;
 use nostr_relay_builder::{LocalRelay, RelayBuilder};
-use nostrdb::{Filter, NoteBuilder};
+use nostrdb::{Config, Filter, NoteBuilder};
 use std::sync::Once;
 use std::time::Duration;
+
+/// Returns a [`Config`] with a small mapsize suitable for tests on Windows.
+fn test_config() -> Config {
+    if cfg!(target_os = "windows") {
+        Config::new().set_mapsize(32 * 1024 * 1024)
+    } else {
+        Config::new()
+    }
+}
 
 static TRACING_INIT: Once = Once::new();
 
@@ -1185,7 +1194,7 @@ async fn publish_receive_ndb_ingest() {
     let tmpdir = tempfile::TempDir::new().expect("tmpdir");
     let db_path = tmpdir.path().join("db");
     std::fs::create_dir_all(&db_path).expect("create db dir");
-    let ndb = nostrdb::Ndb::new(db_path.to_str().unwrap(), &nostrdb::Config::new()).expect("ndb");
+    let ndb = nostrdb::Ndb::new(db_path.to_str().unwrap(), &test_config()).expect("ndb");
 
     // Subscriber pool
     let mut sub_pool = OutboxPool::default();

@@ -185,8 +185,8 @@ fn get_trusted_authors(
 mod tests {
     use super::*;
     use enostr::{OutboxPool, OutboxSessionHandler};
-    use nostrdb::Config;
     use notedeck::{Accounts, EguiWakeup, ScopedSubsState, FALLBACK_PUBKEY};
+    use notedeck_testing::fixtures::test_config;
     use tempfile::TempDir;
 
     fn test_harness() -> (
@@ -198,7 +198,7 @@ mod tests {
         OutboxPool,
     ) {
         let tmp = TempDir::new().expect("tmp dir");
-        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
         let mut unknown_ids = UnknownIds::default();
         let accounts = Accounts::new(

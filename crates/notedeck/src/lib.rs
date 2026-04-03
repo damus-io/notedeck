@@ -44,6 +44,8 @@ mod setup;
 pub mod sound;
 pub mod storage;
 mod style;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub mod theme;
 mod time;
 mod timecache;

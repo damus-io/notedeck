@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use enostr::FullKeypair;
-use harness::fixtures::seed_local_dm_relay_list;
+use harness::fixtures::{seed_local_dm_relay_list, test_config};
 use harness::ui::{open_conversation_via_ui, send_message_via_ui};
 use harness::{
     build_messages_device, init_tracing, local_chat_messages, publish_note_via_device,
@@ -99,7 +99,7 @@ async fn thread_leak_isolation() {
         let tmp = tempfile::TempDir::new().unwrap();
         let db = tmp.path().join("db");
         std::fs::create_dir_all(&db).unwrap();
-        let cfg = nostrdb::Config::new().set_ingester_threads(2);
+        let cfg = test_config().set_ingester_threads(2);
         let _ndb = nostrdb::Ndb::new(db.to_str().unwrap(), &cfg).unwrap();
     }
     std::thread::sleep(Duration::from_secs(1));
@@ -111,7 +111,7 @@ async fn thread_leak_isolation() {
         let tmp = tempfile::TempDir::new().unwrap();
         let db = tmp.path().join("db");
         std::fs::create_dir_all(&db).unwrap();
-        let cfg = nostrdb::Config::new().set_ingester_threads(2);
+        let cfg = test_config().set_ingester_threads(2);
         let _ndb = nostrdb::Ndb::new(db.to_str().unwrap(), &cfg).unwrap();
         let _pool = enostr::OutboxPool::default();
     }
@@ -126,7 +126,7 @@ async fn thread_leak_isolation() {
         let tmp = tempfile::TempDir::new().unwrap();
         let db = tmp.path().join("db");
         std::fs::create_dir_all(&db).unwrap();
-        let cfg = nostrdb::Config::new().set_ingester_threads(2);
+        let cfg = test_config().set_ingester_threads(2);
         let _ndb = nostrdb::Ndb::new(db.to_str().unwrap(), &cfg).unwrap();
         let mut pool = enostr::OutboxPool::default();
         {
@@ -156,7 +156,7 @@ async fn thread_leak_isolation() {
         let tmp = tempfile::TempDir::new().unwrap();
         let db = tmp.path().join("db");
         std::fs::create_dir_all(&db).unwrap();
-        let cfg = nostrdb::Config::new().set_ingester_threads(2);
+        let cfg = test_config().set_ingester_threads(2);
         let _ndb = nostrdb::Ndb::new(db.to_str().unwrap(), &cfg).unwrap();
         let _job_pool = notedeck::jobs::JobPool::default();
     }

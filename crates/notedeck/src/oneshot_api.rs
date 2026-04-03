@@ -29,14 +29,15 @@ impl<'o, 'a> OneshotApi<'o, 'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::test_config;
     use crate::{EguiWakeup, UnknownIds, FALLBACK_PUBKEY};
     use enostr::{OutboxPool, OutboxSessionHandler, OutboxSubId};
-    use nostrdb::{Config, Ndb, Transaction};
+    use nostrdb::{Ndb, Transaction};
     use tempfile::TempDir;
 
     fn test_accounts_with_forced_relay(relay: &str) -> (TempDir, crate::Accounts) {
         let tmp = TempDir::new().expect("tmp dir");
-        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &test_config()).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
         let mut unknown_ids = UnknownIds::default();
 

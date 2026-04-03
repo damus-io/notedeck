@@ -24,6 +24,20 @@ pub fn seed_cluster_known_profiles(
     }
 }
 
+/// Returns a [`Config`] with a small mapsize suitable for tests.
+///
+/// On Windows LMDB actually allocates the full mapsize on disk, so tests
+/// that use the default (very large) mapsize can exhaust disk space or hit
+/// CI resource limits.  On other platforms the map is only virtually mapped,
+/// so we leave the default alone.
+pub fn test_config() -> Config {
+    if cfg!(target_os = "windows") {
+        Config::new().set_mapsize(32 * 1024 * 1024) // 32 MiB
+    } else {
+        Config::new()
+    }
+}
+
 /// Seeds raw local note JSON into one device's on-disk NostrDB before app startup.
 pub fn seed_local_notes_in_data_dir(
     data_dir: &Path,
@@ -33,7 +47,7 @@ pub fn seed_local_notes_in_data_dir(
     let db_path = ndb_path(data_dir);
     fs::create_dir_all(&db_path).expect("create db dir");
 
-    let ndb = Ndb::new(db_path.to_str().expect("db path"), &Config::new()).expect("ndb");
+    let ndb = Ndb::new(db_path.to_str().expect("db path"), &test_config()).expect("ndb");
     for note_json in note_jsons {
         ndb.process_client_event(note_json)
             .expect("ingest pre-seeded local note history");
@@ -88,7 +102,7 @@ pub fn ndb_path(data_dir: &Path) -> PathBuf {
 /// Opens a NostrDB for one prepared device data directory.
 pub fn open_ndb(data_dir: &Path) -> Ndb {
     let db_path = ndb_path(data_dir);
-    Ndb::new(db_path.to_str().expect("db path"), &Config::new()).expect("ndb")
+    Ndb::new(db_path.to_str().expect("db path"), &test_config()).expect("ndb")
 }
 
 /// Waits until at least `expected_count` events are queryable through the given filters.

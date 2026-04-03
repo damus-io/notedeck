@@ -3,9 +3,10 @@ use std::time::Duration;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use enostr::FullKeypair;
-use nostrdb::{Config, FilterBuilder, Ndb, NoteBuilder};
+use nostrdb::{FilterBuilder, Ndb, NoteBuilder};
 use notedeck::{App, Notedeck};
 use notedeck_dashboard::Dashboard;
+use notedeck_testing::fixtures::test_config;
 use notedeck_testing::ui::wait_for_label;
 
 const NUM_NOTES: usize = 50;
@@ -39,7 +40,7 @@ fn seed_dashboard_notes(data_dir: &std::path::Path) {
     let db_path = notedeck::DataPath::new(data_dir).path(notedeck::DataPathType::Db);
     std::fs::create_dir_all(&db_path).expect("create db dir");
 
-    let ndb = Ndb::new(db_path.to_str().unwrap(), &Config::new()).expect("ndb");
+    let ndb = Ndb::new(db_path.to_str().unwrap(), &test_config()).expect("ndb");
     let account = FullKeypair::generate();
     let account2 = FullKeypair::generate();
 

@@ -565,7 +565,8 @@ pub mod test_helpers {
 mod tests {
     use super::test_helpers::*;
     use super::*;
-    use nostrdb::{Config, IngestMetadata, Ndb};
+    use crate::test_util::test_config;
+    use nostrdb::{IngestMetadata, Ndb};
     use tempfile::TempDir;
 
     /// Hex pubkey string for use with make_*_event_json (skip_validation tests)
@@ -574,7 +575,7 @@ mod tests {
 
     fn test_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().unwrap();
-        let cfg = Config::new().skip_validation(true);
+        let cfg = test_config().skip_validation(true);
         let ndb = Ndb::new(tmp.path().to_str().unwrap(), &cfg).unwrap();
         (tmp, ndb)
     }

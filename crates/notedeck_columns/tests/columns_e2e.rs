@@ -9,11 +9,11 @@ use nostr_relay_builder::{
     prelude::{MemoryDatabase, MemoryDatabaseOptions, NostrEventsDatabase},
     LocalRelay, RelayBuilder,
 };
-use nostrdb::{Config, FilterBuilder, Ndb, NoteBuilder};
+use nostrdb::{FilterBuilder, Ndb, NoteBuilder};
 use notedeck_columns::Damus;
 use notedeck_testing::{
     device::{build_device_in_tmpdir_with_relays, DeviceHarness},
-    fixtures::{ndb_path, wait_for_import_count},
+    fixtures::{ndb_path, test_config, wait_for_import_count},
     init_tracing,
 };
 use serial_test::serial;
@@ -75,7 +75,7 @@ fn seed_notes_in_tmpdir(tmpdir: &TempDir, note_jsons: &[String], kind: u64) {
     let db_path = ndb_path(tmpdir.path());
     std::fs::create_dir_all(&db_path).expect("create db dir");
 
-    let ndb = Ndb::new(db_path.to_str().expect("db path"), &Config::new()).expect("ndb");
+    let ndb = Ndb::new(db_path.to_str().expect("db path"), &test_config()).expect("ndb");
     for note_json in note_jsons {
         ndb.process_client_event(note_json)
             .expect("ingest pre-seeded note");

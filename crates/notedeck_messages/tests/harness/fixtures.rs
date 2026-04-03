@@ -10,7 +10,7 @@ use nostr::{
     nips::nip44,
     util::JsonUtil,
 };
-use nostrdb::{Config, FilterBuilder, Ndb, Note, NoteBuilder, Transaction};
+use nostrdb::{FilterBuilder, Ndb, Note, NoteBuilder, Transaction};
 use notedeck::{unix_time_secs, RelayType};
 use notedeck_messages::nip17::{
     conversation_filter, parse_chat_message, parse_dm_relay_list_relays,
@@ -20,7 +20,7 @@ use notedeck_messages::nip17::{
 // Re-export general fixtures from the shared harness.
 pub use notedeck_testing::fixtures::{
     ndb_path, nostr_pubkey, open_ndb, seed_cluster_known_profiles, seed_local_notes_in_data_dir,
-    seed_local_profile_metadata, wait_for_import_count,
+    seed_local_profile_metadata, test_config, wait_for_import_count,
 };
 
 use super::{AccountCluster, DeviceHarness, TEST_TIMEOUT};
@@ -41,7 +41,7 @@ pub fn seed_local_giftwraps_in_data_dir(
     let db_path = ndb_path(data_dir);
     std::fs::create_dir_all(&db_path).expect("create messages db dir");
 
-    let ndb = Ndb::new(db_path.to_str().expect("db path"), &Config::new()).expect("ndb");
+    let ndb = Ndb::new(db_path.to_str().expect("db path"), &test_config()).expect("ndb");
     ndb.add_key(&account.secret_key.secret_bytes());
 
     for note_json in note_jsons {
