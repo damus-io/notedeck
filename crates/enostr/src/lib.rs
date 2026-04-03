@@ -24,8 +24,9 @@ pub use relay::subs_debug::{OwnedRelayEvent, RelayLogEvent, SubsDebug, TransferS
 pub use relay::{
     Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw, NormRelayUrl, OutboxPool,
     OutboxSession, OutboxSessionHandler, OutboxSubId, RelayCoordinatorLimits, RelayId,
-    RelayImplType, RelayLimitations, RelayReqId, RelayReqStatus, RelayStatus, RelayType,
-    RelayUrlPkgs, SubPass, SubPassGuardian, SubPassRevocation, WebsocketConn,
+    RelayImplType, RelayLimitations, RelayReqId, RelayReqStatus, RelayRoutingPreference,
+    RelayStatus, RelayType, RelayUrlPkgs, SubPass, SubPassGuardian, SubPassRevocation,
+    WebsocketConn,
 };
 
 pub type Result<T> = std::result::Result<T, error::Error>;

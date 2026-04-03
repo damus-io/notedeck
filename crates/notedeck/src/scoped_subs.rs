@@ -2,7 +2,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
 use crate::{Accounts, Outbox};
-use enostr::{NormRelayUrl, OutboxSubId, Pubkey, RelayReqStatus, RelayUrlPkgs};
+use enostr::{
+    NormRelayUrl, OutboxSubId, Pubkey, RelayReqStatus, RelayRoutingPreference, RelayUrlPkgs,
+};
 use hashbrown::{HashMap, HashSet};
 use nostrdb::Filter;
 
@@ -135,7 +137,8 @@ pub enum RelaySelection {
 pub struct SubConfig {
     pub relays: RelaySelection,
     pub filters: Vec<Filter>,
-    pub use_transparent: bool,
+    /// Routing intent when dedicated relay capacity is constrained.
+    pub routing_preference: RelayRoutingPreference,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -715,7 +718,7 @@ fn plan_set_sub_live_op(
         return SetSubLiveOp::EnsurePresent;
     }
 
-    if previous.use_transparent != next.use_transparent {
+    if previous.routing_preference != next.routing_preference {
         return SetSubLiveOp::ReplaceExisting;
     }
 
@@ -782,7 +785,7 @@ fn subscribe_live(
 
     let relays = resolve_relays(account_read_relays, &spec.relays);
     let mut relay_pkgs = RelayUrlPkgs::new(relays);
-    relay_pkgs.use_transparent = spec.use_transparent;
+    relay_pkgs.routing_preference = spec.routing_preference;
     Some(pool.subscribe(spec.filters.clone(), relay_pkgs))
 }
 
@@ -831,7 +834,7 @@ mod tests {
         SubConfig {
             relays: RelaySelection::AccountsRead,
             filters: Vec::new(),
-            use_transparent: false,
+            routing_preference: RelayRoutingPreference::default(),
         }
     }
 
@@ -907,7 +910,7 @@ mod tests {
             slot,
             scope,
             key,
-            empty_config(scope.clone()),
+            empty_config(scope),
         );
         let second = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1193,7 +1196,7 @@ mod tests {
         let relays_b = relay_set("wss://relay-b.example.com");
         let slot = runtime.create_slot();
 
-        let mut spec = empty_config(scope.clone());
+        let mut spec = empty_config(scope);
         spec.filters = vec![Filter::new().kinds(vec![1]).limit(2).build()];
 
         let first = runtime.set_sub_with_relays(
@@ -1233,7 +1236,7 @@ mod tests {
         );
 
         let mut transparent_update = updated;
-        transparent_update.use_transparent = true;
+        transparent_update.routing_preference = RelayRoutingPreference::RequireDedicated;
 
         let res = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1541,7 +1544,7 @@ mod tests {
         let mut thread_spec_a = empty_config(SubScope::Account);
         thread_spec_a.filters = vec![Filter::new().kinds(vec![1]).limit(200).build()];
         thread_spec_a.relays = RelaySelection::AccountsRead;
-        thread_spec_a.use_transparent = true;
+        thread_spec_a.routing_preference = RelayRoutingPreference::RequireDedicated;
 
         let mut messages_spec_a = empty_config(SubScope::Account);
         messages_spec_a.filters = vec![Filter::new().kinds(vec![10002]).limit(20).build()];

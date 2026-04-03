@@ -12,7 +12,7 @@ use crate::{
     AccountStorage, MuteFun, RemoteApi, ScopedSubApi, SingleUnkIdAction, SubOwnerKey, UnknownIds,
     UserAccount, ZapWallet,
 };
-use enostr::{FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId};
+use enostr::{FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId, RelayRoutingPreference};
 use hashbrown::HashSet;
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 
@@ -482,26 +482,38 @@ fn selected_account_request_subs(
             AccountRemoteSubKind::RelayList => {
                 let _ = scoped_subs.ensure_sub(
                     identity,
-                    make_account_remote_config(vec![data.relay.filter.clone()], false),
+                    make_account_remote_config(
+                        vec![data.relay.filter.clone()],
+                        RelayRoutingPreference::default(),
+                    ),
                 );
             }
             AccountRemoteSubKind::MuteList => {
                 let _ = scoped_subs.ensure_sub(
                     identity,
-                    make_account_remote_config(vec![data.muted.filter.clone()], false),
+                    make_account_remote_config(
+                        vec![data.muted.filter.clone()],
+                        RelayRoutingPreference::default(),
+                    ),
                 );
             }
             AccountRemoteSubKind::ContactsList => {
                 let _ = scoped_subs.ensure_sub(
                     identity,
-                    make_account_remote_config(vec![data.contacts.filter.clone()], true),
+                    make_account_remote_config(
+                        vec![data.contacts.filter.clone()],
+                        RelayRoutingPreference::RequireDedicated,
+                    ),
                 );
             }
             AccountRemoteSubKind::Giftwrap => {
                 let pk = &selected_account.key.pubkey;
                 scoped_subs.set_sub(
                     identity,
-                    make_account_remote_config(vec![giftwrap_filter(pk)], true),
+                    make_account_remote_config(
+                        vec![giftwrap_filter(pk)],
+                        RelayRoutingPreference::RequireDedicated,
+                    ),
                 );
             }
         };
@@ -551,14 +563,16 @@ pub fn giftwrap_sub_identity() -> ScopedSubIdentity {
     ScopedSubIdentity::account(owner, key)
 }
 
-fn make_account_remote_config(filters: Vec<Filter>, use_transparent: bool) -> SubConfig {
+fn make_account_remote_config(
+    filters: Vec<Filter>,
+    routing_preference: RelayRoutingPreference,
+) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
         filters,
-        use_transparent,
+        routing_preference,
     }
 }
-
 struct AccountNdbSubs {
     relay_ndb: Subscription,
     mute_ndb: Subscription,

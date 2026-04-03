@@ -3,6 +3,7 @@ mod broadcast;
 mod compaction;
 mod coordinator;
 mod identity;
+mod indexed_queue;
 mod limits;
 pub mod message;
 mod multicast;
@@ -17,7 +18,8 @@ mod websocket;
 
 pub use broadcast::{BroadcastCache, BroadcastRelay};
 pub use identity::{
-    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs,
+    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayRoutingPreference,
+    RelayType, RelayUrlPkgs,
 };
 pub use limits::{
     RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,
@@ -31,7 +33,7 @@ pub use subscription::{
     FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask, OutboxSubscriptions,
     OutboxTask, SubscribeTask,
 };
-pub use websocket::{WebsocketConn, WebsocketRelay};
+pub use websocket::{WebsocketConn, WebsocketRelay, WebsocketSlot};
 
 #[cfg(test)]
 pub mod test_utils;
@@ -61,6 +63,7 @@ pub enum RelayImplType {
     Multicast,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RelayTask {
     Unsubscribe,
     Subscribe,
