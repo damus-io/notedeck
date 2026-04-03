@@ -16,41 +16,113 @@ use crate::{
 /// It must never remain both queued and active at the same time.
 #[derive(Default)]
 pub struct TransparentData {
-    request_to_sid: HashMap<OutboxSubId, RelayReqId>,
-    sid_status: HashMap<RelayReqId, SubData>,
+    active_legs_by_request: HashMap<OutboxSubId, ActiveTransparentLeg>,
+    request_by_sid: HashMap<RelayReqId, OutboxSubId>,
     queue: QueuedTasks,
 }
 
 impl TransparentData {
-    #[allow(dead_code)]
-    pub fn num_subs(&self) -> usize {
-        self.sid_status.len()
+    #[cfg(debug_assertions)]
+    fn assert_consistent(&self) {
+        debug_assert_eq!(
+            self.active_legs_by_request.len(),
+            self.request_by_sid.len(),
+            "transparent active-leg store and reverse sid index must have matching sizes"
+        );
+        for (req_id, active_leg) in &self.active_legs_by_request {
+            debug_assert_eq!(
+                self.request_by_sid.get(&active_leg.sid),
+                Some(req_id),
+                "transparent reverse sid index must point back to the owning request"
+            );
+        }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
+    pub fn num_subs(&self) -> usize {
+        self.active_legs_by_request.len()
+    }
+
+    #[cfg(test)]
     pub fn contains(&self, id: &OutboxSubId) -> bool {
-        self.request_to_sid.contains_key(id)
+        self.active_legs_by_request.contains_key(id)
     }
 
     pub fn request_ids(&self) -> Vec<OutboxSubId> {
-        self.request_to_sid.keys().copied().collect()
+        self.active_legs_by_request.keys().copied().collect()
     }
 
     pub fn set_req_status(&mut self, sid: &str, status: RelayReqStatus) {
-        let Some(entry) = self.sid_status.get_mut(sid) else {
+        let Some(req_id) = self.request_by_sid.get(sid).copied() else {
             return;
         };
+        let entry = self
+            .active_legs_by_request
+            .get_mut(&req_id)
+            .unwrap_or_else(|| {
+                panic!("transparent sid {sid} mapped to missing request {req_id:?}")
+            });
         entry.status = status;
     }
 
     pub fn req_status(&self, req_id: &OutboxSubId) -> Option<RelayReqStatus> {
-        let sid = self.request_to_sid.get(req_id)?;
-        Some(self.sid_status.get(sid)?.status)
+        Some(self.active_legs_by_request.get(req_id)?.status)
     }
 
     /// Returns the OutboxSubId associated with the given relay subscription ID.
     pub fn id(&self, sid: &RelayReqId) -> Option<OutboxSubId> {
-        self.sid_status.get(sid).map(|d| d.sub_req_id)
+        self.request_by_sid.get(sid).copied()
+    }
+
+    fn active_leg_mut(
+        &mut self,
+        req_id: &OutboxSubId,
+    ) -> Option<(RelayReqId, &mut ActiveTransparentLeg)> {
+        let active = self.active_legs_by_request.get_mut(req_id)?;
+        Some((active.sid.clone(), active))
+    }
+
+    fn insert_active_leg(&mut self, req_id: OutboxSubId, active_leg: ActiveTransparentLeg) {
+        let old_sid = self.request_by_sid.insert(active_leg.sid.clone(), req_id);
+        debug_assert!(
+            old_sid.is_none(),
+            "transparent request_by_sid must not overwrite an existing sid"
+        );
+        let old_active = self.active_legs_by_request.insert(req_id, active_leg);
+        debug_assert!(
+            old_active.is_none(),
+            "transparent active_legs_by_request must not overwrite an existing request"
+        );
+        #[cfg(debug_assertions)]
+        self.assert_consistent();
+    }
+
+    fn remove_active_leg(&mut self, req_id: &OutboxSubId) -> Option<ActiveTransparentLeg> {
+        let removed = self.active_legs_by_request.remove(req_id)?;
+        let removed_req = self.request_by_sid.remove(&removed.sid);
+        debug_assert_eq!(
+            removed_req,
+            Some(*req_id),
+            "transparent reverse sid index must match removed request"
+        );
+        #[cfg(debug_assertions)]
+        self.assert_consistent();
+        Some(removed)
+    }
+
+    fn iter_active_legs_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (OutboxSubId, &mut ActiveTransparentLeg)> {
+        self.active_legs_by_request
+            .iter_mut()
+            .map(|(req_id, active_leg)| (*req_id, active_leg))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sid_for_test(&self, id: OutboxSubId) -> Option<RelayReqId> {
+        self.active_legs_by_request
+            .get(&id)
+            .map(|active_leg| active_leg.sid.clone())
     }
 
     #[cfg(test)]
@@ -117,16 +189,10 @@ impl<'a> TransparentRelay<'a> {
         let req_id = view.id;
         self.data.queue.cancel(req_id);
 
-        if let Some(existing_sid) = self.data.request_to_sid.get(&req_id).cloned() {
-            if let Some(sub_data) = self.data.sid_status.get_mut(&existing_sid) {
-                // we're replacing the existing sub with new filters
-                sub_data.status = RelayReqStatus::InitialQuery;
-                send_req(&mut self.relay, &existing_sid, view.filters);
-                return TransparentPlaceResult::Placed;
-            }
-
-            // stale index; rebuild from scratch below.
-            self.data.request_to_sid.remove(&req_id);
+        if let Some((existing_sid, active_leg)) = self.data.active_leg_mut(&req_id) {
+            active_leg.status = RelayReqStatus::InitialQuery;
+            send_req(&mut self.relay, &existing_sid, view.filters);
+            return TransparentPlaceResult::Placed;
         }
 
         let Some(new_pass) = self.sub_guardian.take_pass() else {
@@ -134,14 +200,13 @@ impl<'a> TransparentRelay<'a> {
         };
         tracing::debug!("Transparent took pass for {req_id:?}");
         let sid: RelayReqId = Uuid::new_v4().into();
-        self.data.request_to_sid.insert(req_id, sid.clone());
         send_req(&mut self.relay, &sid, view.filters);
-        self.data.sid_status.insert(
-            sid,
-            SubData {
+        self.data.insert_active_leg(
+            req_id,
+            ActiveTransparentLeg {
+                sid,
                 status: RelayReqStatus::InitialQuery,
                 sub_pass: new_pass,
-                sub_req_id: req_id,
             },
         );
         TransparentPlaceResult::Placed
@@ -155,11 +220,7 @@ impl<'a> TransparentRelay<'a> {
     pub fn unsubscribe(&mut self, req_id: OutboxSubId) {
         self.data.queue.cancel(req_id);
 
-        let Some(sid) = self.data.request_to_sid.remove(&req_id) else {
-            return;
-        };
-
-        let Some(removed) = self.data.sid_status.remove(&sid) else {
+        let Some(removed) = self.data.remove_active_leg(&req_id) else {
             return;
         };
 
@@ -170,7 +231,9 @@ impl<'a> TransparentRelay<'a> {
         };
 
         if relay.is_connected() {
-            relay.conn.send(&ClientMessage::close(sid.to_string()));
+            relay
+                .conn
+                .send(&ClientMessage::close(removed.sid.to_string()));
         }
     }
 
@@ -185,17 +248,17 @@ impl<'a> TransparentRelay<'a> {
         }
 
         let mut invalidated = HashSet::new();
-        for (sid, data) in &mut self.data.sid_status {
-            let Some(view) = subs.view(&data.sub_req_id) else {
+        for (req_id, active_leg) in self.data.iter_active_legs_mut() {
+            let Some(view) = subs.view(&req_id) else {
                 continue;
             };
 
-            data.status = RelayReqStatus::InitialQuery;
+            active_leg.status = RelayReqStatus::InitialQuery;
             relay.conn.send(&ClientMessage::req(
-                sid.to_string(),
+                active_leg.sid.to_string(),
                 view.filters.get_filters().clone(),
             ));
-            invalidated.insert(data.sub_req_id);
+            invalidated.insert(req_id);
         }
 
         invalidated
@@ -227,33 +290,31 @@ pub fn take_revoked_transparent_subs(
 ) -> Vec<OutboxSubId> {
     let mut revoked_ids = Vec::with_capacity(ids.len());
     for (id, mut revocation) in ids.into_iter().zip(revocations) {
-        let Some(sid) = data.request_to_sid.remove(&id) else {
-            continue;
-        };
+        data.queue.cancel(id);
+        let removed = data.remove_active_leg(&id).unwrap_or_else(|| {
+            panic!("transparent revocation selected {id:?} without a live active request")
+        });
 
-        let Some(status) = data.sid_status.remove(&sid) else {
-            continue;
-        };
-
-        revocation.revocate(status.sub_pass);
         revoked_ids.push(id);
+        revocation.revocate(removed.sub_pass);
 
         let Some(relay) = &mut relay else {
             continue;
         };
-
         if relay.is_connected() {
-            relay.conn.send(&ClientMessage::close(sid.to_string()));
+            relay
+                .conn
+                .send(&ClientMessage::close(removed.sid.to_string()));
         }
     }
 
     revoked_ids
 }
 
-struct SubData {
+struct ActiveTransparentLeg {
+    pub sid: RelayReqId,
     pub status: RelayReqStatus,
     pub sub_pass: SubPass,
-    pub sub_req_id: OutboxSubId,
 }
 
 #[cfg(test)]
@@ -303,13 +364,12 @@ mod tests {
         let req_id = OutboxSubId(42);
         let sid = RelayReqId::default();
 
-        data.request_to_sid.insert(req_id, sid.clone());
-        data.sid_status.insert(
-            sid.clone(),
-            SubData {
+        data.insert_active_leg(
+            req_id,
+            ActiveTransparentLeg {
+                sid: sid.clone(),
                 status: RelayReqStatus::InitialQuery,
                 sub_pass: pass,
-                sub_req_id: req_id,
             },
         );
 
@@ -454,9 +514,10 @@ mod tests {
         assert_eq!(data.num_subs(), 1);
 
         // Verify replacement happened - status should be reset to InitialQuery
-        let sid = data.request_to_sid.get(&OutboxSubId(0)).unwrap();
-        let sub_data = data.sid_status.get(sid).unwrap();
-        assert_eq!(sub_data.status, RelayReqStatus::InitialQuery);
+        assert_eq!(
+            data.req_status(&OutboxSubId(0)),
+            Some(RelayReqStatus::InitialQuery)
+        );
     }
 
     #[test]
@@ -583,7 +644,7 @@ mod tests {
             relay.try_subscribe(subs.view(&OutboxSubId(1)).unwrap());
         }
 
-        let sid = data.request_to_sid.get(&OutboxSubId(0)).unwrap().clone();
+        let sid = data.sid_for_test(OutboxSubId(0)).unwrap();
 
         // id() should return the OutboxSubId for the relay subscription
         let outbox_id = data.id(&sid);
@@ -618,15 +679,11 @@ mod tests {
         }
 
         let sid0 = data
-            .request_to_sid
-            .get(&OutboxSubId(0))
-            .expect("sid for first transparent sub")
-            .clone();
+            .sid_for_test(OutboxSubId(0))
+            .expect("sid for first transparent sub");
         let sid1 = data
-            .request_to_sid
-            .get(&OutboxSubId(1))
-            .expect("sid for second transparent sub")
-            .clone();
+            .sid_for_test(OutboxSubId(1))
+            .expect("sid for second transparent sub");
         data.set_req_status(&sid0.to_string(), RelayReqStatus::Eose);
         data.set_req_status(&sid1.to_string(), RelayReqStatus::Eose);
 
