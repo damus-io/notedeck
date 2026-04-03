@@ -46,7 +46,7 @@ impl FullyEosedEffectsPlan {
 pub(super) struct EoseTracker {
     by_sub: HashMap<OutboxSubId, HashSet<NormRelayUrl>>,
     fully_eosed: HashSet<OutboxSubId>,
-    pending_relays: HashSet<NormRelayUrl>,
+    pending_effect_relays: HashSet<NormRelayUrl>,
     ready_fully_eosed: HashSet<OutboxSubId>,
 }
 
@@ -101,24 +101,28 @@ impl EoseTracker {
             .is_some_and(|relays| sub.relays.iter().all(|relay| relays.contains(relay)))
     }
 
-    /// Marks one relay as having pending EOSE entries to ingest.
-    pub(super) fn note_relay_pending(&mut self, relay: &NormRelayUrl) {
-        if !self.pending_relays.contains(relay) {
-            self.pending_relays.insert(relay.clone());
+    /// Marks one relay as having pending coordinator-side effects to ingest.
+    pub(super) fn note_relay_pending_effects(&mut self, relay: &NormRelayUrl) {
+        if !self.pending_effect_relays.contains(relay) {
+            self.pending_effect_relays.insert(relay.clone());
         }
     }
 
-    /// Returns and clears relays that should run EOSE ingest work.
-    pub(super) fn drain_pending_relays(&mut self) -> HashSet<NormRelayUrl> {
-        std::mem::take(&mut self.pending_relays)
+    /// Returns and clears relays that should run pending-effect ingest work.
+    pub(super) fn drain_pending_effect_relays(&mut self) -> HashSet<NormRelayUrl> {
+        std::mem::take(&mut self.pending_effect_relays)
     }
 
-    /// Records the relay pending flag after one ingest pass.
-    pub(super) fn set_relay_pending_state(&mut self, relay: &NormRelayUrl, has_pending: bool) {
+    /// Records the relay pending-effect flag after one ingest pass.
+    pub(super) fn set_relay_pending_effect_state(
+        &mut self,
+        relay: &NormRelayUrl,
+        has_pending: bool,
+    ) {
         if has_pending {
-            self.note_relay_pending(relay);
+            self.note_relay_pending_effects(relay);
         } else {
-            self.pending_relays.remove(relay);
+            self.pending_effect_relays.remove(relay);
         }
     }
 

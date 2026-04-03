@@ -364,13 +364,15 @@ impl CoordinationData {
         )
         .plan(session);
 
-        let mut eose_delta = IngestExecutor::new(self, subs).execute(plan);
-        eose_delta.invalidated_sub_ids = self.drain_tracker_invalidations();
-        eose_delta.normalize();
-        IngestSessionResult {
-            eose_delta,
-            has_pending_eose: !self.eose_queue.is_empty(),
-        }
+        let eose_delta = IngestExecutor::new(self, subs).execute(plan);
+        self.finalize_pending_effects(eose_delta)
+    }
+
+    /// Flushes pending coordinator-side relay effects without any new session
+    /// work, keeping queued EOSE and tracker invalidations reconciled inside
+    /// the coordinator boundary.
+    pub fn flush_pending_effects(&mut self, subs: &OutboxSubscriptions) -> IngestSessionResult {
+        self.ingest_session(subs, CoordinationSession::default())
     }
 
     /// Attempts dedicated placement during the first probe pass without
@@ -708,8 +710,25 @@ impl CoordinationData {
     }
 
     /// Returns and clears coordinator-reported relay-leg invalidations.
-    pub(crate) fn drain_tracker_invalidations(&mut self) -> HashSet<OutboxSubId> {
+    fn drain_tracker_invalidations(&mut self) -> HashSet<OutboxSubId> {
         std::mem::take(&mut self.pending_tracker_invalidations)
+    }
+
+    /// Returns whether this relay still has unresolved queued EOSE or tracker
+    /// invalidation work that must be ingested by outbox.
+    pub(crate) fn has_pending_effects(&self) -> bool {
+        !self.eose_queue.is_empty() || !self.pending_tracker_invalidations.is_empty()
+    }
+
+    /// Normalizes one relay's queued EOSE and invalidation effects into a
+    /// single resolved delta for outbox to apply.
+    fn finalize_pending_effects(&mut self, mut eose_delta: RelayEoseDelta) -> IngestSessionResult {
+        eose_delta.invalidated_sub_ids = self.drain_tracker_invalidations();
+        eose_delta.normalize();
+        IngestSessionResult {
+            eose_delta,
+            has_pending_effects: self.has_pending_effects(),
+        }
     }
 
     /// Returns the current request status for `id` if this coordinator still
@@ -880,8 +899,10 @@ impl RecvResponse {
 
 /// Result returned after coordinator ingestion for one relay.
 pub struct IngestSessionResult {
+    /// Resolved post-ingest relay effects for durable outbox tracking.
     pub eose_delta: RelayEoseDelta,
-    pub has_pending_eose: bool,
+    /// Whether this relay still has unresolved queued effects after ingest.
+    pub has_pending_effects: bool,
 }
 
 #[derive(Default)]
@@ -1107,6 +1128,28 @@ mod tests {
         assert_eq!(delta.sub_ids, HashSet::from([keep]));
         assert_eq!(delta.invalidated_sub_ids, HashSet::from([overlap]));
         assert!(delta.sub_ids.is_disjoint(&delta.invalidated_sub_ids));
+    }
+
+    #[test]
+    fn flush_pending_effects_normalizes_stale_queued_eose_against_invalidations() {
+        let mut subs = OutboxSubscriptions::default();
+        let id = OutboxSubId(9);
+        insert_sub_with_policy(&mut subs, id, RelayRoutingPreference::PreferDedicated);
+
+        let mut coordinator = coordinator_with_limit(1);
+        seed_transparent_route(&mut coordinator, &subs, id);
+
+        let sid = coordinator
+            .transparent_data
+            .active_sid(&id)
+            .expect("transparent route should have a live sid");
+        coordinator.eose_queue.push(sid);
+        coordinator.pending_tracker_invalidations.insert(id);
+
+        let ingest = coordinator.flush_pending_effects(&subs);
+        assert!(ingest.eose_delta.sub_ids.is_empty());
+        assert_eq!(ingest.eose_delta.invalidated_sub_ids, HashSet::from([id]));
+        assert!(!ingest.has_pending_effects);
     }
 
     fn coordinator_with_limit(maximum_subs: usize) -> CoordinationData {
