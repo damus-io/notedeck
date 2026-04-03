@@ -20,8 +20,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-
       - name: Additional Setup (if specified)
         if: ${{ inputs.additional-setup != '' }}
         run: ${{ inputs.additional-setup }}
