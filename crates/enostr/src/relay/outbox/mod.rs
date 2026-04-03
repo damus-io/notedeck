@@ -1063,6 +1063,49 @@ mod tests {
         );
     }
 
+    /// Unsaturated relays should place preferred dedicated requests on a
+    /// dedicated leg rather than falling through to compaction.
+    #[test]
+    fn prefer_dedicated_request_uses_dedicated_when_unsaturated() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay =
+            NormRelayUrl::new("wss://relay-prefer-dedicated-unsaturated.example.com").unwrap();
+
+        let id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let mut pkgs = RelayUrlPkgs::new(relays);
+            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let mut handler = pool.start_session(wakeup);
+            handler.subscribe(trivial_filter(), pkgs)
+        };
+
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.route_type(&id), Some(RelayType::Transparent));
+    }
+
+    /// Unsaturated relays should also place no-preference requests on a
+    /// dedicated leg before considering compaction fallback.
+    #[test]
+    fn no_preference_request_uses_dedicated_when_unsaturated() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-no-preference-unsaturated.example.com").unwrap();
+
+        let id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let mut pkgs = RelayUrlPkgs::new(relays);
+            pkgs.routing_preference = RelayRoutingPreference::NoPreference;
+            let mut handler = pool.start_session(wakeup);
+            handler.subscribe(trivial_filter(), pkgs)
+        };
+
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.route_type(&id), Some(RelayType::Transparent));
+    }
+
     /// Fully EOSE'd dedicated routes should keep their original filters instead
     /// of advancing `since`, which is only safe for compaction.
     #[test]

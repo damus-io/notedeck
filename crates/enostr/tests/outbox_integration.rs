@@ -362,8 +362,10 @@ async fn unsubscribe_during_processing() {
 
 // ==================== Routing Preference Modes ====================
 
+/// `PreferDedicated` should receive its initial query response when the relay
+/// is not saturated.
 #[tokio::test]
-async fn prefer_dedicated_subscription_uses_dedicated_when_unsaturated() {
+async fn prefer_dedicated_subscription_receives_eose_when_unsaturated() {
     let (_relay, url) = create_test_relay().await;
 
     let mut pool = OutboxPool::default();
@@ -385,9 +387,10 @@ async fn prefer_dedicated_subscription_uses_dedicated_when_unsaturated() {
     );
 }
 
-/// `NoPreference` still uses dedicated routing first when the relay is not saturated.
+/// `NoPreference` still receives its initial query response when the relay is
+/// not saturated.
 #[tokio::test]
-async fn no_preference_subscription_uses_dedicated_when_unsaturated() {
+async fn no_preference_subscription_receives_eose_when_unsaturated() {
     let (_relay, url) = create_test_relay().await;
 
     let mut pool = OutboxPool::default();
