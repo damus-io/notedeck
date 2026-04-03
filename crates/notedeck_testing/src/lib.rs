@@ -12,7 +12,9 @@ pub mod stepping;
 pub mod ui;
 
 pub use cluster::AccountCluster;
-pub use device::{shutdown_device, AppFactory, DeviceDataDir, DeviceHarness, DeviceState};
+pub use device::{
+    build_device_minimal, shutdown_device, AppFactory, DeviceDataDir, DeviceHarness, DeviceState,
+};
 pub use relay::LocalRelayExt;
 
 use std::sync::Once;

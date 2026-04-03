@@ -1,5 +1,7 @@
 //! Markdown rendering for assistant messages using egui.
 
+use std::borrow::Cow;
+
 use egui::text::LayoutJob;
 use egui::{Color32, FontFamily, FontId, RichText, TextFormat, Ui};
 use md_stream::{
@@ -69,10 +71,8 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
         }
 
         MdElement::Paragraph(inlines) => {
-            ui.horizontal_wrapped(|ui| {
-                render_inlines(inlines, theme, buffer, ui);
-            });
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            render_wrapped_inlines(inlines, theme, buffer, ui);
+            ui.add_space(8.0);
         }
 
         MdElement::CodeBlock(CodeBlock { language, content }) => {
@@ -87,27 +87,21 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
         MdElement::BlockQuote(nested) => {
             egui::Frame::default()
                 .fill(theme.blockquote_bg)
-                .stroke(egui::Stroke::new(
-                    notedeck::tokens::STROKE_THICK,
-                    theme.blockquote_border,
-                ))
-                .inner_margin(egui::Margin::symmetric(
-                    notedeck::tokens::SPACING_SM as i8,
-                    notedeck::tokens::SPACING_XS as i8,
-                ))
+                .stroke(egui::Stroke::new(2.0, theme.blockquote_border))
+                .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
                     for elem in nested {
                         render_element(elem, theme, buffer, ui);
                     }
                 });
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            ui.add_space(8.0);
         }
 
         MdElement::UnorderedList(items) => {
             for item in items {
                 render_list_item(item, "\u{2022}", theme, buffer, ui);
             }
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            ui.add_space(8.0);
         }
 
         MdElement::OrderedList { start, items } => {
@@ -115,7 +109,7 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
                 let marker = format!("{}.", start + i as u32);
                 render_list_item(item, &marker, theme, buffer, ui);
             }
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            ui.add_space(8.0);
         }
 
         MdElement::Table { headers, rows } => {
@@ -124,7 +118,7 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
 
         MdElement::ThematicBreak => {
             ui.separator();
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            ui.add_space(8.0);
         }
 
         MdElement::Text(span) => {
@@ -133,12 +127,204 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
     }
 }
 
+/// A link embedded in a LayoutJob, tracked by character range so hit-testing
+/// matches egui's character-based cursors.
+struct InlineLink {
+    /// Character range in the LayoutJob text.
+    char_range: std::ops::Range<usize>,
+    /// URL to open on click.
+    url: String,
+    /// Human-readable link text used for accessibility metadata.
+    label: String,
+}
+
 /// Flush a LayoutJob as a wrapped label if it has any content.
-fn flush_job(job: &mut LayoutJob, ui: &mut Ui) {
-    if !job.text.is_empty() {
-        job.wrap.max_width = ui.available_width();
-        ui.add(egui::Label::new(std::mem::take(job)).wrap());
+/// When `links` is non-empty, the label is made clickable and any click on a
+/// link character range opens the corresponding URL.
+fn flush_job(job: &mut LayoutJob, links: &mut Vec<InlineLink>, ui: &mut Ui) {
+    if job.text.is_empty() {
+        return;
     }
+
+    // Keep a small headroom to avoid subpixel right-edge spill at narrow widths.
+    job.wrap.max_width = (ui.available_width() - 1.0).max(0.0);
+
+    if links.is_empty() {
+        ui.add(egui::Label::new(std::mem::take(job)).wrap());
+        return;
+    }
+
+    let galley = ui.fonts(|f| f.layout_job(std::mem::take(job)));
+    let galley_response = ui.add(
+        egui::Label::new(egui::WidgetText::Galley(galley.clone())).sense(egui::Sense::hover()),
+    );
+    let galley_origin = galley_response.rect.min;
+
+    for (link_index, link) in links.iter().enumerate() {
+        let segment_rects = link_segment_rects(&galley, &link.char_range, galley_origin);
+        if segment_rects.is_empty() {
+            continue;
+        }
+
+        let mut clicked = false;
+        let mut hovered = false;
+
+        for (segment_index, rect) in segment_rects.into_iter().enumerate() {
+            let response = ui.interact(
+                rect,
+                ui.id()
+                    .with("inline_link")
+                    .with(link_index)
+                    .with(segment_index),
+                egui::Sense::click(),
+            );
+
+            if segment_index == 0 {
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Link, ui.is_enabled(), &link.label)
+                });
+            }
+
+            let response = response.on_hover_text(&link.url);
+            clicked |= response.clicked();
+            hovered |= response.hovered();
+        }
+
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        if clicked {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(&link.url));
+        }
+    }
+
+    links.clear();
+}
+
+/// Convert a link character range into one or more on-screen rects, one per
+/// wrapped galley row the link spans.
+fn link_segment_rects(
+    galley: &egui::Galley,
+    char_range: &std::ops::Range<usize>,
+    galley_origin: egui::Pos2,
+) -> Vec<egui::Rect> {
+    let mut rects = Vec::new();
+    let mut row_start = 0;
+
+    for row in &galley.rows {
+        let row_end = row_start + row.char_count_excluding_newline();
+        let segment_start = char_range.start.max(row_start);
+        let segment_end = char_range.end.min(row_end);
+
+        if segment_start < segment_end {
+            let start_col = segment_start - row_start;
+            let end_col = segment_end - row_start;
+            rects.push(egui::Rect::from_min_max(
+                egui::pos2(
+                    galley_origin.x + row.x_offset(start_col),
+                    galley_origin.y + row.min_y(),
+                ),
+                egui::pos2(
+                    galley_origin.x + row.x_offset(end_col),
+                    galley_origin.y + row.max_y(),
+                ),
+            ));
+        }
+
+        row_start = row_end + usize::from(row.ends_with_newline);
+    }
+
+    rects
+}
+
+/// Insert invisible wrap opportunities after code-like separators without
+/// changing how normal prose wraps.
+/// Returns `true` for characters that act as word separators in code-like
+/// tokens (paths, identifiers, URLs).
+fn is_wrap_separator(ch: char) -> bool {
+    matches!(ch, '_' | '.' | '-' | '/' | '\\' | ':')
+}
+
+fn soft_wrap_text(text: &str) -> Cow<'_, str> {
+    const SOFT_WRAP_MIN_TOKEN_CHARS: usize = 24;
+
+    if text.len() < SOFT_WRAP_MIN_TOKEN_CHARS {
+        return Cow::Borrowed(text);
+    }
+
+    let mut wrapped = String::with_capacity(text.len());
+    let mut token = String::new();
+    let mut changed = false;
+
+    let flush_token = |token: &mut String, wrapped: &mut String, changed: &mut bool| {
+        if token.is_empty() {
+            return;
+        }
+
+        let token_len = token.chars().count();
+        let has_separator = token.chars().any(is_wrap_separator);
+
+        if token_len >= SOFT_WRAP_MIN_TOKEN_CHARS && has_separator {
+            for ch in token.chars() {
+                wrapped.push(ch);
+                if is_wrap_separator(ch) {
+                    wrapped.push('\u{200B}');
+                    *changed = true;
+                }
+            }
+        } else {
+            wrapped.push_str(token);
+        }
+
+        token.clear();
+    };
+
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            flush_token(&mut token, &mut wrapped, &mut changed);
+            wrapped.push(ch);
+        } else {
+            token.push(ch);
+        }
+    }
+    flush_token(&mut token, &mut wrapped, &mut changed);
+
+    if changed {
+        Cow::Owned(wrapped)
+    } else {
+        Cow::Borrowed(text)
+    }
+}
+
+/// Append text to a layout job while preserving normal word wrapping and
+/// enabling breaks inside long code-like identifiers and paths.
+fn append_wrapped_text(
+    job: &mut LayoutJob,
+    text: &str,
+    format: TextFormat,
+) -> std::ops::Range<usize> {
+    let start = job.text.chars().count();
+    let wrapped = soft_wrap_text(text);
+    job.append(&wrapped, 0.0, format);
+    let end = job.text.chars().count();
+    start..end
+}
+
+/// Render inline elements inside a width-constrained wrapper that prevents
+/// `horizontal_wrapped` from expanding past the parent boundary.
+fn render_wrapped_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+    let max_width = (ui.available_width() - 1.0).max(0.0);
+    ui.allocate_ui_with_layout(
+        egui::vec2(max_width, 0.0),
+        egui::Layout::top_down(egui::Align::Min),
+        |ui| {
+            ui.set_max_width(max_width);
+            ui.horizontal_wrapped(|ui| {
+                render_inlines(inlines, theme, buffer, ui);
+            });
+        },
+    );
 }
 
 fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: &mut Ui) {
@@ -168,68 +354,99 @@ fn render_inlines(inlines: &[InlineElement], theme: &MdTheme, buffer: &str, ui: 
     let strikethrough_fmt = TextFormat {
         font_id: FontId::new(font_size, FontFamily::Proportional),
         color: text_color,
-        strikethrough: egui::Stroke::new(notedeck::tokens::STROKE_THIN, text_color),
+        strikethrough: egui::Stroke::new(1.0, text_color),
+        ..Default::default()
+    };
+
+    // Use the named "bold" font family (OnestBold) if available, otherwise
+    // fall back to Proportional. Keeping bold text inside the LayoutJob
+    // instead of flushing it as a separate ui.label() prevents
+    // horizontal_wrapped layout expansion that shifts content off-screen.
+    let bold_font = if ui.fonts(|f| f.families().contains(&FontFamily::Name("bold".into()))) {
+        FontFamily::Name("bold".into())
+    } else {
+        FontFamily::Proportional
+    };
+
+    let bold_fmt = TextFormat {
+        font_id: FontId::new(font_size, bold_font.clone()),
+        color: text_color,
+        ..Default::default()
+    };
+
+    let bold_italic_fmt = TextFormat {
+        font_id: FontId::new(font_size, bold_font),
+        color: text_color,
+        italics: true,
+        ..Default::default()
+    };
+
+    let link_fmt = TextFormat {
+        font_id: FontId::new(font_size, FontFamily::Proportional),
+        color: theme.link_color,
+        underline: egui::Stroke::new(1.0, theme.link_color),
         ..Default::default()
     };
 
     let mut job = LayoutJob::default();
+    let mut links: Vec<InlineLink> = Vec::new();
 
     for inline in inlines {
         match inline {
             InlineElement::Text(span) => {
-                job.append(span.resolve(buffer), 0.0, text_fmt.clone());
+                append_wrapped_text(&mut job, span.resolve(buffer), text_fmt.clone());
             }
 
             InlineElement::Code(span) => {
-                job.append(span.resolve(buffer), 0.0, code_fmt.clone());
+                append_wrapped_text(&mut job, span.resolve(buffer), code_fmt.clone());
             }
 
             InlineElement::Styled { style, content } => {
                 let text = content.resolve(buffer);
                 match style {
                     InlineStyle::Italic => {
-                        job.append(text, 0.0, italic_fmt.clone());
+                        append_wrapped_text(&mut job, text, italic_fmt.clone());
                     }
                     InlineStyle::Strikethrough => {
-                        job.append(text, 0.0, strikethrough_fmt.clone());
+                        append_wrapped_text(&mut job, text, strikethrough_fmt.clone());
                     }
-                    InlineStyle::Bold | InlineStyle::BoldItalic => {
-                        // TextFormat has no bold/weight — flush and render as separate label
-                        flush_job(&mut job, ui);
-                        let rt = if matches!(style, InlineStyle::BoldItalic) {
-                            RichText::new(text).strong().italics()
-                        } else {
-                            RichText::new(text).strong()
-                        };
-                        ui.label(rt);
+                    InlineStyle::Bold => {
+                        append_wrapped_text(&mut job, text, bold_fmt.clone());
+                    }
+                    InlineStyle::BoldItalic => {
+                        append_wrapped_text(&mut job, text, bold_italic_fmt.clone());
                     }
                 }
             }
 
             InlineElement::Link { text, url } => {
-                flush_job(&mut job, ui);
-                ui.hyperlink_to(
-                    RichText::new(text.resolve(buffer)).color(theme.link_color),
-                    url.resolve(buffer),
-                );
+                let link_text = text.resolve(buffer);
+                let char_range = append_wrapped_text(&mut job, link_text, link_fmt.clone());
+                links.push(InlineLink {
+                    char_range,
+                    url: url.resolve(buffer).to_owned(),
+                    label: link_text.to_owned(),
+                });
             }
 
             InlineElement::Image { alt, url } => {
-                flush_job(&mut job, ui);
-                ui.hyperlink_to(
-                    format!("[Image: {}]", alt.resolve(buffer)),
-                    url.resolve(buffer),
-                );
+                let alt_text = format!("[Image: {}]", alt.resolve(buffer));
+                let char_range = append_wrapped_text(&mut job, &alt_text, link_fmt.clone());
+                links.push(InlineLink {
+                    char_range,
+                    url: url.resolve(buffer).to_owned(),
+                    label: alt_text,
+                });
             }
 
             InlineElement::LineBreak => {
-                flush_job(&mut job, ui);
+                flush_job(&mut job, &mut links, ui);
                 ui.end_row();
             }
         }
     }
 
-    flush_job(&mut job, ui);
+    flush_job(&mut job, &mut links, ui);
 }
 
 /// Sand-themed syntax highlighting colors (warm, Claude-Code-esque palette)
@@ -456,7 +673,7 @@ fn highlight_sand(code: &str, language: &str, ui: &Ui) -> LayoutJob {
 
     let mut job = LayoutJob::default();
     for (token, text) in tokenize_code(code, language) {
-        job.append(text, 0.0, theme.format(token, &font_id));
+        append_wrapped_text(&mut job, text, theme.format(token, &font_id));
     }
     job
 }
@@ -472,32 +689,39 @@ fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui:
             }
 
             let lang = language.unwrap_or("text");
-            let layout_job = highlight_sand(content, lang, ui);
+            let mut layout_job = highlight_sand(content, lang, ui);
+            layout_job.wrap.max_width = (ui.available_width() - 1.0).max(0.0);
             ui.add(egui::Label::new(layout_job).wrap());
         });
     ui.add_space(8.0);
 }
 
 fn render_list_item(item: &ListItem, marker: &str, theme: &MdTheme, buffer: &str, ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(marker).weak());
-        ui.vertical(|ui| {
-            ui.horizontal_wrapped(|ui| {
-                render_inlines(&item.content, theme, buffer, ui);
-            });
-            // Render nested list if present
-            if let Some(nested) = &item.nested {
-                ui.indent("nested", |ui| {
-                    render_element(nested, theme, buffer, ui);
+    let row_width = ui.available_width();
+    ui.horizontal_top(|ui| {
+        let marker_response = ui.label(RichText::new(marker).weak());
+        let content_width =
+            (row_width - marker_response.rect.width() - ui.spacing().item_spacing.x).max(0.0);
+        ui.allocate_ui_with_layout(
+            egui::vec2(content_width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_max_width(content_width);
+                ui.horizontal_wrapped(|ui| {
+                    render_inlines(&item.content, theme, buffer, ui);
                 });
-            }
-        });
+                // Render nested list if present
+                if let Some(nested) = &item.nested {
+                    ui.indent("nested", |ui| {
+                        render_element(nested, theme, buffer, ui);
+                    });
+                }
+            },
+        );
     });
 }
 
 fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &str, ui: &mut Ui) {
-    use egui_extras::{Column, TableBuilder};
-
     let num_cols = headers.len();
     if num_cols == 0 {
         return;
@@ -508,46 +732,45 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
     // Use first header's byte offset as id_salt so multiple tables don't clash
     let salt = headers.first().map_or(0, |h| h.start);
 
-    // Wrap in horizontal scroll so wide tables don't break layout on small screens
-    egui::ScrollArea::horizontal()
-        .id_salt(("md_table_scroll", salt))
+    // Cap column width to prevent overflow, but let Grid auto-size narrower.
+    let table_width = ui.available_width();
+    let spacing = ui.spacing().item_spacing.x;
+    let total_spacing = spacing * (num_cols - 1) as f32;
+    let max_col = ((table_width - total_spacing) / num_cols as f32).max(20.0);
+
+    let header_bg = theme.code_bg;
+
+    // Use egui::Grid instead of TableBuilder so rows auto-size to fit
+    // wrapped text content rather than truncating at a fixed height.
+    // Columns auto-size to content width, capped at max_col.
+    egui::Grid::new(salt)
+        .num_columns(num_cols)
+        .max_col_width(max_col)
+        .striped(true)
+        .spacing([spacing, 0.0])
         .show(ui, |ui| {
-            let mut builder = TableBuilder::new(ui)
-                .id_salt(salt)
-                .vscroll(false)
-                .auto_shrink([false, false]);
-            for _ in 0..num_cols {
-                builder = builder.column(Column::auto().resizable(true));
+            // Header row
+            for h in headers {
+                egui::Frame::NONE
+                    .fill(header_bg)
+                    .inner_margin(cell_padding)
+                    .show(ui, |ui| {
+                        ui.strong(h.resolve(buffer));
+                    });
             }
+            ui.end_row();
 
-            let header_bg = theme.code_bg;
-
-            builder
-                .header(28.0, |mut header| {
-                    for h in headers {
-                        header.col(|ui| {
-                            ui.painter().rect_filled(ui.max_rect(), 0.0, header_bg);
-                            egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                                ui.strong(h.resolve(buffer));
-                            });
-                        });
-                    }
-                })
-                .body(|mut body| {
-                    for row in rows {
-                        body.row(28.0, |mut table_row| {
-                            for i in 0..num_cols {
-                                table_row.col(|ui| {
-                                    egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                                        if let Some(cell) = row.get(i) {
-                                            ui.label(cell.resolve(buffer));
-                                        }
-                                    });
-                                });
-                            }
-                        });
-                    }
-                });
+            // Data rows
+            for row in rows {
+                for i in 0..num_cols {
+                    egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
+                        if let Some(cell) = row.get(i) {
+                            ui.label(cell.resolve(buffer));
+                        }
+                    });
+                }
+                ui.end_row();
+            }
         });
     ui.add_space(8.0);
 }
@@ -571,7 +794,8 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
                     }
 
                     let lang = lang_str.unwrap_or("text");
-                    let layout_job = highlight_sand(content, lang, ui);
+                    let mut layout_job = highlight_sand(content, lang, ui);
+                    layout_job.wrap.max_width = (ui.available_width() - 1.0).max(0.0);
                     ui.add(egui::Label::new(layout_job).wrap());
                     ui.label(RichText::new("_").weak());
                 });
@@ -594,20 +818,9 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
             }
         }
 
-        PartialKind::Paragraph => {
-            // Parse inline elements from the partial content for proper formatting
-            let inlines = parse_inline(content, partial.content_start);
-            ui.horizontal_wrapped(|ui| {
-                render_inlines(&inlines, theme, buffer, ui);
-            });
-        }
-
         _ => {
-            // Other partial kinds - parse inline elements too
             let inlines = parse_inline(content, partial.content_start);
-            ui.horizontal_wrapped(|ui| {
-                render_inlines(&inlines, theme, buffer, ui);
-            });
+            render_wrapped_inlines(&inlines, theme, buffer, ui);
         }
     }
 }
@@ -615,6 +828,7 @@ fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::messages::ParsedMarkdown;
     use egui_kittest::{kittest::Queryable, Harness};
     use md_stream::{InlineElement, Span};
 
@@ -780,6 +994,244 @@ mod tests {
             beta_bounds.y0 > alpha_bounds.y1,
             "hard line breaks should render the following text on a later row"
         );
+    }
+
+    #[test]
+    fn inline_link_stays_on_same_row_as_surrounding_text_when_width_allows() {
+        // Links stay inside the same wrapped galley as their surrounding text,
+        // so when width allows they should remain on a single row.
+        let markdown = "Renderer-level in [markdown_ui.rs](https://example.com): keep this inline.";
+        let parsed = ParsedMarkdown::parse(markdown);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(800.0, 200.0))
+            .build_ui(move |ui| {
+                ui.allocate_ui(egui::vec2(800.0, 200.0), |ui| {
+                    render_assistant_message(&parsed.elements, None, &parsed.source, ui);
+                });
+            });
+
+        harness.run();
+
+        let container = harness.get_by_role_and_label(
+            egui::accesskit::Role::Label,
+            "Renderer-level in markdown_ui.rs: keep this inline.",
+        );
+        let bounds = container.raw_bounds().expect("container bounds");
+        assert!(
+            bounds.height() < 40.0,
+            "paragraph with inline link should render on a single row at 800px, got height {}",
+            bounds.height()
+        );
+    }
+
+    #[test]
+    fn inline_link_exposes_accessible_link_role() {
+        let markdown = "Open [markdown_ui.rs](https://example.com) from the renderer.";
+        let parsed = ParsedMarkdown::parse(markdown);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(500.0, 200.0))
+            .build_ui(move |ui| {
+                ui.allocate_ui(egui::vec2(500.0, 200.0), |ui| {
+                    render_assistant_message(&parsed.elements, None, &parsed.source, ui);
+                });
+            });
+
+        harness.run();
+
+        harness.get_by_role_and_label(egui::accesskit::Role::Link, "markdown_ui.rs");
+    }
+
+    #[test]
+    fn inline_link_hit_testing_uses_character_ranges_after_unicode_prefix() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let prefix = "Prefix: Привет ";
+        let link_label = "markdown_ui.rs";
+
+        let cursor_offset = Rc::new(RefCell::new(None));
+        let cursor_offset_out = cursor_offset.clone();
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(500.0, 100.0))
+            .build_ui(move |ui| {
+                let mut job = LayoutJob::default();
+                let _ = append_wrapped_text(&mut job, prefix, TextFormat::default());
+                let char_range = append_wrapped_text(&mut job, link_label, TextFormat::default());
+                job.wrap.max_width = 500.0;
+
+                let galley = ui.fonts(|fonts| fonts.layout_job(job));
+                let click_pos = galley
+                    .pos_from_pcursor(egui::epaint::text::cursor::PCursor {
+                        paragraph: 0,
+                        offset: char_range.start,
+                        prefer_next_row: false,
+                    })
+                    .center()
+                    .to_vec2();
+                *cursor_offset_out.borrow_mut() =
+                    Some((galley.cursor_from_pos(click_pos).pcursor.offset, char_range));
+            });
+        harness.run();
+
+        let (cursor_offset, char_range) = cursor_offset
+            .borrow()
+            .clone()
+            .expect("cursor offset should be captured");
+        let old_byte_range = prefix.len()..prefix.len() + link_label.len();
+        assert!(
+            !old_byte_range.contains(&cursor_offset),
+            "cursor offset {cursor_offset} should not match the old byte range {old_byte_range:?}",
+        );
+        assert!(
+            char_range.contains(&cursor_offset),
+            "cursor offset {cursor_offset} should fall inside the character range {char_range:?}",
+        );
+    }
+
+    #[test]
+    fn soft_wrap_text_preserves_normal_words() {
+        assert_eq!(soft_wrap_text("plain words only"), "plain words only");
+    }
+
+    #[test]
+    fn soft_wrap_text_adds_breaks_to_code_like_tokens() {
+        assert_eq!(
+            soft_wrap_text("restart_should_prefetch_newer_known_participant_relay_list_e2e"),
+            "restart_\u{200b}should_\u{200b}prefetch_\u{200b}newer_\u{200b}known_\u{200b}participant_\u{200b}relay_\u{200b}list_\u{200b}e2e"
+        );
+        assert_eq!(
+            soft_wrap_text("/Users/user/Documents/test/test_folder"),
+            "/\u{200b}Users/\u{200b}user/\u{200b}Documents/\u{200b}test/\u{200b}test_\u{200b}folder"
+        );
+    }
+
+    #[test]
+    fn soft_wrap_text_keeps_short_code_like_tokens_unchanged() {
+        assert_eq!(soft_wrap_text("messages_e2e.rs"), "messages_e2e.rs");
+        assert_eq!(soft_wrap_text("markdown_ui.rs"), "markdown_ui.rs");
+        assert_eq!(soft_wrap_text("relay-A/path"), "relay-A/path");
+    }
+
+    fn markdown_overflows(md: &str, width: f32) -> Vec<String> {
+        let parsed = ParsedMarkdown::parse(md);
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(width, 800.0))
+            .build_ui(move |ui| {
+                ui.allocate_ui(egui::vec2(width, 800.0), |ui| {
+                    render_assistant_message(&parsed.elements, None, &parsed.source, ui);
+                });
+            });
+
+        harness.run();
+
+        // Collect bounds once, then derive min_x and check overflows.
+        let all_bounds: Vec<_> = harness
+            .query_all(egui_kittest::kittest::by())
+            .filter_map(|node| {
+                let bounds = node.raw_bounds()?;
+                let label = node.label().map(|s| s.to_owned());
+                Some((bounds, label))
+            })
+            .collect();
+
+        let min_x = all_bounds
+            .iter()
+            .map(|(b, _)| b.x0)
+            .fold(f64::INFINITY, f64::min);
+        let min_x = if min_x.is_finite() { min_x } else { 0.0 };
+
+        all_bounds
+            .iter()
+            .filter_map(|(bounds, label)| {
+                if bounds.x0 < min_x - 4.0 || bounds.x1 > min_x + f64::from(width + 4.0) {
+                    Some(format!(
+                        "label={label:?} bounds=({:.1}, {:.1})-({:.1}, {:.1})",
+                        bounds.x0, bounds.y0, bounds.x1, bounds.y1
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plain_paragraph_stays_within_renderer_width_at_198px() {
+        let overflows = markdown_overflows(
+            "This is a plain paragraph without lists or code blocks. It should wrap inside the \
+             allocated markdown renderer width even on a narrow viewport.",
+            198.0,
+        );
+        assert!(
+            overflows.is_empty(),
+            "plain paragraph overflowed: {overflows:?}"
+        );
+    }
+
+    #[test]
+    fn emphasized_paragraph_followed_by_code_block_stays_within_renderer_width_at_198px() {
+        let overflows = markdown_overflows(
+            "Use **strong emphasis** before the example so the preceding paragraph exercises the \
+             inline formatting path, then render the code block below without shifting the chat \
+             layout.\n\n\
+             ```rust\n\
+             let builder = egui::Frame::default()\n\
+                 .inner_margin(8.0)\n\
+                 .corner_radius(4.0)\n\
+                 .fill(ui.visuals().panel_fill);\n\
+             ```\n\n\
+             After the block, render one more **bold marker** to ensure normal inline content \
+             still lines up with the rest of the conversation.",
+            198.0,
+        );
+        assert!(
+            overflows.is_empty(),
+            "code block markdown overflowed at 198px: {overflows:?}"
+        );
+    }
+
+    #[test]
+    fn exact_repro_paragraph_stays_within_renderer_width_across_narrow_sizes() {
+        let paragraph = "The Linux issue is fixed in messages_e2e.rs. \
+             restart_should_prefetch_newer_known_participant_relay_list_e2e now waits until \
+             sender_current has actually ingested the recipient’s relay-A DM relay list before \
+             the first send, instead of relying on the fixed warmup alone.";
+
+        for width in [240.0, 220.0, 210.0, 205.0, 200.0, 198.0] {
+            let overflows = markdown_overflows(paragraph, width);
+            assert!(
+                overflows.is_empty(),
+                "exact repro paragraph overflowed at {width}px: {overflows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_list_repro_paragraph_stays_within_renderer_width_across_narrow_sizes() {
+        let paragraph =
+            "1. Medium: the restart E2E tests are not fully correct as written; at least one is \
+             flaky because it waits on relay-side giftwrap counts without continuing to step the \
+             sender that flushes outbound publishes. The helper at messages_e2e.rs only polls the \
+             relay DB. In messages_e2e.rs, messages_e2e.rs, messages_e2e.rs, and \
+             messages_e2e.rs, the test stops stepping sender_device before asserting the relay \
+             count increase. I reproduced that flake directly: \
+             same_account_device_restart_catches_up_from_existing_db_e2e failed once with \
+             \"expected relay giftwrap count at least 2, actual 1\", then passed immediately on \
+             rerun. The same pattern exists in the many-conversation restart variants too.";
+
+        for width in [
+            300.0, 280.0, 260.0, 240.0, 220.0, 210.0, 200.0, 198.0, 190.0, 180.0,
+        ] {
+            let overflows = markdown_overflows(paragraph, width);
+            assert!(
+                overflows.is_empty(),
+                "ordered-list repro paragraph overflowed at {width}px: {overflows:?}"
+            );
+        }
     }
 
     #[test]

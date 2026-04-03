@@ -1,3 +1,11 @@
+pub(crate) const CHAT_MARGIN_NARROW: i8 = 8;
+pub(crate) const CHAT_MARGIN_WIDE: i8 = 20;
+
+/// Returns the (narrow, wide) chat frame margins for test assertions.
+pub fn chat_margins() -> (i8, i8) {
+    (CHAT_MARGIN_NARROW, CHAT_MARGIN_WIDE)
+}
+
 use super::badge::{BadgeVariant, StatusBadge};
 use super::diff;
 use super::git_status_ui;
@@ -359,9 +367,9 @@ impl<'a> DaveUi<'a> {
 
     fn chat_margin(&self, ctx: &egui::Context) -> i8 {
         if self.flags.contains(DaveUiFlags::Compact) || notedeck::ui::is_narrow(ctx) {
-            8
+            CHAT_MARGIN_NARROW
         } else {
-            20
+            CHAT_MARGIN_WIDE
         }
     }
 
@@ -508,6 +516,25 @@ impl<'a> DaveUi<'a> {
     fn render_chat(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
         let mut response = DaveResponse::default();
         let is_agentic = self.ai_mode == AiMode::Agentic;
+        // Constrain chat content to the narrower of available width, max rect,
+        // and clip rect.  We measure from the cursor (content left edge after
+        // the frame's padding) to the nearest right boundary so that the
+        // frame's right margin is respected.
+        let cursor_left = ui.cursor().min.x;
+        let right_bound = ui.max_rect().right().min(ui.clip_rect().right());
+        let content_width = ui
+            .available_width()
+            .min((right_bound - cursor_left).max(0.0))
+            .max(0.0);
+        ui.set_width(content_width);
+        ui.set_max_width(content_width);
+        // Tighten the clip rect so no child can paint past the content area.
+        let content_clip = {
+            let mut r = ui.clip_rect();
+            r.set_right(r.right().min(cursor_left + content_width));
+            r
+        };
+        ui.set_clip_rect(content_clip);
 
         // Find where queued (not-yet-dispatched) user messages start.
         // When streaming, append_token inserts an Assistant between the
@@ -890,7 +917,7 @@ impl<'a> DaveUi<'a> {
         let shift_held = ui.input(|i| i.modifiers.shift);
         let in_tentative = self.permission_message_state != PermissionMessageState::None;
 
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.horizontal_wrapped(|ui| {
             if in_tentative {
                 tentative_send_ui(self.permission_message_state, "Allow", "Deny", ui, action);
             } else {
@@ -1033,7 +1060,7 @@ impl<'a> DaveUi<'a> {
                     let in_tentative =
                         self.permission_message_state != PermissionMessageState::None;
 
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.horizontal_wrapped(|ui| {
                         if in_tentative {
                             tentative_send_ui(
                                 self.permission_message_state,
@@ -1113,6 +1140,14 @@ impl<'a> DaveUi<'a> {
 
     /// Render tool result metadata as a compact line
     fn executed_tool_ui(result: &ExecutedTool, ui: &mut egui::Ui) {
+        // Capture available width and clip rect BEFORE entering horizontal
+        // layout.  `ui.horizontal()` creates a child UI whose max_rect can
+        // expand beyond the parent — `set_max_width` alone is not sufficient
+        // to prevent overflow.  By using `allocate_ui_with_layout` with a
+        // fixed size we get a truly bounded child UI.
+        let max_w = ui.available_width();
+        let parent_clip = ui.clip_rect();
+
         if let Some(file_update) = &result.file_update {
             // File edit with diff — show collapsible header with inline diff
             let expand_id = ui.id().with("exec_diff").with(&result.summary);
@@ -1121,25 +1156,36 @@ impl<'a> DaveUi<'a> {
 
             let header_resp = ui
                 .horizontal(|ui| {
+                    ui.set_max_width(max_w);
+                    let mut clip = parent_clip;
+                    clip.set_right(clip.right().min(ui.max_rect().right()));
+                    ui.set_clip_rect(clip);
+
                     let arrow = if expanded { "▼" } else { "▶" };
                     ui.add(egui::Label::new(
                         egui::RichText::new(arrow)
                             .size(10.0)
                             .color(ui.visuals().text_color().gamma_multiply(0.5)),
                     ));
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(&result.tool_name)
-                            .size(11.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.6))
-                            .monospace(),
-                    ));
-                    if !result.summary.is_empty() {
-                        ui.add(egui::Label::new(
-                            egui::RichText::new(&result.summary)
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&result.tool_name)
                                 .size(11.0)
-                                .color(ui.visuals().text_color().gamma_multiply(0.4))
+                                .color(ui.visuals().text_color().gamma_multiply(0.6))
                                 .monospace(),
-                        ));
+                        )
+                        .truncate(),
+                    );
+                    if !result.summary.is_empty() {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&result.summary)
+                                    .size(11.0)
+                                    .color(ui.visuals().text_color().gamma_multiply(0.4))
+                                    .monospace(),
+                            )
+                            .truncate(),
+                        );
                     }
                 })
                 .response
@@ -1154,23 +1200,38 @@ impl<'a> DaveUi<'a> {
                 diff::file_update_ui(file_update, false, ui);
             }
         } else {
-            // Compact single-line display with subdued styling
-            ui.horizontal(|ui| {
-                ui.add(egui::Label::new(
-                    egui::RichText::new(&result.tool_name)
-                        .size(11.0)
-                        .color(ui.visuals().text_color().gamma_multiply(0.6))
-                        .monospace(),
-                ));
-                if !result.summary.is_empty() {
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(&result.summary)
-                            .size(11.0)
-                            .color(ui.visuals().text_color().gamma_multiply(0.4))
-                            .monospace(),
-                    ));
-                }
-            });
+            // Compact single-line display with subdued styling.
+            // Use allocate_ui_with_layout to hard-constrain the width — a
+            // plain ui.horizontal() + set_max_width does not prevent the
+            // inner layout from expanding past the parent boundary.
+            let row_h = ui.spacing().interact_size.y;
+            ui.allocate_ui_with_layout(
+                egui::vec2(max_w, row_h),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.set_clip_rect(parent_clip);
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&result.tool_name)
+                                .size(11.0)
+                                .color(ui.visuals().text_color().gamma_multiply(0.6))
+                                .monospace(),
+                        )
+                        .truncate(),
+                    );
+                    if !result.summary.is_empty() {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(&result.summary)
+                                    .size(11.0)
+                                    .color(ui.visuals().text_color().gamma_multiply(0.4))
+                                    .monospace(),
+                            )
+                            .truncate(),
+                        );
+                    }
+                },
+            );
         }
     }
 
@@ -1197,50 +1258,61 @@ impl<'a> DaveUi<'a> {
         let has_tools = tool_count > 0;
         // Compute expand ID from outer ui, before horizontal changes the id scope
         let expand_id = ui.id().with("subagent_expand").with(&info.task_id);
+        let max_w = ui.available_width();
+        let parent_clip = ui.clip_rect();
 
-        ui.horizontal(|ui| {
-            // Status badge with color based on status
-            let variant = match info.status {
-                SubagentStatus::Running => BadgeVariant::Warning,
-                SubagentStatus::Completed => BadgeVariant::Success,
-                SubagentStatus::Failed => BadgeVariant::Destructive,
-            };
-            StatusBadge::new(&info.subagent_type)
-                .variant(variant)
-                .show(ui);
+        let row_h = ui.spacing().interact_size.y;
+        ui.allocate_ui_with_layout(
+            egui::vec2(max_w, row_h),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_clip_rect(parent_clip);
+                // Status badge with color based on status
+                let variant = match info.status {
+                    SubagentStatus::Running => BadgeVariant::Warning,
+                    SubagentStatus::Completed => BadgeVariant::Success,
+                    SubagentStatus::Failed => BadgeVariant::Destructive,
+                };
+                StatusBadge::new(&info.subagent_type)
+                    .variant(variant)
+                    .show(ui);
 
-            // Description
-            ui.label(
-                egui::RichText::new(&info.description)
-                    .size(11.0)
-                    .color(ui.visuals().text_color().gamma_multiply(0.7)),
-            );
-
-            // Show spinner for running subagents
-            if info.status == SubagentStatus::Running {
-                ui.add(egui::Spinner::new().size(11.0));
-            }
-
-            // Tool count indicator (clickable to expand)
-            if has_tools {
-                let expanded = ui.data(|d| d.get_temp::<bool>(expand_id).unwrap_or(false));
-                let arrow = if expanded { "▾" } else { "▸" };
-                let label = format!("{} ({} tools)", arrow, tool_count);
-                if ui
-                    .add(
-                        egui::Label::new(
-                            egui::RichText::new(label)
-                                .size(10.0)
-                                .color(ui.visuals().text_color().gamma_multiply(0.4)),
-                        )
-                        .sense(egui::Sense::click()),
+                // Description
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&info.description)
+                            .size(11.0)
+                            .color(ui.visuals().text_color().gamma_multiply(0.7)),
                     )
-                    .clicked()
-                {
-                    ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
+                    .truncate(),
+                );
+
+                // Show spinner for running subagents
+                if info.status == SubagentStatus::Running {
+                    ui.add(egui::Spinner::new().size(11.0));
                 }
-            }
-        });
+
+                // Tool count indicator (clickable to expand)
+                if has_tools {
+                    let expanded = ui.data(|d| d.get_temp::<bool>(expand_id).unwrap_or(false));
+                    let arrow = if expanded { "▾" } else { "▸" };
+                    let label = format!("{} ({} tools)", arrow, tool_count);
+                    if ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(label)
+                                    .size(10.0)
+                                    .color(ui.visuals().text_color().gamma_multiply(0.4)),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                        .clicked()
+                    {
+                        ui.data_mut(|d| d.insert_temp(expand_id, !expanded));
+                    }
+                }
+            },
+        );
 
         // Expanded tool results
         if has_tools {
@@ -1447,11 +1519,17 @@ impl<'a> DaveUi<'a> {
 
     fn user_chat(&self, msg: &crate::messages::UserMessage, is_queued: bool, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            // Keep a small inset from the extreme right edge so wrapped user
+            // text doesn't visually clip against the chat container boundary.
+            ui.add_space(6.0);
+
             let r = egui::Frame::new()
                 .inner_margin(10.0)
                 .corner_radius(10.0)
                 .fill(ui.visuals().widgets.inactive.weak_bg_fill)
                 .show(ui, |ui| {
+                    ui.set_max_width(ui.available_width());
+
                     for img in &msg.images {
                         ui.add(
                             egui::Image::from_bytes(img.egui_uri(), img.bytes.clone())
@@ -2042,9 +2120,14 @@ fn toggle_badges_ui(
         action = Some(DaveAction::CyclePermissionMode);
     }
 
-    // COMPACT badge
+    // Keep badge row from spilling off-screen on very narrow layouts.
+    let compact_label = if notedeck::ui::is_narrow(ui.ctx()) {
+        "CMP"
+    } else {
+        "COMPACT"
+    };
     let compact_badge =
-        super::badge::StatusBadge::new("COMPACT").variant(super::badge::BadgeVariant::Default);
+        super::badge::StatusBadge::new(compact_label).variant(super::badge::BadgeVariant::Default);
     if compact_badge
         .show(ui)
         .on_hover_text("Click to compact context")
