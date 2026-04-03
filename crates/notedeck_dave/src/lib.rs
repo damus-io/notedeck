@@ -288,6 +288,16 @@ impl PendingWorktreeRemoval {
     }
 }
 
+/// Result from processing incoming AI backend tokens for all sessions.
+struct ProcessEventsResult {
+    /// Sessions that need to dispatch queued user messages.
+    needs_send: HashSet<SessionId>,
+    /// Nostr events to publish to relays.
+    events_to_publish: Vec<session_events::BuiltEvent>,
+    /// Sessions that need a compact query dispatched (compact-and-proceed).
+    needs_compact: HashSet<SessionId>,
+}
+
 /// Info captured from a session before deletion, for publishing a "deleted" state event.
 struct DeletedSessionInfo {
     claude_session_id: String,
@@ -731,14 +741,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     /// Process incoming tokens from the ai backend for ALL sessions.
-    /// Returns (sessions needing tool responses, events to publish to relays).
-    fn process_events(
-        &mut self,
-        app_ctx: &AppContext,
-    ) -> (HashSet<SessionId>, Vec<session_events::BuiltEvent>) {
-        // Track which sessions need to send tool responses
+    fn process_events(&mut self, app_ctx: &AppContext) -> ProcessEventsResult {
         let mut needs_send: HashSet<SessionId> = HashSet::new();
         let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
+        let mut needs_compact: HashSet<SessionId> = HashSet::new();
         let active_id = self.session_manager.active_id();
 
         // Extract secret key once for live event generation
@@ -889,6 +895,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             app_ctx.ndb,
                             &mut events_to_publish,
                             &mut needs_send,
+                            &mut needs_compact,
                         );
                     }
                 }
@@ -949,6 +956,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                                 app_ctx.ndb,
                                 &mut events_to_publish,
                                 &mut needs_send,
+                                &mut needs_compact,
                             );
                             if !matches!(session.chat.last(), Some(Message::Error(_))) {
                                 session.chat.push(Message::Error(
@@ -963,7 +971,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
-        (needs_send, events_to_publish)
+        ProcessEventsResult {
+            needs_send,
+            events_to_publish,
+            needs_compact,
+        }
     }
 
     fn ui(&mut self, app_ctx: &mut AppContext, ui: &mut egui::Ui) -> DaveResponse {
@@ -2964,25 +2976,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 None
             }
             UiActionResult::Compact => {
-                if let Some(session) = self.session_manager.get_active() {
-                    let session_id = format!("dave-session-{}", session.id);
-                    tracing::info!("Compact requested for session {}", session_id);
-                    if let Some(rx) = get_backend(&self.backends, bt)
-                        .compact_session(session_id.clone(), ui.ctx().clone())
-                    {
-                        tracing::info!("Compact dispatched for session {}", session_id);
-                        if let Some(session) = self.session_manager.get_active_mut() {
-                            session.incoming_tokens = Some(rx);
-                            session.last_backend_msg = Some(std::time::Instant::now());
-                        }
-                    } else {
-                        tracing::warn!("Compact failed: no backend session for {}", session_id);
-                    }
-                }
+                self.dispatch_compact(bt, ui);
                 None
             }
             UiActionResult::Handled => None,
         }
+    }
+
+    /// Dispatch a compact request to the backend for the active session.
+    fn dispatch_compact(&mut self, bt: BackendType, ui: &egui::Ui) {
+        dispatch_compact_for_active(&mut self.session_manager, &self.backends, bt, ui.ctx());
     }
 
     /// Handle a user send action triggered by the ui
@@ -3470,7 +3473,11 @@ impl notedeck::App for Dave {
         self.check_interrupt_timeout();
 
         // Process incoming AI responses for all sessions
-        let (sessions_needing_send, events_to_publish) = self.process_events(ctx);
+        let ProcessEventsResult {
+            needs_send: sessions_needing_send,
+            events_to_publish,
+            needs_compact: sessions_needing_compact,
+        } = self.process_events(ctx);
 
         // Build permission response events from remote sessions
         self.publish_pending_perm_responses(ctx);
@@ -3621,6 +3628,16 @@ impl notedeck::App for Dave {
                 session_id
             );
             self.send_user_message_for(session_id, ctx, egui_ctx);
+        }
+
+        // Dispatch compact queries for sessions in compact-and-proceed flow
+        for session_id in sessions_needing_compact {
+            dispatch_compact_for_session(
+                &mut self.session_manager,
+                &self.backends,
+                session_id,
+                egui_ctx,
+            );
         }
     }
 
@@ -4260,6 +4277,7 @@ fn handle_stream_end(
     ndb: &nostrdb::Ndb,
     events_to_publish: &mut Vec<session_events::BuiltEvent>,
     needs_send: &mut HashSet<SessionId>,
+    needs_compact: &mut HashSet<SessionId>,
 ) {
     session.finalize_last_assistant();
 
@@ -4301,10 +4319,69 @@ fn handle_stream_end(
 
     session.dispatch_state.stream_ended();
 
+    // Compact-and-proceed: if we were waiting for the stream to end
+    // before dispatching the compact query, signal the caller now.
+    if let Some(agentic) = &session.agentic {
+        if agentic.compact_and_proceed == session::CompactAndProceedState::WaitingForStreamEnd {
+            needs_compact.insert(session_id);
+        }
+    }
+
     // After compact & approve: compaction must have completed
     // (ReadyToProceed) before we send "Proceed".
     if session.take_compact_and_proceed() {
         needs_send.insert(session_id);
+    }
+}
+
+/// Dispatch a compact request to the backend for the active session.
+fn dispatch_compact_for_active(
+    session_manager: &mut session::SessionManager,
+    backends: &HashMap<BackendType, Box<dyn AiBackend>>,
+    bt: BackendType,
+    ctx: &egui::Context,
+) {
+    let Some(session) = session_manager.get_active() else {
+        return;
+    };
+    let session_id = format!("dave-session-{}", session.id);
+    tracing::info!("Compact requested for session {}", session_id);
+    if let Some(rx) = get_backend(backends, bt).compact_session(session_id.clone(), ctx.clone()) {
+        tracing::info!("Compact dispatched for session {}", session_id);
+        if let Some(session) = session_manager.get_active_mut() {
+            session.incoming_tokens = Some(rx);
+            session.last_backend_msg = Some(std::time::Instant::now());
+        }
+    } else {
+        tracing::warn!("Compact failed: no backend session for {}", session_id);
+    }
+}
+
+/// Dispatch a compact query for a specific session (compact-and-proceed flow).
+fn dispatch_compact_for_session(
+    session_manager: &mut session::SessionManager,
+    backends: &HashMap<BackendType, Box<dyn AiBackend>>,
+    session_id: SessionId,
+    ctx: &egui::Context,
+) {
+    let Some(session) = session_manager.get(session_id) else {
+        return;
+    };
+    let bt = session.backend_type;
+    let backend_session_id = format!("dave-session-{}", session_id);
+    tracing::info!(
+        "Session {}: dispatching compact for compact-and-proceed",
+        session_id
+    );
+    if let Some(rx) = get_backend(backends, bt).compact_session(backend_session_id, ctx.clone()) {
+        if let Some(session) = session_manager.get_mut(session_id) {
+            session.incoming_tokens = Some(rx);
+            session.last_backend_msg = Some(std::time::Instant::now());
+            if let Some(agentic) = &mut session.agentic {
+                agentic.is_compacting = true;
+                agentic.compact_and_proceed = session::CompactAndProceedState::WaitingForCompaction;
+            }
+        }
     }
 }
 

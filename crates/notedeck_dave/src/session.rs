@@ -130,15 +130,21 @@ pub fn friendly_model_name(model: &str) -> &str {
 
 /// Tracks the "Compact & Approve" lifecycle.
 ///
-/// Button click → `WaitingForCompaction` (intent recorded).
-/// CompactionComplete → `ReadyToProceed` (compaction finished, safe to send).
-/// Stream-end (local) or compaction_complete event (remote) → consume and fire.
-#[derive(Default, Clone, Copy, PartialEq)]
+/// Button click → `WaitingForStreamEnd` (permission approved, waiting for
+/// the current stream to finish so we can send the compact query).
+/// Stream-end → `WaitingForCompaction` (compact query dispatched).
+/// CompactionComplete + stream-end → `ReadyToProceed` → consume and fire.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum CompactAndProceedState {
     /// No compact-and-proceed in progress.
     #[default]
     Idle,
-    /// User clicked "Compact & Approve"; waiting for compaction to finish.
+    /// User clicked "Compact & Approve"; permission was approved but the
+    /// current stream hasn't ended yet. We need to wait before we can
+    /// dispatch the compact query.
+    WaitingForStreamEnd,
+    /// The current stream ended; compact query has been dispatched and
+    /// we're waiting for compaction to finish.
     WaitingForCompaction,
     /// Compaction finished; send "Proceed" on the next safe opportunity
     /// (stream-end for local, immediately for remote).
@@ -2983,6 +2989,100 @@ mod tests {
         assert_eq!(
             mgr.visual_order(&collapse),
             vec![local_b, remote_a, chat_id]
+        );
+    }
+
+    // ---- compact_and_proceed tests ----
+
+    #[test]
+    fn take_compact_and_proceed_idle_returns_false() {
+        let mut session = test_session();
+        // Agentic session starts in Idle state
+        assert!(!session.take_compact_and_proceed());
+        // Chat should be empty — no "Proceed" message added
+        assert!(session.chat.is_empty());
+    }
+
+    #[test]
+    fn take_compact_and_proceed_waiting_for_stream_end_returns_false() {
+        let mut session = test_session();
+        session.agentic.as_mut().unwrap().compact_and_proceed =
+            CompactAndProceedState::WaitingForStreamEnd;
+        assert!(!session.take_compact_and_proceed());
+        assert!(session.chat.is_empty());
+    }
+
+    #[test]
+    fn take_compact_and_proceed_waiting_for_compaction_returns_false() {
+        let mut session = test_session();
+        session.agentic.as_mut().unwrap().compact_and_proceed =
+            CompactAndProceedState::WaitingForCompaction;
+        assert!(!session.take_compact_and_proceed());
+        assert!(session.chat.is_empty());
+    }
+
+    #[test]
+    fn take_compact_and_proceed_ready_returns_true_and_pushes_message() {
+        let mut session = test_session();
+        session.agentic.as_mut().unwrap().compact_and_proceed =
+            CompactAndProceedState::ReadyToProceed;
+
+        assert!(session.take_compact_and_proceed());
+
+        // Should have pushed a user "Proceed" message
+        assert_eq!(session.chat.len(), 1);
+        assert!(matches!(session.chat[0], Message::User(ref s) if s.text.contains("Proceed")));
+
+        // State should be reset to Idle
+        assert_eq!(
+            session.agentic.as_ref().unwrap().compact_and_proceed,
+            CompactAndProceedState::Idle
+        );
+    }
+
+    #[test]
+    fn take_compact_and_proceed_only_fires_once() {
+        let mut session = test_session();
+        session.agentic.as_mut().unwrap().compact_and_proceed =
+            CompactAndProceedState::ReadyToProceed;
+
+        assert!(session.take_compact_and_proceed());
+        // Second call should return false — state was consumed
+        assert!(!session.take_compact_and_proceed());
+        // Only one "Proceed" message
+        assert_eq!(session.chat.len(), 1);
+    }
+
+    #[test]
+    fn compact_and_proceed_full_lifecycle() {
+        let mut session = test_session();
+        let agentic = session.agentic.as_mut().unwrap();
+
+        // 1. User clicks "Compact & Approve" → WaitingForStreamEnd
+        agentic.compact_and_proceed = CompactAndProceedState::WaitingForStreamEnd;
+        assert!(!session.take_compact_and_proceed());
+
+        // 2. Stream ends → caller dispatches compact, sets WaitingForCompaction
+        let agentic = session.agentic.as_mut().unwrap();
+        assert_eq!(
+            agentic.compact_and_proceed,
+            CompactAndProceedState::WaitingForStreamEnd
+        );
+        agentic.compact_and_proceed = CompactAndProceedState::WaitingForCompaction;
+        assert!(!session.take_compact_and_proceed());
+
+        // 3. Compaction completes → advance to ReadyToProceed
+        let agentic = session.agentic.as_mut().unwrap();
+        agentic.compact_and_proceed = CompactAndProceedState::ReadyToProceed;
+
+        // 4. Compact stream ends → take_compact_and_proceed fires → sends "Proceed"
+        assert!(session.take_compact_and_proceed());
+        assert!(matches!(session.chat.last(), Some(Message::User(ref s)) if s.text.contains("Proceed")));
+
+        // 5. State is back to Idle
+        assert_eq!(
+            session.agentic.as_ref().unwrap().compact_and_proceed,
+            CompactAndProceedState::Idle
         );
     }
 }

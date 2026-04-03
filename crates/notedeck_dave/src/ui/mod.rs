@@ -1111,14 +1111,12 @@ pub fn handle_ui_action(
             let result = update::handle_permission_response(
                 session_manager,
                 request_id,
-                PermissionResponse::Allow {
-                    message: Some("/compact".into()),
-                },
+                PermissionResponse::Allow { message: None },
             );
             if let Some(session) = session_manager.get_active_mut() {
                 if let Some(agentic) = &mut session.agentic {
                     agentic.compact_and_proceed =
-                        crate::session::CompactAndProceedState::WaitingForCompaction;
+                        crate::session::CompactAndProceedState::WaitingForStreamEnd;
                 }
             }
             result.map_or(
