@@ -178,9 +178,18 @@ fn try_process_event(
     });
 
     // Handle Escape separately: only consume the key if there's a route to go back to,
-    // otherwise let Chrome handle it (e.g. to open the side menu)
+    // otherwise let Chrome handle it (e.g. to open the side menu).
+    // Don't consume if the media viewer is open — it should get priority.
+    let media_viewer_open = damus
+        .view_state
+        .media_viewer
+        .flags
+        .contains(MediaViewerFlags::Open);
     let can_go_back = current_columns.get_selected_router().routes().len() > 1;
-    if can_go_back && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+    if !media_viewer_open
+        && can_go_back
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
         current_columns.get_selected_router().go_back();
     }
 
