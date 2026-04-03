@@ -296,26 +296,48 @@ impl OutboxPool {
             let _ = self.ensure_relay(&relay_id, wakeup);
             let has_pending = self.ingest_relay_session(&relay_id, session);
             self.eose_tracker
-                .set_relay_pending_state(&relay_id, has_pending);
+                .set_relay_pending_effect_state(&relay_id, has_pending);
         }
     }
 
-    /// Ingests one relay session and applies resulting EOSE deltas to outbox lifecycle state.
+    /// Ingests one relay session with staged subscription work and applies the
+    /// resulting resolved relay effects to outbox lifecycle state.
     fn ingest_relay_session(
         &mut self,
         relay_id: &NormRelayUrl,
         session: CoordinationSession,
     ) -> bool {
-        let mut has_pending_eose = false;
-        let mut ingest = {
+        let ingest = {
             let Some(relay) = self.relays.get_mut(relay_id) else {
                 return false;
             };
             relay.ingest_session(&self.subs, session)
         };
+        self.apply_ingest_result(relay_id, ingest)
+    }
 
+    /// Flushes one relay's pending coordinator-side effects without staging any
+    /// new subscription work.
+    fn flush_relay_pending_effects(&mut self, relay_id: &NormRelayUrl) -> bool {
+        let ingest = {
+            let Some(relay) = self.relays.get_mut(relay_id) else {
+                return false;
+            };
+            relay.flush_pending_effects(&self.subs)
+        };
+        self.apply_ingest_result(relay_id, ingest)
+    }
+
+    /// Applies one relay ingest result and any follow-up oneshot unsubs until
+    /// the relay's resolved effect stream is fully consumed.
+    fn apply_ingest_result(
+        &mut self,
+        relay_id: &NormRelayUrl,
+        mut ingest: crate::relay::coordinator::IngestSessionResult,
+    ) -> bool {
+        let mut has_pending_effects = false;
         loop {
-            has_pending_eose |= ingest.has_pending_eose;
+            has_pending_effects |= ingest.has_pending_effects;
             let oneshot_unsubs = self.apply_relay_eose_delta(relay_id, ingest.eose_delta);
             if oneshot_unsubs.is_empty() {
                 break;
@@ -328,13 +350,13 @@ impl OutboxPool {
 
             ingest = {
                 let Some(relay) = self.relays.get_mut(relay_id) else {
-                    return has_pending_eose;
+                    return has_pending_effects;
                 };
                 relay.ingest_session(&self.subs, unsub_session)
             };
         }
 
-        has_pending_eose
+        has_pending_effects
     }
 
     /// Applies one relay's EOSE delta to the durable tracker and returns oneshot legs to close.
@@ -510,7 +532,7 @@ impl OutboxPool {
         raw: Nip11LimitationsRaw,
         fetched_at: SystemTime,
     ) -> Nip11ApplyOutcome {
-        let (current, derived, invalidations) = {
+        let (current, derived) = {
             let Some(coord) = self.relays.get_mut(relay) else {
                 return Nip11ApplyOutcome::RelayUnknown;
             };
@@ -527,11 +549,12 @@ impl OutboxPool {
             }
 
             coord.set_limits(&self.subs, derived);
-            let invalidations = coord.drain_tracker_invalidations();
-            (current, derived, invalidations)
+            (current, derived)
         };
 
-        self.apply_relay_tracker_invalidations(relay, invalidations);
+        let has_pending = self.flush_relay_pending_effects(relay);
+        self.eose_tracker
+            .set_relay_pending_effect_state(relay, has_pending);
         tracing::info!(
             "nip11: {relay} limits updated — max_subs: {} -> {}, max_json_bytes: {} -> {}",
             current.maximum_subs,
@@ -639,18 +662,13 @@ impl OutboxPool {
     where
         for<'a> F: FnMut(RawEventData<'a>),
     {
-        let mut tracker_invalidations = Vec::new();
         's: while max_notes > 0 {
             let mut received_any = false;
 
             for (relay_id, relay) in &mut self.relays {
                 let resp = relay.try_recv(&self.subs, &mut process);
-                let invalidated = relay.drain_tracker_invalidations();
-                if !invalidated.is_empty() {
-                    tracker_invalidations.push((relay_id.clone(), invalidated));
-                }
-                if resp.eose_enqueued {
-                    self.eose_tracker.note_relay_pending(relay_id);
+                if resp.eose_enqueued || relay.has_pending_effects() {
+                    self.eose_tracker.note_relay_pending_effects(relay_id);
                 }
 
                 if !resp.received_event {
@@ -672,21 +690,17 @@ impl OutboxPool {
             }
         }
 
-        for (relay_id, invalidated) in tracker_invalidations {
-            self.apply_relay_tracker_invalidations(&relay_id, invalidated);
-        }
-
-        self.process_pending_eose_relays();
+        self.process_pending_relay_effects();
         self.multicast.try_recv(process);
     }
 
-    /// Processes relay-local EOSE queues accumulated during receive polling.
-    fn process_pending_eose_relays(&mut self) {
-        let relays = self.eose_tracker.drain_pending_relays();
+    /// Processes relay-local pending effects accumulated during receive polling.
+    fn process_pending_relay_effects(&mut self) {
+        let relays = self.eose_tracker.drain_pending_effect_relays();
         for relay_id in relays {
-            let has_pending = self.ingest_relay_session(&relay_id, CoordinationSession::default());
+            let has_pending = self.flush_relay_pending_effects(&relay_id);
             self.eose_tracker
-                .set_relay_pending_state(&relay_id, has_pending);
+                .set_relay_pending_effect_state(&relay_id, has_pending);
         }
 
         self.flush_fully_eosed_effects();
@@ -1037,7 +1051,7 @@ mod tests {
     /// Receive-driven EOSE processing must apply ready fully-EOSE effects in
     /// the same frame, including oneshot cleanup.
     #[test]
-    fn process_pending_eose_relays_applies_ready_fully_eosed_effects() {
+    fn process_pending_relay_effects_applies_ready_fully_eosed_effects() {
         let relay = NormRelayUrl::new("wss://relay-eose-pending-effects.example.com").unwrap();
         let id = OutboxSubId(24);
         let mut relays = HashSet::new();
@@ -1054,8 +1068,8 @@ mod tests {
         );
 
         pool.eose_tracker.mark_relay_eose(&relay, id, &pool.subs);
-        pool.eose_tracker.note_relay_pending(&relay);
-        pool.process_pending_eose_relays();
+        pool.eose_tracker.note_relay_pending_effects(&relay);
+        pool.process_pending_relay_effects();
 
         assert!(
             pool.subs.get(&id).is_none(),

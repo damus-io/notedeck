@@ -74,6 +74,12 @@ impl TransparentData {
         self.request_by_sid.get(sid).copied()
     }
 
+    #[cfg(test)]
+    /// Returns the live relay subscription ID for one active transparent leg.
+    pub fn active_sid(&self, req_id: &OutboxSubId) -> Option<RelayReqId> {
+        Some(self.active_legs_by_request.get(req_id)?.sid.clone())
+    }
+
     fn active_leg_mut(
         &mut self,
         req_id: &OutboxSubId,
