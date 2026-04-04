@@ -63,8 +63,7 @@ pub fn insert_sub_with_policy(
     id: OutboxSubId,
     policy: RelayRoutingPreference,
 ) {
-    let mut relays = RelayUrlPkgs::new(HashSet::new());
-    relays.routing_preference = policy;
+    let relays = RelayUrlPkgs::with_preference(HashSet::new(), policy);
     subs.new_subscription(
         id,
         SubscribeTask {
@@ -84,8 +83,7 @@ pub fn insert_sub_with_policy_for_relay(
 ) {
     let mut urls = HashSet::new();
     urls.insert(NormRelayUrl::new(relay_url).expect("valid test relay url"));
-    let mut relays = RelayUrlPkgs::new(urls);
-    relays.routing_preference = policy;
+    let relays = RelayUrlPkgs::with_preference(urls, policy);
     subs.new_subscription(
         id,
         SubscribeTask {

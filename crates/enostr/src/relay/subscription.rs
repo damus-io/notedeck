@@ -170,8 +170,10 @@ mod tests {
     #[test]
     fn new_subscription_records_metadata() {
         let mut subs = OutboxSubscriptions::default();
-        let mut pkgs = RelayUrlPkgs::new(relay_urls("wss://relay-meta.example.com"));
-        pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+        let pkgs = RelayUrlPkgs::with_preference(
+            relay_urls("wss://relay-meta.example.com"),
+            RelayRoutingPreference::PreferDedicated,
+        );
         let filters = vec![Filter::new().kinds(vec![1]).limit(4).build()];
         let id = OutboxSubId(7);
 

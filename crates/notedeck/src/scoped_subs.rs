@@ -784,8 +784,7 @@ fn subscribe_live(
     }
 
     let relays = resolve_relays(account_read_relays, &spec.relays);
-    let mut relay_pkgs = RelayUrlPkgs::new(relays);
-    relay_pkgs.routing_preference = spec.routing_preference;
+    let relay_pkgs = RelayUrlPkgs::with_preference(relays, spec.routing_preference);
     Some(pool.subscribe(spec.filters.clone(), relay_pkgs))
 }
 

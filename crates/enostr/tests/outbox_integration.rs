@@ -137,8 +137,7 @@ async fn eose_propagation_from_real_relay() {
     // Subscribe with transparent mode (faster EOSE)
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+    let url_pkgs = RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -372,8 +371,7 @@ async fn prefer_dedicated_subscription_receives_eose_when_unsaturated() {
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+    let url_pkgs = RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -397,8 +395,7 @@ async fn no_preference_subscription_receives_eose_when_unsaturated() {
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = RelayRoutingPreference::NoPreference;
+    let url_pkgs = RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::NoPreference);
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -423,8 +420,8 @@ async fn no_preference_request_falls_back_to_compaction_when_dedicated_is_satura
 
     let mut dedicated_urls = HashSet::new();
     dedicated_urls.insert(url.clone());
-    let mut preferred_pkg = RelayUrlPkgs::new(dedicated_urls);
-    preferred_pkg.routing_preference = RelayRoutingPreference::PreferDedicated;
+    let preferred_pkg =
+        RelayUrlPkgs::with_preference(dedicated_urls, RelayRoutingPreference::PreferDedicated);
 
     let first_id = {
         let mut session = pool.start_session(wakeup.clone());
@@ -446,8 +443,8 @@ async fn no_preference_request_falls_back_to_compaction_when_dedicated_is_satura
 
     let mut fallback_urls = HashSet::new();
     fallback_urls.insert(url.clone());
-    let mut no_preference_pkg = RelayUrlPkgs::new(fallback_urls);
-    no_preference_pkg.routing_preference = RelayRoutingPreference::NoPreference;
+    let no_preference_pkg =
+        RelayUrlPkgs::with_preference(fallback_urls, RelayRoutingPreference::NoPreference);
 
     let second_id = {
         let mut session = pool.start_session(wakeup);
@@ -669,8 +666,7 @@ async fn dedicated_eose_does_not_apply_since_to_filters() {
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+    let url_pkgs = RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -716,8 +712,7 @@ async fn since_optimization_waits_for_all_relays_eose() {
     let mut urls = HashSet::new();
     urls.insert(live_url);
     urls.insert(dead_url);
-    let mut url_pkgs = RelayUrlPkgs::new(urls);
-    url_pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+    let url_pkgs = RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
 
     let id = {
         let mut session = pool.start_session(MockWakeup::default());
@@ -764,8 +759,8 @@ async fn preferred_request_stays_active_without_displacing_existing_preferred() 
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut preferred_pkg = RelayUrlPkgs::new(urls);
-    preferred_pkg.routing_preference = RelayRoutingPreference::PreferDedicated;
+    let preferred_pkg =
+        RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
 
     let first_id = {
         let mut session = pool.start_session(wakeup.clone());
@@ -823,8 +818,8 @@ async fn require_dedicated_request_queues_without_compaction_fallback_when_satur
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut required_pkg = RelayUrlPkgs::new(urls);
-    required_pkg.routing_preference = RelayRoutingPreference::RequireDedicated;
+    let required_pkg =
+        RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::RequireDedicated);
 
     let first_id = {
         let mut session = pool.start_session(wakeup.clone());
@@ -886,8 +881,8 @@ async fn require_dedicated_requests_compete_for_last_slot() {
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut required_pkg = RelayUrlPkgs::new(urls);
-    required_pkg.routing_preference = RelayRoutingPreference::RequireDedicated;
+    let required_pkg =
+        RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::RequireDedicated);
 
     let first_id = {
         let mut session = pool.start_session(wakeup.clone());
@@ -969,10 +964,10 @@ async fn prefer_dedicated_does_not_displace_existing_require_dedicated() {
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut required_pkg = RelayUrlPkgs::new(urls.clone());
-    required_pkg.routing_preference = RelayRoutingPreference::RequireDedicated;
-    let mut preferred_pkg = RelayUrlPkgs::new(urls);
-    preferred_pkg.routing_preference = RelayRoutingPreference::PreferDedicated;
+    let required_pkg =
+        RelayUrlPkgs::with_preference(urls.clone(), RelayRoutingPreference::RequireDedicated);
+    let preferred_pkg =
+        RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
 
     let required_id = {
         let mut session = pool.start_session(wakeup.clone());
@@ -1038,10 +1033,10 @@ async fn mixed_require_and_prefer_dedicated_on_one_relay_behaves_as_expected() {
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
-    let mut required_pkg = RelayUrlPkgs::new(urls.clone());
-    required_pkg.routing_preference = RelayRoutingPreference::RequireDedicated;
-    let mut preferred_pkg = RelayUrlPkgs::new(urls);
-    preferred_pkg.routing_preference = RelayRoutingPreference::PreferDedicated;
+    let required_pkg =
+        RelayUrlPkgs::with_preference(urls.clone(), RelayRoutingPreference::RequireDedicated);
+    let preferred_pkg =
+        RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
 
     let required_a = {
         let mut session = pool.start_session(wakeup.clone());

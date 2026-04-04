@@ -149,15 +149,23 @@ impl Default for RelayUrlPkgs {
 }
 
 impl RelayUrlPkgs {
+    /// Builds a relay package with explicit routing preference.
+    pub fn with_preference(
+        urls: HashSet<NormRelayUrl>,
+        routing_preference: RelayRoutingPreference,
+    ) -> Self {
+        Self {
+            urls,
+            routing_preference,
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &NormRelayUrl> {
         self.urls.iter()
     }
 
     pub fn new(urls: HashSet<NormRelayUrl>) -> Self {
-        Self {
-            urls,
-            routing_preference: RelayRoutingPreference::default(),
-        }
+        Self::with_preference(urls, RelayRoutingPreference::default())
     }
 }
 

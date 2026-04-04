@@ -1089,8 +1089,8 @@ mod tests {
         let id = {
             let mut relays = HashSet::new();
             relays.insert(relay.clone());
-            let mut pkgs = RelayUrlPkgs::new(relays);
-            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::PreferDedicated);
             let mut handler = pool.start_session(wakeup);
             handler.subscribe(trivial_filter(), pkgs)
         };
@@ -1110,8 +1110,7 @@ mod tests {
         let id = {
             let mut relays = HashSet::new();
             relays.insert(relay.clone());
-            let mut pkgs = RelayUrlPkgs::new(relays);
-            pkgs.routing_preference = RelayRoutingPreference::NoPreference;
+            let pkgs = RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::NoPreference);
             let mut handler = pool.start_session(wakeup);
             handler.subscribe(trivial_filter(), pkgs)
         };
@@ -1132,8 +1131,8 @@ mod tests {
         let id = {
             let mut relays = HashSet::new();
             relays.insert(relay.clone());
-            let mut pkgs = RelayUrlPkgs::new(relays);
-            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::PreferDedicated);
             let mut handler = pool.start_session(wakeup);
             handler.subscribe(vec![filter], pkgs)
         };
@@ -1180,8 +1179,8 @@ mod tests {
         let id = {
             let mut relays = HashSet::new();
             relays.insert(relay.clone());
-            let mut pkgs = RelayUrlPkgs::new(relays);
-            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::PreferDedicated);
             let mut handler = pool.start_session(wakeup);
             handler.subscribe(vec![filter], pkgs)
         };
@@ -1235,8 +1234,8 @@ mod tests {
             let mut relays = HashSet::new();
             relays.insert(relay_dedicated.clone());
             relays.insert(relay_compaction.clone());
-            let mut pkgs = RelayUrlPkgs::new(relays);
-            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::PreferDedicated);
             let mut handler = pool.start_session(wakeup);
             handler.subscribe(vec![filter], pkgs)
         };
@@ -1549,8 +1548,7 @@ mod tests {
 
         let mut urls = HashSet::new();
         urls.insert(relay.clone());
-        let mut pkgs = RelayUrlPkgs::new(urls);
-        pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+        let pkgs = RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
 
         let mut session = OutboxSession::default();
         session.subscribe(id, trivial_filter(), pkgs);
@@ -1642,8 +1640,7 @@ mod tests {
 
         let mut urls = HashSet::new();
         urls.insert(relay.clone());
-        let mut pkgs = RelayUrlPkgs::new(urls);
-        pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+        let pkgs = RelayUrlPkgs::with_preference(urls, RelayRoutingPreference::PreferDedicated);
         let sub_id = {
             let mut handler = pool.start_session(wakeup.clone());
             handler.subscribe(trivial_filter(), pkgs)
@@ -1839,8 +1836,8 @@ mod tests {
         let id_first = {
             let mut relays = HashSet::new();
             relays.insert(relay.clone());
-            let mut pkgs = RelayUrlPkgs::new(relays);
-            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::PreferDedicated);
             let mut handler = pool.start_session(wakeup.clone());
             handler.subscribe(trivial_filter(), pkgs)
         };
@@ -1848,8 +1845,8 @@ mod tests {
         let id_second = {
             let mut relays = HashSet::new();
             relays.insert(relay.clone());
-            let mut pkgs = RelayUrlPkgs::new(relays);
-            pkgs.routing_preference = RelayRoutingPreference::PreferDedicated;
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::PreferDedicated);
             let mut handler = pool.start_session(wakeup);
             handler.subscribe(trivial_filter(), pkgs)
         };
