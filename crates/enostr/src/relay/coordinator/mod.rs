@@ -135,6 +135,7 @@ impl CoordinationData {
             if max_size > previous_total {
                 self.flush_transparent_queue(subs);
                 self.promote_preferred_compaction_routes(subs);
+                self.drain_compaction_queue(subs);
             }
             return;
         };
@@ -152,6 +153,7 @@ impl CoordinationData {
         );
         let downgrade = self.plan_limit_downgrade(subs, revoked_ids, compacts_revocations);
         self.execute_limit_downgrade_compaction(subs, downgrade);
+        self.drain_compaction_queue(subs);
     }
 
     /// Selects exact transparent victims and compaction revocations for a relay
@@ -308,8 +310,27 @@ impl CoordinationData {
         }
         if !fallback_compaction.is_empty() {
             self.pending_tracker_invalidations
-                .extend(compaction.ingest_session(fallback_compaction));
+                .extend(compaction.ingest_session_without_queue_drain(fallback_compaction));
         }
+    }
+
+    /// Attempts to place any queued compaction work using the pass capacity that
+    /// remains after coordinator-level policy decisions complete.
+    fn drain_compaction_queue(&mut self, subs: &OutboxSubscriptions) {
+        if !self.compaction_data.has_queued_subs() {
+            return;
+        }
+
+        self.pending_tracker_invalidations.extend(
+            CompactionRelay::new(
+                self.websocket.as_mut(),
+                &mut self.compaction_data,
+                self.limits.max_json_bytes,
+                &mut self.limits.sub_guardian,
+                subs,
+            )
+            .drain_queue(),
+        );
     }
 
     fn repack_compaction_for_new_json_limit(&mut self, subs: &OutboxSubscriptions) {
@@ -382,10 +403,24 @@ impl CoordinationData {
         subs: &OutboxSubscriptions,
         id: OutboxSubId,
     ) -> ProbeTransparentRouteOutcome {
-        let Some(view) = subs.view(&id) else {
+        let Some(placed) = self.try_place_transparent_route(subs, id) else {
             return ProbeTransparentRouteOutcome::Skipped;
         };
 
+        match placed {
+            TransparentPlaceResult::Placed => ProbeTransparentRouteOutcome::Placed,
+            TransparentPlaceResult::NoRoom => ProbeTransparentRouteOutcome::NeedsCapacity,
+        }
+    }
+
+    /// Materializes one transparent route immediately through the production
+    /// transparent relay path and updates coordinator ownership if placed.
+    fn try_place_transparent_route(
+        &mut self,
+        subs: &OutboxSubscriptions,
+        id: OutboxSubId,
+    ) -> Option<TransparentPlaceResult> {
+        let view = subs.view(&id)?;
         let placed = {
             let mut transparent = TransparentRelay::new(
                 self.websocket.as_mut(),
@@ -395,13 +430,11 @@ impl CoordinationData {
             transparent.try_subscribe(view)
         };
 
-        match placed {
-            TransparentPlaceResult::Placed => {
-                self.set_transparent_route(subs, id);
-                ProbeTransparentRouteOutcome::Placed
-            }
-            TransparentPlaceResult::NoRoom => ProbeTransparentRouteOutcome::NeedsCapacity,
+        if matches!(placed, TransparentPlaceResult::Placed) {
+            self.set_transparent_route(subs, id);
         }
+
+        Some(placed)
     }
 
     /// Attempts dedicated placement during the fallback-enabled pass. When
@@ -413,25 +446,16 @@ impl CoordinationData {
         demoted_in_current_pass: &mut HashSet<OutboxSubId>,
         id: OutboxSubId,
     ) -> FallbackTransparentRouteOutcome {
-        let Some(view) = subs.view(&id) else {
+        let Some(_) = subs.view(&id) else {
             return FallbackTransparentRouteOutcome::Skipped;
         };
         let policy = subs.routing_preference(&id).unwrap_or_default();
-
-        let placed = {
-            let mut transparent = TransparentRelay::new(
-                self.websocket.as_mut(),
-                &mut self.transparent_data,
-                &mut self.limits.sub_guardian,
-            );
-            transparent.try_subscribe(view)
-        };
+        let placed = self
+            .try_place_transparent_route(subs, id)
+            .expect("checked view above");
 
         match placed {
-            TransparentPlaceResult::Placed => {
-                self.set_transparent_route(subs, id);
-                FallbackTransparentRouteOutcome::Placed
-            }
+            TransparentPlaceResult::Placed => FallbackTransparentRouteOutcome::Placed,
             TransparentPlaceResult::NoRoom => {
                 let Some(demoted) =
                     self.pick_demotion_candidate(policy, subs, id, demoted_in_current_pass)
@@ -456,21 +480,12 @@ impl CoordinationData {
                 fallback_compaction.sub(demoted);
                 demoted_in_current_pass.insert(demoted);
 
-                let Some(retry_view) = subs.view(&id) else {
+                let Some(placed_after_demotion) = self.try_place_transparent_route(subs, id) else {
                     self.clear_route(id);
                     return FallbackTransparentRouteOutcome::Skipped;
                 };
-                let placed_after_demotion = {
-                    let mut transparent = TransparentRelay::new(
-                        self.websocket.as_mut(),
-                        &mut self.transparent_data,
-                        &mut self.limits.sub_guardian,
-                    );
-                    transparent.try_subscribe(retry_view)
-                };
 
                 if matches!(placed_after_demotion, TransparentPlaceResult::Placed) {
-                    self.set_transparent_route(subs, id);
                     return FallbackTransparentRouteOutcome::Placed;
                 }
 
@@ -653,22 +668,17 @@ impl CoordinationData {
 
         let mut restore_compaction = CompactionSession::default();
         for id in candidates {
-            let Some(view) = subs.view(&id) else {
+            let Some(_) = subs.view(&id) else {
                 self.clear_route(id);
                 continue;
             };
 
-            let placed = {
-                let mut transparent = TransparentRelay::new(
-                    self.websocket.as_mut(),
-                    &mut self.transparent_data,
-                    &mut self.limits.sub_guardian,
-                );
-                transparent.try_subscribe(view)
-            };
+            let placed = self
+                .try_place_transparent_route(subs, id)
+                .expect("checked view above");
 
             match placed {
-                TransparentPlaceResult::Placed => self.set_transparent_route(subs, id),
+                TransparentPlaceResult::Placed => {}
                 TransparentPlaceResult::NoRoom => {
                     self.set_compaction_route(subs, id);
                     restore_compaction.sub(id);
@@ -688,7 +698,7 @@ impl CoordinationData {
                 &mut self.limits.sub_guardian,
                 subs,
             )
-            .ingest_session(restore_compaction),
+            .ingest_session_without_queue_drain(restore_compaction),
         );
     }
 
@@ -1137,7 +1147,10 @@ mod tests {
         insert_sub_with_policy(&mut subs, id, RelayRoutingPreference::PreferDedicated);
 
         let mut coordinator = coordinator_with_limit(1);
-        seed_transparent_route(&mut coordinator, &subs, id);
+        assert!(matches!(
+            coordinator.try_place_transparent_route(&subs, id),
+            Some(TransparentPlaceResult::Placed)
+        ));
 
         let sid = coordinator
             .transparent_data
@@ -1161,46 +1174,6 @@ mod tests {
             NormRelayUrl::new("wss://relay-coordinator-test.example.com").unwrap(),
             MockWakeup::default(),
         )
-    }
-
-    fn seed_transparent_route(
-        coordinator: &mut CoordinationData,
-        subs: &OutboxSubscriptions,
-        id: OutboxSubId,
-    ) {
-        {
-            let mut transparent = TransparentRelay::new(
-                None,
-                &mut coordinator.transparent_data,
-                &mut coordinator.limits.sub_guardian,
-            );
-            assert!(matches!(
-                transparent.try_subscribe(subs.view(&id).unwrap()),
-                TransparentPlaceResult::Placed
-            ));
-        }
-        coordinator.set_transparent_route(subs, id);
-    }
-
-    fn seed_compaction_route(
-        coordinator: &mut CoordinationData,
-        subs: &OutboxSubscriptions,
-        id: OutboxSubId,
-    ) {
-        {
-            let mut compaction = CompactionRelay::new(
-                None,
-                &mut coordinator.compaction_data,
-                coordinator.limits.max_json_bytes,
-                &mut coordinator.limits.sub_guardian,
-                subs,
-            );
-            assert!(matches!(
-                compaction.subscribe(id),
-                crate::relay::compaction::PlaceResult::Placed
-            ));
-        }
-        coordinator.set_compaction_route(subs, id);
     }
 
     #[test]
@@ -1289,6 +1262,65 @@ mod tests {
     }
 
     #[test]
+    fn older_preferred_compaction_route_keeps_priority_when_dedicated_slot_opens() {
+        let mut subs = OutboxSubscriptions::default();
+        let id_required = OutboxSubId(12);
+        let id_existing_preferred = OutboxSubId(13);
+        let id_incoming_preferred = OutboxSubId(14);
+        insert_sub_with_policy(
+            &mut subs,
+            id_required,
+            RelayRoutingPreference::RequireDedicated,
+        );
+        insert_sub_with_policy(
+            &mut subs,
+            id_existing_preferred,
+            RelayRoutingPreference::PreferDedicated,
+        );
+        insert_sub_with_policy(
+            &mut subs,
+            id_incoming_preferred,
+            RelayRoutingPreference::PreferDedicated,
+        );
+
+        let mut coordinator = coordinator_with_limit(1);
+
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_required, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(
+            id_existing_preferred,
+            RelayRoutingPreference::PreferDedicated,
+        );
+        coordinator.ingest_session(&subs, second);
+
+        let mut third = CoordinationSession::default();
+        third.subscribe(
+            id_incoming_preferred,
+            RelayRoutingPreference::PreferDedicated,
+        );
+        coordinator.ingest_session(&subs, third);
+
+        let mut fourth = CoordinationSession::default();
+        fourth.unsubscribe(id_required);
+        coordinator.ingest_session(&subs, fourth);
+
+        assert_eq!(coordinator.route_type(&id_required), None);
+        assert_eq!(
+            coordinator.route_type(&id_existing_preferred),
+            Some(RelayType::Transparent),
+            "the older preferred request should reclaim the freed slot before a newer preferred request"
+        );
+        assert_eq!(
+            coordinator.route_type(&id_incoming_preferred),
+            Some(RelayType::Compaction),
+            "the newer preferred request should yield if an older preferred request was displaced from compaction"
+        );
+    }
+
+    #[test]
     fn required_transparent_does_not_fallback_to_compaction_when_full() {
         let mut subs = OutboxSubscriptions::default();
         let id_a = OutboxSubId(20);
@@ -1360,19 +1392,31 @@ mod tests {
         let mut subs = OutboxSubscriptions::default();
         let id_existing = OutboxSubId(40);
         let id_incoming = OutboxSubId(41);
-        insert_sub_with_policy(&mut subs, id_existing, RelayRoutingPreference::NoPreference);
-        insert_sub_with_policy(&mut subs, id_incoming, RelayRoutingPreference::NoPreference);
+        insert_sub_with_policy(
+            &mut subs,
+            id_existing,
+            RelayRoutingPreference::RequireDedicated,
+        );
+        insert_sub_with_policy(
+            &mut subs,
+            id_incoming,
+            RelayRoutingPreference::RequireDedicated,
+        );
 
         let mut coordinator = coordinator_with_limit(1);
 
         let mut seed = CoordinationSession::default();
-        seed.subscribe(id_existing, RelayRoutingPreference::NoPreference);
+        seed.subscribe(id_existing, RelayRoutingPreference::RequireDedicated);
         coordinator.ingest_session(&subs, seed);
 
-        coordinator
-            .transparent_data
-            .queue_subscribe_for_test(id_incoming);
+        let mut first_incoming = CoordinationSession::default();
+        first_incoming.subscribe(id_incoming, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first_incoming);
         assert_eq!(coordinator.transparent_data.queued_len_for_test(), 1);
+
+        subs.get_mut(&id_incoming)
+            .expect("incoming subscription metadata")
+            .routing_preference = RelayRoutingPreference::NoPreference;
 
         let mut second = CoordinationSession::default();
         second.subscribe(id_incoming, RelayRoutingPreference::NoPreference);
@@ -1404,11 +1448,18 @@ mod tests {
             RelayRoutingPreference::NoPreference,
         );
 
-        let mut coordinator = coordinator_with_limit(3);
-        seed_transparent_route(&mut coordinator, &subs, id_a);
-        seed_transparent_route(&mut coordinator, &subs, id_b);
-        seed_compaction_route(&mut coordinator, &subs, id_compaction);
+        let mut coordinator = coordinator_with_limit(2);
 
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_a, RelayRoutingPreference::PreferDedicated);
+        first.subscribe(id_b, RelayRoutingPreference::PreferDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(id_compaction, RelayRoutingPreference::NoPreference);
+        coordinator.ingest_session(&subs, second);
+
+        coordinator.set_max_size(&subs, 3);
         coordinator.set_max_size(&subs, 2);
 
         let transparent_ids = [
@@ -1451,11 +1502,18 @@ mod tests {
             RelayRoutingPreference::NoPreference,
         );
 
-        let mut coordinator = coordinator_with_limit(3);
-        seed_transparent_route(&mut coordinator, &subs, id_a);
-        seed_transparent_route(&mut coordinator, &subs, id_b);
-        seed_compaction_route(&mut coordinator, &subs, id_compaction);
+        let mut coordinator = coordinator_with_limit(2);
 
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_a, RelayRoutingPreference::RequireDedicated);
+        first.subscribe(id_b, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(id_compaction, RelayRoutingPreference::NoPreference);
+        coordinator.ingest_session(&subs, second);
+
+        coordinator.set_max_size(&subs, 3);
         coordinator.set_max_size(&subs, 2);
 
         assert_eq!(
@@ -1492,11 +1550,18 @@ mod tests {
             RelayRoutingPreference::NoPreference,
         );
 
-        let mut coordinator = coordinator_with_limit(3);
-        seed_transparent_route(&mut coordinator, &subs, id_no_preference);
-        seed_transparent_route(&mut coordinator, &subs, id_required);
-        seed_compaction_route(&mut coordinator, &subs, id_compaction);
+        let mut coordinator = coordinator_with_limit(2);
 
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_no_preference, RelayRoutingPreference::NoPreference);
+        first.subscribe(id_required, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(id_compaction, RelayRoutingPreference::NoPreference);
+        coordinator.ingest_session(&subs, second);
+
+        coordinator.set_max_size(&subs, 3);
         coordinator.set_max_size(&subs, 2);
 
         assert_eq!(
@@ -1521,8 +1586,14 @@ mod tests {
         insert_sub_with_policy(&mut subs, id_b, RelayRoutingPreference::RequireDedicated);
 
         let mut coordinator = coordinator_with_limit(2);
-        seed_transparent_route(&mut coordinator, &subs, id_a);
-        seed_transparent_route(&mut coordinator, &subs, id_b);
+        assert!(matches!(
+            coordinator.try_place_transparent_route(&subs, id_a),
+            Some(TransparentPlaceResult::Placed)
+        ));
+        assert!(matches!(
+            coordinator.try_place_transparent_route(&subs, id_b),
+            Some(TransparentPlaceResult::Placed)
+        ));
 
         coordinator.set_max_size(&subs, 1);
 
@@ -1553,9 +1624,15 @@ mod tests {
             RelayRoutingPreference::PreferDedicated,
         );
 
-        let mut coordinator = coordinator_with_limit(2);
-        seed_transparent_route(&mut coordinator, &subs, id_transparent);
-        seed_compaction_route(&mut coordinator, &subs, id_preferred);
+        let mut coordinator = coordinator_with_limit(1);
+
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_transparent, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(id_preferred, RelayRoutingPreference::PreferDedicated);
+        coordinator.ingest_session(&subs, second);
 
         let mut session = CoordinationSession::default();
         session.unsubscribe(id_transparent);
@@ -1589,9 +1666,15 @@ mod tests {
             RelayRoutingPreference::NoPreference,
         );
 
-        let mut coordinator = coordinator_with_limit(2);
-        seed_transparent_route(&mut coordinator, &subs, id_transparent);
-        seed_compaction_route(&mut coordinator, &subs, id_no_preference);
+        let mut coordinator = coordinator_with_limit(1);
+
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_transparent, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(id_no_preference, RelayRoutingPreference::NoPreference);
+        coordinator.ingest_session(&subs, second);
 
         let mut session = CoordinationSession::default();
         session.unsubscribe(id_transparent);
@@ -1619,14 +1702,27 @@ mod tests {
             RelayRoutingPreference::PreferDedicated,
         );
 
-        let mut coordinator = coordinator_with_limit(2);
-        seed_compaction_route(&mut coordinator, &subs, id_preferred);
+        let id_required = OutboxSubId(91);
+        insert_sub_with_policy(
+            &mut subs,
+            id_required,
+            RelayRoutingPreference::RequireDedicated,
+        );
+
+        let mut coordinator = coordinator_with_limit(1);
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_required, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(id_preferred, RelayRoutingPreference::PreferDedicated);
+        coordinator.ingest_session(&subs, second);
         assert_eq!(
             coordinator.route_type(&id_preferred),
             Some(RelayType::Compaction)
         );
 
-        coordinator.set_max_size(&subs, 3);
+        coordinator.set_max_size(&subs, 2);
 
         assert_eq!(
             coordinator.route_type(&id_preferred),

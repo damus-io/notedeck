@@ -164,11 +164,12 @@ impl<'a> IngestExecutor<'a> {
         // Execution order is policy-sensitive: route ownership first, engine side effects second.
         self.apply_route_ops(&plan.route_ops);
         self.execute_transparent_unsubscribes(std::mem::take(&mut plan.transparent_unsub_ids));
-        self.execute_compaction(std::mem::take(&mut plan.compaction_session));
+        self.execute_compaction_session(std::mem::take(&mut plan.compaction_session));
         self.route_transparent_requests(std::mem::take(&mut plan.transparent_sub_requests));
         self.flush_transparent_queue();
         self.coordinator
             .promote_preferred_compaction_routes(self.subs);
+        self.drain_compaction_queue();
         self.log_sub_pass_usage();
         plan.eose_delta
     }
@@ -209,8 +210,8 @@ impl<'a> IngestExecutor<'a> {
         }
     }
 
-    fn execute_compaction(&mut self, session: CompactionSession) {
-        if session.is_empty() && !self.coordinator.compaction_data.has_queued_subs() {
+    fn execute_compaction_session(&mut self, session: CompactionSession) {
+        if session.is_empty() {
             return;
         }
 
@@ -222,7 +223,24 @@ impl<'a> IngestExecutor<'a> {
                 &mut self.coordinator.limits.sub_guardian,
                 self.subs,
             )
-            .ingest_session(session),
+            .ingest_session_without_queue_drain(session),
+        );
+    }
+
+    fn drain_compaction_queue(&mut self) {
+        if !self.coordinator.compaction_data.has_queued_subs() {
+            return;
+        }
+
+        self.coordinator.pending_tracker_invalidations.extend(
+            CompactionRelay::new(
+                self.coordinator.websocket.as_mut(),
+                &mut self.coordinator.compaction_data,
+                self.coordinator.limits.max_json_bytes,
+                &mut self.coordinator.limits.sub_guardian,
+                self.subs,
+            )
+            .drain_queue(),
         );
     }
 
@@ -253,7 +271,9 @@ impl<'a> IngestExecutor<'a> {
         if !needs_capacity_ids.is_empty() {
             let mut reserve_session = CompactionSession::default();
             reserve_session.request_free_subs(needs_capacity_ids.len());
-            self.execute_compaction(reserve_session);
+            self.execute_compaction_session(reserve_session);
+            self.coordinator
+                .promote_preferred_compaction_routes(self.subs);
         }
 
         for id in needs_capacity_ids {
@@ -272,7 +292,7 @@ impl<'a> IngestExecutor<'a> {
         }
 
         let demotion_count = demoted_in_this_pass.len();
-        self.execute_compaction(fallback_compaction_session);
+        self.execute_compaction_session(fallback_compaction_session);
 
         tracing::trace!(
             requested,

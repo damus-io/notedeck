@@ -107,6 +107,30 @@ impl<'a> CompactionRelay<'a> {
 
     #[profiling::function]
     pub fn ingest_session(mut self, session: CompactionSession) -> HashSet<OutboxSubId> {
+        self.execute_session(session, true);
+        self.take_session_invalidations()
+    }
+
+    /// Applies the explicit compaction session without opportunistically draining
+    /// queued compaction work afterward.
+    #[profiling::function]
+    pub fn ingest_session_without_queue_drain(
+        mut self,
+        session: CompactionSession,
+    ) -> HashSet<OutboxSubId> {
+        self.execute_session(session, false);
+        self.take_session_invalidations()
+    }
+
+    /// Attempts to place queued compaction work using whatever pass capacity is
+    /// currently free.
+    #[profiling::function]
+    pub fn drain_queue(mut self) -> HashSet<OutboxSubId> {
+        self.drain_queue_internal();
+        self.take_session_invalidations()
+    }
+
+    fn execute_session(&mut self, session: CompactionSession, drain_queue: bool) {
         let request_free = session.request_free;
         let mut reserved: Vec<SubPass> = Vec::new();
 
@@ -124,24 +148,25 @@ impl<'a> CompactionRelay<'a> {
         // Process session (can't touch reserved passes)
         self.ingest_session_internal(session);
 
-        // Drain queue
-        {
-            profiling::scope!("drain queue");
-            let attempts = self.ctx.data().queue.len();
-            for _ in 0..attempts {
-                let Some(id) = self.ctx.data().queue.pop() else {
-                    break;
-                };
-                self.subscribe(id);
-            }
+        if drain_queue {
+            self.drain_queue_internal();
         }
 
         // Return reserved passes
         for pass in reserved {
             self.sub_guardian.return_pass(pass);
         }
+    }
 
-        self.take_session_invalidations()
+    fn drain_queue_internal(&mut self) {
+        profiling::scope!("drain queue");
+        let attempts = self.ctx.data().queue.len();
+        for _ in 0..attempts {
+            let Some(id) = self.ctx.data().queue.pop() else {
+                break;
+            };
+            self.subscribe(id);
+        }
     }
 
     #[profiling::function]
