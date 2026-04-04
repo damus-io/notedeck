@@ -125,18 +125,6 @@ impl TransparentData {
     }
 
     #[cfg(test)]
-    pub(crate) fn sid_for_test(&self, id: OutboxSubId) -> Option<RelayReqId> {
-        self.active_legs_by_request
-            .get(&id)
-            .map(|active_leg| active_leg.sid.clone())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn queue_subscribe_for_test(&mut self, id: OutboxSubId) {
-        self.queue.enqueue(id);
-    }
-
-    #[cfg(test)]
     pub(crate) fn queued_len_for_test(&self) -> usize {
         self.queue.len()
     }
@@ -650,7 +638,7 @@ mod tests {
             relay.try_subscribe(subs.view(&OutboxSubId(1)).unwrap());
         }
 
-        let sid = data.sid_for_test(OutboxSubId(0)).unwrap();
+        let sid = data.active_sid(&OutboxSubId(0)).unwrap();
 
         // id() should return the OutboxSubId for the relay subscription
         let outbox_id = data.id(&sid);
@@ -685,10 +673,10 @@ mod tests {
         }
 
         let sid0 = data
-            .sid_for_test(OutboxSubId(0))
+            .active_sid(&OutboxSubId(0))
             .expect("sid for first transparent sub");
         let sid1 = data
-            .sid_for_test(OutboxSubId(1))
+            .active_sid(&OutboxSubId(1))
             .expect("sid for second transparent sub");
         data.set_req_status(&sid0.to_string(), RelayReqStatus::Eose);
         data.set_req_status(&sid1.to_string(), RelayReqStatus::Eose);
