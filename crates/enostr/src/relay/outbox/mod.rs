@@ -79,7 +79,6 @@ impl OutboxPool {
                 continue;
             };
             sub.see_all(now);
-            sub.filters.since_optimize();
         }
     }
 
@@ -657,6 +656,13 @@ impl OutboxPool {
         self.subs.view(id).map(|v| v.filters.get_filters())
     }
 
+    /// Returns the compaction-projected filters for the given subscription ID,
+    /// applying any stored synthetic `since` cursor without mutating the base
+    /// subscription filters.
+    pub fn compaction_filters(&self, id: &OutboxSubId) -> Option<Vec<Filter>> {
+        self.subs.filters_for_compaction(id)
+    }
+
     #[profiling::function]
     pub fn try_recv<F>(&mut self, mut max_notes: usize, mut process: F)
     where
@@ -1155,8 +1161,9 @@ mod tests {
         );
     }
 
-    /// Fully EOSE'd compaction routes should advance `since` so future shared
-    /// REQs do not re-fetch the same history.
+    /// Fully EOSE'd compaction routes should keep the base filters pristine
+    /// while their compaction projection advances `since` for future shared
+    /// REQs.
     #[test]
     fn fully_eosed_compaction_route_optimizes_since() {
         let mut pool = OutboxPool::default();
@@ -1191,15 +1198,23 @@ mod tests {
         pool.eose_tracker.mark_relay_eose(&relay, id, &pool.subs);
         pool.flush_fully_eosed_effects();
 
-        let filter = &pool
+        let stored_filter = &pool
             .subs
             .view(&id)
             .expect("subscription")
             .filters
             .get_filters()[0];
         assert!(
-            filter_has_since(filter),
-            "compaction routes should advance since after fully catching up"
+            !filter_has_since(stored_filter),
+            "stored filters should remain pristine after compaction catches up"
+        );
+
+        let projected = pool
+            .compaction_filters(&id)
+            .expect("compaction-projected filters");
+        assert!(
+            filter_has_since(&projected[0]),
+            "compaction projection should advance since after fully catching up"
         );
     }
 
@@ -1263,6 +1278,96 @@ mod tests {
         assert!(
             !filter_has_since(filter),
             "a mixed dedicated/compaction subscription must not advance since"
+        );
+    }
+
+    /// A request that caught up through compaction should still use pristine
+    /// stored filters if it is later promoted back to dedicated routing.
+    #[test]
+    fn promoted_dedicated_route_does_not_keep_compaction_since() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-promoted-since.example.com").unwrap();
+        let filter = Filter::new().kinds(vec![1]).limit(2).build();
+
+        let _ = pool.ensure_relay(&relay, &wakeup);
+        {
+            let (subs, relays) = (&pool.subs, &mut pool.relays);
+            relays.get_mut(&relay).expect("coordinator").set_limits(
+                subs,
+                RelayLimitations {
+                    maximum_subs: 1,
+                    max_json_bytes: RelayLimitations::default().max_json_bytes,
+                },
+            );
+        }
+
+        let required_id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::RequireDedicated);
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(vec![filter.clone()], pkgs)
+        };
+
+        let preferred_id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::PreferDedicated);
+            let mut handler = pool.start_session(wakeup);
+            handler.subscribe(vec![filter], pkgs)
+        };
+
+        {
+            let coordinator = pool.relays.get(&relay).expect("coordinator");
+            assert_eq!(
+                coordinator.route_type(&required_id),
+                Some(RelayType::Transparent)
+            );
+            assert_eq!(
+                coordinator.route_type(&preferred_id),
+                Some(RelayType::Compaction)
+            );
+        }
+
+        pool.eose_tracker
+            .mark_relay_eose(&relay, preferred_id, &pool.subs);
+        pool.flush_fully_eosed_effects();
+
+        let stored_before = pool.filters(&preferred_id).expect("stored filters");
+        assert!(
+            !filter_has_since(&stored_before[0]),
+            "stored filters should remain pristine after compaction catch-up"
+        );
+        let projected_before = pool
+            .compaction_filters(&preferred_id)
+            .expect("compaction-projected filters");
+        assert!(
+            filter_has_since(&projected_before[0]),
+            "compaction projection should reflect the stored catch-up cursor"
+        );
+
+        {
+            let mut session = pool.start_session(MockWakeup::default());
+            session.unsubscribe(required_id);
+        }
+
+        {
+            let coordinator = pool.relays.get(&relay).expect("coordinator");
+            assert_eq!(
+                coordinator.route_type(&preferred_id),
+                Some(RelayType::Transparent)
+            );
+        }
+
+        let stored_after = pool
+            .filters(&preferred_id)
+            .expect("stored filters after promotion");
+        assert!(
+            !filter_has_since(&stored_after[0]),
+            "promoted dedicated route must use pristine stored filters"
         );
     }
 

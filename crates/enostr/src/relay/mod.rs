@@ -95,6 +95,23 @@ impl MetadataFilters {
         self.meta.iter().map(|f| f.filter_json_size).sum()
     }
 
+    /// Returns a compaction-specific filter projection with any available
+    /// `last_seen` cursor applied as a synthetic `since`.
+    pub fn projected_filters(&self) -> Vec<Filter> {
+        self.filters
+            .iter()
+            .zip(self.meta.iter())
+            .map(|(filter, meta)| {
+                let Some(last_seen) = meta.last_seen else {
+                    return filter.clone();
+                };
+
+                filter.clone().since_mut(last_seen)
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     pub fn since_optimize(&mut self) {
         for (filter, meta) in self.filters.iter_mut().zip(self.meta.iter()) {
             let Some(last_seen) = meta.last_seen else {
@@ -190,6 +207,24 @@ mod tests {
         assert!(
             filter_has_since(&metadata_filters.get_filters()[0], 12345),
             "filter should have since:12345 after optimization"
+        );
+    }
+
+    #[test]
+    fn projected_filters_apply_last_seen_without_mutating_base_filters() {
+        let filter = Filter::new().kinds(vec![1]).build();
+        let mut metadata_filters = MetadataFilters::new(vec![filter]);
+        metadata_filters.meta[0].last_seen = Some(12345);
+
+        let projected = metadata_filters.projected_filters();
+
+        assert!(filter_has_since(&projected[0], 12345));
+        let base_json = metadata_filters.get_filters()[0]
+            .json()
+            .expect("base filter json");
+        assert!(
+            !base_json.contains("\"since\""),
+            "base filters should remain pristine after projection"
         );
     }
 

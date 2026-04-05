@@ -195,7 +195,9 @@ impl<'a> CompactionRelay<'a> {
 
         let mut invalidated = HashSet::new();
         for (sid, sub_data) in &mut handler.data.relay_subs {
-            let filters = handler.subs.filters_all(&sub_data.requests.requests);
+            let filters = handler
+                .subs
+                .filters_all_for_compaction(&sub_data.requests.requests);
             if are_filters_empty(&filters) {
                 continue;
             }
@@ -510,7 +512,9 @@ impl<'a> Drop for CompactionHandler<'a> {
                         continue;
                     };
 
-                    let filters = self.subs.filters_all(&data.requests.requests);
+                    let filters = self
+                        .subs
+                        .filters_all_for_compaction(&data.requests.requests);
 
                     if filters.is_empty() {
                         self.relay.conn.send(&ClientMessage::close(id.0.clone()));

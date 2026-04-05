@@ -14,6 +14,12 @@ pub struct OutboxSubscription {
 }
 
 impl OutboxSubscription {
+    /// Returns the filter set that compaction should send for this
+    /// subscription, applying any synthetic `since` cursor from metadata.
+    pub fn filters_for_compaction(&self) -> Vec<Filter> {
+        self.filters.projected_filters()
+    }
+
     pub fn see_all(&mut self, at: u64) {
         for (_, meta) in self.filters.iter_mut() {
             meta.last_seen = Some(at);
@@ -78,6 +84,23 @@ impl OutboxSubscriptions {
         ids.iter()
             .filter_map(|id| self.subs.get(id))
             .flat_map(|sub| sub.filters.filters.iter().cloned())
+            .collect()
+    }
+
+    /// Returns the compaction-projected filters for one subscription.
+    pub fn filters_for_compaction(&self, id: &OutboxSubId) -> Option<Vec<Filter>> {
+        self.subs
+            .get(id)
+            .map(OutboxSubscription::filters_for_compaction)
+    }
+
+    /// Returns all filters for a compaction REQ, projecting any stored
+    /// compaction cursor into the returned filter set without mutating the
+    /// shared subscription definition.
+    pub fn filters_all_for_compaction(&self, ids: &HashSet<OutboxSubId>) -> Vec<Filter> {
+        ids.iter()
+            .filter_map(|id| self.subs.get(id))
+            .flat_map(OutboxSubscription::filters_for_compaction)
             .collect()
     }
 

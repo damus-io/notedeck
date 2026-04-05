@@ -777,6 +777,173 @@ async fn oneshot_multi_relay_fully_removed_after_eose() {
     );
 }
 
+/// A receive pass that stops at the note budget must not strand oneshot cleanup.
+/// The follow-up `try_recv` should consume the queued EOSE and finish removal.
+#[tokio::test]
+async fn oneshot_cleanup_completes_after_try_recv_stops_at_note_budget() {
+    let (_relay, url) = create_test_relay_with_seeded_note().await;
+
+    let mut pool = OutboxPool::default();
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    let url_pkgs = RelayUrlPkgs::new(urls);
+
+    let id = {
+        let mut handler = pool.start_session(MockWakeup::default());
+        handler.oneshot(trivial_filter(), url_pkgs);
+        let session = handler.export();
+        let id = *session
+            .tasks
+            .keys()
+            .next()
+            .expect("oneshot should create a task");
+        OutboxSessionHandler::import(&mut pool, session, MockWakeup::default());
+        id
+    };
+
+    assert!(
+        pool.filters(&id).is_some(),
+        "oneshot should exist before receive processing starts"
+    );
+
+    let mut saw_note = false;
+    for _ in 0..100 {
+        pool.try_recv(1, |_| {
+            saw_note = true;
+        });
+        if saw_note {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        saw_note,
+        "first bounded receive pass should consume the note"
+    );
+    assert!(
+        pool.filters(&id).is_some(),
+        "oneshot should still exist after the note-budget break"
+    );
+    assert!(
+        !pool.has_eose(&id),
+        "EOSE should still be unread after the first bounded receive pass"
+    );
+
+    let removed =
+        pump_pool_until_with_note_budget(&mut pool, 1, 100, Duration::from_millis(10), |pool| {
+            pool.filters(&id).is_none() && pool.status(&id).is_empty()
+        })
+        .await;
+    assert!(
+        removed,
+        "a later bounded receive pass should flush EOSE effects and remove the oneshot"
+    );
+}
+
+/// Repeated bounded receive passes should still deliver every queued note and
+/// the final EOSE.
+#[tokio::test]
+async fn bounded_try_recv_eventually_delivers_all_notes() {
+    let (_relay, url, expected_ids) = create_test_relay_with_seeded_notes(3).await;
+
+    let mut pool = OutboxPool::default();
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    let url_pkgs = RelayUrlPkgs::new(urls);
+
+    let id = {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), url_pkgs)
+    };
+
+    let mut seen_ids = HashSet::new();
+    let mut received_all = false;
+    for _ in 0..100 {
+        pool.try_recv(1, |event| {
+            let parsed: serde_json::Value =
+                serde_json::from_str(event.event_json).expect("parse delivered seeded note json");
+            let id = parsed[2]["id"]
+                .as_str()
+                .expect("delivered seeded note should include an id");
+            seen_ids.insert(id.to_owned());
+        });
+
+        if expected_ids.iter().all(|id| seen_ids.contains(id)) && pool.has_eose(&id) {
+            received_all = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        received_all,
+        "repeated bounded receive passes should eventually deliver all notes and EOSE"
+    );
+}
+
+/// Repeated bounded receive passes should still drain note delivery and EOSE
+/// when non-event relay frames are interleaved ahead of them.
+#[tokio::test]
+async fn bounded_try_recv_eventually_delivers_notes_after_notice_frame() {
+    let signer = FullKeypair::generate();
+    let first_note = NoteBuilder::new()
+        .kind(1)
+        .content("notice relay note 1")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build first notice relay note");
+    let second_note = NoteBuilder::new()
+        .kind(1)
+        .content("notice relay note 2")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build second notice relay note");
+    let expected_ids = [hex::encode(first_note.id()), hex::encode(second_note.id())];
+    let (_relay_task, url) = create_notice_then_events_relay(vec![
+        first_note.json().expect("first notice relay note json"),
+        second_note.json().expect("second notice relay note json"),
+    ])
+    .await;
+
+    let mut pool = OutboxPool::default();
+    let mut urls = HashSet::new();
+    urls.insert(url);
+    let url_pkgs = RelayUrlPkgs::new(urls);
+
+    let id = {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), url_pkgs)
+    };
+
+    let mut seen_ids = HashSet::new();
+    let mut received_all = false;
+    for _ in 0..100 {
+        pool.try_recv(1, |event| {
+            let parsed: serde_json::Value =
+                serde_json::from_str(event.event_json).expect("parse delivered notice-relay frame");
+            let id = parsed[2]["id"]
+                .as_str()
+                .expect("delivered notice-relay event should include an id");
+            seen_ids.insert(id.to_owned());
+        });
+
+        if expected_ids.iter().all(|id| seen_ids.contains(id)) && pool.has_eose(&id) {
+            received_all = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(
+        received_all,
+        "bounded receive should not lose later notes or EOSE when a NOTICE frame appears first"
+    );
+}
+
 // ==================== Since Optimization After EOSE ====================
 
 fn filter_has_since(filter: &Filter) -> bool {
@@ -824,6 +991,103 @@ async fn dedicated_eose_does_not_apply_since_to_filters() {
     assert!(
         !filter_has_since(&optimized_filters[0]),
         "dedicated filters should not gain since after EOSE"
+    );
+}
+
+/// After EOSE is received on a compaction-only subscription, the stored filters
+/// should remain pristine while the compaction projection gains a `since`
+/// cursor for the next shared catch-up request.
+#[tokio::test]
+async fn compaction_eose_applies_since_to_filters() {
+    let (_relay, url) = create_test_relay_with_seeded_note().await;
+    let mut pool = OutboxPool::default();
+    let now = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_320);
+
+    let mut dedicated_urls = HashSet::new();
+    dedicated_urls.insert(url.clone());
+    let dedicated_pkgs =
+        RelayUrlPkgs::with_preference(dedicated_urls, RelayRoutingPreference::PreferDedicated);
+
+    let dedicated_id = {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(
+            vec![Filter::new().kinds(vec![1]).limit(10).build()],
+            dedicated_pkgs,
+        )
+    };
+
+    let applied = pool.apply_nip11_limits(
+        &url,
+        Nip11LimitationsRaw {
+            max_subscriptions: Some(1),
+            ..Default::default()
+        },
+        now,
+    );
+    assert!(matches!(
+        applied,
+        Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+    ));
+
+    let mut compaction_urls = HashSet::new();
+    compaction_urls.insert(url.clone());
+    let compaction_pkgs =
+        RelayUrlPkgs::with_preference(compaction_urls, RelayRoutingPreference::NoPreference);
+
+    let compaction_id = {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(
+            vec![Filter::new().kinds(vec![1]).limit(10).build()],
+            compaction_pkgs,
+        )
+    };
+
+    let initial_filters = pool.filters(&compaction_id).expect("subscription exists");
+    assert!(
+        !filter_has_since(&initial_filters[0]),
+        "filters should not have since before EOSE"
+    );
+
+    let dedicated_got_eose =
+        default_pool_pump(&mut pool, |pool| pool.has_eose(&dedicated_id)).await;
+    assert!(
+        dedicated_got_eose,
+        "dedicated subscription should stay active while the fallback request is queued"
+    );
+    assert!(
+        !pool.has_eose(&compaction_id),
+        "fallback request should not become active until the dedicated slot is released"
+    );
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.unsubscribe(dedicated_id);
+    }
+
+    let got_eose = default_pool_pump(&mut pool, |pool| pool.has_eose(&compaction_id)).await;
+    assert!(
+        got_eose,
+        "queued fallback request should receive EOSE once it becomes the active compaction route"
+    );
+
+    {
+        let _ = pool.start_session(MockWakeup::default());
+    }
+
+    let stored_filters = pool
+        .filters(&compaction_id)
+        .expect("compaction subscription still exists");
+    assert!(
+        !filter_has_since(&stored_filters[0]),
+        "stored filters should remain pristine after compaction EOSE"
+    );
+
+    let optimized_filters = pool
+        .compaction_filters(&compaction_id)
+        .expect("compaction-projected filters");
+    assert!(
+        filter_has_since(&optimized_filters[0]),
+        "compaction projection should gain since after EOSE"
     );
 }
 
