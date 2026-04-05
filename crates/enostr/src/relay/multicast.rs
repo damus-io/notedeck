@@ -299,6 +299,9 @@ mod tests {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
         let socket = UdpSocket::bind(addr).unwrap();
         let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(239, 19, 88, 1), 9797);
+        socket
+            .join_multicast_v4(multicast_addr.ip(), &Ipv4Addr::UNSPECIFIED)
+            .unwrap();
         MulticastRelay::new(multicast_addr, socket, Ipv4Addr::UNSPECIFIED)
     }
 

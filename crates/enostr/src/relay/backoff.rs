@@ -6,9 +6,43 @@ use std::{
 
 /// Computes the deterministic base delay for a given attempt number.
 /// Formula: `5s * 2^attempt`, capped at `max`.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn base_delay(attempt: u32, max: Duration) -> Duration {
-    let secs = 5u64.checked_shl(attempt).unwrap_or(u64::MAX);
-    Duration::from_secs(secs).min(max)
+    base_delay_from(attempt, Duration::from_secs(5), max)
+}
+
+/// Computes the deterministic base delay for a given attempt number using a
+/// configurable starting duration.
+pub(crate) fn base_delay_from(attempt: u32, base: Duration, max: Duration) -> Duration {
+    let base_nanos = base.as_nanos() as u64;
+    let nanos = base_nanos.checked_shl(attempt).unwrap_or(u64::MAX);
+    Duration::from_nanos(nanos).min(max)
+}
+
+pub(crate) fn next_duration_from_base(
+    attempt: u32,
+    base: Duration,
+    jitter_seed: u64,
+    max: Duration,
+) -> Duration {
+    let base = base_delay_from(attempt, base, max);
+    let jitter_ceiling = base / 4;
+    let jitter = if jitter_ceiling.is_zero() {
+        Duration::ZERO
+    } else {
+        let jitter_ceiling_nanos = jitter_ceiling.as_nanos() as u64;
+        Duration::from_nanos(jitter_seed % jitter_ceiling_nanos)
+    };
+    (base + jitter).min(max)
+}
+
+/// Returns the backoff delay for the given attempt count.
+///
+/// Uses the exponential base delay as the primary component and adds up to 25%
+/// additive jitter (via key/time mixed seed) to spread out simultaneous
+/// retries without undermining the exponential delay itself.
+pub(crate) fn next_duration(attempt: u32, jitter_seed: u64, max: Duration) -> Duration {
+    next_duration_from_base(attempt, Duration::from_secs(5), jitter_seed, max)
 }
 
 pub(crate) fn jitter_seed(key: &impl Hash, attempt: u32) -> u64 {
@@ -21,23 +55,6 @@ pub(crate) fn jitter_seed(key: &impl Hash, attempt: u32) -> u64 {
     attempt.hash(&mut hasher);
     now_nanos.hash(&mut hasher);
     hasher.finish()
-}
-
-/// Returns the backoff delay for the given attempt count.
-///
-/// Uses the exponential base delay as the primary component and adds up to 25%
-/// additive jitter (via key/time mixed seed) to spread out simultaneous
-/// retries without undermining the exponential delay itself.
-pub(crate) fn next_duration(attempt: u32, jitter_seed: u64, max: Duration) -> Duration {
-    let base = base_delay(attempt, max);
-    let jitter_ceiling = base / 4;
-    let jitter = if jitter_ceiling.is_zero() {
-        Duration::ZERO
-    } else {
-        let jitter_ceiling_nanos = jitter_ceiling.as_nanos() as u64;
-        Duration::from_nanos(jitter_seed % jitter_ceiling_nanos)
-    };
-    (base + jitter).min(max)
 }
 
 pub struct FlushBackoff {

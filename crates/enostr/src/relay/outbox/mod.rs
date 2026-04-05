@@ -30,6 +30,7 @@ pub use session::OutboxSession;
 const DEFAULT_KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
 const PONG_TIMEOUT: Duration = Duration::from_secs(90);
 const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const DEFAULT_RECONNECT_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30 * 60); // 30 minutes
 const NIP11_REFRESH_AFTER_SUCCESS: Duration = Duration::from_secs(60 * 60);
 
@@ -43,6 +44,7 @@ pub struct OutboxPool {
     multicast: MulticastRelayCache,
     keepalive_ping_rate: Duration,
     keepalive_reconnect_delay: Duration,
+    keepalive_reconnect_backoff_base: Duration,
     pong_timeout: Duration,
 }
 
@@ -56,6 +58,7 @@ impl Default for OutboxPool {
             subs: Default::default(),
             keepalive_ping_rate: DEFAULT_KEEPALIVE_PING_RATE,
             keepalive_reconnect_delay: DEFAULT_RECONNECT_DELAY,
+            keepalive_reconnect_backoff_base: DEFAULT_RECONNECT_BACKOFF_BASE,
             pong_timeout: PONG_TIMEOUT,
         }
     }
@@ -79,6 +82,12 @@ impl OutboxPool {
             };
             websocket.retry_connect_after = delay;
         }
+    }
+
+    /// Overrides the exponential base delay used after failed websocket
+    /// reconnect attempts during keepalive processing.
+    pub fn set_keepalive_reconnect_backoff_base(&mut self, base: Duration) {
+        self.keepalive_reconnect_backoff_base = base;
     }
 
     /// Overrides the multicast rejoin interval used to refresh group
@@ -477,8 +486,9 @@ impl OutboxPool {
                         websocket.reconnect_attempt = websocket.reconnect_attempt.saturating_add(1);
                         let jitter_seed =
                             backoff::jitter_seed(&websocket.conn.url, websocket.reconnect_attempt);
-                        let next_duration = backoff::next_duration(
+                        let next_duration = backoff::next_duration_from_base(
                             websocket.reconnect_attempt,
+                            self.keepalive_reconnect_backoff_base,
                             jitter_seed,
                             MAX_RECONNECT_DELAY,
                         );

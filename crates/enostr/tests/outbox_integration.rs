@@ -16,16 +16,18 @@ use nostr_relay_builder::{
     LocalRelay, RelayBuilder,
 };
 use nostrdb::{Filter, NoteBuilder};
-use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener as StdTcpListener, UdpSocket};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc, Once,
+    Arc, Once, OnceLock,
 };
 use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::{oneshot, Mutex};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 static TRACING_INIT: Once = Once::new();
+static MULTICAST_TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Initialize tracing for tests (only runs once even if called multiple times)
 fn init_tracing() {
@@ -38,6 +40,13 @@ fn init_tracing() {
             .with_test_writer()
             .init();
     });
+}
+
+async fn lock_multicast_test() -> tokio::sync::MutexGuard<'static, ()> {
+    MULTICAST_TEST_GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .await
 }
 
 /// A mock Wakeup implementation for integration tests
@@ -291,6 +300,70 @@ async fn create_reconnect_counting_relay(
     (handle, url, connection_count)
 }
 
+async fn create_reconnect_counting_relay_at(
+    addr: SocketAddr,
+) -> (tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind(addr)
+        .await
+        .expect("bind reconnect-counting relay");
+    let connection_count = Arc::new(AtomicUsize::new(0));
+    let connection_count_task = connection_count.clone();
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            connection_count_task.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let Ok(mut websocket) = accept_async(stream).await else {
+                    return;
+                };
+                while let Some(msg) = websocket.next().await {
+                    match msg {
+                        Ok(Message::Close(_)) | Err(_) => break,
+                        _ => {}
+                    }
+                }
+            });
+        }
+    });
+
+    (handle, connection_count)
+}
+
+async fn create_shutdownable_silent_relay_at(
+    addr: SocketAddr,
+) -> (tokio::task::JoinHandle<()>, oneshot::Sender<()>) {
+    let listener = TcpListener::bind(addr)
+        .await
+        .expect("bind shutdownable relay");
+    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+
+    let handle = tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(mut websocket) = accept_async(stream).await else {
+            return;
+        };
+
+        tokio::select! {
+            _ = &mut shutdown_rx => {}
+            _ = async {
+                while let Some(msg) = websocket.next().await {
+                    match msg {
+                        Ok(Message::Close(_)) | Err(_) => break,
+                        _ => {}
+                    }
+                }
+            } => {}
+        }
+    });
+
+    (handle, shutdown_tx)
+}
+
 /// Helper to create a websocket relay that captures inbound EVENT frames from
 /// the client connection.
 async fn create_event_capture_relay() -> (
@@ -298,35 +371,54 @@ async fn create_event_capture_relay() -> (
     NormRelayUrl,
     Arc<std::sync::Mutex<Vec<String>>>,
 ) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind event-capture relay");
-    let addr = listener.local_addr().expect("event-capture relay addr");
+    let (listener, addr) = bind_test_tcp_listener().await;
     let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid event-capture relay url");
     let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
     let captured_task = captured.clone();
 
     let handle = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.expect("accept event-capture relay");
-        let mut websocket = accept_async(stream)
-            .await
-            .expect("upgrade event-capture relay");
-
-        while let Some(msg) = websocket.next().await {
-            let Ok(Message::Text(text)) = msg else {
-                continue;
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
             };
+            let captured_task = captured_task.clone();
+            tokio::spawn(async move {
+                let Ok(mut websocket) = accept_async(stream).await else {
+                    return;
+                };
 
-            if text.starts_with("[\"EVENT\",") {
-                captured_task
-                    .lock()
-                    .expect("lock captured events")
-                    .push(text);
-            }
+                while let Some(msg) = websocket.next().await {
+                    let Ok(Message::Text(text)) = msg else {
+                        continue;
+                    };
+
+                    if text.starts_with("[\"EVENT\",") {
+                        captured_task
+                            .lock()
+                            .expect("lock captured events")
+                            .push(text);
+                    }
+                }
+            });
         }
     });
 
     (handle, url, captured)
+}
+
+fn reserve_free_socket_addr() -> SocketAddr {
+    let listener = StdTcpListener::bind("127.0.0.1:0").expect("reserve free socket addr");
+    let addr = listener.local_addr().expect("reserved socket addr");
+    drop(listener);
+    addr
+}
+
+async fn bind_test_tcp_listener() -> (TcpListener, SocketAddr) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test tcp listener");
+    let addr = listener.local_addr().expect("test tcp listener addr");
+    (listener, addr)
 }
 
 fn send_multicast_text_frame(text: &str) {
@@ -1161,10 +1253,156 @@ async fn broadcast_note_sends_event_to_websocket_relay() {
     );
 }
 
+/// Broadcasting while the websocket relay is disconnected should queue the
+/// event and flush it once the relay reopens.
+#[tokio::test]
+async fn broadcast_note_queues_while_disconnected_and_flushes_on_reopen() {
+    let (_relay_task, url, captured) = create_event_capture_relay().await;
+    let mut pool = OutboxPool::default();
+    pool.set_pong_timeout(Duration::from_millis(20));
+    pool.set_keepalive_reconnect_delay(Duration::from_millis(30));
+    let signer = FullKeypair::generate();
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), RelayUrlPkgs::new(urls));
+    }
+
+    let connected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(connected, "relay should connect before disconnecting it");
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+    assert_eq!(
+        websocket_status(&pool, &url),
+        Some(RelayStatus::Disconnected),
+        "stale pong should disconnect the websocket before queueing the broadcast"
+    );
+
+    let note = NoteBuilder::new()
+        .kind(1)
+        .content("broadcast queued while disconnected")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build queued broadcast note");
+    let note_id_hex = hex::encode(note.id());
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.broadcast_note(&note, vec![RelayId::Websocket(url.clone())]);
+    }
+    assert!(
+        !captured
+            .lock()
+            .expect("lock captured events")
+            .iter()
+            .any(|frame| frame.contains(&note_id_hex)),
+        "disconnected websocket should queue the broadcast instead of sending it immediately"
+    );
+
+    tokio::time::sleep(Duration::from_millis(35)).await;
+    pool.keepalive_ping(|| {});
+
+    let delivered = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+        pool.try_recv(10, |_| {});
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+            && captured
+                .lock()
+                .expect("lock captured events")
+                .iter()
+                .any(|frame| frame.contains(&note_id_hex))
+    })
+    .await;
+    assert!(
+        delivered,
+        "queued websocket broadcast should flush once the relay reopens"
+    );
+}
+
+/// Repeated websocket reconnect failures should escalate the reconnect backoff
+/// before a later relay startup is allowed to reconnect.
+#[tokio::test]
+async fn websocket_reconnect_failures_escalate_backoff_before_later_success() {
+    let addr = reserve_free_socket_addr();
+    let (_first_relay_task, shutdown_first_relay) = create_shutdownable_silent_relay_at(addr).await;
+    let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid delayed relay url");
+    let mut pool = OutboxPool::default();
+    pool.set_pong_timeout(Duration::from_millis(20));
+    pool.set_keepalive_reconnect_delay(Duration::from_millis(5));
+    pool.set_keepalive_reconnect_backoff_base(Duration::from_millis(10));
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), RelayUrlPkgs::new(urls));
+    }
+
+    let disconnected = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(
+        disconnected,
+        "relay should establish an initial websocket connection"
+    );
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+    assert_eq!(
+        websocket_status(&pool, &url),
+        Some(RelayStatus::Disconnected),
+        "stale pong should first move the live websocket onto the disconnected reconnect path"
+    );
+
+    let _ = shutdown_first_relay.send(());
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    pool.keepalive_ping(|| {});
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    pool.keepalive_ping(|| {});
+
+    let (_relay_task, connection_count) = create_reconnect_counting_relay_at(addr).await;
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    pool.keepalive_ping(|| {});
+
+    let too_early = pump_pool_until(&mut pool, 10, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+            || connection_count.load(Ordering::SeqCst) > 0
+    })
+    .await;
+    assert!(
+        !too_early,
+        "second failed reconnect should escalate backoff enough to block an early later reconnect"
+    );
+
+    let reconnected = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+        pool.keepalive_ping(|| {});
+        pool.try_recv(10, |_| {});
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(
+        reconnected,
+        "relay should reconnect once the escalated backoff window has elapsed"
+    );
+    assert!(
+        connection_count.load(Ordering::SeqCst) > 0,
+        "late relay startup should eventually observe the delayed reconnect attempt"
+    );
+}
+
 /// Multicast frames should be delivered through outbox receive both before and
 /// after the rejoin maintenance path runs.
 #[tokio::test]
 async fn multicast_frames_are_delivered_before_and_after_rejoin_interval() {
+    let _multicast_guard = lock_multicast_test().await;
     let mut pool = OutboxPool::default();
     pool.set_multicast_rejoin_interval(Duration::from_millis(20));
     let signer = FullKeypair::generate();
@@ -1235,6 +1473,62 @@ async fn multicast_frames_are_delivered_before_and_after_rejoin_interval() {
     assert!(
         second_delivered,
         "multicast delivery should still work after the rejoin maintenance path runs"
+    );
+}
+
+/// A multicast note queued while setup is unavailable should flush once setup
+/// later succeeds, and the flushed note should surface through the normal
+/// outbox receive path.
+#[tokio::test]
+async fn multicast_broadcast_queued_before_setup_flushes_after_later_setup() {
+    let _multicast_guard = lock_multicast_test().await;
+    let blocked_port = UdpSocket::bind("0.0.0.0:9797").expect("bind temporary multicast blocker");
+    let mut pool = OutboxPool::default();
+    let signer = FullKeypair::generate();
+    let queued_note = NoteBuilder::new()
+        .kind(1)
+        .content("multicast queued before setup")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build queued multicast note");
+    let setup_note = NoteBuilder::new()
+        .kind(1)
+        .content("multicast setup note after blocker release")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build setup multicast note");
+    let queued_note_id_hex = hex::encode(queued_note.id());
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.broadcast_note(&queued_note, vec![RelayId::Multicast]);
+    }
+    pool.try_recv(10, |_| {});
+
+    drop(blocked_port);
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.broadcast_note(&setup_note, vec![RelayId::Multicast]);
+    }
+
+    let mut saw_queued_note = false;
+    let queued_note_delivered =
+        pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+            pool.try_recv(10, |event| {
+                if matches!(event.relay_type, RelayImplType::Multicast)
+                    && event.event_json.contains(&queued_note_id_hex)
+                {
+                    saw_queued_note = true;
+                }
+            });
+            saw_queued_note
+        })
+        .await;
+
+    assert!(
+        queued_note_delivered,
+        "queued multicast broadcast should flush once setup later succeeds"
     );
 }
 
