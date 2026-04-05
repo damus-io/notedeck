@@ -1077,10 +1077,20 @@ async fn keepalive_sends_ping_on_configured_schedule() {
 
     tokio::time::sleep(Duration::from_millis(15)).await;
     pool.keepalive_ping(|| {});
-    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let saw_ping = tokio::time::timeout(Duration::from_millis(50), async {
+        loop {
+            if ping_count.load(Ordering::SeqCst) > 0 {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or(false);
 
     assert!(
-        ping_count.load(Ordering::SeqCst) > 0,
+        saw_ping,
         "keepalive should send a websocket ping once the configured interval elapses"
     );
 }
