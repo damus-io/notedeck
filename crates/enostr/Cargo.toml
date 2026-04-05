@@ -33,5 +33,7 @@ profiling = { workspace = true }
 nostr-database = "0.37"
 nostr-relay-builder = "0.37"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = { workspace = true }

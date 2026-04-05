@@ -4,14 +4,22 @@
 //! and test the full subscription lifecycle, EOSE propagation, and multi-relay coordination.
 
 use enostr::{
-    Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool, OutboxSessionHandler,
-    OutboxSubId, RelayReqStatus, RelayRoutingPreference, RelayStatus, RelayUrlPkgs, Wakeup,
+    FullKeypair, Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool,
+    OutboxSessionHandler, OutboxSubId, RelayReqStatus, RelayRoutingPreference, RelayStatus,
+    RelayUrlPkgs, Wakeup,
 };
+use futures_util::{SinkExt, StreamExt};
 use hashbrown::HashSet;
-use nostr_relay_builder::{LocalRelay, RelayBuilder};
-use nostrdb::Filter;
+use nostr::{Event, JsonUtil};
+use nostr_relay_builder::{
+    prelude::{MemoryDatabase, MemoryDatabaseOptions, NostrEventsDatabase},
+    LocalRelay, RelayBuilder,
+};
+use nostrdb::{Filter, NoteBuilder};
 use std::sync::Once;
 use std::time::Duration;
+use tokio::net::TcpListener;
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 static TRACING_INIT: Once = Once::new();
 
@@ -50,6 +58,103 @@ async fn create_test_relay() -> (LocalRelay, NormRelayUrl) {
     (relay, url)
 }
 
+/// Helper to create a LocalRelay pre-seeded with one kind-1 note that matches `trivial_filter`.
+async fn create_test_relay_with_seeded_note() -> (LocalRelay, NormRelayUrl) {
+    let (relay, url, _) = create_test_relay_with_seeded_notes(1).await;
+    (relay, url)
+}
+
+/// Helper to create a LocalRelay pre-seeded with `count` kind-1 notes that
+/// all match `trivial_filter`.
+async fn create_test_relay_with_seeded_notes(
+    count: usize,
+) -> (LocalRelay, NormRelayUrl, Vec<String>) {
+    let relay_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+
+    let signer = FullKeypair::generate();
+    let mut event_ids = Vec::with_capacity(count);
+    for i in 0..count {
+        let note = NoteBuilder::new()
+            .kind(1)
+            .content(&format!("seeded relay note {i}"))
+            .sign(&signer.secret_key.secret_bytes())
+            .build()
+            .expect("build seeded note");
+        let event = Event::from_json(note.json().expect("seeded note json")).expect("parse event");
+        event_ids.push(event.id.to_hex());
+        relay_db.save_event(&event).await.expect("seed relay event");
+    }
+
+    let relay = LocalRelay::run(RelayBuilder::default().database(relay_db))
+        .await
+        .expect("failed to start seeded relay");
+
+    let url_str = relay.url();
+    let url = NormRelayUrl::new(&url_str).expect("valid relay url");
+    (relay, url, event_ids)
+}
+
+/// Helper to create a tiny relay that sends one NOTICE, then the provided
+/// events, then EOSE for the first REQ it receives.
+async fn create_notice_then_events_relay(
+    events_json: Vec<String>,
+) -> (tokio::task::JoinHandle<()>, NormRelayUrl) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind notice relay");
+    let addr = listener.local_addr().expect("notice relay addr");
+    let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid notice relay url");
+
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept notice relay");
+        let mut websocket = accept_async(stream).await.expect("upgrade notice relay");
+
+        while let Some(msg) = websocket.next().await {
+            let Message::Text(text) = msg.expect("read notice relay message") else {
+                continue;
+            };
+
+            let parts: serde_json::Value =
+                serde_json::from_str(&text).expect("parse REQ from client");
+            if parts[0] != "REQ" {
+                continue;
+            }
+
+            let sid = parts[1].as_str().expect("REQ sid");
+            websocket
+                .send(Message::Text(r#"["NOTICE","queued notice"]"#.to_owned()))
+                .await
+                .expect("send notice");
+
+            for event_json in &events_json {
+                websocket
+                    .send(Message::Text(
+                        serde_json::json!([
+                            "EVENT",
+                            sid,
+                            serde_json::from_str::<serde_json::Value>(event_json)
+                                .expect("parse event json for relay frame")
+                        ])
+                        .to_string(),
+                    ))
+                    .await
+                    .expect("send event frame");
+            }
+
+            websocket
+                .send(Message::Text(serde_json::json!(["EOSE", sid]).to_string()))
+                .await
+                .expect("send eose");
+            break;
+        }
+    });
+
+    (handle, url)
+}
+
 /// Polls the pool until the provided predicate returns true or the attempt limit is reached.
 /// Returns the attempt count and whether the predicate was ultimately satisfied.
 async fn pump_pool_until<F>(
@@ -81,6 +186,27 @@ where
     F: FnMut(&mut OutboxPool) -> bool,
 {
     pump_pool_until(pool, 100, Duration::from_millis(15), predicate).await
+}
+
+async fn pump_pool_until_with_note_budget<F>(
+    pool: &mut OutboxPool,
+    max_notes: usize,
+    max_attempts: usize,
+    sleep_duration: Duration,
+    mut predicate: F,
+) -> bool
+where
+    F: FnMut(&mut OutboxPool) -> bool,
+{
+    for _ in 0..max_attempts {
+        pool.try_recv(max_notes, |_| {});
+        if predicate(pool) {
+            return true;
+        }
+        tokio::time::sleep(sleep_duration).await;
+    }
+
+    predicate(pool)
 }
 
 // ==================== Full Subscription Lifecycle ====================
