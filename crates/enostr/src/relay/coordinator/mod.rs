@@ -1,6 +1,7 @@
 use ewebsock::{WsEvent, WsMessage};
 use hashbrown::{HashMap, HashSet};
 use ingest::{IngestExecutor, IngestPlanner};
+use std::time::Duration;
 use transparent_routing::TransparentRoutingState;
 
 use crate::{
@@ -764,7 +765,12 @@ impl CoordinationData {
 
     // whether we received
     #[profiling::function]
-    pub(crate) fn try_recv<F>(&mut self, subs: &OutboxSubscriptions, act: &mut F) -> RecvResponse
+    pub(crate) fn try_recv<F>(
+        &mut self,
+        subs: &OutboxSubscriptions,
+        reconnect_delay: Duration,
+        act: &mut F,
+    ) -> RecvResponse
     where
         for<'a> F: FnMut(RawEventData<'a>),
     {
@@ -783,9 +789,7 @@ impl CoordinationData {
 
         let msg = match &event {
             WsEvent::Opened => {
-                websocket.conn.set_status(RelayStatus::Connected);
-                websocket.reconnect_attempt = 0;
-                websocket.retry_connect_after = WebsocketRelay::initial_reconnect_duration();
+                websocket.note_opened(reconnect_delay);
                 self.pending_tracker_invalidations.extend(handle_relay_open(
                     websocket,
                     &mut self.broadcast_cache,

@@ -9,7 +9,6 @@ use crate::{
     relay::{
         backoff,
         coordinator::{CoordinationData, CoordinationSession, RelayEoseDelta},
-        websocket::WebsocketRelay,
         ModifyTask, MulticastRelayCache, Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw,
         NormRelayUrl, OutboxSubId, OutboxSubscriptions, OutboxTask, RawEventData, RelayId,
         RelayLimitations, RelayReqStatus, RelayRoutingPreference, RelayStatus, RelayType,
@@ -28,8 +27,9 @@ use eose::{
 pub use handler::OutboxSessionHandler;
 pub use session::OutboxSession;
 
-const KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
+const DEFAULT_KEEPALIVE_PING_RATE: Duration = Duration::from_secs(45);
 const PONG_TIMEOUT: Duration = Duration::from_secs(90);
+const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30 * 60); // 30 minutes
 const NIP11_REFRESH_AFTER_SUCCESS: Duration = Duration::from_secs(60 * 60);
 
@@ -41,6 +41,8 @@ pub struct OutboxPool {
     subs: OutboxSubscriptions,
     eose_tracker: EoseTracker,
     multicast: MulticastRelayCache,
+    keepalive_ping_rate: Duration,
+    keepalive_reconnect_delay: Duration,
     pong_timeout: Duration,
 }
 
@@ -52,12 +54,33 @@ impl Default for OutboxPool {
             eose_tracker: EoseTracker::default(),
             multicast: Default::default(),
             subs: Default::default(),
+            keepalive_ping_rate: DEFAULT_KEEPALIVE_PING_RATE,
+            keepalive_reconnect_delay: DEFAULT_RECONNECT_DELAY,
             pong_timeout: PONG_TIMEOUT,
         }
     }
 }
 
 impl OutboxPool {
+    /// Overrides the interval between outbound websocket keepalive ping frames
+    /// for connected relays.
+    pub fn set_keepalive_ping_rate(&mut self, interval: Duration) {
+        self.keepalive_ping_rate = interval;
+    }
+
+    /// Overrides the base delay before a disconnected relay is eligible for a
+    /// reconnect attempt during keepalive processing.
+    pub fn set_keepalive_reconnect_delay(&mut self, delay: Duration) {
+        self.keepalive_reconnect_delay = delay;
+
+        for relay in self.relays.values_mut() {
+            let Some(websocket) = relay.websocket.as_mut() else {
+                continue;
+            };
+            websocket.retry_connect_after = delay;
+        }
+    }
+
     /// Overrides the maximum allowed time since the last websocket pong before
     /// a connected relay is marked disconnected by keepalive checks.
     pub fn set_pong_timeout(&mut self, timeout: Duration) {
@@ -465,9 +488,6 @@ impl OutboxPool {
                     }
                 }
                 RelayStatus::Connected => {
-                    websocket.reconnect_attempt = 0;
-                    websocket.retry_connect_after = WebsocketRelay::initial_reconnect_duration();
-
                     // Detect stale connections: if we've been pinging but no
                     // pong has come back within PONG_TIMEOUT, the connection
                     // is silently dead (e.g. laptop sleep, NAT timeout).
@@ -476,11 +496,12 @@ impl OutboxPool {
                             "pong timeout on {}, marking disconnected",
                             websocket.conn.url
                         );
+                        websocket.last_connect_attempt = now;
                         websocket.conn.set_status(RelayStatus::Disconnected);
                         continue;
                     }
 
-                    let should_ping = now - websocket.last_ping > KEEPALIVE_PING_RATE;
+                    let should_ping = now - websocket.last_ping > self.keepalive_ping_rate;
                     if should_ping {
                         tracing::trace!("pinging {}", websocket.conn.url);
                         websocket.conn.ping();
@@ -672,7 +693,7 @@ impl OutboxPool {
             let mut received_any = false;
 
             for (relay_id, relay) in &mut self.relays {
-                let resp = relay.try_recv(&self.subs, &mut process);
+                let resp = relay.try_recv(&self.subs, self.keepalive_reconnect_delay, &mut process);
                 if resp.eose_enqueued || relay.has_pending_effects() {
                     self.eose_tracker.note_relay_pending_effects(relay_id);
                 }

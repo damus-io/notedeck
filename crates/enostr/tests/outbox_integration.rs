@@ -16,7 +16,10 @@ use nostr_relay_builder::{
     LocalRelay, RelayBuilder,
 };
 use nostrdb::{Filter, NoteBuilder};
-use std::sync::Once;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Once,
+};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -155,6 +158,138 @@ async fn create_notice_then_events_relay(
     (handle, url)
 }
 
+/// Helper to create a websocket relay that accepts one connection and never
+/// sends pong frames.
+async fn create_silent_websocket_relay() -> (tokio::task::JoinHandle<()>, NormRelayUrl) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind silent relay");
+    let addr = listener.local_addr().expect("silent relay addr");
+    let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid silent relay url");
+
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept silent relay");
+        let mut websocket = accept_async(stream).await.expect("upgrade silent relay");
+
+        while let Some(msg) = websocket.next().await {
+            match msg {
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    (handle, url)
+}
+
+/// Helper to create a websocket relay that accepts one connection and sends
+/// pong frames at a fixed interval.
+async fn create_periodic_pong_relay(
+    pong_interval: Duration,
+) -> (tokio::task::JoinHandle<()>, NormRelayUrl) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind periodic-pong relay");
+    let addr = listener.local_addr().expect("periodic-pong relay addr");
+    let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid periodic-pong relay url");
+
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept periodic-pong relay");
+        let mut websocket = accept_async(stream)
+            .await
+            .expect("upgrade periodic-pong relay");
+        let mut interval = tokio::time::interval(pong_interval);
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if websocket.send(Message::Pong(Vec::new())).await.is_err() {
+                        break;
+                    }
+                }
+                msg = websocket.next() => {
+                    match msg {
+                        Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    });
+
+    (handle, url)
+}
+
+/// Helper to create a websocket relay that counts inbound ping frames from the
+/// client connection.
+async fn create_ping_counting_relay(
+) -> (tokio::task::JoinHandle<()>, NormRelayUrl, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ping-counting relay");
+    let addr = listener.local_addr().expect("ping-counting relay addr");
+    let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid ping-counting relay url");
+    let ping_count = Arc::new(AtomicUsize::new(0));
+    let ping_count_task = ping_count.clone();
+
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept ping-counting relay");
+        let mut websocket = accept_async(stream)
+            .await
+            .expect("upgrade ping-counting relay");
+
+        while let Some(msg) = websocket.next().await {
+            match msg {
+                Ok(Message::Ping(_)) => {
+                    ping_count_task.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(Message::Close(_)) | Err(_) => break,
+                _ => {}
+            }
+        }
+    });
+
+    (handle, url, ping_count)
+}
+
+/// Helper to create a websocket relay that counts repeated client
+/// connections and keeps each upgraded socket alive until the client drops it.
+async fn create_reconnect_counting_relay(
+) -> (tokio::task::JoinHandle<()>, NormRelayUrl, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind reconnect-counting relay");
+    let addr = listener
+        .local_addr()
+        .expect("reconnect-counting relay addr");
+    let url =
+        NormRelayUrl::new(&format!("ws://{addr}")).expect("valid reconnect-counting relay url");
+    let connection_count = Arc::new(AtomicUsize::new(0));
+    let connection_count_task = connection_count.clone();
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            connection_count_task.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let Ok(mut websocket) = accept_async(stream).await else {
+                    return;
+                };
+                while let Some(msg) = websocket.next().await {
+                    match msg {
+                        Ok(Message::Close(_)) | Err(_) => break,
+                        _ => {}
+                    }
+                }
+            });
+        }
+    });
+
+    (handle, url, connection_count)
+}
+
 /// Polls the pool until the provided predicate returns true or the attempt limit is reached.
 /// Returns the attempt count and whether the predicate was ultimately satisfied.
 async fn pump_pool_until<F>(
@@ -186,6 +321,12 @@ where
     F: FnMut(&mut OutboxPool) -> bool,
 {
     pump_pool_until(pool, 100, Duration::from_millis(15), predicate).await
+}
+
+fn websocket_status(pool: &OutboxPool, url: &NormRelayUrl) -> Option<RelayStatus> {
+    pool.websocket_statuses()
+        .into_iter()
+        .find_map(|(relay_url, status)| (*relay_url == *url).then_some(status))
 }
 
 async fn pump_pool_until_with_note_budget<F>(
@@ -696,6 +837,241 @@ async fn unreachable_relay_reports_disconnected_status() {
 
     // Should survive keepalive pings even when no websocket is available.
     pool.keepalive_ping(|| {});
+}
+
+/// A connected relay with no fresh pong should be marked disconnected when the
+/// pong timeout expires.
+#[tokio::test]
+async fn keepalive_marks_connected_relay_disconnected_after_pong_timeout() {
+    let (_relay_task, url) = create_silent_websocket_relay().await;
+    let mut pool = OutboxPool::default();
+    pool.set_pong_timeout(Duration::from_millis(20));
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    let id = {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), RelayUrlPkgs::new(urls))
+    };
+
+    let connected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(connected, "relay should reach Connected before timeout");
+    assert!(
+        !pool.has_eose(&id),
+        "silent relay should not produce EOSE in this setup"
+    );
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+
+    assert_eq!(
+        websocket_status(&pool, &url),
+        Some(RelayStatus::Disconnected),
+        "stale pong should force the connected relay to Disconnected"
+    );
+}
+
+/// A connected relay that keeps sending pong frames should remain connected
+/// even after wall-clock time exceeds the configured pong timeout.
+#[tokio::test]
+async fn keepalive_keeps_connected_relay_alive_when_pongs_continue() {
+    let (_relay_task, url) = create_periodic_pong_relay(Duration::from_millis(5)).await;
+    let mut pool = OutboxPool::default();
+    pool.set_pong_timeout(Duration::from_millis(20));
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), RelayUrlPkgs::new(urls));
+    }
+
+    let connected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(connected, "relay should reach Connected before pong checks");
+
+    for _ in 0..8 {
+        pool.try_recv(10, |_| {});
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    pool.keepalive_ping(|| {});
+
+    assert_eq!(
+        websocket_status(&pool, &url),
+        Some(RelayStatus::Connected),
+        "fresh pong frames should keep the relay connected"
+    );
+}
+
+/// A connected relay should receive websocket ping frames on the configured
+/// keepalive schedule.
+#[tokio::test]
+async fn keepalive_sends_ping_on_configured_schedule() {
+    let (_relay_task, url, ping_count) = create_ping_counting_relay().await;
+    let mut pool = OutboxPool::default();
+    pool.set_keepalive_ping_rate(Duration::from_millis(10));
+    pool.set_pong_timeout(Duration::from_secs(1));
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), RelayUrlPkgs::new(urls));
+    }
+
+    let connected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(connected, "relay should reach Connected before ping checks");
+
+    tokio::time::sleep(Duration::from_millis(15)).await;
+    pool.keepalive_ping(|| {});
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    assert!(
+        ping_count.load(Ordering::SeqCst) > 0,
+        "keepalive should send a websocket ping once the configured interval elapses"
+    );
+}
+
+/// After a stale-pong timeout, reconnect backoff should be measured from the
+/// disconnect moment before a new websocket connection is attempted.
+#[tokio::test]
+async fn keepalive_reconnects_only_after_configured_backoff_from_timeout() {
+    let (_relay_task, url, connection_count) = create_reconnect_counting_relay().await;
+    let mut pool = OutboxPool::default();
+    pool.set_pong_timeout(Duration::from_millis(20));
+    pool.set_keepalive_reconnect_delay(Duration::from_millis(30));
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), RelayUrlPkgs::new(urls));
+    }
+
+    let connected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(connected, "relay should reach Connected before timeout");
+    assert_eq!(
+        connection_count.load(Ordering::SeqCst),
+        1,
+        "test relay should observe exactly one initial websocket connection"
+    );
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+    assert_eq!(
+        websocket_status(&pool, &url),
+        Some(RelayStatus::Disconnected),
+        "stale pong should mark the relay disconnected before reconnect begins"
+    );
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    pool.keepalive_ping(|| {});
+    assert_eq!(
+        connection_count.load(Ordering::SeqCst),
+        1,
+        "reconnect must not happen before the configured backoff elapses"
+    );
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+
+    let reconnected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+            && connection_count.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    assert!(
+        reconnected,
+        "relay should reconnect after the configured backoff elapses"
+    );
+}
+
+/// After a relay reconnects, the new websocket leg should start with a fresh
+/// pong timestamp and keep using the configured reconnect delay.
+#[tokio::test]
+async fn keepalive_reconnect_open_refreshes_pong_and_preserves_configured_delay() {
+    let (_relay_task, url, connection_count) = create_reconnect_counting_relay().await;
+    let mut pool = OutboxPool::default();
+    pool.set_pong_timeout(Duration::from_millis(20));
+    pool.set_keepalive_reconnect_delay(Duration::from_millis(30));
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), RelayUrlPkgs::new(urls));
+    }
+
+    let connected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(connected, "relay should reach Connected before timeout");
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+
+    tokio::time::sleep(Duration::from_millis(35)).await;
+    pool.keepalive_ping(|| {});
+
+    let reconnected_once = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+            && connection_count.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    assert!(
+        reconnected_once,
+        "relay should reconnect once the first configured backoff elapses"
+    );
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    pool.keepalive_ping(|| {});
+    assert_eq!(
+        websocket_status(&pool, &url),
+        Some(RelayStatus::Connected),
+        "reopened websocket should not immediately time out from the previous leg's stale pong"
+    );
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+    assert_eq!(
+        websocket_status(&pool, &url),
+        Some(RelayStatus::Disconnected),
+        "second stale-pong window should still disconnect the reopened websocket"
+    );
+
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    pool.keepalive_ping(|| {});
+    assert_eq!(
+        connection_count.load(Ordering::SeqCst),
+        2,
+        "second reconnect must not happen before the configured backoff elapses"
+    );
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+
+    let reconnected_twice = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+            && connection_count.load(Ordering::SeqCst) >= 3
+    })
+    .await;
+    assert!(
+        reconnected_twice,
+        "reopened websocket should keep using the configured reconnect delay after later timeouts"
+    );
 }
 
 // ==================== Oneshot Subscription Removal After EOSE ====================

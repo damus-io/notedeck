@@ -147,6 +147,15 @@ impl WebsocketRelay {
     pub fn is_connected(&self) -> bool {
         self.conn.status == RelayStatus::Connected
     }
+
+    /// Records that the underlying websocket connection has opened
+    /// successfully, refreshing liveness state for the new leg.
+    pub fn note_opened(&mut self, reconnect_delay: Duration) {
+        self.conn.status = RelayStatus::Connected;
+        self.last_pong = Instant::now();
+        self.reconnect_attempt = 0;
+        self.retry_connect_after = reconnect_delay;
+    }
 }
 
 /// Owns websocket presence and bootstrap-retry state.
@@ -264,5 +273,35 @@ impl WebsocketSlot {
     #[cfg(test)]
     pub(crate) fn clear_for_test(&mut self) {
         self.relay = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WebsocketConn, WebsocketRelay};
+    use crate::{relay::test_utils::MockWakeup, RelayStatus};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn note_opened_refreshes_liveness_and_configured_reconnect_delay() {
+        let mut websocket = WebsocketRelay::new(
+            WebsocketConn::from_wakeup(
+                nostr::RelayUrl::parse("wss://relay-websocket-open.example.com").unwrap(),
+                MockWakeup::default(),
+            )
+            .unwrap(),
+        );
+        websocket.conn.status = RelayStatus::Disconnected;
+        websocket.last_pong = Instant::now() - Duration::from_secs(5);
+        websocket.reconnect_attempt = 3;
+        let before = websocket.last_pong;
+        let configured_delay = Duration::from_millis(30);
+
+        websocket.note_opened(configured_delay);
+
+        assert_eq!(websocket.conn.status, RelayStatus::Connected);
+        assert!(websocket.last_pong > before);
+        assert_eq!(websocket.reconnect_attempt, 0);
+        assert_eq!(websocket.retry_connect_after, configured_delay);
     }
 }
