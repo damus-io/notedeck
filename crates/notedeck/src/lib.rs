@@ -60,6 +60,9 @@ mod user_account;
 mod wallet;
 mod zaps;
 
+#[cfg(test)]
+mod test_utils;
+
 pub use account::accounts::{giftwrap_sub_identity, AccountData, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;

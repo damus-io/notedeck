@@ -51,6 +51,8 @@ pub struct RemoteApi<'a> {
 }
 
 impl<'a> RemoteApi<'a> {
+    /// Construct the host-facing remote facade over one outbox session and
+    /// scoped-subscription state bundle.
     pub(crate) fn new(pool: Outbox<'a>, scoped_sub_state: &'a mut ScopedSubsState) -> Self {
         Self {
             pool,

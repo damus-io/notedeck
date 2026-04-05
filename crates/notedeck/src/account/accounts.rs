@@ -225,6 +225,8 @@ impl Accounts {
         &self.cache.selected().data
     }
 
+    /// Select a new current account and apply the corresponding host-side
+    /// scoped-subscription transition.
     pub(crate) fn select_account(
         &mut self,
         pk_to_select: &Pubkey,
@@ -603,5 +605,243 @@ impl AccountNdbSubs {
         let _ = ndb.unsubscribe(self.contacts_ndb);
 
         *self = AccountNdbSubs::new(ndb, new_selection_data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        test_utils::{live_id_with_selected_for_test, remote_for_test},
+        ScopedSubsState, FALLBACK_PUBKEY,
+    };
+    use enostr::{FullKeypair, OutboxPool};
+    use nostrdb::Config;
+    use tempfile::TempDir;
+
+    struct AccountRemoteHarness {
+        _tmp: TempDir,
+        ndb: Ndb,
+        accounts: Accounts,
+        scoped_sub_state: ScopedSubsState,
+        pool: OutboxPool,
+    }
+
+    impl AccountRemoteHarness {
+        fn new() -> Self {
+            let tmp = TempDir::new().expect("tmp dir");
+            let mut ndb =
+                Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+            let txn = Transaction::new(&ndb).expect("txn");
+            let mut unknown_ids = UnknownIds::default();
+            let accounts = Accounts::new(
+                None,
+                Vec::new(),
+                FALLBACK_PUBKEY(),
+                &mut ndb,
+                &txn,
+                &mut unknown_ids,
+            );
+
+            Self {
+                _tmp: tmp,
+                ndb,
+                accounts,
+                scoped_sub_state: ScopedSubsState::default(),
+                pool: OutboxPool::default(),
+            }
+        }
+
+        fn identity_for(kind: AccountRemoteSubKind) -> ScopedSubIdentity {
+            ScopedSubIdentity::account(account_remote_owner_key(), account_remote_sub_key(kind))
+        }
+
+        fn live_id_for(
+            &mut self,
+            account_pk: Pubkey,
+            identity: ScopedSubIdentity,
+        ) -> Option<enostr::OutboxSubId> {
+            live_id_with_selected_for_test(
+                &mut self.scoped_sub_state,
+                account_pk,
+                identity.key,
+                identity.scope,
+            )
+        }
+    }
+
+    fn filter_jsons(filters: &[Filter]) -> Vec<String> {
+        filters
+            .iter()
+            .map(|filter| filter.json().expect("filter json"))
+            .collect()
+    }
+
+    #[test]
+    fn update_initializes_selected_account_remote_subs_with_expected_routing() {
+        let mut h = AccountRemoteHarness::new();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let selected = *h.accounts.selected_account_pubkey();
+        let relay_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::RelayList);
+        let mute_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::MuteList);
+        let contacts_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::ContactsList);
+        let giftwrap = giftwrap_sub_identity();
+
+        let _relay_list_id = h
+            .live_id_for(selected, relay_list)
+            .expect("relay list live id");
+        let _mute_list_id = h
+            .live_id_for(selected, mute_list)
+            .expect("mute list live id");
+        let _contacts_list_id = h
+            .live_id_for(selected, contacts_list)
+            .expect("contacts list live id");
+        let giftwrap_id = h.live_id_for(selected, giftwrap).expect("giftwrap live id");
+
+        let expected_giftwrap = vec![giftwrap_filter(&selected)];
+        let stored_giftwrap = h.pool.filters(&giftwrap_id).expect("giftwrap filters");
+        assert_eq!(
+            filter_jsons(stored_giftwrap),
+            filter_jsons(&expected_giftwrap),
+            "giftwrap live sub should target the selected account's pubkey"
+        );
+    }
+
+    #[test]
+    fn account_switch_replaces_remote_subs_and_restores_them_on_switch_back() {
+        let mut h = AccountRemoteHarness::new();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let account_a = *h.accounts.selected_account_pubkey();
+        let relay_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::RelayList);
+        let giftwrap = giftwrap_sub_identity();
+        let relay_a_id = h
+            .live_id_for(account_a, relay_list)
+            .expect("relay list for A");
+        let giftwrap_a_id = h.live_id_for(account_a, giftwrap).expect("giftwrap for A");
+
+        let account_b = FullKeypair::generate().to_keypair();
+        let account_b_pk = account_b.pubkey;
+        let add_response = h.accounts.add_account(account_b).expect("add account");
+        assert_eq!(add_response.switch_to, account_b_pk);
+
+        {
+            let txn = Transaction::new(&h.ndb).expect("txn");
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .select_account(&account_b_pk, &mut h.ndb, &txn, &mut remote);
+        }
+
+        assert!(
+            h.live_id_for(account_a, relay_list).is_none()
+                && h.live_id_for(account_a, giftwrap).is_none(),
+            "switching away should unsubscribe the old account-scoped remote subs"
+        );
+
+        let relay_b_id = h
+            .live_id_for(account_b_pk, relay_list)
+            .expect("relay list for B");
+        let giftwrap_b_id = h
+            .live_id_for(account_b_pk, giftwrap)
+            .expect("giftwrap for B");
+        assert_ne!(relay_a_id, relay_b_id);
+        assert_ne!(giftwrap_a_id, giftwrap_b_id);
+
+        let stored_giftwrap_b = h
+            .pool
+            .filters(&giftwrap_b_id)
+            .expect("giftwrap filters for B");
+        assert_eq!(
+            filter_jsons(stored_giftwrap_b),
+            filter_jsons(&[giftwrap_filter(&account_b_pk)]),
+            "giftwrap live sub should retarget when the selected account changes"
+        );
+
+        {
+            let txn = Transaction::new(&h.ndb).expect("txn");
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .select_account(&account_a, &mut h.ndb, &txn, &mut remote);
+        }
+
+        let restored_relay_a_id = h
+            .live_id_for(account_a, relay_list)
+            .expect("relay list restored for A");
+        let restored_giftwrap_a_id = h
+            .live_id_for(account_a, giftwrap)
+            .expect("giftwrap restored for A");
+
+        assert!(h.live_id_for(account_b_pk, relay_list).is_none());
+        assert!(h.live_id_for(account_b_pk, giftwrap).is_none());
+        assert_ne!(relay_a_id, restored_relay_a_id);
+        assert_ne!(giftwrap_a_id, restored_giftwrap_a_id);
+        assert_eq!(
+            filter_jsons(
+                h.pool
+                    .filters(&restored_giftwrap_a_id)
+                    .expect("giftwrap filters for A")
+            ),
+            filter_jsons(&[giftwrap_filter(&account_a)]),
+            "switching back should restore the original account's giftwrap target"
+        );
+    }
+
+    #[test]
+    fn selected_account_relay_action_retargets_existing_accountsread_remote_subs() {
+        let mut h = AccountRemoteHarness::new();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let selected = *h.accounts.selected_account_pubkey();
+        let relay_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::RelayList);
+        let mute_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::MuteList);
+        let contacts_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::ContactsList);
+
+        let relay_list_id = h
+            .live_id_for(selected, relay_list)
+            .expect("relay list live id");
+        let mute_list_id = h
+            .live_id_for(selected, mute_list)
+            .expect("mute list live id");
+        let contacts_list_id = h
+            .live_id_for(selected, contacts_list)
+            .expect("contacts list live id");
+
+        let relay_before = h.accounts.selected_account_read_relays();
+        let new_relay =
+            NormRelayUrl::new("wss://relay-account-retarget.example.com").expect("relay url");
+
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .process_relay_action(&mut remote, RelayAction::Add(new_relay.to_string()));
+        }
+
+        let relay_after = h.accounts.selected_account_read_relays();
+        assert!(relay_after.contains(&new_relay));
+        assert_ne!(relay_before, relay_after);
+
+        assert_eq!(h.live_id_for(selected, relay_list), Some(relay_list_id));
+        assert_eq!(h.live_id_for(selected, mute_list), Some(mute_list_id));
+        assert_eq!(
+            h.live_id_for(selected, contacts_list),
+            Some(contacts_list_id)
+        );
+
+        assert!(
+            h.pool.filters(&relay_list_id).is_some()
+                && h.pool.filters(&mute_list_id).is_some()
+                && h.pool.filters(&contacts_list_id).is_some(),
+            "retargeting should keep the existing live account-read subs active"
+        );
     }
 }

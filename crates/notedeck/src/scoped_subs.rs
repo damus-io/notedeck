@@ -705,6 +705,20 @@ impl ScopedSubRuntime {
     }
 }
 
+#[cfg(test)]
+impl ScopedSubRuntime {
+    pub(crate) fn live_id_with_selected(
+        &self,
+        selected_account_pubkey: Pubkey,
+        key: SubKey,
+        scope: SubScope,
+    ) -> Option<OutboxSubId> {
+        let resolved_scope = resolve_scope(&scope, selected_account_pubkey);
+        let scoped = Self::scoped_key(resolved_scope, key);
+        self.live.get(&scoped).copied()
+    }
+}
+
 fn plan_set_sub_live_op(
     previous: Option<&SubConfig>,
     next: &SubConfig,
