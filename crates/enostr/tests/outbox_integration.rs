@@ -5,8 +5,8 @@
 
 use enostr::{
     FullKeypair, Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool,
-    OutboxSessionHandler, OutboxSubId, RelayReqStatus, RelayRoutingPreference, RelayStatus,
-    RelayUrlPkgs, Wakeup,
+    OutboxSessionHandler, OutboxSubId, RelayId, RelayImplType, RelayReqStatus,
+    RelayRoutingPreference, RelayStatus, RelayUrlPkgs, Wakeup,
 };
 use futures_util::{SinkExt, StreamExt};
 use hashbrown::HashSet;
@@ -16,6 +16,7 @@ use nostr_relay_builder::{
     LocalRelay, RelayBuilder,
 };
 use nostrdb::{Filter, NoteBuilder};
+use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc, Once,
@@ -288,6 +289,57 @@ async fn create_reconnect_counting_relay(
     });
 
     (handle, url, connection_count)
+}
+
+/// Helper to create a websocket relay that captures inbound EVENT frames from
+/// the client connection.
+async fn create_event_capture_relay() -> (
+    tokio::task::JoinHandle<()>,
+    NormRelayUrl,
+    Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind event-capture relay");
+    let addr = listener.local_addr().expect("event-capture relay addr");
+    let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid event-capture relay url");
+    let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured_task = captured.clone();
+
+    let handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept event-capture relay");
+        let mut websocket = accept_async(stream)
+            .await
+            .expect("upgrade event-capture relay");
+
+        while let Some(msg) = websocket.next().await {
+            let Ok(Message::Text(text)) = msg else {
+                continue;
+            };
+
+            if text.starts_with("[\"EVENT\",") {
+                captured_task
+                    .lock()
+                    .expect("lock captured events")
+                    .push(text);
+            }
+        }
+    });
+
+    (handle, url, captured)
+}
+
+fn send_multicast_text_frame(text: &str) {
+    let socket = UdpSocket::bind("0.0.0.0:0").expect("bind multicast sender");
+    let mut frame = Vec::with_capacity(4 + text.len());
+    frame.extend_from_slice(&(text.len() as u32).to_be_bytes());
+    frame.extend_from_slice(text.as_bytes());
+    socket
+        .send_to(
+            &frame,
+            SocketAddrV4::new(Ipv4Addr::new(239, 19, 88, 1), 9797),
+        )
+        .expect("send multicast frame");
 }
 
 /// Polls the pool until the provided predicate returns true or the attempt limit is reached.
@@ -1071,6 +1123,118 @@ async fn keepalive_reconnect_open_refreshes_pong_and_preserves_configured_delay(
     assert!(
         reconnected_twice,
         "reopened websocket should keep using the configured reconnect delay after later timeouts"
+    );
+}
+
+/// Broadcasting to a websocket relay should eventually send an `EVENT` frame
+/// through the relay's broadcast path.
+#[tokio::test]
+async fn broadcast_note_sends_event_to_websocket_relay() {
+    let (_relay_task, url, captured) = create_event_capture_relay().await;
+    let mut pool = OutboxPool::default();
+    let signer = FullKeypair::generate();
+    let note = NoteBuilder::new()
+        .kind(1)
+        .content("broadcast websocket test")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build websocket broadcast note");
+    let note_id_hex = hex::encode(note.id());
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.broadcast_note(&note, vec![RelayId::Websocket(url.clone())]);
+    }
+
+    let delivered = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |_pool| {
+        captured
+            .lock()
+            .expect("lock captured events")
+            .iter()
+            .any(|frame| frame.contains(&note_id_hex))
+    })
+    .await;
+
+    assert!(
+        delivered,
+        "websocket broadcast path should eventually send the note as an EVENT frame"
+    );
+}
+
+/// Multicast frames should be delivered through outbox receive both before and
+/// after the rejoin maintenance path runs.
+#[tokio::test]
+async fn multicast_frames_are_delivered_before_and_after_rejoin_interval() {
+    let mut pool = OutboxPool::default();
+    pool.set_multicast_rejoin_interval(Duration::from_millis(20));
+    let signer = FullKeypair::generate();
+    let setup_note = NoteBuilder::new()
+        .kind(1)
+        .content("multicast setup note")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build multicast setup note");
+    let first_note = NoteBuilder::new()
+        .kind(1)
+        .content("multicast target note before rejoin")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build multicast first target note");
+    let second_note = NoteBuilder::new()
+        .kind(1)
+        .content("multicast target note after rejoin")
+        .sign(&signer.secret_key.secret_bytes())
+        .build()
+        .expect("build multicast second target note");
+    let first_note_json = first_note.json().expect("first target note json");
+    let first_note_id_hex = hex::encode(first_note.id());
+    let second_note_json = second_note.json().expect("second target note json");
+    let second_note_id_hex = hex::encode(second_note.id());
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.broadcast_note(&setup_note, vec![RelayId::Multicast]);
+    }
+
+    let mut saw_first = false;
+    let first_delivered = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+        send_multicast_text_frame(&first_note_json);
+        pool.try_recv(10, |event| {
+            if matches!(event.relay_type, RelayImplType::Multicast)
+                && event.event_json.contains(&first_note_id_hex)
+            {
+                saw_first = true;
+            }
+        });
+        saw_first
+    })
+    .await;
+
+    assert!(
+        first_delivered,
+        "multicast frames should be surfaced through outbox try_recv before rejoin"
+    );
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.try_recv(10, |_| {});
+
+    let mut saw_second = false;
+    let second_delivered = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+        send_multicast_text_frame(&second_note_json);
+        pool.try_recv(10, |event| {
+            if matches!(event.relay_type, RelayImplType::Multicast)
+                && event.event_json.contains(&second_note_id_hex)
+            {
+                saw_second = true;
+            }
+        });
+        saw_second
+    })
+    .await;
+
+    assert!(
+        second_delivered,
+        "multicast delivery should still work after the rejoin maintenance path runs"
     );
 }
 

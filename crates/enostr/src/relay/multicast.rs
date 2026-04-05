@@ -14,6 +14,7 @@ use tracing::{debug, error};
 
 pub struct MulticastRelay {
     last_join: Instant,
+    rejoin_interval: Duration,
     status: RelayStatus,
     address: SocketAddrV4,
     socket: UdpSocket,
@@ -41,6 +42,7 @@ impl MulticastRelay {
             socket,
             interface,
             last_join,
+            rejoin_interval: Duration::from_secs(200),
             poller_stop: Arc::new(AtomicBool::new(false)),
             poller_handle: None,
         }
@@ -60,7 +62,15 @@ impl MulticastRelay {
     }
 
     pub fn should_rejoin(&self) -> bool {
-        (Instant::now() - self.last_join) >= Duration::from_secs(200)
+        self.should_rejoin_at(Instant::now())
+    }
+
+    pub fn should_rejoin_at(&self, now: Instant) -> bool {
+        (now - self.last_join) >= self.rejoin_interval
+    }
+
+    pub fn set_rejoin_interval(&mut self, interval: Duration) {
+        self.rejoin_interval = interval;
     }
 
     pub fn try_recv(&self) -> Option<WsEvent> {
@@ -194,10 +204,20 @@ pub fn setup_multicast_relay(
 }
 /// MulticastRelayCache lazily initializes the multicast connection and buffers
 /// outbound events until a connection is available.
-#[derive(Default)]
 pub struct MulticastRelayCache {
     multicast: Option<MulticastRelay>,
     cache: BroadcastCache,
+    rejoin_interval: Duration,
+}
+
+impl Default for MulticastRelayCache {
+    fn default() -> Self {
+        Self {
+            multicast: None,
+            cache: BroadcastCache::default(),
+            rejoin_interval: Duration::from_secs(200),
+        }
+    }
 }
 
 impl MulticastRelayCache {
@@ -213,8 +233,16 @@ impl MulticastRelayCache {
         let Ok(multicast) = setup_multicast_relay(move || wake.wake()) else {
             return;
         };
-
+        let mut multicast = multicast;
+        multicast.set_rejoin_interval(self.rejoin_interval);
         self.multicast = Some(multicast);
+    }
+
+    pub fn set_rejoin_interval(&mut self, interval: Duration) {
+        self.rejoin_interval = interval;
+        if let Some(multicast) = self.multicast.as_mut() {
+            multicast.set_rejoin_interval(interval);
+        }
     }
 
     pub fn broadcast(&mut self, msg: EventClientMessage) {
@@ -226,17 +254,11 @@ impl MulticastRelayCache {
     where
         for<'a> F: FnMut(RawEventData<'a>),
     {
+        self.maintain();
+
         let Some(multicast) = &mut self.multicast else {
             return;
         };
-
-        if multicast.should_rejoin() {
-            if let Err(e) = multicast.rejoin() {
-                tracing::error!("multicast: rejoin error: {e}");
-            } else {
-                self.cache.flush_backoff = None;
-            }
-        }
 
         BroadcastRelay::multicast(Some(multicast), &mut self.cache).try_flush_queue();
 
@@ -249,5 +271,45 @@ impl MulticastRelayCache {
             event_json: &text,
             relay_type: RelayImplType::Multicast,
         });
+    }
+
+    fn maintain(&mut self) {
+        let Some(multicast) = &mut self.multicast else {
+            return;
+        };
+
+        if multicast.should_rejoin() {
+            if let Err(e) = multicast.rejoin() {
+                tracing::error!("multicast: rejoin error: {e}");
+            } else {
+                self.cache.flush_backoff = None;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MulticastRelay;
+    use mio::net::UdpSocket;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+    use std::time::{Duration, Instant};
+
+    fn test_multicast_relay() -> MulticastRelay {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+        let socket = UdpSocket::bind(addr).unwrap();
+        let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(239, 19, 88, 1), 9797);
+        MulticastRelay::new(multicast_addr, socket, Ipv4Addr::UNSPECIFIED)
+    }
+
+    #[test]
+    fn multicast_rejoin_interval_controls_rejoin_threshold() {
+        let mut relay = test_multicast_relay();
+        let joined_at = Instant::now();
+        relay.last_join = joined_at;
+        relay.set_rejoin_interval(Duration::from_millis(20));
+
+        assert!(!relay.should_rejoin_at(joined_at + Duration::from_millis(10)));
+        assert!(relay.should_rejoin_at(joined_at + Duration::from_millis(25)));
     }
 }

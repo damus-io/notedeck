@@ -81,6 +81,12 @@ impl OutboxPool {
         }
     }
 
+    /// Overrides the multicast rejoin interval used to refresh group
+    /// membership during receive processing.
+    pub fn set_multicast_rejoin_interval(&mut self, interval: Duration) {
+        self.multicast.set_rejoin_interval(interval);
+    }
+
     /// Overrides the maximum allowed time since the last websocket pong before
     /// a connected relay is marked disconnected by keepalive checks.
     pub fn set_pong_timeout(&mut self, timeout: Duration) {
