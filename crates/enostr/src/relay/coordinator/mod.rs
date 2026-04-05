@@ -1321,6 +1321,128 @@ mod tests {
     }
 
     #[test]
+    fn preferred_compaction_route_beats_no_preference_when_dedicated_slot_opens() {
+        let mut subs = OutboxSubscriptions::default();
+        let id_required = OutboxSubId(15);
+        let id_no_preference = OutboxSubId(16);
+        let id_preferred = OutboxSubId(17);
+        insert_sub_with_policy(
+            &mut subs,
+            id_required,
+            RelayRoutingPreference::RequireDedicated,
+        );
+        insert_sub_with_policy(
+            &mut subs,
+            id_no_preference,
+            RelayRoutingPreference::NoPreference,
+        );
+        insert_sub_with_policy(
+            &mut subs,
+            id_preferred,
+            RelayRoutingPreference::PreferDedicated,
+        );
+
+        let mut coordinator = coordinator_with_limit(1);
+
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_required, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(id_no_preference, RelayRoutingPreference::NoPreference);
+        coordinator.ingest_session(&subs, second);
+
+        let mut third = CoordinationSession::default();
+        third.subscribe(id_preferred, RelayRoutingPreference::PreferDedicated);
+        coordinator.ingest_session(&subs, third);
+
+        let mut fourth = CoordinationSession::default();
+        fourth.unsubscribe(id_required);
+        coordinator.ingest_session(&subs, fourth);
+
+        assert_eq!(coordinator.route_type(&id_required), None);
+        assert_eq!(
+            coordinator.route_type(&id_preferred),
+            Some(RelayType::Transparent),
+            "a preferred request should reclaim the opened slot before queued no-preference compaction work"
+        );
+        assert_eq!(
+            coordinator.route_type(&id_no_preference),
+            Some(RelayType::Compaction)
+        );
+        assert_eq!(
+            coordinator.compaction_data.req_status(&id_no_preference),
+            None
+        );
+    }
+
+    #[test]
+    fn incoming_preferred_request_reclaims_live_compaction_slot_from_no_preference() {
+        let mut subs = OutboxSubscriptions::default();
+        let id_required = OutboxSubId(18);
+        let id_no_preference = OutboxSubId(19);
+        let id_incoming_preferred = OutboxSubId(20);
+        insert_sub_with_policy(
+            &mut subs,
+            id_required,
+            RelayRoutingPreference::RequireDedicated,
+        );
+        insert_sub_with_policy(
+            &mut subs,
+            id_no_preference,
+            RelayRoutingPreference::NoPreference,
+        );
+        insert_sub_with_policy(
+            &mut subs,
+            id_incoming_preferred,
+            RelayRoutingPreference::PreferDedicated,
+        );
+
+        let mut coordinator = coordinator_with_limit(1);
+
+        let mut first = CoordinationSession::default();
+        first.subscribe(id_required, RelayRoutingPreference::RequireDedicated);
+        coordinator.ingest_session(&subs, first);
+
+        let mut second = CoordinationSession::default();
+        second.subscribe(id_no_preference, RelayRoutingPreference::NoPreference);
+        coordinator.ingest_session(&subs, second);
+
+        coordinator.set_max_size(&subs, 2);
+        assert_eq!(
+            coordinator.route_type(&id_no_preference),
+            Some(RelayType::Compaction)
+        );
+        assert_eq!(
+            coordinator.compaction_data.req_status(&id_no_preference),
+            Some(RelayReqStatus::InitialQuery),
+            "increasing capacity should materialize the queued no-preference compaction request"
+        );
+
+        let mut third = CoordinationSession::default();
+        third.subscribe(
+            id_incoming_preferred,
+            RelayRoutingPreference::PreferDedicated,
+        );
+        coordinator.ingest_session(&subs, third);
+
+        assert_eq!(
+            coordinator.route_type(&id_required),
+            Some(RelayType::Transparent)
+        );
+        assert_eq!(
+            coordinator.route_type(&id_incoming_preferred),
+            Some(RelayType::Transparent),
+            "the incoming preferred request should reclaim the live compaction slot instead of falling behind no-preference work"
+        );
+        assert_eq!(
+            coordinator.route_type(&id_no_preference),
+            Some(RelayType::Compaction),
+            "the displaced no-preference request should return to compaction"
+        );
+    }
+
+    #[test]
     fn required_transparent_does_not_fallback_to_compaction_when_full() {
         let mut subs = OutboxSubscriptions::default();
         let id_a = OutboxSubId(20);
