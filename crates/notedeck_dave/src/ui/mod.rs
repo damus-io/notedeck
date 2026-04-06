@@ -98,11 +98,12 @@ fn build_dave_ui<'a>(
             .session_info
             .as_ref()
             .and_then(|si| si.model.as_deref());
+        let is_compacting = agentic.is_compacting();
         ui_builder = ui_builder
             .permission_message_state(agentic.permission_message_state)
             .question_answers(&mut agentic.question_answers)
             .question_index(&mut agentic.question_index)
-            .is_compacting(agentic.is_compacting)
+            .is_compacting(is_compacting)
             .usage(&agentic.usage, model);
 
         // Only show git status for local sessions
@@ -1113,14 +1114,12 @@ pub fn handle_ui_action(
             let result = update::handle_permission_response(
                 session_manager,
                 request_id,
-                PermissionResponse::Allow {
-                    message: Some("/compact".into()),
-                },
+                PermissionResponse::Allow { message: None },
             );
             if let Some(session) = session_manager.get_active_mut() {
                 if let Some(agentic) = &mut session.agentic {
-                    agentic.compact_and_proceed =
-                        crate::session::CompactAndProceedState::WaitingForCompaction;
+                    agentic.compact_intent =
+                        Some(crate::session::CompactIntent::ProceedAfterStreamEnd);
                 }
             }
             result.map_or(

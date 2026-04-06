@@ -128,19 +128,21 @@ pub fn friendly_model_name(model: &str) -> &str {
     model
 }
 
-/// Tracks the "Compact & Approve" lifecycle.
+/// Unified compaction intent — replaces the old `CompactAndProceedState`
+/// enum *and* the separate `is_compacting: bool` field.
 ///
-/// Button click → `WaitingForCompaction` (intent recorded).
-/// CompactionComplete → `ReadyToProceed` (compaction finished, safe to send).
-/// Stream-end (local) or compaction_complete event (remote) → consume and fire.
-#[derive(Default, Clone, Copy, PartialEq)]
-pub enum CompactAndProceedState {
-    /// No compact-and-proceed in progress.
-    #[default]
-    Idle,
-    /// User clicked "Compact & Approve"; waiting for compaction to finish.
-    WaitingForCompaction,
-    /// Compaction finished; send "Proceed" on the next safe opportunity
+/// `None` = idle (no compaction in progress, no compact-and-proceed pending).
+/// Each variant captures exactly one phase of the compaction lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CompactIntent {
+    /// Manual compact (Compact button pressed); no "Proceed" afterwards.
+    Manual,
+    /// "Compact & Approve" clicked; waiting for the current stream to end
+    /// so we can dispatch the compact query.
+    ProceedAfterStreamEnd,
+    /// Compact query dispatched; waiting for CompactionComplete.
+    ProceedAfterCompaction,
+    /// Compaction finished; send "Proceed" at next opportunity
     /// (stream-end for local, immediately for remote).
     ReadyToProceed,
 }
@@ -263,8 +265,8 @@ pub struct AgenticSessionData {
     pub session_info: Option<SessionInfo>,
     /// Indices of subagent messages in chat (keyed by task_id)
     pub subagent_indices: HashMap<String, usize>,
-    /// Whether conversation compaction is in progress
-    pub is_compacting: bool,
+    /// Compaction lifecycle state. `None` = idle.
+    pub compact_intent: Option<CompactIntent>,
     /// Info from the last completed compaction (for display)
     pub last_compaction: Option<CompactionInfo>,
     /// Claude session ID to resume (UUID from Claude CLI's session storage)
@@ -290,8 +292,6 @@ pub struct AgenticSessionData {
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
     pub seen_note_ids: HashSet<[u8; 32]>,
-    /// Tracks the "Compact & Approve" lifecycle.
-    pub compact_and_proceed: CompactAndProceedState,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
     /// Runtime allowlist for auto-accepting permissions this session.
@@ -324,7 +324,7 @@ impl AgenticSessionData {
             cwd,
             session_info: None,
             subagent_indices: HashMap::new(),
-            is_compacting: false,
+            compact_intent: None,
             last_compaction: None,
             resume_session_id: None,
             git_status,
@@ -334,7 +334,6 @@ impl AgenticSessionData {
             remote_status_ts: 0,
             live_conversation_sub: None,
             seen_note_ids: HashSet::new(),
-            compact_and_proceed: CompactAndProceedState::Idle,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -383,6 +382,14 @@ impl AgenticSessionData {
     /// It is independent of the Claude CLI session ID.
     pub fn event_session_id(&self) -> &str {
         &self.event_id
+    }
+
+    /// Whether a compaction operation is currently in-flight.
+    pub fn is_compacting(&self) -> bool {
+        matches!(
+            self.compact_intent,
+            Some(CompactIntent::Manual | CompactIntent::ProceedAfterCompaction)
+        )
     }
 
     /// Get the CLI session ID for backend `--resume`.
@@ -1488,16 +1495,16 @@ impl ChatSession {
     /// - Local sessions: at stream-end in process_events()
     /// - Remote sessions: on compaction_complete in poll_remote_conversation_events()
     pub fn take_compact_and_proceed(&mut self) -> bool {
-        let dominated = self
+        let ready = self
             .agentic
             .as_ref()
-            .is_none_or(|a| a.compact_and_proceed != CompactAndProceedState::ReadyToProceed);
+            .is_some_and(|a| a.compact_intent == Some(CompactIntent::ReadyToProceed));
 
-        if dominated {
+        if !ready {
             return false;
         }
 
-        self.agentic.as_mut().unwrap().compact_and_proceed = CompactAndProceedState::Idle;
+        self.agentic.as_mut().unwrap().compact_intent = None;
         self.chat
             .push(Message::User("Proceed with implementing the plan.".into()));
         true
@@ -2984,5 +2991,118 @@ mod tests {
             mgr.visual_order(&collapse),
             vec![local_b, remote_a, chat_id]
         );
+    }
+
+    // ---- compact_intent / take_compact_and_proceed tests ----
+
+    #[test]
+    fn take_compact_and_proceed_none_returns_false() {
+        let mut session = test_session();
+        // Agentic session starts with compact_intent = None
+        assert!(!session.take_compact_and_proceed());
+        assert!(session.chat.is_empty());
+    }
+
+    #[test]
+    fn take_compact_and_proceed_waiting_for_stream_end_returns_false() {
+        let mut session = test_session();
+        session.agentic.as_mut().unwrap().compact_intent =
+            Some(CompactIntent::ProceedAfterStreamEnd);
+        assert!(!session.take_compact_and_proceed());
+        assert!(session.chat.is_empty());
+    }
+
+    #[test]
+    fn take_compact_and_proceed_waiting_for_compaction_returns_false() {
+        let mut session = test_session();
+        session.agentic.as_mut().unwrap().compact_intent =
+            Some(CompactIntent::ProceedAfterCompaction);
+        assert!(!session.take_compact_and_proceed());
+        assert!(session.chat.is_empty());
+    }
+
+    #[test]
+    fn take_compact_and_proceed_ready_returns_true_and_pushes_message() {
+        let mut session = test_session();
+        session.agentic.as_mut().unwrap().compact_intent = Some(CompactIntent::ReadyToProceed);
+
+        assert!(session.take_compact_and_proceed());
+
+        // Should have pushed a user "Proceed" message
+        assert_eq!(session.chat.len(), 1);
+        assert!(matches!(session.chat[0], Message::User(ref s) if s.text.contains("Proceed")));
+
+        // State should be reset to None
+        assert_eq!(session.agentic.as_ref().unwrap().compact_intent, None);
+    }
+
+    #[test]
+    fn take_compact_and_proceed_only_fires_once() {
+        let mut session = test_session();
+        session.agentic.as_mut().unwrap().compact_intent = Some(CompactIntent::ReadyToProceed);
+
+        assert!(session.take_compact_and_proceed());
+        // Second call should return false — state was consumed
+        assert!(!session.take_compact_and_proceed());
+        // Only one "Proceed" message
+        assert_eq!(session.chat.len(), 1);
+    }
+
+    #[test]
+    fn compact_and_proceed_full_lifecycle() {
+        let mut session = test_session();
+        let agentic = session.agentic.as_mut().unwrap();
+
+        // 1. User clicks "Compact & Approve" → ProceedAfterStreamEnd
+        agentic.compact_intent = Some(CompactIntent::ProceedAfterStreamEnd);
+        assert!(!session.take_compact_and_proceed());
+
+        // 2. Stream ends → caller dispatches compact, sets ProceedAfterCompaction
+        let agentic = session.agentic.as_mut().unwrap();
+        assert_eq!(
+            agentic.compact_intent,
+            Some(CompactIntent::ProceedAfterStreamEnd)
+        );
+        agentic.compact_intent = Some(CompactIntent::ProceedAfterCompaction);
+        assert!(!session.take_compact_and_proceed());
+
+        // 3. Compaction completes → advance to ReadyToProceed
+        let agentic = session.agentic.as_mut().unwrap();
+        agentic.compact_intent = Some(CompactIntent::ReadyToProceed);
+
+        // 4. Compact stream ends → take_compact_and_proceed fires → sends "Proceed"
+        assert!(session.take_compact_and_proceed());
+        assert!(
+            matches!(session.chat.last(), Some(Message::User(ref s)) if s.text.contains("Proceed"))
+        );
+
+        // 5. State is back to None
+        assert_eq!(session.agentic.as_ref().unwrap().compact_intent, None);
+    }
+
+    #[test]
+    fn is_compacting_derived_from_compact_intent() {
+        let mut session = test_session();
+        let agentic = session.agentic.as_mut().unwrap();
+
+        // None → not compacting
+        agentic.compact_intent = None;
+        assert!(!agentic.is_compacting());
+
+        // Manual → compacting
+        agentic.compact_intent = Some(CompactIntent::Manual);
+        assert!(agentic.is_compacting());
+
+        // ProceedAfterStreamEnd → not yet compacting (waiting for stream end)
+        agentic.compact_intent = Some(CompactIntent::ProceedAfterStreamEnd);
+        assert!(!agentic.is_compacting());
+
+        // ProceedAfterCompaction → compacting
+        agentic.compact_intent = Some(CompactIntent::ProceedAfterCompaction);
+        assert!(agentic.is_compacting());
+
+        // ReadyToProceed → compaction finished, not compacting
+        agentic.compact_intent = Some(CompactIntent::ReadyToProceed);
+        assert!(!agentic.is_compacting());
     }
 }
