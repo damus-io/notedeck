@@ -437,7 +437,7 @@ pub fn clients_trends_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     card_header_ui(ui, "CLIENTS (TREND)");
     ui.add_space(tokens::SPACING_SM);
 
-    let limit = 10;
+    let limit = 50;
 
     let cache = match dashboard.period {
         Period::Daily => &dashboard.state.daily,
