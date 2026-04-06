@@ -3367,46 +3367,48 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Reconcile local events against PNS relay,
         // fetch any missing kind-1080 events via standard REQ.
-        if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
-            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-            let since = notedeck::unix_time_secs() - (7 * 86400);
-            let filter = nostrdb::Filter::new()
-                .kinds([enostr::pns::PNS_KIND as u64])
-                .authors([pns_keys.keypair.pubkey.bytes()])
-                .since(since)
-                .build();
-            let result = self.neg_sync.process(
-                neg_events,
-                ctx.ndb,
-                &mut self.pool,
-                &filter,
-                &self.pns_relay_url,
-            );
+        if self.neg_sync.needs_process(&neg_events) {
+            if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
+                let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
+                let since = notedeck::unix_time_secs() - (7 * 86400);
+                let filter = nostrdb::Filter::new()
+                    .kinds([enostr::pns::PNS_KIND as u64])
+                    .authors([pns_keys.keypair.pubkey.bytes()])
+                    .since(since)
+                    .build();
+                let result = self.neg_sync.process(
+                    neg_events,
+                    ctx.ndb,
+                    &mut self.pool,
+                    &filter,
+                    &self.pns_relay_url,
+                );
 
-            // If events were found and we haven't hit the round limit,
-            // trigger another sync to pull more recent data.
-            if result.new_events > 0 {
-                self.neg_sync_round += 1;
-                if self.neg_sync_round < MAX_NEG_SYNC_ROUNDS {
+                // If events were found and we haven't hit the round limit,
+                // trigger another sync to pull more recent data.
+                if result.new_events > 0 {
+                    self.neg_sync_round += 1;
+                    if self.neg_sync_round < MAX_NEG_SYNC_ROUNDS {
+                        tracing::info!(
+                            "negentropy: scheduling round {}/{} (got {} new, {} skipped)",
+                            self.neg_sync_round + 1,
+                            MAX_NEG_SYNC_ROUNDS,
+                            result.new_events,
+                            result.skipped
+                        );
+                        self.neg_sync.trigger_now();
+                    } else {
+                        tracing::info!(
+                            "negentropy: reached max rounds ({}), stopping",
+                            MAX_NEG_SYNC_ROUNDS
+                        );
+                    }
+                } else if result.skipped > 0 {
                     tracing::info!(
-                        "negentropy: scheduling round {}/{} (got {} new, {} skipped)",
-                        self.neg_sync_round + 1,
-                        MAX_NEG_SYNC_ROUNDS,
-                        result.new_events,
+                        "negentropy: relay has {} events we can't reconcile, stopping",
                         result.skipped
                     );
-                    self.neg_sync.trigger_now();
-                } else {
-                    tracing::info!(
-                        "negentropy: reached max rounds ({}), stopping",
-                        MAX_NEG_SYNC_ROUNDS
-                    );
                 }
-            } else if result.skipped > 0 {
-                tracing::info!(
-                    "negentropy: relay has {} events we can't reconcile, stopping",
-                    result.skipped
-                );
             }
         }
     }

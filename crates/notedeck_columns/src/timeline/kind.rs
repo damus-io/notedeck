@@ -548,6 +548,7 @@ impl TimelineKind {
                 let mut filters = Vec::new();
                 for tag in hashtag.iter().filter(|tag| !tag.is_empty()) {
                     let tag_lower = tag.to_lowercase();
+                    debug!("fn filters -> TimelineKind::Hashtag => pushing filter");
                     filters.push(
                         Filter::new()
                             .kinds([1])

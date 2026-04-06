@@ -137,6 +137,13 @@ impl NegentropySync {
         self.sync_requested = true;
     }
 
+    /// Whether `process()` has pending work that requires calling it.
+    /// Use this to avoid constructing expensive filter objects on idle frames.
+    /// Pass the pending events so the check accounts for incoming relay messages too.
+    pub fn needs_process(&self, events: &[NegEvent]) -> bool {
+        !events.is_empty() || self.sync_requested || !self.pending_fetch_ids.is_empty()
+    }
+
     /// Process collected relay events and run periodic sync.
     ///
     /// Call this once per frame after collecting [`NegEvent`]s from

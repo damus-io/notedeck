@@ -368,6 +368,8 @@ impl Timeline {
 
     /// Create a hashtag timeline with ready filters.
     pub fn hashtag(hashtag: Vec<String>) -> Self {
+        debug!("timeline.hashtag -> pushing filter");
+
         let filters = hashtag
             .iter()
             .filter(|tag| !tag.is_empty())
@@ -900,10 +902,10 @@ pub fn is_timeline_ready(
     // seen all of the different contact lists from each relay
     if let FilterState::Ready(filter) = &timeline.filter {
         let account_pk = *accounts.selected_account_pubkey();
-        let remote_filters = filter.remote().to_vec();
         if timeline.subscription.dependers(&account_pk) > 0
             && !timeline.subscription.remote_seeded(&account_pk)
         {
+            let remote_filters = filter.remote().to_vec();
             ensure_remote_timeline_subscription(timeline, account_pk, remote_filters, scoped_subs);
         }
         return true;

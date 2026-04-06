@@ -31,6 +31,7 @@ pub fn hybrid_contacts_filter(
     add_pk: Option<&[u8; 32]>,
     with_hashtags: bool,
 ) -> Result<HybridFilter, Error> {
+    tracing::debug!("entered hybrid_contacts_filter");
     let local = vec![
         filter::filter_from_tags(note, add_pk, with_hashtags)?
             .into_query_package(ValidKind::One, filter::default_limit()),
