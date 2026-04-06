@@ -29,6 +29,11 @@ android: jni
 	adb shell am start -n com.damus.notedeck/.MainActivity
 	adb logcat -v color -s GameActivity -s RustStdoutStderr -s threaded_app | tee logcat.txt
 
+android-release: jni
+	cd $(ANDROID_DIR) && ./gradlew installRelease
+	adb shell am start -n com.damus.notedeck/.MainActivity
+	adb logcat -v color -s GameActivity -s RustStdoutStderr -s threaded_app | tee logcat.txt
+
 release-apk: jni
 	cd $(ANDROID_DIR) && ./gradlew assembleRelease
 	@echo "Signed APK: $(ANDROID_DIR)/app/build/outputs/apk/release/app-release.apk"
