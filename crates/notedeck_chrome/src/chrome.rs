@@ -640,6 +640,7 @@ fn poll_updater(updater: &mut notedeck::updater::Updater, ctx: &mut notedeck::Ap
     }
 
     if updater.needs_relay_sub() {
+        tracing::debug!("updater: sending release filter to relays");
         let release_pubkey = *updater.release_pubkey();
         let filters = notedeck::updater::nostr::release_filter(&release_pubkey);
         let mut oneshot = ctx.remote.oneshot(ctx.accounts);
@@ -650,11 +651,15 @@ fn poll_updater(updater: &mut notedeck::updater::Updater, ctx: &mut notedeck::Ap
         let release_sub = updater.release_sub();
         let nks = ctx.ndb.poll_for_notes(release_sub, 10);
         if !nks.is_empty() {
+            tracing::debug!(
+                "updater: got {} new note(s) from release subscription",
+                nks.len()
+            );
             updater.note_received();
         }
     }
     updater.check_gathering(ctx.ndb);
-    updater.poll();
+    updater.poll(ctx.ndb);
 }
 
 #[cfg(feature = "auto-update")]

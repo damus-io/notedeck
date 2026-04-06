@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 /// How long to wait after receiving the first release event before
 /// picking the best version. Gives slower relays time to respond.
@@ -110,7 +110,7 @@ impl Updater {
 
     /// Poll for state changes. Call this every frame from `eframe::App::update()`.
     /// This is non-blocking — it only does `try_recv()` on the channel.
-    pub fn poll(&mut self) {
+    pub fn poll(&mut self, ndb: &Ndb) {
         // Process any messages from background tasks
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
@@ -118,10 +118,29 @@ impl Updater {
             }
         }
 
-        // Auto-transition from Idle to WaitingForRelease
+        // Auto-transition from Idle to WaitingForRelease.
+        // Also check ndb for releases that were already ingested in a
+        // previous session so we don't have to wait for relays again.
         if matches!(self.state, UpdateState::Idle) {
-            info!("updater: waiting for release events from nostr...");
+            info!(
+                "updater: waiting for release events from nostr (channel={}, pkg_version=v{})",
+                self.channel.as_str(),
+                env!("CARGO_PKG_VERSION"),
+            );
             self.state = UpdateState::WaitingForRelease;
+
+            // Check for releases already in ndb from a prior session
+            if let Ok(txn) = nostrdb::Transaction::new(ndb) {
+                if let Some(release) =
+                    nostr::find_latest_release(ndb, &txn, &self.release_pubkey, self.channel)
+                {
+                    info!(
+                        "updater: found cached release v{}, starting download",
+                        release.version
+                    );
+                    self.start_download(release);
+                }
+            }
         }
     }
 
@@ -148,11 +167,16 @@ impl Updater {
     pub fn note_received(&mut self) {
         match self.state {
             UpdateState::WaitingForRelease | UpdateState::GatheringReleases { .. } => {
+                debug!("updater: release note received, starting/resetting debounce timer");
                 self.state = UpdateState::GatheringReleases {
                     deadline: Instant::now() + GATHER_DEBOUNCE,
                 };
             }
-            _ => {}
+            _ => {
+                debug!(
+                    "updater: note_received called but state is not waiting/gathering, ignoring"
+                );
+            }
         }
     }
 
@@ -188,6 +212,14 @@ impl Updater {
     pub fn update_ready(&self) -> Option<&str> {
         match &self.state {
             UpdateState::ReadyToInstall { version, .. } => Some(version),
+            _ => None,
+        }
+    }
+
+    /// Returns the version being downloaded, if any.
+    pub fn downloading_version(&self) -> Option<&str> {
+        match &self.state {
+            UpdateState::Downloading { version } => Some(version),
             _ => None,
         }
     }
@@ -355,8 +387,10 @@ fn handle_download(
     // Extract and find the binary
     let binary_path = platform::extract_archive(&archive_path, staging_dir)?;
 
-    // Clean up the archive
-    let _ = std::fs::remove_file(&archive_path);
+    // Clean up the archive (but not if the binary IS the archive, e.g. APK)
+    if binary_path != archive_path {
+        let _ = std::fs::remove_file(&archive_path);
+    }
 
     Ok(binary_path)
 }
@@ -420,6 +454,101 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Download failed"));
+    }
+
+    #[test]
+    fn test_apk_download_not_deleted() {
+        let fake_apk = b"PK\x03\x04fake apk content";
+        let expected_sha = sha256_hex(fake_apk);
+
+        let response = Ok(ehttp::Response {
+            status: 200,
+            status_text: "OK".to_string(),
+            url: "https://example.com/notedeck.apk".to_string(),
+            bytes: fake_apk.to_vec(),
+            headers: Default::default(),
+            ok: true,
+        });
+
+        let staging = tempfile::tempdir().unwrap();
+        let result = handle_download(response, "notedeck.apk", &expected_sha, staging.path());
+
+        assert!(result.is_ok(), "handle_download failed: {:?}", result.err());
+        let apk_path = result.unwrap();
+        assert!(
+            apk_path.exists(),
+            "APK should still exist after handle_download: {}",
+            apk_path.display()
+        );
+        assert_eq!(std::fs::read(&apk_path).unwrap(), fake_apk);
+    }
+
+    /// Simulates a second app launch: release events are already in ndb
+    /// from a prior session. The updater should discover them on its first
+    /// poll() without waiting for new notes from relays.
+    #[tokio::test]
+    async fn test_poll_finds_cached_release() {
+        use self::nostr::test_helpers::*;
+        use crate::test_util::test_config;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = test_config().skip_validation(true);
+        let ndb = Ndb::new(tmp.path().to_str().unwrap(), &cfg).unwrap();
+
+        let platform = nostr::target_platform_tag();
+        let asset_id = "aa00000000000000000000000000000000000000000000000000000000000001";
+        let pubkey_hex = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+        let asset_ev = make_asset_event_json(
+            asset_id,
+            pubkey_hex,
+            "99.0.0",
+            platform,
+            "https://example.com/notedeck.tar.gz",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            1700000000,
+        );
+        let release_ev = make_release_event_json(
+            "bb00000000000000000000000000000000000000000000000000000000000001",
+            pubkey_hex,
+            "99.0.0",
+            "main",
+            &[asset_id],
+            1700000001,
+        );
+
+        // Ingest events (simulating a prior session)
+        let filter = nostrdb::Filter::new()
+            .kinds([30063, 3063])
+            .limit(20)
+            .build();
+        let sub = ndb.subscribe(&[filter]).unwrap();
+
+        ndb.process_event_with(&asset_ev, nostrdb::IngestMetadata::new())
+            .unwrap();
+        ndb.process_event_with(&release_ev, nostrdb::IngestMetadata::new())
+            .unwrap();
+        let _ = ndb.wait_for_all_notes(sub, 2).await.unwrap();
+
+        // Now create a fresh Updater (simulating a new app launch)
+        let data_path = DataPath::new(tmp.path());
+        let ctx = egui::Context::default();
+        let mut updater = Updater::new(
+            &data_path,
+            &ndb,
+            &ctx,
+            TEST_PUBKEY,
+            nostr::ReleaseChannel::Main,
+        );
+
+        // First poll should find the cached release and start downloading
+        updater.poll(&ndb);
+
+        assert_eq!(
+            updater.downloading_version(),
+            Some("99.0.0"),
+            "updater should start downloading cached release on first poll"
+        );
     }
 
     #[test]

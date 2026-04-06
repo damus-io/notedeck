@@ -1,5 +1,5 @@
 use nostrdb::{Filter, Ndb, Note, Transaction};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::ReleaseInfo;
 
@@ -340,6 +340,13 @@ pub fn find_latest_release(
         }
     };
 
+    debug!(
+        "updater: queried ndb, got {} results (channel={}, platform={})",
+        results.len(),
+        channel.as_str(),
+        target_platform_tag(),
+    );
+
     let mut best: Option<ReleaseInfo> = None;
 
     // Filter to only kind 30063 release events
@@ -350,16 +357,28 @@ pub fn find_latest_release(
 
         let release_info = match parse_release_event(&result.note) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(e) => {
+                debug!("updater: skipping release event: {e}");
+                continue;
+            }
         };
 
         // Derive channel from semver prerelease and check hierarchy
         let remote_version = match semver::Version::parse(&release_info.version) {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                debug!("updater: bad semver '{}': {e}", release_info.version);
+                continue;
+            }
         };
         let release_ch = ReleaseChannel::from_version(&remote_version);
         if !channel.accepts(release_ch) {
+            debug!(
+                "updater: channel {} rejects v{} (release channel={})",
+                channel.as_str(),
+                release_info.version,
+                release_ch.as_str(),
+            );
             continue;
         }
 
@@ -371,10 +390,16 @@ pub fn find_latest_release(
         });
 
         if dominated {
+            debug!(
+                "updater: v{} dominated by current best v{}",
+                release_info.version,
+                best.as_ref().map(|b| b.version.as_str()).unwrap_or("?"),
+            );
             continue;
         }
 
         // Resolve asset references — find a matching platform asset
+        let mut found_asset = false;
         for asset_id in &release_info.asset_event_ids {
             let asset_note = ndb
                 .get_notekey_by_id(txn, asset_id)
@@ -382,15 +407,42 @@ pub fn find_latest_release(
                 .and_then(|nk| ndb.get_note_by_key(txn, nk).ok());
 
             let Some(asset_note) = asset_note else {
+                debug!(
+                    "updater: asset event {} not found in ndb for v{}",
+                    hex::encode(asset_id),
+                    release_info.version,
+                );
                 continue;
             };
 
             if let Some(asset_info) = parse_asset_event(&asset_note) {
                 info!("found release candidate: v{}", release_info.version);
                 best = Some(asset_info);
+                found_asset = true;
                 break;
+            } else {
+                debug!(
+                    "updater: asset {} didn't match platform for v{}",
+                    hex::encode(asset_id),
+                    release_info.version,
+                );
             }
         }
+        if !found_asset {
+            debug!(
+                "updater: no matching platform asset for v{} ({} asset refs)",
+                release_info.version,
+                release_info.asset_event_ids.len(),
+            );
+        }
+    }
+
+    if best.is_none() {
+        debug!(
+            "updater: no suitable release found (current=v{}, channel={})",
+            env!("CARGO_PKG_VERSION"),
+            channel.as_str(),
+        );
     }
 
     best

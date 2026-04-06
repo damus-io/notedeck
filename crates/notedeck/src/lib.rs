@@ -53,7 +53,7 @@ pub mod timed_serializer;
 pub mod tokens;
 pub mod ui;
 mod unknowns;
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+#[cfg(feature = "auto-update")]
 pub mod updater;
 mod urls;
 mod user_account;

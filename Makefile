@@ -10,7 +10,7 @@ tags: fake
 	rusty-tags vi
 
 jni: fake
-	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --features messages --profile release --workspace --exclude notedeck_release
+	cargo ndk --target arm64-v8a -o $(ANDROID_DIR)/app/src/main/jniLibs/ build --features messages,auto-update --profile release --workspace --exclude notedeck_release
 
 jni-check: fake
 	cargo ndk --target arm64-v8a check --workspace --exclude notedeck_release
