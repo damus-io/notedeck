@@ -202,6 +202,62 @@ fn snapshot_light_mode() {
 }
 
 // ---------------------------------------------------------------------------
+// Welcome → Login navigation regression test
+// ---------------------------------------------------------------------------
+
+/// Like render_damus_frame but also calls update() so that the Welcome
+/// route gets pushed during initialization. Disables animations for
+/// deterministic snapshots.
+fn render_damus_frame_with_update(ctx: &egui::Context, state: &mut TestState) {
+    if !state.fonts_installed {
+        state.notedeck.setup(ctx);
+        ctx.style_mut(|s| s.animation_time = 0.0);
+        state.fonts_installed = true;
+        return;
+    }
+    let mut app_ctx = state.notedeck.app_context(ctx);
+    app_ctx.settings.get_settings_mut().animate_nav_transitions = false;
+    state.damus.update(&mut app_ctx, ctx);
+    egui::CentralPanel::default().show(ctx, |ui| {
+        state.damus.render(&mut app_ctx, ui);
+    });
+}
+
+/// Regression test: clicking "I have a Nostr key" on the welcome screen must
+/// navigate to the AddAccount (login) view and stay there — not bounce back
+/// to Welcome. Snapshot verifies the login screen is visible after the click.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_welcome_login_navigation() {
+    let ctx = egui::Context::default();
+    let state = make_test_state(&ctx);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(800.0, 600.0))
+        .renderer(notedeck::software_renderer())
+        .build_state(render_damus_frame_with_update, state);
+
+    // The welcome screen should be showing
+    assert!(
+        harness.query_by_label("I have a Nostr key").is_some(),
+        "Welcome screen should be visible before click"
+    );
+
+    // Click "I have a Nostr key"
+    harness.get_by_label("I have a Nostr key").click();
+    harness.run();
+
+    // After clicking, we should be on the login screen, not back on Welcome
+    assert!(
+        harness.query_by_label("I have a Nostr key").is_none(),
+        "Welcome screen should no longer be visible after clicking login"
+    );
+
+    // Snapshot should show the login/AddAccount screen, not the Welcome screen
+    harness.snapshot("welcome_login_navigation");
+}
+
+// ---------------------------------------------------------------------------
 // Auto-update sidebar snapshot
 // ---------------------------------------------------------------------------
 

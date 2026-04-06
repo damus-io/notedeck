@@ -1104,9 +1104,10 @@ fn render_nav_body(
                             .router_mut()
                             .route_to(Route::Accounts(AccountsRoute::AddAccount));
                     }
-                    ui::welcome::WelcomeResponse::Browse => {}
+                    ui::welcome::WelcomeResponse::Browse => {
+                        return DragResponse::output(Some(RenderNavAction::Back));
+                    }
                 }
-                return DragResponse::output(Some(RenderNavAction::Back));
             }
 
             DragResponse::none()
