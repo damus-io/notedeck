@@ -49,9 +49,9 @@ use std::time::Instant;
 pub use avatar::DaveAvatar;
 pub use config::{AiMode, AiProvider, DaveSettings, ModelConfig, RunConfig};
 pub use messages::{
-    AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionRequest,
-    PermissionResponse, PermissionResponseType, PermissionView, QuestionAnswer, QuestionSetInput,
-    SessionInfo, SubagentInfo, SubagentStatus, UserMessage,
+    AssistantMessage, DaveApiResponse, ExecutedTool, ImageAttachment, Message, PermissionResponse,
+    PermissionResponseType, QuestionAnswer, QuestionSetInput, SessionInfo, SubagentInfo,
+    SubagentStatus, UserMessage,
 };
 pub use quaternion::Quaternion;
 pub use session::{ChatSession, SessionId, SessionManager};
@@ -431,87 +431,6 @@ fn calculate_user_id(keypair: KeypairUnowned) -> String {
 impl Dave {
     pub fn avatar_mut(&mut self) -> Option<&mut DaveAvatar> {
         self.avatar.as_mut()
-    }
-
-    /// Create a new session while keeping Dave's derived session state in sync.
-    pub fn create_session_with_cwd(
-        &mut self,
-        cwd: PathBuf,
-        backend_type: BackendType,
-        model: Model,
-    ) -> SessionId {
-        update::create_session_with_cwd(
-            &mut self.session_manager,
-            &mut self.directory_picker,
-            &mut self.scene,
-            self.show_scene,
-            self.ai_mode,
-            cwd,
-            &self.hostname,
-            backend_type,
-            None,
-            model,
-        )
-    }
-
-    /// Append and finalize an assistant message for an existing session.
-    pub fn append_assistant_message_for_session(&mut self, sid: SessionId, text: &str) -> bool {
-        let Some(session) = self.session_manager.get_mut(sid) else {
-            return false;
-        };
-
-        session.append_token(text);
-        session.finalize_last_assistant();
-        true
-    }
-
-    /// Push a tool response into an existing session transcript.
-    pub fn push_tool_response_for_session(
-        &mut self,
-        sid: SessionId,
-        tool_response: ToolResponse,
-    ) -> bool {
-        let Some(session) = self.session_manager.get_mut(sid) else {
-            return false;
-        };
-
-        session.chat.push(Message::ToolResponse(tool_response));
-        true
-    }
-
-    /// Push a pending permission request into an existing session transcript.
-    pub fn push_permission_request_for_session(
-        &mut self,
-        sid: SessionId,
-        request: PermissionRequest,
-    ) -> bool {
-        let Some(session) = self.session_manager.get_mut(sid) else {
-            return false;
-        };
-
-        session.chat.push(Message::PermissionRequest(request));
-        true
-    }
-
-    /// Dismiss any active overlay (e.g. the directory picker).
-    pub fn clear_overlay(&mut self) {
-        let overlay = std::mem::take(&mut self.active_overlay);
-        self.dismiss_overlay(overlay);
-    }
-
-    /// Close an overlay and run any overlay-specific teardown first.
-    fn dismiss_overlay(&mut self, overlay: DaveOverlay) {
-        match overlay {
-            DaveOverlay::DirectoryPicker => {
-                self.directory_picker.target_host = None;
-            }
-            DaveOverlay::SessionPicker { .. } => {
-                self.session_picker.close();
-            }
-            _ => {}
-        }
-
-        self.active_overlay = DaveOverlay::None;
     }
 
     fn _system_prompt() -> Message {
@@ -1072,9 +991,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         self.apply_settings(new_settings.clone());
                         return DaveResponse::new(DaveAction::UpdateSettings(new_settings));
                     }
-                    OverlayResult::Close => {
-                        self.dismiss_overlay(DaveOverlay::Settings);
-                    }
+                    OverlayResult::Close => {}
                     _ => {
                         self.active_overlay = DaveOverlay::Settings;
                     }
@@ -1089,9 +1006,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         self.directory_picker.target_host = host;
                         self.active_overlay = DaveOverlay::DirectoryPicker;
                     }
-                    OverlayResult::Close => {
-                        self.dismiss_overlay(DaveOverlay::HostPicker);
-                    }
+                    OverlayResult::Close => {}
                     _ => {
                         self.active_overlay = DaveOverlay::HostPicker;
                     }
@@ -1120,7 +1035,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         }
                     }
                     OverlayResult::Close => {
-                        self.dismiss_overlay(DaveOverlay::DirectoryPicker);
+                        self.directory_picker.target_host = None;
                     }
                     _ => {
                         self.active_overlay = DaveOverlay::DirectoryPicker;
@@ -1159,9 +1074,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                     OverlayResult::BackToDirectoryPicker => {
                         self.session_picker.close();
                         self.active_overlay = DaveOverlay::DirectoryPicker;
-                    }
-                    OverlayResult::Close => {
-                        self.dismiss_overlay(DaveOverlay::SessionPicker { backend, model });
                     }
                     _ => {
                         self.active_overlay = DaveOverlay::SessionPicker { backend, model };
@@ -1539,6 +1451,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         hosts
     }
 
+    /// Create a new session with the given cwd (called after directory picker selection)
+    fn create_session_with_cwd(&mut self, cwd: PathBuf, backend_type: BackendType, model: Model) {
+        update::create_session_with_cwd(
+            &mut self.session_manager,
+            &mut self.directory_picker,
+            &mut self.scene,
+            self.show_scene,
+            self.ai_mode,
+            cwd,
+            &self.hostname,
+            backend_type,
+            None,
+            model,
+        );
+    }
+
     /// Create a new session that resumes an existing Claude conversation
     fn create_resumed_session_with_cwd(
         &mut self,
@@ -1586,18 +1514,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
     /// Poll for IPC spawn-agent commands from external tools
     fn poll_ipc_commands(&mut self) {
-        // Drain all pending connections (non-blocking)
-        loop {
-            let pending = {
-                let Some(listener) = self.ipc_listener.as_ref() else {
-                    return;
-                };
-                listener.try_recv()
-            };
-            let Some(mut pending) = pending else {
-                break;
-            };
+        let Some(listener) = self.ipc_listener.as_ref() else {
+            return;
+        };
 
+        // Drain all pending connections (non-blocking)
+        while let Some(mut pending) = listener.try_recv() {
             // Create the session and get its ID
             let id = self.session_manager.new_session(
                 pending.cwd.clone(),
@@ -1621,7 +1543,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             // Close directory picker if open
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
-                self.clear_overlay();
+                self.active_overlay = DaveOverlay::None;
             }
 
             // Send success response back to the client
@@ -2292,7 +2214,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
             // If we were showing the directory picker, switch to showing sessions
             if matches!(self.active_overlay, DaveOverlay::DirectoryPicker) {
-                self.clear_overlay();
+                self.active_overlay = DaveOverlay::None;
             }
         }
     }
@@ -3142,22 +3064,48 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         }
 
+        // Normal message handling
+        if let Some(session) = self.session_manager.get_active_mut() {
+            let user_text = session.input.clone();
+            session.input.clear();
+
+            // Generate live event for user message
+            if let Some(sk) = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair()) {
+                if let Some(evt) =
+                    ingest_live_event(session, app_ctx.ndb, &sk, &user_text, "user", None, None)
+                {
+                    self.pending_relay_events.push(evt);
+                }
+            }
+
+            let images = std::mem::take(&mut session.pending_images);
+            session
+                .chat
+                .push(Message::User(UserMessage::new(user_text, images)));
+            session.update_title_from_last_message();
+
+            // Remote sessions: publish user message to relay but don't send to local backend
+            if session.is_remote() {
+                return;
+            }
+
+            // If already dispatched (waiting for or receiving response), queue
+            // the message in chat without dispatching.
+            // needs_redispatch_after_stream_end() will dispatch it when the
+            // current turn finishes.
+            if session.is_dispatched() {
+                tracing::info!("message queued, will dispatch after current turn");
+                return;
+            }
+        }
+        self.send_user_message(app_ctx, ui.ctx());
+    }
+
+    fn send_user_message(&mut self, app_ctx: &AppContext, ctx: &egui::Context) {
         let Some(active_id) = self.session_manager.active_id() else {
             return;
         };
-
-        let Some((user_text, images)) = self.session_manager.get_mut(active_id).map(|session| {
-            let user_text = session.input.clone();
-            session.input.clear();
-            let images = std::mem::take(&mut session.pending_images);
-            (user_text, images)
-        }) else {
-            return;
-        };
-
-        if self.add_user_message_for_session(active_id, app_ctx, user_text, images) {
-            self.send_user_message_for(active_id, app_ctx, ui.ctx());
-        }
+        self.send_user_message_for(active_id, app_ctx, ctx);
     }
 
     /// Send a message for a specific session by ID

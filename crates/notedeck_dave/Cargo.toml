@@ -56,7 +56,6 @@ tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 eframe = { workspace = true, features = ["accesskit"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
-notedeck_testing = { path = "../notedeck_testing" }
 
 [[bin]]
 name = "notedeck-spawn"
