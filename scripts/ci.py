@@ -287,8 +287,6 @@ def run_script(name, script, root, dry_run, verbose):
         return True, ""
 
     step_start = time.time()
-    sys.stdout.write(f"  {dim('▸')} {name} ... ")
-    sys.stdout.flush()
 
     # Limit parallelism to avoid freezing the machine
     jobs = str(local_jobs())
@@ -297,31 +295,48 @@ def run_script(name, script, root, dry_run, verbose):
     env.setdefault("RUST_TEST_THREADS", jobs)
 
     try:
-        result = subprocess.run(
-            ["bash", "-ec", script],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=600,
-            env=env,
-        )
-        elapsed = time.time() - step_start
-        output = result.stdout + result.stderr
-
-        if result.returncode == 0:
-            print(f"{green('✓')} {dim(f'({elapsed:.1f}s)')}")
-            if verbose and output.strip():
-                for line in output.strip().split("\n"):
-                    print(f"    {dim(line)}")
-            return True, output
+        if verbose:
+            # Stream output in real-time
+            print(f"  {dim('▸')} {name}")
+            sys.stdout.flush()
+            result = subprocess.run(
+                ["bash", "-ec", script],
+                cwd=root,
+                timeout=600,
+                env=env,
+            )
+            elapsed = time.time() - step_start
+            if result.returncode == 0:
+                print(f"  {green('✓')} {name} {dim(f'({elapsed:.1f}s)')}")
+                return True, ""
+            else:
+                print(f"  {red('✗')} {name} {dim(f'({elapsed:.1f}s)')}")
+                return False, ""
         else:
-            print(f"{red('✗')} {dim(f'({elapsed:.1f}s)')}")
-            if output.strip():
-                print()
-                for line in output.strip().split("\n"):
-                    print(f"    {line}")
-                print()
-            return False, output
+            sys.stdout.write(f"  {dim('▸')} {name} ... ")
+            sys.stdout.flush()
+            result = subprocess.run(
+                ["bash", "-ec", script],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                env=env,
+            )
+            elapsed = time.time() - step_start
+            output = result.stdout + result.stderr
+
+            if result.returncode == 0:
+                print(f"{green('✓')} {dim(f'({elapsed:.1f}s)')}")
+                return True, output
+            else:
+                print(f"{red('✗')} {dim(f'({elapsed:.1f}s)')}")
+                if output.strip():
+                    print()
+                    for line in output.strip().split("\n"):
+                        print(f"    {line}")
+                    print()
+                return False, output
 
     except subprocess.TimeoutExpired:
         print(f"{red('TIMEOUT')} (10 minutes)")
