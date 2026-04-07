@@ -104,9 +104,25 @@ impl OutboxPool {
 
     /// Applies an already planned set of post-EOSE subscription effects.
     fn apply_fully_eosed_effects(&mut self, plan: FullyEosedEffectsPlan) {
+        let mut oneshot_unsubs = HashMap::new();
+        for id in &plan.remove_oneshots {
+            let Some(sub) = self.subs.get(id) else {
+                continue;
+            };
+            for relay in &sub.relays {
+                get_session(&mut oneshot_unsubs, relay).unsubscribe(*id);
+            }
+        }
+
         for id in plan.remove_oneshots {
             self.subs.remove(&id);
             self.eose_tracker.remove_sub(&id);
+        }
+
+        for (relay_id, session) in oneshot_unsubs {
+            let has_pending = self.ingest_relay_session(&relay_id, session);
+            self.eose_tracker
+                .set_relay_pending_effect_state(&relay_id, has_pending);
         }
 
         let Some(now) = plan.optimize_since_at else {
@@ -2002,6 +2018,182 @@ mod tests {
             coordinator.route_type(&id_second),
             Some(RelayType::Compaction)
         );
+    }
+
+    /// Verifies a mixed churn path where a preferred dedicated route is
+    /// demoted by a NIP-11 limit shrink, a later required request queues
+    /// behind a live required oneshot, receive-path EOSE cleanup frees that
+    /// slot, and a later limit increase promotes the preferred route back.
+    #[test]
+    fn required_queue_survives_limit_shrink_oneshot_cleanup_and_reexpand() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-required-churn.example.com").unwrap();
+        let initial_limits_at = UNIX_EPOCH + Duration::from_secs(1_700_000_260);
+        let shrink_at = initial_limits_at + Duration::from_secs(1);
+        let expand_at = shrink_at + Duration::from_secs(1);
+
+        let _ = pool.ensure_relay(&relay, &wakeup);
+        let initial = pool.apply_nip11_limits(
+            &relay,
+            Nip11LimitationsRaw {
+                max_subscriptions: Some(2),
+                ..Default::default()
+            },
+            initial_limits_at,
+        );
+        assert!(matches!(
+            initial,
+            Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+        ));
+        assert_eq!(
+            pool.relays
+                .get(&relay)
+                .expect("relay present")
+                .current_limits()
+                .maximum_subs,
+            2
+        );
+
+        let required_pkgs = |relay: &NormRelayUrl| {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::RequireDedicated)
+        };
+        let preferred_pkgs = |relay: &NormRelayUrl| {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::PreferDedicated)
+        };
+
+        let preferred_dedicated = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(trivial_filter(), preferred_pkgs(&relay))
+        };
+
+        let live_oneshot = {
+            let id = pool.registry.next();
+            let mut session = OutboxSession::default();
+            session.oneshot(id, trivial_filter(), required_pkgs(&relay));
+            pool.ingest_session(session, &wakeup);
+            id
+        };
+
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.transparent_live_len_for_test(), 2);
+        assert_eq!(coordinator.transparent_queue_len_for_test(), 0);
+        assert!(coordinator.transparent_contains_for_test(&preferred_dedicated));
+        assert!(coordinator.transparent_contains_for_test(&live_oneshot));
+        assert!(pool.subs.is_oneshot(&live_oneshot));
+
+        let shrink = pool.apply_nip11_limits(
+            &relay,
+            Nip11LimitationsRaw {
+                max_subscriptions: Some(1),
+                ..Default::default()
+            },
+            shrink_at,
+        );
+        assert!(matches!(
+            shrink,
+            Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+        ));
+
+        assert_eq!(
+            pool.relays
+                .get(&relay)
+                .expect("coordinator")
+                .current_limits()
+                .maximum_subs,
+            1
+        );
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.transparent_live_len_for_test(), 1);
+        assert_eq!(coordinator.transparent_queue_len_for_test(), 0);
+        assert!(
+            !coordinator.transparent_contains_for_test(&preferred_dedicated),
+            "preferred route should be demoted off dedicated capacity on shrink: preferred_active={} oneshot_active={} live_len={} queue_len={}",
+            coordinator.transparent_contains_for_test(&preferred_dedicated),
+            coordinator.transparent_contains_for_test(&live_oneshot),
+            coordinator.transparent_live_len_for_test(),
+            coordinator.transparent_queue_len_for_test(),
+        );
+        assert!(
+            coordinator.transparent_contains_for_test(&live_oneshot),
+            "the younger live oneshot should keep the only remaining dedicated slot"
+        );
+        assert!(
+            coordinator.route_type(&preferred_dedicated) == Some(RelayType::Compaction),
+            "preferred route should fall back to compaction when dedicated capacity shrinks"
+        );
+
+        let queued_required = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(trivial_filter(), required_pkgs(&relay))
+        };
+
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.transparent_live_len_for_test(), 1);
+        assert_eq!(coordinator.transparent_queue_len_for_test(), 1);
+        assert!(
+            coordinator.transparent_contains_for_test(&live_oneshot),
+            "the live required oneshot should still own the only dedicated slot"
+        );
+        assert!(
+            !coordinator.transparent_contains_for_test(&queued_required),
+            "the later required sub should queue behind the live required oneshot"
+        );
+
+        pool.eose_tracker
+            .mark_relay_eose(&relay, live_oneshot, &pool.subs);
+        pool.eose_tracker.note_relay_pending_effects(&relay);
+        pool.process_pending_relay_effects();
+
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.transparent_live_len_for_test(), 1);
+        assert_eq!(coordinator.transparent_queue_len_for_test(), 0);
+        assert!(
+            pool.subs.get(&live_oneshot).is_none(),
+            "receive-path cleanup should remove the completed oneshot"
+        );
+        assert!(
+            coordinator.transparent_contains_for_test(&queued_required),
+            "oneshot cleanup should immediately promote the queued required sub"
+        );
+        assert!(
+            coordinator.route_type(&preferred_dedicated) == Some(RelayType::Compaction),
+            "preferred route should remain compacted until dedicated capacity expands again"
+        );
+
+        let expand = pool.apply_nip11_limits(
+            &relay,
+            Nip11LimitationsRaw {
+                max_subscriptions: Some(2),
+                ..Default::default()
+            },
+            expand_at,
+        );
+        assert!(matches!(
+            expand,
+            Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+        ));
+
+        assert_eq!(
+            pool.relays
+                .get(&relay)
+                .expect("coordinator")
+                .current_limits()
+                .maximum_subs,
+            2
+        );
+        let coordinator = pool.relays.get(&relay).expect("coordinator");
+        assert_eq!(coordinator.transparent_live_len_for_test(), 2);
+        assert_eq!(coordinator.transparent_queue_len_for_test(), 0);
+        assert!(
+            coordinator.transparent_contains_for_test(&preferred_dedicated),
+            "limit expansion should promote the preferred compaction route back to dedicated"
+        );
+        assert!(coordinator.transparent_contains_for_test(&queued_required));
     }
 
     // ==================== OutboxSessionHandler tests ====================

@@ -756,6 +756,24 @@ impl CoordinationData {
         self.coordination.get(id).copied()
     }
 
+    /// Returns how many transparent relay legs are currently active.
+    #[cfg(test)]
+    pub(crate) fn transparent_live_len_for_test(&self) -> usize {
+        self.transparent_data.num_subs()
+    }
+
+    /// Returns whether one request currently owns an active transparent leg.
+    #[cfg(test)]
+    pub(crate) fn transparent_contains_for_test(&self, id: &OutboxSubId) -> bool {
+        self.transparent_data.contains(id)
+    }
+
+    /// Returns how many transparent retry entries are currently queued.
+    #[cfg(test)]
+    pub(crate) fn transparent_queue_len_for_test(&self) -> usize {
+        self.transparent_data.queued_len_for_test()
+    }
+
     fn url(&self) -> &str {
         let Some(websocket) = self.websocket.as_ref() else {
             return "";
