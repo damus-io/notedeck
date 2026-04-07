@@ -686,6 +686,14 @@ impl OutboxPool {
         status
     }
 
+    /// Returns the most recent pong timestamp tracked for one websocket relay.
+    pub fn websocket_last_pong(&self, relay: &NormRelayUrl) -> Option<Instant> {
+        self.relays
+            .get(relay)
+            .and_then(|data| data.websocket.as_ref())
+            .map(|websocket| websocket.last_pong)
+    }
+
     pub fn has_eose(&self, id: &OutboxSubId) -> bool {
         if self.eose_tracker.has_any_eose(&self.subs, id) {
             return true;

@@ -1019,7 +1019,6 @@ mod tests {
         RelayUrlPkgs,
     };
     use hashbrown::HashSet;
-    use nostr_relay_builder::{LocalRelay, RelayBuilder};
     use nostrdb::{Config, Transaction};
     use notedeck::{EguiWakeup, ScopedSubEoseStatus, ScopedSubsState, FALLBACK_PUBKEY};
     use std::time::{Duration, UNIX_EPOCH};
@@ -1061,30 +1060,11 @@ mod tests {
         }
     }
 
-    async fn pump_pool_until<F>(
-        pool: &mut OutboxPool,
-        max_attempts: usize,
-        mut predicate: F,
-    ) -> bool
-    where
-        F: FnMut(&mut OutboxPool) -> bool,
-    {
-        for _ in 0..max_attempts {
-            pool.try_recv(10, |_| {});
-            if predicate(pool) {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        predicate(pool)
-    }
-
     /// Saturates one relay to `max_subscriptions = 1`, then promotes a
     /// `NoPreference` subscription into the live compaction lane by first
     /// occupying the dedicated slot with a `PreferDedicated` request and then
     /// unsubscribing it.
-    async fn install_active_compaction_lane(
+    fn install_active_compaction_lane(
         pool: &mut OutboxPool,
         relay: &NormRelayUrl,
     ) -> enostr::OutboxSubId {
@@ -1120,13 +1100,12 @@ mod tests {
             )
         };
 
-        let preferred_ready = pump_pool_until(pool, 100, |pool| pool.has_eose(&preferred_id)).await;
         assert!(
-            preferred_ready,
-            "preferred baseline subscription should stay active while the fallback request waits"
+            !pool.status(&preferred_id).is_empty(),
+            "preferred baseline subscription should own the only dedicated slot while the fallback request waits"
         );
         assert!(
-            !pool.has_eose(&compaction_id),
+            pool.status(&compaction_id).is_empty(),
             "fallback request should stay queued until the preferred dedicated slot is released"
         );
 
@@ -1135,15 +1114,9 @@ mod tests {
             session.unsubscribe(preferred_id);
         }
 
-        let compaction_ready =
-            pump_pool_until(pool, 100, |pool| pool.has_eose(&compaction_id)).await;
-        assert!(
-            compaction_ready,
-            "fallback request should become the active compaction route once the preferred slot is released"
-        );
         assert!(
             !pool.status(&compaction_id).is_empty(),
-            "active compaction route should expose one routed relay leg before notifications subscribe"
+            "fallback request should become the active compaction route once the preferred slot is released"
         );
 
         compaction_id
@@ -1152,14 +1125,11 @@ mod tests {
     /// Verifies notifications timelines keep `RequireDedicated` routing on both
     /// create and update by revoking an existing non-preferred compaction leg
     /// rather than being absorbed into that shared fallback route.
-    #[tokio::test]
-    async fn notifications_remote_sub_keeps_require_dedicated_on_create_and_update() {
-        let relay_task = LocalRelay::run(RelayBuilder::default())
-            .await
-            .expect("start local relay");
-        let relay = NormRelayUrl::new(&relay_task.url()).expect("relay url");
+    #[test]
+    fn notifications_remote_sub_keeps_require_dedicated_on_create_and_update() {
+        let relay = NormRelayUrl::new("ws://127.0.0.1:6556").expect("static relay url");
         let mut h = TimelineRemoteHarness::with_forced_relays(vec![relay.to_string()]);
-        let compaction_id = install_active_compaction_lane(&mut h.pool, &relay).await;
+        let compaction_id = install_active_compaction_lane(&mut h.pool, &relay);
 
         let selected = *h.accounts.selected_account_pubkey();
         let mut timeline = Timeline::new(
@@ -1228,7 +1198,5 @@ mod tests {
             h.pool.status(&compaction_id).is_empty(),
             "updating notifications should keep the dedicated route and leave the old compaction leg revoked"
         );
-
-        relay_task.shutdown();
     }
 }

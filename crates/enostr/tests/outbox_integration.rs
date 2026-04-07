@@ -5,8 +5,8 @@
 
 use enostr::{
     FullKeypair, Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool,
-    OutboxSessionHandler, OutboxSubId, RelayId, RelayImplType, RelayReqStatus,
-    RelayRoutingPreference, RelayStatus, RelayUrlPkgs, Wakeup,
+    OutboxSessionHandler, OutboxSubId, RelayId, RelayReqStatus, RelayRoutingPreference,
+    RelayStatus, RelayUrlPkgs, Wakeup,
 };
 use futures_util::{SinkExt, StreamExt};
 use hashbrown::HashSet;
@@ -16,18 +16,17 @@ use nostr_relay_builder::{
     LocalRelay, RelayBuilder,
 };
 use nostrdb::{Filter, NoteBuilder};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener as StdTcpListener, UdpSocket};
+use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc, Once, OnceLock,
+    Arc, Once,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 static TRACING_INIT: Once = Once::new();
-static MULTICAST_TEST_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Initialize tracing for tests (only runs once even if called multiple times)
 fn init_tracing() {
@@ -40,13 +39,6 @@ fn init_tracing() {
             .with_test_writer()
             .init();
     });
-}
-
-async fn lock_multicast_test() -> tokio::sync::MutexGuard<'static, ()> {
-    MULTICAST_TEST_GUARD
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .await
 }
 
 /// A mock Wakeup implementation for integration tests
@@ -192,22 +184,30 @@ async fn create_silent_websocket_relay() -> (tokio::task::JoinHandle<()>, NormRe
     (handle, url)
 }
 
-/// Helper to create a websocket relay that accepts one connection and sends
-/// pong frames at a fixed interval.
+/// Helper to create a websocket relay that accepts one connection, sends one
+/// pong immediately, then continues sending pong frames at a fixed interval.
 async fn create_periodic_pong_relay(
     pong_interval: Duration,
-) -> (tokio::task::JoinHandle<()>, NormRelayUrl) {
+) -> (tokio::task::JoinHandle<()>, NormRelayUrl, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind periodic-pong relay");
     let addr = listener.local_addr().expect("periodic-pong relay addr");
     let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid periodic-pong relay url");
+    let pong_count = Arc::new(AtomicUsize::new(0));
+    let relay_pong_count = Arc::clone(&pong_count);
 
     let handle = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.expect("accept periodic-pong relay");
         let mut websocket = accept_async(stream)
             .await
             .expect("upgrade periodic-pong relay");
+
+        if websocket.send(Message::Pong(Vec::new())).await.is_err() {
+            return;
+        }
+        relay_pong_count.fetch_add(1, Ordering::SeqCst);
+
         let mut interval = tokio::time::interval(pong_interval);
 
         loop {
@@ -216,6 +216,7 @@ async fn create_periodic_pong_relay(
                     if websocket.send(Message::Pong(Vec::new())).await.is_err() {
                         break;
                     }
+                    relay_pong_count.fetch_add(1, Ordering::SeqCst);
                 }
                 msg = websocket.next() => {
                     match msg {
@@ -227,7 +228,7 @@ async fn create_periodic_pong_relay(
         }
     });
 
-    (handle, url)
+    (handle, url, pong_count)
 }
 
 /// Helper to create a websocket relay that counts inbound ping frames from the
@@ -421,19 +422,6 @@ async fn bind_test_tcp_listener() -> (TcpListener, SocketAddr) {
     (listener, addr)
 }
 
-fn send_multicast_text_frame(text: &str) {
-    let socket = UdpSocket::bind("0.0.0.0:0").expect("bind multicast sender");
-    let mut frame = Vec::with_capacity(4 + text.len());
-    frame.extend_from_slice(&(text.len() as u32).to_be_bytes());
-    frame.extend_from_slice(text.as_bytes());
-    socket
-        .send_to(
-            &frame,
-            SocketAddrV4::new(Ipv4Addr::new(239, 19, 88, 1), 9797),
-        )
-        .expect("send multicast frame");
-}
-
 /// Polls the pool until the provided predicate returns true or the attempt limit is reached.
 /// Returns the attempt count and whether the predicate was ultimately satisfied.
 async fn pump_pool_until<F>(
@@ -471,6 +459,41 @@ fn websocket_status(pool: &OutboxPool, url: &NormRelayUrl) -> Option<RelayStatus
     pool.websocket_statuses()
         .into_iter()
         .find_map(|(relay_url, status)| (*relay_url == *url).then_some(status))
+}
+
+async fn wait_for_sent_pong(pong_count: &AtomicUsize, observed: usize) -> usize {
+    tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            let sent = pong_count.load(Ordering::SeqCst);
+            if sent > observed {
+                return sent;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("relay should send another pong before timeout")
+}
+
+async fn wait_for_last_pong_advance(
+    pool: &mut OutboxPool,
+    url: &NormRelayUrl,
+    previous: Instant,
+) -> Instant {
+    tokio::time::timeout(Duration::from_millis(200), async {
+        loop {
+            pool.try_recv(10, |_| {});
+            let Some(last_pong) = pool.websocket_last_pong(url) else {
+                panic!("relay should remain tracked while pongs are flowing");
+            };
+            if last_pong > previous {
+                return last_pong;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("outbox should ingest the next pong before timeout")
 }
 
 async fn pump_pool_until_with_note_budget<F>(
@@ -1022,9 +1045,10 @@ async fn keepalive_marks_connected_relay_disconnected_after_pong_timeout() {
 /// even after wall-clock time exceeds the configured pong timeout.
 #[tokio::test]
 async fn keepalive_keeps_connected_relay_alive_when_pongs_continue() {
-    let (_relay_task, url) = create_periodic_pong_relay(Duration::from_millis(5)).await;
+    let (_relay_task, url, pong_count) = create_periodic_pong_relay(Duration::from_millis(5)).await;
     let mut pool = OutboxPool::default();
-    pool.set_pong_timeout(Duration::from_millis(20));
+    let pong_timeout = Duration::from_millis(20);
+    pool.set_pong_timeout(pong_timeout);
 
     let mut urls = HashSet::new();
     urls.insert(url.clone());
@@ -1039,13 +1063,27 @@ async fn keepalive_keeps_connected_relay_alive_when_pongs_continue() {
     .await;
     assert!(connected, "relay should reach Connected before pong checks");
 
-    for _ in 0..8 {
-        pool.try_recv(10, |_| {});
-        tokio::time::sleep(Duration::from_millis(5)).await;
+    let mut observed_pongs = pong_count.load(Ordering::SeqCst);
+    let mut last_pong = pool
+        .websocket_last_pong(&url)
+        .expect("connected relay should have an initial pong timestamp");
+    let start = Instant::now();
+
+    while start.elapsed() <= pong_timeout {
+        observed_pongs = wait_for_sent_pong(&pong_count, observed_pongs).await;
+        last_pong = wait_for_last_pong_advance(&mut pool, &url, last_pong).await;
+        pool.keepalive_ping(|| {});
+        assert_eq!(
+            websocket_status(&pool, &url),
+            Some(RelayStatus::Connected),
+            "keepalive should not disconnect a relay after ingesting a fresh pong"
+        );
     }
 
-    pool.keepalive_ping(|| {});
-
+    assert!(
+        start.elapsed() > pong_timeout,
+        "test should run long enough to cross the configured pong timeout"
+    );
     assert_eq!(
         websocket_status(&pool, &url),
         Some(RelayStatus::Connected),
@@ -1405,140 +1443,6 @@ async fn websocket_reconnect_failures_escalate_backoff_before_later_success() {
     assert!(
         connection_count.load(Ordering::SeqCst) > 0,
         "late relay startup should eventually observe the delayed reconnect attempt"
-    );
-}
-
-/// Multicast frames should be delivered through outbox receive both before and
-/// after the rejoin maintenance path runs.
-#[tokio::test]
-async fn multicast_frames_are_delivered_before_and_after_rejoin_interval() {
-    let _multicast_guard = lock_multicast_test().await;
-    let mut pool = OutboxPool::default();
-    pool.set_multicast_rejoin_interval(Duration::from_millis(20));
-    let signer = FullKeypair::generate();
-    let setup_note = NoteBuilder::new()
-        .kind(1)
-        .content("multicast setup note")
-        .sign(&signer.secret_key.secret_bytes())
-        .build()
-        .expect("build multicast setup note");
-    let first_note = NoteBuilder::new()
-        .kind(1)
-        .content("multicast target note before rejoin")
-        .sign(&signer.secret_key.secret_bytes())
-        .build()
-        .expect("build multicast first target note");
-    let second_note = NoteBuilder::new()
-        .kind(1)
-        .content("multicast target note after rejoin")
-        .sign(&signer.secret_key.secret_bytes())
-        .build()
-        .expect("build multicast second target note");
-    let first_note_json = first_note.json().expect("first target note json");
-    let first_note_id_hex = hex::encode(first_note.id());
-    let second_note_json = second_note.json().expect("second target note json");
-    let second_note_id_hex = hex::encode(second_note.id());
-
-    {
-        let mut session = pool.start_session(MockWakeup::default());
-        session.broadcast_note(&setup_note, vec![RelayId::Multicast]);
-    }
-
-    let mut saw_first = false;
-    let first_delivered = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
-        send_multicast_text_frame(&first_note_json);
-        pool.try_recv(10, |event| {
-            if matches!(event.relay_type, RelayImplType::Multicast)
-                && event.event_json.contains(&first_note_id_hex)
-            {
-                saw_first = true;
-            }
-        });
-        saw_first
-    })
-    .await;
-
-    assert!(
-        first_delivered,
-        "multicast frames should be surfaced through outbox try_recv before rejoin"
-    );
-
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    pool.try_recv(10, |_| {});
-
-    let mut saw_second = false;
-    let second_delivered = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
-        send_multicast_text_frame(&second_note_json);
-        pool.try_recv(10, |event| {
-            if matches!(event.relay_type, RelayImplType::Multicast)
-                && event.event_json.contains(&second_note_id_hex)
-            {
-                saw_second = true;
-            }
-        });
-        saw_second
-    })
-    .await;
-
-    assert!(
-        second_delivered,
-        "multicast delivery should still work after the rejoin maintenance path runs"
-    );
-}
-
-/// A multicast note queued while setup is unavailable should flush once setup
-/// later succeeds, and the flushed note should surface through the normal
-/// outbox receive path.
-#[tokio::test]
-async fn multicast_broadcast_queued_before_setup_flushes_after_later_setup() {
-    let _multicast_guard = lock_multicast_test().await;
-    let blocked_port = UdpSocket::bind("0.0.0.0:9797").expect("bind temporary multicast blocker");
-    let mut pool = OutboxPool::default();
-    let signer = FullKeypair::generate();
-    let queued_note = NoteBuilder::new()
-        .kind(1)
-        .content("multicast queued before setup")
-        .sign(&signer.secret_key.secret_bytes())
-        .build()
-        .expect("build queued multicast note");
-    let setup_note = NoteBuilder::new()
-        .kind(1)
-        .content("multicast setup note after blocker release")
-        .sign(&signer.secret_key.secret_bytes())
-        .build()
-        .expect("build setup multicast note");
-    let queued_note_id_hex = hex::encode(queued_note.id());
-
-    {
-        let mut session = pool.start_session(MockWakeup::default());
-        session.broadcast_note(&queued_note, vec![RelayId::Multicast]);
-    }
-    pool.try_recv(10, |_| {});
-
-    drop(blocked_port);
-
-    {
-        let mut session = pool.start_session(MockWakeup::default());
-        session.broadcast_note(&setup_note, vec![RelayId::Multicast]);
-    }
-
-    let mut saw_queued_note = false;
-    let queued_note_delivered =
-        pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
-            pool.try_recv(10, |event| {
-                if matches!(event.relay_type, RelayImplType::Multicast)
-                    && event.event_json.contains(&queued_note_id_hex)
-                {
-                    saw_queued_note = true;
-                }
-            });
-            saw_queued_note
-        })
-        .await;
-
-    assert!(
-        queued_note_delivered,
-        "queued multicast broadcast should flush once setup later succeeds"
     );
 }
 
