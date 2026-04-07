@@ -496,8 +496,6 @@ fn render_list_item(item: &ListItem, marker: &str, theme: &MdTheme, buffer: &str
 }
 
 fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &str, ui: &mut Ui) {
-    use egui_extras::{Column, TableBuilder};
-
     let num_cols = headers.len();
     if num_cols == 0 {
         return;
@@ -508,44 +506,52 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
     // Use first header's byte offset as id_salt so multiple tables don't clash
     let salt = headers.first().map_or(0, |h| h.start);
 
-    // Wrap in horizontal scroll so wide tables don't break layout on small screens
+    // Cap column width to prevent overflow, but let Grid auto-size narrower.
+    let table_width = ui.available_width();
+    let spacing = ui.spacing().item_spacing.x;
+    let total_spacing = spacing * (num_cols - 1) as f32;
+    let max_col = ((table_width - total_spacing) / num_cols as f32).max(20.0);
+
+    let header_bg = theme.code_bg;
+
+    // Wrap in horizontal scroll so wide tables don't break layout on small screens.
+    // Use egui::Grid so rows auto-size to fit wrapped text content
+    // rather than truncating at a fixed height.
     egui::ScrollArea::horizontal()
         .id_salt(("md_table_scroll", salt))
         .show(ui, |ui| {
-            let mut builder = TableBuilder::new(ui)
-                .id_salt(salt)
-                .vscroll(false)
-                .auto_shrink([false, false]);
-            for _ in 0..num_cols {
-                builder = builder.column(Column::auto().resizable(true));
-            }
-
-            let header_bg = theme.code_bg;
-
-            builder
-                .header(28.0, |mut header| {
+            egui::Grid::new(salt)
+                .num_columns(num_cols)
+                .max_col_width(max_col)
+                .with_row_color(
+                    move |row, _style| {
+                        if row == 0 {
+                            Some(header_bg)
+                        } else {
+                            None
+                        }
+                    },
+                )
+                .spacing([spacing, 0.0])
+                .show(ui, |ui| {
+                    // Header row
                     for h in headers {
-                        header.col(|ui| {
-                            ui.painter().rect_filled(ui.max_rect(), 0.0, header_bg);
-                            egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                                ui.strong(h.resolve(buffer));
-                            });
+                        egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
+                            ui.strong(h.resolve(buffer));
                         });
                     }
-                })
-                .body(|mut body| {
+                    ui.end_row();
+
+                    // Data rows
                     for row in rows {
-                        body.row(28.0, |mut table_row| {
-                            for i in 0..num_cols {
-                                table_row.col(|ui| {
-                                    egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
-                                        if let Some(cell) = row.get(i) {
-                                            ui.label(cell.resolve(buffer));
-                                        }
-                                    });
-                                });
-                            }
-                        });
+                        for i in 0..num_cols {
+                            egui::Frame::NONE.inner_margin(cell_padding).show(ui, |ui| {
+                                if let Some(cell) = row.get(i) {
+                                    ui.label(cell.resolve(buffer));
+                                }
+                            });
+                        }
+                        ui.end_row();
                     }
                 });
         });
