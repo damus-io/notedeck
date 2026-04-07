@@ -4979,6 +4979,7 @@ dependencies = [
  "mime_guess",
  "ndk-context",
  "nostr 0.37.0",
+ "nostr-relay-builder",
  "nostrdb",
  "nwc",
  "once_cell",

@@ -613,10 +613,12 @@ mod tests {
     use super::*;
     use crate::{
         test_utils::{live_id_with_selected_for_test, remote_for_test},
-        ScopedSubsState, FALLBACK_PUBKEY,
+        EguiWakeup, ScopedSubEoseStatus, ScopedSubLiveEoseStatus, ScopedSubsState, FALLBACK_PUBKEY,
     };
-    use enostr::{FullKeypair, OutboxPool};
+    use enostr::{FullKeypair, OutboxPool, RelayUrlPkgs};
+    use nostr_relay_builder::{LocalRelay, RelayBuilder};
     use nostrdb::Config;
+    use std::time::{Duration, UNIX_EPOCH};
     use tempfile::TempDir;
 
     struct AccountRemoteHarness {
@@ -629,6 +631,10 @@ mod tests {
 
     impl AccountRemoteHarness {
         fn new() -> Self {
+            Self::with_forced_relays(Vec::new())
+        }
+
+        fn with_forced_relays(forced_relays: Vec<String>) -> Self {
             let tmp = TempDir::new().expect("tmp dir");
             let mut ndb =
                 Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
@@ -636,7 +642,7 @@ mod tests {
             let mut unknown_ids = UnknownIds::default();
             let accounts = Accounts::new(
                 None,
-                Vec::new(),
+                forced_relays,
                 FALLBACK_PUBKEY(),
                 &mut ndb,
                 &txn,
@@ -675,6 +681,94 @@ mod tests {
             .iter()
             .map(|filter| filter.json().expect("filter json"))
             .collect()
+    }
+
+    async fn pump_pool_until<F>(
+        pool: &mut OutboxPool,
+        max_attempts: usize,
+        mut predicate: F,
+    ) -> bool
+    where
+        F: FnMut(&mut OutboxPool) -> bool,
+    {
+        for _ in 0..max_attempts {
+            pool.try_recv(10, |_| {});
+            if predicate(pool) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        predicate(pool)
+    }
+
+    /// Saturates one relay to `max_subscriptions = 1`, then promotes a
+    /// `NoPreference` subscription into the live compaction lane by first
+    /// occupying the dedicated slot with a `PreferDedicated` request and then
+    /// unsubscribing it.
+    async fn install_active_compaction_lane(
+        pool: &mut OutboxPool,
+        relay: &NormRelayUrl,
+    ) -> enostr::OutboxSubId {
+        let relay_pkgs = |routing_preference| {
+            RelayUrlPkgs::with_preference(HashSet::from([relay.clone()]), routing_preference)
+        };
+
+        let preferred_id = {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.subscribe(
+                vec![Filter::new().kinds(vec![1]).limit(10).build()],
+                relay_pkgs(RelayRoutingPreference::PreferDedicated),
+            )
+        };
+        let applied = pool.apply_nip11_limits(
+            relay,
+            enostr::Nip11LimitationsRaw {
+                max_subscriptions: Some(1),
+                ..Default::default()
+            },
+            UNIX_EPOCH + Duration::from_secs(1_700_000_400),
+        );
+        assert!(matches!(
+            applied,
+            enostr::Nip11ApplyOutcome::Applied | enostr::Nip11ApplyOutcome::Unchanged
+        ));
+
+        let compaction_id = {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.subscribe(
+                vec![Filter::new().kinds(vec![2]).limit(10).build()],
+                relay_pkgs(RelayRoutingPreference::NoPreference),
+            )
+        };
+
+        let preferred_ready = pump_pool_until(pool, 100, |pool| pool.has_eose(&preferred_id)).await;
+        assert!(
+            preferred_ready,
+            "preferred baseline subscription should stay active while the fallback request waits"
+        );
+        assert!(
+            !pool.has_eose(&compaction_id),
+            "fallback request should stay queued until the preferred dedicated slot is released"
+        );
+
+        {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.unsubscribe(preferred_id);
+        }
+
+        let compaction_ready =
+            pump_pool_until(pool, 100, |pool| pool.has_eose(&compaction_id)).await;
+        assert!(
+            compaction_ready,
+            "fallback request should become the active compaction route once the preferred slot is released"
+        );
+        assert!(
+            !pool.status(&compaction_id).is_empty(),
+            "active compaction route should expose one routed relay leg before account subscriptions are added"
+        );
+
+        compaction_id
     }
 
     #[test]
@@ -843,5 +937,80 @@ mod tests {
                 && h.pool.filters(&contacts_list_id).is_some(),
             "retargeting should keep the existing live account-read subs active"
         );
+    }
+
+    /// Verifies that account-scoped `ContactsList`/`Giftwrap` subscriptions
+    /// retain `RequireDedicated` routing under saturation by evicting a live
+    /// non-preferred compaction leg instead of joining that shared route.
+    #[tokio::test]
+    async fn update_routes_contacts_and_giftwrap_as_required_dedicated_under_saturation() {
+        let relay_task = LocalRelay::run(RelayBuilder::default())
+            .await
+            .expect("start local relay");
+        let relay = NormRelayUrl::new(&relay_task.url()).expect("relay url");
+        let mut h = AccountRemoteHarness::with_forced_relays(vec![relay.to_string()]);
+        let compaction_id = install_active_compaction_lane(&mut h.pool, &relay).await;
+
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let selected = *h.accounts.selected_account_pubkey();
+        let contacts_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::ContactsList);
+        let giftwrap = giftwrap_sub_identity();
+
+        let contacts_list_id = h
+            .live_id_for(selected, contacts_list)
+            .expect("contacts list live id");
+        let giftwrap_id = h.live_id_for(selected, giftwrap).expect("giftwrap live id");
+
+        let contacts_routed = !h.pool.status(&contacts_list_id).is_empty();
+        let giftwrap_routed = !h.pool.status(&giftwrap_id).is_empty();
+        assert!(
+            h.pool.status(&compaction_id).is_empty(),
+            "a required account sub should evict the existing non-preferred compaction leg"
+        );
+        assert!(
+            contacts_routed ^ giftwrap_routed,
+            "with one dedicated slot, exactly one of contacts/giftwrap should be routed and the other should remain queued"
+        );
+
+        let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+        let scoped_subs = remote.scoped_subs(&h.accounts);
+        assert_eq!(
+            scoped_subs.sub_eose_status(contacts_list),
+            if contacts_routed {
+                ScopedSubEoseStatus::Live(ScopedSubLiveEoseStatus {
+                    tracked_relays: 1,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            } else {
+                ScopedSubEoseStatus::Live(ScopedSubLiveEoseStatus {
+                    tracked_relays: 0,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            }
+        );
+        assert_eq!(
+            scoped_subs.sub_eose_status(giftwrap),
+            if giftwrap_routed {
+                ScopedSubEoseStatus::Live(ScopedSubLiveEoseStatus {
+                    tracked_relays: 1,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            } else {
+                ScopedSubEoseStatus::Live(ScopedSubLiveEoseStatus {
+                    tracked_relays: 0,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            }
+        );
+
+        relay_task.shutdown();
     }
 }

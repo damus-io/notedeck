@@ -75,6 +75,7 @@ required-features = ["auto-update"]
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
+nostr-relay-builder = "0.37"
 
 [dependencies.egui_kittest]
 workspace = true
