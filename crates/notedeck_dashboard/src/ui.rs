@@ -1,12 +1,14 @@
 use egui::FontId;
 use egui::RichText;
+use egui::Sense;
 
 use std::time::Instant;
 
+use enostr::Pubkey;
 use nostrdb::Transaction;
 use notedeck::{
-    AppContext, abbrev::floor_char_boundary, name::get_display_name, profile::get_profile_url,
-    theme::ColorTheme, tokens,
+    AppContext, NoteAction, abbrev::floor_char_boundary, name::get_display_name,
+    profile::get_profile_url, theme::ColorTheme, tokens,
 };
 use notedeck_ui::ProfilePic;
 
@@ -344,17 +346,27 @@ fn total_over(cache: &RollingCache) -> u64 {
     cache.buckets.iter().map(|b| b.total).sum()
 }
 
-pub fn dashboard_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
+pub fn dashboard_ui(
+    dashboard: &mut Dashboard,
+    ui: &mut egui::Ui,
+    ctx: &mut AppContext<'_>,
+) -> Option<NoteAction> {
+    let mut action = None;
     egui::Frame::new()
         .inner_margin(egui::Margin::same(tokens::SPACING_XL as i8))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                dashboard_ui_inner(dashboard, ui, ctx);
+                action = dashboard_ui_inner(dashboard, ui, ctx);
             });
         });
+    action
 }
 
-fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
+fn dashboard_ui_inner(
+    dashboard: &mut Dashboard,
+    ui: &mut egui::Ui,
+    ctx: &mut AppContext<'_>,
+) -> Option<NoteAction> {
     let avail = ui.available_width();
 
     // Card sizing hierarchy — clamped to available width
@@ -402,6 +414,7 @@ fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
     ui.add_space(tokens::SPACING_SM);
 
     // --- List row: sparkline/list cards ---
+    let mut action = None;
     ui.with_layout(
         egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
         |ui| {
@@ -413,10 +426,13 @@ fn dashboard_ui_inner(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
                 card_ui(ui, list_h, |ui| new_contact_lists_ui(dashboard, ui))
             });
             ui.add_sized([list_w, list_h], |ui: &mut egui::Ui| {
-                card_ui(ui, list_h, |ui| top_posters_ui(dashboard, ui, ctx))
+                card_ui(ui, list_h, |ui| {
+                    action = top_posters_ui(dashboard, ui, ctx);
+                })
             });
         },
     );
+    action
 }
 
 fn client_series(cache: &RollingCache, client: &str) -> Vec<f32> {
@@ -668,7 +684,11 @@ pub fn new_contact_lists_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui) {
     }
 }
 
-pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
+pub fn top_posters_ui(
+    dashboard: &mut Dashboard,
+    ui: &mut egui::Ui,
+    ctx: &mut AppContext<'_>,
+) -> Option<NoteAction> {
     let cache = dashboard.selected_cache();
     let n = cache.buckets.len();
     let unit = dashboard.period.label();
@@ -686,18 +706,19 @@ pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
                 .font(FontId::proportional(24.0))
                 .color(theme.text_muted),
         );
-        return;
+        return None;
     }
 
     let txn = match Transaction::new(ctx.ndb) {
         Ok(t) => t,
         Err(_) => {
             ui.label("DB error");
-            return;
+            return None;
         }
     };
 
     let pfp_size = ProfilePic::small_size() as f32;
+    let mut clicked_profile: Option<Pubkey> = None;
 
     for (pubkey, count) in &top {
         let profile = ctx.ndb.get_profile_by_pubkey(&txn, pubkey.bytes()).ok();
@@ -705,10 +726,12 @@ pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
         let pfp_url = get_profile_url(profile.as_ref());
 
         ui.horizontal(|ui| {
-            ui.add(
+            let pfp_resp = ui.add(
                 &mut ProfilePic::new(ctx.img_cache, ctx.media_jobs.sender(), pfp_url)
+                    .sense(Sense::click())
                     .size(pfp_size),
             );
+
             ui.add_space(tokens::SPACING_SM);
 
             let display = name.name();
@@ -718,7 +741,17 @@ pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
             } else {
                 display.to_string()
             };
-            ui.label(RichText::new(truncated).small());
+
+            let name_resp =
+                ui.add(egui::Label::new(RichText::new(truncated).small()).sense(Sense::click()));
+
+            if pfp_resp.clicked() || name_resp.clicked() {
+                clicked_profile = Some(*pubkey);
+            }
+
+            if pfp_resp.hovered() || name_resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(RichText::new(count.to_string()).small().strong());
@@ -726,4 +759,6 @@ pub fn top_posters_ui(dashboard: &mut Dashboard, ui: &mut egui::Ui, ctx: &mut Ap
         });
         ui.add_space(tokens::SPACING_XS);
     }
+
+    clicked_profile.map(NoteAction::Profile)
 }

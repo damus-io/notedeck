@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel as chan;
 
 use nostrdb::{Filter, Ndb, Transaction};
-use notedeck::{AppContext, AppResponse};
+use notedeck::{AppAction, AppContext, AppResponse};
 
 use chrono::{Datelike, TimeZone, Utc};
 
@@ -284,8 +284,8 @@ impl notedeck::App for Dashboard {
     }
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        self.show(ui, ctx);
-        AppResponse::none()
+        let action = self.show(ui, ctx);
+        AppResponse::action(action.map(AppAction::Note))
     }
 }
 
@@ -423,8 +423,12 @@ impl Dashboard {
         }
     }
 
-    fn show(&mut self, ui: &mut egui::Ui, ctx: &mut AppContext<'_>) {
-        crate::ui::dashboard_ui(self, ui, ctx);
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &mut AppContext<'_>,
+    ) -> Option<notedeck::NoteAction> {
+        crate::ui::dashboard_ui(self, ui, ctx)
     }
 }
 
