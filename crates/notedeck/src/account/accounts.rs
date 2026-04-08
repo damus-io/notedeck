@@ -27,6 +27,7 @@ pub struct Accounts {
     storage_writer: Option<AccountStorageWriter>,
     relay_defaults: RelayDefaults,
     ndb_subs: AccountNdbSubs,
+    max_hashtags_per_note: usize,
     scoped_remote_initialized: bool,
 }
 
@@ -36,13 +37,14 @@ impl Accounts {
         key_store: Option<AccountStorage>,
         forced_relays: Vec<String>,
         fallback: Pubkey,
+        max_hashtags_per_note: usize,
         ndb: &mut Ndb,
         txn: &Transaction,
         unknown_ids: &mut UnknownIds,
     ) -> Self {
         let (mut cache, unknown_id) = AccountCache::new(UserAccount::new(
             Keypair::only_pubkey(fallback),
-            AccountData::new(fallback.bytes()),
+            AccountData::new(fallback.bytes(), max_hashtags_per_note),
         ));
 
         unknown_id.process_action(unknown_ids, ndb, txn);
@@ -53,11 +55,8 @@ impl Accounts {
             match reader.get_accounts() {
                 Ok(accounts) => {
                     for account in accounts {
-                        add_account_from_storage(&mut cache, account).process_action(
-                            unknown_ids,
-                            ndb,
-                            txn,
-                        )
+                        add_account_from_storage(&mut cache, account, max_hashtags_per_note)
+                            .process_action(unknown_ids, ndb, txn)
                     }
                 }
                 Err(e) => {
@@ -85,6 +84,7 @@ impl Accounts {
             storage_writer,
             relay_defaults,
             ndb_subs,
+            max_hashtags_per_note,
             scoped_remote_initialized: false,
         }
     }
@@ -147,7 +147,7 @@ impl Accounts {
             acc.key = kp.clone();
             AccType::Acc(&*acc)
         } else {
-            let new_account_data = AccountData::new(kp.pubkey.bytes());
+            let new_account_data = AccountData::new(kp.pubkey.bytes(), self.max_hashtags_per_note);
             AccType::Entry(
                 self.cache
                     .add(UserAccount::new(kp.clone(), new_account_data)),
@@ -269,6 +269,11 @@ impl Accounts {
             }
         }
 
+        let max_hashtags_per_note = self.max_hashtags_per_note;
+        self.get_selected_account_mut()
+            .data
+            .muted
+            .update_max_hashtags(max_hashtags_per_note);
         self.get_selected_account_mut().data.query(ndb, txn);
         self.ndb_subs.swap_to(ndb, &self.cache.selected().data);
 
@@ -290,6 +295,7 @@ impl Accounts {
     }
 
     pub fn update_max_hashtags_per_note(&mut self, max_hashtags: usize) {
+        self.max_hashtags_per_note = max_hashtags;
         for account in self.cache.accounts_mut() {
             account.data.muted.update_max_hashtags(max_hashtags);
         }
@@ -383,8 +389,9 @@ impl<'a> AccType<'a> {
 fn add_account_from_storage(
     cache: &mut AccountCache,
     user_account_serializable: UserAccountSerializable,
+    max_hashtags_per_note: usize,
 ) -> SingleUnkIdAction {
-    let Some(acc) = get_acc_from_storage(user_account_serializable) else {
+    let Some(acc) = get_acc_from_storage(user_account_serializable, max_hashtags_per_note) else {
         return SingleUnkIdAction::NoAction;
     };
 
@@ -394,9 +401,12 @@ fn add_account_from_storage(
     SingleUnkIdAction::pubkey(pk)
 }
 
-fn get_acc_from_storage(user_account_serializable: UserAccountSerializable) -> Option<UserAccount> {
+fn get_acc_from_storage(
+    user_account_serializable: UserAccountSerializable,
+    max_hashtags_per_note: usize,
+) -> Option<UserAccount> {
     let keypair = user_account_serializable.key;
-    let new_account_data = AccountData::new(keypair.pubkey.bytes());
+    let new_account_data = AccountData::new(keypair.pubkey.bytes(), max_hashtags_per_note);
 
     let mut wallet = None;
     if let Some(wallet_s) = user_account_serializable.wallet {
@@ -424,10 +434,10 @@ pub struct AccountData {
 }
 
 impl AccountData {
-    pub fn new(pubkey: &[u8; 32]) -> Self {
+    pub fn new(pubkey: &[u8; 32], max_hashtags_per_note: usize) -> Self {
         Self {
             relay: AccountRelayData::new(pubkey),
-            muted: AccountMutedData::new(pubkey),
+            muted: AccountMutedData::new(pubkey, max_hashtags_per_note),
             contacts: Contacts::new(pubkey),
         }
     }

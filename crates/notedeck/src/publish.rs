@@ -92,6 +92,7 @@ mod tests {
             None,
             vec![relay.to_owned()],
             FALLBACK_PUBKEY(),
+            crate::persist::DEFAULT_MAX_HASHTAGS_PER_NOTE,
             &mut ndb,
             &txn,
             &mut unknown_ids,
