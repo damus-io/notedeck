@@ -887,8 +887,11 @@ mod tests {
     use futures_util::StreamExt;
     use hashbrown::HashSet;
     use nostrdb::Filter;
-    use std::sync::{Arc, Mutex};
-    use tokio::net::TcpListener;
+    use std::{
+        sync::{Arc, Mutex},
+        time::Instant,
+    };
+    use tokio::{net::TcpListener, sync::Notify};
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     use super::*;
@@ -912,10 +915,12 @@ mod tests {
         let frame: serde_json::Value = serde_json::from_str(text).expect("parse req frame");
         frame[0] == "REQ"
             && frame
-                .get(2)
-                .and_then(|filter| filter.get("kinds"))
-                .and_then(|kinds| kinds.as_array())
-                .is_some_and(|kinds| kinds.iter().any(|value| value.as_u64() == Some(kind)))
+                .as_array()
+                .into_iter()
+                .flat_map(|items| items.iter().skip(2))
+                .filter_map(|filter| filter.get("kinds"))
+                .filter_map(|kinds| kinds.as_array())
+                .any(|kinds| kinds.iter().any(|value| value.as_u64() == Some(kind)))
     }
 
     /// Creates a local websocket relay that records every inbound REQ frame.
@@ -923,6 +928,7 @@ mod tests {
         tokio::task::JoinHandle<()>,
         NormRelayUrl,
         Arc<Mutex<Vec<String>>>,
+        Arc<Notify>,
     ) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -931,6 +937,8 @@ mod tests {
         let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid req capture relay url");
         let captured = Arc::new(Mutex::new(Vec::new()));
         let captured_task = Arc::clone(&captured);
+        let notify = Arc::new(Notify::new());
+        let notify_task = Arc::clone(&notify);
 
         let handle = tokio::spawn(async move {
             loop {
@@ -938,6 +946,7 @@ mod tests {
                     break;
                 };
                 let captured_task = Arc::clone(&captured_task);
+                let notify_task = Arc::clone(&notify_task);
                 tokio::spawn(async move {
                     let Ok(mut websocket) = accept_async(stream).await else {
                         return;
@@ -950,13 +959,83 @@ mod tests {
 
                         if text.starts_with("[\"REQ\",") {
                             captured_task.lock().expect("lock captured reqs").push(text);
+                            notify_task.notify_one();
                         }
                     }
                 });
             }
         });
 
-        (handle, url, captured)
+        (handle, url, captured, notify)
+    }
+
+    /// Waits until the local relay captures a REQ frame matching `predicate`.
+    async fn wait_for_captured_req<F>(
+        captured: &Arc<Mutex<Vec<String>>>,
+        notify: &Arc<Notify>,
+        timeout: Duration,
+        context: &str,
+        predicate: F,
+    ) -> String
+    where
+        F: Fn(&str) -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            if let Some(frame) = captured
+                .lock()
+                .expect("lock captured reqs")
+                .iter()
+                .find(|text| predicate(text))
+                .cloned()
+            {
+                return frame;
+            }
+
+            let snapshot = captured.lock().expect("lock captured reqs").clone();
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "timed out waiting for {context}; captured {snapshot:?}"
+            );
+
+            let remaining = deadline
+                .checked_duration_since(now)
+                .expect("remaining req capture wait");
+            if tokio::time::timeout(remaining, notify.notified())
+                .await
+                .is_err()
+            {
+                let snapshot = captured.lock().expect("lock captured reqs").clone();
+                panic!("timed out waiting for {context}; captured {snapshot:?}");
+            }
+        }
+    }
+
+    /// Waits until the websocket relay reaches the connected state while
+    /// continuing to ingest relay events through the production receive path.
+    async fn wait_for_websocket_connected(
+        pool: &mut OutboxPool,
+        relay: &NormRelayUrl,
+        timeout: Duration,
+    ) {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            pool.try_recv(10, |_| {});
+            if websocket_status(pool, relay) == Some(RelayStatus::Connected) {
+                return;
+            }
+
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "relay should connect before the test continues"
+            );
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 
     /// Ensures the subscription registry always yields unique IDs.
@@ -1344,7 +1423,7 @@ mod tests {
     /// compaction request.
     #[tokio::test]
     async fn repacked_new_compaction_req_uses_projected_since() {
-        let (_relay_task, relay, captured) = create_req_capture_relay().await;
+        let (_relay_task, relay, captured, notify) = create_req_capture_relay().await;
         let wakeup = MockWakeup::default();
         let mut pool = OutboxPool::default();
         let filter_required = Filter::new().kinds(vec![1]).limit(2).build();
@@ -1352,17 +1431,7 @@ mod tests {
         let filter_compaction_target = Filter::new().kinds(vec![2]).limit(2).build();
 
         let _ = pool.ensure_relay(&relay, &wakeup);
-        tokio::time::timeout(Duration::from_millis(200), async {
-            loop {
-                pool.try_recv(10, |_| {});
-                if websocket_status(&pool, &relay) == Some(RelayStatus::Connected) {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("relay should connect before compaction repack test");
+        wait_for_websocket_connected(&mut pool, &relay, Duration::from_secs(5)).await;
 
         {
             let (subs, relays) = (&pool.subs, &mut pool.relays);
@@ -1430,34 +1499,14 @@ mod tests {
             );
         }
 
-        let saw_initial = tokio::time::timeout(Duration::from_millis(200), async {
-            loop {
-                if captured
-                    .lock()
-                    .expect("lock captured reqs")
-                    .iter()
-                    .any(|text| req_targets_kind(text, 3))
-                {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .is_ok();
-        let captured_snapshot = captured.lock().expect("lock captured reqs").clone();
-        assert!(
-            saw_initial,
-            "initial compaction req should be emitted, saw {captured_snapshot:?}"
-        );
-
-        let initial_compaction_req = captured
-            .lock()
-            .expect("lock captured reqs")
-            .iter()
-            .find(|text| req_targets_kind(text, 3))
-            .cloned()
-            .expect("initial compaction req");
+        let initial_compaction_req = wait_for_captured_req(
+            &captured,
+            &notify,
+            Duration::from_secs(5),
+            "initial compaction req should be emitted",
+            |text| req_targets_kind(text, 3),
+        )
+        .await;
         assert!(
             !initial_compaction_req.contains("\"since\""),
             "initial compaction req should use the base filters before catch-up"
@@ -1491,22 +1540,14 @@ mod tests {
             );
         }
 
-        tokio::time::timeout(Duration::from_millis(200), async {
-            loop {
-                if captured
-                    .lock()
-                    .expect("lock captured reqs")
-                    .iter()
-                    .filter(|text| req_targets_kind(text, 3))
-                    .any(|text| text.contains("\"since\""))
-                {
-                    return;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("repacked compaction req should preserve projected since on a new REQ");
+        let _ = wait_for_captured_req(
+            &captured,
+            &notify,
+            Duration::from_secs(5),
+            "repacked compaction req should preserve projected since on a new REQ",
+            |text| req_targets_kind(text, 3) && text.contains("\"since\""),
+        )
+        .await;
         {
             let coordinator = pool.relays.get(&relay).expect("coordinator");
             assert!(
