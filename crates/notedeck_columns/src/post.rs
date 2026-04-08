@@ -751,7 +751,10 @@ pub struct MentionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostrdb::{Config, Ndb, Transaction};
     use pretty_assertions::assert_eq;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
 
     impl MentionInfo {
         pub fn bounds(&self) -> Range<usize> {
@@ -767,6 +770,59 @@ mod tests {
         Pubkey::from_hex("4a0510f26880d40e432f4865cb5714d9d3c200ca6ebb16b418ae6c555f574967")
             .unwrap()
     };
+
+    fn test_note(
+        account: &FullKeypair,
+        content: &str,
+        created_at: u64,
+        tags: &[&[&str]],
+    ) -> Note<'static> {
+        let mut builder = NoteBuilder::new()
+            .kind(1)
+            .content(content)
+            .created_at(created_at);
+
+        for tag in tags {
+            builder = builder.start_tag();
+            for component in *tag {
+                builder = builder.tag_str(component);
+            }
+        }
+
+        builder
+            .sign(&account.secret_key.secret_bytes())
+            .build()
+            .expect("note")
+    }
+
+    fn setup_ndb() -> (TempDir, Ndb) {
+        let tmp = TempDir::new().expect("tmpdir");
+        let ndb = Ndb::new(tmp.path().to_str().expect("db path"), &Config::new()).expect("ndb");
+        (tmp, ndb)
+    }
+
+    fn ingest(ndb: &Ndb, note: &Note<'_>) {
+        ndb.process_client_event(&note.json().expect("note json"))
+            .expect("ingest note");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(ndb).expect("txn");
+            if ndb.get_note_by_id(&txn, note.id()).is_ok() {
+                break;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for note import"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn stored_note<'a>(ndb: &'a Ndb, txn: &'a Transaction, id: &[u8; 32]) -> Note<'a> {
+        ndb.get_note_by_id(txn, id).expect("stored note")
+    }
 
     #[derive(PartialEq, Clone, Debug)]
     struct MentionExample {
@@ -877,6 +933,133 @@ mod tests {
             let expected: HashSet<String> = expected.into_iter().map(String::from).collect();
             assert_eq!(result, expected, "Failed for input: {}", input);
         }
+    }
+
+    #[test]
+    fn to_reply_writes_root_tag_for_top_level_reply() {
+        let (_tmp, ndb) = setup_ndb();
+        let author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let root = test_note(&author, "root", 1_700_000_000, &[]);
+        ingest(&ndb, &root);
+        let post = NewPost::new(
+            "reply".to_owned(),
+            reply_author.clone(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let (reply, expected_root_id, expected_root_pubkey) = {
+            let txn = Transaction::new(&ndb).expect("txn");
+            let root = stored_note(&ndb, &txn, root.id());
+            let reply = post.to_reply(&reply_author.secret_key.secret_bytes(), &root);
+            (reply, *root.id(), *root.pubkey())
+        };
+        ingest(&ndb, &reply);
+        let txn = Transaction::new(&ndb).expect("txn");
+        let reply = stored_note(&ndb, &txn, reply.id());
+        let note_reply = NoteReply::new(reply.tags());
+
+        assert!(note_reply.is_reply_to_root());
+        assert_eq!(note_reply.root().unwrap().id, &expected_root_id);
+        assert_eq!(note_reply.reply().unwrap().id, &expected_root_id);
+        assert_eq!(notedeck::get_p_tags(&reply), vec![&expected_root_pubkey]);
+    }
+
+    #[test]
+    fn to_reply_writes_root_and_reply_tags_for_nested_reply() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let nested_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let direct_reply = test_note(
+            &reply_author,
+            "direct reply",
+            1_700_000_001,
+            &[
+                &["e", root_hex.as_str(), "", "root"],
+                &["p", &root_author.pubkey.hex()],
+            ],
+        );
+        for note in [&root, &direct_reply] {
+            ingest(&ndb, note);
+        }
+        let post = NewPost::new(
+            "nested".to_owned(),
+            nested_author.clone(),
+            Vec::new(),
+            vec![reply_author.pubkey],
+        );
+        let (
+            nested,
+            expected_root_id,
+            expected_parent_id,
+            expected_root_pubkey,
+            expected_parent_pubkey,
+        ) = {
+            let txn = Transaction::new(&ndb).expect("txn");
+            let root = stored_note(&ndb, &txn, root.id());
+            let direct_reply = stored_note(&ndb, &txn, direct_reply.id());
+            let nested = post.to_reply(&nested_author.secret_key.secret_bytes(), &direct_reply);
+            (
+                nested,
+                *root.id(),
+                *direct_reply.id(),
+                *root.pubkey(),
+                *direct_reply.pubkey(),
+            )
+        };
+        ingest(&ndb, &nested);
+        let txn = Transaction::new(&ndb).expect("txn");
+        let nested = stored_note(&ndb, &txn, nested.id());
+        let note_reply = NoteReply::new(nested.tags());
+        let p_tags = notedeck::get_p_tags(&nested);
+
+        assert!(!note_reply.is_reply_to_root());
+        assert_eq!(note_reply.root().unwrap().id, &expected_root_id);
+        assert_eq!(note_reply.reply().unwrap().id, &expected_parent_id);
+        assert!(p_tags.contains(&&expected_parent_pubkey));
+        assert!(p_tags.contains(&&expected_root_pubkey));
+    }
+
+    #[test]
+    fn to_reply_uses_deprecated_single_e_tag_as_root_context() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let nested_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let direct_reply = test_note(
+            &reply_author,
+            "direct reply",
+            1_700_000_001,
+            &[&["e", root_hex.as_str()]],
+        );
+        for note in [&root, &direct_reply] {
+            ingest(&ndb, note);
+        }
+        let post = NewPost::new(
+            "nested".to_owned(),
+            nested_author.clone(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let (nested, expected_root_id, expected_parent_id) = {
+            let txn = Transaction::new(&ndb).expect("txn");
+            let root = stored_note(&ndb, &txn, root.id());
+            let direct_reply = stored_note(&ndb, &txn, direct_reply.id());
+            let nested = post.to_reply(&nested_author.secret_key.secret_bytes(), &direct_reply);
+            (nested, *root.id(), *direct_reply.id())
+        };
+        ingest(&ndb, &nested);
+        let txn = Transaction::new(&ndb).expect("txn");
+        let nested = stored_note(&ndb, &txn, nested.id());
+        let note_reply = NoteReply::new(nested.tags());
+
+        assert_eq!(note_reply.root().unwrap().id, &expected_root_id);
+        assert_eq!(note_reply.reply().unwrap().id, &expected_parent_id);
     }
 
     #[test]

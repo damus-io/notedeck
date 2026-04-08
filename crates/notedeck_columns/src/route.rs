@@ -851,4 +851,26 @@ mod tests {
         assert_eq!(expected, parsed);
         assert_eq!(token_writer.str(), data_str);
     }
+
+    #[test]
+    fn test_thread_route_serialize_selected_reply() {
+        let root_hex = "1c54e5b0c386425f7e017d9e068ddef8962eb2ce1bb08ed27e24b93411c12e60";
+        let reply_hex = "7ac2f0c7792ff4b7f3bc3dbac6dc3ee85f02278698d50543607e7ea826988805";
+        let root = NoteId::from_hex(root_hex).unwrap();
+        let reply = NoteId::from_hex(reply_hex).unwrap();
+        let data_str = format!("thread:root:{root_hex}:reply:{reply_hex}");
+        let data = &data_str.split(':').collect::<Vec<&str>>();
+        let mut token_writer = TokenWriter::default();
+        let mut parser = TokenParser::new(data);
+        let parsed = Route::parse(&mut parser, &Pubkey::new(*root.bytes())).unwrap();
+        let expected = Route::Thread(ThreadSelection {
+            root_id: RootNoteIdBuf::new_unsafe(*root.bytes()),
+            selected_note: Some(reply),
+        });
+
+        parsed.serialize_tokens(&mut token_writer);
+
+        assert_eq!(expected, parsed);
+        assert_eq!(token_writer.str(), data_str);
+    }
 }
