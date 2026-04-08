@@ -18,7 +18,7 @@ use crate::{
         RelayReqStatus, RelayRoutingPreference, RelayType, SubPassGuardian, WebsocketRelay,
         WebsocketSlot,
     },
-    EventClientMessage, RelayMessage, RelayStatus, Wakeup,
+    EventClientMessage, RelayMessage, Wakeup,
 };
 
 mod ingest;
@@ -352,7 +352,7 @@ impl CoordinationData {
                 &mut self.limits.sub_guardian,
                 subs,
             )
-            .ingest_session(clear_session),
+            .ingest_session_without_queue_drain(clear_session),
         );
 
         let mut rebuild_session = CompactionSession::default();
@@ -367,8 +367,10 @@ impl CoordinationData {
                 &mut self.limits.sub_guardian,
                 subs,
             )
-            .ingest_session(rebuild_session),
+            .ingest_session_without_queue_drain(rebuild_session),
         );
+
+        self.drain_compaction_queue(subs);
     }
 
     #[profiling::function]
@@ -807,7 +809,7 @@ impl CoordinationData {
 
         let msg = match &event {
             WsEvent::Opened => {
-                websocket.note_opened(reconnect_delay);
+                websocket.set_connected(reconnect_delay);
                 self.pending_tracker_invalidations.extend(handle_relay_open(
                     websocket,
                     &mut self.broadcast_cache,
@@ -820,12 +822,12 @@ impl CoordinationData {
                 None
             }
             WsEvent::Closed => {
-                websocket.conn.set_status(RelayStatus::Disconnected);
+                websocket.set_disconnected_now();
                 None
             }
             WsEvent::Error(err) => {
                 tracing::error!("relay {} error: {:?}", websocket.conn.url, err);
-                websocket.conn.set_status(RelayStatus::Disconnected);
+                websocket.set_disconnected_now();
                 None
             }
             WsEvent::Message(ws_message) => handle_websocket_message(websocket, ws_message),
@@ -1011,8 +1013,9 @@ mod tests {
     use super::*;
     use crate::relay::{
         test_utils::{insert_sub_with_policy, MockWakeup},
-        WebsocketConn,
+        RelayUrlPkgs, SubscribeTask, WebsocketConn,
     };
+    use nostrdb::Filter;
 
     /// Returns the task held for `id`, panicking when no matching task exists.
     #[track_caller]
@@ -1021,6 +1024,35 @@ mod tests {
             .tasks
             .get(&id)
             .unwrap_or_else(|| panic!("Expected task for {:?}", id))
+    }
+
+    /// Inserts a subscription with caller-provided filters for coordinator tests.
+    fn insert_sub_with_filters_and_policy(
+        subs: &mut OutboxSubscriptions,
+        id: OutboxSubId,
+        policy: RelayRoutingPreference,
+        filters: Vec<Filter>,
+    ) {
+        subs.new_subscription(
+            id,
+            SubscribeTask {
+                filters,
+                relays: RelayUrlPkgs::with_preference(HashSet::new(), policy),
+            },
+            false,
+        );
+    }
+
+    /// Builds a filter large enough to exercise compaction JSON-limit behavior.
+    fn bulky_filter(seed: u8) -> Filter {
+        let authors = (0..10)
+            .map(|offset| [seed.wrapping_add(offset); 32])
+            .collect::<Vec<_>>();
+        Filter::new()
+            .authors(authors.iter())
+            .kinds([1])
+            .limit(1)
+            .build()
     }
 
     // ==================== CoordinationSession tests ====================
@@ -1877,6 +1909,103 @@ mod tests {
             .compaction_data
             .req_status(&id_preferred)
             .is_none());
+    }
+
+    #[test]
+    fn json_limit_repack_preserves_live_compaction_before_draining_queue() {
+        let mut subs = OutboxSubscriptions::default();
+        let id_required = OutboxSubId(92);
+        let id_live_compaction = OutboxSubId(93);
+        let id_queued_compaction = OutboxSubId(94);
+        insert_sub_with_policy(
+            &mut subs,
+            id_required,
+            RelayRoutingPreference::RequireDedicated,
+        );
+        insert_sub_with_filters_and_policy(
+            &mut subs,
+            id_live_compaction,
+            RelayRoutingPreference::NoPreference,
+            vec![bulky_filter(1)],
+        );
+        insert_sub_with_filters_and_policy(
+            &mut subs,
+            id_queued_compaction,
+            RelayRoutingPreference::NoPreference,
+            vec![bulky_filter(32)],
+        );
+
+        let compaction_json_limit = subs
+            .json_size(&id_live_compaction)
+            .expect("live compaction size")
+            + 8;
+        let mut coordinator = CoordinationData::new(
+            RelayLimitations {
+                maximum_subs: 1,
+                max_json_bytes: compaction_json_limit,
+            },
+            NormRelayUrl::new("wss://relay-coordinator-repack.example.com").unwrap(),
+            MockWakeup::default(),
+        );
+
+        let mut initial = CoordinationSession::default();
+        initial.subscribe(id_required, RelayRoutingPreference::RequireDedicated);
+        initial.subscribe(id_live_compaction, RelayRoutingPreference::NoPreference);
+        initial.subscribe(id_queued_compaction, RelayRoutingPreference::NoPreference);
+        coordinator.ingest_session(&subs, initial);
+
+        coordinator.set_max_size(&subs, 2);
+        let [active_before, queued_before] = if coordinator
+            .compaction_data
+            .req_status(&id_live_compaction)
+            .is_some()
+        {
+            [id_live_compaction, id_queued_compaction]
+        } else {
+            [id_queued_compaction, id_live_compaction]
+        };
+        assert_eq!(
+            coordinator.route_type(&active_before),
+            Some(RelayType::Compaction)
+        );
+        assert!(
+            coordinator
+                .compaction_data
+                .req_status(&active_before)
+                .is_some(),
+            "one queued no-preference request should materialize into the live compaction slot"
+        );
+        assert_eq!(
+            coordinator.route_type(&queued_before),
+            Some(RelayType::Compaction)
+        );
+        assert!(
+            coordinator
+                .compaction_data
+                .req_status(&queued_before)
+                .is_none(),
+            "the second compaction request should stay queued before the JSON-limit repack"
+        );
+
+        coordinator.set_limits(
+            &subs,
+            RelayLimitations {
+                maximum_subs: 2,
+                max_json_bytes: compaction_json_limit - 4,
+            },
+        );
+
+        assert!(
+            coordinator.compaction_data.req_status(&active_before).is_some(),
+            "repacking live compaction routes for a smaller JSON limit should preserve the route that was already active"
+        );
+        assert!(
+            coordinator
+                .compaction_data
+                .req_status(&queued_before)
+                .is_none(),
+            "queued compaction work should not steal the freed pass while the live route is being rebuilt"
+        );
     }
 
     #[test]

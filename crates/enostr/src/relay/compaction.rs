@@ -532,7 +532,9 @@ impl<'a> Drop for CompactionHandler<'a> {
                         continue;
                     };
 
-                    let filters = self.subs.filters_all(&data.requests.requests);
+                    let filters = self
+                        .subs
+                        .filters_all_for_compaction(&data.requests.requests);
                     self.relay
                         .conn
                         .send(&ClientMessage::req(id.0.clone(), filters));

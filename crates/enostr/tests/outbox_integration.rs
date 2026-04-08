@@ -333,6 +333,47 @@ async fn create_reconnect_counting_relay_at(
     (handle, connection_count)
 }
 
+async fn create_delayed_close_relay(
+    close_after: Duration,
+) -> (tokio::task::JoinHandle<()>, NormRelayUrl, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind delayed-close relay");
+    let addr = listener.local_addr().expect("delayed-close relay addr");
+    let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid delayed-close relay url");
+    let connection_count = Arc::new(AtomicUsize::new(0));
+    let connection_count_task = Arc::clone(&connection_count);
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let connection_number = connection_count_task.fetch_add(1, Ordering::SeqCst) + 1;
+            tokio::spawn(async move {
+                let Ok(mut websocket) = accept_async(stream).await else {
+                    return;
+                };
+
+                if connection_number == 1 {
+                    tokio::time::sleep(close_after).await;
+                    let _ = websocket.close(None).await;
+                    return;
+                }
+
+                while let Some(msg) = websocket.next().await {
+                    match msg {
+                        Ok(Message::Close(_)) | Err(_) => break,
+                        _ => {}
+                    }
+                }
+            });
+        }
+    });
+
+    (handle, url, connection_count)
+}
+
 async fn create_shutdownable_silent_relay_at(
     addr: SocketAddr,
 ) -> (tokio::task::JoinHandle<()>, oneshot::Sender<()>) {
@@ -1266,6 +1307,63 @@ async fn keepalive_reconnect_open_refreshes_pong_and_preserves_configured_delay(
     );
 }
 
+/// A server-driven close should start reconnect timing from the disconnect
+/// moment, not from the original websocket open.
+#[tokio::test]
+async fn keepalive_closed_relay_waits_for_configured_reconnect_delay() {
+    let (_relay_task, url, connection_count) =
+        create_delayed_close_relay(Duration::from_millis(40)).await;
+    let mut pool = OutboxPool::default();
+    pool.set_pong_timeout(Duration::from_secs(1));
+    pool.set_keepalive_reconnect_delay(Duration::from_millis(30));
+
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), RelayUrlPkgs::new(urls));
+    }
+
+    let connected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+    })
+    .await;
+    assert!(
+        connected,
+        "relay should reach Connected before the server closes it"
+    );
+
+    let disconnected = pump_pool_until(&mut pool, 100, Duration::from_millis(5), |pool| {
+        pool.try_recv(10, |_| {});
+        websocket_status(pool, &url) == Some(RelayStatus::Disconnected)
+    })
+    .await;
+    assert!(
+        disconnected,
+        "server-driven close should transition the relay onto the disconnected reconnect path"
+    );
+
+    pool.keepalive_ping(|| {});
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert_eq!(
+        connection_count.load(Ordering::SeqCst),
+        1,
+        "close-driven reconnect should still honor the configured reconnect delay"
+    );
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pool.keepalive_ping(|| {});
+    let reconnected = pump_pool_until(&mut pool, 50, Duration::from_millis(5), |pool| {
+        websocket_status(pool, &url) == Some(RelayStatus::Connected)
+            && connection_count.load(Ordering::SeqCst) >= 2
+    })
+    .await;
+    assert!(
+        reconnected,
+        "relay should reconnect once the close-driven reconnect delay has elapsed"
+    );
+}
+
 /// Broadcasting to a websocket relay should eventually send an `EVENT` frame
 /// through the relay's broadcast path.
 #[tokio::test]
@@ -1371,12 +1469,13 @@ async fn broadcast_note_queues_while_disconnected_and_flushes_on_reopen() {
     );
 }
 
-/// Repeated websocket reconnect failures should escalate the reconnect backoff
-/// before a later relay startup is allowed to reconnect.
+/// After an outage and several reconnect opportunities with no server bound,
+/// awaiting the old relay teardown should let a later rebind recover cleanly
+/// on the same address.
 #[tokio::test]
-async fn websocket_reconnect_failures_escalate_backoff_before_later_success() {
+async fn websocket_reconnect_recovers_when_relay_returns_after_outage() {
     let addr = reserve_free_socket_addr();
-    let (_first_relay_task, shutdown_first_relay) = create_shutdownable_silent_relay_at(addr).await;
+    let (first_relay_task, shutdown_first_relay) = create_shutdownable_silent_relay_at(addr).await;
     let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid delayed relay url");
     let mut pool = OutboxPool::default();
     pool.set_pong_timeout(Duration::from_millis(20));
@@ -1408,27 +1507,20 @@ async fn websocket_reconnect_failures_escalate_backoff_before_later_success() {
     );
 
     let _ = shutdown_first_relay.send(());
+    tokio::time::timeout(Duration::from_secs(1), first_relay_task)
+        .await
+        .expect("first relay shutdown should complete before rebinding addr")
+        .expect("first relay task should exit cleanly");
 
     tokio::time::sleep(Duration::from_millis(10)).await;
     pool.keepalive_ping(|| {});
+    pool.try_recv(10, |_| {});
 
     tokio::time::sleep(Duration::from_millis(30)).await;
     pool.keepalive_ping(|| {});
+    pool.try_recv(10, |_| {});
 
     let (_relay_task, connection_count) = create_reconnect_counting_relay_at(addr).await;
-
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    pool.keepalive_ping(|| {});
-
-    let too_early = pump_pool_until(&mut pool, 10, Duration::from_millis(5), |pool| {
-        websocket_status(pool, &url) == Some(RelayStatus::Connected)
-            || connection_count.load(Ordering::SeqCst) > 0
-    })
-    .await;
-    assert!(
-        !too_early,
-        "second failed reconnect should escalate backoff enough to block an early later reconnect"
-    );
 
     let reconnected = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
         pool.keepalive_ping(|| {});
@@ -1438,11 +1530,11 @@ async fn websocket_reconnect_failures_escalate_backoff_before_later_success() {
     .await;
     assert!(
         reconnected,
-        "relay should reconnect once the escalated backoff window has elapsed"
+        "relay should reconnect once the later server is available again"
     );
     assert!(
         connection_count.load(Ordering::SeqCst) > 0,
-        "late relay startup should eventually observe the delayed reconnect attempt"
+        "later relay startup should eventually observe the reconnect attempt"
     );
 }
 

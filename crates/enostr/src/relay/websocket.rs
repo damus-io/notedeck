@@ -148,13 +148,20 @@ impl WebsocketRelay {
         self.conn.status == RelayStatus::Connected
     }
 
-    /// Records that the underlying websocket connection has opened
-    /// successfully, refreshing liveness state for the new leg.
-    pub fn note_opened(&mut self, reconnect_delay: Duration) {
+    /// Enters the connected state for a fresh websocket leg, refreshing
+    /// liveness tracking and reconnect metadata.
+    pub fn set_connected(&mut self, reconnect_delay: Duration) {
         self.conn.status = RelayStatus::Connected;
         self.last_pong = Instant::now();
         self.reconnect_attempt = 0;
         self.retry_connect_after = reconnect_delay;
+    }
+
+    /// Enters the disconnected state and starts reconnect timing from the
+    /// moment the live websocket leg ended.
+    pub fn set_disconnected_now(&mut self) {
+        self.conn.status = RelayStatus::Disconnected;
+        self.last_connect_attempt = Instant::now();
     }
 }
 
@@ -283,7 +290,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     #[test]
-    fn note_opened_refreshes_liveness_and_configured_reconnect_delay() {
+    fn set_connected_refreshes_liveness_and_configured_reconnect_delay() {
         let mut websocket = WebsocketRelay::new(
             WebsocketConn::from_wakeup(
                 nostr::RelayUrl::parse("wss://relay-websocket-open.example.com").unwrap(),
@@ -297,11 +304,34 @@ mod tests {
         let before = websocket.last_pong;
         let configured_delay = Duration::from_millis(30);
 
-        websocket.note_opened(configured_delay);
+        websocket.set_connected(configured_delay);
 
         assert_eq!(websocket.conn.status, RelayStatus::Connected);
         assert!(websocket.last_pong > before);
         assert_eq!(websocket.reconnect_attempt, 0);
         assert_eq!(websocket.retry_connect_after, configured_delay);
+    }
+
+    #[test]
+    fn set_disconnected_now_starts_reconnect_delay_without_resetting_backoff() {
+        let mut websocket = WebsocketRelay::new(
+            WebsocketConn::from_wakeup(
+                nostr::RelayUrl::parse("wss://relay-websocket-close.example.com").unwrap(),
+                MockWakeup::default(),
+            )
+            .unwrap(),
+        );
+        websocket.conn.status = RelayStatus::Connected;
+        websocket.last_connect_attempt = Instant::now() - Duration::from_secs(5);
+        websocket.retry_connect_after = Duration::from_millis(45);
+        websocket.reconnect_attempt = 3;
+        let before = websocket.last_connect_attempt;
+
+        websocket.set_disconnected_now();
+
+        assert_eq!(websocket.conn.status, RelayStatus::Disconnected);
+        assert!(websocket.last_connect_attempt > before);
+        assert_eq!(websocket.retry_connect_after, Duration::from_millis(45));
+        assert_eq!(websocket.reconnect_attempt, 3);
     }
 }

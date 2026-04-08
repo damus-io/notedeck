@@ -80,13 +80,6 @@ impl OutboxSubscriptions {
             .sum()
     }
 
-    pub fn filters_all(&self, ids: &HashSet<OutboxSubId>) -> Vec<Filter> {
-        ids.iter()
-            .filter_map(|id| self.subs.get(id))
-            .flat_map(|sub| sub.filters.filters.iter().cloned())
-            .collect()
-    }
-
     /// Returns the compaction-projected filters for one subscription.
     pub fn filters_for_compaction(&self, id: &OutboxSubId) -> Option<Vec<Filter>> {
         self.subs

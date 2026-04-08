@@ -528,8 +528,7 @@ impl OutboxPool {
                             "pong timeout on {}, marking disconnected",
                             websocket.conn.url
                         );
-                        websocket.last_connect_attempt = now;
-                        websocket.conn.set_status(RelayStatus::Disconnected);
+                        websocket.set_disconnected_now();
                         continue;
                     }
 
@@ -885,8 +884,12 @@ fn valid_positive_usize(value: i64) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use futures_util::StreamExt;
     use hashbrown::HashSet;
     use nostrdb::Filter;
+    use std::sync::{Arc, Mutex};
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     use super::*;
     use crate::relay::{
@@ -897,6 +900,63 @@ mod tests {
 
     fn filter_has_since(filter: &Filter) -> bool {
         filter.json().expect("filter json").contains("\"since\"")
+    }
+
+    fn websocket_status(pool: &OutboxPool, url: &NormRelayUrl) -> Option<RelayStatus> {
+        pool.websocket_statuses()
+            .into_iter()
+            .find_map(|(relay_url, status)| (*relay_url == *url).then_some(status))
+    }
+
+    fn req_targets_kind(text: &str, kind: u64) -> bool {
+        let frame: serde_json::Value = serde_json::from_str(text).expect("parse req frame");
+        frame[0] == "REQ"
+            && frame
+                .get(2)
+                .and_then(|filter| filter.get("kinds"))
+                .and_then(|kinds| kinds.as_array())
+                .is_some_and(|kinds| kinds.iter().any(|value| value.as_u64() == Some(kind)))
+    }
+
+    /// Creates a local websocket relay that records every inbound REQ frame.
+    async fn create_req_capture_relay() -> (
+        tokio::task::JoinHandle<()>,
+        NormRelayUrl,
+        Arc<Mutex<Vec<String>>>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind req capture relay");
+        let addr = listener.local_addr().expect("req capture relay addr");
+        let url = NormRelayUrl::new(&format!("ws://{addr}")).expect("valid req capture relay url");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_task = Arc::clone(&captured);
+
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let captured_task = Arc::clone(&captured_task);
+                tokio::spawn(async move {
+                    let Ok(mut websocket) = accept_async(stream).await else {
+                        return;
+                    };
+
+                    while let Some(msg) = websocket.next().await {
+                        let Ok(Message::Text(text)) = msg else {
+                            continue;
+                        };
+
+                        if text.starts_with("[\"REQ\",") {
+                            captured_task.lock().expect("lock captured reqs").push(text);
+                        }
+                    }
+                });
+            }
+        });
+
+        (handle, url, captured)
     }
 
     /// Ensures the subscription registry always yields unique IDs.
@@ -1277,6 +1337,187 @@ mod tests {
             filter_has_since(&projected[0]),
             "compaction projection should advance since after fully catching up"
         );
+    }
+
+    /// Rebuilding a compaction route after catch-up should preserve the
+    /// projected `since` cursor when the rebuilt REQ is emitted as a new
+    /// compaction request.
+    #[tokio::test]
+    async fn repacked_new_compaction_req_uses_projected_since() {
+        let (_relay_task, relay, captured) = create_req_capture_relay().await;
+        let wakeup = MockWakeup::default();
+        let mut pool = OutboxPool::default();
+        let filter_required = Filter::new().kinds(vec![1]).limit(2).build();
+        let filter_compaction_existing = Filter::new().kinds(vec![3]).limit(2).build();
+        let filter_compaction_target = Filter::new().kinds(vec![2]).limit(2).build();
+
+        let _ = pool.ensure_relay(&relay, &wakeup);
+        tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                pool.try_recv(10, |_| {});
+                if websocket_status(&pool, &relay) == Some(RelayStatus::Connected) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("relay should connect before compaction repack test");
+
+        {
+            let (subs, relays) = (&pool.subs, &mut pool.relays);
+            relays.get_mut(&relay).expect("coordinator").set_limits(
+                subs,
+                RelayLimitations {
+                    maximum_subs: 2,
+                    max_json_bytes: RelayLimitations::default().max_json_bytes,
+                },
+            );
+        }
+
+        let required_id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let pkgs =
+                RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::RequireDedicated);
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(vec![filter_required], pkgs)
+        };
+
+        let compaction_active_id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let pkgs = RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::NoPreference);
+            let mut handler = pool.start_session(MockWakeup::default());
+            handler.subscribe(vec![filter_compaction_existing], pkgs)
+        };
+
+        let compaction_target_id = {
+            let mut relays = HashSet::new();
+            relays.insert(relay.clone());
+            let pkgs = RelayUrlPkgs::with_preference(relays, RelayRoutingPreference::NoPreference);
+            let mut handler = pool.start_session(MockWakeup::default());
+            handler.subscribe(vec![filter_compaction_target], pkgs)
+        };
+
+        {
+            let (subs, relays) = (&pool.subs, &mut pool.relays);
+            relays.get_mut(&relay).expect("coordinator").set_limits(
+                subs,
+                RelayLimitations {
+                    maximum_subs: 3,
+                    max_json_bytes: RelayLimitations::default().max_json_bytes,
+                },
+            );
+            relays.get_mut(&relay).expect("coordinator").set_limits(
+                subs,
+                RelayLimitations {
+                    maximum_subs: 2,
+                    max_json_bytes: RelayLimitations::default().max_json_bytes,
+                },
+            );
+        };
+
+        {
+            let coordinator = pool.relays.get(&relay).expect("coordinator");
+            assert_eq!(
+                coordinator.route_type(&required_id),
+                Some(RelayType::Transparent)
+            );
+            assert_eq!(
+                coordinator.route_type(&compaction_active_id),
+                Some(RelayType::Compaction)
+            );
+        }
+
+        let saw_initial = tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                if captured
+                    .lock()
+                    .expect("lock captured reqs")
+                    .iter()
+                    .any(|text| req_targets_kind(text, 3))
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        let captured_snapshot = captured.lock().expect("lock captured reqs").clone();
+        assert!(
+            saw_initial,
+            "initial compaction req should be emitted, saw {captured_snapshot:?}"
+        );
+
+        let initial_compaction_req = captured
+            .lock()
+            .expect("lock captured reqs")
+            .iter()
+            .find(|text| req_targets_kind(text, 3))
+            .cloned()
+            .expect("initial compaction req");
+        assert!(
+            !initial_compaction_req.contains("\"since\""),
+            "initial compaction req should use the base filters before catch-up"
+        );
+
+        pool.eose_tracker
+            .mark_relay_eose(&relay, compaction_active_id, &pool.subs);
+        pool.flush_fully_eosed_effects();
+
+        let stored = pool.filters(&compaction_active_id).expect("stored filters");
+        assert!(
+            !filter_has_since(&stored[0]),
+            "stored filters should remain pristine after compaction catch-up"
+        );
+        let projected = pool
+            .compaction_filters(&compaction_active_id)
+            .expect("projected compaction filters");
+        assert!(
+            filter_has_since(&projected[0]),
+            "compaction projection should reflect the stored catch-up cursor"
+        );
+
+        {
+            let (subs, relays) = (&pool.subs, &mut pool.relays);
+            relays.get_mut(&relay).expect("coordinator").set_limits(
+                subs,
+                RelayLimitations {
+                    maximum_subs: 2,
+                    max_json_bytes: RelayLimitations::default().max_json_bytes - 1,
+                },
+            );
+        }
+
+        tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                if captured
+                    .lock()
+                    .expect("lock captured reqs")
+                    .iter()
+                    .filter(|text| req_targets_kind(text, 3))
+                    .any(|text| text.contains("\"since\""))
+                {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("repacked compaction req should preserve projected since on a new REQ");
+        {
+            let coordinator = pool.relays.get(&relay).expect("coordinator");
+            assert!(
+                coordinator.route_type(&compaction_target_id).is_some(),
+                "second no-preference sub should remain coordinator-managed while repack runs"
+            );
+            assert_eq!(
+                coordinator.route_type(&required_id),
+                Some(RelayType::Transparent)
+            );
+        }
     }
 
     /// Mixed routing should refuse `since` optimization until every relay leg
