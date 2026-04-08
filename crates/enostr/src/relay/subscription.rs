@@ -1,17 +1,25 @@
 use hashbrown::{HashMap, HashSet};
 use nostrdb::Filter;
 
-use crate::relay::{MetadataFilters, NormRelayUrl, OutboxSubId, RelayType, RelayUrlPkgs};
+use crate::relay::{
+    MetadataFilters, NormRelayUrl, OutboxSubId, RelayRoutingPreference, RelayUrlPkgs,
+};
 
 pub struct OutboxSubscription {
     pub relays: HashSet<NormRelayUrl>,
     pub filters: MetadataFilters,
     json_size: usize,
     pub is_oneshot: bool,
-    pub relay_type: RelayType,
+    pub routing_preference: RelayRoutingPreference,
 }
 
 impl OutboxSubscription {
+    /// Returns the filter set that compaction should send for this
+    /// subscription, applying any synthetic `since` cursor from metadata.
+    pub fn filters_for_compaction(&self) -> Vec<Filter> {
+        self.filters.projected_filters()
+    }
+
     pub fn see_all(&mut self, at: u64) {
         for (_, meta) in self.filters.iter_mut() {
             meta.last_seen = Some(at);
@@ -57,15 +65,13 @@ impl OutboxSubscriptions {
         self.subs.get(id).map(|s| s.json_size)
     }
 
-    pub fn subset_oneshot(&self, ids: &HashSet<OutboxSubId>) -> HashSet<OutboxSubId> {
-        ids.iter()
-            .filter(|id| self.subs.get(*id).is_some_and(|s| s.is_oneshot))
-            .copied()
-            .collect()
-    }
-
     pub fn is_oneshot(&self, id: &OutboxSubId) -> bool {
         self.subs.get(id).is_some_and(|s| s.is_oneshot)
+    }
+
+    /// Returns the dedicated/compaction routing preference for the subscription, if present.
+    pub fn routing_preference(&self, id: &OutboxSubId) -> Option<RelayRoutingPreference> {
+        self.subs.get(id).map(|s| s.routing_preference)
     }
 
     pub fn json_size_sum(&self, ids: &HashSet<OutboxSubId>) -> usize {
@@ -74,10 +80,20 @@ impl OutboxSubscriptions {
             .sum()
     }
 
-    pub fn filters_all(&self, ids: &HashSet<OutboxSubId>) -> Vec<Filter> {
+    /// Returns the compaction-projected filters for one subscription.
+    pub fn filters_for_compaction(&self, id: &OutboxSubId) -> Option<Vec<Filter>> {
+        self.subs
+            .get(id)
+            .map(OutboxSubscription::filters_for_compaction)
+    }
+
+    /// Returns all filters for a compaction REQ, projecting any stored
+    /// compaction cursor into the returned filter set without mutating the
+    /// shared subscription definition.
+    pub fn filters_all_for_compaction(&self, ids: &HashSet<OutboxSubId>) -> Vec<Filter> {
         ids.iter()
             .filter_map(|id| self.subs.get(id))
-            .flat_map(|sub| sub.filters.filters.iter().cloned())
+            .flat_map(OutboxSubscription::filters_for_compaction)
             .collect()
     }
 
@@ -103,11 +119,7 @@ impl OutboxSubscriptions {
                 filters,
                 json_size,
                 is_oneshot,
-                relay_type: if task.relays.use_transparent {
-                    RelayType::Transparent
-                } else {
-                    RelayType::Compaction
-                },
+                routing_preference: task.relays.routing_preference,
             },
         );
     }
@@ -174,8 +186,10 @@ mod tests {
     #[test]
     fn new_subscription_records_metadata() {
         let mut subs = OutboxSubscriptions::default();
-        let mut pkgs = RelayUrlPkgs::new(relay_urls("wss://relay-meta.example.com"));
-        pkgs.use_transparent = true;
+        let pkgs = RelayUrlPkgs::with_preference(
+            relay_urls("wss://relay-meta.example.com"),
+            RelayRoutingPreference::PreferDedicated,
+        );
         let filters = vec![Filter::new().kinds(vec![1]).limit(4).build()];
         let id = OutboxSubId(7);
 
@@ -189,44 +203,10 @@ mod tests {
 
         let sub = subs.get_mut(&id).expect("subscription metadata");
         assert_eq!(sub.relays.len(), 1);
-        assert_eq!(sub.relay_type, RelayType::Transparent);
-    }
-
-    /// subset_oneshot should only return IDs corresponding to oneshot subscriptions.
-    #[test]
-    fn subset_oneshot_filters_ids() {
-        let mut subs = OutboxSubscriptions::default();
-        let filters = vec![Filter::new().kinds(vec![1]).build()];
-        let id_a = OutboxSubId(1);
-        let id_b = OutboxSubId(2);
-        subs.new_subscription(
-            id_a,
-            subscribe_task(
-                filters.clone(),
-                RelayUrlPkgs::new(relay_urls("wss://relay-a.example")),
-            ),
-            false,
+        assert_eq!(
+            sub.routing_preference,
+            RelayRoutingPreference::PreferDedicated
         );
-        subs.new_subscription(
-            id_b,
-            subscribe_task(
-                filters,
-                RelayUrlPkgs::new(relay_urls("wss://relay-b.example")),
-            ),
-            true,
-        );
-
-        let mut ids = HashSet::new();
-        ids.insert(id_a);
-        ids.insert(id_b);
-
-        let oneshots = subs.subset_oneshot(&ids);
-        let expected = {
-            let mut s = HashSet::new();
-            s.insert(id_b);
-            s
-        };
-        assert_eq!(oneshots, expected);
     }
 
     /// json_size_sum aggregates the JSON payload size for the requested subscriptions.

@@ -240,7 +240,7 @@ impl RelayPool {
                                     "pong timeout on {}, marking disconnected",
                                     relay.conn.url
                                 );
-                                relay.conn.set_status(RelayStatus::Disconnected);
+                                relay.set_disconnected_now();
                                 continue;
                             }
 
@@ -357,17 +357,20 @@ impl RelayPool {
             if let Some(event) = relay.try_recv() {
                 match &event {
                     WsEvent::Opened => {
-                        relay.set_status(RelayStatus::Connected);
                         if let PoolRelay::Websocket(wsr) = relay {
-                            wsr.last_pong = Instant::now();
+                            wsr.set_connected(WebsocketRelay::initial_reconnect_duration());
                         }
                     }
                     WsEvent::Closed => {
-                        relay.set_status(RelayStatus::Disconnected);
+                        if let PoolRelay::Websocket(wsr) = relay {
+                            wsr.set_disconnected_now();
+                        }
                     }
                     WsEvent::Error(err) => {
                         error!("{:?}", err);
-                        relay.set_status(RelayStatus::Disconnected);
+                        if let PoolRelay::Websocket(wsr) = relay {
+                            wsr.set_disconnected_now();
+                        }
                     }
                     WsEvent::Message(ev) => {
                         // Handle ping/pong natively

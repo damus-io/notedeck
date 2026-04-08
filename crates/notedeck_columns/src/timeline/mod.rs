@@ -19,7 +19,7 @@ use notedeck::{
 };
 
 use egui_virtual_list::VirtualList;
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayRoutingPreference};
 use nostrdb::{Filter, Ndb, Note, NoteKey, Transaction};
 use std::rc::Rc;
 use std::{cell::RefCell, collections::HashSet};
@@ -52,11 +52,14 @@ fn timeline_remote_sub_key(kind: &TimelineKind) -> SubKey {
         .finish()
 }
 
-fn timeline_remote_sub_config(remote_filters: Vec<Filter>, use_transparent: bool) -> SubConfig {
+fn timeline_remote_sub_config(
+    remote_filters: Vec<Filter>,
+    routing_preference: RelayRoutingPreference,
+) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: remote_filters,
-        use_transparent,
+        routing_preference,
     }
 }
 
@@ -70,7 +73,11 @@ pub(crate) fn ensure_remote_timeline_subscription(
     let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
     let config = timeline_remote_sub_config(
         remote_filters,
-        matches!(&timeline.kind, TimelineKind::Notifications(_)),
+        if matches!(&timeline.kind, TimelineKind::Notifications(_)) {
+            RelayRoutingPreference::RequireDedicated
+        } else {
+            RelayRoutingPreference::default()
+        },
     );
     let _ = scoped_subs.ensure_sub(identity, config);
     timeline.subscription.mark_remote_seeded(account_pk);
@@ -85,7 +92,11 @@ pub(crate) fn update_remote_timeline_subscription(
     let identity = ScopedSubIdentity::account(owner, timeline_remote_sub_key(&timeline.kind));
     let config = timeline_remote_sub_config(
         remote_filters,
-        matches!(&timeline.kind, TimelineKind::Notifications(_)),
+        if matches!(&timeline.kind, TimelineKind::Notifications(_)) {
+            RelayRoutingPreference::RequireDedicated
+        } else {
+            RelayRoutingPreference::default()
+        },
     );
     let _ = scoped_subs.set_sub(identity, config);
     timeline
@@ -997,5 +1008,195 @@ fn people_list_ref(kind: &TimelineKind) -> Option<&PeopleListRef> {
         TimelineKind::List(ListKind::PeopleList(plr))
         | TimelineKind::Algo(AlgoTimeline::LastPerPubkey(ListKind::PeopleList(plr))) => Some(plr),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enostr::{
+        Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool, OutboxSessionHandler,
+        RelayUrlPkgs,
+    };
+    use hashbrown::HashSet;
+    use nostrdb::{Config, Transaction};
+    use notedeck::{EguiWakeup, ScopedSubEoseStatus, ScopedSubsState, FALLBACK_PUBKEY};
+    use std::time::{Duration, UNIX_EPOCH};
+    use tempfile::TempDir;
+
+    struct TimelineRemoteHarness {
+        _tmp: TempDir,
+        _ndb: Ndb,
+        accounts: Accounts,
+        _unknown_ids: UnknownIds,
+        scoped_sub_state: ScopedSubsState,
+        pool: OutboxPool,
+    }
+
+    impl TimelineRemoteHarness {
+        fn with_forced_relays(forced_relays: Vec<String>) -> Self {
+            let tmp = TempDir::new().expect("tmp dir");
+            let mut ndb =
+                Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+            let txn = Transaction::new(&ndb).expect("txn");
+            let mut unknown_ids = UnknownIds::default();
+            let accounts = Accounts::new(
+                None,
+                forced_relays,
+                FALLBACK_PUBKEY(),
+                &mut ndb,
+                &txn,
+                &mut unknown_ids,
+            );
+
+            Self {
+                _tmp: tmp,
+                _ndb: ndb,
+                accounts,
+                _unknown_ids: unknown_ids,
+                scoped_sub_state: ScopedSubsState::default(),
+                pool: OutboxPool::default(),
+            }
+        }
+    }
+
+    /// Saturates one relay to `max_subscriptions = 1`, then promotes a
+    /// `NoPreference` subscription into the live compaction lane by first
+    /// occupying the dedicated slot with a `PreferDedicated` request and then
+    /// unsubscribing it.
+    fn install_active_compaction_lane(
+        pool: &mut OutboxPool,
+        relay: &NormRelayUrl,
+    ) -> enostr::OutboxSubId {
+        let relay_pkgs = |routing_preference| {
+            RelayUrlPkgs::with_preference(HashSet::from([relay.clone()]), routing_preference)
+        };
+
+        let preferred_id = {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.subscribe(
+                vec![Filter::new().kinds(vec![1]).limit(10).build()],
+                relay_pkgs(RelayRoutingPreference::PreferDedicated),
+            )
+        };
+        let applied = pool.apply_nip11_limits(
+            relay,
+            Nip11LimitationsRaw {
+                max_subscriptions: Some(1),
+                ..Default::default()
+            },
+            UNIX_EPOCH + Duration::from_secs(1_700_000_410),
+        );
+        assert!(matches!(
+            applied,
+            Nip11ApplyOutcome::Applied | Nip11ApplyOutcome::Unchanged
+        ));
+
+        let compaction_id = {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.subscribe(
+                vec![Filter::new().kinds(vec![2]).limit(10).build()],
+                relay_pkgs(RelayRoutingPreference::NoPreference),
+            )
+        };
+
+        assert!(
+            !pool.status(&preferred_id).is_empty(),
+            "preferred baseline subscription should own the only dedicated slot while the fallback request waits"
+        );
+        assert!(
+            pool.status(&compaction_id).is_empty(),
+            "fallback request should stay queued until the preferred dedicated slot is released"
+        );
+
+        {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.unsubscribe(preferred_id);
+        }
+
+        assert!(
+            !pool.status(&compaction_id).is_empty(),
+            "fallback request should become the active compaction route once the preferred slot is released"
+        );
+
+        compaction_id
+    }
+
+    /// Verifies notifications timelines keep `RequireDedicated` routing on both
+    /// create and update by revoking an existing non-preferred compaction leg
+    /// rather than being absorbed into that shared fallback route.
+    #[test]
+    fn notifications_remote_sub_keeps_require_dedicated_on_create_and_update() {
+        let relay = NormRelayUrl::new("ws://127.0.0.1:6556").expect("static relay url");
+        let mut h = TimelineRemoteHarness::with_forced_relays(vec![relay.to_string()]);
+        let compaction_id = install_active_compaction_lane(&mut h.pool, &relay);
+
+        let selected = *h.accounts.selected_account_pubkey();
+        let mut timeline = Timeline::new(
+            TimelineKind::notifications(selected),
+            FilterState::ready(vec![Filter::new().kinds(vec![1]).limit(20).build()]),
+            TimelineTab::notifications(),
+        );
+        let identity = ScopedSubIdentity::account(
+            timeline_remote_owner_key(selected, &timeline.kind),
+            timeline_remote_sub_key(&timeline.kind),
+        );
+
+        {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
+            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            ensure_remote_timeline_subscription(
+                &mut timeline,
+                selected,
+                vec![Filter::new().kinds(vec![1]).limit(20).build()],
+                &mut scoped_subs,
+            );
+        }
+        {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
+            let scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            assert_eq!(
+                scoped_subs.sub_eose_status(identity),
+                ScopedSubEoseStatus::Live(notedeck::ScopedSubLiveEoseStatus {
+                    tracked_relays: 1,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            );
+        }
+        assert!(
+            h.pool.status(&compaction_id).is_empty(),
+            "required-dedicated notifications should evict the existing non-preferred compaction leg"
+        );
+
+        {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
+            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            update_remote_timeline_subscription(
+                &mut timeline,
+                vec![Filter::new().kinds(vec![1]).limit(5).build()],
+                &mut scoped_subs,
+            );
+        }
+        {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
+            let scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            assert_eq!(
+                scoped_subs.sub_eose_status(identity),
+                ScopedSubEoseStatus::Live(notedeck::ScopedSubLiveEoseStatus {
+                    tracked_relays: 1,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            );
+        }
+        assert!(
+            h.pool.status(&compaction_id).is_empty(),
+            "updating notifications should keep the dedicated route and leave the old compaction leg revoked"
+        );
     }
 }

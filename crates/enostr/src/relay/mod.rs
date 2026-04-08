@@ -3,6 +3,7 @@ mod broadcast;
 mod compaction;
 mod coordinator;
 mod identity;
+mod indexed_queue;
 mod limits;
 pub mod message;
 mod multicast;
@@ -17,7 +18,8 @@ mod websocket;
 
 pub use broadcast::{BroadcastCache, BroadcastRelay};
 pub use identity::{
-    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayType, RelayUrlPkgs,
+    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayRoutingPreference,
+    RelayType, RelayUrlPkgs,
 };
 pub use limits::{
     RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,
@@ -31,7 +33,7 @@ pub use subscription::{
     FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask, OutboxSubscriptions,
     OutboxTask, SubscribeTask,
 };
-pub use websocket::{WebsocketConn, WebsocketRelay};
+pub use websocket::{WebsocketConn, WebsocketRelay, WebsocketSlot};
 
 #[cfg(test)]
 pub mod test_utils;
@@ -61,6 +63,7 @@ pub enum RelayImplType {
     Multicast,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RelayTask {
     Unsubscribe,
     Subscribe,
@@ -92,6 +95,23 @@ impl MetadataFilters {
         self.meta.iter().map(|f| f.filter_json_size).sum()
     }
 
+    /// Returns a compaction-specific filter projection with any available
+    /// `last_seen` cursor applied as a synthetic `since`.
+    pub fn projected_filters(&self) -> Vec<Filter> {
+        self.filters
+            .iter()
+            .zip(self.meta.iter())
+            .map(|(filter, meta)| {
+                let Some(last_seen) = meta.last_seen else {
+                    return filter.clone();
+                };
+
+                filter.clone().since_mut(last_seen)
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
     pub fn since_optimize(&mut self) {
         for (filter, meta) in self.filters.iter_mut().zip(self.meta.iter()) {
             let Some(last_seen) = meta.last_seen else {
@@ -187,6 +207,24 @@ mod tests {
         assert!(
             filter_has_since(&metadata_filters.get_filters()[0], 12345),
             "filter should have since:12345 after optimization"
+        );
+    }
+
+    #[test]
+    fn projected_filters_apply_last_seen_without_mutating_base_filters() {
+        let filter = Filter::new().kinds(vec![1]).build();
+        let mut metadata_filters = MetadataFilters::new(vec![filter]);
+        metadata_filters.meta[0].last_seen = Some(12345);
+
+        let projected = metadata_filters.projected_filters();
+
+        assert!(filter_has_since(&projected[0], 12345));
+        let base_json = metadata_filters.get_filters()[0]
+            .json()
+            .expect("base filter json");
+        assert!(
+            !base_json.contains("\"since\""),
+            "base filters should remain pristine after projection"
         );
     }
 

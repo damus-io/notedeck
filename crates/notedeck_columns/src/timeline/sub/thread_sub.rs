@@ -1,5 +1,5 @@
 use egui_nav::ReturnType;
-use enostr::{Filter, NoteId, Pubkey};
+use enostr::{Filter, NoteId, Pubkey, RelayRoutingPreference};
 use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
 use notedeck::{
@@ -289,7 +289,7 @@ fn sub_remote(
     let config = SubConfig {
         relays: RelaySelection::AccountsRead,
         filters: filter,
-        use_transparent: false,
+        routing_preference: RelayRoutingPreference::default(),
     };
     let _ = scoped_subs.ensure_sub(identity, config);
 }
@@ -334,4 +334,121 @@ fn local_sub_new_scope(
     });
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::Context;
+    use nostrdb::Transaction;
+    use notedeck::{Notedeck, RootNoteIdBuf, ScopedSubEoseStatus, ScopedSubIdentity};
+    use tempfile::TempDir;
+
+    use crate::timeline::{thread::Threads, ThreadSelection};
+
+    struct ThreadHostHarness {
+        _tmp: TempDir,
+        ui_ctx: Context,
+        notedeck: Notedeck,
+        threads: Threads,
+    }
+
+    impl ThreadHostHarness {
+        fn new() -> Self {
+            let tmp = TempDir::new().expect("tmp dir");
+            let ui_ctx = Context::default();
+            let notedeck = Notedeck::init(
+                &ui_ctx,
+                tmp.path(),
+                &["notedeck".to_owned(), "--testrunner".to_owned()],
+            )
+            .notedeck;
+
+            Self {
+                _tmp: tmp,
+                ui_ctx,
+                notedeck,
+                threads: Threads::default(),
+            }
+        }
+    }
+
+    fn thread_selection(tag: u8) -> ThreadSelection {
+        ThreadSelection::from_root_id(RootNoteIdBuf::new_unsafe([tag; 32]))
+    }
+
+    fn thread_identity(
+        account_pk: Pubkey,
+        col: usize,
+        root_id: &NoteId,
+        scope_depth: usize,
+    ) -> ScopedSubIdentity {
+        ScopedSubIdentity::account(
+            thread_scope_owner_key(account_pk, col, root_id, scope_depth),
+            thread_remote_sub_key(root_id),
+        )
+    }
+
+    #[test]
+    fn open_thread_remote_sub_restores_after_account_switch() {
+        let mut h = ThreadHostHarness::new();
+        let selection = thread_selection(0x33);
+        let root_id = selection.root_id.to_note_id();
+        let col = 9;
+
+        let mut app_ctx = h.notedeck.app_context(&h.ui_ctx);
+        let account_a = *app_ctx.accounts.selected_account_pubkey();
+        let account_b = enostr::FullKeypair::generate().to_keypair();
+        let account_b_pk = account_b.pubkey;
+        let add_response = app_ctx
+            .accounts
+            .add_account(account_b)
+            .expect("add account");
+        assert_eq!(add_response.switch_to, account_b_pk);
+
+        {
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            let _ = h.threads.open(
+                app_ctx.ndb,
+                &txn,
+                &mut scoped_subs,
+                &selection,
+                true,
+                col,
+                0.0,
+            );
+
+            let identity = thread_identity(account_a, col, &root_id, 0);
+            assert!(
+                matches!(scoped_subs.sub_eose_status(identity), ScopedSubEoseStatus::Live(_)),
+                "opening the thread should install one live remote thread sub for the selected account"
+            );
+        }
+
+        app_ctx.select_account(&account_b_pk);
+        assert!(
+            h.threads
+                .subs
+                .get_local_for_selected(app_ctx.accounts, col)
+                .is_none(),
+            "switching away should leave no selected-account local thread sub"
+        );
+
+        app_ctx.select_account(&account_a);
+        assert!(
+            h.threads
+                .subs
+                .get_local_for_selected(app_ctx.accounts, col)
+                .is_some(),
+            "switching back should make the original account's local thread sub visible again"
+        );
+
+        let identity = thread_identity(account_a, col, &root_id, 0);
+        let scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+        assert!(
+            matches!(scoped_subs.sub_eose_status(identity), ScopedSubEoseStatus::Live(_)),
+            "switching back should restore the thread's account-scoped remote sub without reopening it"
+        );
+    }
 }

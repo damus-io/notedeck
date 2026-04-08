@@ -14,6 +14,19 @@ pub struct BroadcastCache {
     pub(crate) flush_backoff: Option<FlushBackoff>,
 }
 
+#[cfg(test)]
+impl BroadcastCache {
+    /// Returns the number of queued multicast events waiting for a retry.
+    pub(crate) fn queued_len(&self) -> usize {
+        self.to_send.len()
+    }
+
+    /// Returns whether the multicast retry queue is empty.
+    pub(crate) fn queue_is_empty(&self) -> bool {
+        self.to_send.is_empty()
+    }
+}
+
 /// BroadcastRelay sends events to either a websocket relay or the multicast relay
 /// while handling retries via the shared cache.
 pub struct BroadcastRelay<'a> {
@@ -128,7 +141,7 @@ impl<'a> BroadcastRelay<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::MulticastRelay;
+    use crate::relay::multicast::MulticastRelay;
     use mio::net::UdpSocket;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 

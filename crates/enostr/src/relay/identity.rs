@@ -115,22 +115,57 @@ pub enum RelayType {
     Transparent,
 }
 
-#[derive(Default, Clone, Debug)]
+/// Caller intent for how a subscription should be routed when relay capacity is constrained.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RelayRoutingPreference {
+    /// The subscription must use a dedicated relay subscription.
+    /// If a dedicated slot cannot be obtained immediately, it is queued for
+    /// dedicated retry (no compaction fallback).
+    RequireDedicated,
+    /// Prefer a dedicated relay subscription, but allow compaction fallback.
+    #[default]
+    PreferDedicated,
+    /// No dedicated-vs-compaction preference.
+    /// The coordinator may demote this class first under contention.
+    NoPreference,
+}
+
+/// Relay URL package plus per-subscription routing preference.
+#[derive(Clone, Debug)]
 pub struct RelayUrlPkgs {
+    /// Target relay URLs for this subscription.
     pub urls: HashSet<NormRelayUrl>,
-    pub use_transparent: bool,
+    /// Preferred routing behavior when dedicated capacity is scarce.
+    pub routing_preference: RelayRoutingPreference,
+}
+
+impl Default for RelayUrlPkgs {
+    fn default() -> Self {
+        Self {
+            urls: HashSet::new(),
+            routing_preference: RelayRoutingPreference::default(),
+        }
+    }
 }
 
 impl RelayUrlPkgs {
+    /// Builds a relay package with explicit routing preference.
+    pub fn with_preference(
+        urls: HashSet<NormRelayUrl>,
+        routing_preference: RelayRoutingPreference,
+    ) -> Self {
+        Self {
+            urls,
+            routing_preference,
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &NormRelayUrl> {
         self.urls.iter()
     }
 
     pub fn new(urls: HashSet<NormRelayUrl>) -> Self {
-        Self {
-            urls,
-            use_transparent: false,
-        }
+        Self::with_preference(urls, RelayRoutingPreference::default())
     }
 }
 
@@ -195,9 +230,12 @@ mod tests {
     // ==================== RelayUrlPkgs tests ====================
 
     #[test]
-    fn relay_url_pkgs_default_not_transparent() {
+    fn relay_url_pkgs_default_prefer_dedicated() {
         let pkgs = RelayUrlPkgs::default();
-        assert!(!pkgs.use_transparent);
+        assert_eq!(
+            pkgs.routing_preference,
+            RelayRoutingPreference::PreferDedicated
+        );
         assert!(pkgs.urls.is_empty());
     }
 
@@ -209,7 +247,10 @@ mod tests {
 
         let pkgs = RelayUrlPkgs::new(urls);
         assert_eq!(pkgs.urls.len(), 2);
-        assert!(!pkgs.use_transparent);
+        assert_eq!(
+            pkgs.routing_preference,
+            RelayRoutingPreference::PreferDedicated
+        );
     }
 
     #[test]

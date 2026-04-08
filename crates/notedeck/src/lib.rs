@@ -60,6 +60,9 @@ mod user_account;
 mod wallet;
 mod zaps;
 
+#[cfg(test)]
+mod test_utils;
+
 pub use account::accounts::{giftwrap_sub_identity, AccountData, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;
@@ -68,6 +71,7 @@ pub use app::{App, AppAction, AppResponse, Notedeck};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
+pub use enostr::RelayRoutingPreference;
 use enostr::{OutboxSessionHandler, Wakeup};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
 pub use filter::{FilterState, UnifiedSubscription};

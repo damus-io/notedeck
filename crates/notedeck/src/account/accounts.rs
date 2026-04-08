@@ -12,7 +12,7 @@ use crate::{
     AccountStorage, MuteFun, RemoteApi, ScopedSubApi, SingleUnkIdAction, SubOwnerKey, UnknownIds,
     UserAccount, ZapWallet,
 };
-use enostr::{FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId};
+use enostr::{FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId, RelayRoutingPreference};
 use hashbrown::HashSet;
 use nostrdb::{Filter, Ndb, Note, Subscription, Transaction};
 
@@ -225,6 +225,8 @@ impl Accounts {
         &self.cache.selected().data
     }
 
+    /// Select a new current account and apply the corresponding host-side
+    /// scoped-subscription transition.
     pub(crate) fn select_account(
         &mut self,
         pk_to_select: &Pubkey,
@@ -482,26 +484,38 @@ fn selected_account_request_subs(
             AccountRemoteSubKind::RelayList => {
                 let _ = scoped_subs.ensure_sub(
                     identity,
-                    make_account_remote_config(vec![data.relay.filter.clone()], false),
+                    make_account_remote_config(
+                        vec![data.relay.filter.clone()],
+                        RelayRoutingPreference::default(),
+                    ),
                 );
             }
             AccountRemoteSubKind::MuteList => {
                 let _ = scoped_subs.ensure_sub(
                     identity,
-                    make_account_remote_config(vec![data.muted.filter.clone()], false),
+                    make_account_remote_config(
+                        vec![data.muted.filter.clone()],
+                        RelayRoutingPreference::default(),
+                    ),
                 );
             }
             AccountRemoteSubKind::ContactsList => {
                 let _ = scoped_subs.ensure_sub(
                     identity,
-                    make_account_remote_config(vec![data.contacts.filter.clone()], true),
+                    make_account_remote_config(
+                        vec![data.contacts.filter.clone()],
+                        RelayRoutingPreference::RequireDedicated,
+                    ),
                 );
             }
             AccountRemoteSubKind::Giftwrap => {
                 let pk = &selected_account.key.pubkey;
                 scoped_subs.set_sub(
                     identity,
-                    make_account_remote_config(vec![giftwrap_filter(pk)], true),
+                    make_account_remote_config(
+                        vec![giftwrap_filter(pk)],
+                        RelayRoutingPreference::RequireDedicated,
+                    ),
                 );
             }
         };
@@ -551,14 +565,16 @@ pub fn giftwrap_sub_identity() -> ScopedSubIdentity {
     ScopedSubIdentity::account(owner, key)
 }
 
-fn make_account_remote_config(filters: Vec<Filter>, use_transparent: bool) -> SubConfig {
+fn make_account_remote_config(
+    filters: Vec<Filter>,
+    routing_preference: RelayRoutingPreference,
+) -> SubConfig {
     SubConfig {
         relays: RelaySelection::AccountsRead,
         filters,
-        use_transparent,
+        routing_preference,
     }
 }
-
 struct AccountNdbSubs {
     relay_ndb: Subscription,
     mute_ndb: Subscription,
@@ -589,5 +605,412 @@ impl AccountNdbSubs {
         let _ = ndb.unsubscribe(self.contacts_ndb);
 
         *self = AccountNdbSubs::new(ndb, new_selection_data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        test_utils::{live_id_with_selected_for_test, remote_for_test},
+        EguiWakeup, ScopedSubEoseStatus, ScopedSubLiveEoseStatus, ScopedSubsState, FALLBACK_PUBKEY,
+    };
+    use enostr::{FullKeypair, OutboxPool, RelayUrlPkgs};
+    use nostr_relay_builder::{LocalRelay, RelayBuilder};
+    use nostrdb::Config;
+    use std::time::{Duration, UNIX_EPOCH};
+    use tempfile::TempDir;
+
+    struct AccountRemoteHarness {
+        _tmp: TempDir,
+        ndb: Ndb,
+        accounts: Accounts,
+        scoped_sub_state: ScopedSubsState,
+        pool: OutboxPool,
+    }
+
+    impl AccountRemoteHarness {
+        fn new() -> Self {
+            Self::with_forced_relays(Vec::new())
+        }
+
+        fn with_forced_relays(forced_relays: Vec<String>) -> Self {
+            let tmp = TempDir::new().expect("tmp dir");
+            let mut ndb =
+                Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+            let txn = Transaction::new(&ndb).expect("txn");
+            let mut unknown_ids = UnknownIds::default();
+            let accounts = Accounts::new(
+                None,
+                forced_relays,
+                FALLBACK_PUBKEY(),
+                &mut ndb,
+                &txn,
+                &mut unknown_ids,
+            );
+
+            Self {
+                _tmp: tmp,
+                ndb,
+                accounts,
+                scoped_sub_state: ScopedSubsState::default(),
+                pool: OutboxPool::default(),
+            }
+        }
+
+        fn identity_for(kind: AccountRemoteSubKind) -> ScopedSubIdentity {
+            ScopedSubIdentity::account(account_remote_owner_key(), account_remote_sub_key(kind))
+        }
+
+        fn live_id_for(
+            &mut self,
+            account_pk: Pubkey,
+            identity: ScopedSubIdentity,
+        ) -> Option<enostr::OutboxSubId> {
+            live_id_with_selected_for_test(
+                &mut self.scoped_sub_state,
+                account_pk,
+                identity.key,
+                identity.scope,
+            )
+        }
+    }
+
+    fn filter_jsons(filters: &[Filter]) -> Vec<String> {
+        filters
+            .iter()
+            .map(|filter| filter.json().expect("filter json"))
+            .collect()
+    }
+
+    async fn pump_pool_until<F>(
+        pool: &mut OutboxPool,
+        max_attempts: usize,
+        mut predicate: F,
+    ) -> bool
+    where
+        F: FnMut(&mut OutboxPool) -> bool,
+    {
+        for _ in 0..max_attempts {
+            pool.try_recv(10, |_| {});
+            if predicate(pool) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        predicate(pool)
+    }
+
+    /// Saturates one relay to `max_subscriptions = 1`, then promotes a
+    /// `NoPreference` subscription into the live compaction lane by first
+    /// occupying the dedicated slot with a `PreferDedicated` request and then
+    /// unsubscribing it.
+    async fn install_active_compaction_lane(
+        pool: &mut OutboxPool,
+        relay: &NormRelayUrl,
+    ) -> enostr::OutboxSubId {
+        let relay_pkgs = |routing_preference| {
+            RelayUrlPkgs::with_preference(HashSet::from([relay.clone()]), routing_preference)
+        };
+
+        let preferred_id = {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.subscribe(
+                vec![Filter::new().kinds(vec![1]).limit(10).build()],
+                relay_pkgs(RelayRoutingPreference::PreferDedicated),
+            )
+        };
+        let applied = pool.apply_nip11_limits(
+            relay,
+            enostr::Nip11LimitationsRaw {
+                max_subscriptions: Some(1),
+                ..Default::default()
+            },
+            UNIX_EPOCH + Duration::from_secs(1_700_000_400),
+        );
+        assert!(matches!(
+            applied,
+            enostr::Nip11ApplyOutcome::Applied | enostr::Nip11ApplyOutcome::Unchanged
+        ));
+
+        let compaction_id = {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.subscribe(
+                vec![Filter::new().kinds(vec![2]).limit(10).build()],
+                relay_pkgs(RelayRoutingPreference::NoPreference),
+            )
+        };
+
+        let preferred_ready = pump_pool_until(pool, 100, |pool| pool.has_eose(&preferred_id)).await;
+        assert!(
+            preferred_ready,
+            "preferred baseline subscription should stay active while the fallback request waits"
+        );
+        assert!(
+            !pool.has_eose(&compaction_id),
+            "fallback request should stay queued until the preferred dedicated slot is released"
+        );
+
+        {
+            let mut session = pool.start_session(EguiWakeup::new(egui::Context::default()));
+            session.unsubscribe(preferred_id);
+        }
+
+        let compaction_ready =
+            pump_pool_until(pool, 100, |pool| pool.has_eose(&compaction_id)).await;
+        assert!(
+            compaction_ready,
+            "fallback request should become the active compaction route once the preferred slot is released"
+        );
+        assert!(
+            !pool.status(&compaction_id).is_empty(),
+            "active compaction route should expose one routed relay leg before account subscriptions are added"
+        );
+
+        compaction_id
+    }
+
+    #[test]
+    fn update_initializes_selected_account_remote_subs_with_expected_routing() {
+        let mut h = AccountRemoteHarness::new();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let selected = *h.accounts.selected_account_pubkey();
+        let relay_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::RelayList);
+        let mute_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::MuteList);
+        let contacts_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::ContactsList);
+        let giftwrap = giftwrap_sub_identity();
+
+        let _relay_list_id = h
+            .live_id_for(selected, relay_list)
+            .expect("relay list live id");
+        let _mute_list_id = h
+            .live_id_for(selected, mute_list)
+            .expect("mute list live id");
+        let _contacts_list_id = h
+            .live_id_for(selected, contacts_list)
+            .expect("contacts list live id");
+        let giftwrap_id = h.live_id_for(selected, giftwrap).expect("giftwrap live id");
+
+        let expected_giftwrap = vec![giftwrap_filter(&selected)];
+        let stored_giftwrap = h.pool.filters(&giftwrap_id).expect("giftwrap filters");
+        assert_eq!(
+            filter_jsons(stored_giftwrap),
+            filter_jsons(&expected_giftwrap),
+            "giftwrap live sub should target the selected account's pubkey"
+        );
+    }
+
+    #[test]
+    fn account_switch_replaces_remote_subs_and_restores_them_on_switch_back() {
+        let mut h = AccountRemoteHarness::new();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let account_a = *h.accounts.selected_account_pubkey();
+        let relay_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::RelayList);
+        let giftwrap = giftwrap_sub_identity();
+        let relay_a_id = h
+            .live_id_for(account_a, relay_list)
+            .expect("relay list for A");
+        let giftwrap_a_id = h.live_id_for(account_a, giftwrap).expect("giftwrap for A");
+
+        let account_b = FullKeypair::generate().to_keypair();
+        let account_b_pk = account_b.pubkey;
+        let add_response = h.accounts.add_account(account_b).expect("add account");
+        assert_eq!(add_response.switch_to, account_b_pk);
+
+        {
+            let txn = Transaction::new(&h.ndb).expect("txn");
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .select_account(&account_b_pk, &mut h.ndb, &txn, &mut remote);
+        }
+
+        assert!(
+            h.live_id_for(account_a, relay_list).is_none()
+                && h.live_id_for(account_a, giftwrap).is_none(),
+            "switching away should unsubscribe the old account-scoped remote subs"
+        );
+
+        let relay_b_id = h
+            .live_id_for(account_b_pk, relay_list)
+            .expect("relay list for B");
+        let giftwrap_b_id = h
+            .live_id_for(account_b_pk, giftwrap)
+            .expect("giftwrap for B");
+        assert_ne!(relay_a_id, relay_b_id);
+        assert_ne!(giftwrap_a_id, giftwrap_b_id);
+
+        let stored_giftwrap_b = h
+            .pool
+            .filters(&giftwrap_b_id)
+            .expect("giftwrap filters for B");
+        assert_eq!(
+            filter_jsons(stored_giftwrap_b),
+            filter_jsons(&[giftwrap_filter(&account_b_pk)]),
+            "giftwrap live sub should retarget when the selected account changes"
+        );
+
+        {
+            let txn = Transaction::new(&h.ndb).expect("txn");
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .select_account(&account_a, &mut h.ndb, &txn, &mut remote);
+        }
+
+        let restored_relay_a_id = h
+            .live_id_for(account_a, relay_list)
+            .expect("relay list restored for A");
+        let restored_giftwrap_a_id = h
+            .live_id_for(account_a, giftwrap)
+            .expect("giftwrap restored for A");
+
+        assert!(h.live_id_for(account_b_pk, relay_list).is_none());
+        assert!(h.live_id_for(account_b_pk, giftwrap).is_none());
+        assert_ne!(relay_a_id, restored_relay_a_id);
+        assert_ne!(giftwrap_a_id, restored_giftwrap_a_id);
+        assert_eq!(
+            filter_jsons(
+                h.pool
+                    .filters(&restored_giftwrap_a_id)
+                    .expect("giftwrap filters for A")
+            ),
+            filter_jsons(&[giftwrap_filter(&account_a)]),
+            "switching back should restore the original account's giftwrap target"
+        );
+    }
+
+    #[test]
+    fn selected_account_relay_action_retargets_existing_accountsread_remote_subs() {
+        let mut h = AccountRemoteHarness::new();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let selected = *h.accounts.selected_account_pubkey();
+        let relay_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::RelayList);
+        let mute_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::MuteList);
+        let contacts_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::ContactsList);
+
+        let relay_list_id = h
+            .live_id_for(selected, relay_list)
+            .expect("relay list live id");
+        let mute_list_id = h
+            .live_id_for(selected, mute_list)
+            .expect("mute list live id");
+        let contacts_list_id = h
+            .live_id_for(selected, contacts_list)
+            .expect("contacts list live id");
+
+        let relay_before = h.accounts.selected_account_read_relays();
+        let new_relay =
+            NormRelayUrl::new("wss://relay-account-retarget.example.com").expect("relay url");
+
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .process_relay_action(&mut remote, RelayAction::Add(new_relay.to_string()));
+        }
+
+        let relay_after = h.accounts.selected_account_read_relays();
+        assert!(relay_after.contains(&new_relay));
+        assert_ne!(relay_before, relay_after);
+
+        assert_eq!(h.live_id_for(selected, relay_list), Some(relay_list_id));
+        assert_eq!(h.live_id_for(selected, mute_list), Some(mute_list_id));
+        assert_eq!(
+            h.live_id_for(selected, contacts_list),
+            Some(contacts_list_id)
+        );
+
+        assert!(
+            h.pool.filters(&relay_list_id).is_some()
+                && h.pool.filters(&mute_list_id).is_some()
+                && h.pool.filters(&contacts_list_id).is_some(),
+            "retargeting should keep the existing live account-read subs active"
+        );
+    }
+
+    /// Verifies that account-scoped `ContactsList`/`Giftwrap` subscriptions
+    /// retain `RequireDedicated` routing under saturation by evicting a live
+    /// non-preferred compaction leg instead of joining that shared route.
+    #[tokio::test]
+    async fn update_routes_contacts_and_giftwrap_as_required_dedicated_under_saturation() {
+        let relay_task = LocalRelay::run(RelayBuilder::default())
+            .await
+            .expect("start local relay");
+        let relay = NormRelayUrl::new(&relay_task.url()).expect("relay url");
+        let mut h = AccountRemoteHarness::with_forced_relays(vec![relay.to_string()]);
+        let compaction_id = install_active_compaction_lane(&mut h.pool, &relay).await;
+
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let selected = *h.accounts.selected_account_pubkey();
+        let contacts_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::ContactsList);
+        let giftwrap = giftwrap_sub_identity();
+
+        let contacts_list_id = h
+            .live_id_for(selected, contacts_list)
+            .expect("contacts list live id");
+        let giftwrap_id = h.live_id_for(selected, giftwrap).expect("giftwrap live id");
+
+        let contacts_routed = !h.pool.status(&contacts_list_id).is_empty();
+        let giftwrap_routed = !h.pool.status(&giftwrap_id).is_empty();
+        assert!(
+            h.pool.status(&compaction_id).is_empty(),
+            "a required account sub should evict the existing non-preferred compaction leg"
+        );
+        assert!(
+            contacts_routed ^ giftwrap_routed,
+            "with one dedicated slot, exactly one of contacts/giftwrap should be routed and the other should remain queued"
+        );
+
+        let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+        let scoped_subs = remote.scoped_subs(&h.accounts);
+        assert_eq!(
+            scoped_subs.sub_eose_status(contacts_list),
+            if contacts_routed {
+                ScopedSubEoseStatus::Live(ScopedSubLiveEoseStatus {
+                    tracked_relays: 1,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            } else {
+                ScopedSubEoseStatus::Live(ScopedSubLiveEoseStatus {
+                    tracked_relays: 0,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            }
+        );
+        assert_eq!(
+            scoped_subs.sub_eose_status(giftwrap),
+            if giftwrap_routed {
+                ScopedSubEoseStatus::Live(ScopedSubLiveEoseStatus {
+                    tracked_relays: 1,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            } else {
+                ScopedSubEoseStatus::Live(ScopedSubLiveEoseStatus {
+                    tracked_relays: 0,
+                    any_eose: false,
+                    all_eosed: false,
+                })
+            }
+        );
+
+        relay_task.shutdown();
     }
 }

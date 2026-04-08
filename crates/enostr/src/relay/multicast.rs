@@ -14,6 +14,7 @@ use tracing::{debug, error};
 
 pub struct MulticastRelay {
     last_join: Instant,
+    rejoin_interval: Duration,
     status: RelayStatus,
     address: SocketAddrV4,
     socket: UdpSocket,
@@ -41,6 +42,7 @@ impl MulticastRelay {
             socket,
             interface,
             last_join,
+            rejoin_interval: Duration::from_secs(200),
             poller_stop: Arc::new(AtomicBool::new(false)),
             poller_handle: None,
         }
@@ -60,7 +62,15 @@ impl MulticastRelay {
     }
 
     pub fn should_rejoin(&self) -> bool {
-        (Instant::now() - self.last_join) >= Duration::from_secs(200)
+        self.should_rejoin_at(Instant::now())
+    }
+
+    pub fn should_rejoin_at(&self, now: Instant) -> bool {
+        (now - self.last_join) >= self.rejoin_interval
+    }
+
+    pub fn set_rejoin_interval(&mut self, interval: Duration) {
+        self.rejoin_interval = interval;
     }
 
     pub fn try_recv(&self) -> Option<WsEvent> {
@@ -194,10 +204,20 @@ pub fn setup_multicast_relay(
 }
 /// MulticastRelayCache lazily initializes the multicast connection and buffers
 /// outbound events until a connection is available.
-#[derive(Default)]
 pub struct MulticastRelayCache {
     multicast: Option<MulticastRelay>,
     cache: BroadcastCache,
+    rejoin_interval: Duration,
+}
+
+impl Default for MulticastRelayCache {
+    fn default() -> Self {
+        Self {
+            multicast: None,
+            cache: BroadcastCache::default(),
+            rejoin_interval: Duration::from_secs(200),
+        }
+    }
 }
 
 impl MulticastRelayCache {
@@ -213,8 +233,16 @@ impl MulticastRelayCache {
         let Ok(multicast) = setup_multicast_relay(move || wake.wake()) else {
             return;
         };
-
+        let mut multicast = multicast;
+        multicast.set_rejoin_interval(self.rejoin_interval);
         self.multicast = Some(multicast);
+    }
+
+    pub fn set_rejoin_interval(&mut self, interval: Duration) {
+        self.rejoin_interval = interval;
+        if let Some(multicast) = self.multicast.as_mut() {
+            multicast.set_rejoin_interval(interval);
+        }
     }
 
     pub fn broadcast(&mut self, msg: EventClientMessage) {
@@ -226,17 +254,11 @@ impl MulticastRelayCache {
     where
         for<'a> F: FnMut(RawEventData<'a>),
     {
+        self.maintain();
+
         let Some(multicast) = &mut self.multicast else {
             return;
         };
-
-        if multicast.should_rejoin() {
-            if let Err(e) = multicast.rejoin() {
-                tracing::error!("multicast: rejoin error: {e}");
-            } else {
-                self.cache.flush_backoff = None;
-            }
-        }
 
         BroadcastRelay::multicast(Some(multicast), &mut self.cache).try_flush_queue();
 
@@ -249,5 +271,161 @@ impl MulticastRelayCache {
             event_json: &text,
             relay_type: RelayImplType::Multicast,
         });
+    }
+
+    fn maintain(&mut self) {
+        let Some(multicast) = &mut self.multicast else {
+            return;
+        };
+
+        if multicast.should_rejoin() {
+            if let Err(e) = multicast.rejoin() {
+                tracing::error!("multicast: rejoin error: {e}");
+            } else {
+                self.cache.flush_backoff = None;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MulticastRelay, MulticastRelayCache};
+    use crate::{relay::BroadcastCache, EventClientMessage, RelayImplType};
+    use mio::net::UdpSocket;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket};
+    use std::time::{Duration, Instant};
+
+    fn test_multicast_relay() -> MulticastRelay {
+        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+        let socket = UdpSocket::bind(addr).unwrap();
+        let multicast_addr = SocketAddrV4::new(Ipv4Addr::new(239, 19, 88, 1), 9797);
+        socket
+            .join_multicast_v4(multicast_addr.ip(), &Ipv4Addr::UNSPECIFIED)
+            .unwrap();
+        MulticastRelay::new(multicast_addr, socket, Ipv4Addr::UNSPECIFIED)
+    }
+
+    #[test]
+    fn multicast_rejoin_interval_controls_rejoin_threshold() {
+        let mut relay = test_multicast_relay();
+        let joined_at = Instant::now();
+        relay.last_join = joined_at;
+        relay.set_rejoin_interval(Duration::from_millis(20));
+
+        assert!(!relay.should_rejoin_at(joined_at + Duration::from_millis(10)));
+        assert!(relay.should_rejoin_at(joined_at + Duration::from_millis(25)));
+    }
+
+    fn encode_text_frame(text: &str) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(4 + text.len());
+        frame.extend_from_slice(&(text.len() as u32).to_be_bytes());
+        frame.extend_from_slice(text.as_bytes());
+        frame
+    }
+
+    fn recv_text_frame(socket: &StdUdpSocket) -> String {
+        let mut buffer = [0u8; 65535];
+        let (size, _) = socket.recv_from(&mut buffer).expect("receive frame");
+        let parsed_size =
+            u32::from_be_bytes(buffer[0..4].try_into().expect("frame header")) as usize;
+        assert_eq!(
+            size,
+            parsed_size + 4,
+            "frame should contain one full payload"
+        );
+        String::from_utf8(buffer[4..size].to_vec()).expect("utf8 frame")
+    }
+
+    fn test_cache_with_installed(
+        multicast: MulticastRelay,
+        rejoin_interval: Duration,
+    ) -> MulticastRelayCache {
+        MulticastRelayCache {
+            multicast: Some(multicast),
+            cache: BroadcastCache::default(),
+            rejoin_interval,
+        }
+    }
+
+    /// A queued note should flush through the real cache once a real relay is
+    /// installed later.
+    #[test]
+    fn queued_broadcast_flushes_after_later_install() {
+        let receiver = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind receiver");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .expect("set read timeout");
+        let target = match receiver.local_addr().expect("receiver addr") {
+            SocketAddr::V4(addr) => addr,
+            SocketAddr::V6(_) => panic!("expected ipv4 receiver"),
+        };
+        let relay_socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .expect("bind relay socket");
+        let relay = MulticastRelay::new(target, relay_socket, Ipv4Addr::UNSPECIFIED);
+        let queued = EventClientMessage {
+            note_json: r#"{"id":"queued-note"}"#.to_owned(),
+        };
+
+        let mut cache = MulticastRelayCache::default();
+        cache.broadcast(queued.clone());
+        assert_eq!(cache.cache.queued_len(), 1);
+
+        cache.multicast = Some(relay);
+        cache.try_recv(|_| panic!("queue flush should not fabricate inbound events"));
+
+        assert_eq!(recv_text_frame(&receiver), queued.to_json());
+        assert!(cache.cache.queue_is_empty());
+    }
+
+    /// The real cache should surface inbound frames both before and after a
+    /// forced rejoin maintenance pass.
+    #[test]
+    fn try_recv_surfaces_frames_before_and_after_rejoin() {
+        let mut relay = test_multicast_relay();
+        let local_addr = match relay.socket.local_addr().expect("relay local addr") {
+            SocketAddr::V4(addr) => {
+                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, addr.port()))
+            }
+            SocketAddr::V6(_) => panic!("expected ipv4 relay socket"),
+        };
+        let sender = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind sender");
+        let first = r#"{"id":"before-rejoin"}"#;
+        let second = r#"{"id":"after-rejoin"}"#;
+        let mut delivered = Vec::new();
+
+        relay.set_rejoin_interval(Duration::from_millis(20));
+        let mut cache = test_cache_with_installed(relay, Duration::from_millis(20));
+
+        sender
+            .send_to(&encode_text_frame(first), local_addr)
+            .expect("send first frame");
+        for _ in 0..20 {
+            cache.try_recv(|event| {
+                assert!(matches!(event.relay_type, RelayImplType::Multicast));
+                delivered.push(event.event_json.to_owned());
+            });
+            if delivered.len() == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(delivered, vec![first.to_owned()]);
+
+        cache.multicast.as_mut().expect("installed relay").last_join =
+            Instant::now() - Duration::from_millis(25);
+        cache.try_recv(|_| panic!("forced rejoin pass should not surface an inbound frame"));
+        sender
+            .send_to(&encode_text_frame(second), local_addr)
+            .expect("send second frame");
+        for _ in 0..20 {
+            cache.try_recv(|event| delivered.push(event.event_json.to_owned()));
+            if delivered.len() == 2 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(delivered, vec![first.to_owned(), second.to_owned()]);
     }
 }

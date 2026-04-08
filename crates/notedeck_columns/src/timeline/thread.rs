@@ -434,3 +434,152 @@ impl SingleNoteUnits {
         self.units.contains_key(&UnitKey::Single(*k))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_nav::ReturnType;
+    use nostrdb::Transaction;
+    use notedeck::{Notedeck, RootNoteIdBuf};
+    use tempfile::TempDir;
+
+    struct ThreadHostHarness {
+        _tmp: TempDir,
+        ui_ctx: egui::Context,
+        notedeck: Notedeck,
+        threads: Threads,
+    }
+
+    impl ThreadHostHarness {
+        fn new() -> Self {
+            let tmp = TempDir::new().expect("tmp dir");
+            let ui_ctx = egui::Context::default();
+            let notedeck = Notedeck::init(
+                &ui_ctx,
+                tmp.path(),
+                &["notedeck".to_owned(), "--testrunner".to_owned()],
+            )
+            .notedeck;
+
+            Self {
+                _tmp: tmp,
+                ui_ctx,
+                notedeck,
+                threads: Threads::default(),
+            }
+        }
+    }
+
+    fn thread_selection(tag: u8) -> ThreadSelection {
+        ThreadSelection::from_root_id(RootNoteIdBuf::new_unsafe([tag; 32]))
+    }
+
+    #[test]
+    fn open_thread_installs_expected_remote_sub() {
+        let mut h = ThreadHostHarness::new();
+        let selection = thread_selection(0x11);
+
+        {
+            let mut app_ctx = h.notedeck.app_context(&h.ui_ctx);
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            let _ = h.threads.open(
+                app_ctx.ndb,
+                &txn,
+                &mut scoped_subs,
+                &selection,
+                true,
+                7,
+                0.0,
+            );
+        }
+
+        assert!(
+            h.threads
+                .subs
+                .get_local_for_selected(h.notedeck.app_context(&h.ui_ctx).accounts, 7)
+                .is_some(),
+            "thread open should keep the local NDB sub alive for the selected account"
+        );
+    }
+
+    #[test]
+    fn nested_thread_scopes_share_one_live_remote_sub_until_last_close() {
+        let mut h = ThreadHostHarness::new();
+        let selection = thread_selection(0x22);
+
+        {
+            let mut app_ctx = h.notedeck.app_context(&h.ui_ctx);
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            let _ = h.threads.open(
+                app_ctx.ndb,
+                &txn,
+                &mut scoped_subs,
+                &selection,
+                true,
+                3,
+                0.0,
+            );
+        }
+        {
+            let mut app_ctx = h.notedeck.app_context(&h.ui_ctx);
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            let _ = h.threads.open(
+                app_ctx.ndb,
+                &txn,
+                &mut scoped_subs,
+                &selection,
+                true,
+                3,
+                0.0,
+            );
+        }
+        assert!(
+            h.threads
+                .subs
+                .get_local_for_selected(h.notedeck.app_context(&h.ui_ctx).accounts, 3)
+                .is_some(),
+            "nested scopes should keep one live local thread sub for the selected account"
+        );
+
+        {
+            let mut app_ctx = h.notedeck.app_context(&h.ui_ctx);
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            h.threads.close(
+                app_ctx.ndb,
+                &mut scoped_subs,
+                &selection,
+                ReturnType::Click,
+                3,
+            );
+        }
+        assert!(
+            h.threads
+                .subs
+                .get_local_for_selected(h.notedeck.app_context(&h.ui_ctx).accounts, 3)
+                .is_some(),
+            "closing one nested scope should keep the local thread sub alive"
+        );
+
+        {
+            let mut app_ctx = h.notedeck.app_context(&h.ui_ctx);
+            let mut scoped_subs = app_ctx.remote.scoped_subs(app_ctx.accounts);
+            h.threads.close(
+                app_ctx.ndb,
+                &mut scoped_subs,
+                &selection,
+                ReturnType::Click,
+                3,
+            );
+        }
+        assert!(
+            h.threads
+                .subs
+                .get_local_for_selected(h.notedeck.app_context(&h.ui_ctx).accounts, 3)
+                .is_none(),
+            "closing the last scope should unsubscribe the local thread sub"
+        );
+    }
+}
