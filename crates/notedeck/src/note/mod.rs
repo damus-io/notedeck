@@ -268,3 +268,182 @@ pub fn get_p_tags<'a>(note: &Note<'a>) -> Vec<&'a [u8; 32]> {
 
     items
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::test_config;
+    use enostr::FullKeypair;
+    use nostrdb::NoteBuilder;
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    fn test_note(
+        account: &FullKeypair,
+        content: &str,
+        created_at: u64,
+        tags: &[&[&str]],
+    ) -> Note<'static> {
+        let mut builder = NoteBuilder::new()
+            .kind(1)
+            .content(content)
+            .created_at(created_at);
+
+        for tag in tags {
+            builder = builder.start_tag();
+            for component in *tag {
+                builder = builder.tag_str(component);
+            }
+        }
+
+        builder
+            .sign(&account.secret_key.secret_bytes())
+            .build()
+            .expect("note")
+    }
+
+    fn setup_ndb() -> (TempDir, Ndb) {
+        let tmp = TempDir::new().expect("tmpdir");
+        let ndb = Ndb::new(tmp.path().to_str().expect("db path"), &test_config()).expect("ndb");
+        (tmp, ndb)
+    }
+
+    fn ingest(ndb: &Ndb, note: &Note<'_>) {
+        ndb.process_client_event(&note.json().expect("note json"))
+            .expect("ingest note");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(ndb).expect("txn");
+            if ndb.get_note_by_id(&txn, note.id()).is_ok() {
+                break;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for note import"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn root_note_id_returns_selected_for_root_note() {
+        let (_tmp, ndb) = setup_ndb();
+        let account = FullKeypair::generate();
+        let root = test_note(&account, "root", 1_700_000_000, &[]);
+        ingest(&ndb, &root);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let resolved =
+            root_note_id_from_selected_id(&ndb, &mut note_cache, &txn, root.id()).expect("root id");
+
+        assert_eq!(resolved.bytes(), root.id());
+    }
+
+    #[test]
+    fn root_note_id_resolves_marked_root_for_direct_reply() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let direct_reply = test_note(
+            &reply_author,
+            "direct reply",
+            1_700_000_001,
+            &[&[
+                "e",
+                root_hex.as_str(),
+                "wss://relay.example",
+                "root",
+                &root_author.pubkey.hex(),
+            ]],
+        );
+        ingest(&ndb, &root);
+        ingest(&ndb, &direct_reply);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let resolved =
+            root_note_id_from_selected_id(&ndb, &mut note_cache, &txn, direct_reply.id())
+                .expect("root id");
+
+        assert_eq!(resolved.bytes(), root.id());
+    }
+
+    #[test]
+    fn root_note_id_resolves_deprecated_single_e_reply() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let direct_reply = test_note(
+            &reply_author,
+            "deprecated direct reply",
+            1_700_000_001,
+            &[&["e", root_hex.as_str()]],
+        );
+        ingest(&ndb, &root);
+        ingest(&ndb, &direct_reply);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let resolved =
+            root_note_id_from_selected_id(&ndb, &mut note_cache, &txn, direct_reply.id())
+                .expect("root id");
+
+        assert_eq!(resolved.bytes(), root.id());
+    }
+
+    #[test]
+    fn root_note_id_resolves_root_for_nested_reply() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let nested_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let direct_reply = test_note(
+            &reply_author,
+            "direct reply",
+            1_700_000_001,
+            &[&["e", root_hex.as_str(), "", "root"]],
+        );
+        let direct_reply_hex = hex::encode(direct_reply.id());
+        let nested_reply = test_note(
+            &nested_author,
+            "nested reply",
+            1_700_000_002,
+            &[
+                &["e", root_hex.as_str(), "", "root"],
+                &["e", direct_reply_hex.as_str(), "", "reply"],
+            ],
+        );
+        ingest(&ndb, &root);
+        ingest(&ndb, &direct_reply);
+        ingest(&ndb, &nested_reply);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let resolved =
+            root_note_id_from_selected_id(&ndb, &mut note_cache, &txn, nested_reply.id())
+                .expect("root id");
+
+        assert_eq!(resolved.bytes(), root.id());
+    }
+
+    #[test]
+    fn root_note_id_returns_note_not_found_for_unknown_id() {
+        let (_tmp, ndb) = setup_ndb();
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let missing = [7u8; 32];
+
+        let err = root_note_id_from_selected_id(&ndb, &mut note_cache, &txn, &missing).unwrap_err();
+
+        assert!(matches!(err, RootIdError::NoteNotFound));
+    }
+}

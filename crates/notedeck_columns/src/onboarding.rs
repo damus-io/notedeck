@@ -205,6 +205,7 @@ mod tests {
             None,
             vec!["wss://relay-onboarding.example.com".to_owned()],
             FALLBACK_PUBKEY(),
+            notedeck::DEFAULT_MAX_HASHTAGS_PER_NOTE,
             &mut ndb,
             &txn,
             &mut unknown_ids,

@@ -234,6 +234,160 @@ impl FilterVec {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enostr::FullKeypair;
+    use nostrdb::{Config, NoteBuilder};
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    fn test_note(
+        account: &FullKeypair,
+        content: &str,
+        created_at: u64,
+        tags: &[&[&str]],
+    ) -> nostrdb::Note<'static> {
+        let mut builder = NoteBuilder::new()
+            .kind(1)
+            .content(content)
+            .created_at(created_at);
+
+        for tag in tags {
+            builder = builder.start_tag();
+            for component in *tag {
+                builder = builder.tag_str(component);
+            }
+        }
+
+        builder
+            .sign(&account.secret_key.secret_bytes())
+            .build()
+            .expect("note")
+    }
+
+    fn setup_ndb() -> (TempDir, Ndb) {
+        let tmp = TempDir::new().expect("tmpdir");
+        let ndb = Ndb::new(tmp.path().to_str().expect("db path"), &Config::new()).expect("ndb");
+        (tmp, ndb)
+    }
+
+    fn ingest(ndb: &Ndb, note: &nostrdb::Note<'_>) {
+        ndb.process_client_event(&note.json().expect("note json"))
+            .expect("ingest note");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(ndb).expect("txn");
+            if ndb.get_note_by_id(&txn, note.id()).is_ok() {
+                break;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for note import"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn thread_selection_from_note_id_returns_root_selection_for_root_note() {
+        let (_tmp, ndb) = setup_ndb();
+        let author = FullKeypair::generate();
+        let root = test_note(&author, "root", 1_700_000_000, &[]);
+        ingest(&ndb, &root);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let selection =
+            ThreadSelection::from_note_id(&ndb, &mut note_cache, &txn, NoteId::new(*root.id()))
+                .expect("thread selection");
+
+        assert_eq!(selection.root_id.bytes(), root.id());
+        assert_eq!(selection.selected_note, None);
+        assert_eq!(selection.selected_or_root(), root.id());
+    }
+
+    #[test]
+    fn thread_selection_from_note_id_preserves_selected_for_direct_root_reply() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let reply = test_note(
+            &reply_author,
+            "reply",
+            1_700_000_001,
+            &[&["e", root_hex.as_str(), "", "root"]],
+        );
+        ingest(&ndb, &root);
+        ingest(&ndb, &reply);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let selection =
+            ThreadSelection::from_note_id(&ndb, &mut note_cache, &txn, NoteId::new(*reply.id()))
+                .expect("thread selection");
+
+        assert_eq!(selection.root_id.bytes(), root.id());
+        assert_eq!(selection.selected_note, Some(NoteId::new(*reply.id())));
+        assert_eq!(selection.selected_or_root(), reply.id());
+    }
+
+    #[test]
+    fn thread_selection_from_note_id_preserves_selected_for_nested_reply() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let nested_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let reply = test_note(
+            &reply_author,
+            "reply",
+            1_700_000_001,
+            &[&["e", root_hex.as_str(), "", "root"]],
+        );
+        let reply_hex = hex::encode(reply.id());
+        let nested = test_note(
+            &nested_author,
+            "nested",
+            1_700_000_002,
+            &[
+                &["e", root_hex.as_str(), "", "root"],
+                &["e", reply_hex.as_str(), "", "reply"],
+            ],
+        );
+        ingest(&ndb, &root);
+        ingest(&ndb, &reply);
+        ingest(&ndb, &nested);
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let selection =
+            ThreadSelection::from_note_id(&ndb, &mut note_cache, &txn, NoteId::new(*nested.id()))
+                .expect("thread selection");
+
+        assert_eq!(selection.root_id.bytes(), root.id());
+        assert_eq!(selection.selected_note, Some(NoteId::new(*nested.id())));
+        assert_eq!(selection.selected_or_root(), nested.id());
+    }
+
+    #[test]
+    fn thread_selection_from_note_id_returns_note_not_found() {
+        let (_tmp, ndb) = setup_ndb();
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let missing = NoteId::new([3u8; 32]);
+
+        let err = ThreadSelection::from_note_id(&ndb, &mut note_cache, &txn, missing).unwrap_err();
+
+        assert!(matches!(err, RootIdError::NoteNotFound));
+    }
+}
+
 ///
 /// What kind of timeline is it?
 ///   - Follow List

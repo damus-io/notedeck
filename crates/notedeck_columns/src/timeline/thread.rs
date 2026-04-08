@@ -434,3 +434,274 @@ impl SingleNoteUnits {
         self.units.contains_key(&UnitKey::Single(*k))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enostr::FullKeypair;
+    use nostrdb::{Config, NoteBuilder};
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    fn test_note(
+        account: &FullKeypair,
+        content: &str,
+        created_at: u64,
+        tags: &[&[&str]],
+    ) -> Note<'static> {
+        let mut builder = NoteBuilder::new()
+            .kind(1)
+            .content(content)
+            .created_at(created_at);
+
+        for tag in tags {
+            builder = builder.start_tag();
+            for component in *tag {
+                builder = builder.tag_str(component);
+            }
+        }
+
+        builder
+            .sign(&account.secret_key.secret_bytes())
+            .build()
+            .expect("note")
+    }
+
+    fn setup_ndb() -> (TempDir, Ndb) {
+        let tmp = TempDir::new().expect("tmpdir");
+        let ndb = Ndb::new(tmp.path().to_str().expect("db path"), &Config::new()).expect("ndb");
+        (tmp, ndb)
+    }
+
+    fn ingest(ndb: &Ndb, note: &Note<'_>) {
+        ndb.process_client_event(&note.json().expect("note json"))
+            .expect("ingest note");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(ndb).expect("txn");
+            if ndb.get_note_by_id(&txn, note.id()).is_ok() {
+                break;
+            }
+
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for note import"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn stored_note<'a>(ndb: &'a Ndb, txn: &'a Transaction, id: &[u8; 32]) -> Note<'a> {
+        ndb.get_note_by_id(txn, id).expect("stored note")
+    }
+
+    #[test]
+    fn selected_has_at_least_n_replies_only_counts_direct_root_replies() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let nested_author = FullKeypair::generate();
+        let second_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let direct_reply = test_note(
+            &reply_author,
+            "direct reply",
+            1_700_000_001,
+            &[&["e", root_hex.as_str(), "", "root"]],
+        );
+        let direct_reply_hex = hex::encode(direct_reply.id());
+        let nested_reply = test_note(
+            &nested_author,
+            "nested reply",
+            1_700_000_002,
+            &[
+                &["e", root_hex.as_str(), "", "root"],
+                &["e", direct_reply_hex.as_str(), "", "reply"],
+            ],
+        );
+        let second_direct = test_note(
+            &second_author,
+            "second direct reply",
+            1_700_000_003,
+            &[&["e", root_hex.as_str(), "", "root"]],
+        );
+
+        for note in [&root, &direct_reply, &nested_reply, &second_direct] {
+            ingest(&ndb, note);
+        }
+
+        let txn = Transaction::new(&ndb).expect("txn");
+
+        assert!(selected_has_at_least_n_replies(
+            &ndb,
+            &txn,
+            None,
+            root.id(),
+            2
+        ));
+        assert!(!selected_has_at_least_n_replies(
+            &ndb,
+            &txn,
+            None,
+            root.id(),
+            3
+        ));
+    }
+
+    #[test]
+    fn selected_has_at_least_n_replies_only_counts_direct_children_of_selected_note() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let nested_author = FullKeypair::generate();
+        let unrelated_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let selected = test_note(
+            &reply_author,
+            "selected",
+            1_700_000_001,
+            &[&["e", root_hex.as_str(), "", "root"]],
+        );
+        let selected_hex = hex::encode(selected.id());
+        let nested = test_note(
+            &nested_author,
+            "nested",
+            1_700_000_002,
+            &[
+                &["e", root_hex.as_str(), "", "root"],
+                &["e", selected_hex.as_str(), "", "reply"],
+            ],
+        );
+        let unrelated = test_note(
+            &unrelated_author,
+            "unrelated direct root reply",
+            1_700_000_003,
+            &[&["e", root_hex.as_str(), "", "root"]],
+        );
+
+        for note in [&root, &selected, &nested, &unrelated] {
+            ingest(&ndb, note);
+        }
+
+        let txn = Transaction::new(&ndb).expect("txn");
+
+        assert!(selected_has_at_least_n_replies(
+            &ndb,
+            &txn,
+            Some(selected.id()),
+            root.id(),
+            1,
+        ));
+        assert!(!selected_has_at_least_n_replies(
+            &ndb,
+            &txn,
+            Some(selected.id()),
+            root.id(),
+            2,
+        ));
+    }
+
+    #[test]
+    fn fill_reply_chain_links_direct_root_reply_to_root() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let direct_reply = test_note(
+            &reply_author,
+            "direct reply",
+            1_700_000_001,
+            &[&["e", root_hex.as_str(), "", "root"]],
+        );
+
+        for note in [&root, &direct_reply] {
+            ingest(&ndb, note);
+        }
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let mut threads = Threads::default();
+        let mut unknown_ids = UnknownIds::default();
+        let direct_reply = stored_note(&ndb, &txn, direct_reply.id());
+        let reply_key = direct_reply.key().expect("reply key");
+        let cached_reply = note_cache
+            .cached_note_or_insert_mut(reply_key, &direct_reply)
+            .reply;
+
+        let have_all_ancestors = threads.fill_reply_chain_recursive(
+            &direct_reply,
+            &cached_reply,
+            &mut note_cache,
+            &ndb,
+            &txn,
+            &mut unknown_ids,
+        );
+        let node = threads
+            .threads
+            .get(&NoteId::new(*direct_reply.id()))
+            .expect("thread node");
+        let root_node = threads
+            .threads
+            .get(&NoteId::new(*root.id()))
+            .expect("root node");
+
+        assert!(have_all_ancestors);
+        assert!(
+            matches!(node.prev, ParentState::Parent(parent) if parent == NoteId::new(*root.id()))
+        );
+        assert!(node.have_all_ancestors);
+        assert!(matches!(root_node.prev, ParentState::None));
+        assert!(root_node.have_all_ancestors);
+    }
+
+    #[test]
+    fn fill_reply_chain_links_deprecated_direct_reply_to_first_e_tag() {
+        let (_tmp, ndb) = setup_ndb();
+        let root_author = FullKeypair::generate();
+        let reply_author = FullKeypair::generate();
+        let root = test_note(&root_author, "root", 1_700_000_000, &[]);
+        let root_hex = hex::encode(root.id());
+        let direct_reply = test_note(
+            &reply_author,
+            "deprecated direct reply",
+            1_700_000_001,
+            &[&["e", root_hex.as_str()]],
+        );
+
+        for note in [&root, &direct_reply] {
+            ingest(&ndb, note);
+        }
+
+        let txn = Transaction::new(&ndb).expect("txn");
+        let mut note_cache = NoteCache::default();
+        let mut threads = Threads::default();
+        let mut unknown_ids = UnknownIds::default();
+        let direct_reply = stored_note(&ndb, &txn, direct_reply.id());
+        let reply_key = direct_reply.key().expect("reply key");
+        let cached_reply = note_cache
+            .cached_note_or_insert_mut(reply_key, &direct_reply)
+            .reply;
+
+        let have_all_ancestors = threads.fill_reply_chain_recursive(
+            &direct_reply,
+            &cached_reply,
+            &mut note_cache,
+            &ndb,
+            &txn,
+            &mut unknown_ids,
+        );
+        let node = threads
+            .threads
+            .get(&NoteId::new(*direct_reply.id()))
+            .expect("thread node");
+
+        assert!(have_all_ancestors);
+        assert!(
+            matches!(node.prev, ParentState::Parent(parent) if parent == NoteId::new(*root.id()))
+        );
+    }
+}

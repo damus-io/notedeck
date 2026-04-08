@@ -12,7 +12,7 @@ pub(crate) struct AccountMutedData {
 }
 
 impl AccountMutedData {
-    pub fn new(pubkey: &[u8; 32]) -> Self {
+    pub fn new(pubkey: &[u8; 32], max_hashtags_per_note: usize) -> Self {
         // Construct a filter for the user's NIP-51 muted list
         let filter = Filter::new()
             .authors([pubkey])
@@ -20,7 +20,10 @@ impl AccountMutedData {
             .limit(1)
             .build();
 
-        let muted = Arc::new(Muted::default());
+        let muted = Arc::new(Muted {
+            max_hashtags_per_note,
+            ..Default::default()
+        });
 
         AccountMutedData { filter, muted }
     }

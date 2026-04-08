@@ -294,6 +294,7 @@ impl Notedeck {
             keystore,
             parsed_args.relays.clone(),
             FALLBACK_PUBKEY(),
+            settings.max_hashtags_per_note(),
             &mut ndb,
             &txn,
             &mut unknown_ids,
@@ -612,4 +613,139 @@ fn tick_relay_limit_jobs(
 pub struct NotedeckCtx {
     pub notedeck: Notedeck,
     pub outbox_session: OutboxSession,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enostr::FullKeypair;
+    use nostr::nips::nip19::ToBech32;
+    use nostrdb::NoteBuilder;
+    use tempfile::TempDir;
+
+    fn test_args(account: &FullKeypair) -> Vec<String> {
+        vec![
+            "notedeck-test".to_owned(),
+            "--testrunner".to_owned(),
+            "--no-keystore".to_owned(),
+            "--nsec".to_owned(),
+            account.secret_key.to_bech32().expect("nsec bech32"),
+        ]
+    }
+
+    fn init_notedeck(
+        ctx: &egui::Context,
+        data_dir: &std::path::Path,
+        account: &FullKeypair,
+    ) -> Notedeck {
+        Notedeck::init(ctx, data_dir, &test_args(account)).notedeck
+    }
+
+    fn hashtag_note(author: &FullKeypair, hashtags: &[&str]) -> nostrdb::Note<'static> {
+        let mut builder = NoteBuilder::new().kind(1).content("hashtag note");
+        for hashtag in hashtags {
+            builder = builder.start_tag().tag_str("t").tag_str(hashtag);
+        }
+
+        builder
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("note")
+    }
+
+    #[test]
+    fn updating_max_hashtags_refreshes_selected_account_mute_threshold() {
+        let tmp = TempDir::new().expect("tmpdir");
+        let ctx = egui::Context::default();
+        let selected = FullKeypair::generate();
+        let author = FullKeypair::generate();
+        let note = hashtag_note(&author, &["a", "b", "c", "d"]);
+        let mut notedeck = init_notedeck(&ctx, tmp.path(), &selected);
+
+        {
+            let app_ctx = &mut notedeck.app_context(&ctx);
+            let initial_mute = app_ctx.accounts.mutefun();
+            assert!(initial_mute(&note, note.id()));
+
+            app_ctx.settings.set_max_hashtags_per_note(4);
+            app_ctx.accounts.update_max_hashtags_per_note(4);
+
+            assert_eq!(app_ctx.settings.max_hashtags_per_note(), 4);
+            assert_eq!(app_ctx.accounts.mute().max_hashtags_per_note, 4);
+
+            let updated_mute = app_ctx.accounts.mutefun();
+            assert!(!updated_mute(&note, note.id()));
+        }
+    }
+
+    #[test]
+    fn persisted_max_hashtags_setting_applies_after_restart() {
+        let tmp = TempDir::new().expect("tmpdir");
+        let ctx = egui::Context::default();
+        let selected = FullKeypair::generate();
+        let author = FullKeypair::generate();
+        let note = hashtag_note(&author, &["a", "b", "c", "d"]);
+
+        {
+            let mut notedeck = init_notedeck(&ctx, tmp.path(), &selected);
+            let app_ctx = &mut notedeck.app_context(&ctx);
+            app_ctx.settings.set_max_hashtags_per_note(4);
+            app_ctx.accounts.update_max_hashtags_per_note(4);
+
+            let mute = app_ctx.accounts.mutefun();
+            assert!(!mute(&note, note.id()));
+        }
+
+        {
+            let mut notedeck = init_notedeck(&ctx, tmp.path(), &selected);
+            let app_ctx = &mut notedeck.app_context(&ctx);
+
+            assert_eq!(app_ctx.settings.max_hashtags_per_note(), 4);
+            assert_eq!(app_ctx.accounts.mute().max_hashtags_per_note, 4);
+
+            let mute = app_ctx.accounts.mutefun();
+            assert!(
+                !mute(&note, note.id()),
+                "persisted max_hashtags_per_note should apply on startup"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_to_new_account_preserves_max_hashtags_setting() {
+        let tmp = TempDir::new().expect("tmpdir");
+        let ctx = egui::Context::default();
+        let selected = FullKeypair::generate();
+        let second = FullKeypair::generate();
+        let author = FullKeypair::generate();
+        let note = hashtag_note(&author, &["a", "b", "c", "d"]);
+        let mut notedeck = init_notedeck(&ctx, tmp.path(), &selected);
+
+        {
+            let app_ctx = &mut notedeck.app_context(&ctx);
+            app_ctx.settings.set_max_hashtags_per_note(4);
+            app_ctx.accounts.update_max_hashtags_per_note(4);
+
+            let txn = Transaction::new(app_ctx.ndb).expect("txn");
+            let resp = app_ctx
+                .accounts
+                .add_account(second.clone().to_keypair())
+                .expect("new account");
+            resp.unk_id_action
+                .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
+
+            app_ctx
+                .accounts
+                .select_account(&second.pubkey, app_ctx.ndb, &txn, &mut app_ctx.remote);
+
+            assert_eq!(app_ctx.settings.max_hashtags_per_note(), 4);
+            assert_eq!(app_ctx.accounts.mute().max_hashtags_per_note, 4);
+
+            let mute = app_ctx.accounts.mutefun();
+            assert!(
+                !mute(&note, note.id()),
+                "switched account should inherit current max_hashtags_per_note"
+            );
+        }
+    }
 }
