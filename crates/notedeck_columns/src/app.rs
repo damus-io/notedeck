@@ -237,11 +237,20 @@ fn try_process_event(
                 app_ctx.note_cache,
                 reversed,
             ) {
-                Ok(has_new) => {
-                    if has_new && matches!(kind, TimelineKind::Notifications(_)) {
-                        app_ctx
-                            .sound
-                            .play_debounced(notedeck::SoundEffect::Notification, 2000);
+                Ok(new_note_keys) => {
+                    if !new_note_keys.is_empty() && matches!(kind, TimelineKind::Notifications(_)) {
+                        let muted = app_ctx.accounts.mute();
+                        let has_unmuted = new_note_keys.iter().any(|key| {
+                            app_ctx
+                                .ndb
+                                .get_note_by_key(&txn, *key)
+                                .is_ok_and(|note| !muted.is_pk_muted(note.pubkey()))
+                        });
+                        if has_unmuted {
+                            app_ctx
+                                .sound
+                                .play_debounced(notedeck::SoundEffect::Notification, 2000);
+                        }
                     }
                 }
                 Err(err) => {

@@ -608,7 +608,7 @@ impl Timeline {
 
     #[profiling::function]
     /// Poll for new notes and insert them into the timeline.
-    /// Returns `Ok(true)` if new notes were found, `Ok(false)` otherwise.
+    /// Returns the polled [`NoteKey`]s (empty if nothing new arrived).
     pub fn poll_notes_into_view(
         &mut self,
         account_pk: &Pubkey,
@@ -617,10 +617,10 @@ impl Timeline {
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
         reversed: bool,
-    ) -> Result<bool> {
+    ) -> Result<Vec<NoteKey>> {
         if !self.kind.should_subscribe_locally() {
             // don't need to poll for timelines that don't have local subscriptions
-            return Ok(false);
+            return Ok(vec![]);
         }
 
         let sub = self
@@ -634,7 +634,7 @@ impl Timeline {
         };
 
         if new_note_ids.is_empty() {
-            return Ok(false);
+            return Ok(vec![]);
         };
 
         let any_front_insert =
@@ -650,7 +650,7 @@ impl Timeline {
             self.seen_latest_notes = false;
         }
 
-        Ok(true)
+        Ok(new_note_ids)
     }
 
     /// Invalidate the timeline, forcing a rebuild on the next check.
