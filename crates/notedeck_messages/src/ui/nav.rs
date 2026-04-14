@@ -219,6 +219,7 @@ impl<'a> NavTitle<'a> {
 
         let mut right_action = None;
         let mut left_action = None;
+        let mut title_action = None;
 
         HorizontalHeader::new(48.0)
             .with_margin(Margin::symmetric(12, 8))
@@ -243,7 +244,7 @@ impl<'a> NavTitle<'a> {
                     }
                 },
                 |ui| {
-                    self.title(ui, top);
+                    title_action = self.title(ui, top);
                 },
                 |ui: &mut egui::Ui| match top {
                     Route::ConvoList => {
@@ -266,10 +267,10 @@ impl<'a> NavTitle<'a> {
                 },
             );
 
-        right_action.or(left_action)
+        right_action.or(left_action).or(title_action)
     }
 
-    fn title(&mut self, ui: &mut egui::Ui, route: &Route) {
+    fn title(&mut self, ui: &mut egui::Ui, route: &Route) -> Option<MessagesAction> {
         match route {
             Route::ConvoList => {
                 let label = tr!(
@@ -278,6 +279,7 @@ impl<'a> NavTitle<'a> {
                     "Title for the list of chat conversations"
                 );
                 title_label(ui, &label);
+                None
             }
             Route::CreateConvo => {
                 let label = tr!(
@@ -286,12 +288,13 @@ impl<'a> NavTitle<'a> {
                     "Title shown when composing a new conversation"
                 );
                 title_label(ui, &label);
+                None
             }
             Route::Conversation => self.conversation_title_section(ui),
         }
     }
 
-    fn conversation_title_section(&mut self, ui: &mut egui::Ui) {
+    fn conversation_title_section(&mut self, ui: &mut egui::Ui) -> Option<MessagesAction> {
         conversation_header_impl(
             ui,
             self.i18n,
@@ -300,7 +303,7 @@ impl<'a> NavTitle<'a> {
             self.ndb,
             self.jobs,
             self.img_cache,
-        );
+        )
     }
 }
 

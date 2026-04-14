@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use chrono::{DateTime, Local, Utc};
-use egui::{Layout, RichText};
+use egui::{Layout, RichText, Sense};
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
@@ -9,6 +9,8 @@ use notedeck::{
     NotedeckTextStyle,
 };
 use notedeck_ui::ProfilePic;
+
+use crate::nav::MessagesAction;
 
 use crate::cache::{Conversation, ConversationCache, ConversationMetadata};
 
@@ -194,7 +196,7 @@ pub fn conversation_header_impl(
     ndb: &Ndb,
     jobs: &MediaJobSender,
     img_cache: &mut Images,
-) {
+) -> Option<MessagesAction> {
     let Some(conversation) = cache.get_active() else {
         title_label(
             ui,
@@ -204,7 +206,7 @@ pub fn conversation_header_impl(
                 "Title used when viewing an unknown conversation"
             ),
         );
-        return;
+        return None;
     };
 
     let txn = Transaction::new(ndb).expect("txn");
@@ -219,7 +221,12 @@ pub fn conversation_header_impl(
     let partner = direct_chat_partner(summary.metadata.participants.as_slice(), selected_pubkey);
     let partner_profile = partner.and_then(|pk| ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok());
 
-    conversation_header(ui, &title, jobs, img_cache, true, partner_profile.as_ref());
+    let clicked = conversation_header(ui, &title, jobs, img_cache, true, partner_profile.as_ref());
+    if clicked {
+        partner.map(|pk| MessagesAction::Profile(*pk))
+    } else {
+        None
+    }
 }
 
 fn title_label(ui: &mut egui::Ui, text: &str) -> egui::Response {
@@ -229,6 +236,7 @@ fn title_label(ui: &mut egui::Ui, text: &str) -> egui::Response {
     )
 }
 
+/// Renders the conversation header. Returns `true` if the pfp or name was clicked.
 pub fn conversation_header(
     ui: &mut egui::Ui,
     title: &str,
@@ -236,18 +244,35 @@ pub fn conversation_header(
     img_cache: &mut Images,
     show_partner_avatar: bool,
     partner_profile: Option<&ProfileRecord<'_>>,
-) {
+) -> bool {
+    let mut clicked = false;
     ui.with_layout(
         Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
         |ui| {
             if show_partner_avatar {
                 let mut pic = ProfilePic::from_profile_or_default(img_cache, jobs, partner_profile)
+                    .sense(Sense::click())
                     .size(ProfilePic::medium_size() as f32);
-                ui.add(&mut pic);
+                let pfp_resp = ui.add(&mut pic);
                 ui.add_space(8.0);
-            }
 
-            ui.heading(title);
+                let name_resp = ui.add(
+                    egui::Label::new(
+                        RichText::new(title).text_style(NotedeckTextStyle::Heading.text_style()),
+                    )
+                    .sense(Sense::click()),
+                );
+
+                if pfp_resp.clicked() || name_resp.clicked() {
+                    clicked = true;
+                }
+                if pfp_resp.hovered() || name_resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            } else {
+                ui.heading(title);
+            }
         },
     );
+    clicked
 }

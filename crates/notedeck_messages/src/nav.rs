@@ -1,7 +1,7 @@
 use egui_nav::{NavAction, NavResponse};
 use enostr::Pubkey;
 use hashbrown::HashSet;
-use notedeck::{AppAction, AppContext, ReplacementType, Router};
+use notedeck::{AppAction, AppContext, NoteAction, ReplacementType, Router};
 
 use crate::{
     cache::{
@@ -32,6 +32,7 @@ pub enum MessagesAction {
         recipient: Pubkey,
     },
     ToggleChrome,
+    Profile(Pubkey),
 }
 
 pub struct MessagesUiResponse {
@@ -249,6 +250,9 @@ fn handle_messages_action(
             go_back(router, animate_nav);
         }
         MessagesAction::ToggleChrome => app_action = Some(AppAction::ToggleChrome),
+        MessagesAction::Profile(pubkey) => {
+            app_action = Some(AppAction::Note(NoteAction::Profile(pubkey)));
+        }
     }
 
     app_action

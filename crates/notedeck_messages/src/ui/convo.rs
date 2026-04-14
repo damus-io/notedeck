@@ -1,7 +1,7 @@
 use chrono::{DateTime, Duration, Local, NaiveDate};
 use egui::{
     vec2, Align, Color32, CornerRadius, Frame, Key, KeyboardShortcut, Layout, Margin, Modifiers,
-    RichText, ScrollArea, TextEdit,
+    RichText, ScrollArea, Sense, TextEdit,
 };
 use egui_extras::{Size, StripBuilder};
 use egui_winit::clipboard::Clipboard;
@@ -85,7 +85,7 @@ impl<'a> ConversationUi<'a> {
                         .stick_to_bottom(true)
                         .id_salt(ui.id().with(self.conversation.id))
                         .show(ui, |ui| {
-                            conversation_history(
+                            if let Some(a) = conversation_history(
                                 ui,
                                 self.conversation,
                                 self.state,
@@ -95,7 +95,11 @@ impl<'a> ConversationUi<'a> {
                                 self.img_cache,
                                 selected_pubkey,
                                 self.i18n,
-                            );
+                            ) {
+                                if action.is_none() {
+                                    action = Some(a);
+                                }
+                            }
                         });
                 });
             })
@@ -116,8 +120,9 @@ fn conversation_history(
     img_cache: &mut Images,
     selected_pk: &Pubkey,
     i18n: &mut Localization,
-) {
+) -> Option<MessagesAction> {
     let renderable = &conversation.renderable;
+    let mut action = None;
 
     state.last_read = conversation
         .messages
@@ -138,7 +143,7 @@ fn conversation_history(
                 match renderable {
                     ConversationItem::Date(date) => render_date_line(ui, *date, &today, i18n),
                     ConversationItem::Message { msg_type, key } => {
-                        render_chat_msg(
+                        if let Some(a) = render_chat_msg(
                             ui,
                             img_cache,
                             jobs,
@@ -147,13 +152,16 @@ fn conversation_history(
                             *key,
                             *msg_type,
                             selected_pk,
-                        );
+                        ) {
+                            action = Some(a);
+                        }
                     }
                 };
 
                 1
             });
         });
+    action
 }
 
 fn render_date_line(
@@ -187,21 +195,21 @@ fn render_chat_msg(
     key: NoteKey,
     msg_type: MessageType,
     selected_pk: &Pubkey,
-) {
+) -> Option<MessagesAction> {
     let Ok(note) = ndb.get_note_by_key(txn, key) else {
         tracing::error!("Could not get key {:?}", key);
-        return;
+        return None;
     };
 
     let Some(chat_msg) = parse_chat_message(&note) else {
         tracing::error!("Could not parse chat message for note {key:?}");
-        return;
+        return None;
     };
 
     match msg_type {
         MessageType::Standalone => {
             ui.add_space(2.0);
-            render_msg_with_pfp(
+            let action = render_msg_with_pfp(
                 ui,
                 img_cache,
                 jobs,
@@ -212,16 +220,17 @@ fn render_chat_msg(
                 chat_msg,
             );
             ui.add_space(2.0);
+            action
         }
         MessageType::FirstInSeries => {
             ui.add_space(2.0);
-            render_msg_no_pfp(ui, ndb, txn, selected_pk, msg_type, chat_msg);
+            render_msg_no_pfp(ui, ndb, txn, selected_pk, msg_type, chat_msg)
         }
         MessageType::MiddleInSeries => {
-            render_msg_no_pfp(ui, ndb, txn, selected_pk, msg_type, chat_msg);
+            render_msg_no_pfp(ui, ndb, txn, selected_pk, msg_type, chat_msg)
         }
         MessageType::LastInSeries => {
-            render_msg_with_pfp(
+            let action = render_msg_with_pfp(
                 ui,
                 img_cache,
                 jobs,
@@ -232,6 +241,7 @@ fn render_chat_msg(
                 chat_msg,
             );
             ui.add_space(2.0);
+            action
         }
     }
 }
@@ -246,22 +256,36 @@ fn render_msg_with_pfp(
     selected_pk: &Pubkey,
     msg_type: MessageType,
     chat_msg: Nip17ChatMessage,
-) {
+) -> Option<MessagesAction> {
     if selected_pk.bytes() == chat_msg.sender {
         self_chat_bubble(ui, chat_msg.message, msg_type, chat_msg.created_at);
-        return;
+        return None;
     }
 
+    let sender = chat_msg.sender;
     let avatar_size = ProfilePic::medium_size() as f32;
     let profile = ndb.get_profile_by_pubkey(txn, chat_msg.sender).ok();
-    let mut pic =
-        ProfilePic::from_profile_or_default(img_cache, jobs, profile.as_ref()).size(avatar_size);
+    let mut pic = ProfilePic::from_profile_or_default(img_cache, jobs, profile.as_ref())
+        .sense(Sense::click())
+        .size(avatar_size);
+    let mut clicked = false;
     ui.horizontal(|ui| {
-        ui.add(&mut pic);
+        let pfp_resp = ui.add(&mut pic);
         ui.add_space(8.0);
 
-        other_chat_bubble(ui, chat_msg, get_display_name(profile.as_ref()), msg_type);
+        let name_clicked =
+            other_chat_bubble(ui, chat_msg, get_display_name(profile.as_ref()), msg_type);
+
+        if pfp_resp.clicked() || name_clicked {
+            clicked = true;
+        }
+
+        if pfp_resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
     });
+
+    clicked.then(|| MessagesAction::Profile(Pubkey::new(*sender)))
 }
 
 fn render_msg_no_pfp(
@@ -271,17 +295,22 @@ fn render_msg_no_pfp(
     selected_pk: &Pubkey,
     msg_type: MessageType,
     chat_msg: Nip17ChatMessage,
-) {
+) -> Option<MessagesAction> {
     if selected_pk.bytes() == chat_msg.sender {
         self_chat_bubble(ui, chat_msg.message, msg_type, chat_msg.created_at);
-        return;
+        return None;
     }
 
+    let sender = chat_msg.sender;
+    let mut name_clicked = false;
     ui.horizontal(|ui| {
         ui.add_space(ProfilePic::medium_size() as f32 + ui.spacing().item_spacing.x + 8.0);
         let profile = ndb.get_profile_by_pubkey(txn, chat_msg.sender).ok();
-        other_chat_bubble(ui, chat_msg, get_display_name(profile.as_ref()), msg_type);
+        name_clicked =
+            other_chat_bubble(ui, chat_msg, get_display_name(profile.as_ref()), msg_type);
     });
+
+    name_clicked.then(|| MessagesAction::Profile(Pubkey::new(*sender)))
 }
 
 fn conversation_composer(
@@ -488,27 +517,39 @@ fn self_chat_bubble(
     r.response
 }
 
+/// Renders a chat bubble for a message from someone else.
+/// Returns `true` if the sender name was clicked.
 fn other_chat_bubble(
     ui: &mut egui::Ui,
     chat_msg: Nip17ChatMessage,
     sender_name: NostrName,
     msg_type: MessageType,
-) -> egui::Response {
+) -> bool {
     let message = chat_msg.message;
     let message_owned = message.to_owned();
     let bubble_fill = ui.visuals().extreme_bg_color;
     let text_color = ui.visuals().text_color();
     let secondary_color = ui.visuals().weak_text_color();
+    let mut name_clicked = false;
 
     let r = ui.scope(|ui| {
         chat_bubble(ui, msg_type, false, bubble_fill, |ui| {
             ui.vertical(|ui| {
                 if msg_type == MessageType::FirstInSeries || msg_type == MessageType::Standalone {
-                    ui.label(
-                        RichText::new(sender_name.name())
-                            .strong()
-                            .color(secondary_color),
+                    let name_resp = ui.add(
+                        egui::Label::new(
+                            RichText::new(sender_name.name())
+                                .strong()
+                                .color(secondary_color),
+                        )
+                        .sense(Sense::click()),
                     );
+                    if name_resp.clicked() {
+                        name_clicked = true;
+                    }
+                    if name_resp.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
                     ui.add_space(2.0);
                 }
 
@@ -547,7 +588,7 @@ fn other_chat_bubble(
             ui.close_menu();
         }
     });
-    r.response
+    name_clicked
 }
 
 /// An unfortunate hack to change the corner radius of a TextEdit...

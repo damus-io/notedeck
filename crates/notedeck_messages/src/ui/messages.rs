@@ -30,6 +30,7 @@ pub fn desktop_messages_ui(
 ) -> MessagesUiResponse {
     let mut nav_resp = None;
     let mut convo_resp = None;
+    let mut header_resp = None;
 
     StripBuilder::new(ui)
         .size(Size::exact(300.0))
@@ -62,7 +63,7 @@ pub fn desktop_messages_ui(
                                 Frame::new().inner_margin(Margin::symmetric(16, 4)).show(
                                     ui,
                                     |ui| {
-                                        conversation_header_impl(
+                                        header_resp = conversation_header_impl(
                                             ui,
                                             i18n,
                                             cache,
@@ -94,7 +95,7 @@ pub fn desktop_messages_ui(
 
     MessagesUiResponse {
         nav_response: nav_resp,
-        conversation_panel_response: convo_resp,
+        conversation_panel_response: convo_resp.or(header_resp),
     }
 }
 
