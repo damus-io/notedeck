@@ -371,6 +371,7 @@ fn replies_filter_remote(selection: &ThreadSelection) -> Vec<Filter> {
         nostrdb::Filter::new()
             .kinds([1])
             .event(selection.root_id.bytes())
+            .limit(500)
             .build(),
         nostrdb::Filter::new()
             .ids([selection.root_id.bytes()])
