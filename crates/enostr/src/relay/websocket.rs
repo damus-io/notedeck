@@ -17,6 +17,8 @@ pub struct WebsocketConn {
     pub status: RelayStatus,
     pub sender: WsSender,
     pub receiver: WsReceiver,
+    /// Monotonic identifier for the current sender/receiver websocket leg.
+    send_generation: u64,
 }
 
 impl fmt::Debug for WebsocketConn {
@@ -77,6 +79,7 @@ impl WebsocketConn {
             sender,
             receiver,
             status,
+            send_generation: 0,
         })
     }
 
@@ -103,6 +106,10 @@ impl WebsocketConn {
         self.status = RelayStatus::Connecting;
         self.sender = sender;
         self.receiver = receiver;
+        self.send_generation = self
+            .send_generation
+            .checked_add(1)
+            .expect("websocket leg generation overflow");
         Ok(())
     }
 
@@ -113,6 +120,11 @@ impl WebsocketConn {
 
     pub fn set_status(&mut self, status: RelayStatus) {
         self.status = status;
+    }
+
+    /// Returns the monotonic identifier for the current sender/receiver websocket leg.
+    pub fn send_generation(&self) -> u64 {
+        self.send_generation
     }
 }
 

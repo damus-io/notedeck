@@ -4,8 +4,8 @@ use uuid::Uuid;
 use crate::{
     relay::{
         subscription::SubscriptionView, MetadataFilters, OutboxSubId, OutboxSubscriptions,
-        QueuedTasks, RelayReqId, RelayReqStatus, SubPass, SubPassGuardian, SubPassRevocation,
-        WebsocketRelay,
+        QueuedTasks, RelayReqId, RelayReqStatus, RelayStatus, SubPass, SubPassGuardian,
+        SubPassRevocation, WebsocketRelay,
     },
     ClientMessage,
 };
@@ -185,7 +185,8 @@ impl<'a> TransparentRelay<'a> {
 
         if let Some((existing_sid, active_leg)) = self.data.active_leg_mut(&req_id) {
             active_leg.status = RelayReqStatus::InitialQuery;
-            send_req(&mut self.relay, &existing_sid, view.filters);
+            active_leg.last_enqueued_generation =
+                send_req(&mut self.relay, &existing_sid, view.filters);
             return TransparentPlaceResult::Placed;
         }
 
@@ -194,13 +195,14 @@ impl<'a> TransparentRelay<'a> {
         };
         tracing::debug!("Transparent took pass for {req_id:?}");
         let sid: RelayReqId = Uuid::new_v4().into();
-        send_req(&mut self.relay, &sid, view.filters);
+        let last_enqueued_generation = send_req(&mut self.relay, &sid, view.filters);
         self.data.insert_active_leg(
             req_id,
             ActiveTransparentLeg {
                 sid,
                 status: RelayReqStatus::InitialQuery,
                 sub_pass: new_pass,
+                last_enqueued_generation,
             },
         );
         TransparentPlaceResult::Placed
@@ -242,16 +244,22 @@ impl<'a> TransparentRelay<'a> {
         }
 
         let mut invalidated = HashSet::new();
+        let current_generation = relay.conn.send_generation();
         for (req_id, active_leg) in self.data.iter_active_legs_mut() {
             let Some(view) = subs.view(&req_id) else {
                 continue;
             };
+
+            if active_leg.last_enqueued_generation == Some(current_generation) {
+                continue;
+            }
 
             active_leg.status = RelayReqStatus::InitialQuery;
             relay.conn.send(&ClientMessage::req(
                 active_leg.sid.to_string(),
                 view.filters.get_filters().clone(),
             ));
+            active_leg.last_enqueued_generation = Some(current_generation);
             invalidated.insert(req_id);
         }
 
@@ -259,19 +267,23 @@ impl<'a> TransparentRelay<'a> {
     }
 }
 
-fn send_req(relay: &mut Option<&mut WebsocketRelay>, sid: &RelayReqId, filters: &MetadataFilters) {
-    let Some(relay) = relay.as_mut() else {
-        return;
-    };
+fn send_req(
+    relay: &mut Option<&mut WebsocketRelay>,
+    sid: &RelayReqId,
+    filters: &MetadataFilters,
+) -> Option<u64> {
+    let relay = relay.as_mut()?;
 
-    if !relay.is_connected() {
-        return;
+    if relay.conn.status == RelayStatus::Disconnected {
+        return None;
     }
 
+    let send_generation = relay.conn.send_generation();
     relay.conn.send(&ClientMessage::req(
         sid.to_string(),
         filters.get_filters().clone(),
     ));
+    Some(send_generation)
 }
 
 /// Evicts transparent subscriptions whose passes were revoked and returns the
@@ -309,6 +321,8 @@ struct ActiveTransparentLeg {
     pub sid: RelayReqId,
     pub status: RelayReqStatus,
     pub sub_pass: SubPass,
+    /// Websocket leg generation this request has already been enqueued onto.
+    pub last_enqueued_generation: Option<u64>,
 }
 
 #[cfg(test)]
@@ -318,8 +332,15 @@ mod tests {
         relay::{test_utils::MockWakeup, RelayStatus, RelayUrlPkgs, SubscribeTask},
         WebsocketConn,
     };
+    use futures_util::StreamExt;
     use hashbrown::HashSet;
     use nostrdb::Filter;
+    use std::{
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
+    use tokio::{net::TcpListener, sync::Notify};
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     // ==================== TransparentData tests ====================
 
@@ -349,6 +370,116 @@ mod tests {
         );
     }
 
+    async fn create_req_capture_relay() -> (
+        tokio::task::JoinHandle<()>,
+        nostr::RelayUrl,
+        Arc<Mutex<Vec<String>>>,
+        Arc<Notify>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind req capture relay");
+        let addr = listener.local_addr().expect("req capture relay addr");
+        let relay_url =
+            nostr::RelayUrl::parse(format!("ws://{addr}")).expect("valid req capture relay url");
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let captured_task = Arc::clone(&captured);
+        let notify = Arc::new(Notify::new());
+        let notify_task = Arc::clone(&notify);
+
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let captured_task = Arc::clone(&captured_task);
+                let notify_task = Arc::clone(&notify_task);
+                tokio::spawn(async move {
+                    let Ok(mut websocket) = accept_async(stream).await else {
+                        return;
+                    };
+
+                    while let Some(msg) = websocket.next().await {
+                        let Ok(Message::Text(text)) = msg else {
+                            continue;
+                        };
+
+                        if text.starts_with("[\"REQ\",") {
+                            captured_task
+                                .lock()
+                                .expect("lock captured reqs")
+                                .push(text.to_string());
+                            notify_task.notify_one();
+                        }
+                    }
+                });
+            }
+        });
+
+        (handle, relay_url, captured, notify)
+    }
+
+    async fn wait_for_captured_req_count(
+        captured: &Arc<Mutex<Vec<String>>>,
+        notify: &Arc<Notify>,
+        expected: usize,
+        timeout: Duration,
+        context: &str,
+    ) {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            let len = captured.lock().expect("lock captured reqs").len();
+            if len >= expected {
+                return;
+            }
+
+            let now = Instant::now();
+            assert!(
+                now < deadline,
+                "timed out waiting for {context}; captured {:?}",
+                *captured.lock().expect("lock captured reqs")
+            );
+
+            let remaining = deadline
+                .checked_duration_since(now)
+                .expect("remaining req capture wait");
+            if tokio::time::timeout(remaining, notify.notified())
+                .await
+                .is_err()
+            {
+                panic!(
+                    "timed out waiting for {context}; captured {:?}",
+                    *captured.lock().expect("lock captured reqs")
+                );
+            }
+        }
+    }
+
+    async fn assert_req_count_stays(
+        captured: &Arc<Mutex<Vec<String>>>,
+        expected: usize,
+        duration: Duration,
+    ) {
+        let deadline = Instant::now() + duration;
+
+        loop {
+            let len = captured.lock().expect("lock captured reqs").len();
+            assert_eq!(
+                len,
+                expected,
+                "expected req count to remain stable at {expected}, captured {:?}",
+                *captured.lock().expect("lock captured reqs")
+            );
+
+            if Instant::now() >= deadline {
+                return;
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
     #[test]
     fn transparent_data_manual_insert_and_query() {
         let mut data = TransparentData::default();
@@ -364,6 +495,7 @@ mod tests {
                 sid: sid.clone(),
                 status: RelayReqStatus::InitialQuery,
                 sub_pass: pass,
+                last_enqueued_generation: None,
             },
         );
 
@@ -681,6 +813,9 @@ mod tests {
         data.set_req_status(&sid0.to_string(), RelayReqStatus::Eose);
         data.set_req_status(&sid1.to_string(), RelayReqStatus::Eose);
 
+        websocket.conn.connect(|| {}).expect("reconnect websocket");
+        websocket.set_connected(WebsocketRelay::initial_reconnect_duration());
+
         let invalidated = {
             let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
             relay.handle_relay_open(&subs)
@@ -701,6 +836,105 @@ mod tests {
             Some(RelayReqStatus::InitialQuery),
             "relay-open replay must reset transparent req status to InitialQuery"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transparent_subscribe_enqueues_before_open_and_initial_open_does_not_replay() {
+        let (_relay_task, relay_url, captured, notify) = create_req_capture_relay().await;
+        let mut data = TransparentData::default();
+        let mut guardian = SubPassGuardian::new(1);
+        let subs = create_subs_with_filter(OutboxSubId(0), trivial_filter());
+        let mut websocket = WebsocketRelay::new(
+            WebsocketConn::from_wakeup(relay_url, MockWakeup::default()).unwrap(),
+        );
+
+        {
+            let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
+            assert!(matches!(
+                relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap()),
+                TransparentPlaceResult::Placed
+            ));
+        }
+
+        wait_for_captured_req_count(
+            &captured,
+            &notify,
+            1,
+            Duration::from_secs(5),
+            "pre-open transparent req",
+        )
+        .await;
+
+        websocket.set_connected(WebsocketRelay::initial_reconnect_duration());
+        let invalidated = {
+            let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
+            relay.handle_relay_open(&subs)
+        };
+
+        assert!(
+            invalidated.is_empty(),
+            "initial open must not replay a transparent req already enqueued on this websocket leg"
+        );
+        assert_req_count_stays(&captured, 1, Duration::from_millis(200)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn transparent_reconnect_replays_once_on_new_websocket_leg() {
+        let (_relay_task, relay_url, captured, notify) = create_req_capture_relay().await;
+        let mut data = TransparentData::default();
+        let mut guardian = SubPassGuardian::new(1);
+        let subs = create_subs_with_filter(OutboxSubId(0), trivial_filter());
+        let mut websocket = WebsocketRelay::new(
+            WebsocketConn::from_wakeup(relay_url.clone(), MockWakeup::default()).unwrap(),
+        );
+
+        {
+            let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
+            assert!(matches!(
+                relay.try_subscribe(subs.view(&OutboxSubId(0)).unwrap()),
+                TransparentPlaceResult::Placed
+            ));
+        }
+
+        wait_for_captured_req_count(
+            &captured,
+            &notify,
+            1,
+            Duration::from_secs(5),
+            "initial transparent req",
+        )
+        .await;
+
+        websocket.set_connected(WebsocketRelay::initial_reconnect_duration());
+        {
+            let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
+            let invalidated = relay.handle_relay_open(&subs);
+            assert!(
+                invalidated.is_empty(),
+                "initial open should not invalidate already-enqueued transparent reqs"
+            );
+        }
+
+        websocket.conn.connect(|| {}).expect("reconnect websocket");
+        websocket.set_connected(WebsocketRelay::initial_reconnect_duration());
+        let invalidated = {
+            let mut relay = TransparentRelay::new(Some(&mut websocket), &mut data, &mut guardian);
+            relay.handle_relay_open(&subs)
+        };
+
+        assert_eq!(
+            invalidated,
+            HashSet::from([OutboxSubId(0)]),
+            "reconnect must replay the active transparent req on the new websocket leg"
+        );
+        wait_for_captured_req_count(
+            &captured,
+            &notify,
+            2,
+            Duration::from_secs(5),
+            "transparent replay after reconnect",
+        )
+        .await;
     }
 
     // ==================== take_revoked_transparent_subs tests ====================
