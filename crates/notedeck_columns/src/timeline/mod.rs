@@ -80,7 +80,7 @@ pub(crate) fn ensure_remote_timeline_subscription(
         },
     );
     let _ = scoped_subs.ensure_sub(identity, config);
-    timeline.subscription.mark_remote_seeded(account_pk);
+    timeline.subscription.mark_remote_registered(account_pk);
 }
 
 pub(crate) fn update_remote_timeline_subscription(
@@ -101,7 +101,7 @@ pub(crate) fn update_remote_timeline_subscription(
     let _ = scoped_subs.set_sub(identity, config);
     timeline
         .subscription
-        .mark_remote_seeded(scoped_subs.selected_account_pubkey());
+        .mark_remote_registered(scoped_subs.selected_account_pubkey());
 }
 
 pub fn drop_timeline_remote_owner(
@@ -914,7 +914,7 @@ pub fn is_timeline_ready(
     if let FilterState::Ready(filter) = &timeline.filter {
         let account_pk = *accounts.selected_account_pubkey();
         if timeline.subscription.dependers(&account_pk) > 0
-            && !timeline.subscription.remote_seeded(&account_pk)
+            && !timeline.subscription.is_remote_registered(&account_pk)
         {
             let remote_filters = filter.remote().to_vec();
             ensure_remote_timeline_subscription(timeline, account_pk, remote_filters, scoped_subs);

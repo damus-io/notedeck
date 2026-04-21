@@ -72,7 +72,7 @@ impl TimelineCache {
             .unsubscribe_or_decrement(account_pk, ndb);
 
         if timeline.subscription.no_sub(&account_pk) {
-            timeline.subscription.clear_remote_seeded(account_pk);
+            timeline.subscription.mark_remote_pending(account_pk);
             drop_timeline_remote_owner(timeline, account_pk, scoped_subs);
             // Reset so a later reopen re-runs the initial load and picks
             // up notes posted while the timeline was closed.

@@ -14,11 +14,22 @@ pub struct TimelineSub {
     by_account: HashMap<Pubkey, AccountSubState>,
 }
 
+/// Tracks whether the remote relay subscription has been registered with
+/// `ScopedSubApi` for this (account, timeline) pair. The remote sub itself
+/// lives in the scoped-subs system; this is just an "already asked" marker
+/// so `is_timeline_ready` doesn't re-register the relay sub every frame.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum RemoteSubStatus {
+    #[default]
+    Pending,
+    Registered,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 struct AccountSubState {
     local: Option<Subscription>,
     dependers: usize,
-    remote_seeded: bool,
+    remote_sub_status: RemoteSubStatus,
 }
 
 fn should_remove_account_state(state: &AccountSubState) -> bool {
@@ -78,17 +89,17 @@ impl TimelineSub {
         self.state_for_account_mut(account_pk).dependers += 1;
     }
 
-    pub fn remote_seeded(&self, account_pk: &Pubkey) -> bool {
-        self.state_for_account(account_pk).remote_seeded
+    pub fn is_remote_registered(&self, account_pk: &Pubkey) -> bool {
+        self.state_for_account(account_pk).remote_sub_status == RemoteSubStatus::Registered
     }
 
-    pub fn mark_remote_seeded(&mut self, account_pk: Pubkey) {
-        self.state_for_account_mut(account_pk).remote_seeded = true;
+    pub fn mark_remote_registered(&mut self, account_pk: Pubkey) {
+        self.state_for_account_mut(account_pk).remote_sub_status = RemoteSubStatus::Registered;
     }
 
-    pub fn clear_remote_seeded(&mut self, account_pk: Pubkey) {
+    pub fn mark_remote_pending(&mut self, account_pk: Pubkey) {
         if let Some(state) = self.by_account.get_mut(&account_pk) {
-            state.remote_seeded = false;
+            state.remote_sub_status = RemoteSubStatus::Pending;
         }
     }
 
@@ -105,7 +116,7 @@ impl TimelineSub {
             }
 
             state.dependers = state.dependers.saturating_sub(1);
-            state.remote_seeded = false;
+            state.remote_sub_status = RemoteSubStatus::Pending;
             unsubscribe_local_with_rollback(
                 ndb,
                 &mut state.local,
