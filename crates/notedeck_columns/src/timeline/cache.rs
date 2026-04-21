@@ -2,8 +2,8 @@ use crate::{
     actionbar::TimelineOpenResult,
     error::Error,
     timeline::{
-        drop_timeline_remote_owner, ensure_remote_timeline_subscription, Timeline, TimelineKind,
-        UnknownPksOwned,
+        drop_timeline_remote_owner, ensure_remote_timeline_subscription, InitialLoadState,
+        Timeline, TimelineKind, UnknownPksOwned,
     },
 };
 
@@ -74,6 +74,9 @@ impl TimelineCache {
         if timeline.subscription.no_sub(&account_pk) {
             timeline.subscription.clear_remote_seeded(account_pk);
             drop_timeline_remote_owner(timeline, account_pk, scoped_subs);
+            // Reset so a later reopen re-runs the initial load and picks
+            // up notes posted while the timeline was closed.
+            timeline.initial_load = InitialLoadState::Pending;
         }
 
         if !timeline.subscription.has_any_subs() {
@@ -353,5 +356,215 @@ fn find_new_notes(
     } else {
         debug!("got no results from NotesHolder update",);
         vec![]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Regression tests for [#1449]: posts made while a profile timeline
+    //! was closed must still show up when the timeline is reopened.
+    //!
+    //! This simulates the exact repro:
+    //!   1. post A → open profile → see A
+    //!   2. back → post B
+    //!   3. open profile → must see B
+    //!
+    //! The bug (introduced in 019f93e7018e) was that `TimelineCache::pop`
+    //! left a phantom subscription entry behind, keeping the Timeline
+    //! alive in the cache with `initial_load = Complete`. On reopen, the
+    //! app's `schedule_timeline_load` gate would short-circuit and never
+    //! query ndb for B.
+    //!
+    //! [#1449]: https://github.com/damus-io/notedeck/issues/1449
+
+    use super::*;
+    use crate::timeline::InitialLoadState;
+    use enostr::{FullKeypair, OutboxPool, OutboxSessionHandler};
+    use nostrdb::{Config, NoteBuilder};
+    use notedeck::{Accounts, EguiWakeup, NoteCache, ScopedSubsState, UnknownIds};
+    use std::time::{Duration, Instant};
+    use tempfile::TempDir;
+
+    struct Harness {
+        _tmp: TempDir,
+        ndb: Ndb,
+        accounts: Accounts,
+        scoped_sub_state: ScopedSubsState,
+        pool: OutboxPool,
+        note_cache: NoteCache,
+        kp: FullKeypair,
+    }
+
+    fn make_harness() -> Harness {
+        let tmp = TempDir::new().expect("tmp");
+        let mut ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
+        let kp = FullKeypair::generate();
+        let mut unknown_ids = UnknownIds::default();
+        let accounts = {
+            let txn = Transaction::new(&ndb).expect("txn");
+            // Use our test keypair's pubkey as the selected (fallback)
+            // account so scoped_subs.selected_account_pubkey() matches
+            // what we pass to cache.open.
+            Accounts::new(
+                None,
+                Vec::new(),
+                kp.pubkey,
+                &mut ndb,
+                &txn,
+                &mut unknown_ids,
+            )
+        };
+        Harness {
+            _tmp: tmp,
+            ndb,
+            accounts,
+            scoped_sub_state: ScopedSubsState::default(),
+            pool: OutboxPool::default(),
+            note_cache: NoteCache::default(),
+            kp,
+        }
+    }
+
+    /// Publish a kind-1 note authored by the harness keypair.
+    fn publish_note(h: &Harness, content: &str, created_at: u64) {
+        let note = NoteBuilder::new()
+            .kind(1)
+            .content(content)
+            .created_at(created_at)
+            .sign(&h.kp.secret_key.secret_bytes())
+            .build()
+            .expect("note build");
+        let json = note.json().expect("note json");
+        h.ndb.process_client_event(&json).expect("ingest");
+    }
+
+    /// Wait until ndb has at least `n` matching notes. Ingestion is async.
+    fn wait_for_count(ndb: &Ndb, filter: &[Filter], n: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let txn = Transaction::new(ndb).expect("txn");
+            let hit = ndb.query(&txn, filter, 100).map(|r| r.len()).unwrap_or(0);
+            if hit >= n {
+                return;
+            }
+            if Instant::now() >= deadline {
+                panic!("timed out waiting for {n} notes, have {hit}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Mirrors the subset of `app::schedule_timeline_load` + the timeline
+    /// loader's ndb work that's relevant here: if the timeline's
+    /// `initial_load` is `Pending`, query ndb and insert the results,
+    /// then mark it `Complete`. Otherwise do nothing (that's the bug
+    /// path).
+    fn run_scheduled_initial_load(
+        cache: &mut TimelineCache,
+        kind: &TimelineKind,
+        ndb: &Ndb,
+        note_cache: &mut NoteCache,
+    ) {
+        let timeline = cache.get_mut(kind).expect("timeline exists");
+        if timeline.initial_load != InitialLoadState::Pending {
+            return;
+        }
+        let FilterState::Ready(filter) = timeline.filter.clone() else {
+            panic!("filter should be ready for profile timeline");
+        };
+        let txn = Transaction::new(ndb).expect("txn");
+        let mut notes: Vec<NoteRef> = Vec::new();
+        for pkg in filter.local().packages {
+            let results = ndb.query(&txn, pkg.filters, 1000).expect("query ok");
+            notes.extend(results.into_iter().map(NoteRef::from_query_result));
+        }
+        timeline.insert_new(&txn, ndb, note_cache, &notes);
+        timeline.initial_load = InitialLoadState::Complete;
+    }
+
+    #[test]
+    fn reopened_profile_shows_posts_made_while_closed() {
+        let mut h = make_harness();
+        let pk = h.kp.pubkey;
+        let kind = TimelineKind::profile(pk);
+        let author_filter = vec![Filter::new().authors([pk.bytes()]).kinds([1]).build()];
+
+        let mut cache = TimelineCache::default();
+
+        // --- Step 1: post A, then open profile and run the initial load ---
+        publish_note(&h, "post A", 1_700_000_100);
+        wait_for_count(&h.ndb, &author_filter, 1);
+
+        {
+            let txn = Transaction::new(&h.ndb).expect("txn");
+            let mut outbox =
+                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
+            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            cache.open(
+                &h.ndb,
+                &mut h.note_cache,
+                &txn,
+                &mut scoped_subs,
+                &kind,
+                pk,
+                false,
+            );
+        }
+        run_scheduled_initial_load(&mut cache, &kind, &h.ndb, &mut h.note_cache);
+
+        assert_eq!(
+            cache
+                .get(&kind)
+                .expect("timeline")
+                .current_view()
+                .units
+                .len(),
+            1,
+            "post A should be visible after the first open"
+        );
+
+        // --- Step 2: go back (pop the route) ---
+        {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
+            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            cache
+                .pop(&kind, &mut h.ndb, &mut scoped_subs)
+                .expect("pop ok");
+        }
+
+        // --- Step 3: post B while the profile is closed ---
+        publish_note(&h, "post B", 1_700_000_200);
+        wait_for_count(&h.ndb, &author_filter, 2);
+
+        // --- Step 4: reopen profile and run the scheduled load again ---
+        {
+            let txn = Transaction::new(&h.ndb).expect("txn");
+            let mut outbox =
+                OutboxSessionHandler::new(&mut h.pool, EguiWakeup::new(egui::Context::default()));
+            let mut scoped_subs = h.scoped_sub_state.api(&mut outbox, &h.accounts);
+            cache.open(
+                &h.ndb,
+                &mut h.note_cache,
+                &txn,
+                &mut scoped_subs,
+                &kind,
+                pk,
+                false,
+            );
+        }
+        run_scheduled_initial_load(&mut cache, &kind, &h.ndb, &mut h.note_cache);
+
+        // --- Step 5: post B must now be visible ---
+        let view_len = cache
+            .get(&kind)
+            .expect("timeline")
+            .current_view()
+            .units
+            .len();
+        assert_eq!(
+            view_len, 2,
+            "after reopening, both posts A and B should be visible (got {view_len})"
+        );
     }
 }

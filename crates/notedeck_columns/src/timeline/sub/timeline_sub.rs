@@ -87,7 +87,9 @@ impl TimelineSub {
     }
 
     pub fn clear_remote_seeded(&mut self, account_pk: Pubkey) {
-        self.state_for_account_mut(account_pk).remote_seeded = false;
+        if let Some(state) = self.by_account.get_mut(&account_pk) {
+            state.remote_seeded = false;
+        }
     }
 
     pub fn get_local(&self, account_pk: &Pubkey) -> Option<Subscription> {
