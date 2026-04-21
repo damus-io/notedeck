@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+
+set -eou pipefail
+
+RELEASE_VER="$(cargo pkgid -p notedeck | cut -d "#" -f2)"
+
+# Build the release APK
+make release-apk
+
+cp crates/notedeck_chrome/android/app/build/outputs/apk/release/app-release.apk notedeck.apk
+
+echo ""
+echo "# Create github release"
+echo "gh release create \"v${RELEASE_VER}\" notedeck.apk --repo damus-io/notedeck --title \"v${RELEASE_VER}\" --notes \"Test beta prerelease for APK self-update\" --prerelease"
+
+echo ""
+echo "# Dry-run first to inspect events"
+echo "cargo run -p notedeck_release -- --nsec \$RELEASE_NSEC --version \"${RELEASE_VER}\" --channel beta --dry-run"
+
+echo ""
+echo "# Publish for real"
+echo "cargo run -p notedeck_release -- --nsec \$RELEASE_NSEC --relay ws://relay.jb55.com --version \"${RELEASE_VER}\" --channel beta"
