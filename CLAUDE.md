@@ -32,4 +32,8 @@ Or if there's nothing interesting to note (refactors, etc)
 
    Changelog-None:
 
+When fixing a bug introduced by another commit, add:
 
+   Fixes: 69007fce5002 ("messages: make profile pictures clickable to open in columns")
+
+You can create this line with `git --no-pager show -s --pretty=fixes <commit>`
