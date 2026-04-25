@@ -108,66 +108,9 @@ impl<'a> SessionListUi<'a> {
 
         // Agents grouped by host → cwd (pre-computed, deterministically ordered)
         for host_group in &host_groups {
-            let host_label = if host_group.hostname.is_empty() {
-                "Local"
-            } else {
-                &host_group.hostname
-            };
-
-            let host_collapsed = self.collapse_state.is_host_collapsed(&host_group.hostname);
-
-            let host_response = host_header_ui(ui, host_label);
-            if host_response.clicked() {
-                action = Some(SessionListAction::ToggleHostCollapse(
-                    host_group.hostname.clone(),
-                ));
+            if let Some(a) = host_section_ui(ui, self, host_group, &mut visual_index, active_id) {
+                action = Some(a);
             }
-            ui.add_space(4.0);
-
-            if host_collapsed {
-                ui.add_space(6.0);
-                continue;
-            }
-
-            for cwd_group in &host_group.cwd_groups {
-                let collapsed = self
-                    .collapse_state
-                    .is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd);
-
-                let header_response = cwd_folder_header(ui, &cwd_group.display_cwd, collapsed);
-                if header_response.clicked() {
-                    action = Some(SessionListAction::ToggleCwdCollapse(
-                        host_group.hostname.clone(),
-                        cwd_group.cwd.clone(),
-                    ));
-                }
-
-                notedeck_ui::context_menu::context_menu(&header_response, |ui| {
-                    if ui.button("New Session").clicked() {
-                        action = Some(SessionListAction::NewSessionInCwd(
-                            host_group.hostname.clone(),
-                            cwd_group.cwd.clone(),
-                        ));
-                        ui.close_menu();
-                    }
-                });
-
-                if !collapsed {
-                    ui.add_space(2.0);
-                    for &id in &cwd_group.session_ids {
-                        if let Some(session) = self.session_manager.get(id) {
-                            if let Some(a) =
-                                self.render_session_item(ui, session, visual_index, active_id)
-                            {
-                                action = Some(a);
-                            }
-                            visual_index += 1;
-                        }
-                    }
-                }
-                ui.add_space(2.0);
-            }
-            ui.add_space(6.0);
         }
 
         // Chats section (pre-computed IDs)
@@ -732,62 +675,131 @@ fn render_title(ui: &mut egui::Ui, title: &str, x: f32, y: f32, max_width: f32) 
     }
 }
 
-/// Render a collapsible host header. Truncates with ellipsis and shows
-/// full name on hover.
-fn host_header_ui(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    let text = egui::RichText::new(label)
-        .size(14.0)
-        .color(ui.visuals().weak_text_color());
-    let widget = egui::Label::new(text).truncate().sense(Sense::click());
-    ui.add(widget)
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-}
-
-/// Render a collapsible cwd folder header with disclosure triangle and truncated path.
-fn cwd_folder_header(ui: &mut egui::Ui, cwd_display: &str, collapsed: bool) -> egui::Response {
-    let header_height = 24.0;
-    let desired_size = egui::vec2(ui.available_width(), header_height);
-    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, cwd_display));
-
-    let triangle_size = 8.0;
-    let triangle_center = egui::pos2(rect.left() + 4.0 + triangle_size / 2.0, rect.center().y);
-    let weak_color = ui.visuals().weak_text_color();
-
-    let triangle_points = disclosure_triangle(triangle_center, collapsed);
-    ui.painter().add(egui::Shape::convex_polygon(
-        triangle_points,
-        weak_color,
-        egui::Stroke::NONE,
-    ));
-
-    let text_start = rect.left() + 4.0 + triangle_size + 4.0;
-    let max_text_width = rect.right() - text_start - 4.0;
-    let (text, _) = truncate_host_and_path(ui, "", cwd_display, max_text_width);
-    let font = egui::FontId::monospace(10.0);
-    let text_pos = egui::pos2(text_start, rect.center().y);
-    ui.painter()
-        .text(text_pos, egui::Align2::LEFT_CENTER, &text, font, weak_color);
-
-    response
-}
-
-/// Compute the three vertices for a disclosure triangle.
-fn disclosure_triangle(center: egui::Pos2, collapsed: bool) -> Vec<egui::Pos2> {
-    if collapsed {
-        vec![
-            center + egui::vec2(-3.0, -4.0),
-            center + egui::vec2(4.0, 0.0),
-            center + egui::vec2(-3.0, 4.0),
-        ]
+/// Render one host's collapsible section, including its nested cwd sections.
+///
+/// Egui's `CollapsingState` handles the disclosure triangle and animation;
+/// the open flag is forced from the external `CollapseState` each frame, so
+/// keyboard navigation and persistence keep their single source of truth.
+fn host_section_ui(
+    ui: &mut egui::Ui,
+    list_ui: &SessionListUi<'_>,
+    host_group: &crate::session::HostGroup,
+    visual_index: &mut usize,
+    active_id: Option<SessionId>,
+) -> Option<SessionListAction> {
+    let mut action = None;
+    let host_label = if host_group.hostname.is_empty() {
+        "Local"
     } else {
-        vec![
-            center + egui::vec2(-4.0, -3.0),
-            center + egui::vec2(4.0, -3.0),
-            center + egui::vec2(0.0, 4.0),
-        ]
+        host_group.hostname.as_str()
+    };
+    let host_collapsed = list_ui
+        .collapse_state
+        .is_host_collapsed(&host_group.hostname);
+    let host_id = ui.make_persistent_id(("dave_host_collapse", host_group.hostname.as_str()));
+    let mut host_state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), host_id, true);
+    host_state.set_open(!host_collapsed);
+
+    let header = host_state.show_header(ui, |ui| {
+        let text = egui::RichText::new(host_label)
+            .size(14.0)
+            .color(ui.visuals().weak_text_color());
+        ui.add(egui::Label::new(text).truncate().sense(Sense::click()))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+    });
+
+    let (toggle_resp, label_resp, _) = header.body_unindented(|ui| {
+        for cwd_group in &host_group.cwd_groups {
+            if let Some(a) = cwd_section_ui(
+                ui,
+                list_ui,
+                &host_group.hostname,
+                cwd_group,
+                visual_index,
+                active_id,
+            ) {
+                action = Some(a);
+            }
+        }
+    });
+
+    if toggle_resp.clicked() || label_resp.inner.clicked() {
+        action = Some(SessionListAction::ToggleHostCollapse(
+            host_group.hostname.clone(),
+        ));
     }
+
+    ui.add_space(6.0);
+    action
+}
+
+/// Render one (host, cwd) collapsible section, including its session rows.
+fn cwd_section_ui(
+    ui: &mut egui::Ui,
+    list_ui: &SessionListUi<'_>,
+    hostname: &str,
+    cwd_group: &crate::session::CwdGroup,
+    visual_index: &mut usize,
+    active_id: Option<SessionId>,
+) -> Option<SessionListAction> {
+    let mut action = None;
+    let cwd_collapsed = list_ui
+        .collapse_state
+        .is_cwd_collapsed(hostname, &cwd_group.cwd);
+    let cwd_id = ui.make_persistent_id(("dave_cwd_collapse", hostname, cwd_group.cwd.as_path()));
+    let mut cwd_state =
+        egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), cwd_id, true);
+    cwd_state.set_open(!cwd_collapsed);
+
+    let header = cwd_state.show_header(ui, |ui| cwd_folder_label_ui(ui, &cwd_group.display_cwd));
+
+    let (toggle_resp, label_resp, _) = header.body_unindented(|ui| {
+        ui.add_space(2.0);
+        for &id in &cwd_group.session_ids {
+            if let Some(session) = list_ui.session_manager.get(id) {
+                if let Some(a) = list_ui.render_session_item(ui, session, *visual_index, active_id)
+                {
+                    action = Some(a);
+                }
+                *visual_index += 1;
+            }
+        }
+    });
+
+    if toggle_resp.clicked() || label_resp.inner.clicked() {
+        action = Some(SessionListAction::ToggleCwdCollapse(
+            hostname.to_string(),
+            cwd_group.cwd.clone(),
+        ));
+    }
+
+    notedeck_ui::context_menu::context_menu(&label_resp.inner, |ui| {
+        if ui.button("New Session").clicked() {
+            action = Some(SessionListAction::NewSessionInCwd(
+                hostname.to_string(),
+                cwd_group.cwd.clone(),
+            ));
+            ui.close_menu();
+        }
+    });
+
+    ui.add_space(2.0);
+    action
+}
+
+/// Renders just the cwd label (monospace 10pt, weak color, truncated from the
+/// start) for use inside `CollapsingState::show_header`. egui draws the
+/// disclosure triangle separately.
+fn cwd_folder_label_ui(ui: &mut egui::Ui, cwd_display: &str) -> egui::Response {
+    let max_text_width = (ui.available_width() - 4.0).max(0.0);
+    let (text, _) = truncate_host_and_path(ui, "", cwd_display, max_text_width);
+    let weak_color = ui.visuals().weak_text_color();
+    let rich = egui::RichText::new(text)
+        .font(egui::FontId::monospace(10.0))
+        .color(weak_color);
+    ui.add(egui::Label::new(rich).sense(Sense::click()))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Renders the "Delete worktree" context-menu item with an inline confirmation step.
