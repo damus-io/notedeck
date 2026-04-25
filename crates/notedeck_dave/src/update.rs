@@ -1638,9 +1638,21 @@ mod tests {
             "/srv/hidden",
             "Hidden",
         );
+        // Second session in /srv/hidden so its cwd is collapsible
+        // (single-session cwds skip the folder header and are always visible).
+        let _hidden_sibling = create_named_agent_session(
+            &mut sm,
+            &mut picker,
+            &mut scene,
+            "remote-a",
+            "/srv/hidden",
+            "Hidden sibling",
+        );
 
         let mut collapse = CollapseState::new();
         collapse.toggle_cwd("remote-a", std::path::Path::new("/srv/hidden"));
+
+        sm.switch_to(hidden_id);
 
         focus_queue.enqueue(hidden_id, FocusPriority::NeedsInput);
         focus_queue.enqueue(visible_id, FocusPriority::Error);

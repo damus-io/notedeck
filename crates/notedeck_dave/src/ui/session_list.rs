@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use egui::{Align, Color32, Layout, Sense};
+use egui::{Align, Color32, Layout, Pos2, Sense};
 use notedeck_ui::app_images;
 
 use crate::agent_status::AgentStatus;
@@ -124,7 +124,8 @@ impl<'a> SessionListUi<'a> {
             ui.add_space(4.0);
             for id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
-                    if let Some(a) = self.render_session_item(ui, session, visual_index, active_id)
+                    if let Some(a) =
+                        self.render_session_item(ui, session, visual_index, active_id, None)
                     {
                         action = Some(a);
                     }
@@ -142,6 +143,7 @@ impl<'a> SessionListUi<'a> {
         session: &crate::session::ChatSession,
         index: usize,
         active_id: Option<SessionId>,
+        cwd_display: Option<&str>,
     ) -> Option<SessionListAction> {
         let is_active = Some(session.id) == active_id;
         let shortcut_hint = if self.ctrl_held && index < 9 {
@@ -169,6 +171,7 @@ impl<'a> SessionListUi<'a> {
                 ui,
                 session.id,
                 display_title,
+                cwd_display,
                 is_active,
                 shortcut_hint,
                 session.status(),
@@ -307,19 +310,25 @@ impl<'a> SessionListUi<'a> {
     }
 
     /// Render an agentic session row (status bar, backend icon, focus dot).
+    ///
+    /// When `cwd_display` is `Some`, the row is taller (48px) and shows the cwd
+    /// path in a second line below the title (used for sessions that are alone
+    /// in their cwd, where the surrounding folder header is suppressed).
     #[allow(clippy::too_many_arguments)]
     fn agent_row_ui(
         &self,
         ui: &mut egui::Ui,
         session_id: SessionId,
         title: &str,
+        cwd_display: Option<&str>,
         is_active: bool,
         shortcut_hint: Option<usize>,
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
         backend_type: BackendType,
     ) -> (egui::Response, Option<SessionListAction>) {
-        let desired_size = egui::vec2(ui.available_width(), 32.0);
+        let row_height = if cwd_display.is_some() { 48.0 } else { 32.0 };
+        let desired_size = egui::vec2(ui.available_width(), row_height);
         let (rect, response) = ui.allocate_exact_size(desired_size, Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
@@ -365,7 +374,11 @@ impl<'a> SessionListUi<'a> {
             .layout_no_wrap(title.to_string(), font_id, ui.visuals().text_color())
             .size()
             .y;
-        let title_top = rect.center().y - title_height / 2.0;
+        let title_top = if cwd_display.is_some() {
+            rect.top() + 6.0
+        } else {
+            rect.center().y - title_height / 2.0
+        };
         render_title(
             ui,
             title,
@@ -373,6 +386,11 @@ impl<'a> SessionListUi<'a> {
             title_top,
             max_text_width,
         );
+
+        if let Some(cwd) = cwd_display {
+            let cwd_pos = egui::pos2(rect.left() + text_start_x, title_top + title_height + 1.0);
+            cwd_inline_ui(ui, cwd, cwd_pos, max_text_width);
+        }
 
         (response, dot_action)
     }
@@ -734,7 +752,11 @@ fn host_section_ui(
     action
 }
 
-/// Render one (host, cwd) collapsible section, including its session rows.
+/// Render one (host, cwd) section, including its session rows.
+///
+/// When the cwd has a single session, the folder header is suppressed and the
+/// session is rendered inline with its cwd path embedded in the row. When the
+/// cwd has multiple sessions, a collapsible folder wraps them.
 fn cwd_section_ui(
     ui: &mut egui::Ui,
     list_ui: &SessionListUi<'_>,
@@ -744,6 +766,25 @@ fn cwd_section_ui(
     active_id: Option<SessionId>,
 ) -> Option<SessionListAction> {
     let mut action = None;
+
+    // Single-session cwd: render the row inline with the cwd path, no folder.
+    if cwd_group.session_ids.len() == 1 {
+        let id = cwd_group.session_ids[0];
+        if let Some(session) = list_ui.session_manager.get(id) {
+            if let Some(a) = list_ui.render_session_item(
+                ui,
+                session,
+                *visual_index,
+                active_id,
+                Some(cwd_group.display_cwd.as_str()),
+            ) {
+                action = Some(a);
+            }
+            *visual_index += 1;
+        }
+        return action;
+    }
+
     let cwd_collapsed = list_ui
         .collapse_state
         .is_cwd_collapsed(hostname, &cwd_group.cwd);
@@ -758,7 +799,8 @@ fn cwd_section_ui(
         ui.add_space(2.0);
         for &id in &cwd_group.session_ids {
             if let Some(session) = list_ui.session_manager.get(id) {
-                if let Some(a) = list_ui.render_session_item(ui, session, *visual_index, active_id)
+                if let Some(a) =
+                    list_ui.render_session_item(ui, session, *visual_index, active_id, None)
                 {
                     action = Some(a);
                 }
@@ -786,6 +828,17 @@ fn cwd_section_ui(
 
     ui.add_space(2.0);
     action
+}
+
+/// Draw the cwd path inline within an agent row (monospace 10pt, weak color,
+/// truncated from the start), for sessions that are alone in their cwd and so
+/// don't get a surrounding folder header.
+fn cwd_inline_ui(ui: &mut egui::Ui, cwd_display: &str, pos: Pos2, max_width: f32) {
+    let (text, _) = truncate_host_and_path(ui, "", cwd_display, max_width);
+    let cwd_font = egui::FontId::monospace(10.0);
+    let cwd_color = ui.visuals().weak_text_color();
+    ui.painter()
+        .text(pos, egui::Align2::LEFT_TOP, &text, cwd_font, cwd_color);
 }
 
 /// Renders just the cwd label (monospace 10pt, weak color, truncated from the
@@ -866,15 +919,22 @@ mod tests {
         fn new() -> Self {
             let cwd_path = PathBuf::from("/tmp/project");
             let mut session_manager = SessionManager::new();
-            let session_id =
-                session_manager.new_session(cwd_path.clone(), AiMode::Agentic, BackendType::Claude);
-            let session = session_manager
-                .get_mut(session_id)
-                .expect("session should exist");
-            session.details.hostname = "host-a".to_string();
-            session.details.title = "Workspace agent".to_string();
-            session.details.custom_title = None;
-            session.details.home_dir = String::new();
+            // Two sessions in the same cwd so the folder header is rendered
+            // (single-session cwds skip the header and inline the cwd path).
+            for title in ["Workspace agent A", "Workspace agent B"] {
+                let session_id = session_manager.new_session(
+                    cwd_path.clone(),
+                    AiMode::Agentic,
+                    BackendType::Claude,
+                );
+                let session = session_manager
+                    .get_mut(session_id)
+                    .expect("session should exist");
+                session.details.hostname = "host-a".to_string();
+                session.details.title = title.to_string();
+                session.details.custom_title = None;
+                session.details.home_dir = String::new();
+            }
             session_manager.rebuild_cwd_groups();
 
             let cwd_label = session_manager.host_cwd_groups()[0].cwd_groups[0]

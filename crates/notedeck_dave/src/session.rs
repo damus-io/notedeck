@@ -1211,7 +1211,11 @@ impl SessionManager {
                 continue;
             }
             for cwd_group in &host_group.cwd_groups {
-                if collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd) {
+                // Single-session cwds render without a folder header (no UI to
+                // collapse), so they're always visible to keyboard nav too —
+                // ignore any stale `is_cwd_collapsed` state.
+                let collapsible = cwd_group.session_ids.len() > 1;
+                if collapsible && collapse.is_cwd_collapsed(&host_group.hostname, &cwd_group.cwd) {
                     continue;
                 }
                 ids.extend_from_slice(&cwd_group.session_ids);
@@ -2963,7 +2967,12 @@ mod tests {
     fn visual_order_skips_collapsed_hosts_and_cwds_but_keeps_chats() {
         let mut mgr = SessionManager::new();
 
-        let _local_a = create_grouped_session(&mut mgr, "", "/work/a", "Local A", AiMode::Agentic);
+        // Two sessions in /work/a so the cwd is collapsible (single-session
+        // cwds always stay visible regardless of collapse state).
+        let _local_a1 =
+            create_grouped_session(&mut mgr, "", "/work/a", "Local A1", AiMode::Agentic);
+        let _local_a2 =
+            create_grouped_session(&mut mgr, "", "/work/a", "Local A2", AiMode::Agentic);
         let local_b = create_grouped_session(&mut mgr, "", "/work/b", "Local B", AiMode::Agentic);
         let remote_a = create_grouped_session(
             &mut mgr,
@@ -2991,6 +3000,23 @@ mod tests {
             mgr.visual_order(&collapse),
             vec![local_b, remote_a, chat_id]
         );
+    }
+
+    #[test]
+    fn visual_order_keeps_single_session_cwd_visible_even_if_marked_collapsed() {
+        let mut mgr = SessionManager::new();
+
+        // Only one session in /work/solo — its cwd cannot be collapsed in the
+        // UI (no folder header is rendered), so a stale `is_cwd_collapsed`
+        // entry must not hide it from keyboard navigation.
+        let solo = create_grouped_session(&mut mgr, "", "/work/solo", "Solo", AiMode::Agentic);
+
+        mgr.rebuild_cwd_groups();
+
+        let mut collapse = CollapseState::new();
+        collapse.toggle_cwd("", std::path::Path::new("/work/solo"));
+
+        assert_eq!(mgr.visual_order(&collapse), vec![solo]);
     }
 
     // ---- compact_intent / take_compact_and_proceed tests ----
