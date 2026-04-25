@@ -223,8 +223,14 @@ pub struct ProfileSearchResult {
     pub is_contact: bool,
 }
 
+/// Allowed Bech32 data characters used while extracting Nostr identifiers.
 const BECH32_DATA_CHARS: &str = "023456789acdefghjklmnpqrstuvwxyz";
 
+/// Extract the first Bech32 identifier with `prefix` from arbitrary text.
+///
+/// Matching is case-insensitive, but the returned slice points into `query` and preserves the
+/// original casing. Extraction starts at the matched prefix and stops at the first non-Bech32 data
+/// character. Returns `None` when no prefix is found or when it is not followed by Bech32 data.
 fn extract_bech32_identifier<'a>(query: &'a str, prefix: &str) -> Option<&'a str> {
     let lower = query.to_ascii_lowercase();
     let start = lower.find(prefix)?;

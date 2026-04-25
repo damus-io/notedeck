@@ -74,10 +74,10 @@ impl<'a> CreateConvoUi<'a> {
                 top: 4,
                 bottom: 0,
             };
-            if let ContactState::Received { contacts, .. } = self.contacts {
-                Frame::new()
-                    .inner_margin(contacts_margin)
-                    .show(ui, |ui| {
+            Frame::new()
+                .inner_margin(contacts_margin)
+                .show(ui, |ui| {
+                    if let ContactState::Received { contacts, .. } = self.contacts {
                         let resp = ContactsListView::new(
                             contacts,
                             self.jobs,
@@ -93,21 +93,16 @@ impl<'a> CreateConvoUi<'a> {
                                 CreateConvoResponse { recipient: pubkey }
                             }
                         })
-                    })
-                    .inner
-            } else {
-                Frame::new()
-                    .inner_margin(contacts_margin)
-                    .show(ui, |ui| {
+                    } else {
                         ui.label(tr!(
                             self.i18n,
                             "No contacts yet",
                             "Shown when user has no contacts to display"
                         ));
                         None
-                    })
-                    .inner
-            }
+                    }
+                })
+                .inner
         } else {
             // Show search results
             ui.add(Label::new(

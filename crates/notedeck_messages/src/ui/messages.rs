@@ -11,8 +11,9 @@ use crate::{
     cache::{ConversationCache, ConversationStates},
     nav::{MessagesUiResponse, Route},
     ui::{
-        conversation_details_button, conversation_header_impl, convo::conversation_ui,
-        nav::render_nav, show_conversation_details_modal, MessagesTransportStatus,
+        conversation_details_button, conversation_details_tooltip, conversation_header_impl,
+        convo::conversation_ui, nav::render_nav, show_conversation_details_modal,
+        MessagesTransportStatus,
     },
 };
 
@@ -34,6 +35,7 @@ pub fn desktop_messages_ui(
     let mut nav_resp = None;
     let mut convo_resp = None;
     let mut header_resp = None;
+    let details_tooltip = conversation_details_tooltip(i18n);
 
     StripBuilder::new(ui)
         .size(Size::exact(300.0))
@@ -90,8 +92,11 @@ pub fn desktop_messages_ui(
                                                     Layout::right_to_left(egui::Align::Center),
                                                     |ui| {
                                                         if cache.get_active().is_some()
-                                                            && conversation_details_button(ui)
-                                                                .clicked()
+                                                            && conversation_details_button(
+                                                                ui,
+                                                                &details_tooltip,
+                                                            )
+                                                            .clicked()
                                                         {
                                                             header_resp = Some(
                                                                 crate::nav::MessagesAction::ShowConversationDetails,

@@ -302,7 +302,15 @@ pub fn conversation_header(
     clicked
 }
 
-pub fn conversation_details_button(ui: &mut egui::Ui) -> egui::Response {
+pub fn conversation_details_tooltip(i18n: &mut Localization) -> String {
+    tr!(
+        i18n,
+        "Chat Details",
+        "Tooltip for the chat transport and participant details button"
+    )
+}
+
+pub fn conversation_details_button(ui: &mut egui::Ui, hover_text: &str) -> egui::Response {
     let size = vec2(32.0, 32.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
 
@@ -321,7 +329,7 @@ pub fn conversation_details_button(ui: &mut egui::Ui) -> egui::Response {
 
     response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Chat Details")
+        .on_hover_text(hover_text)
 }
 
 pub fn show_conversation_details_modal(

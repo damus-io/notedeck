@@ -115,6 +115,9 @@ Cancel_ed3b = {"["}Çàñçél{"]"}
 # Label for cancel clear cache, Storage settings section
 Cancel_fd8b = {"["}Çàñçél{"]"}
 
+# Tooltip for the chat transport and participant details button
+Chat_Details_3d3c = {"["}Çhàt Détàíls{"]"}
+
 # Title for chat transport and participant details dialog
 Chat_Details_b6d2 = {"["}Çhàt Détàíls{"]"}
 
@@ -210,6 +213,27 @@ Copy_Pubkey_9cc4 = {"["}Çópy Púbkéy{"]"}
 
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = {"["}Çópy Téxt{"]"}
+
+# Relative time in days
+count_d_b9be = {"["}{$count}d{"]"}
+
+# Relative time in hours
+count_h_3ecb = {"["}{$count}h{"]"}
+
+# Relative time in minutes
+count_m_b41e = {"["}{$count}m{"]"}
+
+# Relative time in months
+count_mo_7aba = {"["}{$count}mó{"]"}
+
+# Relative time in seconds
+count_s_aa26 = {"["}{$count}s{"]"}
+
+# Relative time in weeks
+count_w_7468 = {"["}{$count}w{"]"}
+
+# Relative time in years
+count_y_9408 = {"["}{$count}y{"]"}
 
 # Button to create a new account
 Create_Account_6994 = {"["}Çréàté Àççóúñt{"]"}
@@ -382,9 +406,6 @@ Keep_track_of_your_notes___replies_a334 = {"["}Kéép tràçk óf yóúr ñóté
 # Confirmation prompt for database compaction
 Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_c4a6 = {"["}Kééps àll prófílés àñd yóúr ñótés. Thé smàllér dàtàbàsé wíll bé úséd óñ ñéxt réstàrt.{"]"}
 
-# desc
-key_1dee = {"["}kéy{"]"}
-
 # label for keys setting section
 Keys_435f = {"["}Kéys{"]"}
 
@@ -417,6 +438,9 @@ Media_from_someone_you_don_t_follow_5611 = {"["}Médíà fróm sóméóñé yó�
 
 # Filter label for mentions only view
 Mentions_28d3 = {"["}Méñtíóñs{"]"}
+
+# Tooltip for the messages app button
+Messages_2f17 = {"["}Méssàgés{"]"}
 
 # Label for stored chat message transport counts
 Messages_3a3d = {"["}Méssàgés{"]"}
@@ -455,7 +479,7 @@ name__reposted_a_note_you_were_tagged_in_1379 = {"["}{$name} répóstéd à ñó
 name__reposted_your_note_1379 = {"["}{$name} répóstéd yóúr ñóté{"]"}
 
 # Button to go to a WASM app
-name_as_str_c366 = {"["}ñàmé.às_str(){"]"}
+name_c366 = {"["}{$name}{"]"}
 
 # Title shown when composing a new conversation
 New_Chat_afb4 = {"["}Ñéw Çhàt{"]"}

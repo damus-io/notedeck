@@ -37,5 +37,6 @@ pub struct ConversationState {
     pub list: VirtualList,
     pub last_read: Option<NoteRef>,
     pub composer: String,
+    /// Per-conversation in-memory flag for whether the details dialog is open.
     pub details_open: bool,
 }

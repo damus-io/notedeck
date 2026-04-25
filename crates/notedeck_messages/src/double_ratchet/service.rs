@@ -17,6 +17,11 @@ use crate::cache::{ConversationCache, ConversationId};
 use super::util::{build_inner_rumor_event, unsigned_event_to_ndb_json};
 use super::worker::WorkerHandle;
 
+const MESSAGE_RETRY_DELAY: Duration = Duration::from_millis(200);
+const MESSAGE_RETRY_STALE_AFTER: Duration = Duration::from_secs(300);
+const MESSAGE_RETRY_MAX_ENTRIES: usize = 4096;
+const PEER_APP_KEYS_REFRESH: Duration = Duration::from_secs(1);
+
 struct ActiveSub {
     local_sub: Option<Subscription>,
     filters: Vec<Filter>,
@@ -35,6 +40,8 @@ pub(crate) struct RatchetService {
     seen_outer_events: HashSet<[u8; 32]>,
     message_retry_at: HashMap<[u8; 32], Instant>,
     pending_publish: Vec<[u8; 32]>,
+    known_app_key_recipients: HashSet<Pubkey>,
+    app_key_checked_at: HashMap<Pubkey, Instant>,
 }
 
 impl RatchetService {
@@ -68,6 +75,8 @@ impl RatchetService {
             seen_outer_events: HashSet::new(),
             message_retry_at: HashMap::new(),
             pending_publish: Vec::new(),
+            known_app_key_recipients: HashSet::new(),
+            app_key_checked_at: HashMap::new(),
         })
     }
 
@@ -91,7 +100,7 @@ impl RatchetService {
 
     /// Returns whether the 1:1 peer is known to support double ratchet.
     pub(crate) fn conversation_supports_double_ratchet(
-        &self,
+        &mut self,
         conversation_id: ConversationId,
         cache: &ConversationCache,
         ctx: &AppContext<'_>,
@@ -103,7 +112,7 @@ impl RatchetService {
 
         recipient_pk != self.owner_pubkey
             && (self.send_ready_recipients.contains(&recipient_pk)
-                || recipient_has_app_keys(ctx, &recipient))
+                || self.recipient_has_app_keys(ctx, &recipient, false))
     }
 
     /// Drain worker events, publish queued outer events, and feed matching NDB events to the worker.
@@ -153,12 +162,23 @@ impl RatchetService {
         };
         self.prepare_conversation(conversation_id, cache);
 
-        if recipient_pk == self.owner_pubkey
-            || (!self.send_ready_recipients.contains(&recipient_pk)
-                && !recipient_has_app_keys(ctx, &recipient))
-        {
+        if recipient_pk == self.owner_pubkey {
             return false;
         }
+
+        let known_app_keys = self.send_ready_recipients.contains(&recipient_pk)
+            || self.recipient_has_app_keys(ctx, &recipient, true);
+        if !known_app_keys {
+            return false;
+        }
+
+        let Ok(chat_message_kind) = u16::try_from(nostr_double_ratchet::CHAT_MESSAGE_KIND) else {
+            tracing::warn!(
+                "double-ratchet: unsupported chat message kind {}",
+                nostr_double_ratchet::CHAT_MESSAGE_KIND
+            );
+            return true;
+        };
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -166,7 +186,7 @@ impl RatchetService {
         let rumor = match build_inner_rumor_event(
             self.owner_pubkey,
             recipient_pk,
-            nostr_double_ratchet::CHAT_MESSAGE_KIND,
+            chat_message_kind,
             content,
             Vec::new(),
             now.as_secs(),
@@ -338,6 +358,10 @@ impl RatchetService {
     }
 
     fn flush_pending_publishes(&mut self, ctx: &mut AppContext<'_>) -> bool {
+        if self.pending_publish.is_empty() {
+            return false;
+        }
+
         let mut published_any = false;
         let mut remaining = Vec::new();
         let Ok(txn) = Transaction::new(ctx.ndb) else {
@@ -423,8 +447,8 @@ impl RatchetService {
                         return false;
                     }
 
-                    self.message_retry_at
-                        .insert(id, now + Duration::from_millis(200));
+                    self.prune_message_retries(now);
+                    self.message_retry_at.insert(id, now + MESSAGE_RETRY_DELAY);
                     self.worker.process_event(event);
                     return false;
                 }
@@ -440,6 +464,60 @@ impl RatchetService {
                 false
             }
         }
+    }
+
+    fn prune_message_retries(&mut self, now: Instant) {
+        if let Some(stale_before) = now.checked_sub(MESSAGE_RETRY_STALE_AFTER) {
+            self.message_retry_at
+                .retain(|_, retry_at| *retry_at >= stale_before);
+        }
+
+        if self.message_retry_at.len() <= MESSAGE_RETRY_MAX_ENTRIES {
+            return;
+        }
+
+        let mut entries: Vec<([u8; 32], Instant)> = self
+            .message_retry_at
+            .iter()
+            .map(|(id, retry_at)| (*id, *retry_at))
+            .collect();
+        entries.sort_by_key(|(_, retry_at)| *retry_at);
+
+        let remove_count = self.message_retry_at.len() - MESSAGE_RETRY_MAX_ENTRIES;
+        for (id, _) in entries.into_iter().take(remove_count) {
+            self.message_retry_at.remove(&id);
+        }
+    }
+
+    fn recipient_has_app_keys(
+        &mut self,
+        ctx: &AppContext<'_>,
+        recipient: &Pubkey,
+        force_refresh: bool,
+    ) -> bool {
+        if self.known_app_key_recipients.contains(recipient) {
+            return true;
+        }
+
+        let now = Instant::now();
+        if !force_refresh
+            && self
+                .app_key_checked_at
+                .get(recipient)
+                .is_some_and(|last_checked| {
+                    now.duration_since(*last_checked) < PEER_APP_KEYS_REFRESH
+                })
+        {
+            return false;
+        }
+        self.app_key_checked_at.insert(*recipient, now);
+
+        if query_recipient_has_app_keys(ctx, recipient) {
+            self.known_app_key_recipients.insert(*recipient);
+            return true;
+        }
+
+        false
     }
 
     fn ingest_decrypted_rumor(
@@ -511,7 +589,7 @@ fn ingest_note_keys(ctx: &mut AppContext<'_>, cache: &mut ConversationCache, key
     }
 }
 
-fn recipient_has_app_keys(ctx: &AppContext<'_>, recipient: &Pubkey) -> bool {
+fn query_recipient_has_app_keys(ctx: &AppContext<'_>, recipient: &Pubkey) -> bool {
     let Ok(txn) = Transaction::new(ctx.ndb) else {
         return false;
     };
@@ -524,21 +602,26 @@ fn recipient_has_app_keys(ctx: &AppContext<'_>, recipient: &Pubkey) -> bool {
         return false;
     };
 
-    return results.into_iter().any(|result| {
+    for result in results {
         let Ok(json) = result.note.json() else {
-            return false;
+            continue;
         };
         let Ok(event) = nostr::Event::from_json(json) else {
-            return false;
+            continue;
         };
         if !nostr_double_ratchet::is_app_keys_event(&event) {
-            return false;
+            continue;
         }
 
-        nostr_double_ratchet::AppKeys::from_event(&event)
+        if nostr_double_ratchet::AppKeys::from_event(&event)
             .map(|app_keys| !app_keys.get_all_devices().is_empty())
             .unwrap_or(false)
-    });
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn storage_dir(ctx: &AppContext<'_>, pubkey: &Pubkey) -> PathBuf {

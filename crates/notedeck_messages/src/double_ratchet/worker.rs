@@ -86,13 +86,19 @@ impl WorkerHandle {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or_default();
-                let _ = app_keys.add_device(DeviceEntry::new(owner_pubkey, now));
+                if let Err(err) = app_keys.add_device(DeviceEntry::new(owner_pubkey, now)) {
+                    tracing::warn!("double-ratchet app_keys.add_device failed: {err}");
+                }
 
                 // Publish AppKeys and our Invite material.
                 //
                 // NOTE: publishing is handled by the UI thread (signing + relay publish).
-                let _ = app_keys.publish(owner_pubkey);
-                let _ = manager.init();
+                if let Err(err) = app_keys.publish(owner_pubkey) {
+                    tracing::warn!("double-ratchet app_keys.publish failed: {err}");
+                }
+                if let Err(err) = manager.init() {
+                    tracing::warn!("double-ratchet manager.init failed: {err}");
+                }
 
                 while let Ok(cmd) = cmd_rx.recv() {
                     match cmd {

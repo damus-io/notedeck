@@ -115,6 +115,9 @@ Cancel_ed3b = Cancel
 # Label for cancel clear cache, Storage settings section
 Cancel_fd8b = Cancel
 
+# Tooltip for the chat transport and participant details button
+Chat_Details_3d3c = Chat Details
+
 # Title for chat transport and participant details dialog
 Chat_Details_b6d2 = Chat Details
 
@@ -210,6 +213,27 @@ Copy_Pubkey_9cc4 = Copy Pubkey
 
 # Copy the text content of the note to clipboard
 Copy_Text_f81c = Copy Text
+
+# Relative time in days
+count_d_b9be = {$count}d
+
+# Relative time in hours
+count_h_3ecb = {$count}h
+
+# Relative time in minutes
+count_m_b41e = {$count}m
+
+# Relative time in months
+count_mo_7aba = {$count}mo
+
+# Relative time in seconds
+count_s_aa26 = {$count}s
+
+# Relative time in weeks
+count_w_7468 = {$count}w
+
+# Relative time in years
+count_y_9408 = {$count}y
 
 # Button to create a new account
 Create_Account_6994 = Create Account
@@ -382,9 +406,6 @@ Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
 # Confirmation prompt for database compaction
 Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_c4a6 = Keeps all profiles and your notes. The smaller database will be used on next restart.
 
-# desc
-key_1dee = key
-
 # label for keys setting section
 Keys_435f = Keys
 
@@ -417,6 +438,9 @@ Media_from_someone_you_don_t_follow_5611 = Media from someone you don't follow
 
 # Filter label for mentions only view
 Mentions_28d3 = Mentions
+
+# Tooltip for the messages app button
+Messages_2f17 = Messages
 
 # Label for stored chat message transport counts
 Messages_3a3d = Messages
@@ -455,7 +479,7 @@ name__reposted_a_note_you_were_tagged_in_1379 = {$name} reposted a note you were
 name__reposted_your_note_1379 = {$name} reposted your note
 
 # Button to go to a WASM app
-name_as_str_c366 = name.as_str()
+name_c366 = {$name}
 
 # Title shown when composing a new conversation
 New_Chat_afb4 = New Chat

@@ -1370,7 +1370,12 @@ fn topdown_sidebar(
             }
 
             NotedeckApp::Other(name, _) => {
-                tr!(loc, name.as_str(), "Button to go to a WASM app")
+                tr!(
+                    loc,
+                    "{name}",
+                    "Button to go to a WASM app",
+                    name = name.as_str()
+                )
             }
         };
 

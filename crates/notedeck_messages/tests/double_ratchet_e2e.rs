@@ -225,15 +225,19 @@ fn local_has_double_ratchet_app_keys(device: &mut DeviceHarness, account: &FullK
         .query(&txn, std::slice::from_ref(&filter), 4)
         .expect("query local AppKeys");
 
-    return results.into_iter().any(|result| {
+    for result in results {
         let Ok(json) = result.note.json() else {
-            return false;
+            continue;
         };
         let Ok(event) = Event::from_json(json) else {
-            return false;
+            continue;
         };
-        has_double_ratchet_app_keys(std::iter::once(&event), account)
-    });
+        if has_double_ratchet_app_keys(std::iter::once(&event), account) {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn wait_for_local_double_ratchet_app_keys(

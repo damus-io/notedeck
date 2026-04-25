@@ -99,6 +99,10 @@ impl MessagesApp {
             return;
         }
 
+        if self.ratchet_account == Some(selected_pubkey) && self.ratchet.is_none() {
+            return;
+        }
+
         if let Some(mut existing) = self.ratchet.take() {
             existing.shutdown(ctx);
         }

@@ -9,7 +9,7 @@ use std::ffi::c_void;
 
 use nostrdb::Config;
 
-/// Signature prefix used for Notedeck's locally-ingested double-ratchet inner rumors.
+/// Signature prefix used for Notedeck's double-ratchet inner-rumor ingest marker.
 ///
 /// These events are derived from decrypted `nostr-double-ratchet` payloads and are *not* valid
 /// signed Nostr events (we don't have the peer's secret key). The signature field is repurposed as
@@ -25,8 +25,9 @@ const IRIS_CHAT_SETTINGS_KIND: u32 = 10448;
 
 /// Install an ingest filter that allows Notedeck to persist double-ratchet inner rumor events.
 ///
-/// The filter skips signature validation for locally-ingested `nostr-double-ratchet` *inner rumor*
-/// events whose signature begins with [`DOUBLE_RATCHET_SIG_PREFIX`]. This is intentionally limited
+/// The filter skips signature validation for `nostr-double-ratchet` *inner rumor* events whose
+/// signature begins with [`DOUBLE_RATCHET_SIG_PREFIX`]. The marker is only written by Notedeck when
+/// it derives local plaintext from a decrypted outer event, and the bypass is intentionally limited
 /// to the kinds Notedeck stores as unsigned derived events:
 /// - kind 14 (chat messages)
 /// - kind 40 (Iris group metadata/control)

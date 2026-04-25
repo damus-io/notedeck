@@ -141,7 +141,7 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
                         let messages_resp: Option<egui::Response> = {
                             #[cfg(feature = "messages")]
                             {
-                                Some(ui.add(messages_button()))
+                                Some(ui.add(messages_button(self.i18n)))
                             }
                             #[cfg(not(feature = "messages"))]
                             {
@@ -399,6 +399,7 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
                     router.route_to(Route::ComposeNote);
                 }
             }
+            // Messages is intercepted by `timelines_view` and converted into an app switch.
             SidePanelAction::Messages => {}
             SidePanelAction::Search => {
                 if router.top() == &Route::Search {
@@ -540,11 +541,11 @@ pub fn search_button(current_route: Option<&Route>) -> impl Widget + '_ {
 }
 
 #[cfg(feature = "messages")]
-fn messages_button() -> impl Widget {
+fn messages_button<'a>(i18n: &'a mut Localization) -> impl Widget + 'a {
     |ui: &mut egui::Ui| {
         notedeck_ui::icons::chat_button(ui, 24.0, false)
             .on_hover_cursor(CursorIcon::PointingHand)
-            .on_hover_text("Messages")
+            .on_hover_text(tr!(i18n, "Messages", "Tooltip for the messages app button"))
     }
 }
 

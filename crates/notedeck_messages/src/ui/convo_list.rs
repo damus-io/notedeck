@@ -154,6 +154,7 @@ fn render_list_item(
     response.clicked().then_some(MessagesAction::Open(id))
 }
 
+/// Returns true when the selected pubkey is the only participant in this conversation.
 fn is_note_to_self(participants: &[Pubkey], selected_pubkey: &Pubkey) -> bool {
     !participants.is_empty() && participants.iter().all(|pk| pk == selected_pubkey)
 }

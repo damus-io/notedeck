@@ -11,7 +11,7 @@ use notedeck::DOUBLE_RATCHET_SIG_PREFIX;
 pub(crate) fn build_inner_rumor_event(
     owner_pubkey: PublicKey,
     recipient: PublicKey,
-    kind: u32,
+    kind: u16,
     content: String,
     mut tags: Vec<Tag>,
     created_at_s: u64,
@@ -19,7 +19,7 @@ pub(crate) fn build_inner_rumor_event(
 ) -> Result<UnsignedEvent> {
     let recipient_hex = hex::encode(recipient.to_bytes());
     let has_recipient_p_tag = tags.iter().any(|t| {
-        let v = t.clone().to_vec();
+        let v = t.as_slice();
         v.first().map(|s| s.as_str()) == Some("p")
             && v.get(1).map(|s| s.as_str()) == Some(recipient_hex.as_str())
     });
@@ -33,7 +33,7 @@ pub(crate) fn build_inner_rumor_event(
     }
 
     let has_ms_tag = tags.iter().any(|t| {
-        let v = t.clone().to_vec();
+        let v = t.as_slice();
         v.first().map(|s| s.as_str()) == Some("ms")
     });
     if !has_ms_tag {
@@ -43,7 +43,7 @@ pub(crate) fn build_inner_rumor_event(
         );
     }
 
-    let kind = nostr::Kind::from(kind as u16);
+    let kind = nostr::Kind::from(kind);
     let mut rumor = nostr::EventBuilder::new(kind, &content)
         .tags(tags)
         .custom_created_at(Timestamp::from(created_at_s))
@@ -112,7 +112,8 @@ mod tests {
         let rumor1 = build_inner_rumor_event(
             owner_pubkey,
             recipient_pubkey,
-            nostr_double_ratchet::CHAT_MESSAGE_KIND,
+            u16::try_from(nostr_double_ratchet::CHAT_MESSAGE_KIND)
+                .expect("CHAT_MESSAGE_KIND fits in nostr::Kind"),
             "hello".to_string(),
             Vec::new(),
             created_at_s,
@@ -123,7 +124,8 @@ mod tests {
         let rumor2 = build_inner_rumor_event(
             owner_pubkey,
             recipient_pubkey,
-            nostr_double_ratchet::CHAT_MESSAGE_KIND,
+            u16::try_from(nostr_double_ratchet::CHAT_MESSAGE_KIND)
+                .expect("CHAT_MESSAGE_KIND fits in nostr::Kind"),
             "hello".to_string(),
             Vec::new(),
             created_at_s,
@@ -154,7 +156,8 @@ mod tests {
         let rumor = build_inner_rumor_event(
             owner_keys.public_key(),
             recipient_keys.public_key(),
-            nostr_double_ratchet::CHAT_MESSAGE_KIND,
+            u16::try_from(nostr_double_ratchet::CHAT_MESSAGE_KIND)
+                .expect("CHAT_MESSAGE_KIND fits in nostr::Kind"),
             "hello".to_string(),
             Vec::new(),
             1_700_000_000,
