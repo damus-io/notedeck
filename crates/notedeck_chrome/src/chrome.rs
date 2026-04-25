@@ -22,8 +22,8 @@ use notedeck::DrawerRouter;
 use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
-    tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
-    UserAccount, WalletType,
+    tr, App, AppAction, AppContext, AppKind, Localization, Notedeck, NotedeckOptions,
+    NotedeckTextStyle, UserAccount, WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
@@ -1001,6 +1001,18 @@ fn chrome_handle_app_action(
         AppAction::ToggleChrome => {
             chrome.toggle();
         }
+
+        AppAction::SwitchToApp(kind) => match kind {
+            AppKind::Columns => chrome.switch_to_columns(),
+            AppKind::Dave => chrome.switch_to_dave(),
+            AppKind::Messages => {
+                #[cfg(feature = "messages")]
+                chrome.switch_to_messages();
+
+                #[cfg(not(feature = "messages"))]
+                tracing::warn!("Messages app requested but not compiled in");
+            }
+        },
 
         AppAction::Note(note_action) => {
             // Intercept SummarizeThread — route to Dave instead of Columns

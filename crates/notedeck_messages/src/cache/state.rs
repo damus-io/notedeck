@@ -37,4 +37,5 @@ pub struct ConversationState {
     pub list: VirtualList,
     pub last_read: Option<NoteRef>,
     pub composer: String,
+    pub details_open: bool,
 }

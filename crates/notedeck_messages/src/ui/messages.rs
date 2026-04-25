@@ -10,7 +10,10 @@ use notedeck::{
 use crate::{
     cache::{ConversationCache, ConversationStates},
     nav::{MessagesUiResponse, Route},
-    ui::{conversation_header_impl, convo::conversation_ui, nav::render_nav},
+    ui::{
+        conversation_details_button, conversation_header_impl, convo::conversation_ui,
+        nav::render_nav, show_conversation_details_modal, MessagesTransportStatus,
+    },
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -59,22 +62,46 @@ pub fn desktop_messages_ui(
                     .size(Size::remainder())
                     .vertical(|mut strip| {
                         strip.cell(|ui| {
-                            ui.with_layout(Layout::left_to_right(egui::Align::Center), |ui| {
-                                Frame::new().inner_margin(Margin::symmetric(16, 4)).show(
-                                    ui,
-                                    |ui| {
-                                        header_resp = conversation_header_impl(
-                                            ui,
-                                            i18n,
-                                            cache,
-                                            selected_pubkey,
-                                            ndb,
-                                            jobs,
-                                            img_cache,
-                                        );
-                                    },
-                                );
-                            });
+                            Frame::new()
+                                .inner_margin(Margin::symmetric(16, 4))
+                                .show(ui, |ui| {
+                                    StripBuilder::new(ui)
+                                        .size(Size::remainder())
+                                        .size(Size::exact(36.0))
+                                        .horizontal(|mut strip| {
+                                            strip.cell(|ui| {
+                                                ui.with_layout(
+                                                    Layout::left_to_right(egui::Align::Center),
+                                                    |ui| {
+                                                        header_resp = conversation_header_impl(
+                                                            ui,
+                                                            i18n,
+                                                            cache,
+                                                            selected_pubkey,
+                                                            ndb,
+                                                            jobs,
+                                                            img_cache,
+                                                        );
+                                                    },
+                                                );
+                                            });
+                                            strip.cell(|ui| {
+                                                ui.with_layout(
+                                                    Layout::right_to_left(egui::Align::Center),
+                                                    |ui| {
+                                                        if cache.get_active().is_some()
+                                                            && conversation_details_button(ui)
+                                                                .clicked()
+                                                        {
+                                                            header_resp = Some(
+                                                                crate::nav::MessagesAction::ShowConversationDetails,
+                                                            );
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                        });
+                                });
                         });
                         strip.cell(|ui| {
                             convo_resp = conversation_ui(
@@ -149,8 +176,9 @@ pub fn messages_ui(
     contacts: &ContactState,
     i18n: &mut Localization,
     clipboard: &mut Clipboard,
+    transport: MessagesTransportStatus,
 ) -> MessagesUiResponse {
-    if is_narrow(ui.ctx()) {
+    let response = if is_narrow(ui.ctx()) {
         narrow_messages_ui(
             cache,
             states,
@@ -180,5 +208,8 @@ pub fn messages_ui(
             i18n,
             clipboard,
         )
-    }
+    };
+
+    show_conversation_details_modal(ui, cache, states, ndb, transport, i18n);
+    response
 }

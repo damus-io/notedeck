@@ -5,8 +5,10 @@ use notedeck::{AppAction, AppContext, NoteAction, ReplacementType, Router};
 
 use crate::{
     cache::{
-        ConversationCache, ConversationId, ConversationIdentifierUnowned, ParticipantSetUnowned,
+        ConversationCache, ConversationId, ConversationIdentifierUnowned, ConversationStates,
+        ParticipantSetUnowned,
     },
+    double_ratchet::RatchetService,
     loader::MessagesLoader,
     nip17::send_conversation_message,
     open_conversation_with_prefetch,
@@ -33,6 +35,7 @@ pub enum MessagesAction {
     },
     ToggleChrome,
     Profile(Pubkey),
+    ShowConversationDetails,
 }
 
 pub struct MessagesUiResponse {
@@ -100,65 +103,42 @@ fn go_back(router: &mut Router<Route>, animate: bool) {
     }
 }
 
+pub(crate) struct MessagesNavDeps<'a, 'ctx> {
+    pub ctx: &'a mut AppContext<'ctx>,
+    pub cache: &'a mut ConversationCache,
+    pub router: &'a mut Router<Route>,
+    pub is_narrow: bool,
+    pub loader: &'a MessagesLoader,
+    pub inflight_messages: &'a mut HashSet<ConversationId>,
+    pub ratchet: Option<&'a mut RatchetService>,
+    pub states: &'a mut ConversationStates,
+}
+
 /// Apply UI responses and navigation actions to the messages router.
-pub fn process_messages_ui_response(
+pub(crate) fn process_messages_ui_response(
     resp: MessagesUiResponse,
-    ctx: &mut AppContext,
-    cache: &mut ConversationCache,
-    router: &mut Router<Route>,
-    is_narrow: bool,
-    loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<ConversationId>,
+    mut deps: MessagesNavDeps<'_, '_>,
 ) -> Option<AppAction> {
     let mut action = None;
     if let Some(convo_resp) = resp.conversation_panel_response {
-        action = handle_messages_action(
-            convo_resp,
-            ctx,
-            cache,
-            router,
-            is_narrow,
-            loader,
-            inflight_messages,
-        );
+        action = handle_messages_action(convo_resp, &mut deps);
     }
 
     let Some(nav) = resp.nav_response else {
         return action;
     };
 
-    action.or(process_nav_resp(
-        nav,
-        ctx,
-        cache,
-        router,
-        is_narrow,
-        loader,
-        inflight_messages,
-    ))
+    action.or(process_nav_resp(nav, &mut deps))
 }
 
 /// Handle navigation responses emitted by the messages UI.
 fn process_nav_resp(
     nav: NavResponse<Option<MessagesAction>>,
-    ctx: &mut AppContext,
-    cache: &mut ConversationCache,
-    router: &mut Router<Route>,
-    is_narrow: bool,
-    loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<ConversationId>,
+    deps: &mut MessagesNavDeps<'_, '_>,
 ) -> Option<AppAction> {
     let mut app_action = None;
     if let Some(action) = nav.response.or(nav.title_response) {
-        app_action = handle_messages_action(
-            action,
-            ctx,
-            cache,
-            router,
-            is_narrow,
-            loader,
-            inflight_messages,
-        );
+        app_action = handle_messages_action(action, deps);
     }
 
     let Some(action) = nav.action else {
@@ -170,16 +150,16 @@ fn process_nav_resp(
         NavAction::Resetting => {}
         NavAction::Dragging => {}
         NavAction::Returned(_) => {
-            router.pop();
-            if is_narrow {
-                cache.active = None;
+            deps.router.pop();
+            if deps.is_narrow {
+                deps.cache.active = None;
             }
         }
         NavAction::Navigating => {}
         NavAction::Navigated => {
-            router.navigating = false;
-            if router.is_replacing() {
-                router.complete_replacement();
+            deps.router.navigating = false;
+            if deps.router.is_replacing() {
+                deps.router.complete_replacement();
             }
         }
     }
@@ -190,68 +170,87 @@ fn process_nav_resp(
 /// Execute a messages action and return an optional app action.
 fn handle_messages_action(
     action: MessagesAction,
-    ctx: &mut AppContext<'_>,
-    cache: &mut ConversationCache,
-    router: &mut Router<Route>,
-    is_narrow: bool,
-    loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<ConversationId>,
+    deps: &mut MessagesNavDeps<'_, '_>,
 ) -> Option<AppAction> {
     let mut app_action = None;
-    let animate_nav = nav_transitions_enabled(ctx);
+    let animate_nav = nav_transitions_enabled(deps.ctx);
     match action {
         MessagesAction::SendMessage {
             conversation_id,
             content,
-        } => send_conversation_message(conversation_id, content, cache, ctx),
+        } => {
+            if let Some(ratchet) = deps.ratchet.as_deref_mut() {
+                if ratchet.send_conversation_message(
+                    conversation_id,
+                    content.clone(),
+                    deps.cache,
+                    deps.ctx,
+                ) {
+                    return None;
+                }
+            }
+            send_conversation_message(conversation_id, content, deps.cache, deps.ctx)
+        }
         MessagesAction::Open(conversation_id) => open_coversation_action(
             conversation_id,
-            ctx,
-            cache,
-            router,
-            is_narrow,
-            loader,
-            inflight_messages,
+            deps.ctx,
+            deps.cache,
+            deps.router,
+            deps.is_narrow,
+            deps.loader,
+            deps.inflight_messages,
         ),
         MessagesAction::Create { recipient } => {
-            let selected = ctx.accounts.selected_account_pubkey();
+            let selected = deps.ctx.accounts.selected_account_pubkey();
             let participants = vec![recipient.bytes(), selected.bytes()];
-            let id = cache
+            let id = deps
+                .cache
                 .registry
                 .get_or_insert(ConversationIdentifierUnowned::Nip17(
                     ParticipantSetUnowned::new(participants),
                 ));
 
-            cache.initialize_conversation(id, vec![recipient, *selected]);
-            open_conversation_with_prefetch(&mut ctx.remote, ctx.accounts, cache, id);
-            request_conversation_messages(
-                cache,
-                ctx.accounts.selected_account_pubkey(),
+            deps.cache
+                .initialize_conversation(id, vec![recipient, *selected]);
+            open_conversation_with_prefetch(
+                &mut deps.ctx.remote,
+                deps.ctx.accounts,
+                deps.cache,
                 id,
-                loader,
-                inflight_messages,
+            );
+            request_conversation_messages(
+                deps.cache,
+                deps.ctx.accounts.selected_account_pubkey(),
+                id,
+                deps.loader,
+                deps.inflight_messages,
             );
 
-            if is_narrow {
+            if deps.is_narrow {
                 route_to_replaced(
-                    router,
+                    deps.router,
                     Route::Conversation,
                     ReplacementType::Single,
                     animate_nav,
                 );
             } else {
-                go_back(router, animate_nav);
+                go_back(deps.router, animate_nav);
             }
         }
         MessagesAction::Creating => {
-            route_to(router, Route::CreateConvo, animate_nav);
+            route_to(deps.router, Route::CreateConvo, animate_nav);
         }
         MessagesAction::Back => {
-            go_back(router, animate_nav);
+            go_back(deps.router, animate_nav);
         }
         MessagesAction::ToggleChrome => app_action = Some(AppAction::ToggleChrome),
         MessagesAction::Profile(pubkey) => {
             app_action = Some(AppAction::Note(NoteAction::Profile(pubkey)));
+        }
+        MessagesAction::ShowConversationDetails => {
+            if let Some(active) = deps.cache.active {
+                deps.states.get_or_insert(active).details_open = true;
+            }
         }
     }
 

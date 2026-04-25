@@ -1,4 +1,4 @@
-use egui::{Label, RichText};
+use egui::{Frame, Label, Margin, RichText};
 use enostr::Pubkey;
 use nostrdb::{Ndb, Transaction};
 use notedeck::{tr, ContactState, Images, Localization, MediaJobSender, NotedeckTextStyle};
@@ -42,10 +42,21 @@ impl<'a> CreateConvoUi<'a> {
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) -> Option<CreateConvoResponse> {
+        Frame::new()
+            .inner_margin(Margin {
+                left: 16,
+                right: 16,
+                top: 8,
+                bottom: 0,
+            })
+            .show(ui, |ui| self.content_ui(ui))
+            .inner
+    }
+
+    fn content_ui(&mut self, ui: &mut egui::Ui) -> Option<CreateConvoResponse> {
         let txn = Transaction::new(self.ndb).expect("txn");
 
         // Search input
-        ui.add_space(8.0);
         let hint = tr!(
             self.i18n,
             "Search profiles...",
@@ -57,40 +68,45 @@ impl<'a> CreateConvoUi<'a> {
         let query = self.state.query.trim();
 
         if query.is_empty() {
-            // Show contacts list when not searching
-            ui.add(Label::new(
-                RichText::new(tr!(
-                    self.i18n,
-                    "Contacts",
-                    "Heading shown when choosing a contact to start a new chat"
-                ))
-                .text_style(NotedeckTextStyle::Heading.text_style()),
-            ));
-
+            let contacts_margin = Margin {
+                left: 0,
+                right: 0,
+                top: 4,
+                bottom: 0,
+            };
             if let ContactState::Received { contacts, .. } = self.contacts {
-                let resp = ContactsListView::new(
-                    contacts,
-                    self.jobs,
-                    self.ndb,
-                    self.img_cache,
-                    &txn,
-                    self.i18n,
-                )
-                .ui(ui);
+                Frame::new()
+                    .inner_margin(contacts_margin)
+                    .show(ui, |ui| {
+                        let resp = ContactsListView::new(
+                            contacts,
+                            self.jobs,
+                            self.ndb,
+                            self.img_cache,
+                            &txn,
+                            self.i18n,
+                        )
+                        .ui(ui);
 
-                resp.output.map(|a| match a {
-                    notedeck_ui::ContactsListAction::Select(pubkey) => {
-                        CreateConvoResponse { recipient: pubkey }
-                    }
-                })
+                        resp.output.map(|a| match a {
+                            notedeck_ui::ContactsListAction::Select(pubkey) => {
+                                CreateConvoResponse { recipient: pubkey }
+                            }
+                        })
+                    })
+                    .inner
             } else {
-                // No contacts yet
-                ui.label(tr!(
-                    self.i18n,
-                    "No contacts yet",
-                    "Shown when user has no contacts to display"
-                ));
-                None
+                Frame::new()
+                    .inner_margin(contacts_margin)
+                    .show(ui, |ui| {
+                        ui.label(tr!(
+                            self.i18n,
+                            "No contacts yet",
+                            "Shown when user has no contacts to display"
+                        ));
+                        None
+                    })
+                    .inner
             }
         } else {
             // Show search results

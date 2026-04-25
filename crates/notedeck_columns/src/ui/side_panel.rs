@@ -48,6 +48,7 @@ pub enum SidePanelAction {
     Home,
     Columns,
     ComposeNote,
+    Messages,
     Search,
     ExpandSidePanel,
     NewDeck,
@@ -137,6 +138,16 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
                         let compose_resp = ui
                             .add(crate::ui::post::compose_note_button(ui.visuals().dark_mode))
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        let messages_resp: Option<egui::Response> = {
+                            #[cfg(feature = "messages")]
+                            {
+                                Some(ui.add(messages_button()))
+                            }
+                            #[cfg(not(feature = "messages"))]
+                            {
+                                None
+                            }
+                        };
                         let search_resp = ui.add(search_button(self.current_route));
                         let settings_resp = ui.add(settings_button(self.current_route));
                         let wallet_resp = ui.add(wallet_button(self.current_route));
@@ -170,6 +181,7 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
                         (
                             home_resp,
                             compose_resp,
+                            messages_resp,
                             search_resp,
                             column_resp,
                             settings_resp,
@@ -185,6 +197,7 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
             let (
                 home_resp,
                 compose_resp,
+                messages_resp,
                 search_resp,
                 column_resp,
                 settings_resp,
@@ -284,6 +297,11 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
                     SidePanelAction::ComposeNote,
                     compose_resp,
                 ))
+            } else if let Some(messages_resp) = messages_resp.filter(|resp| resp.clicked()) {
+                Some(SidePanelResponse::new(
+                    SidePanelAction::Messages,
+                    messages_resp,
+                ))
             } else if search_resp.clicked() {
                 Some(SidePanelResponse::new(SidePanelAction::Search, search_resp))
             } else if column_resp.clicked() {
@@ -381,6 +399,7 @@ impl<'r, 'a> DesktopSidePanel<'r, 'a> {
                     router.route_to(Route::ComposeNote);
                 }
             }
+            SidePanelAction::Messages => {}
             SidePanelAction::Search => {
                 if router.top() == &Route::Search {
                     router.go_back();
@@ -517,6 +536,15 @@ pub fn search_button(current_route: Option<&Route>) -> impl Widget + '_ {
     move |ui: &mut egui::Ui| {
         let icon_color = notedeck_ui::side_panel_icon_tint(ui);
         search_button_impl(icon_color, 1.5, is_active).ui(ui)
+    }
+}
+
+#[cfg(feature = "messages")]
+fn messages_button() -> impl Widget {
+    |ui: &mut egui::Ui| {
+        notedeck_ui::icons::chat_button(ui, 24.0, false)
+            .on_hover_cursor(CursorIcon::PointingHand)
+            .on_hover_text("Messages")
     }
 }
 

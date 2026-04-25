@@ -4890,6 +4890,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr-double-ratchet"
+version = "0.0.97"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efa81ac325c153ff71b9c97e622276b4b295dbbb068cce691c1bc46447be808f"
+dependencies = [
+ "base64 0.22.1",
+ "crossbeam-channel",
+ "hex",
+ "hkdf",
+ "nostr 0.37.0",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tracing",
+ "urlencoding",
+ "uuid",
+]
+
+[[package]]
 name = "nostr-relay-builder"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5211,13 +5232,16 @@ dependencies = [
  "egui_virtual_list",
  "enostr",
  "hashbrown 0.15.5",
+ "hex",
  "nostr 0.37.0",
+ "nostr-double-ratchet",
  "nostr-relay-builder",
  "nostrdb",
  "notedeck",
  "notedeck_testing",
  "notedeck_ui",
  "profiling",
+ "serde_json",
  "serial_test",
  "tempfile",
  "tokio",
