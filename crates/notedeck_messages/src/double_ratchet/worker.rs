@@ -7,6 +7,11 @@ use nostr_double_ratchet::{
     AppKeysManager, DeviceEntry, FileStorageAdapter, SessionManager, SessionState,
 };
 
+struct DirectMessageSubscription {
+    subid: String,
+    authors: Vec<PublicKey>,
+}
+
 /// Commands sent from the UI thread to the double-ratchet worker thread.
 pub(crate) enum Command {
     /// Process an event received from the relay pool.
@@ -99,15 +104,27 @@ impl WorkerHandle {
                 if let Err(err) = manager.init() {
                     tracing::warn!("double-ratchet manager.init failed: {err}");
                 }
+                let mut message_subscription = None;
+                sync_direct_message_subscription(&manager, &event_tx, &mut message_subscription);
 
                 while let Ok(cmd) = cmd_rx.recv() {
                     match cmd {
                         Command::ProcessEvent(event) => {
                             manager.process_received_event(event);
+                            sync_direct_message_subscription(
+                                &manager,
+                                &event_tx,
+                                &mut message_subscription,
+                            );
                             publish_send_ready_peers(&manager, owner_pubkey, &send_ready_tx);
                         }
                         Command::SetupUser(recipient) => {
                             manager.setup_user(recipient);
+                            sync_direct_message_subscription(
+                                &manager,
+                                &event_tx,
+                                &mut message_subscription,
+                            );
                             publish_send_ready_peers(&manager, owner_pubkey, &send_ready_tx);
                         }
                         Command::ProbeSendReady(recipient) => {
@@ -120,6 +137,11 @@ impl WorkerHandle {
                         }
                         Command::SendEvent { recipient, event } => {
                             let _ = manager.send_event(recipient, event);
+                            sync_direct_message_subscription(
+                                &manager,
+                                &event_tx,
+                                &mut message_subscription,
+                            );
                             publish_send_ready_peers(&manager, owner_pubkey, &send_ready_tx);
                         }
                         Command::Shutdown => break,
@@ -155,6 +177,49 @@ impl WorkerHandle {
     pub(crate) fn shutdown(&self) {
         let _ = self.cmd_tx.send(Command::Shutdown);
     }
+}
+
+fn sync_direct_message_subscription(
+    manager: &SessionManager,
+    event_tx: &Sender<nostr_double_ratchet::SessionManagerEvent>,
+    current: &mut Option<DirectMessageSubscription>,
+) {
+    let mut authors = manager.get_all_message_push_author_pubkeys();
+    authors.sort_by_key(|author| author.to_hex());
+
+    if current
+        .as_ref()
+        .is_some_and(|subscription| subscription.authors == authors)
+    {
+        return;
+    }
+
+    if let Some(subscription) = current.take() {
+        let _ = event_tx.send(nostr_double_ratchet::SessionManagerEvent::Unsubscribe(
+            subscription.subid,
+        ));
+    }
+
+    if authors.is_empty() {
+        return;
+    }
+
+    let filter = nostr::Filter::new()
+        .kind(nostr::Kind::Custom(
+            nostr_double_ratchet::MESSAGE_EVENT_KIND as u16,
+        ))
+        .authors(authors.clone());
+    let Ok(filter_json) = serde_json::to_string(&filter) else {
+        tracing::warn!("double-ratchet: failed to encode message subscription filter");
+        return;
+    };
+
+    let subid = format!("ndr-runtime-messages-notedeck-{}", uuid::Uuid::new_v4());
+    let _ = event_tx.send(nostr_double_ratchet::SessionManagerEvent::Subscribe {
+        subid: subid.clone(),
+        filter_json,
+    });
+    *current = Some(DirectMessageSubscription { subid, authors });
 }
 
 fn publish_send_ready_peers(

@@ -257,6 +257,9 @@ impl RatchetService {
                 SessionManagerEvent::PublishSigned(signed) => {
                     self.queue_publish(ctx, signed);
                 }
+                SessionManagerEvent::PublishSignedForInnerEvent { event, .. } => {
+                    self.queue_publish(ctx, event);
+                }
                 SessionManagerEvent::DecryptedMessage {
                     sender,
                     content,
