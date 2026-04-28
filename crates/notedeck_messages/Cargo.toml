@@ -20,11 +20,13 @@ tempfile = { workspace = true }
 notedeck_ui = { workspace = true }
 chrono = { workspace = true }
 nostr = { workspace = true }
+nostr44 = { workspace = true }
 nostr-double-ratchet = { workspace = true }
 egui_nav = { workspace = true }
 egui-winit = { workspace = true }
 crossbeam-channel = { workspace = true }
 hex = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

@@ -4866,6 +4866,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr"
+version = "0.44.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3aa5e3b6a278ed061835fe1ee293b71641e6bf8b401cfe4e1834bbf4ef0a34e1"
+dependencies = [
+ "base64 0.22.1",
+ "bech32",
+ "bip39",
+ "bitcoin_hashes",
+ "cbc",
+ "chacha20",
+ "chacha20poly1305",
+ "getrandom 0.2.17",
+ "hex",
+ "instant",
+ "scrypt",
+ "secp256k1 0.29.1",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "url",
+]
+
+[[package]]
 name = "nostr-database"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4891,15 +4915,15 @@ dependencies = [
 
 [[package]]
 name = "nostr-double-ratchet"
-version = "0.0.100"
+version = "0.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "890c47709752128bb48747432829b8280ac4ff895f042d2ae9b44ffb6a21ec84"
+checksum = "47420555986b3c2461c09b98a26fb66f19156014a3eaf12e9931f56b442efdc0"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
  "hex",
  "hkdf",
- "nostr 0.37.0",
+ "nostr 0.44.2",
  "rand 0.8.5",
  "serde",
  "serde_json",
@@ -5234,6 +5258,7 @@ dependencies = [
  "hashbrown 0.15.5",
  "hex",
  "nostr 0.37.0",
+ "nostr 0.44.2",
  "nostr-double-ratchet",
  "nostr-relay-builder",
  "nostrdb",
@@ -5241,6 +5266,7 @@ dependencies = [
  "notedeck_testing",
  "notedeck_ui",
  "profiling",
+ "serde",
  "serde_json",
  "serial_test",
  "tempfile",

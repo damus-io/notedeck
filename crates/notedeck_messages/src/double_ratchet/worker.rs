@@ -2,28 +2,31 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
-use nostr::{PublicKey, UnsignedEvent};
+use nostr::PublicKey;
+use nostr44::{PublicKey as NdrPublicKey, UnsignedEvent as NdrUnsignedEvent};
 use nostr_double_ratchet::{
     AppKeysManager, DeviceEntry, FileStorageAdapter, SessionManager, SessionState,
 };
 
+use super::compat::{app_event_to_ndr, app_unsigned_to_ndr, to_app_pubkey, to_ndr_pubkey};
+
 struct DirectMessageSubscription {
     subid: String,
-    authors: Vec<PublicKey>,
+    authors: Vec<NdrPublicKey>,
 }
 
 /// Commands sent from the UI thread to the double-ratchet worker thread.
 pub(crate) enum Command {
     /// Process an event received from the relay pool.
-    ProcessEvent(nostr::Event),
+    ProcessEvent(nostr44::Event),
     /// Subscribe to discovery material for the given owner pubkey.
-    SetupUser(PublicKey),
+    SetupUser(NdrPublicKey),
     /// Check whether an active session can currently send to the given owner pubkey.
-    ProbeSendReady(PublicKey),
+    ProbeSendReady(NdrPublicKey),
     /// Encrypt and publish an "inner rumor" event to the given recipient.
     SendEvent {
-        recipient: PublicKey,
-        event: UnsignedEvent,
+        recipient: NdrPublicKey,
+        event: NdrUnsignedEvent,
     },
     /// Shut down the worker thread.
     Shutdown,
@@ -60,6 +63,7 @@ impl WorkerHandle {
         let (event_tx, event_rx) = crossbeam_channel::unbounded();
         let (send_ready_tx, send_ready_rx) = crossbeam_channel::unbounded();
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let owner_ndr_pubkey = to_ndr_pubkey(owner_pubkey)?;
 
         let storage = Arc::new(FileStorageAdapter::new(storage_dir)?);
 
@@ -68,10 +72,10 @@ impl WorkerHandle {
             .spawn(move || {
                 // SessionManager drives sessions, invites, and decryption.
                 let manager = SessionManager::new(
-                    owner_pubkey,
+                    owner_ndr_pubkey,
                     owner_identity_key,
                     device_id,
-                    owner_pubkey,
+                    owner_ndr_pubkey,
                     event_tx.clone(),
                     Some(storage.clone()),
                     None,
@@ -91,14 +95,14 @@ impl WorkerHandle {
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs())
                     .unwrap_or_default();
-                if let Err(err) = app_keys.add_device(DeviceEntry::new(owner_pubkey, now)) {
+                if let Err(err) = app_keys.add_device(DeviceEntry::new(owner_ndr_pubkey, now)) {
                     tracing::warn!("double-ratchet app_keys.add_device failed: {err}");
                 }
 
                 // Publish AppKeys and our Invite material.
                 //
                 // NOTE: publishing is handled by the UI thread (signing + relay publish).
-                if let Err(err) = app_keys.publish(owner_pubkey) {
+                if let Err(err) = app_keys.publish(owner_ndr_pubkey) {
                     tracing::warn!("double-ratchet app_keys.publish failed: {err}");
                 }
                 if let Err(err) = manager.init() {
@@ -116,7 +120,7 @@ impl WorkerHandle {
                                 &event_tx,
                                 &mut message_subscription,
                             );
-                            publish_send_ready_peers(&manager, owner_pubkey, &send_ready_tx);
+                            publish_send_ready_peers(&manager, owner_ndr_pubkey, &send_ready_tx);
                         }
                         Command::SetupUser(recipient) => {
                             manager.setup_user(recipient);
@@ -125,12 +129,12 @@ impl WorkerHandle {
                                 &event_tx,
                                 &mut message_subscription,
                             );
-                            publish_send_ready_peers(&manager, owner_pubkey, &send_ready_tx);
+                            publish_send_ready_peers(&manager, owner_ndr_pubkey, &send_ready_tx);
                         }
                         Command::ProbeSendReady(recipient) => {
                             publish_send_ready_peer(
                                 &manager,
-                                owner_pubkey,
+                                owner_ndr_pubkey,
                                 recipient,
                                 &send_ready_tx,
                             );
@@ -142,7 +146,7 @@ impl WorkerHandle {
                                 &event_tx,
                                 &mut message_subscription,
                             );
-                            publish_send_ready_peers(&manager, owner_pubkey, &send_ready_tx);
+                            publish_send_ready_peers(&manager, owner_ndr_pubkey, &send_ready_tx);
                         }
                         Command::Shutdown => break,
                     }
@@ -155,22 +159,44 @@ impl WorkerHandle {
 
     /// Forward an inbound relay event to the worker for session processing.
     pub(crate) fn process_event(&self, event: nostr::Event) {
-        let _ = self.cmd_tx.send(Command::ProcessEvent(event));
+        match app_event_to_ndr(&event) {
+            Ok(event) => {
+                let _ = self.cmd_tx.send(Command::ProcessEvent(event));
+            }
+            Err(err) => tracing::warn!("double-ratchet: failed to convert inbound event: {err}"),
+        }
     }
 
     /// Ask the worker to subscribe to peer AppKeys and known device invites.
     pub(crate) fn setup_user(&self, recipient: PublicKey) {
-        let _ = self.cmd_tx.send(Command::SetupUser(recipient));
+        match to_ndr_pubkey(recipient) {
+            Ok(recipient) => {
+                let _ = self.cmd_tx.send(Command::SetupUser(recipient));
+            }
+            Err(err) => tracing::warn!("double-ratchet: failed to convert setup pubkey: {err}"),
+        }
     }
 
     /// Ask the worker whether the selected account can send to `recipient` right now.
     pub(crate) fn probe_send_ready(&self, recipient: PublicKey) {
-        let _ = self.cmd_tx.send(Command::ProbeSendReady(recipient));
+        match to_ndr_pubkey(recipient) {
+            Ok(recipient) => {
+                let _ = self.cmd_tx.send(Command::ProbeSendReady(recipient));
+            }
+            Err(err) => tracing::warn!("double-ratchet: failed to convert probe pubkey: {err}"),
+        }
     }
 
     /// Ask the worker to encrypt and publish the given rumor to `recipient`.
-    pub(crate) fn send_event(&self, recipient: PublicKey, event: UnsignedEvent) {
-        let _ = self.cmd_tx.send(Command::SendEvent { recipient, event });
+    pub(crate) fn send_event(&self, recipient: PublicKey, event: nostr::UnsignedEvent) {
+        match (to_ndr_pubkey(recipient), app_unsigned_to_ndr(&event)) {
+            (Ok(recipient), Ok(event)) => {
+                let _ = self.cmd_tx.send(Command::SendEvent { recipient, event });
+            }
+            (Err(err), _) | (_, Err(err)) => {
+                tracing::warn!("double-ratchet: failed to convert outbound event: {err}");
+            }
+        }
     }
 
     /// Request a graceful worker shutdown.
@@ -204,8 +230,8 @@ fn sync_direct_message_subscription(
         return;
     }
 
-    let filter = nostr::Filter::new()
-        .kind(nostr::Kind::Custom(
+    let filter = nostr44::Filter::new()
+        .kind(nostr44::Kind::Custom(
             nostr_double_ratchet::MESSAGE_EVENT_KIND as u16,
         ))
         .authors(authors.clone());
@@ -224,21 +250,23 @@ fn sync_direct_message_subscription(
 
 fn publish_send_ready_peers(
     manager: &SessionManager,
-    owner_pubkey: PublicKey,
+    owner_pubkey: NdrPublicKey,
     send_ready_tx: &Sender<PublicKey>,
 ) {
     for (peer, _, state) in manager.export_active_sessions() {
         if peer == owner_pubkey || !session_can_send(&state) {
             continue;
         }
-        let _ = send_ready_tx.send(peer);
+        if let Ok(peer) = to_app_pubkey(peer) {
+            let _ = send_ready_tx.send(peer);
+        }
     }
 }
 
 fn publish_send_ready_peer(
     manager: &SessionManager,
-    owner_pubkey: PublicKey,
-    recipient: PublicKey,
+    owner_pubkey: NdrPublicKey,
+    recipient: NdrPublicKey,
     send_ready_tx: &Sender<PublicKey>,
 ) {
     if recipient == owner_pubkey {
@@ -247,7 +275,9 @@ fn publish_send_ready_peer(
 
     for (peer, _, state) in manager.export_active_sessions() {
         if peer == recipient && session_can_send(&state) {
-            let _ = send_ready_tx.send(peer);
+            if let Ok(peer) = to_app_pubkey(peer) {
+                let _ = send_ready_tx.send(peer);
+            }
             return;
         }
     }

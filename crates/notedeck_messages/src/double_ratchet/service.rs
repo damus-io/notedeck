@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use enostr::{Pubkey, RelayRoutingPreference};
 use nostr::util::JsonUtil;
-use nostr::{Keys, PublicKey};
+use nostr::PublicKey;
 use nostr_double_ratchet::SessionManagerEvent;
 use nostrdb::{Filter, NoteKey, Subscription, Transaction};
 use notedeck::{
@@ -14,6 +14,7 @@ use notedeck::{
 
 use crate::cache::{ConversationCache, ConversationId};
 
+use super::compat::{ndr_event_to_app, ndr_keys_from_secret, to_app_pubkey};
 use super::util::{build_inner_rumor_event, unsigned_event_to_ndb_json};
 use super::worker::WorkerHandle;
 
@@ -30,7 +31,7 @@ struct ActiveSub {
 /// UI-thread facade for a background `nostr-double-ratchet` worker.
 pub(crate) struct RatchetService {
     owner_pubkey: PublicKey,
-    owner_keys: Keys,
+    owner_ndr_keys: nostr44::Keys,
     worker: WorkerHandle,
     event_rx: crossbeam_channel::Receiver<SessionManagerEvent>,
     send_ready_rx: crossbeam_channel::Receiver<PublicKey>,
@@ -50,7 +51,7 @@ impl RatchetService {
         let filled = ctx.accounts.selected_filled()?;
         let owner_pubkey = PublicKey::from_slice(filled.pubkey.bytes()).ok()?;
         let identity_key = filled.secret_key.to_secret_bytes();
-        let owner_keys = Keys::new(filled.secret_key.to_owned());
+        let owner_ndr_keys = ndr_keys_from_secret(identity_key).ok()?;
         let device_id = hex::encode(owner_pubkey.to_bytes());
 
         let storage_dir = storage_dir(ctx, filled.pubkey);
@@ -65,7 +66,7 @@ impl RatchetService {
 
         Some(Self {
             owner_pubkey,
-            owner_keys,
+            owner_ndr_keys,
             worker,
             event_rx,
             send_ready_rx,
@@ -249,16 +250,31 @@ impl RatchetService {
                     self.unsubscribe(ctx, &subid);
                 }
                 SessionManagerEvent::Publish(unsigned) => {
-                    match unsigned.sign_with_keys(&self.owner_keys) {
-                        Ok(signed) => self.queue_publish(ctx, signed),
+                    match unsigned.sign_with_keys(&self.owner_ndr_keys) {
+                        Ok(signed) => match ndr_event_to_app(&signed) {
+                            Ok(signed) => self.queue_publish(ctx, signed),
+                            Err(err) => {
+                                tracing::warn!(
+                                    "double-ratchet: failed to convert signed event: {err}"
+                                )
+                            }
+                        },
                         Err(err) => tracing::warn!("double-ratchet: failed to sign event: {err}"),
                     }
                 }
-                SessionManagerEvent::PublishSigned(signed) => {
-                    self.queue_publish(ctx, signed);
-                }
+                SessionManagerEvent::PublishSigned(signed) => match ndr_event_to_app(&signed) {
+                    Ok(signed) => self.queue_publish(ctx, signed),
+                    Err(err) => {
+                        tracing::warn!("double-ratchet: failed to convert signed event: {err}")
+                    }
+                },
                 SessionManagerEvent::PublishSignedForInnerEvent { event, .. } => {
-                    self.queue_publish(ctx, event);
+                    match ndr_event_to_app(&event) {
+                        Ok(event) => self.queue_publish(ctx, event),
+                        Err(err) => {
+                            tracing::warn!("double-ratchet: failed to convert signed event: {err}")
+                        }
+                    }
                 }
                 SessionManagerEvent::DecryptedMessage {
                     sender,
@@ -282,6 +298,15 @@ impl RatchetService {
                     };
 
                     // Treat the session peer as authoritative for inbound attribution.
+                    let sender = match to_app_pubkey(sender) {
+                        Ok(sender) => sender,
+                        Err(err) => {
+                            tracing::warn!(
+                                "double-ratchet: failed to convert sender pubkey: {err}"
+                            );
+                            continue;
+                        }
+                    };
                     rumor.pubkey = sender;
                     self.ingest_decrypted_rumor(ctx, rumor, event_id.as_deref());
                     if let Some(cache) = cache.as_deref_mut() {
@@ -609,7 +634,7 @@ fn query_recipient_has_app_keys(ctx: &AppContext<'_>, recipient: &Pubkey) -> boo
         let Ok(json) = result.note.json() else {
             continue;
         };
-        let Ok(event) = nostr::Event::from_json(json) else {
+        let Ok(event) = serde_json::from_str::<nostr44::Event>(&json) else {
             continue;
         };
         if !nostr_double_ratchet::is_app_keys_event(&event) {

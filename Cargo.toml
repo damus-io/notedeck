@@ -68,7 +68,8 @@ indexmap = "2.6.0"
 log = "0.4.17"
 md5 = "0.7.0"
 nostr = { version = "0.37.0", default-features = false, features = ["std", "nip44", "nip49"] }
-nostr-double-ratchet = "0.0.100"
+nostr44 = { package = "nostr", version = "0.44.2", default-features = false, features = ["std", "nip44", "nip49"] }
+nostr-double-ratchet = "0.0.104"
 nwc = "0.39.0"
 mio = { version = "1.0.3", features = ["os-poll", "net"] }
 nostrdb = { git = "https://github.com/damus-io/nostrdb-rs", rev = "871b70ee5fb756270c1018254c0f92dc2b5d8d1b" }
