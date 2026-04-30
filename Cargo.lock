@@ -4915,9 +4915,9 @@ dependencies = [
 
 [[package]]
 name = "nostr-double-ratchet"
-version = "0.0.124"
+version = "0.0.125"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "819dd08ebf708c7625d282f76a5e365df309bd9fb6ae65ff4c6c154741a15fa2"
+checksum = "c88c8110c415b4d5e82b4035bc428b6f3b4ec97bafeb4b836504d08794a61efc"
 dependencies = [
  "base64 0.22.1",
  "crossbeam-channel",
