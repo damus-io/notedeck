@@ -121,8 +121,18 @@ fn render_list_item(
 
     let title = conversation_title(summary.metadata, &txn, ndb, selected_pubkey, i18n);
 
-    let partner = direct_chat_partner(summary.metadata.participants.as_slice(), selected_pubkey);
+    let participants = summary.metadata.participants.as_slice();
+    let partner = direct_chat_partner(participants, selected_pubkey);
+    let note_to_self = is_note_to_self(participants, selected_pubkey);
     let partner_profile = partner.and_then(|pk| ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok());
+    let self_profile = if partner.is_none() && note_to_self {
+        ndb.get_profile_by_pubkey(&txn, selected_pubkey.bytes())
+            .ok()
+    } else {
+        None
+    };
+    let avatar_profile = partner_profile.as_ref().or(self_profile.as_ref());
+    let show_avatar = partner.is_some() || note_to_self;
 
     let last_msg = summary
         .last_message
@@ -133,15 +143,20 @@ fn render_list_item(
         summary,
         active == Some(id),
         title.as_ref(),
-        partner.is_some(),
+        show_avatar,
         last_msg.as_ref(),
-        partner_profile.as_ref(),
+        avatar_profile,
         jobs,
         img_cache,
         i18n,
     );
 
     response.clicked().then_some(MessagesAction::Open(id))
+}
+
+/// Returns true when the selected pubkey is the only participant in this conversation.
+fn is_note_to_self(participants: &[Pubkey], selected_pubkey: &Pubkey) -> bool {
+    !participants.is_empty() && participants.iter().all(|pk| pk == selected_pubkey)
 }
 
 #[allow(clippy::too_many_arguments)]

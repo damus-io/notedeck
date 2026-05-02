@@ -13,12 +13,42 @@ const ONE_YEAR_IN_SECONDS: u64 = 31_536_000; // 365 days
 /// Maximum tolerated skew for note timestamps in the future (2 minutes / 120 seconds).
 pub const MAX_FUTURE_NOTE_SKEW_SECS: u64 = 2 * ONE_MINUTE_IN_SECONDS;
 
+#[derive(Clone, Copy)]
+enum RelativeTimeUnit {
+    Years,
+    Months,
+    Weeks,
+    Days,
+    Hours,
+    Minutes,
+    Seconds,
+}
+
 /// Returns the current UNIX timestamp in seconds.
 pub fn unix_time_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time went backwards")
         .as_secs()
+}
+
+/// Localize a compact relative time part such as `5m` or `2d`.
+fn relative_time_part(i18n: &mut Localization, unit: RelativeTimeUnit, count: u64) -> String {
+    match unit {
+        RelativeTimeUnit::Years => tr!(i18n, "{count}y", "Relative time in years", count = count),
+        RelativeTimeUnit::Months => {
+            tr!(i18n, "{count}mo", "Relative time in months", count = count)
+        }
+        RelativeTimeUnit::Weeks => tr!(i18n, "{count}w", "Relative time in weeks", count = count),
+        RelativeTimeUnit::Days => tr!(i18n, "{count}d", "Relative time in days", count = count),
+        RelativeTimeUnit::Hours => tr!(i18n, "{count}h", "Relative time in hours", count = count),
+        RelativeTimeUnit::Minutes => {
+            tr!(i18n, "{count}m", "Relative time in minutes", count = count)
+        }
+        RelativeTimeUnit::Seconds => {
+            tr!(i18n, "{count}s", "Relative time in seconds", count = count)
+        }
+    }
 }
 
 /// Whether `timestamp` is further in the future than the allowed skew.
@@ -67,30 +97,30 @@ fn time_ago_between(i18n: &mut Localization, timestamp: u64, now: u64) -> String
 
     let mut parts: Vec<String> = Vec::with_capacity(2);
 
-    let mut push_part = |count: u64, key: &str, desc: &str| {
+    let mut push_part = |count: u64, unit: RelativeTimeUnit| {
         if count > 0 && parts.len() < 2 {
-            parts.push(tr!(i18n, key, desc, count = count));
+            parts.push(relative_time_part(i18n, unit, count));
         }
     };
 
     if years > 0 {
-        push_part(years, "{count}y", "Relative time in years");
-        push_part(months, "{count}mo", "Relative time in months");
+        push_part(years, RelativeTimeUnit::Years);
+        push_part(months, RelativeTimeUnit::Months);
     } else if months > 0 {
-        push_part(months, "{count}mo", "Relative time in months");
-        push_part(weeks, "{count}w", "Relative time in weeks");
+        push_part(months, RelativeTimeUnit::Months);
+        push_part(weeks, RelativeTimeUnit::Weeks);
     } else if weeks > 0 {
-        push_part(weeks, "{count}w", "Relative time in weeks");
-        push_part(days, "{count}d", "Relative time in days");
+        push_part(weeks, RelativeTimeUnit::Weeks);
+        push_part(days, RelativeTimeUnit::Days);
     } else if days > 0 {
-        push_part(days, "{count}d", "Relative time in days");
-        push_part(hours, "{count}h", "Relative time in hours");
+        push_part(days, RelativeTimeUnit::Days);
+        push_part(hours, RelativeTimeUnit::Hours);
     } else if hours > 0 {
-        push_part(hours, "{count}h", "Relative time in hours");
+        push_part(hours, RelativeTimeUnit::Hours);
     } else if mins > 0 {
-        push_part(mins, "{count}m", "Relative time in minutes");
+        push_part(mins, RelativeTimeUnit::Minutes);
     } else {
-        push_part(secs.max(1), "{count}s", "Relative time in seconds");
+        push_part(secs.max(1), RelativeTimeUnit::Seconds);
     }
 
     let time_str = parts.join(" ");

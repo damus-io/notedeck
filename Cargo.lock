@@ -4866,6 +4866,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr"
+version = "0.44.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3aa5e3b6a278ed061835fe1ee293b71641e6bf8b401cfe4e1834bbf4ef0a34e1"
+dependencies = [
+ "base64 0.22.1",
+ "bech32",
+ "bip39",
+ "bitcoin_hashes",
+ "cbc",
+ "chacha20",
+ "chacha20poly1305",
+ "getrandom 0.2.17",
+ "hex",
+ "instant",
+ "scrypt",
+ "secp256k1 0.29.1",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "url",
+]
+
+[[package]]
 name = "nostr-database"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4887,6 +4911,27 @@ checksum = "ce07b47c77b8e5a856727885fe0ae47b9aa53d8d853a2190dd479b5a0d6e4f52"
 dependencies = [
  "nostr 0.39.0",
  "tokio",
+]
+
+[[package]]
+name = "nostr-double-ratchet"
+version = "0.0.135"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d0c5252d1a2351bfe750893a90dd481b8dfa6b2f6ad8e8fe9d9ada812867e0d"
+dependencies = [
+ "base64 0.22.1",
+ "crossbeam-channel",
+ "hex",
+ "hkdf",
+ "nostr 0.44.2",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tracing",
+ "urlencoding",
+ "uuid",
 ]
 
 [[package]]
@@ -5211,13 +5256,18 @@ dependencies = [
  "egui_virtual_list",
  "enostr",
  "hashbrown 0.15.5",
+ "hex",
  "nostr 0.37.0",
+ "nostr 0.44.2",
+ "nostr-double-ratchet",
  "nostr-relay-builder",
  "nostrdb",
  "notedeck",
  "notedeck_testing",
  "notedeck_ui",
  "profiling",
+ "serde",
+ "serde_json",
  "serial_test",
  "tempfile",
  "tokio",

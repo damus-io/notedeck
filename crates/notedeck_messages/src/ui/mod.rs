@@ -1,18 +1,18 @@
 use std::borrow::Cow;
 
 use chrono::{DateTime, Local, Utc};
-use egui::{Layout, RichText, Sense};
+use egui::{vec2, Layout, RichText, Sense};
 use enostr::Pubkey;
 use nostrdb::{Ndb, ProfileRecord, Transaction};
 use notedeck::{
     name::get_display_name, tr, tr_plural, Images, Localization, MediaJobSender, NoteRef,
-    NotedeckTextStyle,
+    NotedeckTextStyle, DOUBLE_RATCHET_SIG_PREFIX,
 };
 use notedeck_ui::ProfilePic;
 
 use crate::nav::MessagesAction;
 
-use crate::cache::{Conversation, ConversationCache, ConversationMetadata};
+use crate::cache::{Conversation, ConversationCache, ConversationMetadata, ConversationStates};
 
 pub mod convo;
 pub mod convo_list;
@@ -26,6 +26,31 @@ pub struct ConversationSummary<'a> {
     pub last_message: Option<&'a NoteRef>,
     pub unread: bool,
     pub total_messages: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MessagesTransportStatus {
+    pub double_ratchet_active: bool,
+    pub active_conversation_double_ratchet_supported: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OutgoingTransport {
+    Nip17,
+    DoubleRatchet,
+}
+
+impl MessagesTransportStatus {
+    fn outgoing_transport(self, conversation: &Conversation) -> OutgoingTransport {
+        if self.double_ratchet_active
+            && self.active_conversation_double_ratchet_supported
+            && conversation.metadata.participants.len() <= 2
+        {
+            OutgoingTransport::DoubleRatchet
+        } else {
+            OutgoingTransport::Nip17
+        }
+    }
 }
 
 impl<'a> ConversationSummary<'a> {
@@ -275,4 +300,189 @@ pub fn conversation_header(
         },
     );
     clicked
+}
+
+pub fn conversation_details_tooltip(i18n: &mut Localization) -> String {
+    tr!(
+        i18n,
+        "Chat Details",
+        "Tooltip for the chat transport and participant details button"
+    )
+}
+
+pub fn conversation_details_button(ui: &mut egui::Ui, hover_text: &str) -> egui::Response {
+    let size = vec2(32.0, 32.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        if response.hovered() || response.has_focus() {
+            ui.painter().rect_filled(rect, 8.0, visuals.weak_bg_fill);
+        }
+
+        let color = visuals.fg_stroke.color;
+        for offset in [-6.0, 0.0, 6.0] {
+            ui.painter()
+                .circle_filled(rect.center() + vec2(offset, 0.0), 2.0, color);
+        }
+    }
+
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(hover_text)
+}
+
+pub fn show_conversation_details_modal(
+    ui: &mut egui::Ui,
+    cache: &ConversationCache,
+    states: &mut ConversationStates,
+    ndb: &Ndb,
+    transport: MessagesTransportStatus,
+    i18n: &mut Localization,
+) {
+    let Some(active) = cache.active else {
+        return;
+    };
+    let Some(conversation) = cache.get(active) else {
+        return;
+    };
+    let state = states.get_or_insert(active);
+    if !state.details_open {
+        return;
+    }
+
+    let mut open = state.details_open;
+    egui::Window::new(tr!(
+        i18n,
+        "Chat Details",
+        "Title for chat transport and participant details dialog"
+    ))
+    .collapsible(false)
+    .resizable(false)
+    .open(&mut open)
+    .show(ui.ctx(), |ui| {
+        let outgoing = transport.outgoing_transport(conversation);
+        detail_row(
+            ui,
+            &tr!(
+                i18n,
+                "Outgoing",
+                "Label for the transport used by newly sent chat messages"
+            ),
+            match outgoing {
+                OutgoingTransport::Nip17 => "NIP-17",
+                OutgoingTransport::DoubleRatchet => "Double Ratchet",
+            },
+        );
+
+        let ratchet_status = double_ratchet_status_text(transport, i18n);
+        detail_row(
+            ui,
+            &tr!(
+                i18n,
+                "Double Ratchet",
+                "Label for double-ratchet chat transport status"
+            ),
+            &ratchet_status,
+        );
+
+        if outgoing == OutgoingTransport::DoubleRatchet {
+            detail_row(
+                ui,
+                &tr!(
+                    i18n,
+                    "Automatic fallback",
+                    "Label for whether double-ratchet sends automatically fall back to NIP-17"
+                ),
+                &tr!(
+                    i18n,
+                    "None",
+                    "Value indicating no automatic fallback is used for double-ratchet chat sends"
+                ),
+            );
+        }
+
+        let counts = conversation_transport_counts(conversation, ndb);
+        detail_row(
+            ui,
+            &tr!(
+                i18n,
+                "Messages",
+                "Label for stored chat message transport counts"
+            ),
+            &format!(
+                "NIP-17 {} / Double Ratchet {}",
+                counts.nip17, counts.double_ratchet
+            ),
+        );
+
+        detail_row(
+            ui,
+            &tr!(i18n, "Participants", "Label for chat participant count"),
+            &conversation.metadata.participants.len().to_string(),
+        );
+    });
+    states.get_or_insert(active).details_open = open;
+}
+
+fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).strong());
+        ui.add_space(12.0);
+        ui.label(value);
+    });
+}
+
+fn double_ratchet_status_text(
+    transport: MessagesTransportStatus,
+    i18n: &mut Localization,
+) -> String {
+    if transport.double_ratchet_active {
+        if transport.active_conversation_double_ratchet_supported {
+            tr!(
+                i18n,
+                "peer supported",
+                "Double-ratchet status value shown when peer support is known locally"
+            )
+        } else {
+            tr!(
+                i18n,
+                "not discovered",
+                "Double-ratchet status value shown when no peer support is known locally"
+            )
+        }
+    } else {
+        tr!(
+            i18n,
+            "unavailable",
+            "Double-ratchet status value shown when no full-key account is active"
+        )
+    }
+}
+
+#[derive(Default)]
+struct TransportCounts {
+    nip17: usize,
+    double_ratchet: usize,
+}
+
+fn conversation_transport_counts(conversation: &Conversation, ndb: &Ndb) -> TransportCounts {
+    let mut counts = TransportCounts::default();
+    let Ok(txn) = Transaction::new(ndb) else {
+        return counts;
+    };
+
+    for pkg in &conversation.messages.messages_ordered {
+        let Ok(note) = ndb.get_note_by_key(&txn, pkg.note_ref.key) else {
+            continue;
+        };
+
+        if note.sig().starts_with(&DOUBLE_RATCHET_SIG_PREFIX) {
+            counts.double_ratchet += 1;
+        } else {
+            counts.nip17 += 1;
+        }
+    }
+
+    counts
 }

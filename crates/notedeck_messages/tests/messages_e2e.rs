@@ -1438,7 +1438,7 @@ async fn same_account_devices_handle_partial_participant_relay_knowledge_across_
     let mut recipient_device_fallback =
         build_messages_device_with_relays(&[&relay_a_url, &relay_b_url], &recipient_fallback);
 
-    let seed_ts = Some(notedeck::unix_time_secs() as u64 + 600);
+    let seed_ts = Some(notedeck::unix_time_secs() + 600);
     for sender_device in [&mut sender_primary, &mut sender_peer] {
         seed_local_dm_relay_list_with_relays(
             sender_device,
@@ -4265,7 +4265,7 @@ async fn stale_connection_detected_after_silent_stall_e2e() {
         &bob,
         Box::new(|notedeck, _ctx| {
             notedeck.set_pong_timeout(Duration::from_secs(3));
-            notedeck.set_app(notedeck_messages::MessagesApp::new());
+            notedeck.set_app(notedeck_messages::MessagesApp::new_nip17_only_for_tests());
         }),
     );
 

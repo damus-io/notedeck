@@ -1,5 +1,6 @@
 use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
+use crate::ndb_ingest_filters::install_double_ratchet_ingest_filter;
 use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::relay_limits::{enqueue_nip11_fetch, RelayLimitJobs};
@@ -33,7 +34,15 @@ use android_activity::AndroidApp;
 
 pub enum AppAction {
     Note(NoteAction),
+    SwitchToApp(AppKind),
     ToggleChrome,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppKind {
+    Columns,
+    Dave,
+    Messages,
 }
 
 pub trait App {
@@ -263,13 +272,14 @@ impl Notedeck {
 
         let mut settings = SettingsHandler::new(&path).load();
 
-        let config = Config::new()
+        let mut config = Config::new()
             .set_ingester_threads(2)
             .set_mapsize(map_size)
             .set_sub_callback({
                 let ctx = ctx.clone();
                 move |_| ctx.request_repaint()
             });
+        install_double_ratchet_ingest_filter(&mut config);
 
         let keystore = if parsed_args.options.contains(NotedeckOptions::UseKeystore) {
             let keys_path = path.path(DataPathType::Keys);

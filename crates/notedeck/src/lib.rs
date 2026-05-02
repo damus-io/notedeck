@@ -20,6 +20,7 @@ pub mod media;
 mod muted;
 pub mod name;
 pub mod nav;
+mod ndb_ingest_filters;
 pub mod nip05;
 mod nip51_set;
 pub mod note;
@@ -67,7 +68,7 @@ pub use account::accounts::{giftwrap_sub_identity, AccountData, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::RelayAction;
 pub use account::FALLBACK_PUBKEY;
-pub use app::{App, AppAction, AppResponse, Notedeck};
+pub use app::{App, AppAction, AppKind, AppResponse, Notedeck};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
@@ -92,6 +93,7 @@ pub use media::{
 pub use muted::{MuteFun, Muted};
 pub use name::NostrName;
 pub use nav::DragResponse;
+pub use ndb_ingest_filters::{install_double_ratchet_ingest_filter, DOUBLE_RATCHET_SIG_PREFIX};
 pub use nip05::{Nip05Cache, Nip05Status};
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{

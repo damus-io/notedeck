@@ -80,5 +80,6 @@ security-framework = "2.11.0"
 
 [features]
 default = []
+messages = []
 puffin = ["dep:puffin", "profiling/profile-with-puffin"]
 tracy = ["profiling/profile-with-tracy"]

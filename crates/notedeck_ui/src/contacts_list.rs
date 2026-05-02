@@ -223,15 +223,41 @@ pub struct ProfileSearchResult {
     pub is_contact: bool,
 }
 
+/// Allowed Bech32 data characters used while extracting Nostr identifiers.
+const BECH32_DATA_CHARS: &str = "023456789acdefghjklmnpqrstuvwxyz";
+
+/// Extract the first Bech32 identifier with `prefix` from arbitrary text.
+///
+/// Matching is case-insensitive, but the returned slice points into `query` and preserves the
+/// original casing. Extraction starts at the matched prefix and stops at the first non-Bech32 data
+/// character. Returns `None` when no prefix is found or when it is not followed by Bech32 data.
+fn extract_bech32_identifier<'a>(query: &'a str, prefix: &str) -> Option<&'a str> {
+    let lower = query.to_ascii_lowercase();
+    let start = lower.find(prefix)?;
+    let token_start = start + prefix.len();
+    let mut token_end = token_start;
+
+    for (offset, ch) in lower[token_start..].char_indices() {
+        if !BECH32_DATA_CHARS.contains(ch) {
+            break;
+        }
+        token_end = token_start + offset + ch.len_utf8();
+    }
+
+    (token_end > token_start).then_some(&query[start..token_end])
+}
+
 /// Try to parse the query as a pubkey identifier (npub, nprofile, or hex).
 /// Returns the pubkey bytes if successful.
 pub fn parse_pubkey_query(query: &str) -> Option<[u8; 32]> {
-    if query.starts_with("npub1") {
-        Pubkey::try_from_bech32_string(query, false)
+    let query = query.trim();
+
+    if let Some(npub) = extract_bech32_identifier(query, "npub1") {
+        Pubkey::try_from_bech32_string(&npub.to_ascii_lowercase(), false)
             .ok()
             .map(|pk| *pk.bytes())
-    } else if query.starts_with("nprofile1") {
-        Pubkey::from_nprofile_bech(query).map(|pk| *pk.bytes())
+    } else if let Some(nprofile) = extract_bech32_identifier(query, "nprofile1") {
+        Pubkey::from_nprofile_bech(&nprofile.to_ascii_lowercase()).map(|pk| *pk.bytes())
     } else if query.len() == 64 && query.chars().all(|c| c.is_ascii_hexdigit()) {
         Pubkey::from_hex(query).ok().map(|pk| *pk.bytes())
     } else {
@@ -291,4 +317,31 @@ pub fn search_profiles(
     contact_results.extend(other_results);
     contact_results.truncate(max_results);
     contact_results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_pubkey_query_extracts_npub_from_chat_link() {
+        let npub = "npub1sh67pfmpe87rkafw3294c5jgjmjl28nldd0ksnarauex5683852q3g6kcy";
+        let expected = Pubkey::try_from_bech32_string(npub, false).expect("valid npub");
+
+        assert_eq!(
+            parse_pubkey_query(&format!("https://chat.iris.to/#{npub}")),
+            Some(*expected.bytes())
+        );
+    }
+
+    #[test]
+    fn parse_pubkey_query_extracts_npub_from_surrounding_text() {
+        let npub = "npub1sh67pfmpe87rkafw3294c5jgjmjl28nldd0ksnarauex5683852q3g6kcy";
+        let expected = Pubkey::try_from_bech32_string(npub, false).expect("valid npub");
+
+        assert_eq!(
+            parse_pubkey_query(&format!("chat with {npub} please")),
+            Some(*expected.bytes())
+        );
+    }
 }

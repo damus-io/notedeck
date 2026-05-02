@@ -19,9 +19,9 @@ use egui_extras::{Size, StripBuilder};
 use enostr::Pubkey;
 use nostrdb::Transaction;
 use notedeck::{
-    tr, ui::is_compiled_as_mobile, ui::is_narrow, Accounts, AppAction, AppContext, AppResponse,
-    DataPath, DataPathType, FilterState, Images, Localization, MediaJobSender, NotedeckOptions,
-    SettingsHandler,
+    tr, ui::is_compiled_as_mobile, ui::is_narrow, Accounts, AppAction, AppContext, AppKind,
+    AppResponse, DataPath, DataPathType, FilterState, Images, Localization, MediaJobSender,
+    NotedeckOptions, SettingsHandler,
 };
 use notedeck_ui::{
     media::{MediaViewer, MediaViewerFlags, MediaViewerState},
@@ -876,6 +876,7 @@ fn timelines_view(
 ) -> AppResponse {
     let num_cols = get_active_columns(ctx.accounts, &app.decks_cache).num_columns();
     let mut side_panel_action: Option<nav::SwitchingAction> = None;
+    let mut app_action: Option<AppAction> = None;
     let mut responses = Vec::with_capacity(num_cols);
 
     let mut can_take_drag_from = Vec::new();
@@ -905,7 +906,9 @@ fn timelines_view(
 
                 if let Some(side_panel) = side_panel {
                     if side_panel.response.clicked() || side_panel.response.secondary_clicked() {
-                        if let Some(action) = DesktopSidePanel::perform_action(
+                        if side_panel.action == SidePanelAction::Messages {
+                            app_action = Some(AppAction::SwitchToApp(AppKind::Messages));
+                        } else if let Some(action) = DesktopSidePanel::perform_action(
                             &mut app.decks_cache,
                             ctx.accounts,
                             side_panel.action,
@@ -975,8 +978,6 @@ fn timelines_view(
     if let Some(action) = side_panel_action {
         save_cols = save_cols || action.process(&mut app.timeline_cache, &mut app.decks_cache, ctx);
     }
-
-    let mut app_action: Option<AppAction> = None;
 
     for response in responses {
         let nav_result = response.process_render_nav_response(app, ctx, ui);

@@ -7,6 +7,12 @@
 # Profile about/bio field label
 About_00c0 = About
 
+# Button to accept TOS and continue using the app
+Accept_and_Continue_2e5c = Accept and Continue
+
+# Button to go to the accounts view
+Accounts_03a0 = Accounts
+
 # Column title for account management
 Accounts_f018 = Accounts
 
@@ -30,6 +36,9 @@ Add_Account_d06c = Add Account
 
 # Column title for adding algorithm column
 Add_Algo_Column_0d75 = Add Algo Column
+
+# Add new column to current deck from profile context menu
+Add_as_column_baa1 = Add as column
 
 # Column title for adding new column
 Add_Column_c764 = Add Column
@@ -58,11 +67,20 @@ Add_relay_269d = Add relay
 # Button label to add a wallet
 Add_Wallet_d1be = Add Wallet
 
+# Heading shown when prompting the user to add a private key to use messages
+Add_your_private_key_a52e = Add your private key
+
+# Section header for advertised relays
+Advertised_8b3b = Advertised
+
 # Title for algorithmic feeds column
 Algo_2452 = Algo
 
 # Description for algorithmic feeds column
 Algorithmic_feeds_to_aid_in_note_discovery_d344 = Algorithmic feeds to aid in note discovery
+
+# Filter label for all notes view
+All_8729 = All
 
 # Label for zap amount input field
 Amount_70f0 = Amount
@@ -76,11 +94,11 @@ Ask_b7f4 = Ask
 # Placeholder text for Dave AI input field
 Ask_dave_anything_33d1 = Ask dave anything...
 
+# Label for whether double-ratchet sends automatically fall back to NIP-17
+Automatic_fallback_46b3 = Automatic fallback
+
 # Profile banner URL field label
 Banner_52ef = Banner
-
-# Beta version label
-BETA_8e5d = BETA
 
 # Broadcast the note to all connected relays
 Broadcast_fe43 = Broadcast
@@ -88,11 +106,23 @@ Broadcast_fe43 = Broadcast
 # Broadcast the note only to local network relays
 Broadcast_Local_7e50 = Broadcast Local
 
+# Label for cancel compact database
+Cancel_0fef = Cancel
+
 # Button label to cancel an action
 Cancel_ed3b = Cancel
 
 # Label for cancel clear cache, Storage settings section
 Cancel_fd8b = Cancel
+
+# Tooltip for the chat transport and participant details button
+Chat_Details_3d3c = Chat Details
+
+# Title for chat transport and participant details dialog
+Chat_Details_b6d2 = Chat Details
+
+# Title for the list of chat conversations
+Chats_dc22 = Chats
 
 # Label for clear cache button, Storage settings section
 Clear_cache_dccb = Clear cache
@@ -100,11 +130,32 @@ Clear_cache_dccb = Clear cache
 # Hover text for editable zap amount
 Click_to_edit_0414 = Click to edit
 
+# Button to go to the ClnDash app
+ClnDash_2988 = ClnDash
+
+# Button to go to the Columns app
+Columns_7215 = Columns
+
+# Button to compact the database
+Compact_database_be7b = Compact database
+
+# Status label after database compaction completes
+Compacted_cbb8 = Compacted!
+
+# Status label while database compaction is running
+Compacting_3332 = Compacting...
+
+# Status label when database compaction fails
+Compaction_error_7f8f = Compaction error:
+
 # Column title for note composition
 Compose_Note_c094 = Compose Note
 
 # Label for configure relays, settings section
 Configure_relays_d156 = Configure relays
+
+# Label for confirm compact database
+Confirm_7a50 = Confirm
 
 # Label for confirm clear cache, Storage settings section
 Confirm_9d9d = Confirm
@@ -118,6 +169,9 @@ Connected_f8cc = Connected
 # Status label for connecting relay
 Connecting_6b7e = Connecting...
 
+# Badge indicating this profile is in contacts
+Contact_7fbf = Contact
+
 # Title for contact list column
 Contact_List_f85a = Contact List
 
@@ -127,17 +181,29 @@ Contacts_7533 = Contacts
 # Column title for last notes per contact
 Contacts__last_notes_3f84 = Contacts (last notes)
 
+# Title used when viewing an unknown conversation
+Conversation_2b63 = Conversation
+
+# Fallback title when no direct chat partner is available
+Conversation_babb = Conversation
+
 # Button label to copy logs
 Copy_a688 = Copy
+
+# Copy a damus.io link to the author's profile to keyboard
+Copy_Link_490f = Copy Link
 
 # Button to copy media link to clipboard
 Copy_Link_dc7c = Copy Link
 
-# Copy the unique note identifier to clipboard
-Copy_Note_ID_6b45 = Copy Note ID
+# Copy the note identifier to clipboard
+Copy_Note_ID_5a37 = Copy Note ID
 
 # Copy the raw note data in JSON format to clipboard
 Copy_Note_JSON_9e4e = Copy Note JSON
+
+# Copy the damus.io note link for this note to clipboard
+Copy_Note_Link_be49 = Copy Note Link
 
 # Tooltip text for copying npub to clipboard
 Copy_npub_to_clipboard_c105 = Copy npub to clipboard
@@ -172,8 +238,14 @@ count_y_9408 = {$count}y
 # Button to create a new account
 Create_Account_6994 = Create Account
 
+# Button to create a new Nostr account
+Create_Account_9a79 = Create Account
+
 # Button label to create a new deck
 Create_Deck_16b7 = Create Deck
+
+# Column title for creating a people list
+Create_People_List_3067 = Create People List
 
 # Column title for custom timelines
 Custom_a69e = Custom
@@ -181,11 +253,29 @@ Custom_a69e = Custom
 # Column title for zap amount customization
 Customize_Zap_Amount_cfc4 = Customize Zap Amount
 
+# Damus android beta version label
+Damus_Android_BETA_e76b = Damus Android BETA
+
+# Damus notedeck beta version label
+Damus_Notedeck_BETA_99ac = Damus Notedeck BETA
+
 # Column title for support page
 Damus_Support_27c0 = Damus Support
 
 # Label for Theme Dark, Appearance settings section
 Dark_85fe = Dark
+
+# Button to go to the dashboard app
+Dashboard_3a45 = Dashboard
+
+# Label for database settings section
+Database_0a2b = Database
+
+# Label for database size in settings
+Database_size_6772 = Database size:
+
+# Button to go to the Dave app
+Dave_7a46 = Dave
 
 # Label for deck name input field
 Deck_name_cd32 = Deck name
@@ -217,6 +307,9 @@ domain___will_be_used_for_identification_b67e = "{$domain}" will be used for ide
 # Button to indicate that the user is done going through the onboarding process.
 Done_50dd = Done
 
+# Label for double-ratchet chat transport status
+Double_Ratchet_4ffc = Double Ratchet
+
 # Column title for editing deck
 Edit_Deck_4018 = Edit Deck
 
@@ -235,26 +328,41 @@ Enter_the_desired_hashtags_here__for_multiple_space-separated_7a69 = Enter the d
 # Placeholder for relay input field
 Enter_the_relay_here_1c8b = Enter the relay here
 
-# Hint text to prompt entering the user's public key.
-Enter_the_user_s_key__npub__hex__nip05__here_650c = Enter the user's key (npub, hex, nip05) here...
-
 # Label for key input field. Key can be public key (npub), private key (nsec), or Nostr address (NIP-05).
 Enter_your_key_0fca = Enter your key
 
 # Instructions for entering Nostr credentials
 Enter_your_public_key__npub___nostr_address__e_g___address____or_private_key__nsec___You_must_enter_your_private_key_to_be_able_to_post__reply__etc_48e9 = Enter your public key (npub), nostr address (e.g. {$address}), or private key (nsec). You must enter your private key to be able to post, reply, etc.
 
-# Label for find user button
-Find_User_bd12 = Find User
+# Column title for followers
+Followed_by_e8c2 = Followed by
 
-# Label for font size, Appearance settings section
-Font_size_dd73 = Font size:
+# Column title for users being followed
+Following_633f = Following
+
+# Label for number of accounts being followed
+following_7b54 = following
+
+# Badge indicating user follows you
+Follows_you_1835 = Follows you
+
+# Info text when hashtag filter is disabled (set to 0)
+Hashtag_filter_disabled_a136 = Hashtag filter disabled
 
 # Title for hashtags column
 Hashtags_f8e0 = Hashtags
 
 # Title for Home column
 Home_8c19 = Home
+
+# Age verification checkbox label
+I_confirm_that_I_am_at_least_17_years_old_b09f = I confirm that I am at least 17 years old
+
+# Button for existing Nostr users to log in with their key
+I_have_a_Nostr_key_c306 = I have a Nostr key
+
+# TOS agreement checkbox label
+I_have_read_and_agree_to_the_Terms_of_Service_5903 = I have read and agree to the Terms of Service
 
 # Label for deck icon selection
 Icon_b0ab = Icon
@@ -274,6 +382,9 @@ Invalid_key_4726 = Invalid key.
 # Error message for invalid Nostr Wallet Connect URI
 Invalid_NWC_URI_031b = Invalid NWC URI
 
+# Button to dismiss welcome and browse the app without an account
+Just_browsing_17ed = Just browsing
+
 # Zap amount button for 100000 sats. Abbreviated because the button is too small to display the full amount.
 k_100K_686c = 100K
 
@@ -292,6 +403,9 @@ k_5K_f7e6 = 5K
 # Description for your notes column
 Keep_track_of_your_notes___replies_a334 = Keep track of your notes & replies
 
+# Confirmation prompt for database compaction
+Keeps_all_profiles_and_your_notes__The_smaller_database_will_be_used_on_next_restart_c4a6 = Keeps all profiles and your notes. The smaller database will be used on next restart.
+
 # label for keys setting section
 Keys_435f = Keys
 
@@ -307,26 +421,56 @@ Light_7475 = Light
 # Bitcoin Lightning network address field label
 Lightning_network_address__lud16_ea51 = Lightning network address (lud16)
 
+# Hover text for like button
+Like_this_note_dfb5 = Like this note
+
 # Login page title
 Login_9eef = Login
 
 # Login button text
 Login_now___let_s_do_this_5630 = Login now — let's do this!
 
+# Label for max hashtags per note, others settings section
+Max_hashtags_per_note_90e5 = Max hashtags per note:
+
 # Text shown on blurred media from unfollowed users
 Media_from_someone_you_don_t_follow_5611 = Media from someone you don't follow
 
+# Filter label for mentions only view
+Mentions_28d3 = Mentions
+
+# Tooltip for the messages app button
+Messages_2f17 = Messages
+
+# Label for stored chat message transport counts
+Messages_3a3d = Messages
+
+# Description shown under the private key prompt in the Messages view
+Messages_are_end-to-end_encrypted__Add_your_nsec_in_Accounts_to_read_and_send_chats_67db = Messages are end-to-end encrypted. Add your nsec in Accounts to read and send chats.
+
+# Button to go to the messaging app
+Messaging_700d = Messaging
+
 # Tooltip for moving a column
 Moves_this_column_to_another_position_0d4b = Moves this column to another position
+
+# Mute this user's content
+Mute_User_7a73 = Mute User
+
+# Mute the author of this note
+Mute_User_d94a = Mute User
 
 # Title for the user's deck
 My_Deck_4ac5 = My Deck
 
 # reaction from user to a note you were tagged in
-name__reacted_to_a_note_you_were_tagged_in_4b62 = {$name} reacted to a note you were tagged in
+name___privately_reacted_to_a_note_you_were_tagged_in_4b62 = {$name} {$privately}reacted to a note you were tagged in
 
 # reaction from user to your note
-name__reacted_to_your_note_ead9 = {$name} reacted to your note
+name___privately_reacted_to_your_note_ead9 = {$name} {$privately}reacted to your note
+
+# repost from user
+name__reposted_1379 = {$name} reposted
 
 # repost from user
 name__reposted_a_note_you_were_tagged_in_1379 = {$name} reposted a note you were tagged in
@@ -334,8 +478,35 @@ name__reposted_a_note_you_were_tagged_in_1379 = {$name} reposted a note you were
 # repost from user
 name__reposted_your_note_1379 = {$name} reposted your note
 
+# Button to go to a WASM app
+name_c366 = {$name}
+
+# Title shown when composing a new conversation
+New_Chat_afb4 = New Chat
+
 # Label asking if the user is new to Nostr. Underneath this label is a button to create an account.
 New_to_Nostr_a2fd = New to Nostr?
+
+# Shown when user has no contacts to display
+No_contacts_yet_cd10 = No contacts yet
+
+# Empty state text when the user has no conversations
+No_conversations_yet_52c0 = No conversations yet
+
+# label describing that there are no conversations yet
+No_conversations_yet_df0d = No conversations yet
+
+# Chat summary text when the conversation has no messages
+No_messages_yet_3205 = No messages yet
+
+# Shown when profile search returns no results
+No_profiles_found_3130 = No profiles found
+
+# Empty relay section placeholder
+None_8249 = None
+
+# Value indicating no automatic fallback is used for double-ratchet chat sends
+None_cf35 = None
 
 # NIP-05 identity field label
 Nostr_address__NIP-05_identity_74a2 = Nostr address (NIP-05 identity)
@@ -343,11 +514,23 @@ Nostr_address__NIP-05_identity_74a2 = Nostr address (NIP-05 identity)
 # Default username when profile is not available
 nostrich_df29 = nostrich
 
+# Button to go to the Nostrverse app
+Nostrverse_b12a = Nostrverse
+
 # Status label for disconnected relay
 Not_Connected_6292 = Not Connected
 
+# Double-ratchet status value shown when no peer support is known locally
+not_discovered_4b91 = not discovered
+
 # Link text for note references
 note_cad6 = note
+
+# Conversation title used when a chat only has the current user
+Note_to_Self_99be = Note to Self
+
+# Button to go to the Notebook app
+Notebook_6f45 = Notebook
 
 # Beta product warning message
 Notedeck_is_a_beta_product__Expect_bugs_and_contact_us_when_you_run_into_issues_a671 = Notedeck is a beta product. Expect bugs and contact us when you run into issues.
@@ -355,14 +538,8 @@ Notedeck_is_a_beta_product__Expect_bugs_and_contact_us_when_you_run_into_issues_
 # Filter label for notes only view
 Notes_03fb = Notes
 
-# Label for notes-only filter
-Notes_60d2 = Notes
-
 # Filter label for notes and replies view
 Notes___Replies_1ec2 = Notes & Replies
-
-# Label for notes and replies filter
-Notes___Replies_6e3b = Notes & Replies
 
 # Column title for notifications
 Notifications_d673 = Notifications
@@ -385,17 +562,35 @@ Open_Email_25e9 = Open Email
 # Instruction to open email client
 Open_your_default_email_client_to_get_help_from_the_Damus_team_68dc = Open your default email client to get help from the Damus team
 
+# Section header for non-advertised connected relays
+Other_65fa = Other
+
 # Label for others settings section
 Others_7267 = Others
 
+# Label for the transport used by newly sent chat messages
+Outgoing_aa33 = Outgoing
+
+# Label for chat participant count
+Participants_5350 = Participants
+
 # Placeholder text for NWC URI input
 Paste_your_NWC_URI_here_b471 = Paste your NWC URI here...
+
+# Double-ratchet status value shown when peer support is known locally
+peer_supported_7e3e = peer supported
+
+# Title for people list column
+People_List_42bf = People List
 
 # Error message for missing deck name
 Please_create_a_name_for_the_deck_38e7 = Please create a name for the deck.
 
 # Error message for missing deck name and icon
 Please_create_a_name_for_the_deck_and_select_an_icon_0add = Please create a name for the deck and select an icon.
+
+# TOS acceptance instruction text
+Please_read_and_accept_the_following_terms_to_continue_37de = Please read and accept the following terms to continue.
 
 # Error message for missing deck icon
 Please_select_an_icon_655b = Please select an icon.
@@ -405,6 +600,9 @@ Post_now_8a49 = Post now
 
 # Instruction for copying logs
 Press_the_button_below_to_copy_your_most_recent_logs_to_your_system_s_clipboard__Then_paste_it_into_your_email_322e = Press the button below to copy your most recent logs to your system's clipboard. Then paste it into your email.
+
+# Button to go to the user's profile
+Profile_c0ba = Profile
 
 # Profile picture URL field label
 Profile_picture_81ff = Profile picture
@@ -420,6 +618,9 @@ Quote_of_unknown_note_e4f0 = Quote of unknown note
 
 # Label for read-only profile mode
 Read_only_82ff = Read only
+
+# Tooltip for refreshing a one-shot feed
+Refresh_feed_e03d = Refresh feed
 
 # Column title for relay management
 Relays_9d89 = Relays
@@ -454,17 +655,32 @@ replying_to__user__s__thread_444d = replying to {$user}'s {$thread}
 # Fallback text when reply note is not found
 replying_to_a_note_e0bc = replying to a note
 
+# Column title for report screen
+Report_e56f = Report
+
+# Report this note for objectionable content
+Report_Note_8f42 = Report Note
+
+# Report this user for objectionable content
+Report_User_ed48 = Report User
+
+# Column title for deciding the type of repost
+Repost_06b2 = Repost
+
 # Hover text for repost button
 Repost_this_note_8e56 = Repost this note
 
-# Label for reposted notes
-Reposted_61c8 = Reposted
-
-# Label for reset note body font size, Appearance settings section
-Reset_4e60 = Reset
+# Label for reset max hashtags per note, others settings section
+Reset_4998 = Reset
 
 # Label for reset zoom level, Appearance settings section
 Reset_62d4 = Reset
+
+# Instruction to restart after compaction
+Restart_to_apply_811d = Restart to apply.
+
+# Heading shown above search results
+Results_41bf = Results
 
 # Heading for support section
 Running_into_a_bug_1796 = Running into a bug?
@@ -484,14 +700,20 @@ Save_changes_00db = Save changes
 # Column title for search page
 Search_c573 = Search
 
-# Placeholder for search notes input field
-Search_notes_42a6 = Search notes...
+# Placeholder for search input field
+Search_e7f2 = Search
 
-# Search in progress message
-Searching_for___query_5d18 = Searching for '{$query}'
+# Placeholder for profile search input
+Search_profiles_7e59 = Search profiles...
+
+# Placeholder for profile search input
+Search_profiles_or_enter_nip05_address_7e59 = Search profiles or enter nip05 address...
 
 # label describing secret key
 SECRET_ACCOUNT_LOGIN_KEY_8440 = SECRET ACCOUNT LOGIN KEY
+
+# Description for people list column
+See_notes_from_a_NIP-51_people_list_e6d9 = See notes from a NIP-51 people list
 
 # Description for Home column
 See_notes_from_your_contacts_ac16 = See notes from your contacts
@@ -499,11 +721,17 @@ See_notes_from_your_contacts_ac16 = See notes from your contacts
 # Description for universe column
 See_the_whole_nostr_universe_7694 = See the whole nostr universe
 
+# Column title for selecting a people list
+Select_a_People_List_a920 = Select a People List
+
 # Button to select all profiles in follow pack
 Select_All_a319 = Select All
 
 # Button label to send a zap
 Send_1ea4 = Send
+
+# Button to go to the settings view
+Settings_4d83 = Settings
 
 # Column title for app settings
 Settings_7a4f = Settings
@@ -550,6 +778,9 @@ Step_1_8656 = Step 1
 # Step 2 label in support instructions
 Step_2_d08d = Step 2
 
+# Button to interrupt/stop the AI operation
+Stop_5b38 = Stop
+
 # Label for storage settings section
 Storage_ed65 = Storage
 
@@ -559,17 +790,23 @@ Subscribe_to_someone_else_s_notes_d1e9 = Subscribe to someone else's notes
 # Column title for subscribing to individual user
 Subscribe_to_someone_s_notes_b3c8 = Subscribe to someone's notes
 
+# Ask Dave to summarize this note's thread
+Summarize_Thread_5d52 = Summarize Thread
+
+# Button to go to the support view
+Support_75e2 = Support
+
 # Support email address
 Support_email_44d9 = Support email:
 
-# Hover text for dark mode toggle button
-Switch_to_dark_mode_4dec = Switch to dark mode
-
-# Hover text for light mode toggle button
-Switch_to_light_mode_72ce = Switch to light mode
-
 # Button text to load blurred media
 Tap_to_Load_4b05 = Tap to Load
+
+# Column title for TOS acceptance screen
+Terms_of_Service_8a6e = Terms of Service
+
+# TOS acceptance screen title
+Terms_of_Service_e074 = Terms of Service
 
 # Message shown when Dave trial period has ended
 The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_Dave_coming_soon_c6c7 = The Dave Nostr AI assistant trial has ended :(. Thanks for testing! Zap-enabled Dave coming soon!
@@ -577,17 +814,35 @@ The_Dave_Nostr_AI_assistant_trial_has_ended_____Thanks_for_testing__Zap-enabled_
 # Label for theme, Appearance settings section
 Theme_4aac = Theme:
 
+# Button to change the theme (light or dark)
+Theme_7e6b = Theme
+
 # Column title for note thread view
 Thread_0f20 = Thread
 
 # Link text for thread references
 thread_ad1f = thread
 
+# Label shown between chat messages for the current day
+Today_bd04 = Today
+
+# Placeholder text for the message composer in chats
+Type_a_message_2a19 = Type a message
+
+# Double-ratchet status value shown when no full-key account is active
+unavailable_b6fa = unavailable
+
 # Title for universe column
 Universe_e01e = Universe
 
 # Column title for universe feed
 Universe_ffaa = Universe
+
+# Unmute the author of this note
+Unmute_User_5d5a = Unmute User
+
+# Unmute this user's content
+Unmute_User_bf35 = Unmute User
 
 # Checkbox label for using wallet only for current account
 Use_this_wallet_for_the_current_account_only_61dc = Use this wallet for the current account only
@@ -598,11 +853,17 @@ username___at___domain___will_be_used_for_identification_a4fd = "{$username}" at
 # Profile username field label
 Username_daa7 = Username
 
+# Switch active user to this profile
+View_as_092c = View as
+
 # Label for view folder button, Storage settings section
 View_folder_9742 = View folder
 
 # Column title for wallet management
 Wallet_5e50 = Wallet
+
+# Button to go to the wallet view
+Wallet_899d = Wallet
 
 # Hint for deck name input field
 We_recommend_short_names_083e = We recommend short names
@@ -610,8 +871,20 @@ We_recommend_short_names_083e = We recommend short names
 # Profile website field label
 Website_7980 = Website
 
+# Column title for welcome screen
+Welcome_5cce = Welcome
+
+# Welcome screen title
+Welcome_to_Notedeck_e2e7 = Welcome to Notedeck
+
 # Placeholder for note input field
 Write_a_banger_note_here_bad2 = Write a banger note here...
+
+# Abbreviated version of yesterday used in conversation summaries
+Yest_0505 = Yest
+
+# Label shown between chat messages for the previous day
+Yesterday_82b1 = Yesterday
 
 # Placeholder text for key input field
 Your_key_here_81bd = Your key here...
@@ -641,6 +914,14 @@ Got__count__results_for___query_85fb =
     }
 
 
+# Count of messages shown in a chat summary line
+count__messages_28b1 =
+    { $count ->
+        [one] {$count} message
+       *[other] {$count} messages
+    }
+
+
 # amount of reactions a note you were tagged in received
 name__and__count__others_reacted_to_a_note_you_were_tagged_in_181a =
     { $count ->
@@ -654,6 +935,14 @@ name__and__count__others_reacted_to_your_note_0f6a =
     { $count ->
         [one] {$name} and {$count} other reacted to your note
        *[other] {$name} and {$count} others reacted to your note
+    }
+
+
+# describing the amount of reposts a note has
+name__and__count__others_reposted_708c =
+    { $count ->
+        [one] {$name} and {$count} other reposted
+       *[other] {$name} and {$count} others reposted
     }
 
 

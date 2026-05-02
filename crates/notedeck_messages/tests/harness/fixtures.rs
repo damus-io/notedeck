@@ -1,4 +1,5 @@
 //! Fixture builders and raw NostrDB preload helpers for Messages end-to-end tests.
+#![allow(dead_code, unused_imports)]
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -100,7 +101,7 @@ pub fn local_giftwrap_created_ats_in_data_dir(data_dir: &Path, account: &FullKey
 /// Uses a future timestamp so the seeded list always supersedes any default
 /// relay list that `relay_ensure` might publish during device initialization.
 pub fn seed_local_dm_relay_list(device: &mut DeviceHarness, account: &FullKeypair, relay: &str) {
-    let future_ts = Some(notedeck::unix_time_secs() as u64 + 600);
+    let future_ts = Some(notedeck::unix_time_secs() + 600);
     seed_local_dm_relay_list_with_relays(device, account, &[relay], future_ts);
 }
 

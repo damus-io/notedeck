@@ -490,19 +490,13 @@ fn self_chat_bubble(
             ui.visuals_mut().selection.bg_fill = bubble_fill.linear_multiply(0.7);
 
             ui.with_layout(Layout::top_down(Align::Max), |ui| {
-                ui.add(
-                    egui::Label::new(RichText::new(message).color(ui.visuals().text_color()))
-                        .selectable(true),
-                );
+                let text_color = ui.visuals().text_color();
+                ui.add(egui::Label::new(RichText::new(message).color(text_color)).selectable(true));
 
                 if msg_type == MessageType::Standalone || msg_type == MessageType::LastInSeries {
                     let timestamp_label =
                         format_timestamp_label(&local_datetime_from_nostr(timestamp));
-                    ui.label(
-                        RichText::new(timestamp_label)
-                            .small()
-                            .color(ui.visuals().window_fill),
-                    );
+                    ui.label(RichText::new(timestamp_label).small().color(text_color));
                 }
             })
         })
@@ -569,9 +563,7 @@ fn other_chat_bubble(
                             );
                             ui.add(
                                 egui::Label::new(
-                                    RichText::new(timestamp_label)
-                                        .small()
-                                        .color(secondary_color),
+                                    RichText::new(timestamp_label).small().color(text_color),
                                 )
                                 .wrap_mode(egui::TextWrapMode::Extend),
                             );

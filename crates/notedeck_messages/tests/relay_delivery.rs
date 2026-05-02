@@ -7,7 +7,7 @@
 mod harness;
 
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use enostr::FullKeypair;
 use harness::fixtures::{seed_local_dm_relay_list, test_config};
@@ -15,7 +15,7 @@ use harness::ui::{open_conversation_via_ui, send_message_via_ui};
 use harness::{
     build_messages_device, init_tracing, local_chat_messages, publish_note_via_device,
     step_device_group, wait_for_device_giftwrap_subs_ready, wait_for_device_messages,
-    DeviceHarness, LocalRelayExt, TEST_TIMEOUT,
+    LocalRelayExt, TEST_TIMEOUT,
 };
 use harness::{build_messages_device_with_relays, wait_for_device_group_messages};
 use nostr::{Filter as NostrFilter, Kind as NostrKind};
@@ -24,19 +24,6 @@ use nostr_relay_builder::{
     LocalRelay, RelayBuilder,
 };
 use nostrdb::{Filter, NoteBuilder, Transaction};
-
-/// Query all kind-1 notes in a device's NDB authored by a specific pubkey.
-fn device_kind1_notes(device: &mut DeviceHarness, author: &enostr::Pubkey) -> Vec<String> {
-    let ctx = device.ctx.clone();
-    let app_ctx = device.state_mut().notedeck.app_context(&ctx);
-    let filter = Filter::new().kinds([1]).authors([author.bytes()]).build();
-    let txn = Transaction::new(app_ctx.ndb).expect("txn");
-    let results = app_ctx.ndb.query(&txn, &[filter], 100).expect("query");
-    results
-        .into_iter()
-        .map(|r| r.note.content().to_string())
-        .collect()
-}
 
 // ==================== Thread Leak Helpers ====================
 
@@ -209,14 +196,16 @@ async fn thread_leak_isolation() {
 
 // ==================== Plain Kind-1 Event Delivery ====================
 
-// ==================== Plain Kind-1 Event Delivery ====================
-
-/// Publish a kind-1 note via one device, verify another device receives it via relay.
+/// Publish a kind-1 note via one device and verify the relay stores it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn device_kind1_publish_receive() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
+    let db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+    let relay = LocalRelay::run(RelayBuilder::default().database(db.clone()))
         .await
         .expect("start relay");
     let relay_url = relay.url().to_owned();
@@ -234,19 +223,6 @@ async fn device_kind1_publish_receive() {
     sender.step();
     receiver.step();
 
-    // Subscribe receiver to kind-1 from sender
-    // The device already has default account subs but we need to add
-    // a subscription that matches kind-1. The giftwrap sub won't match kind-1.
-    // Instead, we'll rely on the fact that the relay sends events to
-    // subscribers whose filters match. We need a kind-1 subscription on receiver.
-    //
-    // Actually, the receiver won't have a kind-1 sub unless we create one.
-    // Let's use a different approach: publish from sender, then check
-    // the relay has it, then have the receiver fetch via a new sub.
-    //
-    // For now, let's just test that publishing works and the relay gets the event.
-    // The real test is giftwrap delivery which uses the existing giftwrap sub.
-
     // Build and publish a kind-1 note through sender device
     let note = NoteBuilder::new()
         .kind(1)
@@ -257,12 +233,29 @@ async fn device_kind1_publish_receive() {
 
     publish_note_via_device(&mut sender, &note);
 
-    // Verify sender's own NDB has the note (it was ingested locally via process_client_event)
-    let sender_notes = device_kind1_notes(&mut sender, &sender_kp.pubkey);
-    assert!(
-        sender_notes.iter().any(|c| c == "device-relay-test"),
-        "sender should have the note in its own NDB"
-    );
+    // Verify the relay has the note. The device publisher sends asynchronously,
+    // so keep stepping the device while polling the relay database.
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    let filter = NostrFilter::new().kind(NostrKind::Custom(1));
+    loop {
+        sender.step();
+        let events = db
+            .query(vec![filter.clone()])
+            .await
+            .expect("query relay kind-1 events");
+        if events
+            .iter()
+            .any(|event| event.content == "device-relay-test")
+        {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "relay should receive kind-1 note published through sender device"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     relay.shutdown_and_wait().await;
 }
@@ -311,7 +304,7 @@ async fn device_giftwrap_delivery() {
         &sender,
         &recipient,
         "giftwrap-delivery-test",
-        notedeck::unix_time_secs() as u64,
+        notedeck::unix_time_secs(),
     );
     publish_note_via_device(&mut sender_device, &giftwrap);
 
@@ -368,7 +361,7 @@ async fn device_giftwrap_burst_delivery() {
     // Burst-send 6 giftwraps with no delay between them
     let n = 6;
     let mut expected = BTreeSet::new();
-    let now = notedeck::unix_time_secs() as u64;
+    let now = notedeck::unix_time_secs();
     for i in 0..n {
         let msg = format!("burst-gw-{i}");
         expected.insert(msg.clone());
@@ -425,7 +418,7 @@ async fn device_giftwrap_burst_multiple_receivers() {
 
     let n = 6;
     let mut expected = BTreeSet::new();
-    let now = notedeck::unix_time_secs() as u64;
+    let now = notedeck::unix_time_secs();
     for i in 0..n {
         let msg = format!("multi-recv-burst-{i}");
         expected.insert(msg.clone());
@@ -817,7 +810,7 @@ async fn multi_relay_explicit_publish_no_ui() {
     );
 
     // Publish a giftwrap using EXPLICIT relay type (same path as send_conversation_message)
-    let now = notedeck::unix_time_secs() as u64;
+    let now = notedeck::unix_time_secs();
     let giftwrap = harness::fixtures::build_backdated_giftwrap_note(
         &sender,
         &recipient,
@@ -929,7 +922,7 @@ async fn multi_relay_no_ui_cross_delivery() {
     );
 
     // Publish a giftwrap addressed to recipient via sender device (no UI)
-    let now = notedeck::unix_time_secs() as u64;
+    let now = notedeck::unix_time_secs();
     let giftwrap = harness::fixtures::build_backdated_giftwrap_note(
         &sender,
         &recipient,

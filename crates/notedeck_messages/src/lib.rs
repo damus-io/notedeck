@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod convo_renderable;
+mod double_ratchet;
 pub mod loader;
 pub mod nav;
 pub mod nip17;
@@ -20,7 +21,7 @@ use crate::{
     loader::{LoaderMsg, MessagesLoader},
     nip17::{conversation_filter, known_participant_dm_relay_list_authors},
     relay_ensure::ensure_selected_account_dm_list,
-    ui::{login_nsec_prompt, messages::messages_ui},
+    ui::{login_nsec_prompt, messages::messages_ui, MessagesTransportStatus},
 };
 use std::thread;
 
@@ -35,10 +36,26 @@ pub struct MessagesApp {
     loader: MessagesLoader,
     inflight_messages: HashSet<cache::ConversationId>,
     giftwrap_workers: Vec<thread::JoinHandle<()>>,
+    double_ratchet_available: bool,
+    ratchet: Option<double_ratchet::RatchetService>,
+    ratchet_account: Option<Pubkey>,
 }
 
 impl MessagesApp {
     pub fn new() -> Self {
+        Self::with_double_ratchet_available(true)
+    }
+
+    /// Construct a Messages app without a double-ratchet worker.
+    ///
+    /// This is intended for NIP-17-only regression tests. Production app construction should use
+    /// [`Self::new`], which always enables double ratchet when the selected account can sign.
+    #[doc(hidden)]
+    pub fn new_nip17_only_for_tests() -> Self {
+        Self::with_double_ratchet_available(false)
+    }
+
+    fn with_double_ratchet_available(double_ratchet_available: bool) -> Self {
         Self {
             messages: ConversationsCtx::default(),
             states: ConversationStates::default(),
@@ -46,7 +63,51 @@ impl MessagesApp {
             loader: MessagesLoader::new(),
             inflight_messages: HashSet::new(),
             giftwrap_workers: Vec::new(),
+            double_ratchet_available,
+            ratchet: None,
+            ratchet_account: None,
         }
+    }
+
+    /// Returns `true` when the current account has an active double-ratchet worker.
+    pub fn double_ratchet_active(&self) -> bool {
+        self.ratchet.is_some()
+    }
+
+    #[profiling::function]
+    fn ensure_ratchet(&mut self, ctx: &mut AppContext<'_>) {
+        if !self.double_ratchet_available {
+            if let Some(mut existing) = self.ratchet.take() {
+                existing.shutdown(ctx);
+            }
+            self.ratchet_account = None;
+            return;
+        }
+
+        let selected_pubkey = *ctx.accounts.selected_account_pubkey();
+        let has_full_keypair = ctx.accounts.selected_filled().is_some();
+
+        if !has_full_keypair {
+            if let Some(mut existing) = self.ratchet.take() {
+                existing.shutdown(ctx);
+            }
+            self.ratchet_account = None;
+            return;
+        }
+
+        if self.ratchet_account == Some(selected_pubkey) && self.ratchet.is_some() {
+            return;
+        }
+
+        if self.ratchet_account == Some(selected_pubkey) && self.ratchet.is_none() {
+            return;
+        }
+
+        if let Some(mut existing) = self.ratchet.take() {
+            existing.shutdown(ctx);
+        }
+        self.ratchet = double_ratchet::RatchetService::new(ctx);
+        self.ratchet_account = Some(selected_pubkey);
     }
 }
 
@@ -65,6 +126,8 @@ impl Drop for MessagesApp {
 impl App for MessagesApp {
     #[profiling::function]
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        self.ensure_ratchet(ctx);
+
         let Some(cache) = self.messages.get_current_mut(ctx.accounts) else {
             return;
         };
@@ -104,6 +167,12 @@ impl App for MessagesApp {
             &mut self.inflight_messages,
             is_narrow(egui_ctx),
         );
+
+        if let Some(ratchet) = self.ratchet.as_mut() {
+            if ratchet.poll(ctx, Some(cache)) {
+                egui_ctx.request_repaint();
+            }
+        }
     }
 
     #[profiling::function]
@@ -121,6 +190,17 @@ impl App for MessagesApp {
             .data
             .contacts
             .get_state();
+        let active_conversation_double_ratchet_supported =
+            if let (Some(active), Some(ratchet)) = (cache.active, self.ratchet.as_mut()) {
+                ratchet.prepare_conversation(active, cache);
+                ratchet.conversation_supports_double_ratchet(active, cache, ctx)
+            } else {
+                false
+            };
+        let transport = MessagesTransportStatus {
+            double_ratchet_active: self.ratchet.is_some(),
+            active_conversation_double_ratchet_supported,
+        };
         let resp = messages_ui(
             cache,
             &mut self.states,
@@ -134,15 +214,21 @@ impl App for MessagesApp {
             contacts_state,
             ctx.i18n,
             ctx.clipboard,
+            transport,
         );
+        let ratchet = self.ratchet.as_mut();
         let action = process_messages_ui_response(
             resp,
-            ctx,
-            cache,
-            &mut self.router,
-            is_narrow(ui.ctx()),
-            &self.loader,
-            &mut self.inflight_messages,
+            nav::MessagesNavDeps {
+                ctx,
+                cache,
+                router: &mut self.router,
+                is_narrow: is_narrow(ui.ctx()),
+                loader: &self.loader,
+                inflight_messages: &mut self.inflight_messages,
+                ratchet,
+                states: &mut self.states,
+            },
         );
 
         AppResponse::action(action)

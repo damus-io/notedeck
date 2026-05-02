@@ -1,4 +1,5 @@
 //! UI interaction helpers for Messages end-to-end tests.
+#![allow(dead_code, unused_imports)]
 
 use std::time::Duration;
 

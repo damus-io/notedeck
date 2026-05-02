@@ -16,8 +16,9 @@ use crate::{
     cache::{ConversationCache, ConversationStates},
     nav::{MessagesAction, Route},
     ui::{
-        conversation_header_impl, convo::conversation_ui, convo_list::ConversationListUi,
-        create_convo::CreateConvoUi, title_label,
+        conversation_details_button, conversation_details_tooltip, conversation_header_impl,
+        convo::conversation_ui, convo_list::ConversationListUi, create_convo::CreateConvoUi,
+        title_label,
     },
 };
 
@@ -220,6 +221,8 @@ impl<'a> NavTitle<'a> {
         let mut right_action = None;
         let mut left_action = None;
         let mut title_action = None;
+        let has_active_conversation = self.cache.get_active().is_some();
+        let details_tooltip = conversation_details_tooltip(self.i18n);
 
         HorizontalHeader::new(48.0)
             .with_margin(Margin::symmetric(12, 8))
@@ -263,7 +266,13 @@ impl<'a> NavTitle<'a> {
                         }
                     }
                     Route::CreateConvo => {}
-                    Route::Conversation => {}
+                    Route::Conversation => {
+                        if has_active_conversation
+                            && conversation_details_button(ui, &details_tooltip).clicked()
+                        {
+                            right_action = Some(MessagesAction::ShowConversationDetails);
+                        }
+                    }
                 },
             );
 

@@ -2,6 +2,7 @@
 //!
 //! Delegates generic device management, stepping, and UI helpers to
 //! `notedeck_testing` and layers messages-specific functionality on top.
+#![allow(dead_code, unused_imports)]
 
 pub mod fixtures;
 pub mod ui;
@@ -40,7 +41,7 @@ pub const TEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// App factory that installs the Messages app on a device.
 fn messages_app_factory() -> notedeck_testing::AppFactory {
     Box::new(|notedeck, _ctx| {
-        notedeck.set_app(MessagesApp::new());
+        notedeck.set_app(MessagesApp::new_nip17_only_for_tests());
     })
 }
 
@@ -468,6 +469,11 @@ pub fn device_giftwrap_sub_ready(device: &mut DeviceHarness) -> bool {
     )
 }
 
+/// Adapts borrowed device groups to the giftwrap readiness predicate.
+fn borrowed_device_giftwrap_sub_ready(device: &mut &mut DeviceHarness) -> bool {
+    device_giftwrap_sub_ready(device)
+}
+
 /// Steps all clusters until every device has its giftwrap subscription live with EOSE, or panics on timeout.
 pub fn wait_for_giftwrap_subs_ready(clusters: &mut [&mut AccountCluster], timeout: Duration) {
     let deadline = Instant::now() + timeout;
@@ -475,12 +481,9 @@ pub fn wait_for_giftwrap_subs_ready(clusters: &mut [&mut AccountCluster], timeou
     loop {
         step_clusters(clusters);
 
-        let all_ready = clusters.iter_mut().all(|cluster| {
-            cluster
-                .devices
-                .iter_mut()
-                .all(|d| device_giftwrap_sub_ready(d))
-        });
+        let all_ready = clusters
+            .iter_mut()
+            .all(|cluster| cluster.devices.iter_mut().all(device_giftwrap_sub_ready));
 
         if all_ready {
             return;
@@ -504,7 +507,7 @@ pub fn wait_for_device_giftwrap_subs_ready(devices: &mut [&mut DeviceHarness], t
             device.step();
         }
 
-        if devices.iter_mut().all(|d| device_giftwrap_sub_ready(d)) {
+        if devices.iter_mut().all(borrowed_device_giftwrap_sub_ready) {
             return;
         }
 
