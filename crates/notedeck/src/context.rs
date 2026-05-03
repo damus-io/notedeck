@@ -1,7 +1,7 @@
 use crate::{
     account::accounts::Accounts, frame_history::FrameHistory, i18n::Localization,
-    nip05::Nip05Cache, sound::SoundManager, wallet::GlobalWallet, zaps::Zaps, Args, DataPath,
-    Images, JobPool, MediaJobs, NoteCache, RemoteApi, SettingsHandler, UnknownIds,
+    nip05::Nip05Cache, sound::SoundManager, wallet::GlobalWallet, zaps::ZapVerifier, zaps::Zaps,
+    Args, DataPath, Images, JobPool, MediaJobs, NoteCache, RemoteApi, SettingsHandler, UnknownIds,
 };
 use egui_winit::clipboard::Clipboard;
 use enostr::Pubkey;
@@ -27,6 +27,7 @@ pub struct AppContext<'a> {
     pub settings: &'a mut SettingsHandler,
     pub clipboard: &'a mut Clipboard,
     pub zaps: &'a mut Zaps,
+    pub zap_verifier: &'a mut ZapVerifier,
     pub frame_history: &'a mut FrameHistory,
     pub job_pool: &'a mut JobPool,
     pub media_jobs: &'a mut MediaJobs,
