@@ -141,6 +141,8 @@ impl Args {
                 res.options.set(NotedeckOptions::UseKeystore, false);
             } else if arg == "--relay-debug" {
                 res.options.set(NotedeckOptions::RelayDebug, true);
+            } else if arg == "--all-apps-active" {
+                res.options.set(NotedeckOptions::AllAppsActive, true);
             } else if arg == "--title" {
                 i += 1;
                 let title = if let Some(next_arg) = args.get(i) {

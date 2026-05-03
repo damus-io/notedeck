@@ -20,6 +20,9 @@ bitflags! {
 
         /// We need soft keyboard visibility
         const KeyboardVisibility = 1 << 4;
+
+        /// Update all apps every frame, even if they haven't been opened yet
+        const AllAppsActive = 1 << 5;
     }
 }
 
