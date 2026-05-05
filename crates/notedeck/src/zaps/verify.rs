@@ -65,12 +65,16 @@ impl ZapVerifier {
             }
         }
 
-        // extract recipient pubkey from p-tag
-        let Some(recipient) = get_p_tag(note) else {
-            tracing::warn!("zap verify: no p-tag on 9735 note");
+        // securely get the zap target's pubkey. The p-tag can be faked
+        // on note zaps, so we look up the referenced note's actual author.
+        let Some(recipient_bytes) = get_zap_target_pubkey(note, ndb, txn) else {
+            tracing::warn!(
+                "zap verify: can't determine recipient for 9735 note {}",
+                hex::encode(note_id)
+            );
             return;
         };
-        let recipient = Pubkey::new(*recipient);
+        let recipient = Pubkey::new(recipient_bytes);
 
         // look up their LNURL endpoint
         let address = match get_users_zap_address(txn, ndb, &recipient) {
@@ -183,13 +187,80 @@ fn address_to_endpoint_url(address: &ZapAddress) -> Result<Url, ZapError> {
     }
 }
 
-fn get_p_tag<'a>(note: &nostrdb::Note<'a>) -> Option<&'a [u8; 32]> {
-    for tag in note.tags() {
-        if tag.count() >= 2 {
-            if let Some("p") = tag.get_str(0) {
-                return tag.get_id(1);
+/// Securely get the zap target's pubkey. The p-tag on note zaps can be
+/// faked, so we need to look up the actual note author from the database.
+fn get_zap_target_pubkey(
+    note: &nostrdb::Note<'_>,
+    ndb: &Ndb,
+    txn: &Transaction,
+) -> Option<[u8; 32]> {
+    let e_tag = get_single_tag_id(note, "e");
+
+    match e_tag {
+        TagMatch::None => {
+            // No e-tags: this is a profile zap (p-tag only).
+            // The p-tag is the only source, require exactly one.
+            match get_single_tag_id(note, "p") {
+                TagMatch::One(id) => Some(*id),
+                _ => None,
+            }
+        }
+
+        TagMatch::Many => {
+            // Multiple e-tags: reject to prevent fake note zap attacks
+            tracing::warn!("zap verify: rejecting zap with multiple e-tags");
+            None
+        }
+
+        TagMatch::One(referenced_note_id) => {
+            // We can't trust the p-tag on note zaps because it can be
+            // faked. Look up the actual note to get the real author.
+            match ndb.get_note_by_id(txn, referenced_note_id) {
+                Ok(referenced_note) => Some(*referenced_note.pubkey()),
+                Err(_) => {
+                    // We don't have the referenced note in the db so
+                    // we can't verify the author. Fall back to the
+                    // p-tag. This leaks a bit of correctness but
+                    // avoids rejecting valid zaps for notes we simply
+                    // haven't seen yet.
+                    tracing::debug!(
+                        "zap verify: note {} not in db, falling back to p-tag",
+                        hex::encode(referenced_note_id)
+                    );
+                    match get_single_tag_id(note, "p") {
+                        TagMatch::One(id) => Some(*id),
+                        _ => None,
+                    }
+                }
             }
         }
     }
-    None
+}
+
+enum TagMatch<T> {
+    None,
+    One(T),
+    Many,
+}
+
+fn get_single_tag_id<'a>(note: &nostrdb::Note<'a>, tag_name: &str) -> TagMatch<&'a [u8; 32]> {
+    let mut found: Option<&[u8; 32]> = None;
+    for tag in note.tags() {
+        if tag.count() >= 2 {
+            if let Some(name) = tag.get_str(0) {
+                if name == tag_name {
+                    if let Some(id) = tag.get_id(1) {
+                        if found.is_some() {
+                            return TagMatch::Many;
+                        }
+                        found = Some(id);
+                    }
+                }
+            }
+        }
+    }
+    match found {
+        Some(id) => TagMatch::One(id),
+        None => TagMatch::None,
+    }
 }
