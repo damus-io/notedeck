@@ -97,7 +97,7 @@ pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
     builder_from_note, get_p_tags, send_mute_event, send_people_list_event, send_report_event,
     send_unmute_event, BroadcastContext, ContextSelection, NoteAction, NoteContext,
-    NoteContextSelection, NoteRef, ReportTarget, ReportType, RootIdError, RootNoteId,
+    NoteContextSelection, NoteDetail, NoteRef, ReportTarget, ReportType, RootIdError, RootNoteId,
     RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};

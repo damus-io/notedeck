@@ -46,6 +46,17 @@ pub enum NoteAction {
 
     /// User scrolled the timeline
     Scroll(ScrollInfo),
+
+    /// User clicked a detailed count label (reactions, reposts, zaps)
+    Detail(NoteDetail),
+}
+
+/// Which detailed count label was clicked on a note
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum NoteDetail {
+    Reactions(NoteId),
+    Reposts(NoteId),
+    Zaps(NoteId),
 }
 
 impl NoteAction {

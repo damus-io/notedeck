@@ -25,7 +25,7 @@ use egui::{Id, Pos2, Rect, Response, Sense};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
 use nostrdb::{Ndb, Note, NoteKey, NoteMetadataEntryVariant, ProfileRecord, Transaction};
 use notedeck::{
-    note::{NoteAction, NoteContext, ReactAction, ZapAction},
+    note::{NoteAction, NoteContext, NoteDetail, ReactAction, ZapAction},
     tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, ZapTarget, Zaps,
 };
 
@@ -479,7 +479,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                     NoteStats::get(self.note_context.ndb, txn, self.note.id());
 
                 if show_detailed {
-                    detailed_counts_ui(ui, &stats);
+                    note_action = detailed_counts_ui(ui, self.note.id(), &stats)
+                        .or(note_action);
                 }
 
                 if show_actionbar {
@@ -580,7 +581,8 @@ impl<'a, 'd> NoteView<'a, 'd> {
                         NoteStats::get(self.note_context.ndb, txn, self.note.id());
 
                     if show_detailed {
-                        detailed_counts_ui(ui, &stats);
+                        note_action = detailed_counts_ui(ui, self.note.id(), &stats)
+                            .or(note_action);
                     }
 
                     if show_actionbar {
@@ -1038,7 +1040,12 @@ fn is_root_note(note: &Note) -> bool {
 
 /// Renders a detailed counts row showing reposts, reactions, zaps, etc.
 /// Styled like Damus iOS: "3 Reposts  11 Reactions  21K Sats"
-fn detailed_counts_ui(ui: &mut egui::Ui, stats: &NoteStats) {
+/// Each stat is clickable and navigates to a detail view.
+fn detailed_counts_ui(
+    ui: &mut egui::Ui,
+    note_id: &[u8; 32],
+    stats: &NoteStats,
+) -> Option<NoteAction> {
     let (reposts, reactions) = stats
         .counts
         .as_ref()
@@ -1048,57 +1055,85 @@ fn detailed_counts_ui(ui: &mut egui::Ui, stats: &NoteStats) {
 
     // Only show if there's something to display
     if reposts == 0 && reactions == 0 && zap_sats == 0 {
-        return;
+        return None;
     }
 
     ui.add_space(4.0);
     ui.separator();
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        let text_color = ui.style().visuals.text_color();
-        let weak_color = ui.style().visuals.weak_text_color();
-        let font_size = 13.0;
-        let spacing = 12.0;
+    let action = ui
+        .horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let text_color = ui.style().visuals.text_color();
+            let weak_color = ui.style().visuals.weak_text_color();
+            let font_size = 13.0;
+            let spacing = 12.0;
 
-        let mut first = true;
+            let mut first = true;
+            let mut action: Option<NoteAction> = None;
 
-        let mut stat = |value: &str, label: &str, pluralize: bool| {
-            if !first {
-                ui.add_space(spacing);
-            }
-            first = false;
+            let mut stat = |ui: &mut egui::Ui, value: &str, label: &str, pluralize: bool| {
+                if !first {
+                    ui.add_space(spacing);
+                }
+                first = false;
 
-            ui.label(
-                egui::RichText::new(value)
-                    .size(font_size)
-                    .strong()
-                    .color(text_color),
-            );
-            ui.label(
-                egui::RichText::new(if pluralize {
+                let label_text = if pluralize {
                     format!("{label}s")
                 } else {
                     label.to_string()
-                })
-                .size(font_size)
-                .color(weak_color),
-            );
-        };
+                };
 
-        if reposts > 0 {
-            stat(&reposts.to_string(), "Repost", reposts != 1);
-        }
-        if reactions > 0 {
-            stat(&reactions.to_string(), "Reaction", reactions != 1);
-        }
-        if zap_sats > 0 {
-            stat(&format_sats_abbreviated(zap_sats), "Sat", zap_sats != 1);
-        }
-    });
+                let r1 = ui.label(
+                    egui::RichText::new(value)
+                        .size(font_size)
+                        .strong()
+                        .color(text_color),
+                );
+                let r2 = ui
+                    .label(
+                        egui::RichText::new(label_text)
+                            .size(font_size)
+                            .color(weak_color),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                r1.union(r2)
+            };
+
+            let nid = NoteId::new(*note_id);
+
+            if reposts > 0 {
+                if stat(ui, &reposts.to_string(), "Repost", reposts != 1).clicked() {
+                    action = Some(NoteAction::Detail(NoteDetail::Reposts(nid)));
+                }
+            }
+            if reactions > 0 {
+                if stat(ui, &reactions.to_string(), "Reaction", reactions != 1).clicked() {
+                    action = Some(NoteAction::Detail(NoteDetail::Reactions(nid)));
+                }
+            }
+            if zap_sats > 0 {
+                if stat(
+                    ui,
+                    &format_sats_abbreviated(zap_sats),
+                    "Sat",
+                    zap_sats != 1,
+                )
+                .clicked()
+                {
+                    action = Some(NoteAction::Detail(NoteDetail::Zaps(nid)));
+                }
+            }
+
+            action
+        })
+        .inner;
 
     ui.separator();
     ui.add_space(4.0);
+
+    action
 }
 
 #[allow(clippy::too_many_arguments)]
