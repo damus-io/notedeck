@@ -37,7 +37,7 @@ use enostr::ProfileState;
 use nostrdb::{Filter, Ndb, Transaction};
 use notedeck::{
     get_current_default_msats, nav::DragResponse, tr, ui::is_narrow, Accounts, AppContext,
-    FilterState, NoteAction, NoteCache, NoteContext, RelayAction,
+    FilterState, NoteAction, NoteCache, NoteContext, NoteDetail, RelayAction,
 };
 use notedeck_ui::{ContactsListAction, ContactsListView, NoteOptions};
 use tracing::error;
@@ -659,6 +659,208 @@ fn process_render_nav_action(
     }
 }
 
+/// Extract the sender pubkey from a zap receipt (kind 9735).
+/// The sender is the author of the zap request (kind 9734) embedded
+/// in the receipt's "description" tag, not the receipt's own pubkey
+/// (which is the LNURL server).
+fn zap_sender_pubkey(zap_receipt: &nostrdb::Note<'_>) -> Option<enostr::Pubkey> {
+    for tag in zap_receipt.tags() {
+        if tag.count() >= 2 && tag.get_str(0) == Some("description") {
+            let desc = tag.get_str(1)?;
+            let zap_req = enostr::Note::from_json(desc).ok()?;
+            return Some(zap_req.pubkey);
+        }
+    }
+    None
+}
+
+/// Check if a zap receipt has been verified via nostrdb metadata flags.
+/// NDB_NOTE_META_FLAG_ZAP_VERIFIED = 4
+fn is_zap_verified(ndb: &Ndb, txn: &Transaction, note_id: &[u8; 32]) -> bool {
+    if let Ok(mut meta) = ndb.get_note_metadata(txn, note_id) {
+        *meta.flags() & 4 != 0
+    } else {
+        false
+    }
+}
+
+/// Cached zap detail list split by verification status.
+#[derive(Clone)]
+struct ZapDetailCache {
+    verified: Vec<enostr::Pubkey>,
+    unverified: Vec<enostr::Pubkey>,
+}
+
+fn note_detail_ui(
+    ui: &mut egui::Ui,
+    ndb: &Ndb,
+    detail: &NoteDetail,
+    note_context: &mut NoteContext<'_>,
+) -> DragResponse<RenderNavAction> {
+    let note_id = match detail {
+        NoteDetail::Reactions(id) => id,
+        NoteDetail::Reposts(id) => id,
+        NoteDetail::Zaps(id) => id,
+    };
+
+    if matches!(detail, NoteDetail::Zaps(_)) {
+        return zap_detail_ui(ui, ndb, note_id, note_context);
+    }
+
+    let cache_id = egui::Id::new(("note_detail_cache", note_id, std::mem::discriminant(detail)));
+
+    let contacts = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<Vec<enostr::Pubkey>>(cache_id));
+
+    let (txn, contacts) = if let Some(cached) = contacts {
+        let txn = nostrdb::Transaction::new(ndb).expect("txn");
+        (txn, cached)
+    } else {
+        let txn = nostrdb::Transaction::new(ndb).expect("txn");
+
+        let kinds: &[u64] = match detail {
+            NoteDetail::Reactions(_) => &[7],
+            NoteDetail::Reposts(_) => &[6, 16],
+            NoteDetail::Zaps(_) => unreachable!(),
+        };
+
+        let filter = nostrdb::Filter::new()
+            .kinds(kinds.iter().copied())
+            .event(note_id.bytes())
+            .limit(500)
+            .build();
+
+        let mut seen = std::collections::HashSet::new();
+        let mut contacts = vec![];
+
+        if let Ok(results) = ndb.query(&txn, &[filter], 500) {
+            for result in &results {
+                let pk = enostr::Pubkey::new(*result.note.pubkey());
+                if seen.insert(pk) {
+                    contacts.push(pk);
+                }
+            }
+        }
+
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(cache_id, contacts.clone()));
+        (txn, contacts)
+    };
+
+    ContactsListView::new(
+        &contacts,
+        note_context.jobs,
+        note_context.ndb,
+        note_context.img_cache,
+        &txn,
+        note_context.i18n,
+    )
+    .ui(ui)
+    .map_output(|action| match action {
+        ContactsListAction::Select(pk) => RenderNavAction::NoteAction(NoteAction::Profile(pk)),
+    })
+}
+
+fn zap_detail_ui(
+    ui: &mut egui::Ui,
+    ndb: &Ndb,
+    note_id: &enostr::NoteId,
+    note_context: &mut NoteContext<'_>,
+) -> DragResponse<RenderNavAction> {
+    let cache_id = egui::Id::new(("zap_detail_cache", note_id));
+
+    let cached = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<ZapDetailCache>(cache_id));
+
+    let (txn, zap_cache) = if let Some(cached) = cached {
+        let txn = nostrdb::Transaction::new(ndb).expect("txn");
+        (txn, cached)
+    } else {
+        let txn = nostrdb::Transaction::new(ndb).expect("txn");
+
+        let filter = nostrdb::Filter::new()
+            .kinds([9735])
+            .event(note_id.bytes())
+            .limit(500)
+            .build();
+
+        let mut seen = std::collections::HashSet::new();
+        let mut verified = vec![];
+        let mut unverified = vec![];
+
+        if let Ok(results) = ndb.query(&txn, &[filter], 500) {
+            for result in &results {
+                if let Some(pk) = zap_sender_pubkey(&result.note) {
+                    if seen.insert(pk) {
+                        if is_zap_verified(ndb, &txn, result.note.id()) {
+                            verified.push(pk);
+                        } else {
+                            unverified.push(pk);
+                        }
+                    }
+                }
+            }
+        }
+
+        let zap_cache = ZapDetailCache {
+            verified,
+            unverified,
+        };
+
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(cache_id, zap_cache.clone()));
+        (txn, zap_cache)
+    };
+
+    let mut action = None;
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for pk in &zap_cache.verified {
+            let profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+            if notedeck_ui::profile_row(
+                ui,
+                profile.as_ref(),
+                false,
+                note_context.img_cache,
+                note_context.jobs,
+                note_context.i18n,
+            ) {
+                action = Some(RenderNavAction::NoteAction(NoteAction::Profile(*pk)));
+            }
+        }
+
+        if !zap_cache.unverified.is_empty() {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("Unverified")
+                    .size(13.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
+            ui.add_space(4.0);
+
+            for pk in &zap_cache.unverified {
+                let profile = ndb.get_profile_by_pubkey(&txn, pk.bytes()).ok();
+                if notedeck_ui::profile_row(
+                    ui,
+                    profile.as_ref(),
+                    false,
+                    note_context.img_cache,
+                    note_context.jobs,
+                    note_context.i18n,
+                ) {
+                    action = Some(RenderNavAction::NoteAction(NoteAction::Profile(*pk)));
+                }
+            }
+        }
+    });
+
+    DragResponse::output(action)
+}
+
 fn render_nav_body(
     ui: &mut egui::Ui,
     app: &mut Damus,
@@ -1069,6 +1271,7 @@ fn render_nav_body(
             })
         }
         Route::FollowedBy(_pubkey) => DragResponse::none(),
+        Route::NoteDetails(detail) => note_detail_ui(ui, ctx.ndb, detail, &mut note_context),
         Route::TosAcceptance => {
             let resp = ui::tos::TosAcceptanceView::new(
                 ctx.i18n,

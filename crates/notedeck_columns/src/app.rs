@@ -838,6 +838,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::TosAcceptance => false,
         Route::Welcome => false,
         Route::Report(_) => false,
+        Route::NoteDetails(_) => false,
     }
 }
 
