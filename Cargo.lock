@@ -5096,6 +5096,7 @@ dependencies = [
  "image",
  "indexmap 2.13.0",
  "jni 0.21.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "lightning-invoice",
  "ndk-context",
  "nostr 0.37.0",
  "nostr-relay-builder",

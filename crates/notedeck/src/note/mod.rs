@@ -2,7 +2,7 @@ mod action;
 mod context;
 pub mod publish;
 
-pub use action::{NoteAction, ReactAction, ScrollInfo, ZapAction, ZapTargetAmount};
+pub use action::{NoteAction, NoteDetail, ReactAction, ScrollInfo, ZapAction, ZapTargetAmount};
 pub use context::{BroadcastContext, ContextSelection, NoteContextSelection};
 pub use publish::{
     builder_from_note, send_mute_event, send_people_list_event, send_report_event,

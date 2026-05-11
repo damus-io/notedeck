@@ -97,7 +97,7 @@ pub fn event_commitment(
 }
 
 // TODO(kernelkind): i think we may be able to validate just with the nostrdb::Note. Not exactly sure yet how though
-fn valid_zap_request(note: enostr::Note) -> bool {
+pub(crate) fn valid_zap_request(note: enostr::Note) -> bool {
     let sig = note.sig.clone();
 
     let commitment = event_commitment(

@@ -23,9 +23,9 @@ pub use reply_description::reply_desc;
 use egui::emath::{pos2, Vec2};
 use egui::{Id, Pos2, Rect, Response, Sense};
 use enostr::{KeypairUnowned, NoteId, Pubkey};
-use nostrdb::{Ndb, Note, NoteKey, ProfileRecord, Transaction};
+use nostrdb::{Ndb, Note, NoteKey, NoteMetadataEntryVariant, ProfileRecord, Transaction};
 use notedeck::{
-    note::{NoteAction, NoteContext, ReactAction, ZapAction},
+    note::{NoteAction, NoteContext, NoteDetail, ReactAction, ZapAction},
     tr, AnyZapState, ContextSelection, NoteZapTarget, NoteZapTargetOwned, ZapTarget, Zaps,
 };
 
@@ -191,6 +191,13 @@ impl<'a, 'd> NoteView<'a, 'd> {
     #[inline]
     pub fn unread_indicator(mut self, enable: bool) -> Self {
         self.options_mut().set(NoteOptions::UnreadIndicator, enable);
+        self
+    }
+
+    #[inline]
+    pub fn detailed_counts(mut self, enable: bool) -> Self {
+        self.options_mut()
+            .set(NoteOptions::DetailedCounts, enable);
         self
     }
 
@@ -464,46 +471,44 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
             note_action = contents.action.or(note_action);
 
-            if self.options().contains(NoteOptions::ActionBar) {
-                note_action = ui
-                    .horizontal_wrapped(|ui| {
-                        // NOTE(jb55): without this we get a weird artifact where
-                        // there subsequent lines start sinking leftward off the screen.
-                        // question: WTF? question 2: WHY?
-                        ui.allocate_space(egui::vec2(0.0, 0.0));
+            let show_actionbar = self.options().contains(NoteOptions::ActionBar);
+            let show_detailed = self.options().contains(NoteOptions::DetailedCounts);
 
-                        let counts = self
-                            .note_context
-                            .ndb
-                            .get_note_metadata(txn, self.note.id())
-                            .ok()
-                            .and_then(|md| {
-                                md.into_iter().find_map(|e| {
-                                    if let nostrdb::NoteMetadataEntryVariant::Counts(ce) = e {
-                                        Some(ce)
-                                    } else {
-                                        None
-                                    }
-                                })
-                            });
+            if show_actionbar || show_detailed {
+                let stats =
+                    NoteStats::get(self.note_context.ndb, txn, self.note.id());
 
-                        actionbar_ui(
-                            ui,
-                            counts,
-                            get_zapper(
-                                self.note_context.accounts,
-                                self.note_context.global_wallet,
-                                self.note_context.zaps,
-                            ),
-                            self.note,
-                            self.note_context.accounts.selected_account_pubkey(),
-                            note_key,
-                            self.note_context.i18n,
-                            self.note_context.sound,
-                        )
-                    })
-                    .inner
-                    .or(note_action);
+                if show_detailed {
+                    note_action = detailed_counts_ui(ui, self.note.id(), &stats)
+                        .or(note_action);
+                }
+
+                if show_actionbar {
+                    note_action = ui
+                        .horizontal_wrapped(|ui| {
+                            // NOTE(jb55): without this we get a weird artifact where
+                            // there subsequent lines start sinking leftward off the screen.
+                            // question: WTF? question 2: WHY?
+                            ui.allocate_space(egui::vec2(0.0, 0.0));
+
+                            actionbar_ui(
+                                ui,
+                                &stats,
+                                get_zapper(
+                                    self.note_context.accounts,
+                                    self.note_context.global_wallet,
+                                    self.note_context.zaps,
+                                ),
+                                self.note,
+                                self.note_context.accounts.selected_account_pubkey(),
+                                note_key,
+                                self.note_context.i18n,
+                                self.note_context.sound,
+                            )
+                        })
+                        .inner
+                        .or(note_action);
+                }
             }
 
             NoteUiResponse {
@@ -568,41 +573,39 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
                 note_action = contents.action.or(note_action);
 
-                if self.options().contains(NoteOptions::ActionBar) {
-                    let counts = self
-                        .note_context
-                        .ndb
-                        .get_note_metadata(txn, self.note.id())
-                        .ok()
-                        .and_then(|md| {
-                            md.into_iter().find_map(|e| {
-                                if let nostrdb::NoteMetadataEntryVariant::Counts(ce) = e {
-                                    Some(ce)
-                                } else {
-                                    None
-                                }
-                            })
-                        });
+                let show_actionbar = self.options().contains(NoteOptions::ActionBar);
+                let show_detailed = self.options().contains(NoteOptions::DetailedCounts);
 
-                    note_action = ui
-                        .horizontal_wrapped(|ui| {
-                            actionbar_ui(
-                                ui,
-                                counts,
-                                get_zapper(
-                                    self.note_context.accounts,
-                                    self.note_context.global_wallet,
-                                    self.note_context.zaps,
-                                ),
-                                self.note,
-                                self.note_context.accounts.selected_account_pubkey(),
-                                note_key,
-                                self.note_context.i18n,
-                                self.note_context.sound,
-                            )
-                        })
-                        .inner
-                        .or(note_action);
+                if show_actionbar || show_detailed {
+                    let stats =
+                        NoteStats::get(self.note_context.ndb, txn, self.note.id());
+
+                    if show_detailed {
+                        note_action = detailed_counts_ui(ui, self.note.id(), &stats)
+                            .or(note_action);
+                    }
+
+                    if show_actionbar {
+                        note_action = ui
+                            .horizontal_wrapped(|ui| {
+                                actionbar_ui(
+                                    ui,
+                                    &stats,
+                                    get_zapper(
+                                        self.note_context.accounts,
+                                        self.note_context.global_wallet,
+                                        self.note_context.zaps,
+                                    ),
+                                    self.note,
+                                    self.note_context.accounts.selected_account_pubkey(),
+                                    note_key,
+                                    self.note_context.i18n,
+                                    self.note_context.sound,
+                                )
+                            })
+                            .inner
+                            .or(note_action);
+                    }
                 }
 
                 NoteUiResponse {
@@ -855,6 +858,66 @@ fn note_hitbox_clicked(
     }
 }
 
+struct NoteStats {
+    counts: Option<NoteCounts>,
+    zap_msats: u64,
+}
+
+struct NoteCounts {
+    reactions: u32,
+    thread_replies: u32,
+    direct_replies: u16,
+    quotes: u16,
+    reposts: u16,
+}
+
+impl NoteCounts {
+    fn reply_count(&self, note: &Note) -> u32 {
+        if is_root_note(note) {
+            self.thread_replies
+        } else {
+            self.direct_replies as u32
+        }
+    }
+
+    fn repost_count(&self) -> u32 {
+        (self.quotes + self.reposts) as u32
+    }
+}
+
+impl NoteStats {
+    fn get(ndb: &Ndb, txn: &Transaction, note_id: &[u8; 32]) -> Self {
+        let mut counts = None;
+        let mut zap_msats = 0u64;
+
+        if let Ok(md) = ndb.get_note_metadata(txn, note_id) {
+            for e in md {
+                match e {
+                    NoteMetadataEntryVariant::Counts(ce) => {
+                        counts = Some(NoteCounts {
+                            reactions: ce.reactions(),
+                            thread_replies: ce.thread_replies(),
+                            direct_replies: ce.direct_replies(),
+                            quotes: ce.quotes(),
+                            reposts: ce.reposts(),
+                        });
+                    }
+                    NoteMetadataEntryVariant::Zap(ze) => {
+                        zap_msats = ze.msats();
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        NoteStats { counts, zap_msats }
+    }
+
+    fn zap_sats(&self) -> u64 {
+        self.zap_msats / 1000
+    }
+}
+
 struct Zapper<'a> {
     zaps: &'a Zaps,
     cur_acc: KeypairUnowned<'a>,
@@ -865,6 +928,7 @@ fn zap_actionbar_button(
     note_id: &[u8; 32],
     note_pubkey: &[u8; 32],
     zapper: Option<Zapper<'_>>,
+    zap_sats: u64,
     i18n: &mut Localization,
     sound: &notedeck::SoundManager,
 ) -> Option<NoteAction> {
@@ -932,7 +996,31 @@ fn zap_actionbar_button(
     }
     .on_hover_cursor(egui::CursorIcon::PointingHand);
 
+    if zap_sats > 0 {
+        ui.weak(format_sats_abbreviated(zap_sats));
+    }
+
     action
+}
+
+fn format_sats_abbreviated(sats: u64) -> String {
+    if sats >= 1_000_000 {
+        let m = sats as f64 / 1_000_000.0;
+        if m >= 10.0 {
+            format!("{}M", m as u64)
+        } else {
+            format!("{:.1}M", m)
+        }
+    } else if sats >= 1_000 {
+        let k = sats as f64 / 1_000.0;
+        if k >= 10.0 {
+            format!("{}K", k as u64)
+        } else {
+            format!("{:.1}K", k)
+        }
+    } else {
+        format!("{sats}")
+    }
 }
 
 fn is_root_note(note: &Note) -> bool {
@@ -950,11 +1038,109 @@ fn is_root_note(note: &Note) -> bool {
     true
 }
 
+/// Renders a detailed counts row showing reposts, reactions, zaps, etc.
+/// Styled like Damus iOS: "3 Reposts  11 Reactions  21K Sats"
+/// Each stat is clickable and navigates to a detail view.
+fn detailed_counts_ui(
+    ui: &mut egui::Ui,
+    note_id: &[u8; 32],
+    stats: &NoteStats,
+) -> Option<NoteAction> {
+    let (reposts, reactions) = stats
+        .counts
+        .as_ref()
+        .map(|c| (c.repost_count(), c.reactions))
+        .unwrap_or((0, 0));
+    let zap_sats = stats.zap_sats();
+
+    // Only show if there's something to display
+    if reposts == 0 && reactions == 0 && zap_sats == 0 {
+        return None;
+    }
+
+    ui.add_space(4.0);
+    ui.separator();
+
+    let action = ui
+        .horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let text_color = ui.style().visuals.text_color();
+            let weak_color = ui.style().visuals.weak_text_color();
+            let font_size = 13.0;
+            let spacing = 12.0;
+
+            let mut first = true;
+            let mut action: Option<NoteAction> = None;
+
+            let mut stat = |ui: &mut egui::Ui, value: &str, label: &str, pluralize: bool| {
+                if !first {
+                    ui.add_space(spacing);
+                }
+                first = false;
+
+                let label_text = if pluralize {
+                    format!("{label}s")
+                } else {
+                    label.to_string()
+                };
+
+                let r1 = ui.label(
+                    egui::RichText::new(value)
+                        .size(font_size)
+                        .strong()
+                        .color(text_color),
+                );
+                let r2 = ui
+                    .label(
+                        egui::RichText::new(label_text)
+                            .size(font_size)
+                            .color(weak_color),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                r1.union(r2)
+            };
+
+            let nid = NoteId::new(*note_id);
+
+            if reposts > 0 {
+                if stat(ui, &reposts.to_string(), "Repost", reposts != 1).clicked() {
+                    action = Some(NoteAction::Detail(NoteDetail::Reposts(nid)));
+                }
+            }
+            if reactions > 0 {
+                if stat(ui, &reactions.to_string(), "Reaction", reactions != 1).clicked() {
+                    action = Some(NoteAction::Detail(NoteDetail::Reactions(nid)));
+                }
+            }
+            if zap_sats > 0 {
+                if stat(
+                    ui,
+                    &format_sats_abbreviated(zap_sats),
+                    "Sat",
+                    zap_sats != 1,
+                )
+                .clicked()
+                {
+                    action = Some(NoteAction::Detail(NoteDetail::Zaps(nid)));
+                }
+            }
+
+            action
+        })
+        .inner;
+
+    ui.separator();
+    ui.add_space(4.0);
+
+    action
+}
+
 #[allow(clippy::too_many_arguments)]
 #[profiling::function]
 fn actionbar_ui(
     ui: &mut egui::Ui,
-    counts: Option<nostrdb::CountsEntry<'_>>,
+    stats: &NoteStats,
     zapper: Option<Zapper<'_>>,
     note: &Note,
     current_user_pubkey: &Pubkey,
@@ -971,15 +1157,9 @@ fn actionbar_ui(
     let reply_resp =
         reply_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    if let Some(c) = &counts {
-        let count = if is_root_note(note) {
-            c.thread_replies()
-        } else {
-            c.direct_replies() as u32
-        };
-
+    if let Some(c) = &stats.counts {
+        let count = c.reply_count(note);
         if count > 0 {
-            //ui.weak(format!("{}", count));
             crate::anim::rolling_number(ui, egui::Id::new((note_key, "replies")), count);
         }
     }
@@ -994,10 +1174,9 @@ fn actionbar_ui(
     let like_resp =
         like_button(ui, i18n, note_key, filled).on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    if let Some(c) = &counts {
-        let count = c.reactions();
-        if count > 0 {
-            crate::anim::rolling_number(ui, egui::Id::new((note_key, "likes")), count);
+    if let Some(c) = &stats.counts {
+        if c.reactions > 0 {
+            crate::anim::rolling_number(ui, egui::Id::new((note_key, "likes")), c.reactions);
         }
     }
 
@@ -1006,10 +1185,10 @@ fn actionbar_ui(
     let quote_resp =
         quote_repost_button(ui, i18n, note_key).on_hover_cursor(egui::CursorIcon::PointingHand);
 
-    if let Some(c) = &counts {
-        let count = c.quotes() + c.reposts();
+    if let Some(c) = &stats.counts {
+        let count = c.repost_count();
         if count > 0 {
-            crate::anim::rolling_number(ui, egui::Id::new((note_key, "quotes")), count as u32);
+            crate::anim::rolling_number(ui, egui::Id::new((note_key, "quotes")), count);
         }
     }
 
@@ -1040,7 +1219,9 @@ fn actionbar_ui(
         action = Some(NoteAction::Repost(NoteId::new(*note.id())));
     }
 
-    action = zap_actionbar_button(ui, note.id(), note.pubkey(), zapper, i18n, sound).or(action);
+    action =
+        zap_actionbar_button(ui, note.id(), note.pubkey(), zapper, stats.zap_sats(), i18n, sound)
+            .or(action);
 
     action
 }

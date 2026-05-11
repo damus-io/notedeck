@@ -251,6 +251,8 @@ fn try_process_event(
                                 .sound
                                 .play_debounced(notedeck::SoundEffect::Notification, 2000);
                         }
+
+                        verify_new_zap_receipts(app_ctx, &txn, &new_note_keys);
                     }
                 }
                 Err(err) => {
@@ -836,6 +838,7 @@ fn should_show_compose_button(decks: &DecksCache, accounts: &Accounts) -> bool {
         Route::TosAcceptance => false,
         Route::Welcome => false,
         Route::Report(_) => false,
+        Route::NoteDetails(_) => false,
     }
 }
 
@@ -1053,6 +1056,25 @@ pub fn get_decks_mut<'a>(
     decks_cache: &'a mut DecksCache,
 ) -> &'a mut Decks {
     decks_cache.decks_mut(i18n, accounts.selected_account_pubkey())
+}
+
+fn verify_new_zap_receipts(
+    app_ctx: &mut AppContext<'_>,
+    txn: &Transaction,
+    new_note_keys: &[nostrdb::NoteKey],
+) {
+    for key in new_note_keys {
+        if let Ok(note) = app_ctx.ndb.get_note_by_key(txn, *key) {
+            if note.kind() == 9735 {
+                app_ctx.zap_verifier.queue_verification(
+                    app_ctx.ndb,
+                    txn,
+                    &note,
+                    app_ctx.zaps.pay_cache(),
+                );
+            }
+        }
+    }
 }
 
 fn columns_to_decks_cache(i18n: &mut Localization, cols: Columns, key: &[u8; 32]) -> DecksCache {

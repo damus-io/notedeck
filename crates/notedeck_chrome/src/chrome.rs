@@ -176,7 +176,8 @@ impl Chrome {
         notedeck: &mut Notedeck,
         outbox_session: OutboxSession,
     ) -> Result<Self, Error> {
-        stop_debug_mode(notedeck.options());
+        let notedeck_options = notedeck.options();
+        stop_debug_mode(notedeck_options);
 
         let notedeck_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx, Some(outbox_session));
         let dave = Dave::new(
@@ -270,6 +271,10 @@ impl Chrome {
             } else {
                 tracing::info!("WASM apps directory not found: {}", wasm_dir.display());
             }
+        }
+
+        if notedeck_options.contains(NotedeckOptions::AllAppsActive) {
+            chrome.options.set(ChromeOptions::AllAppsActive, true);
         }
 
         chrome.set_active(0);
@@ -723,9 +728,11 @@ impl notedeck::App for Chrome {
 
         // Update opened apps every frame so background processing
         // (relay pools, subscriptions, etc.) stays alive.
-        // Apps that haven't been opened yet are skipped.
+        // Apps that haven't been opened yet are skipped unless
+        // --all-apps-active is set.
+        let all_active = self.options.contains(ChromeOptions::AllAppsActive);
         for (i, app) in self.apps.iter_mut().enumerate() {
-            if self.opened.get(i).copied().unwrap_or(false) {
+            if all_active || self.opened.get(i).copied().unwrap_or(false) {
                 app.update(ctx, _egui_ctx);
             }
         }

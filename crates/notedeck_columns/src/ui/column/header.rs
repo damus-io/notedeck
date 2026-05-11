@@ -537,6 +537,7 @@ impl<'a> NavTitle<'a> {
             Route::TosAcceptance => None,
             Route::Welcome => None,
             Route::Report(_) => None,
+            Route::NoteDetails(_) => None,
         }
     }
 

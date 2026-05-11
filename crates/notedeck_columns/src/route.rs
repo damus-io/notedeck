@@ -2,8 +2,8 @@ use egui_nav::{Percent, ReturnType};
 use enostr::{NoteId, Pubkey};
 use nostrdb::Ndb;
 use notedeck::{
-    tr, Localization, NoteZapTargetOwned, ReplacementType, ReportTarget, RootNoteIdBuf, Router,
-    ScopedSubApi, WalletType,
+    tr, Localization, NoteDetail, NoteZapTargetOwned, ReplacementType, ReportTarget,
+    RootNoteIdBuf, Router, ScopedSubApi, WalletType,
 };
 use std::ops::Range;
 
@@ -43,6 +43,7 @@ pub enum Route {
     TosAcceptance,
     Welcome,
     Report(ReportTarget),
+    NoteDetails(NoteDetail),
 }
 
 impl Route {
@@ -169,6 +170,23 @@ impl Route {
                 writer.write_token(&target.pubkey.hex());
                 if let Some(note_id) = &target.note_id {
                     writer.write_token(&note_id.hex());
+                }
+            }
+            Route::NoteDetails(detail) => {
+                writer.write_token("note_detail");
+                match detail {
+                    NoteDetail::Reactions(id) => {
+                        writer.write_token("reactions");
+                        writer.write_token(&id.hex());
+                    }
+                    NoteDetail::Reposts(id) => {
+                        writer.write_token("reposts");
+                        writer.write_token(&id.hex());
+                    }
+                    NoteDetail::Zaps(id) => {
+                        writer.write_token("zaps");
+                        writer.write_token(&id.hex());
+                    }
                 }
             }
         }
@@ -329,6 +347,21 @@ impl Route {
                         Ok(Route::Report(ReportTarget { pubkey, note_id }))
                     })
                 },
+                |p| {
+                    p.parse_all(|p| {
+                        p.parse_token("note_detail")?;
+                        let kind = p.pull_token()?;
+                        let note_id = NoteId::from_hex(p.pull_token()?)
+                            .map_err(|_| ParseError::HexDecodeFailed)?;
+                        let detail = match kind {
+                            "reactions" => NoteDetail::Reactions(note_id),
+                            "reposts" => NoteDetail::Reposts(note_id),
+                            "zaps" => NoteDetail::Zaps(note_id),
+                            _ => return Err(ParseError::DecodeFailed),
+                        };
+                        Ok(Route::NoteDetails(detail))
+                    })
+                },
             ],
         )
     }
@@ -476,6 +509,23 @@ impl Route {
             Route::Report(_) => {
                 ColumnTitle::formatted(tr!(i18n, "Report", "Column title for report screen"))
             }
+            Route::NoteDetails(detail) => match detail {
+                NoteDetail::Reactions(_) => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Reactions",
+                    "Column title for note reactions list"
+                )),
+                NoteDetail::Reposts(_) => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Reposts",
+                    "Column title for note reposts list"
+                )),
+                NoteDetail::Zaps(_) => ColumnTitle::formatted(tr!(
+                    i18n,
+                    "Zaps",
+                    "Column title for note zaps list"
+                )),
+            },
         }
     }
 }

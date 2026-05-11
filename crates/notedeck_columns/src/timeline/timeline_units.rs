@@ -9,6 +9,7 @@ use crate::timeline::{
     note_units::{InsertManyResponse, NoteUnits},
     unit::{
         CompositeFragment, NoteUnit, NoteUnitFragment, Reaction, ReactionFragment, RepostFragment,
+        ZapFragment, ZapInfo,
     },
 };
 
@@ -139,6 +140,7 @@ fn to_fragment<'a>(
             unknown_pk: Some(r.pk),
         }),
         6 => to_repost(payload, ndb, txn).map(RepostResponse::into),
+        9735 => to_zap(payload, ndb, txn).map(ZapResponse::into),
         _ => None,
     }
 }
@@ -254,5 +256,82 @@ fn to_repost<'a>(
             reposter: Pubkey::new(*payload.note.pubkey()),
         },
         reposter_pk: payload.note.pubkey(),
+    })
+}
+
+struct ZapResponse {
+    fragment: ZapFragment,
+}
+
+impl<'a> From<ZapResponse> for NoteUnitFragmentResponse<'a> {
+    fn from(value: ZapResponse) -> Self {
+        Self {
+            fragment: NoteUnitFragment::Composite(CompositeFragment::Zap(value.fragment)),
+            unknown_pk: None,
+        }
+    }
+}
+
+fn to_zap(payload: &NotePayload, ndb: &Ndb, txn: &Transaction) -> Option<ZapResponse> {
+    let mut note_zapped_id = None;
+    let mut bolt11 = None;
+    let mut description = None;
+
+    for tag in payload.note.tags() {
+        if tag.count() < 2 {
+            continue;
+        }
+
+        let Some(tag_name) = tag.get_str(0) else {
+            continue;
+        };
+
+        if tag_name == "e" {
+            note_zapped_id = tag.get_id(1);
+        } else if tag_name == "bolt11" {
+            bolt11 = tag.get_str(1);
+        } else if tag_name == "description" {
+            description = tag.get_str(1);
+        }
+
+        if note_zapped_id.is_some() && bolt11.is_some() && description.is_some() {
+            break;
+        }
+    }
+
+    let note_zapped_id = note_zapped_id?;
+    let bolt11_str = bolt11?;
+    let description_str = description?;
+
+    // Parse the zap request (description) to get the sender pubkey
+    let zap_req = enostr::Note::from_json(description_str).ok()?;
+    let sender_pk = *zap_req.pubkey.bytes();
+
+    // Parse bolt11 invoice for amount
+    let invoice: lightning_invoice::Bolt11Invoice = bolt11_str.parse().ok()?;
+    let amount_msats = invoice.amount_milli_satoshis()?;
+
+    // Look up the zapped note
+    let zapped_note = ndb.get_note_by_id(txn, note_zapped_id).ok()?;
+    let zapped_key = zapped_note.key()?;
+
+    let sender_profilekey = ndb
+        .get_profile_by_pubkey(txn, &sender_pk)
+        .ok()
+        .and_then(|p| p.key());
+
+    Some(ZapResponse {
+        fragment: ZapFragment {
+            noteref_zapped: NoteRef {
+                key: zapped_key,
+                created_at: zapped_note.created_at(),
+            },
+            zap_note_ref: payload.noteref(),
+            zap_info: ZapInfo {
+                sender: Pubkey::new(sender_pk),
+                sender_profilekey,
+                amount_msats,
+            },
+        },
     })
 }
