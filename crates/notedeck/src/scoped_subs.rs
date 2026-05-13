@@ -3,7 +3,8 @@ use std::hash::{Hash, Hasher};
 
 use crate::{Accounts, Outbox};
 use enostr::{
-    NormRelayUrl, OutboxSubId, Pubkey, RelayReqStatus, RelayRoutingPreference, RelayUrlPkgs,
+    same_canonical_filter_set, FullHistoryConfig, FullHistorySubId, NormRelayUrl, OutboxSubId,
+    Pubkey, RelayReqStatus, RelayRoutingPreference, RelayUrlPkgs,
 };
 use hashbrown::{HashMap, HashSet};
 use nostrdb::Filter;
@@ -131,14 +132,92 @@ pub enum RelaySelection {
 
 /// Realization config for one scoped subscription identity.
 ///
-/// This is configuration only (`relays`, `filters`, transport mode). Identity is carried by
-/// [`ScopedSubIdentity`] (`owner + key + scope`).
+/// This is configuration only; identity is carried by [`ScopedSubIdentity`]
+/// (`owner + key + scope`).
 #[derive(Clone, Debug)]
 pub struct SubConfig {
-    pub relays: RelaySelection,
-    pub filters: Vec<Filter>,
+    relays: RelaySelection,
+    live_filters: Vec<Filter>,
+    full_history: Option<FullHistoryConfig>,
     /// Routing intent when dedicated relay capacity is constrained.
-    pub routing_preference: RelayRoutingPreference,
+    routing_preference: RelayRoutingPreference,
+}
+
+/// Builder for a scoped subscription declaration.
+#[derive(Clone, Debug)]
+pub struct SubConfigBuilder {
+    relays: RelaySelection,
+    live_filters: Vec<Filter>,
+    full_history: Option<FullHistoryConfig>,
+    routing_preference: RelayRoutingPreference,
+}
+
+impl SubConfig {
+    /// Start a builder with a live subscription declaration.
+    pub fn live(filters: Vec<Filter>) -> SubConfigBuilder {
+        SubConfigBuilder {
+            relays: RelaySelection::AccountsRead,
+            live_filters: filters,
+            full_history: None,
+            routing_preference: RelayRoutingPreference::default(),
+        }
+    }
+
+    /// Returns the live filter set for this subscription.
+    pub(crate) fn live_filters(&self) -> &[Filter] {
+        &self.live_filters
+    }
+
+    /// Returns the configured background full-history declaration.
+    pub(crate) fn full_history_config(&self) -> Option<&FullHistoryConfig> {
+        self.full_history.as_ref()
+    }
+}
+
+impl SubConfigBuilder {
+    /// Add or replace the full-history declaration.
+    pub fn full_history(mut self, full_history: FullHistoryConfig) -> Self {
+        self.full_history = Some(full_history);
+        self
+    }
+
+    /// Use an explicit relay set for this subscription.
+    pub fn explicit_relays(mut self, relays: HashSet<NormRelayUrl>) -> Self {
+        self.relays = RelaySelection::Explicit(relays);
+        self
+    }
+
+    /// Use one explicit relay for this subscription.
+    pub fn explicit_relay(self, relay: NormRelayUrl) -> Self {
+        let mut relays = HashSet::new();
+        relays.insert(relay);
+        self.explicit_relays(relays)
+    }
+
+    /// Override the relay routing preference for this subscription.
+    pub fn routing_preference(mut self, routing_preference: RelayRoutingPreference) -> Self {
+        self.routing_preference = routing_preference;
+        self
+    }
+
+    /// Build a normalized scoped subscription config.
+    pub fn build(self) -> SubConfig {
+        let live_filters = normalize_filters(self.live_filters);
+        assert!(
+            !live_filters.is_empty(),
+            "SubConfig requires at least one live filter"
+        );
+        let full_history = self
+            .full_history
+            .filter(|full_history| !full_history.is_empty());
+
+        SubConfig {
+            relays: self.relays,
+            live_filters,
+            full_history,
+            routing_preference: self.routing_preference,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -153,19 +232,12 @@ enum ResolvedSubScope {
     Global,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SetSubLiveOp {
-    EnsurePresent,
-    ReplaceExisting,
-    ModifyExisting,
-    RemoveExisting,
-}
-
 /// Result of setting a desired subscription entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SetSubResult {
     Created,
     Updated,
+    Unchanged,
 }
 
 /// Result of ensuring a desired subscription entry exists without mutating it.
@@ -221,9 +293,14 @@ pub enum ScopedSubEoseStatus {
 /// The runtime never leaks outbox subscription ids to app code. Apps talk in
 /// terms of identity + config and the runtime handles lifecycles, relay
 /// mutations, and account-switch restore semantics.
+///
+/// `live` and `full_history` are separate outbox lifecycles. This runtime owns
+/// their pairing by [`ScopedSubKey`] and removes both when the scoped sub is no
+/// longer desired.
 pub(crate) struct ScopedSubRuntime {
     desired: HashMap<ScopedSubKey, SubConfig>,
     live: HashMap<ScopedSubKey, OutboxSubId>,
+    full_history: HashMap<ScopedSubKey, FullHistorySubId>,
     owners_by_sub: HashMap<ScopedSubKey, HashSet<SubSlotId>>,
     subs_by_slot: HashMap<SubSlotId, HashSet<ScopedSubKey>>,
     next_slot_id: u64,
@@ -234,6 +311,7 @@ impl Default for ScopedSubRuntime {
         Self {
             desired: HashMap::default(),
             live: HashMap::default(),
+            full_history: HashMap::default(),
             owners_by_sub: HashMap::default(),
             subs_by_slot: HashMap::default(),
             next_slot_id: 1,
@@ -309,7 +387,7 @@ impl ScopedSubRuntime {
         slot: SubSlotId,
         scope: SubScope,
         key: SubKey,
-        mut config: SubConfig,
+        config: SubConfig,
     ) -> EnsureSubResult {
         let resolved_scope = resolve_scope(&scope, selected_account_pubkey);
         let scoped = Self::scoped_key(resolved_scope, key);
@@ -319,9 +397,8 @@ impl ScopedSubRuntime {
             return EnsureSubResult::AlreadyExists;
         }
 
-        config.filters = normalize_filters(config.filters);
         self.desired.insert(scoped.clone(), config.clone());
-        self.ensure_live_sub(pool, account_read_relays, scoped, &config);
+        self.apply_scoped_sub(pool, account_read_relays, &scoped, &config, false);
         EnsureSubResult::Created
     }
 
@@ -338,38 +415,44 @@ impl ScopedSubRuntime {
         slot: SubSlotId,
         scope: SubScope,
         key: SubKey,
-        mut config: SubConfig,
+        config: SubConfig,
     ) -> SetSubResult {
         let resolved_scope = resolve_scope(&scope, selected_account_pubkey);
         let scoped = Self::scoped_key(resolved_scope, key);
 
         self.register_ownership(slot, &scoped);
 
-        config.filters = normalize_filters(config.filters);
+        let has_live = self.live.contains_key(&scoped);
+        let has_full_history = self.full_history.contains_key(&scoped);
+
+        if let Some(previous) = self.desired.get(&scoped) {
+            if same_sub_config(previous, &config) {
+                if needs_apply_sub(&config, has_live, has_full_history) {
+                    self.apply_scoped_sub(pool, account_read_relays, &scoped, &config, false);
+                    return SetSubResult::Updated;
+                }
+
+                return SetSubResult::Unchanged;
+            }
+        }
+
         let previous = self.desired.insert(scoped.clone(), config.clone());
-        let op = plan_set_sub_live_op(previous.as_ref(), &config, self.live.contains_key(&scoped));
+        let replace_existing = previous.as_ref().is_some_and(|previous| {
+            has_live && previous.routing_preference != config.routing_preference
+        });
 
         if previous.is_none() {
-            self.ensure_live_sub(pool, account_read_relays, scoped, &config);
+            self.apply_scoped_sub(pool, account_read_relays, &scoped, &config, false);
             return SetSubResult::Created;
         }
 
-        match op {
-            SetSubLiveOp::EnsurePresent => {
-                self.ensure_live_sub(pool, account_read_relays, scoped, &config);
-            }
-            SetSubLiveOp::ReplaceExisting => {
-                self.replace_live_sub(pool, account_read_relays, &scoped, &config);
-            }
-            SetSubLiveOp::ModifyExisting => {
-                if let Some(id) = self.live.get(&scoped).copied() {
-                    Self::modify_live_sub(pool, account_read_relays, id, &config);
-                }
-            }
-            SetSubLiveOp::RemoveExisting => {
-                self.remove_live_sub(pool, &scoped);
-            }
-        }
+        self.apply_scoped_sub(
+            pool,
+            account_read_relays,
+            &scoped,
+            &config,
+            replace_existing,
+        );
 
         SetSubResult::Updated
     }
@@ -448,7 +531,7 @@ impl ScopedSubRuntime {
         }
 
         if let Some(live_id) = self.live.get(&scoped).copied() {
-            let relay_statuses = pool.outbox.status(&live_id);
+            let relay_statuses = pool.status(&live_id);
             return ScopedSubEoseStatus::Live(aggregate_eose_status(
                 relay_statuses.values().copied(),
             ));
@@ -507,21 +590,24 @@ impl ScopedSubRuntime {
             owned_desired_keys_for_scope(&self.desired, &self.owners_by_sub, &new_scope);
 
         for scoped in new_desired_keys {
-            if self.live.contains_key(&scoped) {
-                continue;
-            }
-
-            let Some(spec) = self.desired.get(&scoped) else {
+            let Some(spec) = self.desired.get(&scoped).cloned() else {
                 continue;
             };
-
-            if let Some(live_id) = subscribe_live(pool, new_account_read_relays, spec) {
-                self.live.insert(scoped, live_id);
+            if matches!(spec.relays, RelaySelection::AccountsRead) {
+                continue;
             }
+
+            self.apply_scoped_sub(pool, new_account_read_relays, &scoped, &spec, false);
         }
+
+        self.retarget_selected_account_read_relays_with_relays(
+            pool,
+            new_pk,
+            new_account_read_relays,
+        );
     }
 
-    /// Retarget live subscriptions that depend on the selected account's read relay set.
+    /// Retarget scoped subscriptions that depend on the selected account's read relay set.
     ///
     /// This updates all owned scoped subscriptions whose relay selection is
     /// [`RelaySelection::AccountsRead`] and whose resolved scope is either:
@@ -544,7 +630,7 @@ impl ScopedSubRuntime {
         );
     }
 
-    /// Retarget selected-account-dependent live subscriptions with pre-resolved read relays.
+    /// Retarget selected-account-dependent scoped subscriptions with pre-resolved read relays.
     pub(crate) fn retarget_selected_account_read_relays_with_relays(
         &mut self,
         pool: &mut Outbox<'_>,
@@ -571,36 +657,8 @@ impl ScopedSubRuntime {
                 continue;
             }
 
-            let has_live = self.live.get(&scoped).copied();
-
-            if spec.filters.is_empty() {
-                if has_live.is_some() {
-                    self.remove_live_sub(pool, &scoped);
-                }
-                continue;
-            }
-
-            if let Some(live_id) = has_live {
-                pool.modify_relays(live_id, resolve_relays(account_read_relays, &spec.relays));
-            } else {
-                self.ensure_live_sub(pool, account_read_relays, scoped, &spec);
-            }
+            self.apply_scoped_sub(pool, account_read_relays, &scoped, &spec, false);
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn desired_len(&self) -> usize {
-        self.desired.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn live_len(&self) -> usize {
-        self.live.len()
-    }
-
-    #[allow(dead_code)]
-    pub fn slot_len(&self) -> usize {
-        self.subs_by_slot.len()
     }
 
     fn register_ownership(&mut self, slot: SubSlotId, scoped: &ScopedSubKey) {
@@ -614,37 +672,34 @@ impl ScopedSubRuntime {
             .insert(slot);
     }
 
-    fn ensure_live_sub(
-        &mut self,
-        pool: &mut Outbox<'_>,
-        account_read_relays: &HashSet<NormRelayUrl>,
-        scoped: ScopedSubKey,
-        spec: &SubConfig,
-    ) {
-        if let Some(id) = subscribe_live(pool, account_read_relays, spec) {
-            self.live.insert(scoped, id);
-        }
-    }
-
-    fn replace_live_sub(
+    fn apply_scoped_sub(
         &mut self,
         pool: &mut Outbox<'_>,
         account_read_relays: &HashSet<NormRelayUrl>,
         scoped: &ScopedSubKey,
         spec: &SubConfig,
+        replace_existing: bool,
     ) {
-        self.remove_live_sub(pool, scoped);
-        self.ensure_live_sub(pool, account_read_relays, scoped.clone(), spec);
-    }
+        let relays = resolve_relays(account_read_relays, &spec.relays);
+        if relays.is_empty() {
+            self.remove_scoped_sub(pool, scoped);
+            return;
+        }
 
-    fn modify_live_sub(
-        pool: &mut Outbox<'_>,
-        account_read_relays: &HashSet<NormRelayUrl>,
-        live_id: OutboxSubId,
-        spec: &SubConfig,
-    ) {
-        pool.modify_filters(live_id, spec.filters.clone());
-        pool.modify_relays(live_id, resolve_relays(account_read_relays, &spec.relays));
+        if replace_existing {
+            self.remove_live_sub(pool, scoped);
+        }
+
+        let filters = spec.live_filters();
+        if let Some(live_id) = self.live.get(scoped).copied() {
+            pool.modify_full(live_id, filters.to_vec(), relays.clone());
+        } else {
+            let relay_pkgs = RelayUrlPkgs::with_preference(relays.clone(), spec.routing_preference);
+            let live_id = pool.subscribe(filters.to_vec(), relay_pkgs);
+            self.live.insert(scoped.clone(), live_id);
+        }
+
+        self.apply_full_history(pool, scoped, spec.full_history_config(), relays);
     }
 
     fn remove_live_sub(&mut self, pool: &mut Outbox<'_>, scoped: &ScopedSubKey) {
@@ -653,15 +708,52 @@ impl ScopedSubRuntime {
         }
     }
 
+    fn apply_full_history(
+        &mut self,
+        pool: &mut Outbox<'_>,
+        scoped: &ScopedSubKey,
+        full_history: Option<&FullHistoryConfig>,
+        relays: HashSet<NormRelayUrl>,
+    ) {
+        let Some(full_history) = full_history else {
+            self.remove_full_history(pool, scoped);
+            return;
+        };
+
+        if let Some(history_id) = self.full_history.get(scoped).copied() {
+            pool.modify_full_history(history_id, full_history.clone(), relays);
+            return;
+        }
+
+        let history_id = pool.subscribe_full_history(full_history.clone(), relays);
+        self.full_history.insert(scoped.clone(), history_id);
+    }
+
+    fn remove_scoped_sub(&mut self, pool: &mut Outbox<'_>, scoped: &ScopedSubKey) {
+        if let Some(live_id) = self.live.remove(scoped) {
+            pool.unsubscribe(live_id);
+        }
+        self.remove_full_history(pool, scoped);
+    }
+
+    fn remove_full_history(&mut self, pool: &mut Outbox<'_>, scoped: &ScopedSubKey) {
+        if let Some(history_id) = self.full_history.remove(scoped) {
+            pool.remove_full_history(history_id);
+        }
+    }
+
     fn unsubscribe_scope(&mut self, pool: &mut Outbox<'_>, scope: &ResolvedSubScope) {
-        self.live.retain(|scoped, sub_id| {
-            if scoped.scope == *scope {
-                pool.unsubscribe(*sub_id);
-                false
-            } else {
-                true
-            }
-        });
+        let scoped_keys: HashSet<_> = self
+            .live
+            .keys()
+            .chain(self.full_history.keys())
+            .filter(|scoped| scoped.scope == *scope)
+            .cloned()
+            .collect();
+
+        for scoped in scoped_keys {
+            self.remove_scoped_sub(pool, &scoped);
+        }
     }
 
     fn release_slot_from_scoped_sub(
@@ -684,9 +776,7 @@ impl ScopedSubRuntime {
 
         self.owners_by_sub.remove(scoped);
         self.desired.remove(scoped);
-        if let Some(sub_id) = self.live.remove(scoped) {
-            pool.unsubscribe(sub_id);
-        }
+        self.remove_scoped_sub(pool, scoped);
 
         ClearSubResult::Cleared
     }
@@ -704,7 +794,6 @@ impl ScopedSubRuntime {
         }
     }
 }
-
 #[cfg(test)]
 impl ScopedSubRuntime {
     pub(crate) fn live_id_with_selected(
@@ -719,28 +808,8 @@ impl ScopedSubRuntime {
     }
 }
 
-fn plan_set_sub_live_op(
-    previous: Option<&SubConfig>,
-    next: &SubConfig,
-    has_live: bool,
-) -> SetSubLiveOp {
-    let Some(previous) = previous else {
-        return SetSubLiveOp::EnsurePresent;
-    };
-
-    if !has_live {
-        return SetSubLiveOp::EnsurePresent;
-    }
-
-    if previous.routing_preference != next.routing_preference {
-        return SetSubLiveOp::ReplaceExisting;
-    }
-
-    if next.filters.is_empty() {
-        SetSubLiveOp::RemoveExisting
-    } else {
-        SetSubLiveOp::ModifyExisting
-    }
+fn needs_apply_sub(config: &SubConfig, has_live: bool, has_full_history: bool) -> bool {
+    !has_live || config.full_history_config().is_some() && !has_full_history
 }
 
 fn owned_desired_keys_for_scope(
@@ -771,6 +840,28 @@ fn normalize_filters(filters: Vec<Filter>) -> Vec<Filter> {
         .collect()
 }
 
+/// Compare two `SubConfig` values, ignoring filter ordering but preserving
+/// canonical filter semantics for live and full-history filters.
+fn same_sub_config(previous: &SubConfig, next: &SubConfig) -> bool {
+    previous.relays == next.relays
+        && previous.routing_preference == next.routing_preference
+        && same_canonical_filter_set(previous.live_filters(), next.live_filters())
+        && same_full_history_config(previous.full_history_config(), next.full_history_config())
+}
+
+fn same_full_history_config(
+    previous: Option<&FullHistoryConfig>,
+    next: Option<&FullHistoryConfig>,
+) -> bool {
+    match (previous, next) {
+        (Some(previous), Some(next)) => {
+            same_canonical_filter_set(previous.filters(), next.filters())
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 fn resolve_scope(scope: &SubScope, selected_account_pubkey: Pubkey) -> ResolvedSubScope {
     match scope {
         SubScope::Account => ResolvedSubScope::Account(selected_account_pubkey),
@@ -786,20 +877,6 @@ fn resolve_relays(
         RelaySelection::AccountsRead => account_read_relays.clone(),
         RelaySelection::Explicit(relays) => relays.clone(),
     }
-}
-
-fn subscribe_live(
-    pool: &mut Outbox<'_>,
-    account_read_relays: &HashSet<NormRelayUrl>,
-    spec: &SubConfig,
-) -> Option<OutboxSubId> {
-    if spec.filters.is_empty() {
-        return None;
-    }
-
-    let relays = resolve_relays(account_read_relays, &spec.relays);
-    let relay_pkgs = RelayUrlPkgs::with_preference(relays, spec.routing_preference);
-    Some(pool.subscribe(spec.filters.clone(), relay_pkgs))
 }
 
 fn aggregate_eose_status(
@@ -843,24 +920,26 @@ mod tests {
         Messages,
     }
 
-    fn empty_config(_scope: SubScope) -> SubConfig {
-        SubConfig {
-            relays: RelaySelection::AccountsRead,
-            filters: Vec::new(),
-            routing_preference: RelayRoutingPreference::default(),
-        }
+    fn live_config() -> SubConfig {
+        SubConfig::live(vec![Filter::new().kinds(vec![1]).limit(5).build()]).build()
     }
 
-    fn live_config(scope: SubScope) -> SubConfig {
-        let mut config = empty_config(scope);
-        config.filters = vec![Filter::new().kinds(vec![1]).limit(5).build()];
-        config
+    fn live_config_with_filters(filters: Vec<Filter>) -> SubConfig {
+        SubConfig::live(filters).build()
     }
 
-    fn relay_set(url: &str) -> HashSet<NormRelayUrl> {
-        let mut relays = HashSet::new();
-        relays.insert(NormRelayUrl::new(url).unwrap());
-        relays
+    fn live_full_history_config(
+        live_filters: Vec<Filter>,
+        history_filters: Vec<Filter>,
+    ) -> SubConfig {
+        SubConfig::live(live_filters)
+            .full_history(FullHistoryConfig::new(history_filters))
+            .build()
+    }
+
+    fn full_history_config() -> SubConfig {
+        let filters = vec![Filter::new().kinds(vec![1]).limit(5).build()];
+        live_full_history_config(filters.clone(), filters)
     }
 
     fn account_pk(tag: u8) -> Pubkey {
@@ -871,25 +950,29 @@ mod tests {
         SubKey::new(parts)
     }
 
-    fn accountsread_spec(scope: SubScope, kind: u64, limit: u64) -> SubConfig {
-        let mut spec = empty_config(scope);
-        spec.filters = vec![Filter::new().kinds(vec![kind]).limit(limit).build()];
-        spec.relays = RelaySelection::AccountsRead;
-        spec
+    fn relay_set(url: &str) -> HashSet<NormRelayUrl> {
+        let mut relays = HashSet::new();
+        relays.insert(NormRelayUrl::new(url).unwrap());
+        relays
+    }
+
+    fn accountsread_spec(kind: u64, limit: u64) -> SubConfig {
+        SubConfig::live(vec![Filter::new().kinds(vec![kind]).limit(limit).build()]).build()
     }
 
     fn explicit_account_spec() -> SubConfig {
         let explicit_relay = NormRelayUrl::new("wss://relay-explicit.example.com").unwrap();
-        let mut spec = empty_config(SubScope::Account);
-        spec.filters = vec![Filter::new().kinds(vec![10002]).limit(1).build()];
-        spec.relays = RelaySelection::Explicit({
-            let mut set = HashSet::new();
-            set.insert(explicit_relay);
-            set
-        });
-        spec
+        SubConfig::live(vec![Filter::new().kinds(vec![10002]).limit(1).build()])
+            .explicit_relays({
+                let mut set = HashSet::new();
+                set.insert(explicit_relay);
+                set
+            })
+            .build()
     }
 
+    // Dropping this handler can build `WebsocketConn` through relay coordination;
+    // keep callers under `#[tokio::test]` when the ewebsock Tokio backend is used.
     fn outbox<'a>(pool: &'a mut OutboxPool) -> Outbox<'a> {
         OutboxSessionHandler::new(pool, EguiWakeup::new(egui::Context::default()))
     }
@@ -905,16 +988,15 @@ mod tests {
         let outbox = outbox(pool);
         runtime.sub_eose_status_with_selected(&outbox, selected_account_pubkey, slot, key, scope)
     }
-
-    /// Verifies repeated set_sub calls for the same key perform create-then-update semantics.
-    #[test]
-    fn set_sub_is_upsert_for_existing_key() {
+    #[tokio::test]
+    async fn set_sub_is_upsert_for_existing_key() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let relays = relay_set("wss://relay-a.example.com");
         let key = SubKey::new(("messages", "dm-list", 7u8));
         let scope = SubScope::Global;
         let slot = runtime.create_slot();
+        let config = live_config();
 
         let first = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -923,7 +1005,7 @@ mod tests {
             slot,
             scope,
             key,
-            empty_config(scope),
+            config.clone(),
         );
         let second = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -932,19 +1014,17 @@ mod tests {
             slot,
             scope,
             key,
-            empty_config(scope),
+            config,
         );
 
         assert!(matches!(first, SetSubResult::Created));
-        assert!(matches!(second, SetSubResult::Updated));
-        assert_eq!(runtime.desired_len(), 1);
-        assert_eq!(runtime.live_len(), 0);
-        assert_eq!(runtime.slot_len(), 1);
+        assert!(matches!(second, SetSubResult::Unchanged));
+        assert_eq!(runtime.desired.len(), 1);
+        assert_eq!(runtime.live.len(), 1);
+        assert_eq!(runtime.subs_by_slot.len(), 1);
     }
-
-    /// Verifies repeated ensure_sub calls for the same key are create-then-noop.
-    #[test]
-    fn ensure_sub_is_create_or_ignore_for_existing_key() {
+    #[tokio::test]
+    async fn ensure_sub_is_create_or_ignore_for_existing_key() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let relays = relay_set("wss://relay-a.example.com");
@@ -958,7 +1038,7 @@ mod tests {
             slot,
             SubScope::Global,
             key,
-            empty_config(SubScope::Global),
+            live_config(),
         );
 
         let second = runtime.ensure_sub_with_relays(
@@ -968,27 +1048,25 @@ mod tests {
             slot,
             SubScope::Global,
             key,
-            empty_config(SubScope::Global),
+            live_config(),
         );
 
         assert!(matches!(first, EnsureSubResult::Created));
         assert!(matches!(second, EnsureSubResult::AlreadyExists));
-        assert_eq!(runtime.desired_len(), 1);
-        assert_eq!(runtime.live_len(), 0);
-        assert_eq!(runtime.slot_len(), 1);
+        assert_eq!(runtime.desired.len(), 1);
+        assert_eq!(runtime.live.len(), 1);
+        assert_eq!(runtime.subs_by_slot.len(), 1);
     }
-
-    /// Verifies ensure_sub does not mutate existing live filter state.
-    #[test]
-    fn ensure_sub_does_not_modify_existing_live_sub() {
+    #[tokio::test]
+    async fn ensure_sub_does_not_modify_existing_live_sub() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let relays = relay_set("wss://relay-a.example.com");
         let key = SubKey::new(("timeline", "home", 1u8));
         let slot = runtime.create_slot();
 
-        let mut initial = empty_config(SubScope::Global);
-        initial.filters = vec![Filter::new().kinds(vec![1]).limit(10).build()];
+        let initial =
+            live_config_with_filters(vec![Filter::new().kinds(vec![1]).limit(10).build()]);
 
         let created = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1010,8 +1088,8 @@ mod tests {
             .map(|f| f.json().expect("filter json"))
             .collect::<Vec<_>>();
 
-        let mut replacement = empty_config(SubScope::Global);
-        replacement.filters = vec![Filter::new().kinds(vec![3]).limit(1).build()];
+        let replacement =
+            live_config_with_filters(vec![Filter::new().kinds(vec![3]).limit(1).build()]);
         let ensured = runtime.ensure_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
             &relays,
@@ -1031,10 +1109,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(before, after);
     }
-
-    /// Verifies aggregate EOSE helper treats zero tracked relays as not fully EOSE'd.
-    #[test]
-    fn aggregate_eose_status_zero_tracked_relays_is_not_all_eosed() {
+    #[tokio::test]
+    async fn aggregate_eose_status_zero_tracked_relays_is_not_all_eosed() {
         let status = aggregate_eose_status(std::iter::empty());
         assert_eq!(
             status,
@@ -1045,10 +1121,8 @@ mod tests {
             }
         );
     }
-
-    /// Verifies aggregate EOSE helper reports partial EOSE when relay legs are mixed.
-    #[test]
-    fn aggregate_eose_status_mixed_relays_reports_partial_eose() {
+    #[tokio::test]
+    async fn aggregate_eose_status_mixed_relays_reports_partial_eose() {
         let status = aggregate_eose_status([
             RelayReqStatus::InitialQuery,
             RelayReqStatus::Eose,
@@ -1063,10 +1137,8 @@ mod tests {
             }
         );
     }
-
-    /// Verifies aggregate EOSE helper reports fully EOSE'd only when all tracked relays are EOSE.
-    #[test]
-    fn aggregate_eose_status_all_relays_eose_reports_all_eosed() {
+    #[tokio::test]
+    async fn aggregate_eose_status_all_relays_eose_reports_all_eosed() {
         let status = aggregate_eose_status([RelayReqStatus::Eose, RelayReqStatus::Eose]);
         assert_eq!(
             status,
@@ -1077,10 +1149,8 @@ mod tests {
             }
         );
     }
-
-    /// Verifies EOSE status lookup returns Missing when the slot does not own the requested key.
-    #[test]
-    fn sub_eose_status_missing_when_slot_does_not_own_key() {
+    #[tokio::test]
+    async fn sub_eose_status_missing_when_slot_does_not_own_key() {
         let runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let status = slot_status(
@@ -1093,13 +1163,11 @@ mod tests {
         );
         assert_eq!(status, ScopedSubEoseStatus::Missing);
     }
-
-    /// Verifies empty-filter desired state reports Inactive because no live outbox sub exists.
-    #[test]
-    fn sub_eose_status_inactive_for_desired_without_live_sub() {
+    #[tokio::test]
+    async fn sub_eose_status_inactive_for_desired_without_live_sub() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
-        let relays = relay_set("wss://relay-a.example.com");
+        let relays = HashSet::new();
         let slot = runtime.create_slot();
         let key = make_key(("inactive", 1u8));
         let selected = account_pk(0x01);
@@ -1111,16 +1179,14 @@ mod tests {
             slot,
             SubScope::Global,
             key,
-            empty_config(SubScope::Global),
+            live_config(),
         );
 
         let status = slot_status(&runtime, &mut pool, selected, slot, key, SubScope::Global);
         assert_eq!(status, ScopedSubEoseStatus::Inactive);
     }
-
-    /// Verifies live subscriptions expose aggregate EOSE state without leaking outbox ids.
-    #[test]
-    fn sub_eose_status_live_reports_tracked_relays_and_eose_flags() {
+    #[tokio::test]
+    async fn sub_eose_status_live_reports_tracked_relays_and_eose_flags() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let relays = relay_set("wss://relay-a.example.com");
@@ -1135,7 +1201,7 @@ mod tests {
             slot,
             SubScope::Global,
             key,
-            live_config(SubScope::Global),
+            live_config(),
         );
 
         let status = slot_status(&runtime, &mut pool, selected, slot, key, SubScope::Global);
@@ -1147,10 +1213,8 @@ mod tests {
         assert!(!live.any_eose);
         assert!(!live.all_eosed);
     }
-
-    /// Verifies account switch makes old account-scoped subs inactive and restores them on switch-back.
-    #[test]
-    fn account_scoped_sub_eose_status_transitions_inactive_and_restores_on_switch_back() {
+    #[tokio::test]
+    async fn account_scoped_sub_eose_status_transitions_inactive_and_restores_on_switch_back() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let relays_a = relay_set("wss://relay-a.example.com");
@@ -1167,7 +1231,7 @@ mod tests {
             slot,
             SubScope::Account,
             key,
-            live_config(SubScope::Account),
+            live_config(),
         );
 
         let before = slot_status(&runtime, &mut pool, account_a, slot, key, SubScope::Account);
@@ -1197,10 +1261,8 @@ mod tests {
         let restored = slot_status(&runtime, &mut pool, account_a, slot, key, SubScope::Account);
         assert!(matches!(restored, ScopedSubEoseStatus::Live(_)));
     }
-
-    /// Verifies upsert updates a live subscription in place, and replaces it when transport mode changes.
-    #[test]
-    fn set_sub_upsert_modifies_live_sub() {
+    #[tokio::test]
+    async fn set_sub_upsert_modifies_live_sub() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let key = SubKey::new(("timeline", 1u64));
@@ -1209,8 +1271,7 @@ mod tests {
         let relays_b = relay_set("wss://relay-b.example.com");
         let slot = runtime.create_slot();
 
-        let mut spec = empty_config(scope);
-        spec.filters = vec![Filter::new().kinds(vec![1]).limit(2).build()];
+        let spec = live_config_with_filters(vec![Filter::new().kinds(vec![1]).limit(2).build()]);
 
         let first = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1227,8 +1288,7 @@ mod tests {
         let live_id = runtime.live.get(&scoped).copied().expect("live sub id");
         assert_eq!(pool.filters(&live_id).expect("stored filters").len(), 1);
 
-        let mut updated = spec.clone();
-        updated.filters = vec![Filter::new().kinds(vec![3]).limit(1).build()];
+        let updated = live_config_with_filters(vec![Filter::new().kinds(vec![3]).limit(1).build()]);
 
         let res = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1248,8 +1308,10 @@ mod tests {
             1
         );
 
-        let mut transparent_update = updated;
-        transparent_update.routing_preference = RelayRoutingPreference::RequireDedicated;
+        let transparent_update =
+            SubConfig::live(vec![Filter::new().kinds(vec![3]).limit(1).build()])
+                .routing_preference(RelayRoutingPreference::RequireDedicated)
+                .build();
 
         let res = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1266,18 +1328,107 @@ mod tests {
         assert_ne!(live_id, new_live_id);
         assert!(pool.filters(&live_id).is_none());
     }
+    #[tokio::test]
+    async fn set_sub_is_unchanged_when_live_config_matches_existing_state() {
+        let mut runtime = ScopedSubRuntime::default();
+        let mut pool = OutboxPool::default();
+        let key = SubKey::new(("timeline", 2u64));
+        let scope = SubScope::Global;
+        let relays = relay_set("wss://relay-a.example.com");
+        let slot = runtime.create_slot();
 
-    /// Verifies clearing the last owner unsubscribes the live outbox subscription and removes desired state.
+        let spec = live_config_with_filters(vec![Filter::new().kinds(vec![1]).limit(2).build()]);
+
+        let created = runtime.set_sub_with_relays(
+            &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
+            &relays,
+            account_pk(0x01),
+            slot,
+            scope,
+            key,
+            spec.clone(),
+        );
+        assert!(matches!(created, SetSubResult::Created));
+
+        let scoped = ScopedSubRuntime::scoped_key(ResolvedSubScope::Global, key);
+        let live_id = runtime.live.get(&scoped).copied().expect("live sub id");
+        let before = pool
+            .filters(&live_id)
+            .expect("stored filters before no-op")
+            .iter()
+            .map(|filter| filter.json().expect("filter json"))
+            .collect::<Vec<_>>();
+
+        let unchanged = runtime.set_sub_with_relays(
+            &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
+            &relays,
+            account_pk(0x01),
+            slot,
+            scope,
+            key,
+            spec,
+        );
+        assert!(matches!(unchanged, SetSubResult::Unchanged));
+
+        let after_live_id = runtime.live.get(&scoped).copied().expect("live sub id");
+        let after = pool
+            .filters(&after_live_id)
+            .expect("stored filters after no-op")
+            .iter()
+            .map(|filter| filter.json().expect("filter json"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(live_id, after_live_id);
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn sub_config_declares_live_and_full_history_explicitly() {
+        let live_filter = Filter::new().kinds(vec![1]).limit(500).build();
+        let history_filter = Filter::new().kinds(vec![1]).since(123).build();
+        let config = SubConfig::live(vec![live_filter.clone()])
+            .full_history(FullHistoryConfig::new(vec![history_filter.clone()]))
+            .build();
+
+        let live_filters = config.live_filters();
+        assert_eq!(live_filters.len(), 1);
+        assert!(live_filters[0].same_canonical_attributes(&live_filter));
+        let full_history = config.full_history_config().expect("full-history config");
+        assert_eq!(full_history.filters().len(), 1);
+        assert!(full_history.filters()[0].same_canonical_attributes(&history_filter));
+    }
+
     #[test]
-    fn clear_sub_unsubscribes_live_subscription() {
+    fn sub_config_builder_constructs_live_declarations() {
+        let live_filter = Filter::new().kinds(vec![1]).limit(500).build();
+        let history_filter = Filter::new().kinds(vec![1]).since(123).build();
+
+        let live = SubConfig::live(vec![live_filter.clone()]).build();
+        assert_eq!(live.live_filters().len(), 1);
+        assert!(live.full_history_config().is_none());
+
+        let paired = SubConfig::live(vec![live_filter])
+            .full_history(FullHistoryConfig::new(vec![history_filter]))
+            .build();
+        assert!(!paired.live_filters().is_empty());
+        assert!(paired.full_history_config().is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "SubConfig requires at least one live filter")]
+    fn sub_config_builder_rejects_empty_live_declaration() {
+        let _ = SubConfig::live(Vec::new()).build();
+    }
+
+    #[tokio::test]
+    async fn clear_sub_unsubscribes_live_subscription() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let key = SubKey::new(("timeline", 1u64));
         let relays = relay_set("wss://relay-a.example.com");
         let slot = runtime.create_slot();
 
-        let mut spec = empty_config(SubScope::Global);
-        spec.filters = vec![Filter::new().kinds(vec![1]).limit(2).build()];
+        let spec = live_config_with_filters(vec![Filter::new().kinds(vec![1]).limit(2).build()]);
 
         runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1306,9 +1457,9 @@ mod tests {
             ClearSubResult::Cleared
         ));
 
-        assert_eq!(runtime.desired_len(), 0);
-        assert_eq!(runtime.live_len(), 0);
-        assert_eq!(runtime.slot_len(), 0);
+        assert_eq!(runtime.desired.len(), 0);
+        assert_eq!(runtime.live.len(), 0);
+        assert_eq!(runtime.subs_by_slot.len(), 0);
         assert!(pool.filters(&live_id).is_none());
 
         assert!(matches!(
@@ -1325,18 +1476,15 @@ mod tests {
             ClearSubResult::NotFound
         ));
     }
-
-    /// Verifies multiple owners share one live sub and only the final clear unsubscribes it.
-    #[test]
-    fn multiple_slots_share_single_live_sub_until_last_clear() {
+    #[tokio::test]
+    async fn multiple_slots_share_single_live_sub_until_last_clear() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let relays = relay_set("wss://relay-a.example.com");
         let account = account_pk(0x33);
         let key = SubKey::new(("thread", [9u8; 32]));
 
-        let mut spec = empty_config(SubScope::Account);
-        spec.filters = vec![Filter::new().kinds(vec![1]).limit(25).build()];
+        let spec = live_config_with_filters(vec![Filter::new().kinds(vec![1]).limit(25).build()]);
 
         let slot_a = runtime.create_slot();
         let slot_b = runtime.create_slot();
@@ -1361,13 +1509,13 @@ mod tests {
         );
 
         assert!(matches!(a, SetSubResult::Created));
-        assert!(matches!(b, SetSubResult::Updated));
+        assert!(matches!(b, SetSubResult::Unchanged));
 
         let scoped = ScopedSubRuntime::scoped_key(ResolvedSubScope::Account(account), key);
         let live_id = runtime.live.get(&scoped).copied().expect("live sub id");
-        assert_eq!(runtime.desired_len(), 1);
-        assert_eq!(runtime.live_len(), 1);
-        assert_eq!(runtime.slot_len(), 2);
+        assert_eq!(runtime.desired.len(), 1);
+        assert_eq!(runtime.live.len(), 1);
+        assert_eq!(runtime.subs_by_slot.len(), 2);
         assert!(pool.filters(&live_id).is_some());
 
         assert!(matches!(
@@ -1384,9 +1532,9 @@ mod tests {
             ClearSubResult::StillInUse
         ));
 
-        assert_eq!(runtime.desired_len(), 1);
-        assert_eq!(runtime.live_len(), 1);
-        assert_eq!(runtime.slot_len(), 1);
+        assert_eq!(runtime.desired.len(), 1);
+        assert_eq!(runtime.live.len(), 1);
+        assert_eq!(runtime.subs_by_slot.len(), 1);
         assert!(pool.filters(&live_id).is_some());
 
         assert!(matches!(
@@ -1403,15 +1551,13 @@ mod tests {
             ClearSubResult::Cleared
         ));
 
-        assert_eq!(runtime.desired_len(), 0);
-        assert_eq!(runtime.live_len(), 0);
-        assert_eq!(runtime.slot_len(), 0);
+        assert_eq!(runtime.desired.len(), 0);
+        assert_eq!(runtime.live.len(), 0);
+        assert_eq!(runtime.subs_by_slot.len(), 0);
         assert!(pool.filters(&live_id).is_none());
     }
-
-    /// Verifies dropping a slot clears every scoped sub owned by that slot.
-    #[test]
-    fn drop_slot_clears_all_owned_subs() {
+    #[tokio::test]
+    async fn drop_slot_clears_all_owned_subs() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let account = account_pk(0x4A);
@@ -1421,11 +1567,11 @@ mod tests {
         let key_account = SubKey::new(("timeline", "home"));
         let key_global = SubKey::new(("global", "discovery"));
 
-        let mut account_spec = empty_config(SubScope::Account);
-        account_spec.filters = vec![Filter::new().kinds(vec![1]).limit(5).build()];
+        let account_spec =
+            live_config_with_filters(vec![Filter::new().kinds(vec![1]).limit(5).build()]);
 
-        let mut global_spec = empty_config(SubScope::Global);
-        global_spec.filters = vec![Filter::new().kinds(vec![0]).limit(5).build()];
+        let global_spec =
+            live_config_with_filters(vec![Filter::new().kinds(vec![0]).limit(5).build()]);
 
         let _ = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1446,9 +1592,9 @@ mod tests {
             global_spec,
         );
 
-        assert_eq!(runtime.desired_len(), 2);
-        assert_eq!(runtime.live_len(), 2);
-        assert_eq!(runtime.slot_len(), 1);
+        assert_eq!(runtime.desired.len(), 2);
+        assert_eq!(runtime.live.len(), 2);
+        assert_eq!(runtime.subs_by_slot.len(), 1);
 
         assert!(matches!(
             runtime.drop_slot(
@@ -1461,9 +1607,9 @@ mod tests {
             DropSlotResult::Dropped
         ));
 
-        assert_eq!(runtime.desired_len(), 0);
-        assert_eq!(runtime.live_len(), 0);
-        assert_eq!(runtime.slot_len(), 0);
+        assert_eq!(runtime.desired.len(), 0);
+        assert_eq!(runtime.live.len(), 0);
+        assert_eq!(runtime.subs_by_slot.len(), 0);
 
         assert!(matches!(
             runtime.drop_slot(
@@ -1476,10 +1622,8 @@ mod tests {
             DropSlotResult::NotFound
         ));
     }
-
-    /// Verifies account switch unsubscribes the old account scope and restores it when switching back.
-    #[test]
-    fn account_switch_unsubscribes_old_scope_and_restores_new_scope() {
+    #[tokio::test]
+    async fn account_switch_unsubscribes_old_scope_and_restores_new_scope() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let account_a = account_pk(0xAA);
@@ -1489,8 +1633,8 @@ mod tests {
         let key = SubKey::new(("timeline", "account-scoped"));
         let slot = runtime.create_slot();
 
-        let mut scoped_spec = empty_config(SubScope::Account);
-        scoped_spec.filters = vec![Filter::new().kinds(vec![1]).limit(2).build()];
+        let scoped_spec =
+            live_config_with_filters(vec![Filter::new().kinds(vec![1]).limit(2).build()]);
 
         let _ = runtime.set_sub_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1515,7 +1659,7 @@ mod tests {
 
         assert!(runtime.live.get(&scoped_a).is_none());
         assert!(pool.filters(&initial_live_id).is_none());
-        assert_eq!(runtime.desired_len(), 1);
+        assert_eq!(runtime.desired.len(), 1);
 
         runtime.on_account_switched_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1531,10 +1675,8 @@ mod tests {
             .expect("account A should be restored on switch back");
         assert!(pool.filters(&restored_live_id).is_some());
     }
-
-    /// Verifies account-scoped and global subscriptions obey the account-switch contract across app domains.
-    #[test]
-    fn account_switch_contract_with_multiple_apps_and_mixed_scopes() {
+    #[tokio::test]
+    async fn account_switch_contract_with_multiple_apps_and_mixed_scopes() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
         let account_a = account_pk(0xA1);
@@ -1550,30 +1692,29 @@ mod tests {
         let key_messages_a = make_key((FakeApp::Messages, "dm-relay-list", peer_pk, account_a));
         let key_global = make_key((FakeApp::Timelines, "global-discovery", 99u64));
 
-        let mut timeline_spec_a = empty_config(SubScope::Account);
-        timeline_spec_a.filters = vec![Filter::new().kinds(vec![1]).limit(50).build()];
-        timeline_spec_a.relays = RelaySelection::AccountsRead;
+        let timeline_spec_a =
+            live_config_with_filters(vec![Filter::new().kinds(vec![1]).limit(50).build()]);
 
-        let mut thread_spec_a = empty_config(SubScope::Account);
-        thread_spec_a.filters = vec![Filter::new().kinds(vec![1]).limit(200).build()];
-        thread_spec_a.relays = RelaySelection::AccountsRead;
-        thread_spec_a.routing_preference = RelayRoutingPreference::RequireDedicated;
+        let thread_spec_a = SubConfig::live(vec![Filter::new().kinds(vec![1]).limit(200).build()])
+            .routing_preference(RelayRoutingPreference::RequireDedicated)
+            .build();
 
-        let mut messages_spec_a = empty_config(SubScope::Account);
-        messages_spec_a.filters = vec![Filter::new().kinds(vec![10002]).limit(20).build()];
-        messages_spec_a.relays = RelaySelection::Explicit({
-            let mut set = HashSet::new();
-            set.insert(explicit_relay.clone());
-            set
-        });
+        let messages_spec_a =
+            SubConfig::live(vec![Filter::new().kinds(vec![10002]).limit(20).build()])
+                .explicit_relays({
+                    let mut set = HashSet::new();
+                    set.insert(explicit_relay.clone());
+                    set
+                })
+                .build();
 
-        let mut global_spec = empty_config(SubScope::Global);
-        global_spec.filters = vec![Filter::new().kinds(vec![0]).limit(10).build()];
-        global_spec.relays = RelaySelection::Explicit({
-            let mut set = HashSet::new();
-            set.insert(explicit_relay.clone());
-            set
-        });
+        let global_spec = SubConfig::live(vec![Filter::new().kinds(vec![0]).limit(10).build()])
+            .explicit_relays({
+                let mut set = HashSet::new();
+                set.insert(explicit_relay.clone());
+                set
+            })
+            .build();
 
         let slot_timeline = runtime.create_slot();
         let slot_thread = runtime.create_slot();
@@ -1669,7 +1810,7 @@ mod tests {
                 && pool.filters(&messages_id_a).is_none()
         );
         assert!(runtime.live.get(&scoped_global).is_some() && pool.filters(&global_id).is_some());
-        assert_eq!(runtime.desired_len(), 4);
+        assert_eq!(runtime.desired.len(), 4);
 
         runtime.on_account_switched_with_relays(
             &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
@@ -1703,6 +1844,7 @@ mod tests {
     struct SubmittedSub {
         scoped: ScopedSubKey,
         live_id: OutboxSubId,
+        history_id: Option<FullHistorySubId>,
     }
 
     // Scenario harness for selected-account read-relay retarget tests.
@@ -1732,7 +1874,7 @@ mod tests {
             self.submit_sub(
                 SubScope::Account,
                 make_key((FakeApp::Timelines, "home", 1u64)),
-                accountsread_spec(SubScope::Account, 1, 50),
+                accountsread_spec(1, 50),
             )
         }
 
@@ -1740,7 +1882,7 @@ mod tests {
             self.submit_sub(
                 SubScope::Global,
                 make_key((FakeApp::Timelines, "global-ish", 2u64)),
-                accountsread_spec(SubScope::Global, 0, 10),
+                accountsread_spec(0, 10),
             )
         }
 
@@ -1757,7 +1899,7 @@ mod tests {
                 self.other_account,
                 SubScope::Account,
                 make_key((FakeApp::Timelines, "home", 99u64)),
-                accountsread_spec(SubScope::Account, 1, 25),
+                accountsread_spec(1, 25),
             )
         }
 
@@ -1772,6 +1914,7 @@ mod tests {
             key: SubKey,
             spec: SubConfig,
         ) -> SubmittedSub {
+            let expects_full_history = spec.full_history_config().is_some();
             let slot = self.runtime.create_slot();
             let _ = self.runtime.set_sub_with_relays(
                 &mut outbox(&mut self.pool),
@@ -1789,8 +1932,14 @@ mod tests {
             };
             let scoped = ScopedSubRuntime::scoped_key(resolved_scope, key);
             let live_id = self.runtime.live.get(&scoped).copied().unwrap();
+            let history_id = self.runtime.full_history.get(&scoped).copied();
+            assert_eq!(history_id.is_some(), expects_full_history);
 
-            SubmittedSub { scoped, live_id }
+            SubmittedSub {
+                scoped,
+                live_id,
+                history_id,
+            }
         }
 
         fn retarget_to_relay_b(&mut self) {
@@ -1802,12 +1951,40 @@ mod tests {
                 );
         }
 
+        fn retarget_to_empty_relays(&mut self) {
+            self.runtime
+                .retarget_selected_account_read_relays_with_relays(
+                    &mut outbox(&mut self.pool),
+                    self.selected_account,
+                    &HashSet::new(),
+                );
+        }
+
         fn assert_live_id_unchanged(&self, sub: &SubmittedSub) {
             assert_eq!(self.runtime.live.get(&sub.scoped), Some(&sub.live_id));
         }
 
+        fn assert_history_id_unchanged(&self, sub: &SubmittedSub) {
+            if let Some(history_id) = sub.history_id {
+                assert_eq!(
+                    self.runtime.full_history.get(&sub.scoped),
+                    Some(&history_id)
+                );
+            }
+        }
+
         fn assert_still_live(&self, sub: &SubmittedSub) {
             assert!(self.pool.filters(&sub.live_id).is_some());
+        }
+
+        fn assert_live_relays(&self, sub: &SubmittedSub, expected: &HashSet<NormRelayUrl>) {
+            let actual = self
+                .pool
+                .status(&sub.live_id)
+                .keys()
+                .map(|relay| (*relay).clone())
+                .collect::<HashSet<_>>();
+            assert_eq!(actual, *expected);
         }
 
         fn switch_selected_account_away(&mut self) {
@@ -1821,6 +1998,7 @@ mod tests {
 
         fn assert_not_live(&self, sub: &SubmittedSub) {
             assert!(self.runtime.live.get(&sub.scoped).is_none());
+            assert!(self.runtime.full_history.get(&sub.scoped).is_none());
             assert!(self.pool.filters(&sub.live_id).is_none());
         }
 
@@ -1829,12 +2007,16 @@ mod tests {
             assert_ne!(recreated_live_id, sub.live_id);
             assert!(self.pool.filters(&recreated_live_id).is_some());
             assert!(self.pool.filters(&sub.live_id).is_none());
+
+            if let Some(history_id) = sub.history_id {
+                let recreated_history_id = self.runtime.full_history.get(&sub.scoped).copied();
+                assert!(recreated_history_id.is_some());
+                assert_ne!(recreated_history_id, Some(history_id));
+            }
         }
     }
-
-    /// Verifies selected-account relay list refresh retargets all AccountsRead subs in scope.
-    #[test]
-    fn selected_account_relay_refresh_updates_account_and_global_accountsread_subs() {
+    #[tokio::test]
+    async fn selected_account_relay_refresh_updates_account_and_global_accountsread_subs() {
         let mut t = RetargetReadRelaysTest::new();
 
         let account_home = t.submit_accountsread_account_home();
@@ -1851,10 +2033,47 @@ mod tests {
         t.assert_still_live(&global_feed);
         t.assert_still_live(&explicit_messages);
     }
+    #[tokio::test]
+    async fn selected_account_relay_refresh_keeps_full_history_live_id_without_recreating_sub() {
+        let mut t = RetargetReadRelaysTest::new();
 
-    /// Verifies retargeting recreates a missing live AccountsRead sub from desired state.
-    #[test]
-    fn selected_account_relay_retarget_recreates_missing_live_sub() {
+        let full_history_home = t.submit_sub(
+            SubScope::Account,
+            make_key((FakeApp::Timelines, "full-history-home", 7u64)),
+            full_history_config(),
+        );
+        t.retarget_to_relay_b();
+
+        t.assert_live_id_unchanged(&full_history_home);
+        t.assert_history_id_unchanged(&full_history_home);
+        t.assert_still_live(&full_history_home);
+    }
+    #[tokio::test]
+    async fn selected_account_relay_empty_then_non_empty_recreates_full_history_sub() {
+        let mut t = RetargetReadRelaysTest::new();
+
+        let full_history_home = t.submit_sub(
+            SubScope::Account,
+            make_key((FakeApp::Timelines, "full-history-home", 10u64)),
+            full_history_config(),
+        );
+        t.retarget_to_empty_relays();
+
+        assert!(t.runtime.live.get(&full_history_home.scoped).is_none());
+        assert!(t
+            .runtime
+            .full_history
+            .get(&full_history_home.scoped)
+            .is_none());
+        assert!(t.pool.filters(&full_history_home.live_id).is_none());
+        assert_eq!(t.runtime.desired.len(), 1);
+
+        t.retarget_to_relay_b();
+
+        t.assert_live_recreated(&full_history_home);
+    }
+    #[tokio::test]
+    async fn selected_account_relay_retarget_recreates_missing_live_sub() {
         let mut t = RetargetReadRelaysTest::new();
 
         let account_home = t.submit_accountsread_account_home();
@@ -1865,10 +2084,39 @@ mod tests {
 
         t.assert_live_recreated(&account_home);
     }
+    #[tokio::test]
+    async fn selected_account_relay_retarget_recreates_missing_full_history_sub() {
+        let mut t = RetargetReadRelaysTest::new();
 
-    /// Verifies retargeting the selected account does not touch another account's account-scoped sub.
-    #[test]
-    fn selected_account_relay_retarget_ignores_other_account_scoped_subs() {
+        let full_history_home = t.submit_sub(
+            SubScope::Account,
+            make_key((FakeApp::Timelines, "full-history-home", 8u64)),
+            full_history_config(),
+        );
+        t.switch_selected_account_away();
+        t.assert_not_live(&full_history_home);
+
+        t.retarget_to_relay_b();
+
+        let recreated_live_id = t
+            .runtime
+            .live
+            .get(&full_history_home.scoped)
+            .copied()
+            .expect("recreated live id");
+        assert_ne!(recreated_live_id, full_history_home.live_id);
+        let recreated_history_id = t
+            .runtime
+            .full_history
+            .get(&full_history_home.scoped)
+            .copied()
+            .expect("recreated full-history id");
+        assert_ne!(Some(recreated_history_id), full_history_home.history_id);
+        assert!(t.pool.filters(&recreated_live_id).is_some());
+        assert!(t.pool.filters(&full_history_home.live_id).is_none());
+    }
+    #[tokio::test]
+    async fn selected_account_relay_retarget_ignores_other_account_scoped_subs() {
         let mut t = RetargetReadRelaysTest::new();
 
         let selected_account_home = t.submit_accountsread_account_home();
@@ -1882,9 +2130,21 @@ mod tests {
         t.assert_still_live(&other_account_home);
     }
 
-    /// Verifies typed SubKey builder output is stable for identical inputs.
-    #[test]
-    fn subkey_builder_is_stable_and_typed() {
+    #[tokio::test]
+    async fn account_switch_retargets_global_accountsread_subs() {
+        let mut t = RetargetReadRelaysTest::new();
+        let global_feed = t.submit_accountsread_global_feed();
+        let relay_a = t.relay_a.clone();
+        let relay_b = t.relay_b.clone();
+
+        t.assert_live_relays(&global_feed, &relay_a);
+        t.switch_selected_account_away();
+
+        t.assert_live_id_unchanged(&global_feed);
+        t.assert_live_relays(&global_feed, &relay_b);
+    }
+    #[tokio::test]
+    async fn subkey_builder_is_stable_and_typed() {
         let key_a = SubKey::builder(FakeApp::Messages)
             .with("dm-relay-list")
             .with(account_pk(0x11))
@@ -1904,47 +2164,146 @@ mod tests {
         assert_eq!(key_a, key_b);
         assert_ne!(key_a, key_c);
     }
-
-    /// Verifies that upserting an empty filter set removes the active live subscription
-    /// while preserving desired state for future restoration.
-    #[test]
-    fn set_sub_with_empty_filters_removes_live_but_keeps_desired() {
+    #[tokio::test]
+    async fn full_history_subscriptions_create_modify_and_remove_live_outbox_state() {
         let mut runtime = ScopedSubRuntime::default();
         let mut pool = OutboxPool::default();
-        let relays = relay_set("wss://relay-a.example.com");
-        let key = SubKey::new(("messages", "dm-relay-list", 1u8));
+        let relays = relay_set("wss://relay-full-history.example.com");
+        let key = SubKey::new(("timeline", "home", 1u8));
         let slot = runtime.create_slot();
 
-        let mut initial = empty_config(SubScope::Global);
-        initial.filters = vec![Filter::new().kinds(vec![10002]).limit(10).build()];
-
         let created = runtime.set_sub_with_relays(
-            &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
+            &mut outbox(&mut pool),
             &relays,
             account_pk(0x01),
             slot,
             SubScope::Global,
             key,
-            initial,
+            full_history_config(),
         );
         assert!(matches!(created, SetSubResult::Created));
 
         let scoped = ScopedSubRuntime::scoped_key(ResolvedSubScope::Global, key);
         let live_id = runtime.live.get(&scoped).copied().expect("live sub id");
+        let history_id = runtime
+            .full_history
+            .get(&scoped)
+            .copied()
+            .expect("full-history id");
         assert!(pool.filters(&live_id).is_some());
 
-        let emptied = runtime.set_sub_with_relays(
-            &mut OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default())),
+        let updated_config = live_full_history_config(
+            vec![Filter::new().kinds(vec![42]).limit(7).build()],
+            vec![Filter::new().kinds(vec![1]).limit(5).build()],
+        );
+        let updated = runtime.set_sub_with_relays(
+            &mut outbox(&mut pool),
             &relays,
             account_pk(0x01),
             slot,
             SubScope::Global,
             key,
-            empty_config(SubScope::Global),
+            updated_config.clone(),
         );
-        assert!(matches!(emptied, SetSubResult::Updated));
-        assert_eq!(runtime.desired_len(), 1);
-        assert_eq!(runtime.live_len(), 0);
+        assert!(matches!(updated, SetSubResult::Updated));
+        assert_eq!(runtime.full_history.get(&scoped), Some(&history_id));
+        assert_eq!(
+            pool.filters(&live_id)
+                .expect("updated live filters")
+                .iter()
+                .map(|filter| filter.json().expect("updated filter json"))
+                .collect::<Vec<_>>(),
+            [Filter::new().kinds(vec![42]).limit(7).build()]
+                .iter()
+                .map(|filter| filter.json().expect("expected filter json"))
+                .collect::<Vec<_>>()
+        );
+
+        let routing_update = SubConfig::live(vec![Filter::new().kinds(vec![42]).limit(7).build()])
+            .full_history(FullHistoryConfig::new(vec![Filter::new()
+                .kinds(vec![1])
+                .limit(5)
+                .build()]))
+            .routing_preference(RelayRoutingPreference::RequireDedicated)
+            .build();
+        let routing_updated = runtime.set_sub_with_relays(
+            &mut outbox(&mut pool),
+            &relays,
+            account_pk(0x01),
+            slot,
+            SubScope::Global,
+            key,
+            routing_update,
+        );
+        assert!(matches!(routing_updated, SetSubResult::Updated));
+        let replaced_live_id = runtime.live.get(&scoped).copied().expect("live sub id");
+        assert_ne!(replaced_live_id, live_id);
         assert!(pool.filters(&live_id).is_none());
+        assert_eq!(runtime.full_history.get(&scoped), Some(&history_id));
+
+        let cleared = runtime.clear_sub_with_selected(
+            &mut outbox(&mut pool),
+            account_pk(0x01),
+            slot,
+            key,
+            SubScope::Global,
+        );
+        assert!(matches!(cleared, ClearSubResult::Cleared));
+        assert!(pool.filters(&live_id).is_none());
+        assert!(pool.filters(&replaced_live_id).is_none());
+        assert!(runtime.full_history.get(&scoped).is_none());
+    }
+    #[tokio::test]
+    async fn account_switch_restores_full_history_account_subscriptions() {
+        let mut runtime = ScopedSubRuntime::default();
+        let mut pool = OutboxPool::default();
+        let relay_a = relay_set("wss://relay-account-a.example.com");
+        let relay_b = relay_set("wss://relay-account-b.example.com");
+        let old_pk = account_pk(0x11);
+        let new_pk = account_pk(0x22);
+        let key = SubKey::new(("timeline", "account-home", 9u8));
+        let slot = runtime.create_slot();
+
+        let created = runtime.set_sub_with_relays(
+            &mut outbox(&mut pool),
+            &relay_a,
+            old_pk,
+            slot,
+            SubScope::Account,
+            key,
+            full_history_config(),
+        );
+        assert!(matches!(created, SetSubResult::Created));
+        let resolved_old = ScopedSubRuntime::scoped_key(ResolvedSubScope::Account(old_pk), key);
+        let old_live_id = runtime
+            .live
+            .get(&resolved_old)
+            .copied()
+            .expect("old live id");
+        let old_history_id = runtime
+            .full_history
+            .get(&resolved_old)
+            .copied()
+            .expect("old full-history id");
+        assert!(pool.filters(&old_live_id).is_some());
+
+        runtime.on_account_switched_with_relays(&mut outbox(&mut pool), old_pk, new_pk, &relay_b);
+        assert!(pool.filters(&old_live_id).is_none());
+        assert!(runtime.full_history.get(&resolved_old).is_none());
+
+        runtime.on_account_switched_with_relays(&mut outbox(&mut pool), new_pk, old_pk, &relay_a);
+
+        let restored_live_id = runtime
+            .live
+            .get(&resolved_old)
+            .copied()
+            .expect("restored live id");
+        let restored_history_id = runtime
+            .full_history
+            .get(&resolved_old)
+            .copied()
+            .expect("restored full-history id");
+        assert!(pool.filters(&restored_live_id).is_some());
+        assert_ne!(restored_history_id, old_history_id);
     }
 }

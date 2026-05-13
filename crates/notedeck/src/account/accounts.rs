@@ -5,12 +5,12 @@ use crate::account::relay::{
     calculate_relays, modify_advertised_relays, write_relays, AccountRelayData, RelayAction,
     RelayDefaults,
 };
-use crate::scoped_subs::{RelaySelection, ScopedSubIdentity, SubConfig, SubKey};
+use crate::scoped_subs::{ScopedSubIdentity, SubConfig, SubKey};
 use crate::storage::AccountStorageWriter;
 use crate::user_account::UserAccountSerializable;
 use crate::{
-    AccountStorage, MuteFun, RemoteApi, ScopedSubApi, SingleUnkIdAction, SubOwnerKey, UnknownIds,
-    UserAccount, ZapWallet,
+    AccountStorage, FullHistoryConfig, MuteFun, RemoteApi, ScopedSubApi, SingleUnkIdAction,
+    SubOwnerKey, UnknownIds, UserAccount, ZapWallet,
 };
 use enostr::{FilledKeypair, Keypair, NormRelayUrl, Pubkey, RelayId, RelayRoutingPreference};
 use hashbrown::HashSet;
@@ -119,7 +119,7 @@ impl Accounts {
         if let Some(swap_to) = resp.swap_to {
             let old_pk = resp.deleted.pubkey;
             let txn = Transaction::new(ndb).expect("txn");
-            self.select_account_internal(&swap_to, old_pk, ndb, &txn, remote);
+            self.finish_account_selection_with_session(&swap_to, old_pk, ndb, &txn, remote);
         }
 
         {
@@ -234,10 +234,30 @@ impl Accounts {
         txn: &Transaction,
         remote: &mut RemoteApi<'_>,
     ) {
-        self.select_account_internal_entry(pk_to_select, ndb, txn, remote);
+        self.select_account_with_session(pk_to_select, ndb, txn, remote);
     }
 
-    fn select_account_internal_entry(
+    /// Select the active account during startup before any remote session exists.
+    ///
+    /// This updates the local account cache, persistence, and `nostrdb`
+    /// subscriptions without touching remote outbox state. The first real
+    /// frame-scoped `RemoteApi` will later initialize the corresponding remote
+    /// subscriptions through the normal `update()` path.
+    pub(crate) fn select_account_for_startup(
+        &mut self,
+        pk_to_select: &Pubkey,
+        ndb: &mut Ndb,
+        txn: &Transaction,
+    ) {
+        if !self.begin_account_selection(pk_to_select, ndb) {
+            return;
+        }
+
+        self.refresh_selected_account_state(pk_to_select, ndb, txn);
+        self.scoped_remote_initialized = false;
+    }
+
+    fn select_account_with_session(
         &mut self,
         pk_to_select: &Pubkey,
         ndb: &mut Ndb,
@@ -246,24 +266,33 @@ impl Accounts {
     ) {
         let old_pk = *self.selected_account_pubkey();
 
-        if !self.cache.select(*pk_to_select) {
+        if !self.begin_account_selection(pk_to_select, ndb) {
             return;
         }
-        if let Some(filled) = self.selected_filled() {
-            ndb.add_key(&filled.secret_key.secret_bytes());
-        }
 
-        self.select_account_internal(pk_to_select, old_pk, ndb, txn, remote);
+        self.finish_account_selection_with_session(pk_to_select, old_pk, ndb, txn, remote);
     }
 
-    /// Have already selected in `AccountCache`, updating other things
-    fn select_account_internal(
+    /// Complete an account selection after the local cache already points at the new account.
+    fn finish_account_selection_with_session(
         &mut self,
         pk_to_select: &Pubkey,
         old_pk: Pubkey,
         ndb: &mut Ndb,
         txn: &Transaction,
         remote: &mut RemoteApi<'_>,
+    ) {
+        self.refresh_selected_account_state(pk_to_select, ndb, txn);
+        remote.on_account_switched(old_pk, *pk_to_select, self);
+        selected_account_request_subs(&mut remote.scoped_subs(self), self.get_selected_account());
+    }
+
+    /// Complete the local side of an account selection after cache selection succeeds.
+    fn refresh_selected_account_state(
+        &mut self,
+        pk_to_select: &Pubkey,
+        ndb: &mut Ndb,
+        txn: &Transaction,
     ) {
         if let Some(key_store) = &self.storage_writer {
             if let Err(e) = key_store.select_key(Some(*pk_to_select)) {
@@ -273,10 +302,18 @@ impl Accounts {
 
         self.get_selected_account_mut().data.query(ndb, txn);
         self.ndb_subs.swap_to(ndb, &self.cache.selected().data);
+    }
 
-        remote.on_account_switched(old_pk, *pk_to_select, self);
-
-        selected_account_request_subs(&mut remote.scoped_subs(self), self.get_selected_account());
+    /// Select the account in the local cache and register any available secret
+    /// key with `nostrdb` so giftwrap ingestion follows the new selection.
+    fn begin_account_selection(&mut self, pk_to_select: &Pubkey, ndb: &mut Ndb) -> bool {
+        if !self.cache.select(*pk_to_select) {
+            return false;
+        }
+        if let Some(filled) = self.selected_filled() {
+            ndb.add_key(&filled.secret_key.secret_bytes());
+        }
+        true
     }
 
     pub fn mutefun(&self) -> Box<MuteFun> {
@@ -301,6 +338,9 @@ impl Accounts {
     pub fn update(&mut self, ndb: &mut Ndb, remote: &mut RemoteApi<'_>) {
         // IMPORTANT - This function is called in the UI update loop,
         // make sure it is fast when idle
+        let old_read_relays = self
+            .scoped_remote_initialized
+            .then(|| self.selected_account_read_relays());
 
         let relay_updated = self
             .cache
@@ -321,6 +361,10 @@ impl Accounts {
             return;
         }
 
+        if old_read_relays.is_some_and(|old| old == self.selected_account_read_relays()) {
+            return;
+        }
+
         self.retarget_selected_account_read_relays(remote);
     }
 
@@ -329,6 +373,7 @@ impl Accounts {
     }
 
     pub(crate) fn process_relay_action(&mut self, remote: &mut RemoteApi<'_>, action: RelayAction) {
+        let old_read_relays = self.selected_account_read_relays();
         let acc = self.cache.selected_mut();
         modify_advertised_relays(
             &acc.key,
@@ -337,6 +382,10 @@ impl Accounts {
             &self.relay_defaults,
             &mut acc.data,
         );
+
+        if old_read_relays == self.selected_account_read_relays() {
+            return;
+        }
 
         self.retarget_selected_account_read_relays(remote);
     }
@@ -459,11 +508,18 @@ pub struct AddAccountResponse {
     pub unk_id_action: SingleUnkIdAction,
 }
 
-fn giftwrap_filter(pk: &Pubkey) -> Filter {
+fn giftwrap_live_filter(pk: &Pubkey) -> Filter {
     nostrdb::Filter::new()
         .kinds([1059])
         .pubkeys([pk.bytes()])
         .limit(500)
+        .build()
+}
+
+fn giftwrap_history_filter(pk: &Pubkey) -> Filter {
+    nostrdb::Filter::new()
+        .kinds([1059])
+        .pubkeys([pk.bytes()])
         .build()
 }
 
@@ -510,13 +566,7 @@ fn selected_account_request_subs(
             }
             AccountRemoteSubKind::Giftwrap => {
                 let pk = &selected_account.key.pubkey;
-                scoped_subs.set_sub(
-                    identity,
-                    make_account_remote_config(
-                        vec![giftwrap_filter(pk)],
-                        RelayRoutingPreference::RequireDedicated,
-                    ),
-                );
+                let _ = scoped_subs.ensure_sub(identity, make_giftwrap_remote_config(pk));
             }
         };
     }
@@ -569,11 +619,16 @@ fn make_account_remote_config(
     filters: Vec<Filter>,
     routing_preference: RelayRoutingPreference,
 ) -> SubConfig {
-    SubConfig {
-        relays: RelaySelection::AccountsRead,
-        filters,
-        routing_preference,
-    }
+    SubConfig::live(filters)
+        .routing_preference(routing_preference)
+        .build()
+}
+
+fn make_giftwrap_remote_config(pk: &Pubkey) -> SubConfig {
+    SubConfig::live(vec![giftwrap_live_filter(pk)])
+        .full_history(FullHistoryConfig::new(vec![giftwrap_history_filter(pk)]))
+        .routing_preference(RelayRoutingPreference::RequireDedicated)
+        .build()
 }
 struct AccountNdbSubs {
     relay_ndb: Subscription,
@@ -612,8 +667,10 @@ impl AccountNdbSubs {
 mod tests {
     use super::*;
     use crate::{
+        construct_nip65_relays_note,
         test_utils::{live_id_with_selected_for_test, remote_for_test},
-        EguiWakeup, ScopedSubEoseStatus, ScopedSubLiveEoseStatus, ScopedSubsState, FALLBACK_PUBKEY,
+        EguiWakeup, RelaySpec, ScopedSubEoseStatus, ScopedSubLiveEoseStatus, ScopedSubsState,
+        FALLBACK_PUBKEY,
     };
     use enostr::{FullKeypair, OutboxPool, RelayUrlPkgs};
     use nostr_relay_builder::{LocalRelay, RelayBuilder};
@@ -683,6 +740,34 @@ mod tests {
             .collect()
     }
 
+    #[tokio::test]
+    async fn account_remote_sub_configs_set_full_history_for_giftwrap() {
+        let filter = Filter::new().kinds(vec![0]).limit(1).build();
+
+        let config = make_account_remote_config(vec![filter], RelayRoutingPreference::default());
+        assert!(
+            config.full_history_config().is_none(),
+            "non-giftwrap account remote sub should stay live-only"
+        );
+
+        let pk = Pubkey::new([9; 32]);
+        let config = make_giftwrap_remote_config(&pk);
+        let live_filters = config.live_filters();
+        let live_json = live_filters[0].json().expect("live filter json");
+        assert!(
+            live_json.contains("\"limit\":500"),
+            "giftwrap live filter should keep its transport limit"
+        );
+        let full_history = config.full_history_config().expect("giftwrap full history");
+        let history_json = full_history.filters()[0]
+            .json()
+            .expect("history filter json");
+        assert!(
+            !history_json.contains("\"limit\""),
+            "giftwrap history filter should be constructed without the live filter transport limit"
+        );
+    }
+
     async fn pump_pool_until<F>(
         pool: &mut OutboxPool,
         max_attempts: usize,
@@ -692,7 +777,7 @@ mod tests {
         F: FnMut(&mut OutboxPool) -> bool,
     {
         for _ in 0..max_attempts {
-            pool.try_recv(10, |_| {});
+            pool.try_recv(|_| {});
             if predicate(pool) {
                 return true;
             }
@@ -771,8 +856,8 @@ mod tests {
         compaction_id
     }
 
-    #[test]
-    fn update_initializes_selected_account_remote_subs_with_expected_routing() {
+    #[tokio::test]
+    async fn update_initializes_selected_account_remote_subs_with_expected_routing() {
         let mut h = AccountRemoteHarness::new();
         {
             let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
@@ -796,7 +881,7 @@ mod tests {
             .expect("contacts list live id");
         let giftwrap_id = h.live_id_for(selected, giftwrap).expect("giftwrap live id");
 
-        let expected_giftwrap = vec![giftwrap_filter(&selected)];
+        let expected_giftwrap = vec![giftwrap_live_filter(&selected)];
         let stored_giftwrap = h.pool.filters(&giftwrap_id).expect("giftwrap filters");
         assert_eq!(
             filter_jsons(stored_giftwrap),
@@ -805,8 +890,53 @@ mod tests {
         );
     }
 
-    #[test]
-    fn account_switch_replaces_remote_subs_and_restores_them_on_switch_back() {
+    /// Startup account selection should only flip local account state and defer
+    /// remote scoped-sub initialization until the first real update pass.
+    #[tokio::test]
+    async fn startup_selection_defers_remote_sub_initialization_until_first_update() {
+        let mut h = AccountRemoteHarness::new();
+        let selected_keypair = FullKeypair::generate().to_keypair();
+        let selected = selected_keypair.pubkey;
+        let add_response = h
+            .accounts
+            .add_account(selected_keypair)
+            .expect("add selected account");
+        assert_eq!(add_response.switch_to, selected);
+
+        {
+            let txn = Transaction::new(&h.ndb).expect("txn");
+            h.accounts
+                .select_account_for_startup(&selected, &mut h.ndb, &txn);
+        }
+
+        let relay_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::RelayList);
+        let mute_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::MuteList);
+        let contacts_list = AccountRemoteHarness::identity_for(AccountRemoteSubKind::ContactsList);
+        let giftwrap = giftwrap_sub_identity();
+
+        assert!(!h.accounts.scoped_remote_initialized);
+        assert!(h.live_id_for(selected, relay_list).is_none());
+        assert!(h.live_id_for(selected, mute_list).is_none());
+        assert!(h.live_id_for(selected, contacts_list).is_none());
+        assert!(h.live_id_for(selected, giftwrap).is_none());
+
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        assert!(h.accounts.scoped_remote_initialized);
+        let giftwrap_id = h.live_id_for(selected, giftwrap).expect("giftwrap live id");
+        let stored_giftwrap = h.pool.filters(&giftwrap_id).expect("giftwrap filters");
+        assert_eq!(
+            filter_jsons(stored_giftwrap),
+            filter_jsons(&[giftwrap_live_filter(&selected)]),
+            "first update after startup selection should initialize remote subs for the selected account",
+        );
+    }
+
+    #[tokio::test]
+    async fn account_switch_replaces_remote_subs_and_restores_them_on_switch_back() {
         let mut h = AccountRemoteHarness::new();
         {
             let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
@@ -854,7 +984,7 @@ mod tests {
             .expect("giftwrap filters for B");
         assert_eq!(
             filter_jsons(stored_giftwrap_b),
-            filter_jsons(&[giftwrap_filter(&account_b_pk)]),
+            filter_jsons(&[giftwrap_live_filter(&account_b_pk)]),
             "giftwrap live sub should retarget when the selected account changes"
         );
 
@@ -882,13 +1012,13 @@ mod tests {
                     .filters(&restored_giftwrap_a_id)
                     .expect("giftwrap filters for A")
             ),
-            filter_jsons(&[giftwrap_filter(&account_a)]),
+            filter_jsons(&[giftwrap_live_filter(&account_a)]),
             "switching back should restore the original account's giftwrap target"
         );
     }
 
-    #[test]
-    fn selected_account_relay_action_retargets_existing_accountsread_remote_subs() {
+    #[tokio::test]
+    async fn selected_account_relay_action_retargets_existing_accountsread_remote_subs() {
         let mut h = AccountRemoteHarness::new();
         {
             let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
@@ -936,6 +1066,150 @@ mod tests {
                 && h.pool.filters(&mute_list_id).is_some()
                 && h.pool.filters(&contacts_list_id).is_some(),
             "retargeting should keep the existing live account-read subs active"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_skips_full_history_retarget_when_kind_10002_keeps_same_read_relays() {
+        let mut h = AccountRemoteHarness::new();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let selected_keypair = FullKeypair::generate().to_keypair();
+        let selected = selected_keypair.pubkey;
+        let add_response = h
+            .accounts
+            .add_account(selected_keypair)
+            .expect("add selected account");
+        assert_eq!(add_response.switch_to, selected);
+        {
+            let txn = Transaction::new(&h.ndb).expect("txn");
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .select_account(&selected, &mut h.ndb, &txn, &mut remote);
+        }
+
+        let identity = ScopedSubIdentity::global(
+            SubOwnerKey::new("tests/accounts/noop-relay-refresh"),
+            SubKey::new(("full-history", "relay-refresh", 1u8)),
+        );
+        let filter = vec![Filter::new().kinds(vec![1]).limit(10).build()];
+        let config = SubConfig::live(filter.clone())
+            .full_history(FullHistoryConfig::new(filter))
+            .build();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            let mut scoped_subs = remote.scoped_subs(&h.accounts);
+            let _ = scoped_subs.ensure_sub(identity, config);
+        };
+        let live_id = h
+            .live_id_for(selected, identity)
+            .expect("full-history live id");
+
+        let selected_secret = h
+            .accounts
+            .selected_filled()
+            .expect("selected full keypair")
+            .secret_key
+            .secret_bytes();
+        let relay_a = RelaySpec::new(
+            NormRelayUrl::new("wss://relay-read.example.com").expect("read relay"),
+            false,
+            false,
+        );
+        let relay_a_read = RelaySpec::new(
+            NormRelayUrl::new("wss://relay-read.example.com").expect("read relay"),
+            true,
+            false,
+        );
+        let relay_b = RelaySpec::new(
+            NormRelayUrl::new("wss://relay-write.example.com").expect("write relay"),
+            false,
+            true,
+        );
+
+        let note_one = construct_nip65_relays_note([&relay_a, &relay_b])
+            .created_at(1_700_000_100)
+            .sign(&selected_secret)
+            .build()
+            .expect("first relay-list note");
+        let note_one_json = note_one.json().expect("first relay-list note json");
+        h.ndb
+            .process_client_event(&note_one_json)
+            .expect("ingest first relay-list note");
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let note_two = construct_nip65_relays_note([&relay_a_read, &relay_b])
+            .created_at(1_700_000_101)
+            .sign(&selected_secret)
+            .build()
+            .expect("second relay-list note");
+        let note_two_json = note_two.json().expect("second relay-list note json");
+        h.ndb
+            .process_client_event(&note_two_json)
+            .expect("ingest second relay-list note");
+
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        assert_eq!(
+            h.live_id_for(selected, identity),
+            Some(live_id),
+            "same effective read-relay set should keep the existing live sub"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_relay_action_add_skips_full_history_retarget() {
+        let mut h = AccountRemoteHarness::new();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts.update(&mut h.ndb, &mut remote);
+        }
+
+        let selected = *h.accounts.selected_account_pubkey();
+        let identity = ScopedSubIdentity::global(
+            SubOwnerKey::new("tests/accounts/duplicate-relay-add"),
+            SubKey::new(("full-history", "relay-action", 2u8)),
+        );
+        let filter = vec![Filter::new().kinds(vec![1]).limit(10).build()];
+        let config = SubConfig::live(filter.clone())
+            .full_history(FullHistoryConfig::new(filter))
+            .build();
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            let mut scoped_subs = remote.scoped_subs(&h.accounts);
+            let _ = scoped_subs.ensure_sub(identity, config);
+        };
+        let live_id = h
+            .live_id_for(selected, identity)
+            .expect("full-history live id");
+
+        let new_relay =
+            NormRelayUrl::new("wss://relay-duplicate-add.example.com").expect("relay url");
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .process_relay_action(&mut remote, RelayAction::Add(new_relay.to_string()));
+        }
+
+        {
+            let mut remote = remote_for_test(&mut h.pool, &mut h.scoped_sub_state);
+            h.accounts
+                .process_relay_action(&mut remote, RelayAction::Add(new_relay.to_string()));
+        }
+
+        assert_eq!(
+            h.live_id_for(selected, identity),
+            Some(live_id),
+            "duplicate relay add should keep the existing live sub"
         );
     }
 

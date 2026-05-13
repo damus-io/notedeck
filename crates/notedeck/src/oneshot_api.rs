@@ -55,8 +55,11 @@ mod tests {
 
     /// Verifies oneshot requests are routed to the selected account's read relays
     /// and the expected filters are staged in outbox.
-    #[test]
-    fn oneshot_uses_selected_account_read_relays() {
+    ///
+    /// Dropping `outbox` can build `WebsocketConn` through relay coordination;
+    /// this needs a Tokio runtime when the ewebsock Tokio backend is used.
+    #[tokio::test]
+    async fn oneshot_uses_selected_account_read_relays() {
         let (_tmp, accounts) = test_accounts_with_forced_relay("wss://relay-read.example.com");
         let expected_relays = accounts.selected_account_read_relays();
         assert!(!expected_relays.is_empty());

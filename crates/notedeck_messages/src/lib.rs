@@ -30,10 +30,10 @@ const MAX_LOADER_MSGS_PER_FRAME: usize = 8;
 /// Messages application state and background loaders.
 pub struct MessagesApp {
     messages: ConversationsCtx,
-    states: ConversationStates,
+    states: ConversationStatesByAccount,
     router: Router<Route>,
     loader: MessagesLoader,
-    inflight_messages: HashSet<cache::ConversationId>,
+    inflight_messages: HashSet<ConversationLoadKey>,
     giftwrap_workers: Vec<thread::JoinHandle<()>>,
 }
 
@@ -41,7 +41,7 @@ impl MessagesApp {
     pub fn new() -> Self {
         Self {
             messages: ConversationsCtx::default(),
-            states: ConversationStates::default(),
+            states: ConversationStatesByAccount::default(),
             router: Router::new(vec![Route::ConvoList]),
             loader: MessagesLoader::new(),
             inflight_messages: HashSet::new(),
@@ -65,6 +65,7 @@ impl Drop for MessagesApp {
 impl App for MessagesApp {
     #[profiling::function]
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        let is_narrow = is_narrow(egui_ctx);
         let Some(cache) = self.messages.get_current_mut(ctx.accounts) else {
             return;
         };
@@ -79,7 +80,7 @@ impl App for MessagesApp {
                 initialize(
                     ctx,
                     cache,
-                    is_narrow(egui_ctx),
+                    is_narrow,
                     &self.loader,
                     &mut self.giftwrap_workers,
                 );
@@ -99,11 +100,20 @@ impl App for MessagesApp {
 
         handle_loader_messages(
             ctx,
-            cache,
+            &mut self.messages,
             &self.loader,
             &mut self.inflight_messages,
-            is_narrow(egui_ctx),
         );
+
+        if let Some(cache) = self.messages.get_current_mut(ctx.accounts) {
+            ensure_selected_startup(
+                ctx,
+                cache,
+                &self.loader,
+                &mut self.inflight_messages,
+                is_narrow,
+            );
+        }
     }
 
     #[profiling::function]
@@ -114,6 +124,7 @@ impl App for MessagesApp {
         };
 
         let selected_pubkey = ctx.accounts.selected_account_pubkey();
+        let states = self.states.for_account_mut(selected_pubkey);
 
         let contacts_state = ctx
             .accounts
@@ -123,7 +134,7 @@ impl App for MessagesApp {
             .get_state();
         let resp = messages_ui(
             cache,
-            &mut self.states,
+            states,
             ctx.media_jobs.sender(),
             ctx.ndb,
             selected_pubkey,
@@ -135,7 +146,7 @@ impl App for MessagesApp {
             ctx.i18n,
             ctx.clipboard,
         );
-        let action = process_messages_ui_response(
+        let processed = process_messages_ui_response(
             resp,
             ctx,
             cache,
@@ -144,9 +155,50 @@ impl App for MessagesApp {
             &self.loader,
             &mut self.inflight_messages,
         );
+        if let Some(send) = processed.send_message {
+            let result =
+                nip17::send_conversation_message(send.conversation_id, send.content, cache, ctx);
+            if let nip17::SendMessageResult::NotSent { content } = result {
+                restore_unsent_message(states, send.conversation_id, content);
+            }
+        }
 
-        AppResponse::action(action)
+        AppResponse::action(processed.app_action)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ConversationLoadKey {
+    account_pubkey: Pubkey,
+    conversation_id: cache::ConversationId,
+}
+
+impl ConversationLoadKey {
+    pub(crate) fn new(account_pubkey: Pubkey, conversation_id: cache::ConversationId) -> Self {
+        Self {
+            account_pubkey,
+            conversation_id,
+        }
+    }
+}
+
+#[derive(Default)]
+struct ConversationStatesByAccount {
+    states: HashMap<Pubkey, ConversationStates>,
+}
+
+impl ConversationStatesByAccount {
+    fn for_account_mut(&mut self, account: &Pubkey) -> &mut ConversationStates {
+        self.states.entry(*account).or_default()
+    }
+}
+
+fn restore_unsent_message(
+    states: &mut ConversationStates,
+    conversation_id: cache::ConversationId,
+    content: String,
+) {
+    states.get_or_insert(conversation_id).composer = content;
 }
 
 /// Start the conversation list loader and subscription for the active account.
@@ -162,6 +214,9 @@ fn initialize(
         "initializing Messages conversation list for selected_account={} narrow={is_narrow}",
         ctx.accounts.selected_account_pubkey()
     );
+    // Reprocess only wrappers that were ingested before the account nsec was
+    // available. Once `Ndb` has the key, new kind 1059 wrappers are unwrapped
+    // by ingestion, so do not add a live giftwrap polling path here.
     let giftwrap_ndb = ctx.ndb.clone();
     let r = std::thread::Builder::new()
         .name("process_giftwraps".into())
@@ -253,10 +308,9 @@ fn update_initialized(ctx: &mut AppContext, cache: &mut ConversationCache, sub: 
 #[profiling::function]
 fn handle_loader_messages(
     ctx: &mut AppContext<'_>,
-    cache: &mut ConversationCache,
+    messages: &mut ConversationsCtx,
     loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<cache::ConversationId>,
-    is_narrow: bool,
+    inflight_messages: &mut HashSet<ConversationLoadKey>,
 ) {
     let mut handled = 0;
     while handled < MAX_LOADER_MSGS_PER_FRAME {
@@ -266,73 +320,107 @@ fn handle_loader_messages(
         handled += 1;
 
         match msg {
-            LoaderMsg::ConversationBatch(keys) => {
-                ingest_note_keys(ctx, cache, &keys);
-            }
-            LoaderMsg::ConversationFinished => {
-                let current =
-                    std::mem::replace(&mut cache.state, ConversationListState::Initializing);
-                cache.state = match current {
-                    ConversationListState::Loading { subscription } => {
-                        ConversationListState::Initialized(subscription)
-                    }
-                    other => other,
+            LoaderMsg::ConversationBatch {
+                account_pubkey,
+                keys,
+            } => {
+                let Some(cache) = messages.get_mut(&account_pubkey) else {
+                    continue;
                 };
-
-                let known_participants =
-                    startup_prefetch_participants(ctx.ndb, cache, ctx.accounts);
-                relay_prefetch::ensure_participant_prefetch(
-                    &mut ctx.remote,
-                    ctx.accounts,
-                    &known_participants,
-                );
-
-                if cache.active.is_none() && !is_narrow {
-                    if let Some(first) = cache.first_convo_id() {
-                        open_conversation_with_prefetch(
-                            &mut ctx.remote,
-                            ctx.accounts,
-                            cache,
-                            first,
-                        );
-                        request_conversation_messages(
-                            cache,
-                            ctx.accounts.selected_account_pubkey(),
-                            first,
-                            loader,
-                            inflight_messages,
-                        );
-                    }
-                }
-            }
-            LoaderMsg::ConversationMessagesBatch { keys, .. } => {
                 ingest_note_keys(ctx, cache, &keys);
             }
-            LoaderMsg::ConversationMessagesFinished { conversation_id } => {
-                inflight_messages.remove(&conversation_id);
+            LoaderMsg::ConversationFinished { account_pubkey } => {
+                let Some(cache) = messages.get_mut(&account_pubkey) else {
+                    continue;
+                };
+                finish_conversation_list_loading(cache);
             }
-            LoaderMsg::Failed(err) => {
-                tracing::error!("messages loader error: {err}");
+            LoaderMsg::ConversationMessagesBatch {
+                account_pubkey,
+                keys,
+                ..
+            } => {
+                let Some(cache) = messages.get_mut(&account_pubkey) else {
+                    continue;
+                };
+                ingest_note_keys(ctx, cache, &keys);
+            }
+            LoaderMsg::ConversationMessagesFinished {
+                account_pubkey,
+                conversation_id,
+            } => {
+                inflight_messages
+                    .remove(&ConversationLoadKey::new(account_pubkey, conversation_id));
+            }
+            LoaderMsg::Failed {
+                account_pubkey,
+                conversation_id,
+                error,
+            } => {
+                if let Some(conversation_id) = conversation_id {
+                    inflight_messages
+                        .remove(&ConversationLoadKey::new(account_pubkey, conversation_id));
+                }
+                tracing::error!("messages loader error for account {account_pubkey}: {error}");
             }
         }
     }
+}
+
+fn finish_conversation_list_loading(cache: &mut ConversationCache) {
+    let current = std::mem::replace(&mut cache.state, ConversationListState::Initializing);
+    cache.state = match current {
+        ConversationListState::Loading { subscription } => {
+            cache.mark_selected_startup_pending();
+            ConversationListState::Initialized(subscription)
+        }
+        other => other,
+    };
+}
+
+fn ensure_selected_startup(
+    ctx: &mut AppContext<'_>,
+    cache: &mut ConversationCache,
+    loader: &MessagesLoader,
+    inflight_messages: &mut HashSet<ConversationLoadKey>,
+    is_narrow: bool,
+) {
+    if !cache.selected_startup_pending() {
+        return;
+    }
+
+    if !matches!(&cache.state, ConversationListState::Initialized(_)) {
+        return;
+    }
+
+    let account_pubkey = *ctx.accounts.selected_account_pubkey();
+    let known_participants = startup_prefetch_participants(ctx.ndb, cache, &account_pubkey);
+    relay_prefetch::ensure_participant_prefetch(&mut ctx.remote, ctx.accounts, &known_participants);
+
+    if cache.active.is_none() && !is_narrow {
+        if let Some(first) = cache.first_convo_id() {
+            open_conversation_with_prefetch(&mut ctx.remote, ctx.accounts, cache, first);
+            request_conversation_messages(cache, &account_pubkey, first, loader, inflight_messages);
+        }
+    }
+
+    cache.mark_selected_startup_complete();
 }
 
 /// Collects known participants for startup relay-list prefetch from cache and local NDB state.
 fn startup_prefetch_participants(
     ndb: &Ndb,
     cache: &ConversationCache,
-    accounts: &Accounts,
+    account_pubkey: &Pubkey,
 ) -> Vec<Pubkey> {
-    let selected_account = accounts.selected_account_pubkey();
     let mut participants = HashSet::new();
-    participants.extend(cache.known_participants_except(selected_account));
+    participants.extend(cache.known_participants_except(account_pubkey));
 
     let txn = Transaction::new(ndb).expect("txn");
     participants.extend(known_participant_dm_relay_list_authors(
         ndb,
         &txn,
-        selected_account,
+        account_pubkey,
     ));
 
     participants.into_iter().collect()
@@ -363,9 +451,10 @@ fn request_conversation_messages(
     me: &Pubkey,
     conversation_id: cache::ConversationId,
     loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<cache::ConversationId>,
+    inflight_messages: &mut HashSet<ConversationLoadKey>,
 ) {
-    if inflight_messages.contains(&conversation_id) {
+    let load_key = ConversationLoadKey::new(*me, conversation_id);
+    if inflight_messages.contains(&load_key) {
         return;
     }
 
@@ -373,7 +462,7 @@ fn request_conversation_messages(
         return;
     };
 
-    inflight_messages.insert(conversation_id);
+    inflight_messages.insert(load_key);
     loader.load_conversation_messages(
         conversation_id,
         conversation.metadata.participants.clone(),
@@ -452,5 +541,87 @@ impl ConversationsCtx {
                 .or_insert_with(|| (*current, ConversationCache::new()))
                 .1,
         )
+    }
+
+    /// Get an existing conversation cache for an account-addressed async result.
+    pub fn get_mut(&mut self, account: &Pubkey) -> Option<&mut ConversationCache> {
+        self.convos_per_acc.get_mut(account)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsent_message_restore_is_scoped_by_account() {
+        let account_a = Pubkey::new([0xA1; 32]);
+        let account_b = Pubkey::new([0xB2; 32]);
+        let conversation_id: cache::ConversationId = 0;
+        let mut states = ConversationStatesByAccount::default();
+
+        restore_unsent_message(
+            states.for_account_mut(&account_a),
+            conversation_id,
+            "account a draft".to_owned(),
+        );
+
+        assert_eq!(
+            states
+                .for_account_mut(&account_a)
+                .get_or_insert(conversation_id)
+                .composer,
+            "account a draft"
+        );
+        assert!(
+            states
+                .for_account_mut(&account_b)
+                .get_or_insert(conversation_id)
+                .composer
+                .is_empty(),
+            "same ConversationId in a different account must not inherit a restored draft"
+        );
+    }
+
+    #[test]
+    fn inflight_conversation_load_is_scoped_by_account() {
+        let account_a = Pubkey::new([0xA1; 32]);
+        let account_b = Pubkey::new([0xB2; 32]);
+        let conversation_id: cache::ConversationId = 0;
+        let mut inflight = HashSet::new();
+
+        inflight.insert(ConversationLoadKey::new(account_a, conversation_id));
+
+        assert!(inflight.contains(&ConversationLoadKey::new(account_a, conversation_id)));
+        assert!(!inflight.contains(&ConversationLoadKey::new(account_b, conversation_id)));
+    }
+
+    #[test]
+    fn loader_finished_defers_selected_account_startup() {
+        let mut cache = ConversationCache::new();
+        cache.state = ConversationListState::Loading { subscription: None };
+
+        finish_conversation_list_loading(&mut cache);
+
+        assert!(matches!(
+            &cache.state,
+            ConversationListState::Initialized(None)
+        ));
+        assert!(cache.selected_startup_pending());
+    }
+
+    #[test]
+    fn loader_finished_does_not_requeue_selected_startup_for_stale_finish() {
+        let mut cache = ConversationCache::new();
+        cache.state = ConversationListState::Initialized(None);
+        cache.mark_selected_startup_complete();
+
+        finish_conversation_list_loading(&mut cache);
+
+        assert!(matches!(
+            &cache.state,
+            ConversationListState::Initialized(None)
+        ));
+        assert!(!cache.selected_startup_pending());
     }
 }

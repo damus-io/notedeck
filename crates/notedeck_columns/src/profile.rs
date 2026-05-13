@@ -267,12 +267,13 @@ pub fn send_new_contact_list(
         pks_to_follow.push(*kp.pubkey);
     }
 
-    let builder = construct_new_contact_list(pks_to_follow);
+    let builder = construct_contact_list_note(pks_to_follow);
 
     publish_note_builder(builder, ndb, publisher, kp);
 }
 
-fn construct_new_contact_list<'a>(pks: Vec<Pubkey>) -> NoteBuilder<'a> {
+/// Builds a kind-3 contact-list note for the provided pubkeys.
+fn construct_contact_list_note<'a>(pks: Vec<Pubkey>) -> NoteBuilder<'a> {
     let mut builder = NoteBuilder::new()
         .content("")
         .kind(3)
@@ -308,4 +309,30 @@ fn construct_default_dms_relay_list<'a>() -> NoteBuilder<'a> {
 
 fn default_dms_relays() -> Vec<&'static str> {
     vec!["wss://relay.damus.io", "wss://nos.lol"]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::construct_contact_list_note;
+    use enostr::FullKeypair;
+
+    #[test]
+    fn construct_contact_list_note_emits_expected_tags() {
+        let owner = FullKeypair::generate();
+        let first = FullKeypair::generate();
+        let second = FullKeypair::generate();
+
+        let note = construct_contact_list_note(vec![first.pubkey, second.pubkey])
+            .sign(&owner.secret_key.secret_bytes())
+            .build()
+            .expect("contact list note");
+
+        assert_eq!(note.kind(), 3);
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("p") && tag.get_id(1) == Some(first.pubkey.bytes())
+        }));
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("p") && tag.get_id(1) == Some(second.pubkey.bytes())
+        }));
+    }
 }

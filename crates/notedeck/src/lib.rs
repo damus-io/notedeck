@@ -30,10 +30,10 @@ mod persist;
 pub mod platform;
 pub mod profile;
 mod publish;
-pub mod relay_debug;
 mod relay_limits;
 pub mod relayspec;
 mod remote_api;
+mod remote_data;
 mod result;
 mod route;
 mod scoped_sub_api;
@@ -65,12 +65,13 @@ mod test_utils;
 
 pub use account::accounts::{giftwrap_sub_identity, AccountData, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
-pub use account::relay::RelayAction;
+pub use account::relay::{construct_nip65_relays_note, RelayAction};
 pub use account::FALLBACK_PUBKEY;
 pub use app::{App, AppAction, AppResponse, Notedeck};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};
+pub use enostr::FullHistoryConfig;
 pub use enostr::RelayRoutingPreference;
 use enostr::{OutboxSessionHandler, Wakeup};
 pub use error::{show_one_error_message, Error, FilterError, ZapError};
@@ -95,10 +96,10 @@ pub use nav::DragResponse;
 pub use nip05::{Nip05Cache, Nip05Status};
 pub use nip51_set::{create_nip51_set, Nip51Set, Nip51SetCache};
 pub use note::{
-    builder_from_note, get_p_tags, send_mute_event, send_people_list_event, send_report_event,
-    send_unmute_event, BroadcastContext, ContextSelection, NoteAction, NoteContext,
-    NoteContextSelection, NoteRef, ReportTarget, ReportType, RootIdError, RootNoteId,
-    RootNoteIdBuf, ScrollInfo, ZapAction,
+    builder_from_note, construct_people_list_note, get_p_tags, send_mute_event,
+    send_people_list_event, send_report_event, send_unmute_event, BroadcastContext,
+    ContextSelection, NoteAction, NoteContext, NoteContextSelection, NoteRef, ReportTarget,
+    ReportType, RootIdError, RootNoteId, RootNoteIdBuf, ScrollInfo, ZapAction,
 };
 pub use notecache::{CachedNote, NoteCache};
 pub use oneshot_api::OneshotApi;
@@ -106,7 +107,6 @@ pub use options::NotedeckOptions;
 pub use persist::*;
 pub use profile::*;
 pub use publish::{AccountsPublishApi, ExplicitPublishApi, PublishApi, RelayType};
-pub use relay_debug::RelayDebugView;
 pub use relayspec::RelaySpec;
 pub use remote_api::{RelayInspectApi, RelayInspectEntry, RemoteApi};
 pub use result::Result;

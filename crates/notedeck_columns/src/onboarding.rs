@@ -1,11 +1,11 @@
 use std::{cell::RefCell, rc::Rc};
 
 use egui_virtual_list::VirtualList;
-use enostr::{Pubkey, RelayRoutingPreference};
+use enostr::Pubkey;
 use nostrdb::{Filter, Ndb, NoteKey, Transaction};
 use notedeck::{
-    create_nip51_set, filter::default_limit, Nip51SetCache, RelaySelection, ScopedSubApi,
-    ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey, UnknownIds,
+    create_nip51_set, filter::default_limit, Nip51SetCache, ScopedSubApi, ScopedSubIdentity,
+    SubConfig, SubKey, SubOwnerKey, UnknownIds,
 };
 
 #[derive(Debug)]
@@ -77,11 +77,7 @@ impl Onboarding {
                     let follow_filter = follow_packs_filter(pks);
                     let sub_key = follow_packs_sub_key();
                     let identity = ScopedSubIdentity::account(owner, sub_key);
-                    let sub_config = SubConfig {
-                        relays: RelaySelection::AccountsRead,
-                        filters: vec![follow_filter.clone()],
-                        routing_preference: RelayRoutingPreference::default(),
-                    };
+                    let sub_config = SubConfig::live(vec![follow_filter.clone()]).build();
                     let _ = scoped_subs.ensure_sub(identity, sub_config);
 
                     Nip51SetCache::new_local(ndb, &txn, unknown_ids, vec![follow_filter])

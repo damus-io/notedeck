@@ -101,7 +101,7 @@ NoteDeck Columns manages Nostr subscriptions and relay connections to provide re
 
 - `MultiSubscriber`: Handles subscriptions to multiple relays
 - `Subscriptions`: Tracks application-wide subscriptions
-- `RelayPool`: Manages relay connections
+- `OutboxPool`: Manages relay connections and remote subscriptions
 
 ### Data Flow
 

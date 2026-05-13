@@ -1,9 +1,9 @@
 use egui_nav::ReturnType;
-use enostr::{Filter, NoteId, Pubkey, RelayRoutingPreference};
+use enostr::{Filter, NoteId, Pubkey};
 use hashbrown::HashMap;
 use nostrdb::{Ndb, Subscription};
 use notedeck::{
-    Accounts, RelaySelection, ScopedSubApi, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
+    Accounts, FullHistoryConfig, ScopedSubApi, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
 };
 
 use crate::scoped_sub_owner_keys::thread_scope_owner_key;
@@ -67,6 +67,7 @@ impl ThreadSubs {
         local_sub_filter: Vec<Filter>,
         new_scope: bool,
         remote_sub_filter: Vec<Filter>,
+        remote_history_filter: Vec<Filter>,
     ) {
         let account_pk = scoped_subs.selected_account_pubkey();
         let account_subs = self.by_account.entry(account_pk).or_default();
@@ -80,6 +81,7 @@ impl ThreadSubs {
                 id,
                 local_sub_filter,
                 remote_sub_filter,
+                remote_history_filter,
                 cur_scopes,
             )
         } else {
@@ -281,17 +283,20 @@ fn sub_remote(
     owner: SubOwnerKey,
     key: SubKey,
     filter: Vec<Filter>,
+    history_filter: Vec<Filter>,
     id: impl std::fmt::Debug,
 ) {
     tracing::debug!("Remote subscribe for {:?}", id);
 
     let identity = ScopedSubIdentity::account(owner, key);
-    let config = SubConfig {
-        relays: RelaySelection::AccountsRead,
-        filters: filter,
-        routing_preference: RelayRoutingPreference::default(),
-    };
+    let config = thread_remote_sub_config(filter, history_filter);
     let _ = scoped_subs.ensure_sub(identity, config);
+}
+
+fn thread_remote_sub_config(filter: Vec<Filter>, history_filter: Vec<Filter>) -> SubConfig {
+    SubConfig::live(filter)
+        .full_history(FullHistoryConfig::new(history_filter))
+        .build()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -303,6 +308,7 @@ fn local_sub_new_scope(
     id: &ThreadSelection,
     local_sub_filter: Vec<Filter>,
     remote_sub_filter: Vec<Filter>,
+    remote_history_filter: Vec<Filter>,
     scopes: &mut Vec<Scope>,
 ) -> bool {
     let root_id = id.root_id.to_note_id();
@@ -316,6 +322,7 @@ fn local_sub_new_scope(
         owner,
         thread_remote_sub_key(&root_id),
         remote_sub_filter,
+        remote_history_filter,
         id,
     );
 
@@ -361,8 +368,7 @@ mod tests {
                 &ui_ctx,
                 tmp.path(),
                 &["notedeck".to_owned(), "--testrunner".to_owned()],
-            )
-            .notedeck;
+            );
 
             Self {
                 _tmp: tmp,
@@ -389,8 +395,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn open_thread_remote_sub_restores_after_account_switch() {
+    // Opening a thread stages remote work through `OutboxSessionHandler`; drop
+    // can build `WebsocketConn`, so this needs a Tokio runtime with the ewebsock
+    // Tokio backend.
+    #[tokio::test]
+    async fn open_thread_remote_sub_restores_after_account_switch() {
         let mut h = ThreadHostHarness::new();
         let selection = thread_selection(0x33);
         let root_id = selection.root_id.to_note_id();

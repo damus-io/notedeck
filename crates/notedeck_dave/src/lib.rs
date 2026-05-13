@@ -4,7 +4,6 @@ mod avatar;
 pub mod backend;
 pub(crate) mod collapse_state;
 pub mod config;
-pub mod events;
 pub mod file_update;
 mod focus_queue;
 pub(crate) mod git_status;
@@ -33,12 +32,12 @@ use backend::{
 };
 use chrono::{Duration, Local};
 use egui_wgpu::RenderState;
-use enostr::{KeypairUnowned, RelayPool};
+use enostr::{KeypairUnowned, NormRelayUrl, RelayId};
 use focus_queue::FocusQueue;
 use nostrdb::{Subscription, Transaction};
 use notedeck::{
     timed_serializer::TimedSerializer, ui::is_narrow, AppAction, AppContext, AppResponse, DataPath,
-    DataPathType,
+    DataPathType, FullHistoryConfig, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -71,11 +70,8 @@ pub use vec3::Vec3;
 
 /// Default relay URL used for PNS event publishing and subscription.
 const DEFAULT_PNS_RELAY: &str = "ws://relay.jb55.com/";
-
-/// Maximum consecutive negentropy sync rounds before stopping.
-/// Each round pulls up to the relay's limit (typically 500 events),
-/// so 20 rounds fetches up to ~10000 recent events.
-const MAX_NEG_SYNC_ROUNDS: u8 = 20;
+/// Dave PNS history window retained from the previous negentropy sync path.
+const PNS_HISTORY_WINDOW_SECS: u64 = 7 * 86400;
 
 /// Normalize a relay URL to always have a trailing slash.
 fn normalize_relay_url(url: String) -> String {
@@ -96,6 +92,152 @@ fn secret_key_bytes(keypair: KeypairUnowned<'_>) -> Option<[u8; 32]> {
             .try_into()
             .expect("secret key is 32 bytes")
     })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PnsRemoteSubState {
+    account: enostr::Pubkey,
+    relay_url: String,
+    pns_author: enostr::Pubkey,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PnsLocalState {
+    account: enostr::Pubkey,
+    has_secret_key: bool,
+}
+
+struct PnsLocalRuntime {
+    session_manager: SessionManager,
+    show_session_list: bool,
+    scene: AgentScene,
+    show_scene: bool,
+    interrupt_pending_since: Option<std::time::Instant>,
+    focus_queue: FocusQueue,
+    auto_steal: focus_queue::AutoStealState,
+    home_session: Option<SessionId>,
+    directory_picker: DirectoryPicker,
+    session_picker: SessionPicker,
+    active_overlay: DaveOverlay,
+    pending_archive_convert: Option<(std::path::PathBuf, SessionId, String)>,
+    pending_message_load: Option<PendingMessageLoad>,
+    pending_relay_events: Vec<session_events::BuiltEvent>,
+    session_state_sub: Option<nostrdb::Subscription>,
+    session_command_sub: Option<nostrdb::Subscription>,
+    processed_commands: std::collections::HashSet<String>,
+    pending_spawn_commands: Vec<PendingSpawnCommand>,
+    pending_perm_responses: Vec<PermissionPublish>,
+    pending_mode_commands: Vec<update::ModeCommandPublish>,
+    pending_deletions: Vec<DeletedSessionInfo>,
+    pending_worktree_removals: Vec<PendingWorktreeRemoval>,
+    pending_summaries: Vec<enostr::NoteId>,
+    run_processes: HashMap<SessionId, HashMap<String, std::process::Child>>,
+    running_session_ids: HashMap<SessionId, HashSet<String>>,
+    run_configs: HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>>,
+    run_config_sub: Option<nostrdb::Subscription>,
+    pending_reap: Vec<std::process::Child>,
+}
+
+/// Account-scoped ndb context for live Dave conversation subscriptions.
+#[derive(Clone, Copy)]
+pub struct ConversationSubscriptionScope<'a> {
+    pub(crate) account: enostr::Pubkey,
+    pub(crate) ndb: &'a nostrdb::Ndb,
+}
+
+impl<'a> ConversationSubscriptionScope<'a> {
+    /// Pair an ndb handle with the selected account author for Dave live
+    /// conversation subscriptions.
+    pub fn new(account: enostr::Pubkey, ndb: &'a nostrdb::Ndb) -> Self {
+        Self { account, ndb }
+    }
+}
+
+impl PnsLocalRuntime {
+    fn empty_agentic() -> Self {
+        Self {
+            session_manager: SessionManager::new(),
+            show_session_list: false,
+            scene: AgentScene::new(),
+            show_scene: false,
+            interrupt_pending_since: None,
+            focus_queue: FocusQueue::new(),
+            auto_steal: focus_queue::AutoStealState::Disabled,
+            home_session: None,
+            directory_picker: DirectoryPicker::new(),
+            session_picker: SessionPicker::new(),
+            active_overlay: DaveOverlay::DirectoryPicker,
+            pending_archive_convert: None,
+            pending_message_load: None,
+            pending_relay_events: Vec::new(),
+            session_state_sub: None,
+            session_command_sub: None,
+            processed_commands: std::collections::HashSet::new(),
+            pending_spawn_commands: Vec::new(),
+            pending_perm_responses: Vec::new(),
+            pending_mode_commands: Vec::new(),
+            pending_deletions: Vec::new(),
+            pending_worktree_removals: Vec::new(),
+            pending_summaries: Vec::new(),
+            run_processes: HashMap::new(),
+            running_session_ids: HashMap::new(),
+            run_configs: HashMap::new(),
+            run_config_sub: None,
+            pending_reap: Vec::new(),
+        }
+    }
+
+    fn kill_run_processes(&mut self) {
+        for procs in self.run_processes.values_mut() {
+            for child in procs.values_mut() {
+                kill_process_tree(child);
+            }
+        }
+        for child in &mut self.pending_reap {
+            kill_process_tree(child);
+        }
+    }
+}
+
+/// Stable owner key for Dave-owned scoped subscriptions.
+fn pns_remote_sub_owner_key() -> SubOwnerKey {
+    SubOwnerKey::new("dave/pns")
+}
+
+/// Stable identity for the selected account's PNS discovery subscription.
+fn pns_remote_sub_identity() -> ScopedSubIdentity {
+    ScopedSubIdentity::account(pns_remote_sub_owner_key(), SubKey::new("pns"))
+}
+
+fn pns_remote_sub_author(secret_key: &[u8; 32]) -> enostr::Pubkey {
+    enostr::pns::derive_pns_keys(secret_key).keypair.pubkey
+}
+
+/// Build the PNS discovery subscription for the shared outbox path.
+fn pns_remote_sub_config(
+    pns_relay_url: &str,
+    pns_author: enostr::Pubkey,
+    now: u64,
+) -> Result<(ScopedSubIdentity, SubConfig), enostr::Error> {
+    let relay = NormRelayUrl::new(pns_relay_url)?;
+    let since = now.saturating_sub(PNS_HISTORY_WINDOW_SECS);
+    let pns_filter = nostrdb::Filter::new()
+        .kinds([enostr::pns::PNS_KIND as u64])
+        .authors([pns_author.bytes()])
+        .limit(500)
+        .build();
+    let pns_history_filter = nostrdb::Filter::new()
+        .kinds([enostr::pns::PNS_KIND as u64])
+        .authors([pns_author.bytes()])
+        .since(since)
+        .build();
+    Ok((
+        pns_remote_sub_identity(),
+        SubConfig::live(vec![pns_filter])
+            .explicit_relay(relay)
+            .full_history(FullHistoryConfig::new(vec![pns_history_filter]))
+            .build(),
+    ))
 }
 
 /// A pending spawn command waiting to be built and published.
@@ -139,7 +281,6 @@ pub enum DaveOverlay {
 }
 
 pub struct Dave {
-    pool: RelayPool,
     /// AI interaction mode (Chat vs Agentic)
     ai_mode: AiMode,
     /// Manages multiple chat sessions
@@ -191,11 +332,6 @@ pub struct Dave {
     pending_message_load: Option<PendingMessageLoad>,
     /// Events waiting to be published to relays (queued from non-pool contexts).
     pending_relay_events: Vec<session_events::BuiltEvent>,
-    /// Whether sessions have been restored from ndb on startup.
-    sessions_restored: bool,
-    /// Remote relay subscription ID for PNS events (kind-1080).
-    /// Used to discover session state events from other devices.
-    pns_relay_sub: Option<String>,
     /// Local ndb subscription for kind-31988 session state events.
     /// Fires when new session states are unwrapped from PNS events.
     session_state_sub: Option<nostrdb::Subscription>,
@@ -221,12 +357,13 @@ pub struct Dave {
     hostname: String,
     /// PNS relay URL (configurable via DAVE_RELAY env or settings UI).
     pns_relay_url: String,
-    /// Negentropy sync state for PNS event reconciliation.
-    neg_sync: enostr::negentropy::NegentropySync,
-    /// How many consecutive negentropy sync rounds have completed.
-    /// Reset on startup/reconnect, incremented each time events are found.
-    /// Caps at [`MAX_NEG_SYNC_ROUNDS`] to avoid pulling the entire history.
-    neg_sync_round: u8,
+    /// Last selected account/relay/PNS-author tuple declared through scoped subscriptions.
+    pns_remote_sub_state: Option<PnsRemoteSubState>,
+    /// Last selected account used to populate Dave's local PNS-backed state.
+    pns_local_state: Option<PnsLocalState>,
+    /// Hidden selected-account runtime buckets. The active bucket lives in the
+    /// regular Dave fields so existing UI/update code keeps operating directly.
+    pns_local_runtimes: HashMap<enostr::Pubkey, PnsLocalRuntime>,
     /// Persists DaveSettings to dave_settings.json
     settings_serializer: TimedSerializer<DaveSettings>,
     /// Running app processes launched via the Run button.
@@ -246,7 +383,6 @@ pub struct Dave {
 
 use update::PermissionPublish;
 
-use crate::events::try_process_events_core;
 use crate::ui::keybindings::KeyAction;
 
 /// Kill a spawned process and all of its descendants.
@@ -311,6 +447,8 @@ struct DeletedSessionInfo {
 struct PendingMessageLoad {
     /// ndb subscription for kind-1988 events matching the session
     sub: Subscription,
+    /// Account that signed the archived conversation events.
+    account: enostr::Pubkey,
     /// Dave's internal session ID
     dave_session_id: SessionId,
     /// Claude session ID (the `d` tag value)
@@ -568,10 +706,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             AiMode::Agentic => (SessionManager::new(), DaveOverlay::DirectoryPicker),
         };
 
-        let pool = RelayPool::new();
-
         Dave {
-            pool,
             ai_mode,
             backends,
             available_backends,
@@ -597,8 +732,6 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_archive_convert: None,
             pending_message_load: None,
             pending_relay_events: Vec::new(),
-            sessions_restored: false,
-            pns_relay_sub: None,
             session_state_sub: None,
             session_command_sub: None,
             processed_commands: std::collections::HashSet::new(),
@@ -610,8 +743,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             pending_summaries: Vec::new(),
             hostname,
             pns_relay_url,
-            neg_sync: enostr::negentropy::NegentropySync::new(),
-            neg_sync_round: 0,
+            pns_remote_sub_state: None,
+            pns_local_state: None,
+            pns_local_runtimes: HashMap::new(),
             settings_serializer,
             run_processes: HashMap::new(),
             running_session_ids: HashMap::new(),
@@ -629,6 +763,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Apply new settings and persist to disk.
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
+        let previous_pns_relay_url = self.pns_relay_url.clone();
         self.model_config = ModelConfig::from_settings(&settings);
         self.pns_relay_url = normalize_relay_url(
             settings
@@ -636,6 +771,13 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 .clone()
                 .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string()),
         );
+        if previous_pns_relay_url != self.pns_relay_url {
+            tracing::info!(
+                previous_relay = %previous_pns_relay_url,
+                next_relay = %self.pns_relay_url,
+                "Dave PNS relay changed"
+            );
+        }
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
@@ -749,6 +891,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
 
         // Extract secret key once for live event generation
         let secret_key = secret_key_bytes(app_ctx.accounts.get_selected_account().keypair());
+        let account = *app_ctx.accounts.selected_account_pubkey();
 
         // Get all session IDs to process
         let session_ids = self.session_manager.session_ids();
@@ -856,7 +999,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         handle_tool_result(session, result);
                     }
                     DaveApiResponse::SessionInfo(info) => {
-                        handle_session_info(session, info, app_ctx.ndb);
+                        handle_session_info(
+                            session,
+                            info,
+                            ConversationSubscriptionScope::new(account, app_ctx.ndb),
+                        );
                     }
                     DaveApiResponse::SubagentSpawned(subagent) => {
                         handle_subagent_spawned(session, subagent);
@@ -1570,6 +1717,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         ndb: &nostrdb::Ndb,
     ) -> Vec<(String, BackendType, claude_agent_sdk_rs::PermissionMode)> {
         let mut mode_applies = Vec::new();
+        let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
+            return mode_applies;
+        };
         let session_ids = self.session_manager.session_ids();
         for session_id in session_ids {
             let Some(session) = self.session_manager.get_mut(session_id) else {
@@ -1600,6 +1750,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 let Ok(note) = ndb.get_note_by_key(&txn, key) else {
                     continue;
                 };
+                if *note.pubkey() != *account.bytes() {
+                    continue;
+                }
 
                 match session_events::get_tag_value(&note, "role") {
                     Some("permission_response") => {
@@ -1824,9 +1977,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
     }
 
-    /// Restore sessions from kind-31988 state events in ndb.
-    /// Called once on first `update()`.
-    fn restore_sessions_from_ndb(&mut self, ctx: &mut AppContext<'_>) {
+    /// Restore selected-account sessions from kind-31988 state events in ndb.
+    fn restore_sessions_from_ndb(&mut self, ctx: &mut AppContext<'_>, account: enostr::Pubkey) {
         let txn = match Transaction::new(ctx.ndb) {
             Ok(t) => t,
             Err(e) => {
@@ -1835,14 +1987,27 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             }
         };
 
-        let states = session_loader::load_session_states(ctx.ndb, &txn);
+        let states = session_loader::load_session_states_for_author(ctx.ndb, &txn, &account);
         if states.is_empty() {
             return;
         }
 
         tracing::info!("restoring {} sessions from ndb", states.len());
+        let mut existing_ids: std::collections::HashSet<String> = self
+            .session_manager
+            .iter()
+            .filter_map(|session| {
+                session
+                    .agentic
+                    .as_ref()
+                    .map(|agentic| agentic.event_session_id().to_string())
+            })
+            .collect();
 
         for state in &states {
+            if existing_ids.contains(&state.claude_session_id) {
+                continue;
+            }
             let backend = state
                 .backend
                 .as_deref()
@@ -1875,8 +2040,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             );
 
             // Load conversation history from kind-1988 events
-            let loaded =
-                session_loader::load_session_messages(ctx.ndb, &txn, &state.claude_session_id);
+            let loaded = session_loader::load_session_messages_for_author(
+                ctx.ndb,
+                &txn,
+                &account,
+                &state.claude_session_id,
+            );
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 tracing::info!(
@@ -1940,15 +2109,22 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         agentic.permission_mode = crate::session::permission_mode_from_str(pm);
                     }
 
-                    setup_conversation_subscription(agentic, &state.claude_session_id, ctx.ndb);
+                    setup_conversation_subscription(
+                        agentic,
+                        &state.claude_session_id,
+                        account,
+                        ctx.ndb,
+                    );
                 }
             }
+            existing_ids.insert(state.claude_session_id.clone());
         }
 
         self.session_manager.rebuild_cwd_groups();
 
         // Seed per-host recent paths from session state events
-        let host_paths = session_loader::load_recent_paths_by_host(ctx.ndb, &txn);
+        let host_paths =
+            session_loader::load_recent_paths_by_host_for_author(ctx.ndb, &txn, &account);
         self.directory_picker
             .seed_host_paths(host_paths, &self.hostname);
 
@@ -1962,6 +2138,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// events may appear. This detects them and creates sessions we don't already have.
     fn poll_session_state_events(&mut self, ctx: &mut AppContext<'_>) {
         let Some(sub) = self.session_state_sub else {
+            return;
+        };
+        let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return;
         };
 
@@ -2081,8 +2260,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             // Look up the latest revision of this session. PNS wrapping
             // causes old revisions (including pre-deletion) to arrive from
             // the relay. Only create a session if the latest revision is valid.
-            let Some(state) = session_loader::latest_valid_session(ctx.ndb, &txn, claude_sid)
-            else {
+            let Some(state) = session_loader::latest_valid_session_for_author(
+                ctx.ndb, &txn, &account, claude_sid,
+            ) else {
                 continue;
             };
 
@@ -2140,7 +2320,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             };
 
             // Load any conversation history that arrived with it
-            let loaded = session_loader::load_session_messages(ctx.ndb, &txn, claude_sid);
+            let loaded = session_loader::load_session_messages_for_author(
+                ctx.ndb, &txn, &account, claude_sid,
+            );
 
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 // Clear pending state (upgrades placeholder to real session)
@@ -2206,7 +2388,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                         agentic.permission_mode = crate::session::permission_mode_from_str(pm);
                     }
 
-                    setup_conversation_subscription(agentic, claude_sid, ctx.ndb);
+                    setup_conversation_subscription(agentic, claude_sid, account, ctx.ndb);
                 }
             }
 
@@ -2228,6 +2410,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(sub) = self.session_command_sub else {
             return;
         };
+        let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
+            return;
+        };
 
         let note_keys = ctx.ndb.poll_for_notes(sub, 16);
         if note_keys.is_empty() {
@@ -2243,6 +2428,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let Ok(note) = ctx.ndb.get_note_by_key(&txn, key) else {
                 continue;
             };
+            if *note.pubkey() != *account.bytes() {
+                continue;
+            }
 
             let Some(command_id) = session_events::get_tag_value(&note, "d") else {
                 continue;
@@ -2287,7 +2475,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 PathBuf::from(cwd),
                 &self.hostname,
                 backend,
-                Some(ctx.ndb),
+                Some(ConversationSubscriptionScope::new(account, ctx.ndb)),
                 Model::Default,
             );
 
@@ -2315,6 +2503,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ) -> (Vec<(SessionId, String)>, Vec<session_events::BuiltEvent>) {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
+        let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
+            return (remote_user_messages, events_to_publish);
+        };
         let session_ids = self.session_manager.session_ids();
         for session_id in session_ids {
             let Some(session) = self.session_manager.get_mut(session_id) else {
@@ -2345,6 +2536,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             let notes: Vec<_> = note_keys
                 .iter()
                 .filter_map(|key| ndb.get_note_by_key(&txn, *key).ok())
+                .filter(|note| *note.pubkey() == *account.bytes())
                 .collect();
 
             let result =
@@ -2371,13 +2563,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     }
 
     fn delete_session(&mut self, id: SessionId) {
-        // Kill any running app processes for this session to avoid orphans
-        if let Some(mut procs) = self.run_processes.remove(&id) {
-            for (_, mut child) in procs.drain() {
-                kill_process_tree(&mut child);
-                self.pending_reap.push(child);
-            }
-        }
+        self.kill_session_run_processes(id);
 
         // Capture session info before deletion so we can publish a "deleted" state event
         if let Some(session) = self.session_manager.get(id) {
@@ -2404,6 +2590,16 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             &mut self.directory_picker,
             id,
         );
+    }
+
+    fn kill_session_run_processes(&mut self, id: SessionId) {
+        if let Some(mut procs) = self.run_processes.remove(&id) {
+            for (_, mut child) in procs.drain() {
+                kill_process_tree(&mut child);
+                self.pending_reap.push(child);
+            }
+        }
+        self.running_session_ids.remove(&id);
     }
 
     /// Handle an interrupt request - requires double-Escape to confirm
@@ -2477,6 +2673,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         let Some(sub) = self.run_config_sub else {
             return;
         };
+        let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
+            return;
+        };
         let note_keys = ndb.poll_for_notes(sub, 1);
         if note_keys.is_empty() {
             return;
@@ -2489,6 +2688,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 continue;
             };
             if note.kind() != crate::config::AI_RUN_CONFIG_KIND {
+                continue;
+            }
+            if *note.pubkey() != *account.bytes() {
                 continue;
             }
             if session_events::get_tag_value(&note, "hostname") != Some(self.hostname.as_str()) {
@@ -3164,9 +3366,11 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             return;
         };
 
+        let account = *ctx.accounts.selected_account_pubkey();
         let txn = Transaction::new(ctx.ndb).expect("txn");
         let filter = nostrdb::Filter::new()
             .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .authors([account.bytes()])
             .tags([claude_sid.as_str()], 'd')
             .limit(1)
             .build();
@@ -3183,7 +3387,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 claude_sid
             );
             let loaded_txn = Transaction::new(ctx.ndb).expect("txn");
-            let loaded = session_loader::load_session_messages(ctx.ndb, &loaded_txn, &claude_sid);
+            let loaded = session_loader::load_session_messages_for_author(
+                ctx.ndb,
+                &loaded_txn,
+                &account,
+                &claude_sid,
+            );
             if let Some(session) = self.session_manager.get_mut(dave_sid) {
                 tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
                 session.chat = loaded.messages;
@@ -3203,6 +3412,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         {
             let sub_filter = nostrdb::Filter::new()
                 .kinds([session_events::AI_CONVERSATION_KIND as u64])
+                .authors([account.bytes()])
                 .tags([claude_sid.as_str()], 'd')
                 .build();
 
@@ -3221,6 +3431,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                             );
                             self.pending_message_load = Some(PendingMessageLoad {
                                 sub,
+                                account,
                                 dave_session_id: dave_sid,
                                 claude_session_id: claude_sid,
                             });
@@ -3254,7 +3465,12 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         let txn = Transaction::new(ndb).expect("txn");
-        let loaded = session_loader::load_session_messages(ndb, &txn, &pending.claude_session_id);
+        let loaded = session_loader::load_session_messages_for_author(
+            ndb,
+            &txn,
+            &pending.account,
+            &pending.claude_session_id,
+        );
         if let Some(session) = self.session_manager.get_mut(pending.dave_session_id) {
             tracing::info!("loaded {} messages into chat UI", loaded.messages.len());
             session.chat = loaded.messages;
@@ -3272,181 +3488,226 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.pending_message_load = None;
     }
 
-    /// Process relay events and run negentropy reconciliation against PNS relay.
-    ///
-    /// Collects negentropy protocol events from the relay, re-subscribes on
-    /// reconnect, and drives multi-round sync to fetch missing PNS events.
-    fn process_negentropy_sync(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
-        let pns_sub_id = self.pns_relay_sub.clone();
-        let pns_relay = self.pns_relay_url.clone();
-        let mut neg_events: Vec<enostr::negentropy::NegEvent> = Vec::new();
-        try_process_events_core(ctx, &mut self.pool, egui_ctx, |app_ctx, pool, ev| {
-            if ev.relay == pns_relay {
-                if let enostr::RelayEvent::Opened = (&ev.event).into() {
-                    neg_events.push(enostr::negentropy::NegEvent::RelayOpened);
-                    if let Some(sub_id) = &pns_sub_id {
-                        if let Some(sk) =
-                            app_ctx.accounts.get_selected_account().keypair().secret_key
-                        {
-                            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                            let pns_filter = nostrdb::Filter::new()
-                                .kinds([enostr::pns::PNS_KIND as u64])
-                                .authors([pns_keys.keypair.pubkey.bytes()])
-                                .limit(500)
-                                .build();
-                            let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
-                            pool.send_to(&req, &pns_relay);
-                            tracing::info!("re-subscribed for PNS events after relay reconnect");
-                        }
-                    }
-                }
-
-                neg_events.extend(enostr::negentropy::NegEvent::from_relay(&ev.event));
-            }
-        });
-
-        // Reset round counter on relay reconnect so we do a fresh burst
-        if neg_events
-            .iter()
-            .any(|e| matches!(e, enostr::negentropy::NegEvent::RelayOpened))
-        {
-            self.neg_sync_round = 0;
+    /// Declare the selected account's PNS discovery subscription through RemoteApi.
+    fn ensure_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
+        let account = *ctx.accounts.selected_account_pubkey();
+        let Some(secret_key) = secret_key_bytes(ctx.accounts.get_selected_account().keypair())
+        else {
+            self.clear_pns_remote_subscription(ctx);
+            return;
+        };
+        let pns_author = pns_remote_sub_author(&secret_key);
+        let next_state = PnsRemoteSubState {
+            account,
+            relay_url: self.pns_relay_url.clone(),
+            pns_author,
+        };
+        if self.pns_remote_sub_state.as_ref() == Some(&next_state) {
+            return;
         }
 
-        // Reconcile local events against PNS relay,
-        // fetch any missing kind-1080 events via standard REQ.
-        if self.neg_sync.needs_process(&neg_events) {
-            if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
-                let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                let since = notedeck::unix_time_secs() - (7 * 86400);
-                let filter = nostrdb::Filter::new()
-                    .kinds([enostr::pns::PNS_KIND as u64])
-                    .authors([pns_keys.keypair.pubkey.bytes()])
-                    .since(since)
-                    .build();
-                let result = self.neg_sync.process(
-                    neg_events,
-                    ctx.ndb,
-                    &mut self.pool,
-                    &filter,
-                    &self.pns_relay_url,
-                );
+        let Ok((identity, config)) =
+            pns_remote_sub_config(&self.pns_relay_url, pns_author, notedeck::unix_time_secs())
+        else {
+            self.clear_pns_remote_subscription(ctx);
+            return;
+        };
 
-                // If events were found and we haven't hit the round limit,
-                // trigger another sync to pull more recent data.
-                if result.new_events > 0 {
-                    self.neg_sync_round += 1;
-                    if self.neg_sync_round < MAX_NEG_SYNC_ROUNDS {
-                        tracing::info!(
-                            "negentropy: scheduling round {}/{} (got {} new, {} skipped)",
-                            self.neg_sync_round + 1,
-                            MAX_NEG_SYNC_ROUNDS,
-                            result.new_events,
-                            result.skipped
-                        );
-                        self.neg_sync.trigger_now();
-                    } else {
-                        tracing::info!(
-                            "negentropy: reached max rounds ({}), stopping",
-                            MAX_NEG_SYNC_ROUNDS
-                        );
-                    }
-                } else if result.skipped > 0 {
-                    tracing::info!(
-                        "negentropy: relay has {} events we can't reconcile, stopping",
-                        result.skipped
-                    );
-                }
+        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+        let _ = scoped_subs.set_sub(identity, config);
+        self.pns_remote_sub_state = Some(next_state);
+    }
+
+    /// Remove Dave's PNS discovery subscription from RemoteApi.
+    fn clear_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
+        if self.pns_remote_sub_state.is_none() {
+            return;
+        }
+
+        let mut scoped_subs = ctx.remote.scoped_subs(ctx.accounts);
+        let _ = scoped_subs.drop_owner(pns_remote_sub_owner_key());
+        self.pns_remote_sub_state = None;
+    }
+
+    fn ensure_pns_local_state(&mut self, ctx: &mut AppContext<'_>) {
+        if self.ai_mode != AiMode::Agentic {
+            return;
+        }
+
+        let account = *ctx.accounts.selected_account_pubkey();
+        let has_secret_key = ctx
+            .accounts
+            .get_selected_account()
+            .keypair()
+            .secret_key
+            .is_some();
+        let next_state = PnsLocalState {
+            account,
+            has_secret_key,
+        };
+
+        if self.pns_local_state.as_ref() == Some(&next_state) {
+            return;
+        }
+
+        self.save_active_pns_local_runtime();
+        self.pns_local_state = Some(next_state);
+
+        if has_secret_key {
+            let runtime = self
+                .pns_local_runtimes
+                .remove(&account)
+                .unwrap_or_else(PnsLocalRuntime::empty_agentic);
+            self.install_pns_local_runtime(runtime);
+        } else {
+            self.install_pns_local_runtime(PnsLocalRuntime::empty_agentic());
+        }
+
+        if !has_secret_key {
+            return;
+        }
+
+        if self.session_state_sub.is_none() && self.session_command_sub.is_none() {
+            self.subscribe_pns_local_events(ctx.ndb, account);
+        }
+        if self.run_config_sub.is_none() {
+            self.subscribe_pns_run_configs(ctx.ndb, account);
+        }
+        self.restore_sessions_from_ndb(ctx, account);
+        self.load_run_configs(ctx.ndb, account);
+    }
+
+    fn take_pns_local_runtime(&mut self) -> PnsLocalRuntime {
+        PnsLocalRuntime {
+            session_manager: std::mem::take(&mut self.session_manager),
+            show_session_list: self.show_session_list,
+            scene: std::mem::take(&mut self.scene),
+            show_scene: self.show_scene,
+            interrupt_pending_since: self.interrupt_pending_since.take(),
+            focus_queue: std::mem::take(&mut self.focus_queue),
+            auto_steal: self.auto_steal,
+            home_session: self.home_session.take(),
+            directory_picker: std::mem::take(&mut self.directory_picker),
+            session_picker: std::mem::take(&mut self.session_picker),
+            active_overlay: std::mem::take(&mut self.active_overlay),
+            pending_archive_convert: self.pending_archive_convert.take(),
+            pending_message_load: self.pending_message_load.take(),
+            pending_relay_events: std::mem::take(&mut self.pending_relay_events),
+            session_state_sub: self.session_state_sub.take(),
+            session_command_sub: self.session_command_sub.take(),
+            processed_commands: std::mem::take(&mut self.processed_commands),
+            pending_spawn_commands: std::mem::take(&mut self.pending_spawn_commands),
+            pending_perm_responses: std::mem::take(&mut self.pending_perm_responses),
+            pending_mode_commands: std::mem::take(&mut self.pending_mode_commands),
+            pending_deletions: std::mem::take(&mut self.pending_deletions),
+            pending_worktree_removals: std::mem::take(&mut self.pending_worktree_removals),
+            pending_summaries: std::mem::take(&mut self.pending_summaries),
+            run_processes: std::mem::take(&mut self.run_processes),
+            running_session_ids: std::mem::take(&mut self.running_session_ids),
+            run_configs: std::mem::take(&mut self.run_configs),
+            run_config_sub: self.run_config_sub.take(),
+            pending_reap: std::mem::take(&mut self.pending_reap),
+        }
+    }
+
+    fn save_active_pns_local_runtime(&mut self) {
+        let Some(state) = self.pns_local_state.clone() else {
+            return;
+        };
+        if state.has_secret_key {
+            let runtime = self.take_pns_local_runtime();
+            self.pns_local_runtimes.insert(state.account, runtime);
+        }
+    }
+
+    fn install_pns_local_runtime(&mut self, runtime: PnsLocalRuntime) {
+        self.session_manager = runtime.session_manager;
+        self.show_session_list = runtime.show_session_list;
+        self.scene = runtime.scene;
+        self.show_scene = runtime.show_scene;
+        self.interrupt_pending_since = runtime.interrupt_pending_since;
+        self.focus_queue = runtime.focus_queue;
+        self.auto_steal = runtime.auto_steal;
+        self.home_session = runtime.home_session;
+        self.directory_picker = runtime.directory_picker;
+        self.session_picker = runtime.session_picker;
+        self.active_overlay = runtime.active_overlay;
+        self.pending_archive_convert = runtime.pending_archive_convert;
+        self.pending_message_load = runtime.pending_message_load;
+        self.pending_relay_events = runtime.pending_relay_events;
+        self.session_state_sub = runtime.session_state_sub;
+        self.session_command_sub = runtime.session_command_sub;
+        self.processed_commands = runtime.processed_commands;
+        self.pending_spawn_commands = runtime.pending_spawn_commands;
+        self.pending_perm_responses = runtime.pending_perm_responses;
+        self.pending_mode_commands = runtime.pending_mode_commands;
+        self.pending_deletions = runtime.pending_deletions;
+        self.pending_worktree_removals = runtime.pending_worktree_removals;
+        self.pending_summaries = runtime.pending_summaries;
+        self.run_processes = runtime.run_processes;
+        self.running_session_ids = runtime.running_session_ids;
+        self.run_configs = runtime.run_configs;
+        self.run_config_sub = runtime.run_config_sub;
+        self.pending_reap = runtime.pending_reap;
+    }
+
+    fn subscribe_pns_local_events(&mut self, ndb: &nostrdb::Ndb, account: enostr::Pubkey) {
+        let state_filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_SESSION_STATE_KIND as u64])
+            .authors([account.bytes()])
+            .build();
+        match ndb.subscribe(&[state_filter]) {
+            Ok(sub) => {
+                self.session_state_sub = Some(sub);
+                tracing::info!("subscribed for session state events in ndb");
+            }
+            Err(e) => {
+                tracing::warn!("failed to subscribe for session state events: {:?}", e);
+            }
+        }
+
+        let cmd_filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_SESSION_COMMAND_KIND as u64])
+            .authors([account.bytes()])
+            .build();
+        match ndb.subscribe(&[cmd_filter]) {
+            Ok(sub) => {
+                self.session_command_sub = Some(sub);
+                tracing::info!("subscribed for session command events in ndb");
+            }
+            Err(e) => {
+                tracing::warn!("failed to subscribe for session command events: {:?}", e);
             }
         }
     }
 
-    /// One-time initialization on first update.
-    ///
-    /// Restores sessions from ndb, triggers initial negentropy sync,
-    /// and sets up relay subscriptions.
-    fn initialize_once(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
-        self.sessions_restored = true;
-
-        self.restore_sessions_from_ndb(ctx);
-
-        // Trigger initial negentropy sync after startup
-        self.neg_sync.trigger_now();
-        self.neg_sync_round = 0;
-
-        // Subscribe to PNS events on relays for session discovery from other devices.
-        // Also subscribe locally in ndb for kind-31988 session state events
-        // so we detect new sessions appearing after PNS unwrapping.
-        if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
-            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-
-            // Ensure the PNS relay is in the pool
-            let egui_ctx = egui_ctx.clone();
-            let wakeup = move || egui_ctx.request_repaint();
-            if let Err(e) = self.pool.add_url(self.pns_relay_url.clone(), wakeup) {
-                tracing::warn!("failed to add PNS relay {}: {:?}", self.pns_relay_url, e);
+    fn subscribe_pns_run_configs(&mut self, ndb: &nostrdb::Ndb, account: enostr::Pubkey) {
+        let rc_filter = nostrdb::Filter::new()
+            .kinds([crate::config::AI_RUN_CONFIG_KIND as u64])
+            .authors([account.bytes()])
+            .build();
+        match ndb.subscribe(&[rc_filter]) {
+            Ok(sub) => {
+                self.run_config_sub = Some(sub);
+                tracing::info!("subscribed for run config events in ndb");
             }
-
-            // Remote: subscribe on PNS relay for kind-1080 authored by our PNS pubkey
-            let pns_filter = nostrdb::Filter::new()
-                .kinds([enostr::pns::PNS_KIND as u64])
-                .authors([pns_keys.keypair.pubkey.bytes()])
-                .limit(500)
-                .build();
-            let sub_id = uuid::Uuid::new_v4().to_string();
-            let req = enostr::ClientMessage::req(sub_id.clone(), vec![pns_filter]);
-            self.pool.send_to(&req, &self.pns_relay_url);
-            self.pns_relay_sub = Some(sub_id);
-            tracing::info!("subscribed for PNS events on {}", self.pns_relay_url);
-
-            // Local: subscribe in ndb for kind-31988 session state events
-            let state_filter = nostrdb::Filter::new()
-                .kinds([session_events::AI_SESSION_STATE_KIND as u64])
-                .build();
-            match ctx.ndb.subscribe(&[state_filter]) {
-                Ok(sub) => {
-                    self.session_state_sub = Some(sub);
-                    tracing::info!("subscribed for session state events in ndb");
-                }
-                Err(e) => {
-                    tracing::warn!("failed to subscribe for session state events: {:?}", e);
-                }
-            }
-
-            // Local: subscribe in ndb for kind-31989 session command events
-            let cmd_filter = nostrdb::Filter::new()
-                .kinds([session_events::AI_SESSION_COMMAND_KIND as u64])
-                .build();
-            match ctx.ndb.subscribe(&[cmd_filter]) {
-                Ok(sub) => {
-                    self.session_command_sub = Some(sub);
-                    tracing::info!("subscribed for session command events in ndb");
-                }
-                Err(e) => {
-                    tracing::warn!("failed to subscribe for session command events: {:?}", e);
-                }
-            }
-
-            // Load existing run configs from ndb (kind-31991) and subscribe for updates.
-            // Each config carries its own stable UUID (the d-tag); no runtime ID generation needed.
-            let txn = nostrdb::Transaction::new(ctx.ndb).expect("txn");
-            self.run_configs =
-                session_loader::load_run_configs_from_ndb(ctx.ndb, &txn, &self.hostname);
-            tracing::info!("loaded {} run config CWDs from ndb", self.run_configs.len());
-
-            let rc_filter = nostrdb::Filter::new()
-                .kinds([crate::config::AI_RUN_CONFIG_KIND as u64])
-                .build();
-            match ctx.ndb.subscribe(&[rc_filter]) {
-                Ok(sub) => {
-                    self.run_config_sub = Some(sub);
-                    tracing::info!("subscribed for run config events in ndb");
-                }
-                Err(e) => {
-                    tracing::warn!("failed to subscribe for run config events: {:?}", e);
-                }
+            Err(e) => {
+                tracing::warn!("failed to subscribe for run config events: {:?}", e);
             }
         }
+    }
+
+    fn load_run_configs(&mut self, ndb: &nostrdb::Ndb, account: enostr::Pubkey) {
+        let txn = match nostrdb::Transaction::new(ndb) {
+            Ok(txn) => txn,
+            Err(err) => {
+                tracing::warn!("failed to open txn for run config restore: {err:?}");
+                return;
+            }
+        };
+        self.run_configs =
+            session_loader::load_run_configs_from_ndb(ndb, &txn, &account, &self.hostname);
+        tracing::info!("loaded {} run config CWDs from ndb", self.run_configs.len());
     }
 }
 
@@ -3457,12 +3718,19 @@ impl Drop for Dave {
                 kill_process_tree(child);
             }
         }
+        for child in &mut self.pending_reap {
+            kill_process_tree(child);
+        }
+        for runtime in self.pns_local_runtimes.values_mut() {
+            runtime.kill_run_processes();
+        }
     }
 }
 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
-        self.process_negentropy_sync(ctx, egui_ctx);
+        self.ensure_pns_local_state(ctx);
+        self.ensure_pns_remote_subscription(ctx);
 
         // Poll for external spawn-agent commands via IPC
         self.poll_ipc_commands();
@@ -3473,11 +3741,6 @@ impl notedeck::App for Dave {
             if let Some(sid) = self.build_summary_session(ctx.ndb, &note_id) {
                 self.send_user_message_for(sid, ctx, egui_ctx);
             }
-        }
-
-        // One-time initialization on first update
-        if !self.sessions_restored {
-            self.initialize_once(ctx, egui_ctx);
         }
 
         // Poll for external editor completion
@@ -3551,19 +3814,29 @@ impl notedeck::App for Dave {
         // Build permission mode command events for remote sessions
         self.publish_pending_mode_commands(ctx);
 
-        // PNS-wrap and publish events to relays
-        let pending = std::mem::take(&mut self.pending_relay_events);
-        let all_events = events_to_publish.iter().chain(pending.iter());
-        if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
-            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-            for event in all_events {
-                match session_events::wrap_pns(&event.note_json, &pns_keys) {
-                    Ok(pns_json) => match enostr::ClientMessage::event_json(pns_json) {
-                        Ok(msg) => self.pool.send_to(&msg, &self.pns_relay_url),
-                        Err(e) => tracing::warn!("failed to build relay message: {:?}", e),
-                    },
-                    Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
+        self.pending_relay_events.extend(events_to_publish);
+        if !self.pending_relay_events.is_empty() && self.pns_remote_sub_state.is_some() {
+            if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
+                match NormRelayUrl::new(&self.pns_relay_url) {
+                    Ok(relay) => {
+                        let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
+                        let pns_relay = RelayId::Websocket(relay);
+                        let mut publisher = ctx.remote.publisher_explicit();
+                        for event in std::mem::take(&mut self.pending_relay_events) {
+                            match session_events::wrap_pns(&event.note_json, &pns_keys) {
+                                Ok(pns_json) => {
+                                    publisher.publish_event_json(pns_json, vec![pns_relay.clone()]);
+                                }
+                                Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to parse PNS relay {}: {:?}", self.pns_relay_url, e);
+                    }
                 }
+            } else {
+                tracing::warn!("no secret key for publishing pending Dave PNS events");
             }
         }
 
@@ -3718,6 +3991,7 @@ impl notedeck::App for Dave {
 pub(crate) fn setup_conversation_subscription(
     agentic: &mut session::AgenticSessionData,
     claude_session_id: &str,
+    account: enostr::Pubkey,
     ndb: &nostrdb::Ndb,
 ) {
     if agentic.live_conversation_sub.is_some() {
@@ -3725,6 +3999,7 @@ pub(crate) fn setup_conversation_subscription(
     }
     let filter = nostrdb::Filter::new()
         .kinds([session_events::AI_CONVERSATION_KIND as u64])
+        .authors([account.bytes()])
         .tags([claude_session_id], 'd')
         .build();
     match ndb.subscribe(&[filter]) {
@@ -3746,6 +4021,7 @@ pub(crate) fn setup_conversation_subscription(
 pub(crate) fn setup_conversation_action_subscription(
     agentic: &mut session::AgenticSessionData,
     event_id: &str,
+    account: enostr::Pubkey,
     ndb: &nostrdb::Ndb,
 ) {
     if agentic.conversation_action_sub.is_some() {
@@ -3753,6 +4029,7 @@ pub(crate) fn setup_conversation_action_subscription(
     }
     let filter = nostrdb::Filter::new()
         .kinds([session_events::AI_CONVERSATION_KIND as u64])
+        .authors([account.bytes()])
         .tags([event_id], 'd')
         .build();
     match ndb.subscribe(&[filter]) {
@@ -4298,7 +4575,11 @@ fn handle_query_complete(session: &mut session::ChatSession, info: messages::Usa
 ///
 /// Sets up ndb subscriptions for permission responses and conversation events
 /// when we first learn the claude session ID.
-fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo, ndb: &nostrdb::Ndb) {
+fn handle_session_info(
+    session: &mut session::ChatSession,
+    info: SessionInfo,
+    subscription_scope: ConversationSubscriptionScope<'_>,
+) {
     // Propagate the runtime model for header display only.
     // Keep the original requested override intact so duplicate/clear
     // can reuse the user's intent instead of the backend's resolved model.
@@ -4310,8 +4591,18 @@ fn handle_session_info(session: &mut session::ChatSession, info: SessionInfo, nd
         // Use the stable event_id (not the CLI session ID) for subscriptions,
         // since all live events are tagged with event_id as the d-tag.
         let event_id = agentic.event_session_id().to_string();
-        setup_conversation_action_subscription(agentic, &event_id, ndb);
-        setup_conversation_subscription(agentic, &event_id, ndb);
+        setup_conversation_action_subscription(
+            agentic,
+            &event_id,
+            subscription_scope.account,
+            subscription_scope.ndb,
+        );
+        setup_conversation_subscription(
+            agentic,
+            &event_id,
+            subscription_scope.account,
+            subscription_scope.ndb,
+        );
 
         agentic.session_info = Some(info);
     }
@@ -4487,10 +4778,114 @@ mod tests {
         key
     }
 
+    async fn same_d_live_subscription_pubkeys(
+        setup: impl FnOnce(&mut session::AgenticSessionData, &str, enostr::Pubkey, &Ndb),
+        sub: impl FnOnce(&session::AgenticSessionData) -> Option<nostrdb::Subscription>,
+    ) -> ([u8; 32], Vec<[u8; 32]>) {
+        let account = enostr::FullKeypair::generate();
+        let other_account = enostr::FullKeypair::generate();
+        let account_pubkey = *account.pubkey.bytes();
+        let session_id_str = "same-d-live-scope";
+        let mut account_threading = ThreadingState::new();
+        let mut other_threading = ThreadingState::new();
+
+        let account_event = build_live_event(
+            "account event",
+            "user",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut account_threading,
+            &account.secret_key.secret_bytes(),
+        )
+        .expect("account live event");
+        let other_event = build_live_event(
+            "other event",
+            "user",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut other_threading,
+            &other_account.secret_key.secret_bytes(),
+        )
+        .expect("other live event");
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let mut session = session::ChatSession::new(
+            1,
+            PathBuf::from("/tmp"),
+            AiMode::Agentic,
+            BackendType::Claude,
+        );
+        let agentic = session.agentic.as_mut().expect("agentic session");
+        setup(agentic, session_id_str, account.pubkey, &ndb);
+        let sub = sub(agentic).expect("live subscription");
+
+        ndb.process_event_with(
+            &other_event.to_event_json(),
+            IngestMetadata::new().client(true),
+        )
+        .expect("ingest other event");
+        ndb.process_event_with(
+            &account_event.to_event_json(),
+            IngestMetadata::new().client(true),
+        )
+        .expect("ingest account event");
+
+        let mut keys = ndb
+            .wait_for_notes(sub, 1)
+            .await
+            .expect("subscription notes");
+        keys.extend(ndb.poll_for_notes(sub, 16));
+        let txn = Transaction::new(&ndb).expect("txn");
+        let pubkeys = keys
+            .iter()
+            .map(|key| *ndb.get_note_by_key(&txn, *key).expect("note").pubkey())
+            .collect();
+        (account_pubkey, pubkeys)
+    }
+
     fn test_dave(data_path: &DataPath) -> Dave {
         let ndb_dir = TempDir::new().unwrap();
         let ndb = Ndb::new(ndb_dir.path().to_str().unwrap(), &test_config()).unwrap();
         Dave::new(None, ndb, egui::Context::default(), data_path)
+    }
+
+    #[tokio::test]
+    async fn live_conversation_subscription_filters_selected_account_author() {
+        let (account_pubkey, pubkeys) = same_d_live_subscription_pubkeys(
+            |agentic, session_id, account, ndb| {
+                setup_conversation_subscription(agentic, session_id, account, ndb);
+            },
+            |agentic| agentic.live_conversation_sub,
+        )
+        .await;
+
+        assert_eq!(
+            pubkeys,
+            vec![account_pubkey],
+            "same-d events from another account must not match conversation subscription"
+        );
+    }
+
+    #[tokio::test]
+    async fn live_action_subscription_filters_selected_account_author() {
+        let (account_pubkey, pubkeys) = same_d_live_subscription_pubkeys(
+            |agentic, session_id, account, ndb| {
+                setup_conversation_action_subscription(agentic, session_id, account, ndb);
+            },
+            |agentic| agentic.conversation_action_sub,
+        )
+        .await;
+
+        assert_eq!(
+            pubkeys,
+            vec![account_pubkey],
+            "same-d events from another account must not match action subscription"
+        );
     }
 
     /// Integration test: events ingested out of order into ndb are sorted

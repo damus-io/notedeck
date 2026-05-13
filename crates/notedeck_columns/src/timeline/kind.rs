@@ -544,32 +544,7 @@ impl TimelineKind {
                 FilterState::ready(vec![notifications_filter(pubkey)])
             }
 
-            TimelineKind::Hashtag(hashtag) => {
-                let mut filters = Vec::new();
-                for tag in hashtag.iter().filter(|tag| !tag.is_empty()) {
-                    let tag_lower = tag.to_lowercase();
-                    debug!("fn filters -> TimelineKind::Hashtag => pushing filter");
-                    filters.push(
-                        Filter::new()
-                            .kinds([1])
-                            .limit(filter::default_limit())
-                            .tags([tag_lower.as_str()], 't')
-                            .build(),
-                    );
-                }
-
-                if filters.is_empty() {
-                    warn!(?hashtag, "hashtag timeline has no usable tags");
-                } else if filters.len() != hashtag.len() {
-                    debug!(
-                        ?hashtag,
-                        usable_tags = filters.len(),
-                        "hashtag timeline dropped empty tags"
-                    );
-                }
-
-                FilterState::ready(filters)
-            }
+            TimelineKind::Hashtag(hashtag) => hashtag_filter_state(hashtag),
 
             TimelineKind::Algo(algo_timeline) => match algo_timeline {
                 AlgoTimeline::LastPerPubkey(list_k) => match list_k {
@@ -580,7 +555,7 @@ impl TimelineKind {
                 },
             },
 
-            TimelineKind::Generic(filter_vec) => FilterState::ready(filter_vec.to_filters()),
+            TimelineKind::Generic(filter_vec) => generic_filter_state(filter_vec),
 
             TimelineKind::Profile(pk) => FilterState::ready_hybrid(profile_filter(pk.bytes())),
         }
@@ -604,10 +579,10 @@ impl TimelineKind {
             )),
 
             TimelineKind::Generic(filter_vec) => {
-                let filters = filter_vec.to_filters();
+                let filter_state = generic_filter_state(&filter_vec);
                 Some(Timeline::new(
                     TimelineKind::Generic(filter_vec),
-                    FilterState::ready(filters),
+                    filter_state,
                     TimelineTab::full_tabs(),
                 ))
             }
@@ -976,5 +951,77 @@ fn people_list_last_per_pubkey_filter_state(
             }
             Ok(filter) => FilterState::ready_hybrid(filter),
         }
+    }
+}
+
+pub(super) fn hashtag_filter_state(hashtag: &[String]) -> FilterState {
+    let mut filters = Vec::new();
+    for tag in hashtag.iter().filter(|tag| !tag.is_empty()) {
+        let tag_lower = tag.to_lowercase();
+        filters.push(
+            Filter::new()
+                .kinds([1])
+                .limit(filter::default_limit())
+                .tags([tag_lower.as_str()], 't')
+                .build(),
+        );
+    }
+
+    if filters.is_empty() {
+        warn!(?hashtag, "hashtag timeline has no usable tags");
+        return FilterState::broken(FilterError::EmptyList);
+    }
+
+    if filters.len() != hashtag.len() {
+        debug!(
+            ?hashtag,
+            usable_tags = filters.len(),
+            "hashtag timeline dropped empty tags"
+        );
+    }
+
+    FilterState::ready(filters)
+}
+
+fn generic_filter_state(filter_vec: &FilterVec) -> FilterState {
+    let filters = filter_vec.to_filters();
+    if filters.is_empty() {
+        warn!(?filter_vec, "generic timeline has no usable filters");
+        return FilterState::broken(FilterError::EmptyList);
+    }
+
+    FilterState::ready(filters)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_hashtag_filter_state_is_broken() {
+        assert!(matches!(
+            hashtag_filter_state(&["".to_owned()]),
+            FilterState::Broken(FilterError::EmptyList)
+        ));
+    }
+
+    #[test]
+    fn empty_generic_timeline_filter_state_is_broken() {
+        let tmp = tempfile::TempDir::new().expect("tmp dir");
+        let ndb =
+            Ndb::new(tmp.path().to_str().expect("path"), &nostrdb::Config::new()).expect("ndb");
+        let txn = Transaction::new(&ndb).expect("txn");
+        let kind = TimelineKind::Generic(FilterVec::new(Vec::new()));
+
+        assert!(matches!(
+            kind.filters(&txn, &ndb),
+            FilterState::Broken(FilterError::EmptyList)
+        ));
+
+        let timeline = kind.into_timeline(&txn, &ndb).expect("timeline");
+        assert!(matches!(
+            timeline.filter,
+            FilterState::Broken(FilterError::EmptyList)
+        ));
     }
 }

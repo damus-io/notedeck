@@ -2,29 +2,25 @@ use crate::account::FALLBACK_PUBKEY;
 use crate::i18n::Localization;
 use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
-use crate::relay_limits::{enqueue_nip11_fetch, RelayLimitJobs};
-use crate::scoped_sub_state::ScopedSubsState;
-use crate::unknowns::unknown_id_send;
+use crate::remote_data::RemoteState;
 use crate::wallet::GlobalWallet;
 use crate::zaps::Zaps;
+use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
-    DataPathType, Directory, Images, NoteAction, NoteCache, RemoteApi, UnknownIds,
+    DataPathType, Directory, Images, NoteAction, NoteCache, UnknownIds,
 };
-use crate::{EguiWakeup, NotedeckOptions};
 use crate::{Error, JobCache};
 use crate::{JobPool, MediaJobs};
 use egui::Margin;
 use egui::ThemePreference;
 use egui_winit::clipboard::Clipboard;
-use enostr::{OutboxPool, OutboxSession, OutboxSessionHandler};
 use nostrdb::{Config, Ndb, Transaction};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
-use std::time::SystemTime;
 use tracing::{error, info};
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
@@ -73,8 +69,7 @@ pub struct Notedeck {
     ndb: Ndb,
     img_cache: Images,
     unknown_ids: UnknownIds,
-    pool: OutboxPool,
-    scoped_sub_state: ScopedSubsState,
+    remote: RemoteState,
     note_cache: NoteCache,
     accounts: Accounts,
     global_wallet: GlobalWallet,
@@ -89,7 +84,6 @@ pub struct Notedeck {
     frame_history: FrameHistory,
     job_pool: JobPool,
     media_jobs: MediaJobs,
-    relay_limit_jobs: RelayLimitJobs,
     nip05_cache: Nip05Cache,
     i18n: Localization,
     sound: crate::SoundManager,
@@ -161,45 +155,39 @@ impl Notedeck {
         }
 
         {
-            profiling::scope!("relay limit jobs");
-            tick_relay_limit_jobs(
-                &mut self.pool,
-                &mut self.relay_limit_jobs,
-                &mut self.job_pool,
-            );
+            self.remote.service_relays(&mut self.job_pool);
+            self.remote.process_events(ctx, &self.ndb);
         }
-
         self.nip05_cache.poll();
         let Some(app) = &self.app else {
+            self.remote
+                .request_repaint_for_next_full_history_deadline(ctx);
             return;
         };
         let app = app.clone();
 
-        let mut app_ctx = self.app_context(ctx);
-
-        // handle account updates
-        app_ctx.accounts.update(app_ctx.ndb, &mut app_ctx.remote);
-
-        app_ctx
-            .zaps
-            .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
-
-        app_ctx.remote.process_events(ctx, app_ctx.ndb);
+        let mut app_ref = self.notedeck_ref(ctx);
 
         {
-            profiling::scope!("unknown id");
+            let app_ctx = &mut app_ref.app_ctx;
+            app_ctx.accounts.update(app_ctx.ndb, &mut app_ctx.remote);
+            app_ctx
+                .zaps
+                .process(app_ctx.accounts, app_ctx.global_wallet, app_ctx.ndb);
             if app_ctx.unknown_ids.ready_to_send() {
                 let mut oneshot = app_ctx.remote.oneshot(app_ctx.accounts);
-                unknown_id_send(app_ctx.unknown_ids, &mut oneshot);
+                crate::unknown_id_send(app_ctx.unknown_ids, &mut oneshot);
             }
         }
 
-        render_notedeck(app, &mut app_ctx, ctx);
+        render_notedeck(app, &mut app_ref.app_ctx, ctx);
 
         {
             profiling::scope!("outbox ingestion");
-            drop(app_ctx);
+            drop(app_ref);
         }
+        self.remote
+            .request_repaint_for_next_full_history_deadline(ctx);
 
         self.settings.update_batch(|settings| {
             settings.zoom_factor = ctx.zoom_factor();
@@ -222,7 +210,7 @@ impl Notedeck {
     }
 
     pub fn set_pong_timeout(&mut self, timeout: Duration) {
-        self.pool.set_pong_timeout(timeout);
+        self.remote.set_pong_timeout(timeout);
     }
 
     #[cfg(target_os = "android")]
@@ -230,7 +218,7 @@ impl Notedeck {
         self.android_app = Some(context);
     }
 
-    pub fn init<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> NotedeckCtx {
+    pub fn init<P: AsRef<Path>>(ctx: &egui::Context, data_path: P, args: &[String]) -> Self {
         #[cfg(feature = "puffin")]
         setup_puffin();
 
@@ -286,9 +274,8 @@ impl Notedeck {
         try_swap_compacted_db(&dbpath_str);
         let mut ndb = Ndb::new(&dbpath_str, &config).expect("ndb");
         let txn = Transaction::new(&ndb).expect("txn");
-        let mut scoped_sub_state = ScopedSubsState::default();
-        let mut pool = OutboxPool::default();
-        let outbox_session = OutboxSessionHandler::new(&mut pool, EguiWakeup::new(ctx.clone()));
+        let job_pool = JobPool::default();
+        let remote = RemoteState::new(&ndb, job_pool.spawner());
 
         let mut accounts = Accounts::new(
             keystore,
@@ -314,13 +301,9 @@ impl Notedeck {
             }
         }
 
-        let outbox_session = if let Some(first) = parsed_args.keys.first() {
-            let mut remote = RemoteApi::new(outbox_session, &mut scoped_sub_state);
-            accounts.select_account(&first.pubkey, &mut ndb, &txn, &mut remote);
-            remote.export_session()
-        } else {
-            outbox_session.export()
-        };
+        if let Some(first) = parsed_args.keys.first() {
+            accounts.select_account_for_startup(&first.pubkey, &mut ndb, &txn);
+        }
 
         let img_cache = Images::new(img_cache_dir);
         let note_cache = NoteCache::default();
@@ -334,7 +317,6 @@ impl Notedeck {
 
         let global_wallet = GlobalWallet::new(&path);
         let zaps = Zaps::default();
-        let job_pool = JobPool::default();
 
         // Initialize localization
         let mut i18n = Localization::new();
@@ -356,20 +338,17 @@ impl Notedeck {
 
         let (send_new_jobs, receive_new_jobs) = std::sync::mpsc::channel();
         let media_job_cache = JobCache::new(receive_new_jobs, send_new_jobs);
-        let (send_new_relay_jobs, receive_new_relay_jobs) = std::sync::mpsc::channel();
-        let relay_limit_jobs = JobCache::new(receive_new_relay_jobs, send_new_relay_jobs);
 
         let sound = {
             let s = settings.get_settings_mut();
             crate::SoundManager::new(s.sounds_enabled, s.sound_volume)
         };
 
-        let notedeck = Self {
+        Self {
             ndb,
             img_cache,
             unknown_ids,
-            pool,
-            scoped_sub_state,
+            remote,
             note_cache,
             accounts,
             global_wallet,
@@ -384,17 +363,11 @@ impl Notedeck {
             zaps,
             job_pool,
             media_jobs: media_job_cache,
-            relay_limit_jobs,
             nip05_cache: Nip05Cache::new(),
             i18n,
             sound,
             #[cfg(target_os = "android")]
             android_app: None,
-        };
-
-        NotedeckCtx {
-            notedeck,
-            outbox_session,
         }
     }
 
@@ -420,26 +393,17 @@ impl Notedeck {
     }
 
     pub fn app_context(&mut self, ui_ctx: &egui::Context) -> AppContext<'_> {
-        self.notedeck_ref(ui_ctx, None).app_ctx
+        self.notedeck_ref(ui_ctx).app_ctx
     }
 
-    pub fn notedeck_ref<'a>(
-        &'a mut self,
-        ui_ctx: &egui::Context,
-        session: Option<OutboxSession>,
-    ) -> NotedeckRef<'a> {
-        let outbox = if let Some(session) = session {
-            OutboxSessionHandler::import(&mut self.pool, session, EguiWakeup::new(ui_ctx.clone()))
-        } else {
-            OutboxSessionHandler::new(&mut self.pool, EguiWakeup::new(ui_ctx.clone()))
-        };
-
+    pub fn notedeck_ref<'a>(&'a mut self, ui_ctx: &egui::Context) -> NotedeckRef<'a> {
+        let remote = self.remote.api(ui_ctx);
         NotedeckRef {
             app_ctx: AppContext {
                 ndb: &mut self.ndb,
                 img_cache: &mut self.img_cache,
                 unknown_ids: &mut self.unknown_ids,
-                remote: RemoteApi::new(outbox, &mut self.scoped_sub_state),
+                remote,
                 note_cache: &mut self.note_cache,
                 accounts: &mut self.accounts,
                 global_wallet: &mut self.global_wallet,
@@ -581,35 +545,4 @@ fn try_swap_compacted_db(dbpath: &str) {
     let _ = std::fs::remove_file(&db_old);
     let _ = std::fs::remove_dir_all(&compact_path);
     info!("compact swap: success! {old_size} -> {compact_size} bytes");
-}
-
-#[profiling::function]
-fn tick_relay_limit_jobs(
-    pool: &mut OutboxPool,
-    relay_limit_jobs: &mut RelayLimitJobs,
-    job_pool: &mut JobPool,
-) {
-    let now = SystemTime::now();
-    for request in pool.take_nip11_fetch_requests(16, now) {
-        enqueue_nip11_fetch(relay_limit_jobs.sender(), request);
-    }
-
-    relay_limit_jobs.run_received(job_pool, |_| {});
-    relay_limit_jobs.deliver_all_completed(|completed| {
-        let response = completed.response;
-        let now = SystemTime::now();
-        match response.result {
-            Ok(raw) => {
-                let _ = pool.apply_nip11_limits(&response.relay, raw, now);
-            }
-            Err(error) => {
-                pool.record_nip11_failure(&response.relay, error.to_string(), now);
-            }
-        }
-    });
-}
-
-pub struct NotedeckCtx {
-    pub notedeck: Notedeck,
-    pub outbox_session: OutboxSession,
 }

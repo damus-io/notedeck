@@ -26,6 +26,7 @@ pub struct ConversationCache {
     pub state: ConversationListState,
     dm_relay_list_ensure: DmListState,
     pub active: Option<ConversationId>,
+    selected_startup_pending: bool,
 }
 
 impl ConversationCache {
@@ -119,6 +120,21 @@ impl ConversationCache {
     /// Mutable access to the selected-account DM relay-list ensure state.
     pub fn dm_relay_list_ensure_mut(&mut self) -> &mut DmListState {
         &mut self.dm_relay_list_ensure
+    }
+
+    /// Mark selected-account startup side effects as pending after initial load.
+    pub(crate) fn mark_selected_startup_pending(&mut self) {
+        self.selected_startup_pending = true;
+    }
+
+    /// Mark selected-account startup side effects as applied.
+    pub(crate) fn mark_selected_startup_complete(&mut self) {
+        self.selected_startup_pending = false;
+    }
+
+    /// Whether selected-account startup side effects still need to run.
+    pub(crate) fn selected_startup_pending(&self) -> bool {
+        self.selected_startup_pending
     }
 }
 
@@ -255,6 +271,7 @@ impl Default for ConversationCache {
             state: Default::default(),
             dm_relay_list_ensure: Default::default(),
             active: None,
+            selected_startup_pending: false,
         }
     }
 }

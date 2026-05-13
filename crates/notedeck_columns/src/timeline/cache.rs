@@ -482,8 +482,8 @@ mod tests {
         timeline.initial_load = InitialLoadState::Complete;
     }
 
-    #[test]
-    fn reopened_profile_shows_posts_made_while_closed() {
+    #[tokio::test]
+    async fn reopened_profile_shows_posts_made_while_closed() {
         let mut h = make_harness();
         let pk = h.kp.pubkey;
         let kind = TimelineKind::profile(pk);

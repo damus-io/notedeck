@@ -11,9 +11,6 @@ bitflags! {
         /// Debug controls, fps stats
         const Debug = 1 << 1;
 
-        /// Show relay debug window?
-        const RelayDebug = 1 << 2;
-
         /// Are we running as tests?
         const Tests = 1 << 3;
 

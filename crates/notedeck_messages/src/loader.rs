@@ -21,25 +21,36 @@ pub enum LoaderCmd {
     LoadConversationMessages {
         conversation_id: ConversationId,
         participants: Vec<Pubkey>,
-        me: Pubkey,
+        account_pubkey: Pubkey,
     },
 }
 
 /// Messages emitted by the loader worker thread.
 pub enum LoaderMsg {
     /// Batch of conversation list note keys.
-    ConversationBatch(Vec<NoteKey>),
+    ConversationBatch {
+        account_pubkey: Pubkey,
+        keys: Vec<NoteKey>,
+    },
     /// Conversation list load finished.
-    ConversationFinished,
+    ConversationFinished { account_pubkey: Pubkey },
     /// Batch of note keys for a conversation.
     ConversationMessagesBatch {
+        account_pubkey: Pubkey,
         conversation_id: ConversationId,
         keys: Vec<NoteKey>,
     },
     /// Conversation messages load finished.
-    ConversationMessagesFinished { conversation_id: ConversationId },
+    ConversationMessagesFinished {
+        account_pubkey: Pubkey,
+        conversation_id: ConversationId,
+    },
     /// Loader error.
-    Failed(String),
+    Failed {
+        account_pubkey: Pubkey,
+        conversation_id: Option<ConversationId>,
+        error: String,
+    },
 }
 
 /// Handle for driving the messages loader worker thread.
@@ -73,12 +84,12 @@ impl MessagesLoader {
         &self,
         conversation_id: ConversationId,
         participants: Vec<Pubkey>,
-        me: Pubkey,
+        account_pubkey: Pubkey,
     ) {
         self.loader.send(LoaderCmd::LoadConversationMessages {
             conversation_id,
             participants,
-            me,
+            account_pubkey,
         });
     }
 
@@ -97,8 +108,13 @@ impl Default for MessagesLoader {
 #[derive(Clone, Copy)]
 /// Internal fold target kind for note key batches.
 enum FoldKind {
-    ConversationList,
-    ConversationMessages { conversation_id: ConversationId },
+    ConversationList {
+        account_pubkey: Pubkey,
+    },
+    ConversationMessages {
+        account_pubkey: Pubkey,
+        conversation_id: ConversationId,
+    },
 }
 
 /// Fold accumulator for batching note keys.
@@ -125,13 +141,18 @@ impl FoldAcc {
 
         let keys = std::mem::take(&mut self.batch);
         let msg = match self.kind {
-            FoldKind::ConversationList => LoaderMsg::ConversationBatch(keys),
-            FoldKind::ConversationMessages { conversation_id } => {
-                LoaderMsg::ConversationMessagesBatch {
-                    conversation_id,
-                    keys,
-                }
-            }
+            FoldKind::ConversationList { account_pubkey } => LoaderMsg::ConversationBatch {
+                account_pubkey,
+                keys,
+            },
+            FoldKind::ConversationMessages {
+                account_pubkey,
+                conversation_id,
+            } => LoaderMsg::ConversationMessagesBatch {
+                account_pubkey,
+                conversation_id,
+                keys,
+            },
         };
 
         self.msg_tx
@@ -150,8 +171,14 @@ fn load_conversation_list(
     account_pubkey: Pubkey,
 ) -> Result<(), String> {
     let filters = conversation_filter(&account_pubkey);
-    fold_note_keys(egui_ctx, ndb, msg_tx, &filters, FoldKind::ConversationList)?;
-    let _ = msg_tx.send(LoaderMsg::ConversationFinished);
+    fold_note_keys(
+        egui_ctx,
+        ndb,
+        msg_tx,
+        &filters,
+        FoldKind::ConversationList { account_pubkey },
+    )?;
+    let _ = msg_tx.send(LoaderMsg::ConversationFinished { account_pubkey });
     egui_ctx.request_repaint();
     Ok(())
 }
@@ -165,19 +192,47 @@ fn handle_cmd(
 ) {
     let result = match cmd {
         LoaderCmd::LoadConversationList { account_pubkey } => {
-            load_conversation_list(egui_ctx, ndb, msg_tx, account_pubkey)
+            load_conversation_list(egui_ctx, ndb, msg_tx, account_pubkey).map_err(|error| {
+                LoaderFailure {
+                    account_pubkey,
+                    conversation_id: None,
+                    error,
+                }
+            })
         }
         LoaderCmd::LoadConversationMessages {
             conversation_id,
             participants,
-            me,
-        } => load_conversation_messages(egui_ctx, ndb, msg_tx, conversation_id, participants, me),
+            account_pubkey,
+        } => load_conversation_messages(
+            egui_ctx,
+            ndb,
+            msg_tx,
+            conversation_id,
+            participants,
+            account_pubkey,
+        )
+        .map_err(|error| LoaderFailure {
+            account_pubkey,
+            conversation_id: Some(conversation_id),
+            error,
+        }),
     };
 
-    if let Err(err) = result {
-        let _ = msg_tx.send(LoaderMsg::Failed(err));
+    if let Err(failure) = result {
+        let _ = msg_tx.send(LoaderMsg::Failed {
+            account_pubkey: failure.account_pubkey,
+            conversation_id: failure.conversation_id,
+            error: failure.error,
+        });
         egui_ctx.request_repaint();
     }
+}
+
+struct LoaderFailure {
+    account_pubkey: Pubkey,
+    conversation_id: Option<ConversationId>,
+    error: String,
 }
 
 /// Run a conversation messages load and stream note keys.
@@ -187,21 +242,27 @@ fn load_conversation_messages(
     msg_tx: &chan::Sender<LoaderMsg>,
     conversation_id: ConversationId,
     participants: Vec<Pubkey>,
-    me: Pubkey,
+    account_pubkey: Pubkey,
 ) -> Result<(), String> {
     let participant_bytes: Vec<[u8; 32]> = participants.iter().map(|p| *p.bytes()).collect();
     let participant_refs: Vec<&[u8; 32]> = participant_bytes.iter().collect();
-    let filters = chatroom_filter(participant_refs, me.bytes());
+    let filters = chatroom_filter(participant_refs, account_pubkey.bytes());
 
     fold_note_keys(
         egui_ctx,
         ndb,
         msg_tx,
         &filters,
-        FoldKind::ConversationMessages { conversation_id },
+        FoldKind::ConversationMessages {
+            account_pubkey,
+            conversation_id,
+        },
     )?;
 
-    let _ = msg_tx.send(LoaderMsg::ConversationMessagesFinished { conversation_id });
+    let _ = msg_tx.send(LoaderMsg::ConversationMessagesFinished {
+        account_pubkey,
+        conversation_id,
+    });
     egui_ctx.request_repaint();
     Ok(())
 }

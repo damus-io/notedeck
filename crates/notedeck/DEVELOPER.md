@@ -18,7 +18,7 @@ Notedeck is built around a modular architecture that separates concerns into dis
    - `Images` - Image and GIF cache management
 
 3. **Network Layer**
-   - `RelayPool` - Manages connections to Nostr relays
+   - `OutboxPool` - Manages relay connections and remote subscriptions
    - `UnknownIds` - Tracks and resolves unknown profiles and notes
 
 4. **User Accounts**

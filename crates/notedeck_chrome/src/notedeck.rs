@@ -99,17 +99,12 @@ async fn main() {
             let args: Vec<String> = std::env::args().collect();
             let ctx = &cc.egui_ctx;
 
-            let mut notedeck_ctx = Notedeck::init(ctx, base_path, &args);
-            notedeck_ctx.notedeck.setup(ctx);
-            let chrome = Chrome::new_with_apps(
-                cc,
-                &args,
-                &mut notedeck_ctx.notedeck,
-                notedeck_ctx.outbox_session,
-            )?;
-            notedeck_ctx.notedeck.set_app(chrome);
+            let mut notedeck = Notedeck::init(ctx, base_path, &args);
+            notedeck.setup(ctx);
+            let chrome = Chrome::new_with_apps(cc, &args, &mut notedeck)?;
+            notedeck.set_app(chrome);
 
-            Ok(Box::new(notedeck_ctx.notedeck))
+            Ok(Box::new(notedeck))
         }),
     );
 }
@@ -218,8 +213,8 @@ mod tests {
         .collect();
 
         let ctx = egui::Context::default();
-        let mut notedeck_ctx = Notedeck::init(&ctx, &tmpdir, &args);
-        let mut app_ctx = notedeck_ctx.notedeck.app_context(&ctx);
+        let mut notedeck = Notedeck::init(&ctx, &tmpdir, &args);
+        let mut app_ctx = notedeck.app_context(&ctx);
         let app = Damus::new(&mut app_ctx, &args);
 
         assert_eq!(app.columns(app_ctx.accounts).columns().len(), 2);
@@ -268,12 +263,11 @@ mod tests {
         .collect();
 
         let ctx = egui::Context::default();
-        let mut notedeck_ctx = Notedeck::init(&ctx, &tmpdir, &args);
-        let app = Damus::new(&mut notedeck_ctx.notedeck.app_context(&ctx), &args);
+        let mut notedeck = Notedeck::init(&ctx, &tmpdir, &args);
+        let app = Damus::new(&mut notedeck.app_context(&ctx), &args);
 
         // ensure we recognized all the arguments
-        let completely_unrecognized: Vec<String> = notedeck_ctx
-            .notedeck
+        let completely_unrecognized: Vec<String> = notedeck
             .unrecognized_args()
             .intersection(app.unrecognized_args())
             .cloned()

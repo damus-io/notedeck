@@ -92,10 +92,32 @@ pub struct LoadedSession {
 /// This queries for kind-1988 events with a `d` tag matching the session ID,
 /// sorts them chronologically, and converts relevant roles into Messages.
 pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> LoadedSession {
-    let filter = Filter::new()
-        .kinds([AI_CONVERSATION_KIND as u64])
-        .tags([session_id], 'd')
-        .build();
+    load_session_messages_with_author(ndb, txn, session_id, None)
+}
+
+/// Load conversation messages for one author-scoped Dave session.
+pub fn load_session_messages_for_author(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &enostr::Pubkey,
+    session_id: &str,
+) -> LoadedSession {
+    load_session_messages_with_author(ndb, txn, session_id, Some(author))
+}
+
+fn load_session_messages_with_author(
+    ndb: &Ndb,
+    txn: &Transaction,
+    session_id: &str,
+    author: Option<&enostr::Pubkey>,
+) -> LoadedSession {
+    let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]);
+    let filter = if let Some(author) = author {
+        filter.authors([author.bytes()])
+    } else {
+        filter
+    };
+    let filter = filter.tags([session_id], 'd').build();
 
     let results = match ndb.query(txn, &[filter], 10000) {
         Ok(r) => r,
@@ -282,9 +304,30 @@ impl SessionState {
 /// Uses `query_replaceable_filtered` to deduplicate by d-tag, keeping
 /// only the most recent non-deleted revision of each session state.
 pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
+    load_session_states_with_author(ndb, txn, None)
+}
+
+/// Load session state events signed by the selected Dave account.
+pub fn load_session_states_for_author(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &enostr::Pubkey,
+) -> Vec<SessionState> {
+    load_session_states_with_author(ndb, txn, Some(author))
+}
+
+fn load_session_states_with_author(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: Option<&enostr::Pubkey>,
+) -> Vec<SessionState> {
     use crate::session_events::AI_SESSION_STATE_KIND;
 
-    let filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]).build();
+    let mut filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]);
+    if let Some(author) = author {
+        filter = filter.authors([author.bytes()]);
+    }
+    let filter = filter.build();
 
     let is_valid = |note: &nostrdb::Note| {
         // Skip deleted sessions
@@ -326,12 +369,16 @@ pub fn load_session_states(ndb: &Ndb, txn: &Transaction) -> Vec<SessionState> {
 pub(crate) fn load_run_configs_from_ndb(
     ndb: &Ndb,
     txn: &Transaction,
+    author: &enostr::Pubkey,
     local_hostname: &str,
 ) -> std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> {
     use crate::config::{RunConfig, AI_RUN_CONFIG_KIND};
     use crate::session_events::{get_tag_value, parse_run_config_event};
 
-    let filter = Filter::new().kinds([AI_RUN_CONFIG_KIND as u64]).build();
+    let filter = Filter::new()
+        .kinds([AI_RUN_CONFIG_KIND as u64])
+        .authors([author.bytes()])
+        .build();
     let note_keys = query_replaceable(ndb, txn, &[filter]);
 
     let mut map: std::collections::HashMap<std::path::PathBuf, Vec<crate::config::RunConfig>> =
@@ -386,6 +433,34 @@ pub fn latest_valid_session(
     SessionState::from_note(note, Some(session_id))
 }
 
+/// Look up the latest valid revision of a selected-account session by d-tag.
+pub fn latest_valid_session_for_author(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &enostr::Pubkey,
+    session_id: &str,
+) -> Option<SessionState> {
+    use crate::session_events::AI_SESSION_STATE_KIND;
+
+    let filter = Filter::new()
+        .kinds([AI_SESSION_STATE_KIND as u64])
+        .authors([author.bytes()])
+        .tags([session_id], 'd')
+        .limit(1)
+        .build();
+    let results = ndb.query(txn, &[filter], 1).ok()?;
+    let note = &results.first()?.note;
+
+    if get_tag_value(note, "status") == Some("deleted") {
+        return None;
+    }
+    if note.content().starts_with('{') {
+        return None;
+    }
+
+    SessionState::from_note(note, Some(session_id))
+}
+
 /// Extract recent working directories grouped by hostname from kind-31988
 /// session state events.
 ///
@@ -396,11 +471,32 @@ pub fn load_recent_paths_by_host(
     ndb: &Ndb,
     txn: &Transaction,
 ) -> HashMap<String, Vec<std::path::PathBuf>> {
+    load_recent_paths_by_host_with_author(ndb, txn, None)
+}
+
+/// Extract recent paths only from session states signed by the selected account.
+pub fn load_recent_paths_by_host_for_author(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &enostr::Pubkey,
+) -> HashMap<String, Vec<std::path::PathBuf>> {
+    load_recent_paths_by_host_with_author(ndb, txn, Some(author))
+}
+
+fn load_recent_paths_by_host_with_author(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: Option<&enostr::Pubkey>,
+) -> HashMap<String, Vec<std::path::PathBuf>> {
     use crate::session_events::AI_SESSION_STATE_KIND;
 
     const MAX_RECENT_PER_HOST: usize = 10;
 
-    let filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]).build();
+    let mut filter = Filter::new().kinds([AI_SESSION_STATE_KIND as u64]);
+    if let Some(author) = author {
+        filter = filter.authors([author.bytes()]);
+    }
+    let filter = filter.build();
 
     let is_valid = |note: &nostrdb::Note| {
         if get_tag_value(note, "status") == Some("deleted") {

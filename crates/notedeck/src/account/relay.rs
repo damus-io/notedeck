@@ -93,19 +93,10 @@ impl AccountRelayData {
     }
 
     pub fn new_nip65_relays_note(&'_ self, seckey: &[u8; 32]) -> Note<'_> {
-        let mut builder = NoteBuilder::new().kind(10002).content("");
-        for rs in &self.advertised {
-            builder = builder
-                .start_tag()
-                .tag_str("r")
-                .tag_str(&rs.url.to_string());
-            if rs.has_read_marker {
-                builder = builder.tag_str("read");
-            } else if rs.has_write_marker {
-                builder = builder.tag_str("write");
-            }
-        }
-        builder.sign(seckey).build().expect("note build")
+        construct_nip65_relays_note(&self.advertised)
+            .sign(seckey)
+            .build()
+            .expect("note build")
     }
 
     #[profiling::function]
@@ -122,6 +113,25 @@ impl AccountRelayData {
 
         true
     }
+}
+
+/// Builds a kind-10002 NIP-65 relay-list note for the provided advertised relays.
+pub fn construct_nip65_relays_note<'a>(
+    relay_specs: impl IntoIterator<Item = &'a RelaySpec>,
+) -> NoteBuilder<'a> {
+    let mut builder = NoteBuilder::new().kind(10002).content("");
+    for relay_spec in relay_specs {
+        builder = builder
+            .start_tag()
+            .tag_str("r")
+            .tag_str(&relay_spec.url.to_string());
+        if relay_spec.has_read_marker {
+            builder = builder.tag_str("read");
+        } else if relay_spec.has_write_marker {
+            builder = builder.tag_str("write");
+        }
+    }
+    builder
 }
 
 pub(crate) struct RelayDefaults {
@@ -269,4 +279,55 @@ pub fn write_relays(relay_defaults: &RelayDefaults, data: &AccountRelayData) -> 
     relays.push(RelayId::Multicast);
 
     relays
+}
+
+#[cfg(test)]
+mod tests {
+    use super::construct_nip65_relays_note;
+    use crate::RelaySpec;
+    use enostr::{FullKeypair, NormRelayUrl};
+
+    #[test]
+    fn construct_nip65_relays_note_emits_expected_tags() {
+        let owner = FullKeypair::generate();
+        let relays = vec![
+            RelaySpec::new(
+                NormRelayUrl::new("wss://relay-read.example.com").expect("read relay"),
+                true,
+                false,
+            ),
+            RelaySpec::new(
+                NormRelayUrl::new("wss://relay-write.example.com").expect("write relay"),
+                false,
+                true,
+            ),
+            RelaySpec::new(
+                NormRelayUrl::new("wss://relay-both.example.com").expect("both relay"),
+                false,
+                false,
+            ),
+        ];
+
+        let note = construct_nip65_relays_note(&relays)
+            .sign(&owner.secret_key.secret_bytes())
+            .build()
+            .expect("relay list note");
+
+        assert_eq!(note.kind(), 10002);
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("r")
+                && tag.get_str(1) == Some("wss://relay-read.example.com/")
+                && tag.get_str(2) == Some("read")
+        }));
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("r")
+                && tag.get_str(1) == Some("wss://relay-write.example.com/")
+                && tag.get_str(2) == Some("write")
+        }));
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("r")
+                && tag.get_str(1) == Some("wss://relay-both.example.com/")
+                && tag.get(2).is_none()
+        }));
+    }
 }

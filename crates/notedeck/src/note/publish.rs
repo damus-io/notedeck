@@ -215,6 +215,14 @@ pub fn send_people_list_event(
     name: &str,
     members: &[Pubkey],
 ) {
+    let builder = construct_people_list_note(name, members);
+
+    publish_note_builder(builder, ndb, publisher, kp);
+}
+
+/// Construct a kind-30000 NIP-51 people-list note builder with one identifier,
+/// title, and one `p` tag per member.
+pub fn construct_people_list_note<'a>(name: &str, members: &[Pubkey]) -> NoteBuilder<'a> {
     let mut builder = NoteBuilder::new()
         .content("")
         .kind(30000)
@@ -230,7 +238,7 @@ pub fn send_people_list_event(
         builder = builder.start_tag().tag_str("p").tag_str(&pk.hex());
     }
 
-    publish_note_builder(builder, ndb, publisher, kp);
+    builder
 }
 
 pub fn send_report_event(
@@ -260,4 +268,34 @@ pub fn send_report_event(
     }
 
     publish_note_builder(builder, ndb, publisher, kp);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::construct_people_list_note;
+    use enostr::FullKeypair;
+
+    #[test]
+    fn construct_people_list_note_emits_expected_nip51_tags() {
+        let owner = FullKeypair::generate();
+        let member = FullKeypair::generate();
+
+        let note = construct_people_list_note("friends", &[member.pubkey])
+            .sign(&owner.secret_key.secret_bytes())
+            .build()
+            .expect("people list note");
+
+        assert_eq!(note.kind(), 30000);
+        assert!(note
+            .tags()
+            .into_iter()
+            .any(|tag| tag.get_str(0) == Some("d") && tag.get_str(1) == Some("friends")));
+        assert!(note
+            .tags()
+            .into_iter()
+            .any(|tag| tag.get_str(0) == Some("title") && tag.get_str(1) == Some("friends")));
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("p") && tag.get_id(1) == Some(member.pubkey.bytes())
+        }));
+    }
 }

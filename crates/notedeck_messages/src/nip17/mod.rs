@@ -1,8 +1,8 @@
-pub mod message;
+mod message;
 
 use enostr::{FullKeypair, NormRelayUrl, Pubkey, SecretKey};
 use hashbrown::HashSet;
-pub use message::send_conversation_message;
+pub(crate) use message::{send_conversation_message, SendMessageResult};
 pub use nostr::secp256k1::rand::rngs::OsRng;
 use nostr::secp256k1::rand::Rng;
 use nostr::{

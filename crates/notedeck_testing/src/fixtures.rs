@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use enostr::{FullKeypair, ProfileState, Pubkey};
 use nostr::key::PublicKey;
 use nostrdb::{Config, FilterBuilder, Ndb, NoteBuilder, Transaction};
-use notedeck::{DataPath, DataPathType, RelayType};
+use notedeck::{DataPath, DataPathType, RelayAction, RelayType};
 
 use crate::cluster::AccountCluster;
 use crate::device::DeviceHarness;
@@ -164,6 +164,20 @@ pub fn select_account_on_device(device: &mut DeviceHarness, account: &FullKeypai
         let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
         app_ctx.select_account(&account.pubkey);
     }
+    device.step();
+}
+
+/// Applies one relay-list mutation through the real app context and advances
+/// the device so host retarget work runs.
+pub fn process_relay_action_on_device(device: &mut DeviceHarness, action: RelayAction) {
+    let ctx = device.ctx.clone();
+    {
+        let app_ctx = &mut device.state_mut().notedeck.app_context(&ctx);
+        app_ctx.process_relay_action(action);
+    }
+
+    device.step();
+    std::thread::sleep(Duration::from_millis(25));
     device.step();
 }
 

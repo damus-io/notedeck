@@ -121,6 +121,7 @@ impl Threads {
             local_sub_filter,
             new_scope,
             replies_filter_remote(thread),
+            replies_history_filter_remote(thread),
         );
 
         new_notes.map(|notes| NewThreadNotes {
@@ -367,17 +368,23 @@ fn direct_replies_filter_root(root_id: &[u8; 32]) -> nostrdb::Filter {
 }
 
 fn replies_filter_remote(selection: &ThreadSelection) -> Vec<Filter> {
-    vec![
-        nostrdb::Filter::new()
-            .kinds([1])
-            .event(selection.root_id.bytes())
-            .limit(500)
-            .build(),
-        nostrdb::Filter::new()
-            .ids([selection.root_id.bytes()])
-            .limit(1)
-            .build(),
-    ]
+    let (replies, root) = replies_remote_filter_builders(selection);
+    vec![replies.limit(500).build(), root.limit(1).build()]
+}
+
+fn replies_history_filter_remote(selection: &ThreadSelection) -> Vec<Filter> {
+    let (replies, root) = replies_remote_filter_builders(selection);
+    vec![replies.build(), root.build()]
+}
+
+fn replies_remote_filter_builders(
+    selection: &ThreadSelection,
+) -> (nostrdb::FilterBuilder, nostrdb::FilterBuilder) {
+    let replies = nostrdb::Filter::new()
+        .kinds([1])
+        .event(selection.root_id.bytes());
+    let root = nostrdb::Filter::new().ids([selection.root_id.bytes()]);
+    (replies, root)
 }
 
 /// Represents indicators that there is more content in the note to view
@@ -459,8 +466,7 @@ mod tests {
                 &ui_ctx,
                 tmp.path(),
                 &["notedeck".to_owned(), "--testrunner".to_owned()],
-            )
-            .notedeck;
+            );
 
             Self {
                 _tmp: tmp,
@@ -475,8 +481,8 @@ mod tests {
         ThreadSelection::from_root_id(RootNoteIdBuf::new_unsafe([tag; 32]))
     }
 
-    #[test]
-    fn open_thread_installs_expected_remote_sub() {
+    #[tokio::test]
+    async fn open_thread_installs_expected_remote_sub() {
         let mut h = ThreadHostHarness::new();
         let selection = thread_selection(0x11);
 
@@ -504,8 +510,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nested_thread_scopes_share_one_live_remote_sub_until_last_close() {
+    #[tokio::test]
+    async fn nested_thread_scopes_share_one_live_remote_sub_until_last_close() {
         let mut h = ThreadHostHarness::new();
         let selection = thread_selection(0x22);
 

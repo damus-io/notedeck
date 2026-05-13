@@ -1,10 +1,7 @@
-use egui::Context;
-use enostr::{NormRelayUrl, OutboxSession, Pubkey, RelayImplType, RelayStatus};
-use nostrdb::Ndb;
-
 use crate::{
     Accounts, ExplicitPublishApi, OneshotApi, Outbox, PublishApi, ScopedSubApi, ScopedSubsState,
 };
+use enostr::{NormRelayUrl, Pubkey, RelayStatus};
 
 /// Read-only relay inspection row for relay UI surfaces.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -16,7 +13,7 @@ pub struct RelayInspectEntry<'a> {
 /// Read-only relay inspection facade.
 ///
 /// This exposes only relay status inspection needed by UI code and intentionally
-/// does not provide subscription/publish/oneshot methods.
+/// does not provide subscription, publish, or one-shot methods.
 pub struct RelayInspectApi<'r, 'a> {
     pool: &'r Outbox<'a>,
 }
@@ -29,7 +26,6 @@ impl<'r, 'a> RelayInspectApi<'r, 'a> {
     /// Snapshot websocket relay statuses for display/debug UI.
     pub fn relay_infos(&self) -> Vec<RelayInspectEntry<'_>> {
         self.pool
-            .outbox
             .websocket_statuses()
             .into_iter()
             .map(|(url, status)| RelayInspectEntry {
@@ -40,72 +36,62 @@ impl<'r, 'a> RelayInspectApi<'r, 'a> {
     }
 }
 
-/// App-facing facade for relay/outbox transport operations.
+/// Unowned remote API over exactly one staged outbox session.
 ///
-/// This is the only app-visible entrypoint for scoped subscriptions, one-shot
-/// requests, publishing, relay event ingestion, and relay status inspection.
-/// Apps should not access raw `Outbox` directly.
+/// This is the only mutating relay/outbox facade exposed to app code. It owns
+/// one staged [`crate::Outbox`] handler and borrows the scoped subscription
+/// state needed to interpret durable logical subscriptions.
 pub struct RemoteApi<'a> {
-    pool: Outbox<'a>,
+    outbox: Outbox<'a>,
     scoped_sub_state: &'a mut ScopedSubsState,
 }
 
 impl<'a> RemoteApi<'a> {
     /// Construct the host-facing remote facade over one outbox session and
     /// scoped-subscription state bundle.
-    pub(crate) fn new(pool: Outbox<'a>, scoped_sub_state: &'a mut ScopedSubsState) -> Self {
+    pub(crate) fn new(outbox: Outbox<'a>, scoped_sub_state: &'a mut ScopedSubsState) -> Self {
         Self {
-            pool,
+            outbox,
             scoped_sub_state,
         }
     }
 
-    /// Export the staged outbox session without exposing the raw handler.
-    ///
-    /// This is only needed during host initialization before the first frame.
-    pub(crate) fn export_session(self) -> OutboxSession {
-        self.pool.export()
-    }
-
     /// Access scoped subscription APIs bound to the selected account.
     pub fn scoped_subs<'o>(&'o mut self, accounts: &'o Accounts) -> ScopedSubApi<'o, 'a> {
-        self.scoped_sub_state.api(&mut self.pool, accounts)
+        let (outbox, scoped_sub_state) = self.split_mut();
+        scoped_sub_state.api(outbox, accounts)
     }
 
     /// Access one-shot read APIs bound to the selected account.
     pub fn oneshot<'o>(&'o mut self, accounts: &'o Accounts) -> OneshotApi<'o, 'a> {
-        OneshotApi::new(&mut self.pool, accounts)
+        OneshotApi::new(self.outbox_mut(), accounts)
     }
 
     /// Access publishing APIs bound to the selected account.
     pub fn publisher<'o>(&'o mut self, accounts: &'o Accounts) -> PublishApi<'o, 'a> {
-        PublishApi::new(&mut self.pool, accounts)
+        PublishApi::new(self.outbox_mut(), accounts)
     }
 
-    /// Access explicit-relay publishing APIs (no account dependency).
+    /// Access explicit-relay publishing APIs with no account dependency.
     pub fn publisher_explicit<'o>(&'o mut self) -> ExplicitPublishApi<'o, 'a> {
-        ExplicitPublishApi::new(&mut self.pool)
-    }
-
-    /// Host-only relay ingestion + keepalive maintenance.
-    pub(crate) fn process_events(&mut self, ctx: &Context, ndb: &Ndb) {
-        try_process_events(ctx, &mut self.pool, ndb);
+        ExplicitPublishApi::new(self.outbox_mut())
     }
 
     /// Access read-only relay inspection data for UI rendering.
     pub fn relay_inspect(&self) -> RelayInspectApi<'_, 'a> {
-        RelayInspectApi::new(&self.pool)
+        RelayInspectApi::new(self.outbox_ref())
     }
 
-    /// Host account-switch transition hook for scoped subscription teardown/restore.
+    /// Host account-switch transition hook for scoped subscription teardown and restore.
     pub(crate) fn on_account_switched(
         &mut self,
         old_account: Pubkey,
         new_account: Pubkey,
         accounts: &Accounts,
     ) {
-        self.scoped_sub_state.runtime_mut().on_account_switched(
-            &mut self.pool,
+        let (outbox, scoped_sub_state) = self.split_mut();
+        scoped_sub_state.runtime_mut().on_account_switched(
+            outbox,
             old_account,
             new_account,
             accounts,
@@ -118,37 +104,23 @@ impl<'a> RemoteApi<'a> {
     /// [`crate::RelaySelection::AccountsRead`] without requiring callers to
     /// individually `set_sub(...)` every declaration.
     pub(crate) fn retarget_selected_account_read_relays(&mut self, accounts: &Accounts) {
-        self.scoped_sub_state
+        let (outbox, scoped_sub_state) = self.split_mut();
+        scoped_sub_state
             .runtime_mut()
-            .retarget_selected_account_read_relays(&mut self.pool, accounts);
+            .retarget_selected_account_read_relays(outbox, accounts);
     }
-}
 
-#[profiling::function]
-pub fn try_process_events(ctx: &Context, pool: &mut Outbox, ndb: &Ndb) {
-    let ctx2 = ctx.clone();
-    let wakeup = move || {
-        ctx2.request_repaint();
-    };
+    fn outbox_mut(&mut self) -> &mut Outbox<'a> {
+        &mut self.outbox
+    }
 
-    pool.outbox.keepalive_ping(wakeup);
+    fn outbox_ref(&self) -> &Outbox<'a> {
+        &self.outbox
+    }
 
-    pool.outbox.try_recv(100, |ev| {
-        let from_client = match ev.relay_type {
-            RelayImplType::Websocket => false,
-            enostr::RelayImplType::Multicast => true,
-        };
-
-        {
-            profiling::scope!("ndb process event");
-            if let Err(err) = ndb.process_event_with(
-                ev.event_json,
-                nostrdb::IngestMetadata::new()
-                    .client(from_client)
-                    .relay(ev.url),
-            ) {
-                tracing::error!("error processing event {}: {err}", ev.event_json);
-            }
-        }
-    });
+    fn split_mut(&mut self) -> (&mut Outbox<'a>, &mut ScopedSubsState) {
+        let outbox = &mut self.outbox;
+        let scoped_sub_state = &mut *self.scoped_sub_state;
+        (outbox, scoped_sub_state)
+    }
 }

@@ -2,7 +2,9 @@ use crate::{
     error::Error,
     scoped_sub_owner_keys::timeline_remote_owner_key,
     timeline::{
-        kind::{people_list_note_filter, AlgoTimeline, ListKind, PeopleListRef},
+        kind::{
+            hashtag_filter_state, people_list_note_filter, AlgoTimeline, ListKind, PeopleListRef,
+        },
         note_units::InsertManyResponse,
         sub::TimelineSub,
         timeline_units::NotePayload,
@@ -14,8 +16,8 @@ use notedeck::{
     contacts::{hybrid_contacts_filter, hybrid_last_per_pubkey_filter},
     filter::{self},
     is_future_timestamp, tr, unix_time_secs, Accounts, CachedNote, ContactState, FilterError,
-    FilterState, Localization, NoteCache, NoteRef, RelaySelection, ScopedSubApi, ScopedSubIdentity,
-    SubConfig, SubKey, UnknownIds,
+    FilterState, Localization, NoteCache, NoteRef, ScopedSubApi, ScopedSubIdentity, SubConfig,
+    SubKey, UnknownIds,
 };
 
 use egui_virtual_list::VirtualList;
@@ -56,11 +58,9 @@ fn timeline_remote_sub_config(
     remote_filters: Vec<Filter>,
     routing_preference: RelayRoutingPreference,
 ) -> SubConfig {
-    SubConfig {
-        relays: RelaySelection::AccountsRead,
-        filters: remote_filters,
-        routing_preference,
-    }
+    SubConfig::live(remote_filters)
+        .routing_preference(routing_preference)
+        .build()
 }
 
 pub(crate) fn ensure_remote_timeline_subscription(
@@ -379,27 +379,11 @@ impl Timeline {
 
     /// Create a hashtag timeline with ready filters.
     pub fn hashtag(hashtag: Vec<String>) -> Self {
-        debug!("timeline.hashtag -> pushing filter");
-
-        let filters = hashtag
-            .iter()
-            .filter(|tag| !tag.is_empty())
-            .map(|tag| {
-                Filter::new()
-                    .kinds([1])
-                    .limit(filter::default_limit())
-                    .tags([tag.as_str()], 't')
-                    .build()
-            })
-            .collect::<Vec<_>>();
-
-        if filters.is_empty() {
-            warn!(?hashtag, "hashtag timeline created with no usable tags");
-        }
+        let filter_state = hashtag_filter_state(&hashtag);
 
         Timeline::new(
             TimelineKind::Hashtag(hashtag),
-            FilterState::ready(filters),
+            filter_state,
             TimelineTab::only_notes_and_replies(),
         )
     }
@@ -1012,7 +996,7 @@ fn people_list_ref(kind: &TimelineKind) -> Option<&PeopleListRef> {
 }
 
 #[cfg(test)]
-mod tests {
+mod remote_tests {
     use super::*;
     use enostr::{
         Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool, OutboxSessionHandler,
@@ -1064,6 +1048,10 @@ mod tests {
     /// `NoPreference` subscription into the live compaction lane by first
     /// occupying the dedicated slot with a `PreferDedicated` request and then
     /// unsubscribing it.
+    ///
+    /// Dropping sessions here can build `WebsocketConn` through relay
+    /// coordination; tests using this helper need a Tokio runtime when the
+    /// ewebsock Tokio backend is used.
     fn install_active_compaction_lane(
         pool: &mut OutboxPool,
         relay: &NormRelayUrl,
@@ -1125,8 +1113,8 @@ mod tests {
     /// Verifies notifications timelines keep `RequireDedicated` routing on both
     /// create and update by revoking an existing non-preferred compaction leg
     /// rather than being absorbed into that shared fallback route.
-    #[test]
-    fn notifications_remote_sub_keeps_require_dedicated_on_create_and_update() {
+    #[tokio::test]
+    async fn notifications_remote_sub_keeps_require_dedicated_on_create_and_update() {
         let relay = NormRelayUrl::new("ws://127.0.0.1:6556").expect("static relay url");
         let mut h = TimelineRemoteHarness::with_forced_relays(vec![relay.to_string()]);
         let compaction_id = install_active_compaction_lane(&mut h.pool, &relay);

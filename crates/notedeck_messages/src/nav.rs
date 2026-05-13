@@ -8,8 +8,7 @@ use crate::{
         ConversationCache, ConversationId, ConversationIdentifierUnowned, ParticipantSetUnowned,
     },
     loader::MessagesLoader,
-    nip17::send_conversation_message,
-    open_conversation_with_prefetch,
+    open_conversation_with_prefetch, ConversationLoadKey,
 };
 
 #[derive(Clone, Debug)]
@@ -38,6 +37,29 @@ pub enum MessagesAction {
 pub struct MessagesUiResponse {
     pub nav_response: Option<NavResponse<Option<MessagesAction>>>,
     pub conversation_panel_response: Option<MessagesAction>,
+}
+
+pub(crate) struct MessageSendRequest {
+    pub(crate) conversation_id: ConversationId,
+    pub(crate) content: String,
+}
+
+#[derive(Default)]
+pub(crate) struct ProcessedMessagesUiResponse {
+    pub(crate) app_action: Option<AppAction>,
+    pub(crate) send_message: Option<MessageSendRequest>,
+}
+
+impl ProcessedMessagesUiResponse {
+    fn or(mut self, next: Self) -> Self {
+        if self.app_action.is_none() {
+            self.app_action = next.app_action;
+        }
+        if self.send_message.is_none() {
+            self.send_message = next.send_message;
+        }
+        self
+    }
 }
 
 /// Returns whether route transitions should animate for the current app context.
@@ -101,16 +123,16 @@ fn go_back(router: &mut Router<Route>, animate: bool) {
 }
 
 /// Apply UI responses and navigation actions to the messages router.
-pub fn process_messages_ui_response(
+pub(crate) fn process_messages_ui_response(
     resp: MessagesUiResponse,
     ctx: &mut AppContext,
     cache: &mut ConversationCache,
     router: &mut Router<Route>,
     is_narrow: bool,
     loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<ConversationId>,
-) -> Option<AppAction> {
-    let mut action = None;
+    inflight_messages: &mut HashSet<ConversationLoadKey>,
+) -> ProcessedMessagesUiResponse {
+    let mut action = ProcessedMessagesUiResponse::default();
     if let Some(convo_resp) = resp.conversation_panel_response {
         action = handle_messages_action(
             convo_resp,
@@ -146,11 +168,11 @@ fn process_nav_resp(
     router: &mut Router<Route>,
     is_narrow: bool,
     loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<ConversationId>,
-) -> Option<AppAction> {
-    let mut app_action = None;
+    inflight_messages: &mut HashSet<ConversationLoadKey>,
+) -> ProcessedMessagesUiResponse {
+    let mut processed = ProcessedMessagesUiResponse::default();
     if let Some(action) = nav.response.or(nav.title_response) {
-        app_action = handle_messages_action(
+        processed = handle_messages_action(
             action,
             ctx,
             cache,
@@ -162,7 +184,7 @@ fn process_nav_resp(
     }
 
     let Some(action) = nav.action else {
-        return app_action;
+        return processed;
     };
 
     match action {
@@ -184,10 +206,10 @@ fn process_nav_resp(
         }
     }
 
-    app_action
+    processed
 }
 
-/// Execute a messages action and return an optional app action.
+/// Apply a messages action and return side effects that must be run by the app.
 fn handle_messages_action(
     action: MessagesAction,
     ctx: &mut AppContext<'_>,
@@ -195,15 +217,20 @@ fn handle_messages_action(
     router: &mut Router<Route>,
     is_narrow: bool,
     loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<ConversationId>,
-) -> Option<AppAction> {
-    let mut app_action = None;
+    inflight_messages: &mut HashSet<ConversationLoadKey>,
+) -> ProcessedMessagesUiResponse {
+    let mut processed = ProcessedMessagesUiResponse::default();
     let animate_nav = nav_transitions_enabled(ctx);
     match action {
         MessagesAction::SendMessage {
             conversation_id,
             content,
-        } => send_conversation_message(conversation_id, content, cache, ctx),
+        } => {
+            processed.send_message = Some(MessageSendRequest {
+                conversation_id,
+                content,
+            })
+        }
         MessagesAction::Open(conversation_id) => open_coversation_action(
             conversation_id,
             ctx,
@@ -249,13 +276,13 @@ fn handle_messages_action(
         MessagesAction::Back => {
             go_back(router, animate_nav);
         }
-        MessagesAction::ToggleChrome => app_action = Some(AppAction::ToggleChrome),
+        MessagesAction::ToggleChrome => processed.app_action = Some(AppAction::ToggleChrome),
         MessagesAction::Profile(pubkey) => {
-            app_action = Some(AppAction::Note(NoteAction::Profile(pubkey)));
+            processed.app_action = Some(AppAction::Note(NoteAction::Profile(pubkey)));
         }
     }
 
-    app_action
+    processed
 }
 
 /// Activate a conversation and request its message history.
@@ -266,7 +293,7 @@ fn open_coversation_action(
     router: &mut Router<Route>,
     is_narrow: bool,
     loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<ConversationId>,
+    inflight_messages: &mut HashSet<ConversationLoadKey>,
 ) {
     let animate_nav = nav_transitions_enabled(ctx);
     open_conversation_with_prefetch(&mut ctx.remote, ctx.accounts, cache, id);
@@ -289,9 +316,10 @@ fn request_conversation_messages(
     me: &Pubkey,
     conversation_id: ConversationId,
     loader: &MessagesLoader,
-    inflight_messages: &mut HashSet<ConversationId>,
+    inflight_messages: &mut HashSet<ConversationLoadKey>,
 ) {
-    if inflight_messages.contains(&conversation_id) {
+    let load_key = ConversationLoadKey::new(*me, conversation_id);
+    if inflight_messages.contains(&load_key) {
         return;
     }
 
@@ -299,7 +327,7 @@ fn request_conversation_messages(
         return;
     };
 
-    inflight_messages.insert(conversation_id);
+    inflight_messages.insert(load_key);
     loader.load_conversation_messages(
         conversation_id,
         conversation.metadata.participants.clone(),

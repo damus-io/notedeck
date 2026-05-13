@@ -139,17 +139,12 @@ fn build_device_with_data_dir(
         .with_max_steps(24)
         .with_step_dt(0.05)
         .build_eframe(move |cc| {
-            let notedeck_ctx = Notedeck::init(&cc.egui_ctx, &data_dir, &args);
-            let mut notedeck = notedeck_ctx.notedeck;
-            let outbox_session = notedeck_ctx.outbox_session;
+            let mut notedeck = Notedeck::init(&cc.egui_ctx, &data_dir, &args);
 
             notedeck.setup(&cc.egui_ctx);
             {
-                let notedeck_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx, Some(outbox_session));
-                notedeck_ref
-                    .app_ctx
-                    .settings
-                    .set_animate_nav_transitions(false);
+                let app_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx);
+                app_ref.app_ctx.settings.set_animate_nav_transitions(false);
             }
 
             // App-specific hook: install the app

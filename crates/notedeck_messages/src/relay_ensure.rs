@@ -1,10 +1,10 @@
 use std::time::{Duration, Instant};
 
-use enostr::{Pubkey, RelayRoutingPreference};
+use enostr::Pubkey;
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{
-    Accounts, RelaySelection, RelayType, RemoteApi, ScopedSubEoseStatus, ScopedSubIdentity,
-    SubConfig, SubKey, SubOwnerKey,
+    Accounts, RelayType, RemoteApi, ScopedSubEoseStatus, ScopedSubIdentity, SubConfig, SubKey,
+    SubOwnerKey,
 };
 
 use crate::{
@@ -38,11 +38,7 @@ struct EnsureListCtx<'a, 'remote> {
 
 /// Pure builder for the selected account's own DM relay-list ensure scoped-sub spec.
 fn dm_relay_list_spec(selected_account: &Pubkey) -> SubConfig {
-    SubConfig {
-        relays: RelaySelection::AccountsRead,
-        filters: vec![participant_dm_relay_list_filter(selected_account)],
-        routing_preference: RelayRoutingPreference::default(),
-    }
+    SubConfig::live(vec![participant_dm_relay_list_filter(selected_account)]).build()
 }
 
 #[profiling::function]

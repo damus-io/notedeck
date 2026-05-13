@@ -1,4 +1,4 @@
-use enostr::RelayId;
+use enostr::{EventClientMessage, RelayId};
 use nostrdb::Note;
 
 use crate::{Accounts, Outbox};
@@ -25,6 +25,12 @@ impl<'o, 'a> ExplicitPublishApi<'o, 'a> {
     /// Publish a note to an explicit relay target set.
     pub fn publish_note(&mut self, note: &Note, relays: Vec<RelayId>) {
         self.pool.broadcast_note(note, relays);
+    }
+
+    /// Publish an already-built event JSON to an explicit relay target set.
+    pub fn publish_event_json(&mut self, note_json: String, relays: Vec<RelayId>) {
+        self.pool
+            .broadcast_event(EventClientMessage { note_json }, relays);
     }
 }
 
@@ -113,8 +119,8 @@ mod tests {
     }
 
     /// Verifies explicit relay publishing targets only the provided relay set.
-    #[test]
-    fn publish_note_explicit_targets_requested_relay() {
+    #[tokio::test]
+    async fn publish_note_explicit_targets_requested_relay() {
         let (_tmp, accounts) = test_accounts_with_forced_relay("wss://relay-write.example.com");
         let note = signed_note();
         let relay = NormRelayUrl::new("wss://relay-explicit.example.com").expect("relay");
@@ -140,9 +146,38 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// Verifies explicit relay publishing supports already-built event JSON.
+    #[tokio::test]
+    async fn publish_event_json_explicit_targets_requested_relay() {
+        let (_tmp, accounts) = test_accounts_with_forced_relay("wss://relay-write.example.com");
+        let note = signed_note();
+        let relay = NormRelayUrl::new("wss://relay-json.example.com").expect("relay");
+        let mut expected = hashbrown::HashSet::new();
+        expected.insert(relay.clone());
+
+        let mut pool = OutboxPool::default();
+        {
+            let mut outbox =
+                OutboxSessionHandler::new(&mut pool, EguiWakeup::new(egui::Context::default()));
+            let mut publish = PublishApi::new(&mut outbox, &accounts);
+
+            publish.explicit().publish_event_json(
+                note.json().expect("event json"),
+                vec![RelayId::Websocket(relay)],
+            );
+        }
+
+        let actual: hashbrown::HashSet<NormRelayUrl> = pool
+            .websocket_statuses()
+            .keys()
+            .map(|url| (*url).clone())
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
     /// Verifies account-write publishing targets the selected account's write relays.
-    #[test]
-    fn publish_note_accounts_write_targets_selected_account_relays() {
+    #[tokio::test]
+    async fn publish_note_accounts_write_targets_selected_account_relays() {
         let (_tmp, accounts) =
             test_accounts_with_forced_relay("wss://relay-accounts-write.example.com");
         let note = signed_note();

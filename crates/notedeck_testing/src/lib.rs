@@ -7,6 +7,8 @@
 pub mod cluster;
 pub mod device;
 pub mod fixtures;
+pub mod ndb;
+pub mod negentropy_relay;
 pub mod relay;
 pub mod stepping;
 pub mod ui;

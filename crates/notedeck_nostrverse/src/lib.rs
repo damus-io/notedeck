@@ -21,12 +21,10 @@ pub use room_state::{
 };
 pub use room_view::{NostrverseResponse, render_editing_panel, show_room_view};
 
-use enostr::{NormRelayUrl, Pubkey, RelayId, RelayRoutingPreference};
+use enostr::{NormRelayUrl, Pubkey, RelayId};
 use glam::Vec3;
 use nostrdb::Filter;
-use notedeck::{
-    AppContext, AppResponse, RelaySelection, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey,
-};
+use notedeck::{AppContext, AppResponse, ScopedSubIdentity, SubConfig, SubKey, SubOwnerKey};
 use renderbud::Transform;
 
 use egui_wgpu::wgpu;
@@ -402,11 +400,9 @@ impl NostrverseApp {
 
         // Declare remote room/presence feed on the dedicated relay.
         let relays = std::iter::once(self.relay_url.clone()).collect();
-        let config = SubConfig {
-            relays: RelaySelection::Explicit(relays),
-            filters: vec![room_filter(), presence_filter()],
-            routing_preference: RelayRoutingPreference::default(),
-        };
+        let config = SubConfig::live(vec![room_filter(), presence_filter()])
+            .explicit_relays(relays)
+            .build();
         let _ = ctx
             .remote
             .scoped_subs(ctx.accounts)

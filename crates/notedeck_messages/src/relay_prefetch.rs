@@ -1,7 +1,5 @@
-use enostr::{Pubkey, RelayRoutingPreference};
-use notedeck::{
-    Accounts, RelaySelection, RemoteApi, ScopedSubApi, ScopedSubIdentity, SubConfig, SubOwnerKey,
-};
+use enostr::Pubkey;
+use notedeck::{Accounts, RemoteApi, ScopedSubApi, ScopedSubIdentity, SubConfig, SubOwnerKey};
 
 use crate::{
     cache::{ConversationCache, ConversationId},
@@ -11,11 +9,7 @@ use crate::{
 
 /// Pure builder for the scoped-sub spec used to prefetch one participant relay list.
 fn participant_relay_prefetch_spec(participant: &Pubkey) -> SubConfig {
-    SubConfig {
-        relays: RelaySelection::AccountsRead,
-        filters: vec![participant_dm_relay_list_filter(participant)],
-        routing_preference: RelayRoutingPreference::default(),
-    }
+    SubConfig::live(vec![participant_dm_relay_list_filter(participant)]).build()
 }
 
 /// Ensures remote prefetch subscriptions for one conversation's participants.

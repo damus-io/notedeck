@@ -51,13 +51,16 @@ impl<'o, 'a> ScopedSubApi<'o, 'a> {
     ///
     /// The runtime shares one live outbox subscription for that resolved `(scope, key)`.
     ///
-    /// `set_sub(...)` is an upsert for the resolved `(scope, key)`:
+    /// `set_sub(...)` upserts the current declaration for the resolved
+    /// `(scope, key)`:
     /// - first call creates desired state
-    /// - repeated calls update/replace desired state and may modify the live outbox sub
+    /// - repeated calls with a canonically unchanged `SubConfig` return
+    ///   `SetSubResult::Unchanged`
+    /// - repeated calls with a changed `SubConfig` replace desired state and
+    ///   update the live outbox sub
     ///
-    /// Use this when the remote config can change (filters and/or relays).
-    /// For thread reply subscriptions, prefer [`Self::ensure_sub`] unless the thread's
-    /// remote filters actually change.
+    /// Use [`Self::ensure_sub`] when an existing declaration must never be
+    /// mutated by a later caller.
     ///
     /// Account-scoped behavior (`SubScope::Account`):
     /// - On switch away, the live outbox subscription is unsubscribed.
