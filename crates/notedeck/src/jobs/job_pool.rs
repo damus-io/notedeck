@@ -153,6 +153,8 @@ fn push_job(tx: &JobTx, accepts_jobs: &AtomicBool, job: Job) {
 #[cfg(test)]
 mod tests {
     use crate::jobs::JobPool;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     fn test_fn(a: u32, b: u32) -> u32 {
         a + b
@@ -176,5 +178,23 @@ mod tests {
 
         println!("Got string: {:?}", s);
         println!("Got integer: {}", i);
+    }
+
+    #[test]
+    fn drop_finishes_even_if_a_spawner_outlives_the_pool() {
+        let pool = JobPool::default();
+        let spawner = pool.spawner();
+        let (done_tx, done_rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            drop(pool);
+            let _ = done_tx.send(());
+            drop(spawner);
+        });
+
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(200)).is_ok(),
+            "dropping the pool should not depend on external JobSpawner clones disappearing first",
+        );
     }
 }
