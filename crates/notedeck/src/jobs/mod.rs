@@ -8,6 +8,7 @@ pub use crate::jobs::types::{
 };
 pub use cache::JobCache;
 pub use job_pool::JobPool;
+pub(crate) use job_pool::JobSpawner;
 pub use media::{
     deliver_completed_media_job, run_media_job_pre_action, MediaJobKind, MediaJobResult,
     MediaJobSender, MediaJobs,
