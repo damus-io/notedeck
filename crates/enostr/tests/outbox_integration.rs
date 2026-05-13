@@ -5,8 +5,8 @@
 
 use enostr::{
     FullKeypair, Nip11ApplyOutcome, Nip11LimitationsRaw, NormRelayUrl, OutboxPool,
-    OutboxSessionHandler, OutboxSubId, RelayId, RelayReqStatus, RelayRoutingPreference,
-    RelayStatus, RelayUrlPkgs, Wakeup,
+    OutboxRecvBudget, OutboxSubId, RelayId, RelayReqStatus, RelayRoutingPreference, RelayStatus,
+    RelayUrlPkgs, Wakeup,
 };
 use futures_util::{SinkExt, StreamExt};
 use hashbrown::HashSet;
@@ -479,7 +479,7 @@ where
 {
     let mut attempts = 0;
     for attempt in 0..max_attempts {
-        pool.try_recv(10, |_| {});
+        pool.try_recv(|_| {});
         if predicate(pool) {
             return true;
         }
@@ -515,7 +515,7 @@ where
 
     loop {
         pool.keepalive_ping(|| {});
-        pool.try_recv(10, |_| {});
+        pool.try_recv(|_| {});
         if predicate(pool) {
             return true;
         }
@@ -549,7 +549,7 @@ async fn wait_for_last_pong_advance(
 ) -> Instant {
     tokio::time::timeout(RELAY_TEST_TIMEOUT, async {
         loop {
-            pool.try_recv(10, |_| {});
+            pool.try_recv(|_| {});
             let Some(last_pong) = pool.websocket_last_pong(url) else {
                 panic!("relay should remain tracked while pongs are flowing");
             };
@@ -576,7 +576,7 @@ async fn assert_connection_count_stays(
 
     loop {
         pool.keepalive_ping(|| {});
-        pool.try_recv(10, |_| {});
+        pool.try_recv(|_| {});
         assert_eq!(
             connection_count.load(Ordering::SeqCst),
             expected,
@@ -604,7 +604,7 @@ async fn assert_websocket_status_stays(
 
     loop {
         pool.keepalive_ping(|| {});
-        pool.try_recv(10, |_| {});
+        pool.try_recv(|_| {});
         assert_eq!(websocket_status(pool, url), Some(expected), "{context}");
 
         if Instant::now() >= deadline {
@@ -634,27 +634,6 @@ async fn wait_for_sent_ping(
     })
     .await
     .expect("keepalive should send another websocket ping before timeout")
-}
-
-async fn pump_pool_until_with_note_budget<F>(
-    pool: &mut OutboxPool,
-    max_notes: usize,
-    max_attempts: usize,
-    sleep_duration: Duration,
-    mut predicate: F,
-) -> bool
-where
-    F: FnMut(&mut OutboxPool) -> bool,
-{
-    for _ in 0..max_attempts {
-        pool.try_recv(max_notes, |_| {});
-        if predicate(pool) {
-            return true;
-        }
-        tokio::time::sleep(sleep_duration).await;
-    }
-
-    predicate(pool)
 }
 
 // ==================== Full Subscription Lifecycle ====================
@@ -835,6 +814,107 @@ async fn modify_relays_adds_and_removes() {
         "we are replacing relay {:?} with {:?}",
         url1, url2
     );
+}
+
+#[tokio::test]
+async fn staged_modify_relays_status_does_not_report_old_eose() {
+    let (_relay1, url1) = create_test_relay().await;
+    let (_relay2, url2) = create_test_relay().await;
+
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+
+    let mut urls1 = HashSet::new();
+    urls1.insert(url1.clone());
+    let id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(
+            vec![Filter::new().kinds(vec![1]).build()],
+            RelayUrlPkgs::new(urls1),
+        )
+    };
+
+    let all_eose = default_pool_pump(&mut pool, |pool| pool.all_have_eose(&id)).await;
+    assert!(all_eose, "initial relay should reach EOSE before retarget");
+
+    let mut urls2 = HashSet::new();
+    urls2.insert(url2.clone());
+
+    let mut session = pool.start_session(wakeup);
+    session.modify_relays(id, urls2);
+    let status = session.status(&id);
+
+    assert_eq!(status.get(&url2), Some(&RelayReqStatus::InitialQuery));
+    assert!(
+        !matches!(status.get(&url1), Some(RelayReqStatus::Eose)),
+        "staged retarget must not report old relay EOSE"
+    );
+}
+
+#[tokio::test]
+async fn staged_modify_relays_status_preserves_retained_relay_status() {
+    let (_relay1, url1) = create_test_relay().await;
+    let (_relay2, url2) = create_test_relay().await;
+
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+
+    let mut urls1 = HashSet::new();
+    urls1.insert(url1.clone());
+    let id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(
+            vec![Filter::new().kinds(vec![1]).build()],
+            RelayUrlPkgs::new(urls1),
+        )
+    };
+
+    let all_eose = default_pool_pump(&mut pool, |pool| pool.all_have_eose(&id)).await;
+    assert!(all_eose, "initial relay should reach EOSE before retarget");
+
+    let mut urls2 = HashSet::new();
+    urls2.insert(url1.clone());
+    urls2.insert(url2.clone());
+
+    let mut session = pool.start_session(wakeup);
+    session.modify_relays(id, urls2);
+    let status = session.status(&id);
+
+    assert_eq!(status.len(), 2);
+    assert_eq!(status.get(&url1), Some(&RelayReqStatus::Eose));
+    assert_eq!(status.get(&url2), Some(&RelayReqStatus::InitialQuery));
+}
+
+#[tokio::test]
+async fn staged_modify_full_same_filters_preserves_retained_relay_status() {
+    let (_relay1, url1) = create_test_relay().await;
+    let (_relay2, url2) = create_test_relay().await;
+
+    let mut pool = OutboxPool::default();
+    let wakeup = MockWakeup::default();
+    let filter = Filter::new().kinds(vec![1]).build();
+
+    let mut urls1 = HashSet::new();
+    urls1.insert(url1.clone());
+    let id = {
+        let mut session = pool.start_session(wakeup.clone());
+        session.subscribe(vec![filter.clone()], RelayUrlPkgs::new(urls1))
+    };
+
+    let all_eose = default_pool_pump(&mut pool, |pool| pool.all_have_eose(&id)).await;
+    assert!(all_eose, "initial relay should reach EOSE before retarget");
+
+    let mut urls2 = HashSet::new();
+    urls2.insert(url1.clone());
+    urls2.insert(url2.clone());
+
+    let mut session = pool.start_session(wakeup);
+    session.modify_full(id, vec![filter], urls2);
+    let status = session.status(&id);
+
+    assert_eq!(status.len(), 2);
+    assert_eq!(status.get(&url1), Some(&RelayReqStatus::Eose));
+    assert_eq!(status.get(&url2), Some(&RelayReqStatus::InitialQuery));
 }
 
 // ==================== Subscription with Filters ====================
@@ -1424,7 +1504,7 @@ async fn keepalive_closed_relay_waits_for_configured_reconnect_delay() {
     );
 
     let disconnected = pump_pool_until(&mut pool, 100, Duration::from_millis(5), |pool| {
-        pool.try_recv(10, |_| {});
+        pool.try_recv(|_| {});
         websocket_status(pool, &url) == Some(RelayStatus::Disconnected)
     })
     .await;
@@ -1602,7 +1682,7 @@ async fn websocket_reconnect_recovers_when_relay_returns_after_outage() {
     let no_server_deadline = Instant::now() + Duration::from_millis(120);
     while Instant::now() < no_server_deadline {
         pool.keepalive_ping(|| {});
-        pool.try_recv(10, |_| {});
+        pool.try_recv(|_| {});
         tokio::time::sleep(RELAY_TEST_POLL_INTERVAL).await;
     }
 
@@ -1635,19 +1715,9 @@ async fn oneshot_subscription_removed_after_eose() {
     urls.insert(url.clone());
     let url_pkgs = RelayUrlPkgs::new(urls);
 
-    // Create a oneshot subscription via the handler, then export to get the ID
     let id = {
         let mut handler = pool.start_session(MockWakeup::default());
-        handler.oneshot(trivial_filter(), url_pkgs);
-        let session = handler.export();
-        // Get the ID from the session's tasks
-        let id = *session
-            .tasks
-            .keys()
-            .next()
-            .expect("oneshot should create a task");
-        OutboxSessionHandler::import(&mut pool, session, MockWakeup::default());
-        id
+        handler.oneshot(trivial_filter(), url_pkgs)
     };
 
     // Verify subscription exists
@@ -1680,15 +1750,7 @@ async fn oneshot_multi_relay_fully_removed_after_eose() {
 
     let id = {
         let mut handler = pool.start_session(MockWakeup::default());
-        handler.oneshot(trivial_filter(), url_pkgs);
-        let session = handler.export();
-        let id = *session
-            .tasks
-            .keys()
-            .next()
-            .expect("oneshot should create a task");
-        OutboxSessionHandler::import(&mut pool, session, MockWakeup::default());
-        id
+        handler.oneshot(trivial_filter(), url_pkgs)
     };
 
     let removed = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
@@ -1701,10 +1763,10 @@ async fn oneshot_multi_relay_fully_removed_after_eose() {
     );
 }
 
-/// A receive pass that stops at the note budget must not strand oneshot cleanup.
+/// A receive pass that stops at the time budget must not strand oneshot cleanup.
 /// The follow-up `try_recv` should consume the queued EOSE and finish removal.
 #[tokio::test]
-async fn oneshot_cleanup_completes_after_try_recv_stops_at_note_budget() {
+async fn oneshot_cleanup_completes_after_timed_try_recv_stops_after_event() {
     let (_relay, url) = create_test_relay_with_seeded_note().await;
 
     let mut pool = OutboxPool::default();
@@ -1715,15 +1777,7 @@ async fn oneshot_cleanup_completes_after_try_recv_stops_at_note_budget() {
 
     let id = {
         let mut handler = pool.start_session(MockWakeup::default());
-        handler.oneshot(trivial_filter(), url_pkgs);
-        let session = handler.export();
-        let id = *session
-            .tasks
-            .keys()
-            .next()
-            .expect("oneshot should create a task");
-        OutboxSessionHandler::import(&mut pool, session, MockWakeup::default());
-        id
+        handler.oneshot(trivial_filter(), url_pkgs)
     };
 
     assert!(
@@ -1732,43 +1786,47 @@ async fn oneshot_cleanup_completes_after_try_recv_stops_at_note_budget() {
     );
 
     let mut saw_note = false;
+    let mut processed_events = 0;
     for _ in 0..100 {
-        pool.try_recv(1, |_| {
-            saw_note = true;
-        });
+        let recv = pool.try_recv_with_budget(
+            OutboxRecvBudget::until(Instant::now() + Duration::from_millis(100)),
+            |_| {
+                saw_note = true;
+                processed_events += 1;
+                std::thread::sleep(Duration::from_millis(120));
+            },
+        );
         if saw_note {
+            assert_eq!(processed_events, 1);
+            assert!(recv.time_budget_exhausted);
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(
-        saw_note,
-        "first bounded receive pass should consume the note"
-    );
+    assert!(saw_note, "first timed receive pass should consume the note");
     assert!(
         pool.filters(&id).is_some(),
-        "oneshot should still exist after the note-budget break"
+        "oneshot should still exist after the time-budget break"
     );
     assert!(
         !pool.has_eose(&id),
-        "EOSE should still be unread after the first bounded receive pass"
+        "EOSE should still be unread after the first timed receive pass"
     );
 
-    let removed =
-        pump_pool_until_with_note_budget(&mut pool, 1, 100, Duration::from_millis(10), |pool| {
-            pool.filters(&id).is_none() && pool.status(&id).is_empty()
-        })
-        .await;
+    let removed = pump_pool_until(&mut pool, 100, Duration::from_millis(10), |pool| {
+        pool.filters(&id).is_none() && pool.status(&id).is_empty()
+    })
+    .await;
     assert!(
         removed,
-        "a later bounded receive pass should flush EOSE effects and remove the oneshot"
+        "a later receive pass should flush EOSE effects and remove the oneshot"
     );
 }
 
-/// Repeated bounded receive passes should still deliver every queued note and
-/// the final EOSE.
+/// Repeated receive passes should still deliver every queued note and final
+/// EOSE.
 #[tokio::test]
-async fn bounded_try_recv_eventually_delivers_all_notes() {
+async fn try_recv_eventually_delivers_all_notes() {
     let (_relay, url, expected_ids) = create_test_relay_with_seeded_notes(3).await;
 
     let mut pool = OutboxPool::default();
@@ -1785,7 +1843,7 @@ async fn bounded_try_recv_eventually_delivers_all_notes() {
     let mut seen_ids = HashSet::new();
     let mut received_all = false;
     for _ in 0..100 {
-        pool.try_recv(1, |event| {
+        pool.try_recv(|event| {
             let parsed: serde_json::Value =
                 serde_json::from_str(event.event_json).expect("parse delivered seeded note json");
             let id = parsed[2]["id"]
@@ -1804,14 +1862,49 @@ async fn bounded_try_recv_eventually_delivers_all_notes() {
 
     assert!(
         received_all,
-        "repeated bounded receive passes should eventually deliver all notes and EOSE"
+        "repeated receive passes should eventually deliver all notes and EOSE"
     );
 }
 
-/// Repeated bounded receive passes should still drain note delivery and EOSE
+#[tokio::test]
+async fn timed_try_recv_reports_time_budget_exhaustion_after_processing_event() {
+    let (_relay, url) = create_test_relay_with_seeded_note().await;
+    let mut pool = OutboxPool::default();
+    let mut urls = HashSet::new();
+    urls.insert(url.clone());
+    let url_pkgs = RelayUrlPkgs::new(urls);
+
+    {
+        let mut session = pool.start_session(MockWakeup::default());
+        session.subscribe(trivial_filter(), url_pkgs);
+    }
+
+    let mut saw_note = false;
+    let mut processed_events = 0;
+    for _ in 0..100 {
+        let recv = pool.try_recv_with_budget(
+            OutboxRecvBudget::until(Instant::now() + Duration::from_millis(100)),
+            |_| {
+                saw_note = true;
+                processed_events += 1;
+                std::thread::sleep(Duration::from_millis(120));
+            },
+        );
+        if saw_note {
+            assert_eq!(processed_events, 1);
+            assert!(recv.time_budget_exhausted);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert!(saw_note, "timed receive should process the seeded note");
+}
+
+/// Repeated receive passes should still drain note delivery and EOSE
 /// when non-event relay frames are interleaved ahead of them.
 #[tokio::test]
-async fn bounded_try_recv_eventually_delivers_notes_after_notice_frame() {
+async fn try_recv_eventually_delivers_notes_after_notice_frame() {
     let signer = FullKeypair::generate();
     let first_note = NoteBuilder::new()
         .kind(1)
@@ -1845,7 +1938,7 @@ async fn bounded_try_recv_eventually_delivers_notes_after_notice_frame() {
     let mut seen_ids = HashSet::new();
     let mut received_all = false;
     for _ in 0..100 {
-        pool.try_recv(1, |event| {
+        pool.try_recv(|event| {
             let parsed: serde_json::Value =
                 serde_json::from_str(event.event_json).expect("parse delivered notice-relay frame");
             let id = parsed[2]["id"]
@@ -1864,7 +1957,7 @@ async fn bounded_try_recv_eventually_delivers_notes_after_notice_frame() {
 
     assert!(
         received_all,
-        "bounded receive should not lose later notes or EOSE when a NOTICE frame appears first"
+        "receive should not lose later notes or EOSE when a NOTICE frame appears first"
     );
 }
 

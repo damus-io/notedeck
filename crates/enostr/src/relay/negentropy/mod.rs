@@ -3,6 +3,9 @@ mod relay;
 mod session;
 mod state;
 
+#[cfg(test)]
+mod tests;
+
 use hashbrown::HashSet;
 use negentropy::NegentropyStorageVector;
 use nostrdb::Filter;

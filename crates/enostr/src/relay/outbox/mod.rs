@@ -24,6 +24,10 @@ mod full_history;
 mod handler;
 mod session;
 
+#[cfg(test)]
+#[path = "full_history/tests.rs"]
+mod full_history_tests;
+
 use eose::{
     plan_tracker_invalidation, ChangedRelayLeg, EoseTracker, FullyEosedEffectsPlan,
     TrackerInvalidationPlan,
