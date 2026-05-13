@@ -56,6 +56,10 @@ tempfile = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 eframe = { workspace = true, features = ["accesskit"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
+notedeck_testing = { workspace = true }
+nostr = { workspace = true }
+nostr-relay-builder = "0.37"
+serial_test = "3"
 
 [[bin]]
 name = "notedeck-spawn"

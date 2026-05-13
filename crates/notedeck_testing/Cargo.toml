@@ -10,11 +10,15 @@ eframe = { workspace = true }
 egui = { workspace = true }
 egui_kittest = { workspace = true, features = ["eframe"] }
 enostr = { workspace = true }
+futures-util = "0.3"
+hex = { workspace = true }
+negentropy = { workspace = true }
 nostr = { workspace = true }
 nostrdb = { workspace = true }
 notedeck = { workspace = true }
 nostr-relay-builder = "0.37"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util", "time", "sync"] }
+tokio-tungstenite = "0.24"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
