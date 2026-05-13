@@ -2,15 +2,53 @@ use hashbrown::{HashMap, HashSet};
 use nostrdb::Filter;
 
 use crate::relay::{
-    MetadataFilters, NormRelayUrl, OutboxSubId, RelayRoutingPreference, RelayUrlPkgs,
+    same_canonical_filter_set, FullHistorySubId, MetadataFilters, NormRelayUrl, OutboxSubId,
+    RelayRoutingPreference, RelayUrlPkgs,
 };
+
+/// Filter set used for background full-history reconciliation.
+#[derive(Clone, Debug)]
+pub struct FullHistoryConfig {
+    pub(crate) filters: Vec<Filter>,
+}
+
+impl FullHistoryConfig {
+    /// Create an explicit full-history declaration with its own non-empty
+    /// filter set.
+    pub fn new(filters: Vec<Filter>) -> Self {
+        Self {
+            filters: filters
+                .into_iter()
+                .filter(|filter| filter.num_elements() != 0)
+                .collect(),
+        }
+    }
+
+    /// Returns the full-history filter set.
+    pub fn filters(&self) -> &[Filter] {
+        &self.filters
+    }
+
+    /// Returns whether this config contains no meaningful history filters.
+    pub fn is_empty(&self) -> bool {
+        self.filters.is_empty()
+    }
+}
 
 pub struct OutboxSubscription {
     pub relays: HashSet<NormRelayUrl>,
     pub filters: MetadataFilters,
     json_size: usize,
     pub is_oneshot: bool,
+    full_history_fetch: Option<FullHistoryFetchOrigin>,
     pub routing_preference: RelayRoutingPreference,
+}
+
+/// Source full-history relay/filter pair that produced an internal fetch
+/// subscription.
+struct FullHistoryFetchOrigin {
+    owner: FullHistorySubId,
+    filter: Filter,
 }
 
 impl OutboxSubscription {
@@ -69,6 +107,57 @@ impl OutboxSubscriptions {
         self.subs.get(id).is_some_and(|s| s.is_oneshot)
     }
 
+    /// Remove relay legs from internal full-history fetches when their source
+    /// relay/filter pair no longer belongs to the owning full-history snapshot.
+    pub(in crate::relay) fn remove_full_history_fetch_relays_matching<F>(
+        &mut self,
+        owner: FullHistorySubId,
+        mut matches: F,
+    ) -> Vec<FullHistoryFetchCancellation>
+    where
+        F: FnMut(&NormRelayUrl, &Filter) -> bool,
+    {
+        let mut cancellations = Vec::new();
+        let mut empty_subs = Vec::new();
+        for (id, sub) in &mut self.subs {
+            let Some(origin) = sub.full_history_fetch.as_ref() else {
+                continue;
+            };
+            if origin.owner != owner {
+                continue;
+            }
+
+            let mut relays = Vec::new();
+            sub.relays.retain(|relay| {
+                if matches(relay, &origin.filter) {
+                    relays.push(relay.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            if relays.is_empty() {
+                continue;
+            }
+
+            let removed_sub = sub.relays.is_empty();
+            if removed_sub {
+                empty_subs.push(*id);
+            }
+            cancellations.push(FullHistoryFetchCancellation {
+                id: *id,
+                relays,
+                removed_sub,
+            });
+        }
+
+        for id in empty_subs {
+            self.subs.remove(&id);
+        }
+
+        cancellations
+    }
+
     /// Returns the dedicated/compaction routing preference for the subscription, if present.
     pub fn routing_preference(&self, id: &OutboxSubId) -> Option<RelayRoutingPreference> {
         self.subs.get(id).map(|s| s.routing_preference)
@@ -105,11 +194,50 @@ impl OutboxSubscriptions {
         self.subs.get(id)
     }
 
+    /// Returns whether an active application one-shot already covers this
+    /// relay/filter set.
+    pub(crate) fn app_oneshot_already_covers(
+        &self,
+        relay: &NormRelayUrl,
+        filters: &[Filter],
+    ) -> bool {
+        self.subs.values().any(|sub| {
+            sub.is_app_oneshot()
+                && sub.relays.contains(relay)
+                && same_canonical_filter_set(sub.filters.get_filters(), filters)
+        })
+    }
+
     pub fn remove(&mut self, id: &OutboxSubId) {
         self.subs.remove(id);
     }
 
     pub fn new_subscription(&mut self, id: OutboxSubId, task: SubscribeTask, is_oneshot: bool) {
+        self.insert_subscription(id, task, is_oneshot, None);
+    }
+
+    pub(in crate::relay) fn new_full_history_fetch_subscription(
+        &mut self,
+        id: OutboxSubId,
+        task: SubscribeTask,
+        owner: FullHistorySubId,
+        filter: Filter,
+    ) {
+        self.insert_subscription(
+            id,
+            task,
+            true,
+            Some(FullHistoryFetchOrigin { owner, filter }),
+        );
+    }
+
+    fn insert_subscription(
+        &mut self,
+        id: OutboxSubId,
+        task: SubscribeTask,
+        is_oneshot: bool,
+        full_history_fetch: Option<FullHistoryFetchOrigin>,
+    ) {
         let filters = MetadataFilters::new(task.filters);
         let json_size = filters.json_size_sum();
         self.subs.insert(
@@ -119,9 +247,23 @@ impl OutboxSubscriptions {
                 filters,
                 json_size,
                 is_oneshot,
+                full_history_fetch,
                 routing_preference: task.relays.routing_preference,
             },
         );
+    }
+}
+
+/// Relay work that should be unsubscribed after trimming internal fetch legs.
+pub(in crate::relay) struct FullHistoryFetchCancellation {
+    pub(in crate::relay) id: OutboxSubId,
+    pub(in crate::relay) relays: Vec<NormRelayUrl>,
+    pub(in crate::relay) removed_sub: bool,
+}
+
+impl OutboxSubscription {
+    fn is_app_oneshot(&self) -> bool {
+        self.is_oneshot && self.full_history_fetch.is_none()
     }
 }
 
@@ -139,6 +281,7 @@ pub enum OutboxTask {
     Subscribe(SubscribeTask),
     Unsubscribe,
     Oneshot(SubscribeTask),
+    FullHistoryFetch(FullHistoryFetchTask),
 }
 
 pub enum ModifyTask {
@@ -160,6 +303,22 @@ pub struct FullModificationTask {
 pub struct SubscribeTask {
     pub filters: Vec<Filter>,
     pub relays: RelayUrlPkgs,
+}
+
+pub struct FullHistoryFetchTask {
+    pub(in crate::relay) owner: FullHistorySubId,
+    pub(in crate::relay) filter: Filter,
+    pub(in crate::relay) subscribe: SubscribeTask,
+}
+
+pub(in crate::relay) enum FullHistoryTask {
+    Upsert(FullHistoryUpsertTask),
+    Remove,
+}
+
+pub(in crate::relay) struct FullHistoryUpsertTask {
+    pub(in crate::relay) filters: Vec<Filter>,
+    pub(in crate::relay) relays: HashSet<NormRelayUrl>,
 }
 
 #[cfg(test)]
@@ -347,6 +506,18 @@ mod tests {
     fn filter_has_since(filter: &Filter, expected: u64) -> bool {
         let json = filter.json().expect("filter json");
         json.contains(&format!("\"since\":{}", expected))
+    }
+
+    /// Full-history config should preserve explicit history filters.
+    #[test]
+    fn full_history_config_preserves_limit_and_since() {
+        let filter = Filter::new().kinds(vec![1]).since(123).limit(500).build();
+
+        let config = FullHistoryConfig::new(vec![filter]);
+        let json = config.filters()[0].json().expect("filter json");
+
+        assert!(json.contains("\"since\":123"));
+        assert!(json.contains("\"limit\":500"));
     }
 
     /// Full flow: see_all sets last_seen, then since_optimize applies it to filters.

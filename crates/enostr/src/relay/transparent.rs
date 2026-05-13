@@ -781,8 +781,8 @@ mod tests {
         assert!(data.id(&unknown_sid).is_none());
     }
 
-    #[test]
-    fn handle_relay_open_reports_reissued_transparent_sub_ids() {
+    #[tokio::test]
+    async fn handle_relay_open_reports_reissued_transparent_sub_ids() {
         let mut data = TransparentData::default();
         let mut guardian = SubPassGuardian::new(2);
         let mut websocket = WebsocketRelay::new(

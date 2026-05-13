@@ -68,7 +68,7 @@ impl<'a> BroadcastRelay<'a> {
                     return;
                 }
 
-                websocket_relay.conn.send(&ClientMessage::Event(msg));
+                websocket_relay.conn.send(&ClientMessage::from(msg));
             }
             UnownedRelay::Multicast(multicast) => {
                 // Always queue if we're not connected.
@@ -101,7 +101,7 @@ impl<'a> BroadcastRelay<'a> {
                 }
 
                 for item in self.cache.to_send.drain(..) {
-                    websocket.conn.send(&ClientMessage::Event(item));
+                    websocket.conn.send(&ClientMessage::from(item));
                 }
             }
             UnownedRelay::Multicast(multicast) => {

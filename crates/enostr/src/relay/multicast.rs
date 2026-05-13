@@ -250,20 +250,20 @@ impl MulticastRelayCache {
     }
 
     #[profiling::function]
-    pub fn try_recv<F>(&mut self, mut process: F)
+    pub fn try_recv<F>(&mut self, mut process: F) -> usize
     where
         for<'a> F: FnMut(RawEventData<'a>),
     {
         self.maintain();
 
         let Some(multicast) = &mut self.multicast else {
-            return;
+            return 0;
         };
 
         BroadcastRelay::multicast(Some(multicast), &mut self.cache).try_flush_queue();
 
         let Some(WsEvent::Message(WsMessage::Text(text))) = multicast.try_recv() else {
-            return;
+            return 0;
         };
 
         process(RawEventData {
@@ -271,6 +271,7 @@ impl MulticastRelayCache {
             event_json: &text,
             relay_type: RelayImplType::Multicast,
         });
+        1
     }
 
     fn maintain(&mut self) {
@@ -401,11 +402,13 @@ mod tests {
             .send_to(&encode_text_frame(first), local_addr)
             .expect("send first frame");
         for _ in 0..20 {
-            cache.try_recv(|event| {
+            let received = cache.try_recv(|event| {
                 assert!(matches!(event.relay_type, RelayImplType::Multicast));
                 delivered.push(event.event_json.to_owned());
             });
+            assert!(received <= 1);
             if delivered.len() == 1 {
+                assert_eq!(received, 1);
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -419,8 +422,10 @@ mod tests {
             .send_to(&encode_text_frame(second), local_addr)
             .expect("send second frame");
         for _ in 0..20 {
-            cache.try_recv(|event| delivered.push(event.event_json.to_owned()));
+            let received = cache.try_recv(|event| delivered.push(event.event_json.to_owned()));
+            assert!(received <= 1);
             if delivered.len() == 2 {
+                assert_eq!(received, 1);
                 break;
             }
             std::thread::sleep(Duration::from_millis(5));

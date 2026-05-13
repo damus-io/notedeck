@@ -101,15 +101,16 @@ impl WebsocketConn {
     }
 
     pub fn connect(&mut self, wakeup: impl Fn() + Send + Sync + 'static) -> Result<()> {
+        let next_generation = self
+            .send_generation
+            .checked_add(1)
+            .expect("websocket leg generation overflow");
         let (sender, receiver) =
             ewebsock::connect_with_wakeup(self.url.as_str(), Options::default(), wakeup)?;
         self.status = RelayStatus::Connecting;
         self.sender = sender;
         self.receiver = receiver;
-        self.send_generation = self
-            .send_generation
-            .checked_add(1)
-            .expect("websocket leg generation overflow");
+        self.send_generation = next_generation;
         Ok(())
     }
 
@@ -186,25 +187,13 @@ pub struct WebsocketSlot {
 }
 
 impl WebsocketSlot {
-    /// Creates a websocket slot and attempts an initial bootstrap connection.
-    pub fn from_wakeup<W>(url: nostr::RelayUrl, wakeup: W) -> Self
-    where
-        W: Wakeup,
-    {
-        let now = Instant::now();
-        let relay = match WebsocketConn::from_wakeup(url.clone(), wakeup) {
-            Ok(conn) => Some(WebsocketRelay::new(conn)),
-            Err(err) => {
-                tracing::error!("could not open websocket to {url:?}: {err}");
-                None
-            }
-        };
-
+    /// Creates an empty websocket slot without attempting a connection.
+    pub(crate) fn empty() -> Self {
         Self {
-            relay,
+            relay: None,
             restore_attempt: 0,
             retry_after: WebsocketRelay::initial_reconnect_duration(),
-            last_attempt: now,
+            last_attempt: Instant::now(),
         }
     }
 
@@ -301,8 +290,8 @@ mod tests {
     use crate::{relay::test_utils::MockWakeup, RelayStatus};
     use std::time::{Duration, Instant};
 
-    #[test]
-    fn set_connected_refreshes_liveness_and_configured_reconnect_delay() {
+    #[tokio::test]
+    async fn set_connected_refreshes_liveness_and_configured_reconnect_delay() {
         let mut websocket = WebsocketRelay::new(
             WebsocketConn::from_wakeup(
                 nostr::RelayUrl::parse("wss://relay-websocket-open.example.com").unwrap(),
@@ -324,8 +313,8 @@ mod tests {
         assert_eq!(websocket.retry_connect_after, configured_delay);
     }
 
-    #[test]
-    fn set_disconnected_now_starts_reconnect_delay_without_resetting_backoff() {
+    #[tokio::test]
+    async fn set_disconnected_now_starts_reconnect_delay_without_resetting_backoff() {
         let mut websocket = WebsocketRelay::new(
             WebsocketConn::from_wakeup(
                 nostr::RelayUrl::parse("wss://relay-websocket-close.example.com").unwrap(),

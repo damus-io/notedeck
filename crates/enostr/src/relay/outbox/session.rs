@@ -2,8 +2,9 @@ use hashbrown::{hash_map::Entry, HashMap, HashSet};
 use nostrdb::Filter;
 
 use crate::relay::{
-    FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask, NormRelayUrl,
-    OutboxSubId, OutboxTask, RelayUrlPkgs, SubscribeTask,
+    subscription::{FullHistoryFetchTask, FullHistoryTask, FullHistoryUpsertTask},
+    FullHistoryConfig, FullHistorySubId, FullModificationTask, ModifyFiltersTask, ModifyRelaysTask,
+    ModifyTask, NormRelayUrl, OutboxSubId, OutboxTask, RelayUrlPkgs, SubscribeTask,
 };
 
 /// OutboxSession records subscription mutations for the current frame before they
@@ -11,6 +12,7 @@ use crate::relay::{
 #[derive(Default)]
 pub struct OutboxSession {
     pub tasks: HashMap<OutboxSubId, OutboxTask>,
+    pub(in crate::relay::outbox) full_history_tasks: HashMap<FullHistorySubId, FullHistoryTask>,
 }
 
 impl OutboxSession {
@@ -26,7 +28,10 @@ impl OutboxSession {
 
         let mut entry = match entry {
             Entry::Occupied(occupied_entry) => {
-                if matches!(occupied_entry.get(), OutboxTask::Oneshot(_)) {
+                if matches!(
+                    occupied_entry.get(),
+                    OutboxTask::Oneshot(_) | OutboxTask::FullHistoryFetch(_)
+                ) {
                     // we don't modify oneshots
                     return;
                 }
@@ -65,12 +70,10 @@ impl OutboxSession {
                     OutboxTask::Modify(ModifyTask::Filters(ModifyFiltersTask(new_filters))),
                 );
             }
-            OutboxTask::Oneshot(oneshot) => {
-                oneshot.filters = new_filters;
-            }
             OutboxTask::Subscribe(subscribe_task) => {
                 subscribe_task.filters = new_filters;
             }
+            _ => unreachable!("oneshots are returned before live subscription mutation"),
         }
     }
     #[profiling::function]
@@ -81,7 +84,10 @@ impl OutboxSession {
             Entry::Occupied(occupied_entry) => {
                 let task = occupied_entry.get();
 
-                if matches!(task, OutboxTask::Oneshot(_)) {
+                if matches!(
+                    task,
+                    OutboxTask::Oneshot(_) | OutboxTask::FullHistoryFetch(_)
+                ) {
                     // we don't modify oneshots
                     return;
                 }
@@ -124,16 +130,55 @@ impl OutboxSession {
                     OutboxTask::Modify(ModifyTask::Relays(ModifyRelaysTask(new_urls))),
                 );
             }
-            OutboxTask::Oneshot(oneshot) => {
-                oneshot.relays.urls = new_urls;
-            }
             OutboxTask::Subscribe(subscribe_task) => {
                 subscribe_task.relays.urls = new_urls;
+            }
+            _ => unreachable!("oneshots are returned before live subscription mutation"),
+        }
+    }
+
+    /// Stage the full desired declaration for one durable subscription.
+    ///
+    /// This is the semantically complete update shape for durable subs: later
+    /// session ingest can derive both live relay work and full-history policy
+    /// from this one task.
+    #[profiling::function]
+    pub fn modify_full(
+        &mut self,
+        id: OutboxSubId,
+        filters: Vec<Filter>,
+        relays: HashSet<NormRelayUrl>,
+    ) {
+        let mut filters = filters;
+        filters_prune_empty(&mut filters);
+        if filters.is_empty() {
+            self.unsubscribe(id);
+            return;
+        }
+
+        let full = FullModificationTask { filters, relays };
+        match self.tasks.entry(id) {
+            Entry::Occupied(mut occupied_entry) => match occupied_entry.get_mut() {
+                OutboxTask::Oneshot(_) | OutboxTask::FullHistoryFetch(_) => {}
+                OutboxTask::Subscribe(subscribe_task) => {
+                    subscribe_task.filters = full.filters;
+                    subscribe_task.relays.urls = full.relays;
+                }
+                OutboxTask::Modify(modify) => {
+                    *modify = ModifyTask::Full(full);
+                }
+                OutboxTask::Unsubscribe => {
+                    *occupied_entry.get_mut() = OutboxTask::Modify(ModifyTask::Full(full));
+                }
+            },
+            Entry::Vacant(vacant_entry) => {
+                vacant_entry.insert(OutboxTask::Modify(ModifyTask::Full(full)));
             }
         }
     }
 
-    pub fn subscribe(&mut self, id: OutboxSubId, mut filters: Vec<Filter>, urls: RelayUrlPkgs) {
+    pub fn subscribe(&mut self, id: OutboxSubId, filters: Vec<Filter>, urls: RelayUrlPkgs) {
+        let mut filters = filters;
         filters_prune_empty(&mut filters);
         if filters.is_empty() {
             return;
@@ -163,8 +208,62 @@ impl OutboxSession {
         );
     }
 
+    /// Stage an internal full-history fetch request.
+    ///
+    /// These fetch tasks request events discovered by NIP-77 and must not be
+    /// suppressed by generic active-oneshot dedupe in `OutboxPool`.
+    pub(in crate::relay::outbox) fn full_history_fetch(
+        &mut self,
+        owner: FullHistorySubId,
+        id: OutboxSubId,
+        source_filter: Filter,
+        mut filters: Vec<Filter>,
+        urls: RelayUrlPkgs,
+    ) {
+        filters_prune_empty(&mut filters);
+        if filters.is_empty() {
+            return;
+        }
+
+        self.tasks.insert(
+            id,
+            OutboxTask::FullHistoryFetch(FullHistoryFetchTask {
+                owner,
+                filter: source_filter,
+                subscribe: SubscribeTask {
+                    filters,
+                    relays: urls,
+                },
+            }),
+        );
+    }
+
     pub fn unsubscribe(&mut self, id: OutboxSubId) {
         self.tasks.insert(id, OutboxTask::Unsubscribe);
+    }
+
+    pub fn upsert_full_history(
+        &mut self,
+        id: FullHistorySubId,
+        full_history: FullHistoryConfig,
+        relays: HashSet<NormRelayUrl>,
+    ) {
+        if full_history.is_empty() || relays.is_empty() {
+            self.remove_full_history(id);
+            return;
+        }
+
+        self.full_history_tasks.insert(
+            id,
+            FullHistoryTask::Upsert(FullHistoryUpsertTask {
+                filters: full_history.filters,
+                relays,
+            }),
+        );
+    }
+
+    pub fn remove_full_history(&mut self, id: FullHistorySubId) {
+        self.full_history_tasks.insert(id, FullHistoryTask::Remove);
     }
 }
 

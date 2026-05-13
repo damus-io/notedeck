@@ -1,15 +1,14 @@
 use crate::{Error, Result};
 use ewebsock::{WsEvent, WsMessage};
+use serde::de::{self, IgnoredAny, SeqAccess, Visitor};
+use std::borrow::Cow;
+use std::fmt;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct CommandResult<'a> {
     event_id: &'a str,
     status: bool,
     message: &'a str,
-}
-
-pub fn calculate_command_result_size(result: &CommandResult) -> usize {
-    std::mem::size_of_val(result) + result.event_id.len() + result.message.len()
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -19,6 +18,10 @@ pub enum RelayMessage<'a> {
     Event(&'a str, &'a str),
     Notice(&'a str),
     Closed(&'a str, &'a str),
+    /// NIP-77 negentropy reconciliation message: ["NEG-MSG", <sub_id>, <payload>]
+    NegMsg(Cow<'a, str>, Cow<'a, str>),
+    /// NIP-77 negentropy error: ["NEG-ERR", <sub_id>, <reason>]
+    NegErr(Cow<'a, str>, Cow<'a, str>),
 }
 
 #[derive(Debug)]
@@ -44,16 +47,10 @@ impl<'a> From<&'a WsEvent> for RelayEvent<'a> {
 impl<'a> From<&'a WsMessage> for RelayEvent<'a> {
     fn from(wsmsg: &'a WsMessage) -> RelayEvent<'a> {
         match wsmsg {
-            WsMessage::Text(s) => {
-                // NIP-77 negentropy messages are handled separately via NegEvent
-                if s.starts_with("[\"NEG-") {
-                    return RelayEvent::Other(wsmsg);
-                }
-                match RelayMessage::from_json(s).map(RelayEvent::Message) {
-                    Ok(msg) => msg,
-                    Err(err) => RelayEvent::Error(err),
-                }
-            }
+            WsMessage::Text(s) => match RelayMessage::from_json(s).map(RelayEvent::Message) {
+                Ok(msg) => msg,
+                Err(err) => RelayEvent::Error(err),
+            },
             wsmsg => RelayEvent::Other(wsmsg),
         }
     }
@@ -194,9 +191,136 @@ impl<'a> RelayMessage<'a> {
             return Ok(Self::ok(event_id, status, message));
         }
 
+        if is_nip77_frame(msg) {
+            return parse_nip77_frame(msg);
+        }
+
         Err(Error::DecodeFailed(format!(
             "unrecognized message type: '{msg}'"
         )))
+    }
+}
+
+/// Parse one NIP-77 relay frame as a JSON array and validate its arity.
+fn parse_nip77_frame<'a>(msg: &'a str) -> Result<RelayMessage<'a>> {
+    match serde_json::from_str::<Nip77Frame<'a>>(msg) {
+        Ok(Nip77Frame::NegMsg(sub_id, payload)) => Ok(RelayMessage::NegMsg(sub_id, payload)),
+        Ok(Nip77Frame::NegErr(sub_id, reason)) => Ok(RelayMessage::NegErr(sub_id, reason)),
+        Err(err) => {
+            let err = err.to_string();
+            if err.contains("Invalid NEG-MSG format") {
+                return Err(Error::DecodeFailed("Invalid NEG-MSG format".into()));
+            }
+            if err.contains("Invalid NEG-ERR format") {
+                return Err(Error::DecodeFailed("Invalid NEG-ERR format".into()));
+            }
+            Err(Error::DecodeFailed(err))
+        }
+    }
+}
+
+fn is_nip77_frame(msg: &str) -> bool {
+    matches!(first_json_array_command(msg), Some("NEG-MSG" | "NEG-ERR"))
+}
+
+fn first_json_array_command(msg: &str) -> Option<&str> {
+    let msg = msg.trim_start();
+    let msg = msg.strip_prefix('[')?.trim_start();
+    let msg = msg.strip_prefix('"')?;
+    let end = msg.find('"')?;
+    Some(&msg[..end])
+}
+
+enum Nip77Frame<'a> {
+    NegMsg(Cow<'a, str>, Cow<'a, str>),
+    NegErr(Cow<'a, str>, Cow<'a, str>),
+}
+
+impl<'de> serde::Deserialize<'de> for Nip77Frame<'de> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(Nip77FrameVisitor)
+    }
+}
+
+struct Nip77FrameVisitor;
+
+impl<'de> Visitor<'de> for Nip77FrameVisitor {
+    type Value = Nip77Frame<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a relay JSON array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let Some(command) = seq.next_element::<&'de str>()? else {
+            return Err(de::Error::custom("Invalid NIP-77 format"));
+        };
+
+        match command {
+            "NEG-MSG" => parse_neg_msg_seq(&mut seq),
+            "NEG-ERR" => parse_neg_err_seq(&mut seq),
+            _ => Err(de::Error::custom("Invalid NIP-77 format")),
+        }
+    }
+}
+
+fn parse_neg_msg_seq<'de, A>(seq: &mut A) -> std::result::Result<Nip77Frame<'de>, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let sub_id = next_required_string(seq, "Invalid NEG-MSG format")?;
+    let payload = next_required_string(seq, "Invalid NEG-MSG format")?;
+    if seq.next_element::<IgnoredAny>()?.is_some() {
+        return Err(de::Error::custom("Invalid NEG-MSG format"));
+    }
+
+    Ok(Nip77Frame::NegMsg(sub_id, payload))
+}
+
+fn parse_neg_err_seq<'de, A>(seq: &mut A) -> std::result::Result<Nip77Frame<'de>, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    let sub_id = next_required_string(seq, "Invalid NEG-ERR format")?;
+    let reason = next_required_string(seq, "Invalid NEG-ERR format")?;
+    let _max_records = seq
+        .next_element::<NegErrMaxRecords>()
+        .map_err(|_| de::Error::custom("Invalid NEG-ERR format"))?;
+    if seq.next_element::<IgnoredAny>()?.is_some() {
+        return Err(de::Error::custom("Invalid NEG-ERR format"));
+    }
+
+    Ok(Nip77Frame::NegErr(sub_id, reason))
+}
+
+fn next_required_string<'de, A>(
+    seq: &mut A,
+    error: &'static str,
+) -> std::result::Result<Cow<'de, str>, A::Error>
+where
+    A: SeqAccess<'de>,
+{
+    seq.next_element::<Cow<'de, str>>()
+        .map_err(|_| de::Error::custom(error))?
+        .ok_or_else(|| de::Error::custom(error))
+}
+
+struct NegErrMaxRecords;
+
+impl<'de> serde::Deserialize<'de> for NegErrMaxRecords {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        <u64 as serde::Deserialize>::deserialize(deserializer)
+            .map(|_| Self)
+            .map_err(|_| de::Error::custom("Invalid NEG-ERR format"))
     }
 }
 
@@ -302,6 +426,64 @@ mod tests {
             (
                 r#"["CLOSED","sub1"]"#,
                 Err(Error::DecodeFailed("Invalid CLOSED format".into())),
+            ),
+            // NEG-MSG (NIP-77)
+            (
+                r#"["NEG-MSG","neg-sub-1","abcdef0123"]"#,
+                Ok(RelayMessage::NegMsg(
+                    "neg-sub-1".into(),
+                    "abcdef0123".into(),
+                )),
+            ),
+            (
+                r#"[ "NEG-MSG", "neg-sub-1", "abcdef0123" ]"#,
+                Ok(RelayMessage::NegMsg(
+                    "neg-sub-1".into(),
+                    "abcdef0123".into(),
+                )),
+            ),
+            // NEG-ERR (NIP-77)
+            (
+                r#"["NEG-ERR","neg-sub-1","RESULTS_TOO_BIG"]"#,
+                Ok(RelayMessage::NegErr(
+                    "neg-sub-1".into(),
+                    "RESULTS_TOO_BIG".into(),
+                )),
+            ),
+            (
+                r#"[ "NEG-ERR", "neg-sub-1", "RESULTS_TOO_BIG" ]"#,
+                Ok(RelayMessage::NegErr(
+                    "neg-sub-1".into(),
+                    "RESULTS_TOO_BIG".into(),
+                )),
+            ),
+            (
+                r#"["NEG-ERR","neg-sub-1","blocked: too many records",1000]"#,
+                Ok(RelayMessage::NegErr(
+                    "neg-sub-1".into(),
+                    "blocked: too many records".into(),
+                )),
+            ),
+            (
+                r#"["NEG-ERR","neg-sub-1","blocked: \"too broad\""]"#,
+                Ok(RelayMessage::NegErr(
+                    "neg-sub-1".into(),
+                    r#"blocked: "too broad""#.into(),
+                )),
+            ),
+            // Invalid NEG-MSG
+            (
+                r#"["NEG-MSG","sub1"]"#,
+                Err(Error::DecodeFailed("Invalid NEG-MSG format".into())),
+            ),
+            // Invalid NEG-ERR
+            (
+                r#"["NEG-ERR","neg-sub-1","blocked: too many records",1000,"extra"]"#,
+                Err(Error::DecodeFailed("Invalid NEG-ERR format".into())),
+            ),
+            (
+                r#"["NEG-ERR","neg-sub-1","blocked: too many records","1000"]"#,
+                Err(Error::DecodeFailed("Invalid NEG-ERR format".into())),
             ),
         ];
 

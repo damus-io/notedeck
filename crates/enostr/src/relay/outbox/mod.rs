@@ -6,23 +6,33 @@ use std::{
 };
 
 use crate::{
+    relay::subscription::OutboxSubscription,
     relay::{
         backoff,
         coordinator::{CoordinationData, CoordinationSession, RelayEoseDelta},
-        ModifyTask, MulticastRelayCache, Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw,
+        same_canonical_filter_set, FullHistorySubId, FullModificationTask, ModifyTask,
+        MulticastRelayCache, Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw,
         NormRelayUrl, OutboxSubId, OutboxSubscriptions, OutboxTask, RawEventData, RelayId,
         RelayLimitations, RelayReqStatus, RelayRoutingPreference, RelayStatus, RelayType,
+        SubscribeTask,
     },
     EventClientMessage, Wakeup,
 };
 
 mod eose;
+mod full_history;
 mod handler;
 mod session;
 
 use eose::{
     plan_tracker_invalidation, ChangedRelayLeg, EoseTracker, FullyEosedEffectsPlan,
     TrackerInvalidationPlan,
+};
+use full_history::FullHistoryTracker;
+#[cfg(test)]
+use full_history::{
+    FullHistoryNeed, PendingIngestion, TrackedFullHistorySub, FULL_HISTORY_RETRY_BACKOFF_BASE,
+    INGESTION_TIMEOUT, MAX_FULL_HISTORY_RETRIES_PER_RELAY_FILTER, MAX_FULL_HISTORY_ROUNDS,
 };
 pub use handler::OutboxSessionHandler;
 pub use session::OutboxSession;
@@ -33,11 +43,11 @@ const DEFAULT_RECONNECT_DELAY: Duration = Duration::from_secs(5);
 const DEFAULT_RECONNECT_BACKOFF_BASE: Duration = Duration::from_secs(5);
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30 * 60); // 30 minutes
 const NIP11_REFRESH_AFTER_SUCCESS: Duration = Duration::from_secs(60 * 60);
-
 /// OutboxPool owns the active relay coordinators and applies staged subscription
 /// mutations to them each frame.
 pub struct OutboxPool {
     registry: SubRegistry,
+    history_registry: FullHistoryRegistry,
     relays: HashMap<NormRelayUrl, CoordinationData>,
     subs: OutboxSubscriptions,
     eose_tracker: EoseTracker,
@@ -46,12 +56,14 @@ pub struct OutboxPool {
     keepalive_reconnect_delay: Duration,
     keepalive_reconnect_backoff_base: Duration,
     pong_timeout: Duration,
+    full_history: FullHistoryTracker,
 }
 
 impl Default for OutboxPool {
     fn default() -> Self {
         Self {
             registry: SubRegistry { next_request_id: 0 },
+            history_registry: FullHistoryRegistry { next_request_id: 0 },
             relays: HashMap::new(),
             eose_tracker: EoseTracker::default(),
             multicast: Default::default(),
@@ -60,7 +72,40 @@ impl Default for OutboxPool {
             keepalive_reconnect_delay: DEFAULT_RECONNECT_DELAY,
             keepalive_reconnect_backoff_base: DEFAULT_RECONNECT_BACKOFF_BASE,
             pong_timeout: PONG_TIMEOUT,
+            full_history: FullHistoryTracker::default(),
         }
+    }
+}
+
+/// Non-blocking receive result for one [`OutboxPool::try_recv`] call.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct OutboxRecvResult {
+    /// True when the caller-provided deadline stopped receive work.
+    pub time_budget_exhausted: bool,
+}
+
+/// Receive budget for one [`OutboxPool::try_recv_with_budget`] call.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutboxRecvBudget {
+    deadline: Option<Instant>,
+}
+
+impl OutboxRecvBudget {
+    /// Build an unbounded receive budget.
+    pub fn unbounded() -> Self {
+        Self { deadline: None }
+    }
+
+    /// Build a receive budget with a hard deadline checked between frames.
+    pub fn until(deadline: Instant) -> Self {
+        Self {
+            deadline: Some(deadline),
+        }
+    }
+
+    fn time_budget_exhausted(&self) -> bool {
+        self.deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
     }
 }
 
@@ -101,7 +146,6 @@ impl OutboxPool {
     pub fn set_pong_timeout(&mut self, timeout: Duration) {
         self.pong_timeout = timeout;
     }
-
     /// Applies an already planned set of post-EOSE subscription effects.
     fn apply_fully_eosed_effects(&mut self, plan: FullyEosedEffectsPlan) {
         let mut oneshot_unsubs = HashMap::new();
@@ -204,12 +248,26 @@ impl OutboxPool {
     }
 
     #[profiling::function]
-    fn ingest_session<W>(&mut self, session: OutboxSession, wakeup: &W)
+    fn ingest_session<W>(&mut self, mut session: OutboxSession, wakeup: &W)
     where
         W: Wakeup,
     {
-        let session_delta = self.collect_sessions(session);
+        let full_history_tasks = std::mem::take(&mut session.full_history_tasks);
+        let session_delta = self.collect_sessions(std::mem::take(&mut session));
+        self.ingest_session_delta(session_delta, wakeup);
+        self.apply_full_history_tasks(full_history_tasks, wakeup);
 
+        self.poll_full_history(&mut session);
+        if !session.tasks.is_empty() {
+            let followup_delta = self.collect_sessions(session);
+            self.ingest_session_delta(followup_delta, wakeup);
+        }
+    }
+
+    fn ingest_session_delta<W>(&mut self, session_delta: SessionDelta, wakeup: &W)
+    where
+        W: Wakeup,
+    {
         self.apply_tracker_invalidation(plan_tracker_invalidation(
             &session_delta.changed_legs,
             &session_delta.removed_subs,
@@ -221,7 +279,8 @@ impl OutboxPool {
         }
     }
 
-    /// Translates a session's queued tasks into per-relay coordination sessions.
+    /// Translates a session's queued tasks into per-relay coordination sessions
+    /// and returns relay-local work to apply.
     #[profiling::function]
     fn collect_sessions(&mut self, session: OutboxSession) -> SessionDelta {
         if session.tasks.is_empty() {
@@ -256,19 +315,13 @@ impl OutboxPool {
                             }
                         }
                         ModifyTask::Full(full_modification_task) => {
-                            let new_relays = &full_modification_task.relays;
-                            let relays_to_remove = sub.relays.difference(new_relays);
-                            for relay in relays_to_remove {
-                                stage_unsubscribe_task(&mut delta, relay, id);
-                            }
-
-                            if new_relays.is_empty() {
-                                remove_sub = true;
-                            } else {
-                                for relay in new_relays {
-                                    stage_subscribe_task(&mut delta, relay, id, routing_preference);
-                                }
-                            }
+                            remove_sub = stage_full_modify_tasks(
+                                &mut delta,
+                                id,
+                                sub,
+                                full_modification_task,
+                                routing_preference,
+                            );
                         }
                     }
 
@@ -294,7 +347,12 @@ impl OutboxPool {
                     self.subs.remove(&id);
                     delta.removed_subs.insert(id);
                 }
-                OutboxTask::Oneshot(subscribe) => {
+                OutboxTask::Oneshot(mut subscribe) => {
+                    self.retain_new_oneshot_relays(&mut subscribe);
+                    if subscribe.relays.urls.is_empty() {
+                        continue 'a;
+                    }
+
                     for relay in &subscribe.relays.urls {
                         stage_subscribe_task(
                             &mut delta,
@@ -305,6 +363,23 @@ impl OutboxPool {
                     }
                     delta.removed_subs.insert(id);
                     self.subs.new_subscription(id, subscribe, true);
+                }
+                OutboxTask::FullHistoryFetch(fetch) => {
+                    for relay in &fetch.subscribe.relays.urls {
+                        stage_subscribe_task(
+                            &mut delta,
+                            relay,
+                            id,
+                            fetch.subscribe.relays.routing_preference,
+                        );
+                    }
+                    delta.removed_subs.insert(id);
+                    self.subs.new_full_history_fetch_subscription(
+                        id,
+                        fetch.subscribe,
+                        fetch.owner,
+                        fetch.filter,
+                    );
                 }
                 OutboxTask::Subscribe(subscribe) => {
                     for relay in &subscribe.relays.urls {
@@ -325,6 +400,15 @@ impl OutboxPool {
         delta
     }
 
+    /// Drop relay legs already covered by an active one-shot with the same
+    /// canonical filter set.
+    fn retain_new_oneshot_relays(&self, subscribe: &mut SubscribeTask) {
+        subscribe.relays.urls.retain(|relay| {
+            !self
+                .subs
+                .app_oneshot_already_covers(relay, &subscribe.filters)
+        });
+    }
     /// Applies tracker invalidation changes prepared from the latest session delta.
     fn apply_tracker_invalidation(&mut self, plan: TrackerInvalidationPlan<'_>) {
         for leg in plan.changed_legs {
@@ -450,37 +534,54 @@ impl OutboxPool {
     where
         W: Wakeup,
     {
-        OutboxSessionHandler {
-            outbox: self,
-            session: OutboxSession::default(),
-            wakeup,
-        }
+        OutboxSessionHandler::new(self, wakeup)
     }
 
     pub fn broadcast_note<W>(&mut self, note: &Note, relays: Vec<RelayId>, wakeup: &W)
     where
         W: Wakeup,
     {
-        for relay_id in relays {
-            let Ok(msg) = EventClientMessage::try_from(note) else {
-                continue;
+        let Ok(msg) = EventClientMessage::try_from(note) else {
+            return;
+        };
+        self.broadcast_event(msg, relays, wakeup);
+    }
+
+    /// Broadcast an already-built event message without reserializing a note.
+    pub fn broadcast_event<W>(&mut self, msg: EventClientMessage, relays: Vec<RelayId>, wakeup: &W)
+    where
+        W: Wakeup,
+    {
+        let mut relays = relays.into_iter().peekable();
+        let mut msg = Some(msg);
+        while let Some(relay_id) = relays.next() {
+            let msg_for_relay = if relays.peek().is_some() {
+                let Some(msg) = msg.as_ref() else {
+                    return;
+                };
+                msg.clone()
+            } else {
+                let Some(msg) = msg.take() else {
+                    return;
+                };
+                msg
             };
+
             match relay_id {
                 RelayId::Websocket(norm_relay_url) => {
                     let rel = self.ensure_relay(&norm_relay_url, wakeup);
-                    rel.send_event(msg);
+                    rel.send_event(msg_for_relay);
                 }
                 RelayId::Multicast => {
                     if !self.multicast.is_setup() {
                         self.multicast.try_setup(wakeup);
                     };
 
-                    self.multicast.broadcast(msg);
+                    self.multicast.broadcast(msg_for_relay);
                 }
             }
         }
     }
-
     #[profiling::function]
     pub fn keepalive_ping(&mut self, wakeup: impl Fn() + Send + Sync + Clone + 'static) {
         for (relay_id, relay) in &mut self.relays {
@@ -489,12 +590,18 @@ impl OutboxPool {
                 .try_restore_with_fn(relay_id.clone().into(), wakeup.clone(), false);
             let now = Instant::now();
 
-            let Some(websocket) = relay.websocket.as_mut() else {
-                continue;
-            };
+            let status = relay
+                .websocket
+                .as_ref()
+                .map(|websocket| websocket.conn.status);
 
-            match websocket.conn.status {
-                RelayStatus::Disconnected => {
+            match status {
+                None => continue,
+                Some(RelayStatus::Disconnected) => {
+                    let websocket = relay
+                        .websocket
+                        .as_mut()
+                        .expect("disconnected relay should have a websocket leg");
                     let reconnect_at =
                         websocket.last_connect_attempt + websocket.retry_connect_after;
                     if now > reconnect_at {
@@ -519,27 +626,51 @@ impl OutboxPool {
                         }
                     }
                 }
-                RelayStatus::Connected => {
+                Some(RelayStatus::Connected) => {
+                    let last_pong = relay
+                        .websocket
+                        .as_ref()
+                        .expect("connected relay should have a websocket leg")
+                        .last_pong;
                     // Detect stale connections: if we've been pinging but no
                     // pong has come back within PONG_TIMEOUT, the connection
                     // is silently dead (e.g. laptop sleep, NAT timeout).
-                    if now - websocket.last_pong > self.pong_timeout {
+                    if now - last_pong > self.pong_timeout {
+                        let websocket = relay
+                            .websocket
+                            .as_ref()
+                            .expect("connected relay should have a websocket leg");
                         tracing::warn!(
-                            "pong timeout on {}, marking disconnected",
-                            websocket.conn.url
+                            relay = %relay_id,
+                            send_generation = websocket.conn.send_generation(),
+                            last_pong_elapsed_ms = now.saturating_duration_since(last_pong).as_millis(),
+                            pong_timeout_ms = self.pong_timeout.as_millis(),
+                            last_ping_elapsed_ms = now
+                                .saturating_duration_since(websocket.last_ping)
+                                .as_millis(),
+                            "pong timeout, marking disconnected"
                         );
-                        websocket.set_disconnected_now();
+                        relay.disconnect_websocket_leg();
                         continue;
                     }
 
-                    let should_ping = now - websocket.last_ping > self.keepalive_ping_rate;
+                    let should_ping = {
+                        let websocket = relay
+                            .websocket
+                            .as_ref()
+                            .expect("connected relay should have a websocket leg");
+                        now - websocket.last_ping > self.keepalive_ping_rate
+                    };
                     if should_ping {
-                        tracing::trace!("pinging {}", websocket.conn.url);
+                        let websocket = relay
+                            .websocket
+                            .as_mut()
+                            .expect("connected relay should have a websocket leg");
                         websocket.conn.ping();
                         websocket.last_ping = Instant::now();
                     }
                 }
-                RelayStatus::Connecting => {}
+                Some(RelayStatus::Connecting) => {}
             }
         }
     }
@@ -641,18 +772,12 @@ impl OutboxPool {
         match self.relays.raw_entry_mut().from_key(relay_id) {
             RawEntryMut::Occupied(entry) => {
                 let relay = entry.into_mut();
-                relay.websocket.try_restore_with_wakeup(
-                    relay_id.clone().into(),
-                    wakeup.clone(),
-                    true,
-                );
+                relay.connect_websocket(relay_id, wakeup.clone(), true);
                 relay
             }
             RawEntryMut::Vacant(entry) => {
-                let (_, res) = entry.insert(
-                    relay_id.clone(),
-                    build_relay(relay_id.clone(), wakeup.clone()),
-                );
+                let (_, res) = entry.insert(relay_id.clone(), build_relay());
+                res.connect_websocket(relay_id, wakeup.clone(), true);
                 res
             }
         }
@@ -724,14 +849,38 @@ impl OutboxPool {
     }
 
     #[profiling::function]
-    pub fn try_recv<F>(&mut self, mut max_notes: usize, mut process: F)
+    pub fn try_recv<F>(&mut self, process: F) -> OutboxRecvResult
     where
         for<'a> F: FnMut(RawEventData<'a>),
     {
-        's: while max_notes > 0 {
+        self.try_recv_with_budget(OutboxRecvBudget::unbounded(), process)
+    }
+
+    #[profiling::function]
+    pub fn try_recv_with_budget<F>(
+        &mut self,
+        budget: OutboxRecvBudget,
+        mut process: F,
+    ) -> OutboxRecvResult
+    where
+        for<'a> F: FnMut(RawEventData<'a>),
+    {
+        let mut result = OutboxRecvResult::default();
+
+        's: loop {
+            if budget.time_budget_exhausted() {
+                result.time_budget_exhausted = true;
+                break;
+            }
+
             let mut received_any = false;
 
             for (relay_id, relay) in &mut self.relays {
+                if budget.time_budget_exhausted() {
+                    result.time_budget_exhausted = true;
+                    break 's;
+                }
+
                 let resp = relay.try_recv(&self.subs, self.keepalive_reconnect_delay, &mut process);
                 if resp.eose_enqueued || relay.has_pending_effects() {
                     self.eose_tracker.note_relay_pending_effects(relay_id);
@@ -743,11 +892,9 @@ impl OutboxPool {
 
                 received_any = true;
 
-                if resp.event_was_nostr_note {
-                    max_notes = max_notes.saturating_sub(1);
-                    if max_notes == 0 {
-                        break 's;
-                    }
+                if budget.time_budget_exhausted() {
+                    result.time_budget_exhausted = true;
+                    break 's;
                 }
             }
 
@@ -756,8 +903,37 @@ impl OutboxPool {
             }
         }
 
+        self.process_remote_maintenance_with_budget(&budget, &mut result);
+
+        if !result.time_budget_exhausted {
+            self.multicast.try_recv(process);
+            if budget.time_budget_exhausted() {
+                result.time_budget_exhausted = true;
+            }
+        }
+        result
+    }
+
+    fn process_remote_maintenance_with_budget(
+        &mut self,
+        budget: &OutboxRecvBudget,
+        result: &mut OutboxRecvResult,
+    ) {
+        if budget.time_budget_exhausted() {
+            result.time_budget_exhausted = true;
+            return;
+        }
+
+        self.poll_negentropy_state_machine();
+        if budget.time_budget_exhausted() {
+            result.time_budget_exhausted = true;
+            return;
+        }
+
         self.process_pending_relay_effects();
-        self.multicast.try_recv(process);
+        if budget.time_budget_exhausted() {
+            result.time_budget_exhausted = true;
+        }
     }
 
     /// Processes relay-local pending effects accumulated during receive polling.
@@ -812,6 +988,41 @@ fn stage_unsubscribe_task(delta: &mut SessionDelta, relay: &NormRelayUrl, id: Ou
     let session = get_session(&mut delta.sessions, relay);
     session.unsubscribe(id);
 }
+/// Stage relay work for a full durable-sub modification.
+///
+/// Relay-only changes should only touch added/removed relay legs. Retained
+/// relay legs need a fresh subscribe only when the live filters changed.
+fn stage_full_modify_tasks(
+    delta: &mut SessionDelta,
+    id: OutboxSubId,
+    sub: &OutboxSubscription,
+    full: &FullModificationTask,
+    routing_preference: RelayRoutingPreference,
+) -> bool {
+    let next_relays = &full.relays;
+    for relay in sub.relays.difference(next_relays) {
+        stage_unsubscribe_task(delta, relay, id);
+    }
+
+    if next_relays.is_empty() {
+        return true;
+    }
+
+    let filters_changed =
+        !same_canonical_filter_set(sub.filters.get_filters(), full.filters.as_slice());
+    if filters_changed {
+        for relay in next_relays {
+            stage_subscribe_task(delta, relay, id, routing_preference);
+        }
+        return false;
+    }
+
+    for relay in next_relays.difference(&sub.relays) {
+        stage_subscribe_task(delta, relay, id, routing_preference);
+    }
+
+    false
+}
 
 fn unix_now_secs() -> Option<u64> {
     SystemTime::now()
@@ -832,6 +1043,18 @@ impl SubRegistry {
     }
 }
 
+struct FullHistoryRegistry {
+    next_request_id: u64,
+}
+
+impl FullHistoryRegistry {
+    pub fn next(&mut self) -> FullHistorySubId {
+        let i = self.next_request_id;
+        self.next_request_id += 1;
+        FullHistorySubId(i)
+    }
+}
+
 pub fn get_session<'a>(
     map: &'a mut HashMap<NormRelayUrl, CoordinationSession>,
     id: &NormRelayUrl,
@@ -846,15 +1069,8 @@ pub fn get_session<'a>(
     }
 }
 
-fn build_relay<W>(relay_id: NormRelayUrl, wakeup: W) -> CoordinationData
-where
-    W: Wakeup,
-{
-    CoordinationData::new(
-        RelayLimitations::default(), // TODO(kernelkind): add actual limitations
-        relay_id,
-        wakeup,
-    )
+fn build_relay() -> CoordinationData {
+    CoordinationData::new(RelayLimitations::default()) // TODO(kernelkind): add actual limitations
 }
 
 fn derive_relay_limitations_from_raw(
@@ -889,7 +1105,7 @@ mod tests {
     use nostrdb::Filter;
     use std::{
         sync::{Arc, Mutex},
-        time::Instant,
+        time::{Duration, Instant},
     };
     use tokio::{net::TcpListener, sync::Notify};
     use tokio_tungstenite::{accept_async, tungstenite::Message};
@@ -1023,7 +1239,7 @@ mod tests {
         let deadline = Instant::now() + timeout;
 
         loop {
-            pool.try_recv(10, |_| {});
+            pool.try_recv(|_| {});
             if websocket_status(pool, relay) == Some(RelayStatus::Connected) {
                 return;
             }
@@ -1039,8 +1255,8 @@ mod tests {
     }
 
     /// Ensures the subscription registry always yields unique IDs.
-    #[test]
-    fn registry_generates_unique_ids() {
+    #[tokio::test]
+    async fn registry_generates_unique_ids() {
         let mut registry = SubRegistry { next_request_id: 0 };
 
         let id1 = registry.next();
@@ -1053,8 +1269,11 @@ mod tests {
     }
 
     /// Existing relay coordinators with a missing websocket should be restored by ensure_relay.
-    #[test]
-    fn ensure_relay_restores_missing_websocket() {
+    ///
+    /// `ensure_relay` can build `WebsocketConn`; this needs a Tokio runtime
+    /// when the ewebsock Tokio backend is used.
+    #[tokio::test]
+    async fn ensure_relay_restores_missing_websocket() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay_id = NormRelayUrl::new("wss://relay-restore.example.com").unwrap();
@@ -1073,8 +1292,8 @@ mod tests {
     }
 
     /// EOSE from relays not currently routed for a subscription should be ignored.
-    #[test]
-    fn eose_tracker_ignores_non_routed_relays() {
+    #[tokio::test]
+    async fn eose_tracker_ignores_non_routed_relays() {
         let relay_a = NormRelayUrl::new("wss://relay-eose-routed.example.com").unwrap();
         let relay_b = NormRelayUrl::new("wss://relay-eose-stale.example.com").unwrap();
         let id = OutboxSubId(1);
@@ -1109,8 +1328,8 @@ mod tests {
     }
 
     /// Clearing one routed relay should invalidate cached fully-EOSE completion for that sub.
-    #[test]
-    fn eose_tracker_invalidate_relay_leg_invalidates_cached_completion() {
+    #[tokio::test]
+    async fn eose_tracker_invalidate_relay_leg_invalidates_cached_completion() {
         let relay_a = NormRelayUrl::new("wss://relay-eose-clear-a.example.com").unwrap();
         let relay_b = NormRelayUrl::new("wss://relay-eose-clear-b.example.com").unwrap();
         let id = OutboxSubId(2);
@@ -1144,8 +1363,8 @@ mod tests {
 
     /// Shrinking a subscription's relay set can complete it immediately if all
     /// remaining relays had already reached EOSE.
-    #[test]
-    fn eose_tracker_reconciles_completion_when_relay_set_shrinks() {
+    #[tokio::test]
+    async fn eose_tracker_reconciles_completion_when_relay_set_shrinks() {
         let relay_a = NormRelayUrl::new("wss://relay-eose-shrink-a.example.com").unwrap();
         let relay_b = NormRelayUrl::new("wss://relay-eose-shrink-b.example.com").unwrap();
         let id = OutboxSubId(22);
@@ -1179,8 +1398,8 @@ mod tests {
 
     /// Expanding a subscription's relay set should drop full completion until
     /// the newly added relay also reaches EOSE.
-    #[test]
-    fn eose_tracker_reconciles_incomplete_when_relay_set_expands() {
+    #[tokio::test]
+    async fn eose_tracker_reconciles_incomplete_when_relay_set_expands() {
         let relay_a = NormRelayUrl::new("wss://relay-eose-expand-a.example.com").unwrap();
         let relay_b = NormRelayUrl::new("wss://relay-eose-expand-b.example.com").unwrap();
         let id = OutboxSubId(23);
@@ -1221,8 +1440,8 @@ mod tests {
 
     /// Coordinator-reported relay-leg invalidations must clear stale durable
     /// EOSE completion before any fresh REQ on that relay can complete again.
-    #[test]
-    fn apply_relay_eose_delta_clears_invalidated_sub_ids() {
+    #[tokio::test]
+    async fn apply_relay_eose_delta_clears_invalidated_sub_ids() {
         let relay = NormRelayUrl::new("wss://relay-eose-delta-clear.example.com").unwrap();
         let id = OutboxSubId(3);
         let mut relays = HashSet::new();
@@ -1256,8 +1475,8 @@ mod tests {
 
     /// Receive-driven EOSE processing must apply ready fully-EOSE effects in
     /// the same frame, including oneshot cleanup.
-    #[test]
-    fn process_pending_relay_effects_applies_ready_fully_eosed_effects() {
+    #[tokio::test]
+    async fn process_pending_relay_effects_applies_ready_fully_eosed_effects() {
         let relay = NormRelayUrl::new("wss://relay-eose-pending-effects.example.com").unwrap();
         let id = OutboxSubId(24);
         let mut relays = HashSet::new();
@@ -1283,10 +1502,50 @@ mod tests {
         );
     }
 
+    /// Receive deadlines should defer queued maintenance instead of running it
+    /// in an already over-budget frame.
+    #[tokio::test]
+    async fn timed_try_recv_defers_pending_eose_effects_when_budget_exhausted() {
+        let relay = NormRelayUrl::new("wss://relay-eose-time-budget-effects.example.com").unwrap();
+        let id = OutboxSubId(25);
+        let mut relays = HashSet::new();
+        relays.insert(relay.clone());
+
+        let mut pool = OutboxPool::default();
+        pool.subs.new_subscription(
+            id,
+            SubscribeTask {
+                filters: trivial_filter(),
+                relays: RelayUrlPkgs::new(relays),
+            },
+            true,
+        );
+
+        pool.eose_tracker.mark_relay_eose(&relay, id, &pool.subs);
+        pool.eose_tracker.note_relay_pending_effects(&relay);
+
+        let recv = pool.try_recv_with_budget(
+            OutboxRecvBudget::until(Instant::now() - Duration::from_millis(1)),
+            |_| {},
+        );
+
+        assert!(recv.time_budget_exhausted);
+        assert!(
+            pool.subs.get(&id).is_some(),
+            "queued EOSE effects should wait for the next frame when receive time is exhausted"
+        );
+
+        pool.try_recv(|_| {});
+        assert!(
+            pool.subs.get(&id).is_none(),
+            "queued EOSE effects should flush once the next frame has maintenance budget"
+        );
+    }
+
     /// Unsaturated relays should place preferred dedicated requests on a
     /// dedicated leg rather than falling through to compaction.
-    #[test]
-    fn prefer_dedicated_request_uses_dedicated_when_unsaturated() {
+    #[tokio::test]
+    async fn prefer_dedicated_request_uses_dedicated_when_unsaturated() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay =
@@ -1307,8 +1566,8 @@ mod tests {
 
     /// Unsaturated relays should also place no-preference requests on a
     /// dedicated leg before considering compaction fallback.
-    #[test]
-    fn no_preference_request_uses_dedicated_when_unsaturated() {
+    #[tokio::test]
+    async fn no_preference_request_uses_dedicated_when_unsaturated() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-no-preference-unsaturated.example.com").unwrap();
@@ -1327,8 +1586,8 @@ mod tests {
 
     /// Fully EOSE'd dedicated routes should keep their original filters instead
     /// of advancing `since`, which is only safe for compaction.
-    #[test]
-    fn fully_eosed_dedicated_route_does_not_optimize_since() {
+    #[tokio::test]
+    async fn fully_eosed_dedicated_route_does_not_optimize_since() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-since-dedicated.example.com").unwrap();
@@ -1364,8 +1623,8 @@ mod tests {
     /// Fully EOSE'd compaction routes should keep the base filters pristine
     /// while their compaction projection advances `since` for future shared
     /// REQs.
-    #[test]
-    fn fully_eosed_compaction_route_optimizes_since() {
+    #[tokio::test]
+    async fn fully_eosed_compaction_route_optimizes_since() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-since-compaction.example.com").unwrap();
@@ -1563,8 +1822,8 @@ mod tests {
 
     /// Mixed routing should refuse `since` optimization until every relay leg
     /// for the subscription is owned by compaction.
-    #[test]
-    fn fully_eosed_mixed_routes_do_not_optimize_since() {
+    #[tokio::test]
+    async fn fully_eosed_mixed_routes_do_not_optimize_since() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay_dedicated =
@@ -1626,8 +1885,8 @@ mod tests {
 
     /// A request that caught up through compaction should still use pristine
     /// stored filters if it is later promoted back to dedicated routing.
-    #[test]
-    fn promoted_dedicated_route_does_not_keep_compaction_since() {
+    #[tokio::test]
+    async fn promoted_dedicated_route_does_not_keep_compaction_since() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-promoted-since.example.com").unwrap();
@@ -1714,8 +1973,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn derive_relay_limitations_uses_positive_raw_values() {
+    #[tokio::test]
+    async fn derive_relay_limitations_uses_positive_raw_values() {
         let fallback = RelayLimitations {
             maximum_subs: 10,
             max_json_bytes: 200_000,
@@ -1731,8 +1990,8 @@ mod tests {
         assert_eq!(derived.max_json_bytes, 131_072);
     }
 
-    #[test]
-    fn derive_relay_limitations_ignores_invalid_values() {
+    #[tokio::test]
+    async fn derive_relay_limitations_ignores_invalid_values() {
         let fallback = RelayLimitations {
             maximum_subs: 10,
             max_json_bytes: 200_000,
@@ -1749,8 +2008,8 @@ mod tests {
     }
 
     /// Ensures NIP-11 fetch requests respect in-flight and retry timing lifecycle gates.
-    #[test]
-    fn take_nip11_fetch_requests_respects_lifecycle_and_retry_schedule() {
+    #[tokio::test]
+    async fn take_nip11_fetch_requests_respects_lifecycle_and_retry_schedule() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-nip11-gating.example.com").unwrap();
@@ -1790,8 +2049,8 @@ mod tests {
     }
 
     /// Ensures applying NIP-11 limits reports all outcomes and refresh scheduling is enforced.
-    #[test]
-    fn apply_nip11_limits_reports_outcomes_and_updates_state() {
+    #[tokio::test]
+    async fn apply_nip11_limits_reports_outcomes_and_updates_state() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let known = NormRelayUrl::new("wss://relay-nip11-known.example.com").unwrap();
@@ -1842,8 +2101,8 @@ mod tests {
     // ==================== OutboxPool tests ====================
 
     /// Default pool has no relays or subscriptions.
-    #[test]
-    fn outbox_pool_default_empty() {
+    #[tokio::test]
+    async fn outbox_pool_default_empty() {
         let pool = OutboxPool::default();
         assert!(pool.relays.is_empty());
         // Verify no subscriptions by checking that a lookup returns empty status
@@ -1851,31 +2110,31 @@ mod tests {
     }
 
     /// has_eose returns false when no relays are tracking the request.
-    #[test]
-    fn outbox_pool_has_eose_false_when_empty() {
+    #[tokio::test]
+    async fn outbox_pool_has_eose_false_when_empty() {
         let pool = OutboxPool::default();
         assert!(!pool.has_eose(&OutboxSubId(0)));
     }
 
     /// status() returns empty map for unknown request IDs.
-    #[test]
-    fn outbox_pool_status_empty_for_unknown() {
+    #[tokio::test]
+    async fn outbox_pool_status_empty_for_unknown() {
         let pool = OutboxPool::default();
         let status = pool.status(&OutboxSubId(999));
         assert!(status.is_empty());
     }
 
     /// websocket_statuses() is empty before any relays connect.
-    #[test]
-    fn outbox_pool_websocket_statuses_empty_initially() {
+    #[tokio::test]
+    async fn outbox_pool_websocket_statuses_empty_initially() {
         let pool = OutboxPool::default();
         let statuses = pool.websocket_statuses();
         assert!(statuses.is_empty());
     }
 
     /// Full modifications should unsubscribe old relays and resubscribe new ones using the updated filters.
-    #[test]
-    fn full_modification_updates_sessions_with_new_filters() {
+    #[tokio::test]
+    async fn full_modification_updates_sessions_with_new_filters() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay_a = NormRelayUrl::new("wss://relay-a.example.com").unwrap();
@@ -1906,13 +2165,12 @@ mod tests {
             let mut updated_relays = HashSet::new();
             updated_relays.insert(relay_b.clone());
 
-            let mut handler = pool.start_session(wakeup);
-            handler.modify_filters(
+            let mut session = OutboxSession::default();
+            session.new_filters(
                 new_sub_id,
                 vec![Filter::new().kinds(vec![3]).limit(1).build()],
             );
-            handler.modify_relays(new_sub_id, updated_relays);
-            let session = handler.export();
+            session.new_relays(new_sub_id, updated_relays);
             pool.collect_sessions(session)
         };
 
@@ -1933,8 +2191,8 @@ mod tests {
     }
 
     /// Oneshot requests use the default prefer-dedicated routing policy.
-    #[test]
-    fn oneshot_routes_to_prefer_dedicated() {
+    #[tokio::test]
+    async fn oneshot_routes_to_prefer_dedicated() {
         let mut pool = OutboxPool::default();
         let relay = NormRelayUrl::new("wss://relay-oneshot.example.com").unwrap();
         let mut relays = HashSet::new();
@@ -1957,9 +2215,66 @@ mod tests {
         ));
     }
 
+    /// Duplicate one-shot declarations in the same session should not stage
+    /// duplicate relay work for the same canonical filter set.
+    #[tokio::test]
+    async fn duplicate_oneshot_same_session_is_staged_once() {
+        let mut pool = OutboxPool::default();
+        let relay = NormRelayUrl::new("wss://relay-oneshot.example.com").unwrap();
+        let mut relays = HashSet::new();
+        relays.insert(relay.clone());
+        let relays = RelayUrlPkgs::new(relays);
+        let id = [1; 32];
+        let filters = vec![Filter::new().ids([&id]).build()];
+
+        let mut session = OutboxSession::default();
+        session.oneshot(OutboxSubId(42), filters.clone(), relays.clone());
+        session.oneshot(OutboxSubId(43), filters.clone(), relays);
+
+        let sessions = pool.collect_sessions(session);
+        let relay_session = sessions
+            .get(&relay)
+            .expect("expected one relay session for deduped oneshot");
+        let subscribe_count = relay_session
+            .tasks
+            .values()
+            .filter(|task| matches!(task, CoordinationTask::Subscribe(_)))
+            .count();
+        assert_eq!(subscribe_count, 1);
+    }
+
+    /// A later one-shot should not restage relay work while an equivalent
+    /// active one-shot is still waiting for EOSE.
+    #[tokio::test]
+    async fn duplicate_oneshot_active_request_is_not_restaged() {
+        let mut pool = OutboxPool::default();
+        let relay = NormRelayUrl::new("wss://relay-oneshot.example.com").unwrap();
+        let mut relays = HashSet::new();
+        relays.insert(relay.clone());
+        let relays = RelayUrlPkgs::new(relays);
+        let id = [1; 32];
+        let filters = vec![Filter::new().ids([&id]).build()];
+
+        let mut initial_session = OutboxSession::default();
+        initial_session.oneshot(OutboxSubId(42), filters.clone(), relays.clone());
+        let initial_sessions = pool.collect_sessions(initial_session);
+        assert!(
+            initial_sessions.get(&relay).is_some(),
+            "initial oneshot should stage relay work"
+        );
+
+        let mut duplicate_session = OutboxSession::default();
+        duplicate_session.oneshot(OutboxSubId(43), filters, relays);
+        let duplicate_sessions = pool.collect_sessions(duplicate_session);
+        assert!(
+            duplicate_sessions.get(&relay).is_none(),
+            "duplicate oneshot should be suppressed while active"
+        );
+    }
+
     /// Unsubscribing from a multi-relay subscription emits unsubscribe tasks for each relay.
-    #[test]
-    fn unsubscribe_targets_all_relays() {
+    #[tokio::test]
+    async fn unsubscribe_targets_all_relays() {
         let mut pool = OutboxPool::default();
         let relay_a = NormRelayUrl::new("wss://relay-a.example.com").unwrap();
         let relay_b = NormRelayUrl::new("wss://relay-b.example.com").unwrap();
@@ -1988,8 +2303,8 @@ mod tests {
     }
 
     /// Subscriptions with `PreferDedicated` policy route to dedicated-preferred mode.
-    #[test]
-    fn subscribe_dedicated_preferred_mode() {
+    #[tokio::test]
+    async fn subscribe_dedicated_preferred_mode() {
         let mut pool = OutboxPool::default();
         let relay = NormRelayUrl::new("wss://relay-transparent.example.com").unwrap();
         let id = OutboxSubId(5);
@@ -2012,8 +2327,8 @@ mod tests {
     }
 
     /// Modifying filters should re-subscribe the routed relays with the new filters.
-    #[test]
-    fn modify_filters_reissues_subscribe_for_existing_relays() {
+    #[tokio::test]
+    async fn modify_filters_reissues_subscribe_for_existing_relays() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-modify.example.com").unwrap();
@@ -2026,11 +2341,10 @@ mod tests {
         };
 
         let (sessions, expected_json) = {
-            let mut handler = pool.start_session(wakeup);
+            let mut session = OutboxSession::default();
             let updated_filters = vec![Filter::new().kinds(vec![7]).limit(2).build()];
             let expected_json = filters_json(&updated_filters);
-            handler.modify_filters(sub_id, updated_filters);
-            let session = handler.export();
+            session.new_filters(sub_id, updated_filters);
             (pool.collect_sessions(session), expected_json)
         };
 
@@ -2049,8 +2363,8 @@ mod tests {
     }
 
     /// Modifying filters should preserve the default dedicated retry policy.
-    #[test]
-    fn modify_filters_preserves_default_dedicated_retry_policy() {
+    #[tokio::test]
+    async fn modify_filters_preserves_default_dedicated_retry_policy() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-modify-default-retry.example.com").unwrap();
@@ -2063,9 +2377,8 @@ mod tests {
         };
 
         let sessions = {
-            let mut handler = pool.start_session(wakeup);
-            handler.modify_filters(sub_id, vec![Filter::new().kinds(vec![1]).limit(7).build()]);
-            let session = handler.export();
+            let mut session = OutboxSession::default();
+            session.new_filters(sub_id, vec![Filter::new().kinds(vec![1]).limit(7).build()]);
             pool.collect_sessions(session)
         };
 
@@ -2080,8 +2393,8 @@ mod tests {
     }
 
     /// Modifying filters should preserve the prefer-dedicated retry policy.
-    #[test]
-    fn modify_filters_preserves_preferred_dedicated_retry_policy() {
+    #[tokio::test]
+    async fn modify_filters_preserves_preferred_dedicated_retry_policy() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-modify-preferred-retry.example.com").unwrap();
@@ -2095,9 +2408,8 @@ mod tests {
         };
 
         let sessions = {
-            let mut handler = pool.start_session(wakeup);
-            handler.modify_filters(sub_id, vec![Filter::new().kinds(vec![1]).limit(9).build()]);
-            let session = handler.export();
+            let mut session = OutboxSession::default();
+            session.new_filters(sub_id, vec![Filter::new().kinds(vec![1]).limit(9).build()]);
             pool.collect_sessions(session)
         };
 
@@ -2112,8 +2424,8 @@ mod tests {
     }
 
     /// Modifying relays should unsubscribe removed relays and subscribe new ones.
-    #[test]
-    fn modify_relays_differs_routing_sets() {
+    #[tokio::test]
+    async fn modify_relays_differs_routing_sets() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay_a = NormRelayUrl::new("wss://relay-diff-a.example.com").unwrap();
@@ -2127,11 +2439,10 @@ mod tests {
         };
 
         let sessions = {
-            let mut handler = pool.start_session(wakeup);
+            let mut session = OutboxSession::default();
             let mut new_urls = HashSet::new();
             new_urls.insert(relay_b.clone());
-            handler.modify_relays(sub_id, new_urls);
-            let session = handler.export();
+            session.new_relays(sub_id, new_urls);
             pool.collect_sessions(session)
         };
 
@@ -2151,9 +2462,100 @@ mod tests {
         ));
     }
 
+    /// A full modification that only adds a relay should not reissue retained relay legs.
+    #[tokio::test]
+    async fn modify_full_relay_only_update_subscribes_only_added_relays() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay_a = NormRelayUrl::new("wss://relay-full-removed.example.com").unwrap();
+        let relay_b = NormRelayUrl::new("wss://relay-full-retained.example.com").unwrap();
+        let relay_c = NormRelayUrl::new("wss://relay-full-added.example.com").unwrap();
+
+        let filter = Filter::new().kinds(vec![1]).limit(10).build();
+        let mut initial_relays = HashSet::new();
+        initial_relays.insert(relay_a.clone());
+        initial_relays.insert(relay_b.clone());
+        let sub_id = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(
+                vec![filter.clone()],
+                RelayUrlPkgs::new(initial_relays.clone()),
+            )
+        };
+
+        let sessions = {
+            let mut session = OutboxSession::default();
+            let mut updated_relays = HashSet::new();
+            updated_relays.insert(relay_b.clone());
+            updated_relays.insert(relay_c.clone());
+            session.modify_full(sub_id, vec![filter], updated_relays);
+            pool.collect_sessions(session)
+        };
+
+        let removed_task = sessions
+            .get(&relay_a)
+            .and_then(|session| session.tasks.get(&sub_id))
+            .expect("missing removed relay unsubscribe");
+        assert!(matches!(removed_task, CoordinationTask::Unsubscribe));
+
+        assert!(
+            sessions
+                .get(&relay_b)
+                .and_then(|session| session.tasks.get(&sub_id))
+                .is_none(),
+            "retained relay leg should not receive a duplicate subscribe"
+        );
+
+        let added_task = sessions
+            .get(&relay_c)
+            .and_then(|session| session.tasks.get(&sub_id))
+            .expect("missing added relay subscribe");
+        assert!(matches!(
+            added_task,
+            CoordinationTask::Subscribe(RelayRoutingPreference::PreferDedicated)
+        ));
+    }
+
+    /// A full modification that changes filters should reissue retained relay legs.
+    #[tokio::test]
+    async fn modify_full_filter_update_reissues_retained_relays() {
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        let relay = NormRelayUrl::new("wss://relay-full-filter-retained.example.com").unwrap();
+
+        let mut relays = HashSet::new();
+        relays.insert(relay.clone());
+        let sub_id = {
+            let mut handler = pool.start_session(wakeup.clone());
+            handler.subscribe(
+                vec![Filter::new().kinds(vec![1]).limit(10).build()],
+                RelayUrlPkgs::new(relays.clone()),
+            )
+        };
+
+        let sessions = {
+            let mut session = OutboxSession::default();
+            session.modify_full(
+                sub_id,
+                vec![Filter::new().kinds(vec![7]).limit(10).build()],
+                relays,
+            );
+            pool.collect_sessions(session)
+        };
+
+        let task = sessions
+            .get(&relay)
+            .and_then(|session| session.tasks.get(&sub_id))
+            .expect("missing retained relay subscribe");
+        assert!(matches!(
+            task,
+            CoordinationTask::Subscribe(RelayRoutingPreference::PreferDedicated)
+        ));
+    }
+
     /// Full modifications that end up with no relays should drop the subscription entirely.
-    #[test]
-    fn modify_full_with_empty_relays_removes_subscription() {
+    #[tokio::test]
+    async fn modify_full_with_empty_relays_removes_subscription() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-empty.example.com").unwrap();
@@ -2166,10 +2568,12 @@ mod tests {
         };
 
         let sessions = {
-            let mut handler = pool.start_session(wakeup);
-            handler.modify_filters(sub_id, vec![Filter::new().kinds(vec![9]).limit(1).build()]);
-            handler.modify_relays(sub_id, HashSet::new());
-            let session = handler.export();
+            let mut session = OutboxSession::default();
+            session.modify_full(
+                sub_id,
+                vec![Filter::new().kinds(vec![9]).limit(1).build()],
+                HashSet::new(),
+            );
             pool.collect_sessions(session)
         };
 
@@ -2186,8 +2590,8 @@ mod tests {
 
     /// High churn of modify/unsubscribe operations should keep active and inactive
     /// subscription state consistent without leaking relay status entries.
-    #[test]
-    fn high_churn_modify_and_unsubscribe_keeps_consistent_state() {
+    #[tokio::test]
+    async fn high_churn_modify_and_unsubscribe_keeps_consistent_state() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay_a = NormRelayUrl::new("wss://relay-churn-a.example.com").unwrap();
@@ -2260,8 +2664,8 @@ mod tests {
     /// Under relay saturation with only prefer-dedicated subscriptions, the
     /// existing preferred dedicated route should keep its dedicated slot and the
     /// incoming preferred request should compact instead.
-    #[test]
-    fn saturation_keeps_existing_preferred_dedicated_when_all_preferred_and_full() {
+    #[tokio::test]
+    async fn saturation_keeps_existing_preferred_dedicated_when_all_preferred_and_full() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-saturation-demotion.example.com").unwrap();
@@ -2314,8 +2718,8 @@ mod tests {
     /// demoted by a NIP-11 limit shrink, a later required request queues
     /// behind a live required oneshot, receive-path EOSE cleanup frees that
     /// slot, and a later limit increase promotes the preferred route back.
-    #[test]
-    fn required_queue_survives_limit_shrink_oneshot_cleanup_and_reexpand() {
+    #[tokio::test]
+    async fn required_queue_survives_limit_shrink_oneshot_cleanup_and_reexpand() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
         let relay = NormRelayUrl::new("wss://relay-required-churn.example.com").unwrap();
@@ -2489,8 +2893,8 @@ mod tests {
     // ==================== OutboxSessionHandler tests ====================
 
     /// The first subscribe issued via handler should return SubRequestId(0).
-    #[test]
-    fn outbox_session_handler_subscribe_returns_id() {
+    #[tokio::test]
+    async fn outbox_session_handler_subscribe_returns_id() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
 
@@ -2503,8 +2907,8 @@ mod tests {
     }
 
     /// Separate sessions should continue incrementing subscription IDs globally.
-    #[test]
-    fn outbox_session_handler_multiple_subscribes_unique_ids() {
+    #[tokio::test]
+    async fn outbox_session_handler_multiple_subscribes_unique_ids() {
         let mut pool = OutboxPool::default();
         let wakeup = MockWakeup::default();
 
@@ -2523,28 +2927,11 @@ mod tests {
         assert_eq!(id2, OutboxSubId(1));
     }
 
-    /// Exporting/importing a session should carry over any pending tasks intact.
-    #[test]
-    fn outbox_session_handler_export_and_import() {
-        let mut pool = OutboxPool::default();
-        let wakeup = MockWakeup::default();
-
-        // Create a handler and export its session
-        let handler = pool.start_session(wakeup.clone());
-        let session = handler.export();
-
-        // Should be empty since we didn't do anything
-        assert!(session.tasks.is_empty());
-
-        // Import the session back
-        let _handler = OutboxSessionHandler::import(&mut pool, session, wakeup);
-    }
-
     // ==================== get_session tests ====================
 
     /// get_session should create a new coordination entry when missing.
-    #[test]
-    fn get_session_creates_new_if_missing() {
+    #[tokio::test]
+    async fn get_session_creates_new_if_missing() {
         let mut map: HashMap<NormRelayUrl, CoordinationSession> = HashMap::new();
         let url = NormRelayUrl::new("wss://relay.example.com").unwrap();
 
@@ -2555,8 +2942,8 @@ mod tests {
     }
 
     /// get_session returns the pre-existing coordination session.
-    #[test]
-    fn get_session_returns_existing() {
+    #[tokio::test]
+    async fn get_session_returns_existing() {
         let mut map: HashMap<NormRelayUrl, CoordinationSession> = HashMap::new();
         let url = NormRelayUrl::new("wss://relay.example.com").unwrap();
 

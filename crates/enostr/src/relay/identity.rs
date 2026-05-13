@@ -19,6 +19,9 @@ pub enum RelayId {
 #[derive(Clone, Copy, Hash, PartialEq, Eq, Debug, PartialOrd, Ord)]
 pub struct OutboxSubId(pub u64);
 
+#[derive(Clone, Copy, Hash, PartialEq, Eq, Debug, PartialOrd, Ord)]
+pub struct FullHistorySubId(pub u64);
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RelayReqStatus {
     InitialQuery,

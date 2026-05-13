@@ -1146,8 +1146,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn handle_relay_open_reports_all_reissued_compaction_sub_ids() {
+    #[tokio::test]
+    async fn handle_relay_open_reports_all_reissued_compaction_sub_ids() {
         let mut subs = OutboxSubscriptions::default();
         subs.new_subscription(
             OutboxSubId(0),

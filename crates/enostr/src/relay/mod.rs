@@ -7,31 +7,33 @@ mod indexed_queue;
 mod limits;
 pub mod message;
 mod multicast;
+mod negentropy;
 mod nip11;
 mod outbox;
-pub mod pool;
 mod queue;
-pub mod subs_debug;
 mod subscription;
 mod transparent;
 mod websocket;
 
 pub use broadcast::{BroadcastCache, BroadcastRelay};
 pub use identity::{
-    NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus, RelayRoutingPreference,
-    RelayType, RelayUrlPkgs,
+    FullHistorySubId, NormRelayUrl, OutboxSubId, RelayId, RelayReqId, RelayReqStatus,
+    RelayRoutingPreference, RelayType, RelayUrlPkgs,
 };
 pub use limits::{
     RelayCoordinatorLimits, RelayLimitations, SubPass, SubPassGuardian, SubPassRevocation,
 };
 pub use multicast::{MulticastRelay, MulticastRelayCache};
+pub use negentropy::{EventChecker, NegSetProvider};
 pub use nip11::{Nip11ApplyOutcome, Nip11FetchRequest, Nip11LimitationsRaw};
 use nostrdb::Filter;
-pub use outbox::{OutboxPool, OutboxSession, OutboxSessionHandler};
+pub use outbox::{
+    OutboxPool, OutboxRecvBudget, OutboxRecvResult, OutboxSession, OutboxSessionHandler,
+};
 pub use queue::QueuedTasks;
 pub use subscription::{
-    FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask, OutboxSubscriptions,
-    OutboxTask, SubscribeTask,
+    FullHistoryConfig, FullModificationTask, ModifyFiltersTask, ModifyRelaysTask, ModifyTask,
+    OutboxSubscriptions, OutboxTask, SubscribeTask,
 };
 pub use websocket::{WebsocketConn, WebsocketRelay, WebsocketSlot};
 
@@ -77,6 +79,34 @@ pub struct FilterMetadata {
 pub struct MetadataFilters {
     filters: Vec<Filter>,
     meta: Vec<FilterMetadata>,
+}
+
+/// Compare two filter lists as an order-insensitive multiset using canonical
+/// filter attributes.
+pub fn same_canonical_filter_set(left: &[Filter], right: &[Filter]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    if left
+        .iter()
+        .zip(right.iter())
+        .all(|(left_filter, right_filter)| left_filter.same_canonical_attributes(right_filter))
+    {
+        return true;
+    }
+
+    let mut matched = vec![false; right.len()];
+    for left_filter in left {
+        let Some((index, _)) = right.iter().enumerate().find(|(index, right_filter)| {
+            !matched[*index] && left_filter.same_canonical_attributes(right_filter)
+        }) else {
+            return false;
+        };
+        matched[index] = true;
+    }
+
+    true
 }
 
 impl MetadataFilters {
@@ -226,6 +256,21 @@ mod tests {
             !base_json.contains("\"since\""),
             "base filters should remain pristine after projection"
         );
+    }
+
+    #[test]
+    fn same_canonical_filter_set_compares_order_insensitive_multiset() {
+        let first = Filter::new().kinds(vec![1]).limit(10).build();
+        let second = Filter::new().kinds(vec![2]).since(42).build();
+
+        assert!(same_canonical_filter_set(
+            &[first.clone(), second.clone()],
+            &[second.clone(), first.clone()]
+        ));
+        assert!(!same_canonical_filter_set(
+            &[first.clone(), second.clone()],
+            &[first.clone(), first]
+        ));
     }
 
     #[test]
