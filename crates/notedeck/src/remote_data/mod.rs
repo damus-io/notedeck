@@ -1,5 +1,8 @@
 mod negentropy;
 
+#[cfg(test)]
+mod tests;
+
 use self::negentropy::{FullHistoryNegSetProvider, NdbEventChecker};
 use crate::jobs::{JobCache, JobPool, JobSpawner};
 use crate::relay_limits::{enqueue_nip11_fetch, RelayLimitJobs};
