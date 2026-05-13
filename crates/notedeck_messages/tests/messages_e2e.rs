@@ -18,7 +18,8 @@ use harness::fixtures::{
     seed_local_giftwraps_in_data_dir, seed_local_notes_in_data_dir, seed_local_profile_metadata,
 };
 use harness::ui::{
-    build_direct_message_batch, open_conversation_via_ui, send_direct_message, send_message_via_ui,
+    build_direct_message_batch, open_conversation_via_ui, press_message_composer_enter,
+    send_direct_message, send_message_via_ui,
 };
 use harness::{
     add_account_to_device, assert_cluster_matches_expected, assert_devices_match_expected,
@@ -94,6 +95,23 @@ async fn snapshot_relay_giftwrap_ids(relay_db: &MemoryDatabase) -> HashSet<Event
         .query(vec![filter])
         .await
         .expect("snapshot relay giftwrap ids")
+        .into_iter()
+        .map(|e| e.id)
+        .collect()
+}
+
+/// Snapshots giftwrap event IDs on the relay for one recipient `p` tag.
+async fn snapshot_relay_giftwrap_ids_for_recipient(
+    relay_db: &MemoryDatabase,
+    recipient: &FullKeypair,
+) -> HashSet<EventId> {
+    let filter = NostrFilter::new()
+        .kind(NostrKind::GiftWrap)
+        .pubkey(nostr_pubkey(&recipient.pubkey));
+    relay_db
+        .query(vec![filter])
+        .await
+        .expect("snapshot relay recipient giftwrap ids")
         .into_iter()
         .map(|e| e.id)
         .collect()
@@ -265,6 +283,7 @@ async fn same_account_devices_converge_on_sent_messages_e2e() {
     ];
 
     seed_local_dm_relay_list(&mut sender_device, &sender, &relay_url);
+    seed_local_dm_relay_list(&mut sender_device, &recipient, &relay_url);
     for device in &mut devices {
         seed_local_dm_relay_list(device, &recipient, &relay_url);
     }
@@ -2793,6 +2812,121 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
         local_chat_messages(&mut recipient_a),
         BTreeSet::from(["route-a-before-offline".to_owned()]),
         "expected relay a recipient to retain only the pre-offline delivery"
+    );
+
+    relay_a.shutdown_and_wait().await;
+    relay_b.shutdown_and_wait().await;
+}
+
+/// Verifies the first send is republished when the participant route arrives after send.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_send_uses_participant_route_after_prefetch_completes_e2e() {
+    init_tracing();
+
+    let relay_a_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+    let relay_a = LocalRelay::run(RelayBuilder::default().database(relay_a_db.clone()))
+        .await
+        .expect("start relay a");
+    let relay_b = LocalRelay::run(RelayBuilder::default())
+        .await
+        .expect("start relay b");
+    let relay_a_url = relay_a.url().to_owned();
+    let relay_b_url = relay_b.url().to_owned();
+
+    let sender = FullKeypair::generate();
+    let recipient = FullKeypair::generate();
+    let recipient_npub = recipient.pubkey.npub().expect("recipient npub");
+
+    let mut sender_device = build_messages_device(&relay_a_url, &sender);
+    let mut recipient_device = build_messages_device(&relay_b_url, &recipient);
+
+    seed_local_dm_relay_list(&mut sender_device, &sender, &relay_a_url);
+    seed_local_dm_relay_list(&mut recipient_device, &recipient, &relay_b_url);
+    seed_local_profile_metadata(&mut sender_device, &recipient, "late-route-recipient");
+
+    step_device_group(&mut [&mut sender_device, &mut recipient_device]);
+    wait_for_device_giftwrap_subs_ready(
+        &mut [&mut sender_device, &mut recipient_device],
+        TEST_TIMEOUT,
+    );
+
+    assert!(
+        local_dm_relay_list_relays(&mut sender_device, &recipient).is_empty(),
+        "sender should not know recipient route before first send"
+    );
+
+    let message = "first-send-before-route";
+    let relay_a_recipient_giftwraps_before =
+        snapshot_relay_giftwrap_ids_for_recipient(&relay_a_db, &recipient).await;
+    send_direct_message(&mut sender_device, &recipient_npub, message);
+    assert!(
+        local_dm_relay_list_relays(&mut sender_device, &recipient).is_empty(),
+        "first send should happen before recipient route is ingested"
+    );
+    step_device_frames(&mut sender_device, 8);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    step_device_frames(&mut sender_device, 4);
+    let relay_a_recipient_giftwraps_after =
+        snapshot_relay_giftwrap_ids_for_recipient(&relay_a_db, &recipient).await;
+    assert_eq!(
+        relay_a_recipient_giftwraps_after, relay_a_recipient_giftwraps_before,
+        "unknown participant route should not publish recipient giftwrap to account write relays"
+    );
+    assert!(
+        local_chat_messages(&mut sender_device).is_empty(),
+        "send should not create a local self-copy until every recipient route is known"
+    );
+
+    let mut route_publisher = build_messages_device(&relay_a_url, &recipient);
+    seed_local_dm_relay_list_with_relays(
+        &mut route_publisher,
+        &recipient,
+        &[&relay_b_url],
+        Some(unix_time_secs().saturating_add(600)),
+    );
+
+    let expected_route = vec![relay_b_url.trim_end_matches('/').to_owned()];
+    let deadline = Instant::now() + TEST_TIMEOUT;
+    loop {
+        step_device_group(&mut [&mut route_publisher, &mut sender_device]);
+        let actual = local_dm_relay_list_relays(&mut sender_device, &recipient)
+            .into_iter()
+            .map(|url| url.trim_end_matches('/').to_owned())
+            .collect::<Vec<_>>();
+        if actual == expected_route {
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for sender to ingest recipient participant relay list after first send; expected {:?}, actual {:?}",
+            expected_route,
+            actual
+        );
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    step_device_group(&mut [
+        &mut route_publisher,
+        &mut sender_device,
+        &mut recipient_device,
+    ]);
+    assert!(
+        local_chat_messages(&mut recipient_device).is_empty(),
+        "recipient should not receive anything until the restored composer is submitted again"
+    );
+    press_message_composer_enter(&mut sender_device);
+
+    wait_for_device_messages_while_flushing(
+        &mut recipient_device,
+        &BTreeSet::from([message.to_owned()]),
+        TEST_TIMEOUT,
+        "recipient to receive first send after participant route prefetch completes",
+        &mut [&mut sender_device, &mut route_publisher],
     );
 
     relay_a.shutdown_and_wait().await;

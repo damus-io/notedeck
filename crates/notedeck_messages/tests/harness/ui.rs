@@ -36,6 +36,14 @@ pub fn send_message_via_ui(sender: &mut DeviceHarness, content: &str) {
     sender.step();
     sender.get_by_label("Message composer").type_text(content);
     sender.step();
+    press_message_composer_enter(sender);
+}
+
+/// Presses Enter in the existing Messages composer without changing its text.
+pub fn press_message_composer_enter(sender: &mut DeviceHarness) {
+    wait_for_label(sender, "Message composer", TEST_TIMEOUT);
+    sender.get_by_label("Message composer").click();
+    sender.step();
     sender
         .get_by_label("Message composer")
         .key_press(Key::Enter);

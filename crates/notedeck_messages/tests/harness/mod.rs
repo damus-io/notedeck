@@ -3,6 +3,8 @@
 //! Delegates generic device management, stepping, and UI helpers to
 //! `notedeck_testing` and layers messages-specific functionality on top.
 
+#![allow(dead_code, unused_imports)]
+
 pub mod fixtures;
 pub mod ui;
 

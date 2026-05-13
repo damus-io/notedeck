@@ -1,21 +1,20 @@
 //! Device-level relay delivery tests.
 //!
 //! These tests use real DeviceHarness instances with the Messages app
-//! and LocalRelay to verify event delivery through the full app stack,
-//! without going through the UI message-sending path.
+//! and local test relays to verify event delivery through the full app
+//! stack, without going through the UI message-sending path.
 
 mod harness;
 
 use std::collections::BTreeSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use enostr::FullKeypair;
 use harness::fixtures::{seed_local_dm_relay_list, test_config};
 use harness::ui::{open_conversation_via_ui, send_message_via_ui};
 use harness::{
-    build_messages_device, init_tracing, local_chat_messages, publish_note_via_device,
-    step_device_group, wait_for_device_giftwrap_subs_ready, wait_for_device_messages,
-    DeviceHarness, LocalRelayExt, TEST_TIMEOUT,
+    build_messages_device, init_tracing, publish_note_via_device, step_device_group,
+    wait_for_device_giftwrap_subs_ready, wait_for_device_messages, LocalRelayExt, TEST_TIMEOUT,
 };
 use harness::{build_messages_device_with_relays, wait_for_device_group_messages};
 use nostr::{Filter as NostrFilter, Kind as NostrKind};
@@ -23,19 +22,55 @@ use nostr_relay_builder::{
     prelude::{MemoryDatabase, MemoryDatabaseOptions, NostrEventsDatabase},
     LocalRelay, RelayBuilder,
 };
-use nostrdb::{Filter, NoteBuilder, Transaction};
+use nostrdb::{Filter, NoteBuilder};
+use notedeck_testing::negentropy_relay::{run_memory_negentropy_relay, MemoryNegentropyRelay};
 
-/// Query all kind-1 notes in a device's NDB authored by a specific pubkey.
-fn device_kind1_notes(device: &mut DeviceHarness, author: &enostr::Pubkey) -> Vec<String> {
-    let ctx = device.ctx.clone();
-    let app_ctx = device.state_mut().notedeck.app_context(&ctx);
-    let filter = Filter::new().kinds([1]).authors([author.bytes()]).build();
-    let txn = Transaction::new(app_ctx.ndb).expect("txn");
-    let results = app_ctx.ndb.query(&txn, &[filter], 100).expect("query");
-    results
-        .into_iter()
-        .map(|r| r.note.content().to_string())
-        .collect()
+async fn wait_for_relay_text_note(
+    relay_db: &MemoryDatabase,
+    content: &str,
+    timeout: Duration,
+    context: &str,
+) {
+    let deadline = Instant::now() + timeout;
+    let filter = NostrFilter::new().kind(NostrKind::TextNote);
+
+    loop {
+        let events = relay_db
+            .query(vec![filter.clone()])
+            .await
+            .expect("query relay text notes");
+        if events.iter().any(|event| event.content == content) {
+            return;
+        }
+
+        if Instant::now() >= deadline {
+            let actual: Vec<&str> = events.iter().map(|event| event.content.as_str()).collect();
+            panic!("{context}: expected {content:?}, actual {actual:?}");
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn run_local_relay(context: &str) -> LocalRelay {
+    LocalRelay::run(RelayBuilder::default())
+        .await
+        .expect(context)
+}
+
+async fn run_giftwrap_relay(context: &str) -> MemoryNegentropyRelay {
+    // Giftwrap account subs send `NEG-OPEN`; plain `LocalRelay` rejects that
+    // frame, so giftwrap delivery tests need the NIP-77-aware test relay.
+    run_memory_negentropy_relay().await.expect(context)
+}
+
+async fn run_giftwrap_relay_pair() -> (MemoryNegentropyRelay, MemoryNegentropyRelay, String, String)
+{
+    let relay_a = run_giftwrap_relay("start relay a").await;
+    let relay_b = run_giftwrap_relay("start relay b").await;
+    let relay_a_url = relay_a.relay.url().to_owned();
+    let relay_b_url = relay_b.relay.url().to_owned();
+    (relay_a, relay_b, relay_a_url, relay_b_url)
 }
 
 // ==================== Thread Leak Helpers ====================
@@ -66,6 +101,21 @@ async fn thread_leak_isolation() {
     if std::fs::read_dir("/proc/self/task").is_err() {
         return;
     }
+
+    // Tokio may finish starting runtime workers after the test body begins.
+    // Force that startup before taking leak baselines so later component drops
+    // are compared against a stable test-runtime thread set.
+    let warmups: Vec<_> = (0..8)
+        .map(|_| {
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            })
+        })
+        .collect();
+    for warmup in warmups {
+        warmup.await.expect("runtime warmup task");
+    }
+    std::thread::sleep(Duration::from_millis(100));
 
     let egui_ctx = egui::Context::default();
 
@@ -119,7 +169,7 @@ async fn thread_leak_isolation() {
     assert_no_leaks("Step 2: Ndb + OutboxPool", &b);
 
     // Step 3: Ndb + OutboxPool + connect to relay
-    let relay = LocalRelay::run(RelayBuilder::default()).await.unwrap();
+    let relay = run_local_relay("start relay").await;
     let relay_url = relay.url().to_owned();
     let b = thread_names();
     {
@@ -142,7 +192,7 @@ async fn thread_leak_isolation() {
         }
         // pump until connected
         for _ in 0..50 {
-            pool.try_recv(10, |_| {});
+            pool.try_recv(|_| {});
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         drop(pool);
@@ -209,45 +259,28 @@ async fn thread_leak_isolation() {
 
 // ==================== Plain Kind-1 Event Delivery ====================
 
-// ==================== Plain Kind-1 Event Delivery ====================
-
-/// Publish a kind-1 note via one device, verify another device receives it via relay.
+/// Publish a kind-1 note through one device, then verify the relay receives it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn device_kind1_publish_receive() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
+    let relay_db = MemoryDatabase::with_opts(MemoryDatabaseOptions {
+        events: true,
+        ..Default::default()
+    });
+    let relay = LocalRelay::run(RelayBuilder::default().database(relay_db.clone()))
         .await
         .expect("start relay");
     let relay_url = relay.url().to_owned();
 
     let sender_kp = FullKeypair::generate();
-    let receiver_kp = FullKeypair::generate();
 
     let mut sender = build_messages_device(&relay_url, &sender_kp);
-    let mut receiver = build_messages_device(&relay_url, &receiver_kp);
 
-    // Warm up — let connections establish
     sender.step();
-    receiver.step();
     std::thread::sleep(Duration::from_millis(100));
     sender.step();
-    receiver.step();
 
-    // Subscribe receiver to kind-1 from sender
-    // The device already has default account subs but we need to add
-    // a subscription that matches kind-1. The giftwrap sub won't match kind-1.
-    // Instead, we'll rely on the fact that the relay sends events to
-    // subscribers whose filters match. We need a kind-1 subscription on receiver.
-    //
-    // Actually, the receiver won't have a kind-1 sub unless we create one.
-    // Let's use a different approach: publish from sender, then check
-    // the relay has it, then have the receiver fetch via a new sub.
-    //
-    // For now, let's just test that publishing works and the relay gets the event.
-    // The real test is giftwrap delivery which uses the existing giftwrap sub.
-
-    // Build and publish a kind-1 note through sender device
     let note = NoteBuilder::new()
         .kind(1)
         .content("device-relay-test")
@@ -257,12 +290,13 @@ async fn device_kind1_publish_receive() {
 
     publish_note_via_device(&mut sender, &note);
 
-    // Verify sender's own NDB has the note (it was ingested locally via process_client_event)
-    let sender_notes = device_kind1_notes(&mut sender, &sender_kp.pubkey);
-    assert!(
-        sender_notes.iter().any(|c| c == "device-relay-test"),
-        "sender should have the note in its own NDB"
-    );
+    wait_for_relay_text_note(
+        &relay_db,
+        "device-relay-test",
+        TEST_TIMEOUT,
+        "relay should receive published kind-1 note",
+    )
+    .await;
 
     relay.shutdown_and_wait().await;
 }
@@ -275,10 +309,8 @@ async fn device_kind1_publish_receive() {
 async fn device_giftwrap_delivery() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
-        .await
-        .expect("start relay");
-    let relay_url = relay.url().to_owned();
+    let relay = run_giftwrap_relay("start relay").await;
+    let relay_url = relay.relay.url().to_owned();
 
     let recipient = FullKeypair::generate();
     let sender = FullKeypair::generate();
@@ -333,8 +365,6 @@ async fn device_giftwrap_delivery() {
         TEST_TIMEOUT,
         "device_b should receive giftwrap via relay",
     );
-
-    relay.shutdown_and_wait().await;
 }
 
 /// Same as above but with 6 messages sent in quick succession (burst pattern).
@@ -342,10 +372,8 @@ async fn device_giftwrap_delivery() {
 async fn device_giftwrap_burst_delivery() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
-        .await
-        .expect("start relay");
-    let relay_url = relay.url().to_owned();
+    let relay = run_giftwrap_relay("start relay").await;
+    let relay_url = relay.relay.url().to_owned();
 
     let recipient = FullKeypair::generate();
     let sender = FullKeypair::generate();
@@ -384,8 +412,6 @@ async fn device_giftwrap_burst_delivery() {
         TEST_TIMEOUT,
         "receiver should get all 6 burst giftwraps",
     );
-
-    relay.shutdown_and_wait().await;
 }
 
 /// Multiple receivers: burst-send giftwraps, verify all receive all messages.
@@ -393,10 +419,8 @@ async fn device_giftwrap_burst_delivery() {
 async fn device_giftwrap_burst_multiple_receivers() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
-        .await
-        .expect("start relay");
-    let relay_url = relay.url().to_owned();
+    let relay = run_giftwrap_relay("start relay").await;
+    let relay_url = relay.relay.url().to_owned();
 
     let recipient = FullKeypair::generate();
     let sender = FullKeypair::generate();
@@ -442,8 +466,6 @@ async fn device_giftwrap_burst_multiple_receivers() {
             &format!("device {name} should get all {n} giftwraps"),
         );
     }
-
-    relay.shutdown_and_wait().await;
 }
 
 // ==================== UI Send Path ====================
@@ -454,10 +476,8 @@ async fn device_giftwrap_burst_multiple_receivers() {
 async fn device_ui_send_single_message() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
-        .await
-        .expect("start relay");
-    let relay_url = relay.url().to_owned();
+    let relay = run_giftwrap_relay("start relay").await;
+    let relay_url = relay.relay.url().to_owned();
 
     let recipient = FullKeypair::generate();
     let sender = FullKeypair::generate();
@@ -490,8 +510,6 @@ async fn device_ui_send_single_message() {
         TEST_TIMEOUT,
         "receiver should get UI-sent message",
     );
-
-    relay.shutdown_and_wait().await;
 }
 
 /// UI send path with burst of 6 messages.
@@ -499,10 +517,8 @@ async fn device_ui_send_single_message() {
 async fn device_ui_send_burst() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
-        .await
-        .expect("start relay");
-    let relay_url = relay.url().to_owned();
+    let relay = run_giftwrap_relay("start relay").await;
+    let relay_url = relay.relay.url().to_owned();
 
     let recipient = FullKeypair::generate();
     let sender = FullKeypair::generate();
@@ -539,8 +555,6 @@ async fn device_ui_send_burst() {
         TEST_TIMEOUT,
         "receiver should get all 6 UI-sent burst messages",
     );
-
-    relay.shutdown_and_wait().await;
 }
 
 /// UI send burst with multiple receivers (same account, different devices).
@@ -548,10 +562,8 @@ async fn device_ui_send_burst() {
 async fn device_ui_send_burst_multiple_receivers() {
     init_tracing();
 
-    let relay = LocalRelay::run(RelayBuilder::default())
-        .await
-        .expect("start relay");
-    let relay_url = relay.url().to_owned();
+    let relay = run_giftwrap_relay("start relay").await;
+    let relay_url = relay.relay.url().to_owned();
 
     let recipient = FullKeypair::generate();
     let sender = FullKeypair::generate();
@@ -597,8 +609,6 @@ async fn device_ui_send_burst_multiple_receivers() {
             &format!("device {name} should get all {n} UI-sent messages"),
         );
     }
-
-    relay.shutdown_and_wait().await;
 }
 
 // ==================== Multi-Relay Routing ====================
@@ -610,22 +620,7 @@ async fn device_ui_send_burst_multiple_receivers() {
 async fn multi_relay_same_account_cross_delivery() {
     init_tracing();
 
-    let db_a = MemoryDatabase::with_opts(MemoryDatabaseOptions {
-        events: true,
-        ..Default::default()
-    });
-    let db_b = MemoryDatabase::with_opts(MemoryDatabaseOptions {
-        events: true,
-        ..Default::default()
-    });
-    let relay_a = LocalRelay::run(RelayBuilder::default().database(db_a.clone()))
-        .await
-        .expect("start relay a");
-    let relay_b = LocalRelay::run(RelayBuilder::default().database(db_b.clone()))
-        .await
-        .expect("start relay b");
-    let relay_a_url = relay_a.url().to_owned();
-    let relay_b_url = relay_b.url().to_owned();
+    let (_relay_a, _relay_b, relay_a_url, relay_b_url) = run_giftwrap_relay_pair().await;
 
     let sender = FullKeypair::generate();
     let recipient_a = FullKeypair::generate();
@@ -720,38 +715,6 @@ async fn multi_relay_same_account_cross_delivery() {
         &mut [&mut sender_primary, &mut sender_peer],
     );
 
-    // Check relay-side state before waiting for convergence
-    let gw_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
-    let relay_a_events = db_a
-        .query(vec![gw_filter.clone()])
-        .await
-        .expect("query relay a");
-    let relay_b_events = db_b.query(vec![gw_filter]).await.expect("query relay b");
-    let relay_a_ids: Vec<String> = relay_a_events
-        .iter()
-        .map(|e| format!("{}..p:{}", &e.id.to_hex()[..8], &e.pubkey.to_hex()[..8]))
-        .collect();
-    let relay_b_ids: Vec<String> = relay_b_events
-        .iter()
-        .map(|e| format!("{}..p:{}", &e.id.to_hex()[..8], &e.pubkey.to_hex()[..8]))
-        .collect();
-    eprintln!(
-        "DIAG: relay_a has {} giftwraps {:?}, relay_b has {} giftwraps {:?}, sender_pk={}",
-        relay_a_events.len(),
-        relay_a_ids,
-        relay_b_events.len(),
-        relay_b_ids,
-        &sender.pubkey.hex()[..8],
-    );
-
-    // Also check sender_peer's local state
-    let peer_msgs = local_chat_messages(&mut sender_peer);
-    let primary_msgs = local_chat_messages(&mut sender_primary);
-    eprintln!(
-        "DIAG: sender_primary local: {:?}, sender_peer local: {:?}",
-        primary_msgs, peer_msgs
-    );
-
     // Both sender devices should see BOTH messages
     let expected_sender =
         BTreeSet::from(["msg-via-relay-a".to_string(), "msg-via-relay-b".to_string()]);
@@ -762,9 +725,6 @@ async fn multi_relay_same_account_cross_delivery() {
         TEST_TIMEOUT,
         "both sender devices should see messages from both relays",
     );
-
-    relay_a.shutdown_and_wait().await;
-    relay_b.shutdown_and_wait().await;
 }
 
 /// Publish via Explicit relay type (same as send_conversation_message) without UI.
@@ -773,22 +733,7 @@ async fn multi_relay_same_account_cross_delivery() {
 async fn multi_relay_explicit_publish_no_ui() {
     init_tracing();
 
-    let db_a = MemoryDatabase::with_opts(MemoryDatabaseOptions {
-        events: true,
-        ..Default::default()
-    });
-    let db_b = MemoryDatabase::with_opts(MemoryDatabaseOptions {
-        events: true,
-        ..Default::default()
-    });
-    let relay_a = LocalRelay::run(RelayBuilder::default().database(db_a.clone()))
-        .await
-        .expect("start relay a");
-    let relay_b = LocalRelay::run(RelayBuilder::default().database(db_b.clone()))
-        .await
-        .expect("start relay b");
-    let relay_a_url = relay_a.url().to_owned();
-    let relay_b_url = relay_b.url().to_owned();
+    let (_relay_a, _relay_b, relay_a_url, relay_b_url) = run_giftwrap_relay_pair().await;
 
     let sender = FullKeypair::generate();
     let recipient = FullKeypair::generate();
@@ -842,15 +787,6 @@ async fn multi_relay_explicit_publish_no_ui() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    let gw_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
-    let a_events = db_a.query(vec![gw_filter.clone()]).await.expect("query a");
-    let b_events = db_b.query(vec![gw_filter]).await.expect("query b");
-    eprintln!(
-        "DIAG explicit-no-ui: relay_a has {} giftwraps, relay_b has {} giftwraps",
-        a_events.len(),
-        b_events.len()
-    );
-
     let expected = BTreeSet::from(["explicit-publish-test".to_string()]);
     harness::wait_for_device_messages_while_flushing(
         &mut recv_a,
@@ -866,9 +802,6 @@ async fn multi_relay_explicit_publish_no_ui() {
         "recv_b should get explicit-published giftwrap",
         &mut [&mut sender_device],
     );
-
-    relay_a.shutdown_and_wait().await;
-    relay_b.shutdown_and_wait().await;
 }
 
 /// Same multi-relay scenario but using publish_note_via_device (no UI) to isolate
@@ -877,22 +810,7 @@ async fn multi_relay_explicit_publish_no_ui() {
 async fn multi_relay_no_ui_cross_delivery() {
     init_tracing();
 
-    let db_a = MemoryDatabase::with_opts(MemoryDatabaseOptions {
-        events: true,
-        ..Default::default()
-    });
-    let db_b = MemoryDatabase::with_opts(MemoryDatabaseOptions {
-        events: true,
-        ..Default::default()
-    });
-    let relay_a = LocalRelay::run(RelayBuilder::default().database(db_a.clone()))
-        .await
-        .expect("start relay a");
-    let relay_b = LocalRelay::run(RelayBuilder::default().database(db_b.clone()))
-        .await
-        .expect("start relay b");
-    let relay_a_url = relay_a.url().to_owned();
-    let relay_b_url = relay_b.url().to_owned();
+    let (_relay_a, _relay_b, relay_a_url, relay_b_url) = run_giftwrap_relay_pair().await;
 
     let sender = FullKeypair::generate();
     let recipient = FullKeypair::generate();
@@ -944,16 +862,6 @@ async fn multi_relay_no_ui_cross_delivery() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    // Check relay state
-    let gw_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
-    let a_events = db_a.query(vec![gw_filter.clone()]).await.expect("query a");
-    let b_events = db_b.query(vec![gw_filter]).await.expect("query b");
-    eprintln!(
-        "DIAG no-ui: relay_a has {} giftwraps, relay_b has {} giftwraps",
-        a_events.len(),
-        b_events.len()
-    );
-
     // Both receivers should see the message
     let expected = BTreeSet::from(["no-ui-multi-relay".to_string()]);
     harness::wait_for_device_messages_while_flushing(
@@ -970,9 +878,6 @@ async fn multi_relay_no_ui_cross_delivery() {
         "recv_b should get no-ui giftwrap",
         &mut [&mut sender_device],
     );
-
-    relay_a.shutdown_and_wait().await;
-    relay_b.shutdown_and_wait().await;
 }
 
 /// Multi-relay with UI send but ONLY one sender device — isolates whether
@@ -981,22 +886,7 @@ async fn multi_relay_no_ui_cross_delivery() {
 async fn multi_relay_single_sender_ui() {
     init_tracing();
 
-    let db_a = MemoryDatabase::with_opts(MemoryDatabaseOptions {
-        events: true,
-        ..Default::default()
-    });
-    let db_b = MemoryDatabase::with_opts(MemoryDatabaseOptions {
-        events: true,
-        ..Default::default()
-    });
-    let relay_a = LocalRelay::run(RelayBuilder::default().database(db_a.clone()))
-        .await
-        .expect("start relay a");
-    let relay_b = LocalRelay::run(RelayBuilder::default().database(db_b.clone()))
-        .await
-        .expect("start relay b");
-    let relay_a_url = relay_a.url().to_owned();
-    let relay_b_url = relay_b.url().to_owned();
+    let (_relay_a, _relay_b, relay_a_url, relay_b_url) = run_giftwrap_relay_pair().await;
 
     let sender = FullKeypair::generate();
     let recipient = FullKeypair::generate();
@@ -1043,49 +933,8 @@ async fn multi_relay_single_sender_ui() {
         TEST_TIMEOUT,
     );
 
-    // Verify NDB has the correct relay lists before sending
-    {
-        let ctx = sender_device.ctx.clone();
-        let app_ctx = sender_device.state_mut().notedeck.app_context(&ctx);
-        let txn = Transaction::new(app_ctx.ndb).expect("txn");
-        let sender_relays = notedeck_messages::nip17::query_participant_dm_relays(
-            app_ctx.ndb,
-            &txn,
-            &sender.pubkey,
-        );
-        let recipient_relays = notedeck_messages::nip17::query_participant_dm_relays(
-            app_ctx.ndb,
-            &txn,
-            &recipient.pubkey,
-        );
-        eprintln!(
-            "DIAG relay-lists: sender has {} DM relays: {:?}, recipient has {} DM relays: {:?}",
-            sender_relays.len(),
-            sender_relays,
-            recipient_relays.len(),
-            recipient_relays,
-        );
-    }
-
     // Send via UI
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
-
-    // Check websocket status AFTER opening conversation but BEFORE sending
-    {
-        let ctx = sender_device.ctx.clone();
-        let app_ctx = sender_device.state_mut().notedeck.app_context(&ctx);
-        let inspect = app_ctx.remote.relay_inspect();
-        let infos = inspect.relay_infos();
-        let status_strs: Vec<String> = infos
-            .iter()
-            .map(|e| format!("{}: {:?}", e.relay_url, e.status))
-            .collect();
-        eprintln!(
-            "DIAG ws-status-after-open ({} relays): {:?}",
-            infos.len(),
-            status_strs
-        );
-    }
 
     send_message_via_ui(&mut sender_device, "ui-multi-relay-test");
 
@@ -1094,15 +943,6 @@ async fn multi_relay_single_sender_ui() {
         sender_device.step();
         std::thread::sleep(Duration::from_millis(10));
     }
-
-    let gw_filter = NostrFilter::new().kind(NostrKind::GiftWrap);
-    let a_events = db_a.query(vec![gw_filter.clone()]).await.expect("query a");
-    let b_events = db_b.query(vec![gw_filter]).await.expect("query b");
-    eprintln!(
-        "DIAG single-sender-ui: relay_a has {} giftwraps, relay_b has {} giftwraps",
-        a_events.len(),
-        b_events.len()
-    );
 
     let expected = BTreeSet::from(["ui-multi-relay-test".to_string()]);
     harness::wait_for_device_messages_while_flushing(
@@ -1119,7 +959,4 @@ async fn multi_relay_single_sender_ui() {
         "recv_b should get UI message via relay_b",
         &mut [&mut sender_device],
     );
-
-    relay_a.shutdown_and_wait().await;
-    relay_b.shutdown_and_wait().await;
 }
