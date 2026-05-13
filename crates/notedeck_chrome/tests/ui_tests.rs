@@ -77,10 +77,10 @@ fn make_test_state(egui_ctx: &egui::Context) -> TestState {
         "notedeck-test".into(), // argv[0]: consumed by init as program name
         "--testrunner".into(),
     ];
-    let mut notedeck_ctx = Notedeck::init(egui_ctx, tmpdir.path(), &args);
-    let damus = Damus::new(&mut notedeck_ctx.notedeck.app_context(egui_ctx), &args);
+    let mut notedeck = Notedeck::init(egui_ctx, tmpdir.path(), &args);
+    let damus = Damus::new(&mut notedeck.app_context(egui_ctx), &args);
     TestState {
-        notedeck: notedeck_ctx.notedeck,
+        notedeck,
         damus,
         _tmpdir: tmpdir,
         fonts_installed: false,
@@ -105,8 +105,8 @@ fn render_damus_frame(ctx: &egui::Context, state: &mut TestState) {
     });
 }
 
-#[test]
-fn test_damus_renders() {
+#[tokio::test]
+async fn test_damus_renders() {
     let ctx = egui::Context::default();
     let state = make_test_state(&ctx);
 
@@ -117,9 +117,9 @@ fn test_damus_renders() {
     harness.run();
 }
 
-#[test]
+#[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_damus_columns() {
+async fn snapshot_damus_columns() {
     let ctx = egui::Context::default();
     let state = make_test_state(&ctx);
 
@@ -150,21 +150,21 @@ fn snapshot_at_size(width: f32, height: f32, name: &str) {
     harness.snapshot(name);
 }
 
-#[test]
+#[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_mobile() {
+async fn snapshot_mobile() {
     snapshot_at_size(375.0, 667.0, "damus_mobile");
 }
 
-#[test]
+#[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_tablet() {
+async fn snapshot_tablet() {
     snapshot_at_size(1024.0, 768.0, "damus_tablet");
 }
 
-#[test]
+#[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_desktop_wide() {
+async fn snapshot_desktop_wide() {
     snapshot_at_size(1400.0, 900.0, "damus_desktop_wide");
 }
 
@@ -186,9 +186,9 @@ fn render_damus_frame_light(ctx: &egui::Context, state: &mut TestState) {
     });
 }
 
-#[test]
+#[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_light_mode() {
+async fn snapshot_light_mode() {
     let ctx = egui::Context::default();
     let state = make_test_state(&ctx);
 
@@ -226,9 +226,9 @@ fn render_damus_frame_with_update(ctx: &egui::Context, state: &mut TestState) {
 /// Regression test: clicking "I have a Nostr key" on the welcome screen must
 /// navigate to the AddAccount (login) view and stay there — not bounce back
 /// to Welcome. Snapshot verifies the login screen is visible after the click.
-#[test]
+#[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_welcome_login_navigation() {
+async fn snapshot_welcome_login_navigation() {
     let ctx = egui::Context::default();
     let state = make_test_state(&ctx);
 
@@ -263,6 +263,7 @@ fn snapshot_welcome_login_navigation() {
 
 /// State for tick()-based tests — Chrome is set on Notedeck via set_app,
 /// so tick() handles all rendering through the real code path.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
 struct TickTestState {
     notedeck: Notedeck,
     _tmpdir: tempfile::TempDir,
@@ -271,6 +272,7 @@ struct TickTestState {
 
 /// Render via Notedeck::tick(), which runs the full app loop
 /// including the Chrome sidebar with update item.
+#[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
 fn render_notedeck_tick(ctx: &egui::Context, state: &mut TickTestState) {
     if !state.fonts_installed {
         state.notedeck.setup(ctx);
@@ -282,31 +284,24 @@ fn render_notedeck_tick(ctx: &egui::Context, state: &mut TickTestState) {
 }
 
 #[cfg(all(feature = "auto-update", feature = "snapshot-testing"))]
-#[test]
+#[tokio::test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn snapshot_update_bar() {
-    // tick() uses tokio (media jobs, relay limits)
-    let _rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = _rt.enter();
-
+async fn snapshot_update_bar() {
     use notedeck::updater::nostr::test_helpers;
     use notedeck_chrome::Chrome;
 
     let ctx = egui::Context::default();
     let tmpdir = tempfile::TempDir::new().unwrap();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let mut notedeck_ctx = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
     // Create Chrome with updater, pointing at our test signing key
     let mut chrome = {
-        let mut app_ctx = notedeck_ctx.notedeck.app_context(&ctx);
+        let mut app_ctx = notedeck.app_context(&ctx);
         Chrome::new_test(&mut app_ctx, &ctx, &args)
     };
 
-    chrome.set_release_pubkey(
-        notedeck_ctx.notedeck.app_context(&ctx).ndb,
-        test_helpers::TEST_PUBKEY,
-    );
+    chrome.set_release_pubkey(&notedeck.app_context(&ctx).ndb, test_helpers::TEST_PUBKEY);
 
     // Ingest properly signed NIP-82 events (kind 3063 asset + kind 30063 release)
     let (asset_ev, asset_id) = test_helpers::build_signed_asset_event(
@@ -323,7 +318,7 @@ fn snapshot_update_bar() {
         &[asset_id],
     );
     {
-        let app_ctx = notedeck_ctx.notedeck.app_context(&ctx);
+        let app_ctx = notedeck.app_context(&ctx);
         app_ctx
             .ndb
             .process_event_with(&asset_ev, nostrdb::IngestMetadata::new())
@@ -342,10 +337,10 @@ fn snapshot_update_bar() {
     // Open the drawer so the update item is visible in the snapshot
     chrome.toggle();
 
-    notedeck_ctx.notedeck.set_app(chrome);
+    notedeck.set_app(chrome);
 
     let state = TickTestState {
-        notedeck: notedeck_ctx.notedeck,
+        notedeck,
         _tmpdir: tmpdir,
         fonts_installed: false,
     };

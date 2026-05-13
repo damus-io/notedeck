@@ -105,10 +105,10 @@ fn snapshot_dashboard() {
 
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
-    let notedeck_ctx = Notedeck::init(&ctx, tmpdir.path(), &args);
+    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
     let state = DashTestState {
-        notedeck: notedeck_ctx.notedeck,
+        notedeck,
         dashboard: Dashboard::default(),
         _tmpdir: tmpdir,
         fonts_installed: false,
