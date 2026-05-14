@@ -301,7 +301,10 @@ async fn snapshot_update_bar() {
         Chrome::new_test(&mut app_ctx, &ctx, &args)
     };
 
-    chrome.set_release_pubkey(&notedeck.app_context(&ctx).ndb, test_helpers::TEST_PUBKEY);
+    {
+        let app_ctx = &mut notedeck.app_context(&ctx);
+        chrome.set_release_pubkey(app_ctx.ndb, test_helpers::TEST_PUBKEY);
+    }
 
     // Ingest properly signed NIP-82 events (kind 3063 asset + kind 30063 release)
     let (asset_ev, asset_id) = test_helpers::build_signed_asset_event(

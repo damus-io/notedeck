@@ -1,6 +1,7 @@
 //! End-to-end coverage for Dave PNS discovery through the shared outbox path.
 
 use std::{
+    path::Path,
     sync::mpsc::{self, Receiver, Sender},
     time::Duration,
 };
@@ -29,31 +30,57 @@ const PNS_LIVE_LIMIT: usize = 500;
 struct ControllableDave {
     dave: Dave,
     settings: DaveSettings,
-    pns_relay_rx: Receiver<String>,
+    command_rx: Receiver<ControllableDaveCommand>,
+}
+
+enum ControllableDaveCommand {
+    SetPnsRelay(String),
+    AddUserMessage {
+        session_id: notedeck_dave::session::SessionId,
+        text: String,
+    },
+}
+
+fn agentic_dave_settings(pns_relay_url: String) -> DaveSettings {
+    let mut settings = DaveSettings::with_provider(AiProvider::Codex);
+    settings.pns_relay = Some(pns_relay_url);
+    settings
+}
+
+fn write_dave_settings(path: &notedeck::DataPath, settings: &DaveSettings) {
+    let settings_dir = path.path(DataPathType::Setting);
+    std::fs::create_dir_all(&settings_dir).expect("create settings dir");
+    let settings_json = serde_json::to_string(settings).expect("serialize Dave settings");
+    std::fs::write(settings_dir.join("dave_settings.json"), settings_json)
+        .expect("write Dave settings");
 }
 
 impl ControllableDave {
-    fn apply_pending_settings(&mut self) {
-        let mut changed = false;
-        while let Ok(pns_relay) = self.pns_relay_rx.try_recv() {
-            self.settings.pns_relay = Some(pns_relay);
-            changed = true;
-        }
-
-        if changed {
-            self.dave.apply_settings(self.settings.clone());
+    fn apply_pending_commands(&mut self, ctx: &AppContext<'_>) {
+        while let Ok(command) = self.command_rx.try_recv() {
+            match command {
+                ControllableDaveCommand::SetPnsRelay(pns_relay) => {
+                    self.settings.pns_relay = Some(pns_relay);
+                    self.dave.apply_settings(self.settings.clone());
+                }
+                ControllableDaveCommand::AddUserMessage { session_id, text } => {
+                    let _ =
+                        self.dave
+                            .add_user_message_for_session(session_id, ctx, text, Vec::new());
+                }
+            }
         }
     }
 }
 
 impl App for ControllableDave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
-        self.apply_pending_settings();
+        self.apply_pending_commands(ctx);
         self.dave.update(ctx, egui_ctx);
     }
 
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        self.apply_pending_settings();
+        self.apply_pending_commands(ctx);
         self.dave.render(ctx, ui)
     }
 }
@@ -61,14 +88,12 @@ fn dave_app_factory(pns_relay_url: String) -> AppFactory {
     Box::new(move |notedeck, egui_ctx| {
         let app_ctx = notedeck.app_context(egui_ctx);
         app_ctx.settings.complete_welcome();
+        let settings = agentic_dave_settings(pns_relay_url.clone());
+        write_dave_settings(app_ctx.path, &settings);
         let ndb = app_ctx.ndb.clone();
-        let mut dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
+        let dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
         drop(app_ctx);
 
-        dave.apply_settings(DaveSettings {
-            pns_relay: Some(pns_relay_url),
-            ..DaveSettings::default()
-        });
         notedeck.set_app(dave);
     })
 }
@@ -76,13 +101,8 @@ fn dave_agentic_app_factory(pns_relay_url: String) -> AppFactory {
     Box::new(move |notedeck, egui_ctx| {
         let app_ctx = notedeck.app_context(egui_ctx);
         app_ctx.settings.complete_welcome();
-        let mut settings = DaveSettings::with_provider(AiProvider::Codex);
-        settings.pns_relay = Some(pns_relay_url);
-        let settings_dir = app_ctx.path.path(DataPathType::Setting);
-        std::fs::create_dir_all(&settings_dir).expect("create settings dir");
-        let settings_json = serde_json::to_string(&settings).expect("serialize Dave settings");
-        std::fs::write(settings_dir.join("dave_settings.json"), settings_json)
-            .expect("write Dave settings");
+        let settings = agentic_dave_settings(pns_relay_url.clone());
+        write_dave_settings(app_ctx.path, &settings);
 
         let ndb = app_ctx.ndb.clone();
         let dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
@@ -91,30 +111,29 @@ fn dave_agentic_app_factory(pns_relay_url: String) -> AppFactory {
         notedeck.set_app(dave);
     })
 }
-fn controllable_dave_app_factory(pns_relay_url: String) -> (AppFactory, Sender<String>) {
-    let (pns_relay_tx, pns_relay_rx) = mpsc::channel();
+fn controllable_dave_app_factory(
+    pns_relay_url: String,
+) -> (AppFactory, Sender<ControllableDaveCommand>) {
+    let (command_tx, command_rx) = mpsc::channel();
     let app_factory = Box::new(
         move |notedeck: &mut notedeck::Notedeck, egui_ctx: &egui::Context| {
             let app_ctx = notedeck.app_context(egui_ctx);
             app_ctx.settings.complete_welcome();
+            let settings = agentic_dave_settings(pns_relay_url.clone());
+            write_dave_settings(app_ctx.path, &settings);
             let ndb = app_ctx.ndb.clone();
-            let mut dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
+            let dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
             drop(app_ctx);
 
-            let settings = DaveSettings {
-                pns_relay: Some(pns_relay_url),
-                ..DaveSettings::default()
-            };
-            dave.apply_settings(settings.clone());
             notedeck.set_app(ControllableDave {
                 dave,
                 settings,
-                pns_relay_rx,
+                command_rx,
             });
         },
     );
 
-    (app_factory, pns_relay_tx)
+    (app_factory, command_tx)
 }
 async fn seed_pns_session_states(relay_db: &MemoryDatabase, account: &FullKeypair, count: usize) {
     seed_pns_session_states_with_prefix(relay_db, account, "remote-session", count).await;
@@ -431,7 +450,10 @@ fn wait_for_neg_close(
 }
 
 #[cfg(unix)]
-fn send_spawn_agent_request(device: &mut DeviceHarness, cwd: &std::path::Path) {
+fn send_spawn_agent_request(
+    device: &mut DeviceHarness,
+    cwd: &Path,
+) -> notedeck_dave::session::SessionId {
     use std::io::{ErrorKind, Read, Write};
     use std::os::unix::net::UnixStream;
 
@@ -447,6 +469,7 @@ fn send_spawn_agent_request(device: &mut DeviceHarness, cwd: &std::path::Path) {
     writeln!(stream, "{request}").expect("write spawn-agent request");
 
     let mut response = Vec::new();
+    let mut session_id = None;
     wait_for_device_condition(
         device,
         Duration::from_secs(5),
@@ -466,6 +489,10 @@ fn send_spawn_agent_request(device: &mut DeviceHarness, cwd: &std::path::Path) {
                             value.get("status").and_then(|status| status.as_str()),
                             Some("ok")
                         );
+                        session_id = value
+                            .get("session_id")
+                            .and_then(|session_id| session_id.as_u64())
+                            .and_then(|session_id| session_id.try_into().ok());
                         return Ok(());
                     }
                 }
@@ -476,6 +503,7 @@ fn send_spawn_agent_request(device: &mut DeviceHarness, cwd: &std::path::Path) {
             Err("no response yet".to_owned())
         },
     );
+    session_id.expect("spawn-agent session id")
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
@@ -840,7 +868,9 @@ async fn dave_pns_retargets_when_configured_relay_changes_e2e() {
     );
 
     pns_relay_tx
-        .send(second_relay.url().to_owned())
+        .send(ControllableDaveCommand::SetPnsRelay(
+            second_relay.url().to_owned(),
+        ))
         .expect("send PNS relay retarget");
 
     wait_for_neg_close(
@@ -876,7 +906,9 @@ async fn dave_pns_clears_configured_relay_when_retargeted_to_invalid_url_e2e() {
     );
 
     pns_relay_tx
-        .send("not-a-websocket-relay".to_owned())
+        .send(ControllableDaveCommand::SetPnsRelay(
+            "not-a-websocket-relay".to_owned(),
+        ))
         .expect("send invalid PNS relay retarget");
 
     wait_for_neg_close(
@@ -1004,13 +1036,16 @@ async fn dave_pns_invalid_relay_url_does_not_publish_to_account_relays_e2e() {
     let (_, account_relay) = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
-    let mut device = build_dave_device(
-        &[account_relay.url()],
-        &account,
-        dave_agentic_app_factory("not a relay url".to_string()),
-    );
+    let (app_factory, command_tx) = controllable_dave_app_factory("not a relay url".to_string());
+    let mut device = build_dave_device(&[account_relay.url()], &account, app_factory);
 
-    send_spawn_agent_request(&mut device, &cwd);
+    let session_id = send_spawn_agent_request(&mut device, &cwd);
+    command_tx
+        .send(ControllableDaveCommand::AddUserMessage {
+            session_id,
+            text: "queued while PNS relay is invalid".to_owned(),
+        })
+        .expect("queue outbound PNS event");
     step_device_for(&mut device, Duration::from_millis(200));
 
     assert_eq!(captured_event_count(&account_relay), 0);
@@ -1029,7 +1064,13 @@ async fn dave_pns_invalid_relay_url_retains_outbound_events_until_retarget_e2e()
     let (app_factory, pns_relay_tx) = controllable_dave_app_factory("not a relay url".to_string());
     let mut device = build_dave_device(&[relay.url()], &account, app_factory);
 
-    send_spawn_agent_request(&mut device, &cwd);
+    let session_id = send_spawn_agent_request(&mut device, &cwd);
+    pns_relay_tx
+        .send(ControllableDaveCommand::AddUserMessage {
+            session_id,
+            text: "queued while PNS relay is invalid".to_owned(),
+        })
+        .expect("queue outbound PNS event");
     step_device_for(&mut device, Duration::from_millis(200));
     assert_eq!(captured_event_count(&relay), 0);
 
@@ -1041,13 +1082,13 @@ async fn dave_pns_invalid_relay_url_retains_outbound_events_until_retarget_e2e()
     select_account_on_device(&mut device, &account);
 
     pns_relay_tx
-        .send(relay.url().to_owned())
+        .send(ControllableDaveCommand::SetPnsRelay(relay.url().to_owned()))
         .expect("send valid PNS relay retarget");
 
     wait_for_event_publish(
         &mut device,
         &relay,
-        "Dave outbound PNS state publish after invalid relay retarget",
+        "Dave outbound PNS event publish after invalid relay retarget",
     );
 }
 #[cfg(unix)]

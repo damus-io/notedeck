@@ -92,6 +92,25 @@ pub fn build_device_in_tmpdir_with_relays(
         account,
         data_dir,
         DeviceDataDir::Temp { _dir: tmpdir },
+        DeviceKeyMode::Full,
+        app_factory,
+    )
+}
+
+/// Creates one device with a selected public-only account.
+pub fn build_public_device_in_tmpdir_with_relays(
+    relays: &[&str],
+    account: &FullKeypair,
+    tmpdir: TempDir,
+    app_factory: AppFactory,
+) -> DeviceHarness {
+    let data_dir = tmpdir.path().to_path_buf();
+    build_device_with_data_dir(
+        relays,
+        account,
+        data_dir,
+        DeviceDataDir::Temp { _dir: tmpdir },
+        DeviceKeyMode::Public,
         app_factory,
     )
 }
@@ -108,8 +127,14 @@ pub fn build_device_in_path_with_relays(
         account,
         data_dir.to_path_buf(),
         DeviceDataDir::External,
+        DeviceKeyMode::Full,
         app_factory,
     )
+}
+
+enum DeviceKeyMode {
+    Full,
+    Public,
 }
 
 fn build_device_with_data_dir(
@@ -117,15 +142,24 @@ fn build_device_with_data_dir(
     account: &FullKeypair,
     data_dir: PathBuf,
     data_dir_guard: DeviceDataDir,
+    key_mode: DeviceKeyMode,
     app_factory: AppFactory,
 ) -> DeviceHarness {
     let mut args = vec![
         "notedeck-test".to_owned(),
         "--testrunner".to_owned(),
         "--no-keystore".to_owned(),
-        "--nsec".to_owned(),
-        account.secret_key.to_bech32().expect("nsec bech32"),
     ];
+    match key_mode {
+        DeviceKeyMode::Full => {
+            args.push("--nsec".to_owned());
+            args.push(account.secret_key.to_bech32().expect("nsec bech32"));
+        }
+        DeviceKeyMode::Public => {
+            args.push("--pub".to_owned());
+            args.push(account.pubkey.npub().expect("npub bech32"));
+        }
+    }
     for relay in relays {
         args.push("--relay".to_owned());
         args.push((*relay).to_owned());

@@ -13,7 +13,10 @@ use notedeck_columns::{
     Damus,
 };
 use notedeck_testing::{
-    device::{build_device_in_tmpdir_with_relays, DeviceHarness},
+    device::{
+        build_device_in_tmpdir_with_relays, build_public_device_in_tmpdir_with_relays,
+        DeviceHarness,
+    },
     fixtures::{
         add_account_to_device, ndb_path, nostr_pubkey, select_account_on_device, test_config,
         wait_for_import_count,
@@ -856,8 +859,8 @@ async fn giftwrap_sub_backfills_beyond_live_limit_e2e() {
     let live_limit = 500usize;
     let total_giftwraps = live_limit + 20;
     let fixture = setup_giftwrap_fixture(total_giftwraps).await;
-    let mut device = build_columns_device(
-        &fixture.relay_url,
+    let mut device = build_public_device_in_tmpdir_with_relays(
+        &[&fixture.relay_url],
         &fixture.alice,
         fixture.tmpdir,
         columns_app_factory(),
