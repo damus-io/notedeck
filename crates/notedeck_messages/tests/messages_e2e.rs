@@ -1429,7 +1429,7 @@ async fn same_account_devices_handle_high_volume_multi_conversation_fan_in_e2e()
     relay.shutdown_and_wait().await;
 }
 
-/// Verifies mixed explicit and fallback relay routing still delivers across many conversations.
+/// Verifies mixed single-relay and multi-relay routing still delivers across many conversations.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn same_account_devices_handle_partial_participant_relay_knowledge_across_conversations_e2e()
 {
@@ -1467,6 +1467,12 @@ async fn same_account_devices_handle_partial_participant_relay_knowledge_across_
         );
         seed_local_dm_relay_list(sender_device, &recipient_a, &relay_a_url);
         seed_local_dm_relay_list(sender_device, &recipient_b, &relay_b_url);
+        seed_local_dm_relay_list_with_relays(
+            sender_device,
+            &recipient_fallback,
+            &[&relay_a_url, &relay_b_url],
+            seed_ts,
+        );
         seed_local_profile_metadata(sender_device, &recipient_a, "recipient-a");
         seed_local_profile_metadata(sender_device, &recipient_b, "recipient-b");
         seed_local_profile_metadata(sender_device, &recipient_fallback, "recipient-fallback");
@@ -1536,19 +1542,19 @@ async fn same_account_devices_handle_partial_participant_relay_knowledge_across_
             .pubkey
             .npub()
             .expect("recipient fallback npub"),
-        "fallback-accounts-write",
+        "multi-relay-route",
     );
     wait_for_convergence(
         &mut sender_primary,
         std::slice::from_mut(&mut recipient_device_fallback),
-        &BTreeSet::from(["fallback-accounts-write".to_owned()]),
+        &BTreeSet::from(["multi-relay-route".to_owned()]),
         TEST_TIMEOUT,
     );
 
     let expected_sender_view = BTreeSet::from([
         "explicit-relay-a".to_owned(),
         "explicit-relay-b".to_owned(),
-        "fallback-accounts-write".to_owned(),
+        "multi-relay-route".to_owned(),
     ]);
     wait_for_device_group_messages(
         &mut [&mut sender_primary, &mut sender_peer],
