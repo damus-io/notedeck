@@ -2253,29 +2253,24 @@ async fn sending_uses_latest_participant_dm_relay_list_e2e() {
 
     seed_local_dm_relay_list_with_relays(
         &mut sender_device,
+        &sender,
+        &[&relay_a_url, &relay_b_url],
+        Some(now.saturating_add(600)),
+    );
+    seed_local_dm_relay_list_with_relays(
+        &mut sender_device,
         &recipient,
         &[&relay_a_url],
         Some(now.saturating_sub(60)),
     );
     let expected_a = vec![relay_a_url.trim_end_matches('/').to_owned()];
-    let deadline = Instant::now() + TEST_TIMEOUT;
-    loop {
-        sender_device.step();
-        let actual: Vec<_> = local_dm_relay_list_relays(&mut sender_device, &recipient)
-            .into_iter()
-            .map(|url| url.trim_end_matches('/').to_owned())
-            .collect();
-        if actual == expected_a {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for relay a as latest participant dm relay list; expected {:?}, actual {:?}",
-            expected_a,
-            actual
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_for_participant_route_relays(
+        &mut sender_device,
+        &recipient,
+        &expected_a,
+        TEST_TIMEOUT,
+        "relay a as latest participant dm relay list",
+    );
     wait_for_device_giftwrap_subs_ready(&mut [&mut sender_device], TEST_TIMEOUT);
 
     open_conversation_via_ui(&mut sender_device, &recipient_npub);
@@ -2288,24 +2283,13 @@ async fn sending_uses_latest_participant_dm_relay_list_e2e() {
         Some(now),
     );
     let expected_b = vec![relay_b_url.trim_end_matches('/').to_owned()];
-    let deadline = Instant::now() + TEST_TIMEOUT;
-    loop {
-        sender_device.step();
-        let actual: Vec<_> = local_dm_relay_list_relays(&mut sender_device, &recipient)
-            .into_iter()
-            .map(|url| url.trim_end_matches('/').to_owned())
-            .collect();
-        if actual == expected_b {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "timed out waiting for relay b as latest participant dm relay list; expected {:?}, actual {:?}",
-            expected_b,
-            actual
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    wait_for_participant_route_relays(
+        &mut sender_device,
+        &recipient,
+        &expected_b,
+        TEST_TIMEOUT,
+        "relay b as latest participant dm relay list",
+    );
     send_message_via_ui(&mut sender_device, "route-b");
 
     let mut recipient_a = build_messages_device(&relay_a_url, &recipient);
@@ -2824,7 +2808,7 @@ async fn offline_same_account_sender_refreshes_stale_participant_relay_list_afte
     relay_b.shutdown_and_wait().await;
 }
 
-/// Verifies the first send is republished when the participant route arrives after send.
+/// Verifies an unknown participant route does not publish to fallback relays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn first_send_uses_participant_route_after_prefetch_completes_e2e() {
     init_tracing();
