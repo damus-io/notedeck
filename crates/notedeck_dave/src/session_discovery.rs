@@ -181,7 +181,7 @@ pub fn discover_sessions(cwd: &Path) -> Vec<ResumableSession> {
     }
 
     // Sort by most recent first
-    sessions.sort_by(|a, b| b.last_timestamp.cmp(&a.last_timestamp));
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.last_timestamp));
 
     sessions
 }

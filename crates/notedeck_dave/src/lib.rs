@@ -4301,10 +4301,8 @@ pub(crate) fn process_conversation_notes<'a>(
                     }
                 }
             }
-            Some("compaction_started") => {
-                if agentic.compact_intent.is_none() {
-                    agentic.compact_intent = Some(session::CompactIntent::Manual);
-                }
+            Some("compaction_started") if agentic.compact_intent.is_none() => {
+                agentic.compact_intent = Some(session::CompactIntent::Manual);
             }
             Some("compaction_complete") => {
                 let pre_tokens = content.parse::<u64>().unwrap_or(0);

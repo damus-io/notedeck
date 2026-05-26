@@ -295,21 +295,19 @@ pub fn get_unknown_note_ids<'a>(
         }
 
         match block.as_mention().unwrap() {
-            Mention::Pubkey(npub) => {
-                if ndb.get_profile_by_pubkey(txn, npub.pubkey()).is_err() {
-                    ids.entry(UnknownId::Pubkey(Pubkey::new(*npub.pubkey())))
-                        .or_default();
-                }
+            Mention::Pubkey(npub) if ndb.get_profile_by_pubkey(txn, npub.pubkey()).is_err() => {
+                ids.entry(UnknownId::Pubkey(Pubkey::new(*npub.pubkey())))
+                    .or_default();
             }
-            Mention::Profile(nprofile) => {
-                if ndb.get_profile_by_pubkey(txn, nprofile.pubkey()).is_err() {
-                    let id = UnknownId::Pubkey(Pubkey::new(*nprofile.pubkey()));
-                    let relays = nprofile
-                        .relays_iter()
-                        .filter_map(|s| RelayUrl::parse(s).ok())
-                        .collect::<HashSet<RelayUrl>>();
-                    ids.entry(id).or_default().extend(relays);
-                }
+            Mention::Profile(nprofile)
+                if ndb.get_profile_by_pubkey(txn, nprofile.pubkey()).is_err() =>
+            {
+                let id = UnknownId::Pubkey(Pubkey::new(*nprofile.pubkey()));
+                let relays = nprofile
+                    .relays_iter()
+                    .filter_map(|s| RelayUrl::parse(s).ok())
+                    .collect::<HashSet<RelayUrl>>();
+                ids.entry(id).or_default().extend(relays);
             }
             Mention::Event(ev) => {
                 let relays = ev
