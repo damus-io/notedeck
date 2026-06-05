@@ -372,7 +372,7 @@ impl<'a, 'd> PostView<'a, 'd> {
         }
 
         if let Some(selection) = selection_made {
-            selection.process(ui.ctx(), textedit_output);
+            selection.process(ui.ctx(), textedit_output, self.draft.buffer.as_str());
         }
 
         resp.drag_id
