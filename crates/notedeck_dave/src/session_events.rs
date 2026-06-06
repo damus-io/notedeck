@@ -591,7 +591,7 @@ fn truncate_tool_input(tool_input: &serde_json::Value, max_bytes: usize) -> serd
         .iter()
         .filter_map(|(k, v)| v.as_str().map(|s| (k.as_str(), s.len())))
         .collect();
-    string_fields.sort_by(|a, b| b.1.cmp(&a.1));
+    string_fields.sort_by_key(|field| std::cmp::Reverse(field.1));
 
     if string_fields.is_empty() {
         return tool_input.clone();

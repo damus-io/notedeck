@@ -525,7 +525,7 @@ fn load_recent_paths_by_host_with_author(
     }
 
     // Sort by created_at descending (most recent first)
-    entries.sort_by(|a, b| b.2.cmp(&a.2));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.2));
 
     // Group by hostname, dedup cwds, cap per host
     let mut result: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();

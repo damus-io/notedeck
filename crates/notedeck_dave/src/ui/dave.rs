@@ -628,10 +628,8 @@ impl<'a> DaveUi<'a> {
 
     fn tool_response_ui(tool_response: &ToolResponse, is_agentic: bool, ui: &mut egui::Ui) {
         match tool_response.responses() {
-            ToolResponses::ExecutedTool(result) => {
-                if is_agentic {
-                    Self::executed_tool_ui(result, ui);
-                }
+            ToolResponses::ExecutedTool(result) if is_agentic => {
+                Self::executed_tool_ui(result, ui);
             }
             _ => {
                 //ui.label(format!("tool_response: {:?}", tool_response));

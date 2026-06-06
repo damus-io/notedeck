@@ -661,7 +661,7 @@ pub(crate) fn top_kind1_authors_over(cache: &RollingCache, limit: usize) -> Vec<
         }
     }
     let mut v: Vec<_> = agg.into_iter().collect();
-    v.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+    v.sort_unstable_by_key(|author| std::cmp::Reverse(author.1));
     v.truncate(limit);
     v
 }

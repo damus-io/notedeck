@@ -395,7 +395,12 @@ fn ensure_selected_startup(
 
     let account_pubkey = *ctx.accounts.selected_account_pubkey();
     let known_participants = startup_prefetch_participants(ctx.ndb, cache, &account_pubkey);
-    relay_prefetch::ensure_participant_prefetch(&mut ctx.remote, ctx.accounts, &known_participants);
+    relay_prefetch::ensure_participant_prefetch(
+        &mut ctx.remote,
+        ctx.accounts,
+        cache,
+        &known_participants,
+    );
 
     if cache.active.is_none() && !is_narrow {
         if let Some(first) = cache.first_convo_id() {
@@ -490,6 +495,13 @@ fn list_prefetch_owner_key(account_pk: Pubkey) -> SubOwnerKey {
 fn list_ensure_owner_key(account_pk: Pubkey) -> SubOwnerKey {
     SubOwnerKey::builder(RelayListOwner::Ensure)
         .with(account_pk)
+        .finish()
+}
+
+/// Stable account-level key for the participant DM relay-list prefetch stream.
+pub(crate) fn list_prefetch_sub_key() -> SubKey {
+    SubKey::builder(RELAY_LIST_KEY)
+        .with("participant_prefetch")
         .finish()
 }
 

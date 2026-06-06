@@ -25,6 +25,7 @@ pub struct ConversationCache {
     order: Vec<ConversationOrder>,
     pub state: ConversationListState,
     dm_relay_list_ensure: DmListState,
+    dm_relay_list_prefetch: ParticipantRelayPrefetchState,
     pub active: Option<ConversationId>,
     selected_startup_pending: bool,
 }
@@ -114,12 +115,27 @@ impl ConversationCache {
             }
         }
 
-        participants.into_iter().collect()
+        let mut participants: Vec<Pubkey> = participants.into_iter().collect();
+        sort_pubkeys(&mut participants);
+        participants
     }
 
     /// Mutable access to the selected-account DM relay-list ensure state.
     pub fn dm_relay_list_ensure_mut(&mut self) -> &mut DmListState {
         &mut self.dm_relay_list_ensure
+    }
+
+    /// Accumulate participants for the selected-account DM relay-list prefetch declaration.
+    pub(crate) fn extend_dm_relay_list_prefetch_participants(
+        &mut self,
+        participants: &[Pubkey],
+    ) -> bool {
+        self.dm_relay_list_prefetch.extend(participants)
+    }
+
+    /// Deterministic participants for the selected-account DM relay-list prefetch declaration.
+    pub(crate) fn dm_relay_list_prefetch_participants(&self) -> &[Pubkey] {
+        self.dm_relay_list_prefetch.participants()
     }
 
     /// Mark selected-account startup side effects as pending after initial load.
@@ -270,6 +286,7 @@ impl Default for ConversationCache {
             order: Vec::new(),
             state: Default::default(),
             dm_relay_list_ensure: Default::default(),
+            dm_relay_list_prefetch: Default::default(),
             active: None,
             selected_startup_pending: false,
         }
@@ -297,6 +314,43 @@ impl ConversationMetadata {
     }
 }
 
+/// Account-local state for the single participant relay-list prefetch declaration.
+#[derive(Default)]
+struct ParticipantRelayPrefetchState {
+    participants: Vec<Pubkey>,
+    seen: HashSet<Pubkey>,
+}
+
+impl ParticipantRelayPrefetchState {
+    /// Insert new participants and keep the declaration order deterministic.
+    fn extend(&mut self, participants: &[Pubkey]) -> bool {
+        let mut changed = false;
+
+        for participant in participants {
+            if self.seen.insert(*participant) {
+                self.participants.push(*participant);
+                changed = true;
+            }
+        }
+
+        if changed {
+            sort_pubkeys(&mut self.participants);
+        }
+
+        changed
+    }
+
+    /// Return accumulated participants in deterministic order.
+    fn participants(&self) -> &[Pubkey] {
+        &self.participants
+    }
+}
+
+/// Sort pubkeys by raw bytes for stable filter/config serialization.
+fn sort_pubkeys(participants: &mut [Pubkey]) {
+    participants.sort_unstable_by(|a, b| a.bytes().cmp(b.bytes()));
+}
+
 /// Tracks the conversation list initialization and subscription lifecycle.
 #[derive(Default)]
 pub enum ConversationListState {
@@ -310,4 +364,36 @@ pub enum ConversationListState {
     },
     /// Initial load completed; subscription remains active if available.
     Initialized(Option<Subscription>), // conversation list filter
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies the account-local relay-list prefetch set accumulates instead of narrowing.
+    #[test]
+    fn relay_list_prefetch_participants_accumulate_after_conversation_subset() {
+        let participant_a = Pubkey::new([0x22; 32]);
+        let participant_b = Pubkey::new([0x11; 32]);
+        let participant_c = Pubkey::new([0x33; 32]);
+        let mut cache = ConversationCache::new();
+
+        assert!(cache.extend_dm_relay_list_prefetch_participants(&[participant_c, participant_a]));
+        assert_eq!(
+            cache.dm_relay_list_prefetch_participants(),
+            &[participant_a, participant_c]
+        );
+
+        assert!(cache.extend_dm_relay_list_prefetch_participants(&[participant_b]));
+        assert_eq!(
+            cache.dm_relay_list_prefetch_participants(),
+            &[participant_b, participant_a, participant_c]
+        );
+
+        assert!(!cache.extend_dm_relay_list_prefetch_participants(&[participant_a]));
+        assert_eq!(
+            cache.dm_relay_list_prefetch_participants(),
+            &[participant_b, participant_a, participant_c]
+        );
+    }
 }
