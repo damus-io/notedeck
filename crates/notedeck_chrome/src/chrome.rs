@@ -450,6 +450,25 @@ impl Chrome {
         }
     }
 
+    /// Cycle the active app to the next (`forward`) or previous opened app,
+    /// wrapping around. Used by Ctrl+Tab / Ctrl+Shift+Tab.
+    fn cycle_app(&mut self, forward: bool) {
+        let n = self.opened.len();
+        if n == 0 {
+            return;
+        }
+        let active = self.active.clamp(0, n as i32 - 1) as usize;
+        let step = if forward { 1 } else { n - 1 };
+        // walk opened slots starting from the one after active, wrapping
+        for offset in 1..=n {
+            let idx = (active + step * offset) % n;
+            if self.opened[idx] {
+                self.set_active(idx as i32);
+                return;
+            }
+        }
+    }
+
     /// The chrome side panel
     #[profiling::function]
     fn panel(
@@ -557,6 +576,23 @@ impl Chrome {
 
         // chrome-style app tab strip, desktop/wide only
         let show_app_tabs = !is_narrow && ctx.settings.welcome_completed();
+
+        // Ctrl+Tab / Ctrl+Shift+Tab cycle through opened app tabs
+        if show_app_tabs {
+            let (mut next, mut prev) = (false, false);
+            ui.input_mut(|i| {
+                prev = i.consume_key(
+                    egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+                    egui::Key::Tab,
+                );
+                next = i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab);
+            });
+            if prev {
+                self.cycle_app(false);
+            } else if next {
+                self.cycle_app(true);
+            }
+        }
 
         let (unseen_notifications, active_toolbar_tab) = if is_narrow {
             let unseen = self
