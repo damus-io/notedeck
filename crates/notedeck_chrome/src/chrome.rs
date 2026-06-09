@@ -1060,6 +1060,28 @@ fn nth_opened(opened: &[bool], n: usize) -> Option<usize> {
 /// Chrome-browser-style tab strip across the top of the chrome frame. Shows one
 /// tab per *opened* app (`Chrome::opened`); clicking a tab switches the active
 /// app. New apps are opened from the left sidebar.
+/// A subtle separator beneath the tab strip: a faint line that softens into a
+/// short gradient fading up into the tab strip, instead of a hard hairline.
+fn tab_strip_fade(ui: &egui::Ui) {
+    let rect = ui.available_rect_before_wrap();
+    let top = rect.top();
+    let fade_height = 6.0;
+    let (left, right) = (rect.left(), rect.right());
+
+    let base = ui.visuals().widgets.noninteractive.bg_stroke.color;
+    let line = base.gamma_multiply(0.6);
+    let transparent = Color32::TRANSPARENT;
+
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(egui::pos2(left, top), line);
+    mesh.colored_vertex(egui::pos2(right, top), line);
+    mesh.colored_vertex(egui::pos2(right, top - fade_height), transparent);
+    mesh.colored_vertex(egui::pos2(left, top - fade_height), transparent);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().add(egui::Shape::mesh(mesh));
+}
+
 fn chrome_app_tabs(chrome: &mut Chrome, loc: &mut Localization, ui: &mut egui::Ui) {
     // disjoint field borrows so the tab closure can read opened flags while
     // mutably rendering app icons (e.g. Dave's avatar)
@@ -1109,7 +1131,7 @@ fn chrome_app_tabs(chrome: &mut Chrome, loc: &mut Localization, ui: &mut egui::U
             });
         });
 
-    notedeck_ui::hline(ui);
+    tab_strip_fade(ui);
 
     // switch active app if a different tab was selected
     let new_sel = tab_res.selected().unwrap_or(sel as i32) as usize;
