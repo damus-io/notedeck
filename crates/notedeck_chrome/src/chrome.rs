@@ -555,6 +555,9 @@ impl Chrome {
             0.0
         };
 
+        // chrome-style app tab strip, desktop/wide only
+        let show_app_tabs = !is_narrow && ctx.settings.welcome_completed();
+
         let (unseen_notifications, active_toolbar_tab) = if is_narrow {
             let unseen = self
                 .get_columns_app()
@@ -580,6 +583,9 @@ impl Chrome {
                 // the actual content, shifted up because of the soft keyboard
                 strip.cell(|ui| {
                     ui.spacing_mut().item_spacing = prev_spacing;
+                    if show_app_tabs {
+                        chrome_app_tabs(self, ctx.i18n, ui);
+                    }
                     action = self.panel(ctx, ui, keyboard_height);
                 });
 
@@ -964,6 +970,156 @@ fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui, rect: Rect) -
     }
 }
 
+/// The localized display name for a notedeck app, used in the sidebar and the
+/// chrome tab strip.
+fn app_label(loc: &mut Localization, app: &NotedeckApp) -> String {
+    match app {
+        NotedeckApp::Dave(_) => tr!(loc, "Dave", "Button to go to the Dave app"),
+        NotedeckApp::Columns(_) => tr!(loc, "Columns", "Button to go to the Columns app"),
+
+        #[cfg(feature = "messages")]
+        NotedeckApp::Messages(_) => tr!(loc, "Messaging", "Button to go to the messaging app"),
+
+        #[cfg(feature = "dashboard")]
+        NotedeckApp::Dashboard(_) => tr!(loc, "Dashboard", "Button to go to the dashboard app"),
+
+        #[cfg(feature = "notebook")]
+        NotedeckApp::Notebook(_) => tr!(loc, "Notebook", "Button to go to the Notebook app"),
+
+        #[cfg(feature = "clndash")]
+        NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
+
+        #[cfg(feature = "nostrverse")]
+        NotedeckApp::Nostrverse(_) => tr!(loc, "Nostrverse", "Button to go to the Nostrverse app"),
+
+        NotedeckApp::Other(name, _) => tr!(loc, name.as_str(), "Button to go to a WASM app"),
+    }
+}
+
+/// Render a small (`size` square) app icon for the chrome tab strip.
+fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
+    match app {
+        NotedeckApp::Columns(_) => {
+            ui.add(app_images::columns_image().max_width(size).max_height(size));
+        }
+
+        NotedeckApp::Dave(dave) => {
+            let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+            dave_button(dave.avatar_mut(), ui, rect);
+        }
+
+        #[cfg(feature = "dashboard")]
+        NotedeckApp::Dashboard(_) => {
+            ui.add(app_images::algo_image().max_width(size).max_height(size));
+        }
+
+        #[cfg(feature = "messages")]
+        NotedeckApp::Messages(_) => {
+            ui.add(
+                app_images::new_message_image()
+                    .max_width(size)
+                    .max_height(size),
+            );
+        }
+
+        #[cfg(feature = "clndash")]
+        NotedeckApp::ClnDash(_) => {
+            ui.add(app_images::cln_image().max_width(size).max_height(size));
+        }
+
+        #[cfg(feature = "notebook")]
+        NotedeckApp::Notebook(_) => {
+            ui.add(app_images::algo_image().max_width(size).max_height(size));
+        }
+
+        #[cfg(feature = "nostrverse")]
+        NotedeckApp::Nostrverse(_) => {
+            ui.add(
+                app_images::universe_image()
+                    .max_width(size)
+                    .max_height(size),
+            );
+        }
+
+        NotedeckApp::Other(_name, _) => {
+            ui.label("W");
+        }
+    }
+}
+
+/// The app index of the `n`th opened app (the app backing the `n`th tab).
+fn nth_opened(opened: &[bool], n: usize) -> Option<usize> {
+    opened
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| **o)
+        .nth(n)
+        .map(|(i, _)| i)
+}
+
+/// Chrome-browser-style tab strip across the top of the chrome frame. Shows one
+/// tab per *opened* app (`Chrome::opened`); clicking a tab switches the active
+/// app. New apps are opened from the left sidebar.
+fn chrome_app_tabs(chrome: &mut Chrome, loc: &mut Localization, ui: &mut egui::Ui) {
+    // disjoint field borrows so the tab closure can read opened flags while
+    // mutably rendering app icons (e.g. Dave's avatar)
+    let opened = &chrome.opened;
+    let apps = &mut chrome.apps;
+
+    // the active app is always opened, so there is always at least one tab
+    let n_tabs = opened.iter().filter(|o| **o).count();
+    if n_tabs == 0 {
+        return;
+    }
+
+    // the selected tab is the number of opened apps before the active app
+    let active = chrome.active.max(0) as usize;
+    let sel = opened.iter().take(active).filter(|o| **o).count();
+
+    ui.spacing_mut().item_spacing.y = 0.0;
+
+    // egui_tabs keys its selection on `ui.id().with("tabs")` and prefers temp
+    // data over `.selected()`, so overwrite it each frame to stay in sync with
+    // app switches that happen elsewhere (e.g. the sidebar).
+    let tabs_id = ui.id().with("tabs");
+    ui.ctx().data_mut(|d| d.insert_temp(tabs_id, sel as i32));
+
+    let tab_res = egui_tabs::Tabs::new(n_tabs as i32)
+        .selected(sel as i32)
+        .hover_bg(egui_tabs::TabColor::none())
+        .selected_fg(egui_tabs::TabColor::none())
+        .selected_bg(egui_tabs::TabColor::none())
+        .height(30.0)
+        .layout(Layout::centered_and_justified(egui::Direction::TopDown))
+        .show(ui, |ui, state| {
+            let Some(app_idx) = nth_opened(opened, state.index() as usize) else {
+                return;
+            };
+
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                tab_app_icon(ui, &mut apps[app_idx], 18.0);
+                let txt = RichText::new(app_label(loc, &apps[app_idx]));
+                let txt = if state.is_selected() {
+                    txt
+                } else {
+                    txt.color(ui.visuals().weak_text_color())
+                };
+                ui.add(Label::new(txt).selectable(false));
+            });
+        });
+
+    notedeck_ui::hline(ui);
+
+    // switch active app if a different tab was selected
+    let new_sel = tab_res.selected().unwrap_or(sel as i32) as usize;
+    if let Some(app_idx) = nth_opened(&chrome.opened, new_sel) {
+        if app_idx as i32 != chrome.active {
+            chrome.set_active(app_idx as i32);
+        }
+    }
+}
+
 pub fn get_profile_url_owned(profile: Option<ProfileRecord<'_>>) -> &str {
     if let Some(url) = profile.and_then(|pr| pr.record().profile().and_then(|p| p.picture())) {
         url
@@ -1323,37 +1479,7 @@ fn topdown_sidebar(
             continue;
         }
 
-        let text = match &app {
-            NotedeckApp::Dave(_) => tr!(loc, "Dave", "Button to go to the Dave app"),
-            NotedeckApp::Columns(_) => tr!(loc, "Columns", "Button to go to the Columns app"),
-
-            #[cfg(feature = "messages")]
-            NotedeckApp::Messages(_) => {
-                tr!(loc, "Messaging", "Button to go to the messaging app")
-            }
-
-            #[cfg(feature = "dashboard")]
-            NotedeckApp::Dashboard(_) => {
-                tr!(loc, "Dashboard", "Button to go to the dashboard app")
-            }
-
-            #[cfg(feature = "notebook")]
-            NotedeckApp::Notebook(_) => {
-                tr!(loc, "Notebook", "Button to go to the Notebook app")
-            }
-
-            #[cfg(feature = "clndash")]
-            NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
-
-            #[cfg(feature = "nostrverse")]
-            NotedeckApp::Nostrverse(_) => {
-                tr!(loc, "Nostrverse", "Button to go to the Nostrverse app")
-            }
-
-            NotedeckApp::Other(name, _) => {
-                tr!(loc, name.as_str(), "Button to go to a WASM app")
-            }
-        };
+        let text = app_label(loc, app);
 
         StripBuilder::new(ui)
             .size(Size::exact(40.0))
