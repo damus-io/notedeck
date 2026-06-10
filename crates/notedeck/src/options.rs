@@ -22,6 +22,9 @@ bitflags! {
 
         /// Show the native window titlebar?
         const ShowTitle = 1 << 7;
+
+        /// Update all apps every frame, even if they haven't been opened yet
+        const AllAppsActive = 1 << 8;
     }
 }
 

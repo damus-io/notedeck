@@ -41,7 +41,7 @@ pub use cache::TimelineCache;
 pub use kind::{ColumnTitle, PubkeySource, ThreadSelection, TimelineKind};
 pub use note_units::{CompositeType, InsertionResponse, NoteUnits};
 pub use timeline_units::{MergeResponse, TimelineUnits, UnknownPks};
-pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit};
+pub use unit::{CompositeUnit, NoteUnit, ReactionUnit, RepostUnit, ZapUnit};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum TimelineScopedSub {

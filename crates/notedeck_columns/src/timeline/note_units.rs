@@ -257,6 +257,7 @@ pub struct CompositeKey {
 pub enum CompositeType {
     Reaction,
     Repost,
+    Zap,
 }
 
 #[derive(Hash, PartialEq, Eq, Debug)]

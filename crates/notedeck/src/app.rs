@@ -4,7 +4,7 @@ use crate::nip05::Nip05Cache;
 use crate::persist::{AppSizeHandler, SettingsHandler};
 use crate::remote_data::RemoteState;
 use crate::wallet::GlobalWallet;
-use crate::zaps::Zaps;
+use crate::zaps::{ZapVerifier, Zaps};
 use crate::NotedeckOptions;
 use crate::{
     frame_history::FrameHistory, AccountStorage, Accounts, AppContext, Args, DataPath,
@@ -108,6 +108,7 @@ pub struct Notedeck {
     unrecognized_args: BTreeSet<String>,
     clipboard: Clipboard,
     zaps: Zaps,
+    zap_verifier: ZapVerifier,
     frame_history: FrameHistory,
     job_pool: JobPool,
     media_jobs: MediaJobs,
@@ -186,6 +187,7 @@ impl Notedeck {
             self.remote.process_events(ctx, &self.ndb);
         }
         self.nip05_cache.poll();
+        self.zap_verifier.poll(&self.ndb, self.zaps.pay_cache());
         let Some(app) = &self.app else {
             self.remote
                 .request_repaint_for_next_full_history_deadline(ctx);
@@ -388,6 +390,7 @@ impl Notedeck {
             frame_history: FrameHistory::default(),
             clipboard: Clipboard::new(None),
             zaps,
+            zap_verifier: ZapVerifier::new(),
             job_pool,
             media_jobs: media_job_cache,
             nip05_cache: Nip05Cache::new(),
@@ -439,6 +442,7 @@ impl Notedeck {
                 settings: &mut self.settings,
                 clipboard: &mut self.clipboard,
                 zaps: &mut self.zaps,
+                zap_verifier: &mut self.zap_verifier,
                 frame_history: &mut self.frame_history,
                 job_pool: &mut self.job_pool,
                 media_jobs: &mut self.media_jobs,

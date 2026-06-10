@@ -736,8 +736,8 @@ pub fn notifications_filter(pk: &Pubkey) -> Filter {
         .build()
 }
 
-pub fn notification_kinds() -> [u64; 3] {
-    [1, 7, 6]
+pub fn notification_kinds() -> [u64; 4] {
+    [1, 7, 6, 9735]
 }
 
 #[derive(Debug)]
