@@ -32,12 +32,39 @@ pub enum AppAction {
     ToggleChrome,
 }
 
+/// Notification badge state for an app's chrome tab.
+///
+/// Apps report this via [`App::tab_notifications`] so the chrome tab strip can
+/// render a badge (e.g. unread DMs on Messages, items needing input on Dave).
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabNotifications {
+    /// A count to display in the badge. Zero means no badge.
+    pub count: u32,
+}
+
+impl TabNotifications {
+    /// A badge showing `count`. A count of zero renders no badge.
+    pub fn count(count: u32) -> Self {
+        Self { count }
+    }
+
+    /// Whether there's anything to show.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
 pub trait App {
     /// Background processing — called every frame for ALL apps.
     fn update(&mut self, _ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {}
 
     /// UI rendering — called only for the active/visible app.
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse;
+
+    /// Notification badge state for this app's chrome tab. Defaults to none.
+    fn tab_notifications(&self, _ctx: &AppContext<'_>) -> TabNotifications {
+        TabNotifications::default()
+    }
 }
 
 #[derive(Default)]

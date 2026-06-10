@@ -67,7 +67,7 @@ pub use account::accounts::{giftwrap_sub_identity, AccountData, Accounts};
 pub use account::contacts::{ContactState, IsFollowing};
 pub use account::relay::{construct_nip65_relays_note, RelayAction};
 pub use account::FALLBACK_PUBKEY;
-pub use app::{App, AppAction, AppResponse, Notedeck};
+pub use app::{App, AppAction, AppResponse, Notedeck, TabNotifications};
 pub use args::Args;
 pub use async_loader::{worker_count, AsyncLoader};
 pub use context::{AppContext, SoftKeyboardContext};

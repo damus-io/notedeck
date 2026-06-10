@@ -90,4 +90,28 @@ impl notedeck::App for NotedeckApp {
             NotedeckApp::Other(_name, other) => other.render(ctx, ui),
         }
     }
+
+    fn tab_notifications(&self, ctx: &AppContext<'_>) -> notedeck::TabNotifications {
+        match self {
+            NotedeckApp::Dave(dave) => dave.tab_notifications(ctx),
+            NotedeckApp::Columns(columns) => columns.tab_notifications(ctx),
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => notebook.tab_notifications(ctx),
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => clndash.tab_notifications(ctx),
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => dms.tab_notifications(ctx),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.tab_notifications(ctx),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.tab_notifications(ctx),
+
+            NotedeckApp::Other(_name, other) => other.tab_notifications(ctx),
+        }
+    }
 }

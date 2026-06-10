@@ -3975,6 +3975,10 @@ impl notedeck::App for Dave {
 
         AppResponse::action(app_action)
     }
+
+    fn tab_notifications(&self, _ctx: &AppContext<'_>) -> notedeck::TabNotifications {
+        notedeck::TabNotifications::count(self.focus_queue.needs_input_count() as u32)
+    }
 }
 
 /// Bring the application to the front.

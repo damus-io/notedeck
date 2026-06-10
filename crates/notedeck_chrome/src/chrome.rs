@@ -22,7 +22,7 @@ use notedeck::Error;
 use notedeck::SoftKeyboardContext;
 use notedeck::{
     tr, App, AppAction, AppContext, Localization, Notedeck, NotedeckOptions, NotedeckTextStyle,
-    UserAccount, WalletType,
+    TabNotifications, UserAccount, WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
 use notedeck_dave::{Dave, DaveAvatar};
@@ -620,7 +620,7 @@ impl Chrome {
                 strip.cell(|ui| {
                     ui.spacing_mut().item_spacing = prev_spacing;
                     if show_app_tabs {
-                        chrome_app_tabs(self, ctx.i18n, ui);
+                        chrome_app_tabs(self, ctx, ui);
                     }
                     action = self.panel(ctx, ui, keyboard_height);
                 });
@@ -1093,9 +1093,6 @@ fn nth_opened(opened: &[bool], n: usize) -> Option<usize> {
         .map(|(i, _)| i)
 }
 
-/// Chrome-browser-style tab strip across the top of the chrome frame. Shows one
-/// tab per *opened* app (`Chrome::opened`); clicking a tab switches the active
-/// app. New apps are opened from the left sidebar.
 /// A subtle separator beneath the tab strip: a faint line that softens into a
 /// short gradient fading up into the tab strip, instead of a hard hairline.
 fn tab_strip_fade(ui: &egui::Ui) {
@@ -1118,7 +1115,62 @@ fn tab_strip_fade(ui: &egui::Ui) {
     ui.painter().add(egui::Shape::mesh(mesh));
 }
 
-fn chrome_app_tabs(chrome: &mut Chrome, loc: &mut Localization, ui: &mut egui::Ui) {
+/// A single tab in the chrome app tab strip: the app it represents, whether
+/// it's the active tab, and any notification badge it wants to show.
+struct ChromeTab<'a> {
+    app: &'a mut NotedeckApp,
+    selected: bool,
+    notifications: TabNotifications,
+}
+
+impl ChromeTab<'_> {
+    fn show(&mut self, loc: &mut Localization, ui: &mut egui::Ui) {
+        ui.horizontal_centered(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            tab_app_icon(ui, self.app, 18.0);
+
+            let txt = RichText::new(app_label(loc, self.app));
+            let txt = if self.selected {
+                txt
+            } else {
+                txt.color(ui.visuals().weak_text_color())
+            };
+            ui.add(Label::new(txt).selectable(false));
+
+            tab_notification_badge(ui, self.notifications);
+        });
+    }
+}
+
+/// Render a small pill badge with the notification count, if any.
+fn tab_notification_badge(ui: &mut egui::Ui, notifs: TabNotifications) {
+    if notifs.is_empty() {
+        return;
+    }
+
+    let label = if notifs.count > 99 {
+        "99+".to_owned()
+    } else {
+        notifs.count.to_string()
+    };
+
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label, egui::FontId::proportional(11.0), Color32::WHITE);
+
+    let padding = vec2(5.0, 1.0);
+    let size = galley.size() + padding * 2.0;
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter()
+        .rect_filled(rect, rect.height() / 2.0, notedeck_ui::colors::PINK);
+    ui.painter()
+        .galley(rect.center() - galley.size() / 2.0, galley, Color32::WHITE);
+}
+
+/// Chrome-browser-style tab strip across the top of the chrome frame. Shows one
+/// tab per *opened* app (`Chrome::opened`); clicking a tab switches the active
+/// app. New apps are opened from the left sidebar.
+fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui) {
     // disjoint field borrows so the tab closure can read opened flags while
     // mutably rendering app icons (e.g. Dave's avatar)
     let opened = &chrome.opened;
@@ -1154,17 +1206,13 @@ fn chrome_app_tabs(chrome: &mut Chrome, loc: &mut Localization, ui: &mut egui::U
                 return;
             };
 
-            ui.horizontal_centered(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                tab_app_icon(ui, &mut apps[app_idx], 18.0);
-                let txt = RichText::new(app_label(loc, &apps[app_idx]));
-                let txt = if state.is_selected() {
-                    txt
-                } else {
-                    txt.color(ui.visuals().weak_text_color())
-                };
-                ui.add(Label::new(txt).selectable(false));
-            });
+            let notifications = apps[app_idx].tab_notifications(ctx);
+            ChromeTab {
+                app: &mut apps[app_idx],
+                selected: state.is_selected(),
+                notifications,
+            }
+            .show(ctx.i18n, ui);
         });
 
     tab_strip_fade(ui);
