@@ -228,6 +228,9 @@ impl Chrome {
         #[cfg(feature = "notebook")]
         chrome.add_app(NotedeckApp::Notebook(Box::default()));
 
+        #[cfg(feature = "headway")]
+        chrome.add_app(NotedeckApp::Headway(Box::default()));
+
         #[cfg(feature = "clndash")]
         chrome.add_app(NotedeckApp::ClnDash(Box::default()));
 
@@ -1004,6 +1007,18 @@ fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
+#[cfg(feature = "headway")]
+fn headway_button(ui: &mut egui::Ui) -> egui::Response {
+    notedeck_ui::expanding_button(
+        "headway-button",
+        40.0,
+        app_images::algo_image(),
+        app_images::algo_image(),
+        ui,
+        false,
+    )
+}
+
 fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui, rect: Rect) -> egui::Response {
     if let Some(avatar) = avatar {
         avatar.render(rect, ui)
@@ -1028,6 +1043,9 @@ fn app_label(loc: &mut Localization, app: &NotedeckApp) -> String {
 
         #[cfg(feature = "notebook")]
         NotedeckApp::Notebook(_) => tr!(loc, "Notebook", "Button to go to the Notebook app"),
+
+        #[cfg(feature = "headway")]
+        NotedeckApp::Headway(_) => tr!(loc, "Headway", "Button to go to the Headway app"),
 
         #[cfg(feature = "clndash")]
         NotedeckApp::ClnDash(_) => tr!(loc, "ClnDash", "Button to go to the ClnDash app"),
@@ -1072,6 +1090,11 @@ fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
 
         #[cfg(feature = "notebook")]
         NotedeckApp::Notebook(_) => {
+            ui.add(app_images::algo_image().max_width(size).max_height(size));
+        }
+
+        #[cfg(feature = "headway")]
+        NotedeckApp::Headway(_) => {
             ui.add(app_images::algo_image().max_width(size).max_height(size));
         }
 
@@ -1635,6 +1658,11 @@ fn topdown_sidebar(
                             #[cfg(feature = "notebook")]
                             NotedeckApp::Notebook(_notebook) => {
                                 notebook_button(ui);
+                            }
+
+                            #[cfg(feature = "headway")]
+                            NotedeckApp::Headway(_headway) => {
+                                headway_button(ui);
                             }
 
                             #[cfg(feature = "nostrverse")]

@@ -5039,6 +5039,7 @@ dependencies = [
  "notedeck_columns",
  "notedeck_dashboard",
  "notedeck_dave",
+ "notedeck_headway",
  "notedeck_messages",
  "notedeck_nostrverse",
  "notedeck_notebook",
@@ -5207,6 +5208,15 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "notedeck_headway"
+version = "0.10.0-beta.4"
+dependencies = [
+ "egui",
+ "notedeck",
+ "notedeck_ui",
 ]
 
 [[package]]

@@ -1,0 +1,9 @@
+[package]
+name = "notedeck_headway"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
+egui = { workspace = true }

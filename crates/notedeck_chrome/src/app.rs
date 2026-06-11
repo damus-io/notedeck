@@ -15,6 +15,9 @@ use notedeck_dashboard::Dashboard;
 #[cfg(feature = "notebook")]
 use notedeck_notebook::Notebook;
 
+#[cfg(feature = "headway")]
+use notedeck_headway::Headway;
+
 #[cfg(feature = "nostrverse")]
 use notedeck_nostrverse::NostrverseApp;
 
@@ -25,6 +28,9 @@ pub enum NotedeckApp {
 
     #[cfg(feature = "notebook")]
     Notebook(Box<Notebook>),
+
+    #[cfg(feature = "headway")]
+    Headway(Box<Headway>),
 
     #[cfg(feature = "clndash")]
     ClnDash(Box<ClnDash>),
@@ -49,6 +55,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(notebook) => notebook.update(ctx, egui_ctx),
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.update(ctx, egui_ctx),
 
             #[cfg(feature = "clndash")]
             NotedeckApp::ClnDash(clndash) => clndash.update(ctx, egui_ctx),
@@ -75,6 +84,9 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(notebook) => notebook.render(ctx, ui),
 
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.render(ctx, ui),
+
             #[cfg(feature = "clndash")]
             NotedeckApp::ClnDash(clndash) => clndash.render(ctx, ui),
 
@@ -98,6 +110,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "notebook")]
             NotedeckApp::Notebook(notebook) => notebook.tab_notifications(ctx),
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.tab_notifications(ctx),
 
             #[cfg(feature = "clndash")]
             NotedeckApp::ClnDash(clndash) => clndash.tab_notifications(ctx),
