@@ -5215,8 +5215,11 @@ name = "notedeck_headway"
 version = "0.10.0-beta.4"
 dependencies = [
  "egui",
+ "egui_kittest",
  "notedeck",
+ "notedeck_testing",
  "notedeck_ui",
+ "tempfile",
 ]
 
 [[package]]

@@ -118,23 +118,30 @@ fn column_ui(
             ui.set_width(COLUMN_WIDTH);
             ui.set_min_height(height);
 
-            // Header: title + card count.
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&column.title).strong());
-                ui.label(
-                    egui::RichText::new(format!("{}", column.cards.len())).color(theme.text_muted),
-                );
-            });
-            ui.add_space(SPACING_SM);
-
-            egui::ScrollArea::vertical()
-                .id_salt(("headway-col", col_idx))
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    cards_drop_zone(ui, theme, column, col_idx, action);
-                    ui.add_space(SPACING_SM);
-                    add_card_ui(ui, theme, state, col_idx, action);
+            // Force a top-down interior: the board arranges columns with a
+            // horizontal layout (`horizontal_top`), and that direction is
+            // inherited by this frame — without this the cards would stack
+            // left-to-right instead of vertically.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                // Header: title + card count.
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&column.title).strong());
+                    ui.label(
+                        egui::RichText::new(format!("{}", column.cards.len()))
+                            .color(theme.text_muted),
+                    );
                 });
+                ui.add_space(SPACING_SM);
+
+                egui::ScrollArea::vertical()
+                    .id_salt(("headway-col", col_idx))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        cards_drop_zone(ui, theme, column, col_idx, action);
+                        ui.add_space(SPACING_SM);
+                        add_card_ui(ui, theme, state, col_idx, action);
+                    });
+            });
         });
 }
 
