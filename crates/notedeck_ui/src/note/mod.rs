@@ -196,8 +196,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
 
     #[inline]
     pub fn detailed_counts(mut self, enable: bool) -> Self {
-        self.options_mut()
-            .set(NoteOptions::DetailedCounts, enable);
+        self.options_mut().set(NoteOptions::DetailedCounts, enable);
         self
     }
 
@@ -475,8 +474,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
             let show_detailed = self.options().contains(NoteOptions::DetailedCounts);
 
             if show_actionbar || show_detailed {
-                let stats =
-                    NoteStats::get(self.note_context.ndb, txn, self.note.id());
+                let stats = NoteStats::get(self.note_context.ndb, txn, self.note.id());
 
                 if show_detailed {
                     detailed_counts_ui(ui, &stats);
@@ -576,8 +574,7 @@ impl<'a, 'd> NoteView<'a, 'd> {
                 let show_detailed = self.options().contains(NoteOptions::DetailedCounts);
 
                 if show_actionbar || show_detailed {
-                    let stats =
-                        NoteStats::get(self.note_context.ndb, txn, self.note.id());
+                    let stats = NoteStats::get(self.note_context.ndb, txn, self.note.id());
 
                     if show_detailed {
                         detailed_counts_ui(ui, &stats);
@@ -1184,9 +1181,16 @@ fn actionbar_ui(
         action = Some(NoteAction::Repost(NoteId::new(*note.id())));
     }
 
-    action =
-        zap_actionbar_button(ui, note.id(), note.pubkey(), zapper, stats.zap_sats(), i18n, sound)
-            .or(action);
+    action = zap_actionbar_button(
+        ui,
+        note.id(),
+        note.pubkey(),
+        zapper,
+        stats.zap_sats(),
+        i18n,
+        sound,
+    )
+    .or(action);
 
     action
 }
