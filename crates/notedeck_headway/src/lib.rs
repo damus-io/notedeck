@@ -29,6 +29,8 @@ struct BoardUiState {
     composing: Option<usize>,
     /// Buffer backing the new-card text field.
     compose_text: String,
+    /// The card whose detail view is open, if any.
+    selected: Option<u64>,
 }
 
 /// Drag-and-drop payload: the stable id of the card being dragged.
@@ -62,6 +64,8 @@ impl App for Headway {
         // mutating `state`; structural board edits are collected and applied after.
         let Headway { board, state } = self;
         let mut action: Option<BoardAction> = None;
+        // The card a click landed on this frame; opens the detail view below.
+        let mut clicked: Option<u64> = None;
 
         egui::Frame::new()
             .inner_margin(egui::Margin::same(SPACING_LG as i8))
@@ -75,7 +79,9 @@ impl App for Headway {
                         ui.horizontal_top(|ui| {
                             ui.spacing_mut().item_spacing.x = SPACING_MD;
                             for col_idx in 0..board.columns.len() {
-                                column_ui(ui, &theme, board, state, col_idx, &mut action);
+                                column_ui(
+                                    ui, &theme, board, state, col_idx, &mut action, &mut clicked,
+                                );
                             }
                         });
                     });
@@ -93,6 +99,14 @@ impl App for Headway {
             }
         }
 
+        if let Some(card_id) = clicked {
+            state.selected = Some(card_id);
+        }
+
+        // Detail view floats above the board; it borrows the board mutably to
+        // edit the selected card in place, so it runs after the render pass.
+        card_detail_ui(ui, &theme, board, state);
+
         AppResponse::default()
     }
 }
@@ -106,6 +120,7 @@ fn column_ui(
     state: &mut BoardUiState,
     col_idx: usize,
     action: &mut Option<BoardAction>,
+    clicked: &mut Option<u64>,
 ) {
     let column = &board.columns[col_idx];
     let height = ui.available_height();
@@ -137,7 +152,7 @@ fn column_ui(
                     .id_salt(("headway-col", col_idx))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        cards_drop_zone(ui, theme, column, col_idx, action);
+                        cards_drop_zone(ui, theme, column, col_idx, action, clicked);
                         ui.add_space(SPACING_SM);
                         add_card_ui(ui, theme, state, col_idx, action);
                     });
@@ -152,6 +167,7 @@ fn cards_drop_zone(
     column: &Column,
     col_idx: usize,
     action: &mut Option<BoardAction>,
+    clicked: &mut Option<u64>,
 ) {
     let frame = egui::Frame::new().inner_margin(egui::Margin::same(SPACING_XS as i8));
 
@@ -169,6 +185,14 @@ fn cards_drop_zone(
                     card_ui(ui, theme, card);
                 })
                 .response;
+
+            // `dnd_drag_source` only senses dragging, so it never reports a
+            // click on its own — layer in click sensing so a plain tap (press +
+            // release without a drag) opens the card detail.
+            let response = response.interact(egui::Sense::click());
+            if response.clicked() {
+                *clicked = Some(card.id);
+            }
 
             // While something hovers this card, draw an insertion line and record
             // the resulting row so a release lands there.
@@ -269,4 +293,157 @@ fn add_card_ui(
             state.compose_text.clear();
         }
     }
+}
+
+/// The card detail editor, shown as a responsive modal sheet while a card is
+/// selected: a near-full-width sheet on narrow (mobile) viewports, a centered
+/// card on wider ones. Edits the card in place; closing or deleting clears the
+/// selection. Rendered as overlay layers (scrim + sheet) rather than a
+/// draggable window so it feels native on touch.
+fn card_detail_ui(ui: &mut egui::Ui, theme: &ColorTheme, board: &mut Board, state: &mut BoardUiState) {
+    let Some(card_id) = state.selected else {
+        return;
+    };
+
+    // The selected card may have been removed elsewhere; drop a dangling
+    // selection rather than rendering an empty sheet.
+    if board.card_mut(card_id).is_none() {
+        state.selected = None;
+        return;
+    }
+
+    let screen = ui.ctx().screen_rect();
+    // Narrow viewports get a near-full-width sheet; wider ones a centered modal.
+    let compact = notedeck::ui::is_narrow(ui.ctx());
+    let pad = SPACING_LG;
+    let sheet_width = if compact {
+        screen.width() - 2.0 * pad
+    } else {
+        460.0
+    };
+    // Cap the body so a long card stays on-screen and scrolls instead.
+    let max_body_height = screen.height() - 6.0 * pad;
+
+    let mut close = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
+    let mut delete = false;
+
+    // Dimmed scrim behind the sheet; a tap outside closes the detail.
+    let scrim = egui::Area::new(egui::Id::new("headway-detail-scrim"))
+        .order(egui::Order::Middle)
+        .fixed_pos(screen.min)
+        .show(ui.ctx(), |ui| {
+            let resp = ui.allocate_response(screen.size(), egui::Sense::click());
+            ui.painter()
+                .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
+            resp
+        });
+    if scrim.inner.clicked() {
+        close = true;
+    }
+
+    egui::Area::new(egui::Id::new(("headway-detail", card_id)))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::new()
+                .fill(theme.surface_primary)
+                .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+                .corner_radius(egui::CornerRadius::same(RADIUS_LG as u8))
+                .inner_margin(egui::Margin::same(pad as i8))
+                .show(ui, |ui| {
+                    ui.set_width(sheet_width);
+
+                    // Header: a label plus an explicit close button, since the
+                    // sheet has no draggable window chrome to dismiss it.
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Card").color(theme.text_muted));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let x = egui::Button::new(
+                                egui::RichText::new("✕").color(theme.text_muted),
+                            )
+                            .fill(egui::Color32::TRANSPARENT)
+                            .frame(false);
+                            if ui.add(x).clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    ui.add_space(SPACING_SM);
+
+                    egui::ScrollArea::vertical()
+                        .max_height(max_body_height)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            // Re-borrow inside the closure to satisfy the borrow checker.
+                            let Some(card) = board.card_mut(card_id) else {
+                                return;
+                            };
+
+                            ui.add(
+                                egui::TextEdit::singleline(&mut card.title)
+                                    .font(egui::TextStyle::Heading)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("Title"),
+                            );
+
+                            ui.add_space(SPACING_MD);
+                            ui.label(egui::RichText::new("Description").color(theme.text_muted));
+                            ui.add_space(SPACING_XS);
+                            ui.add(
+                                egui::TextEdit::multiline(&mut card.description)
+                                    .desired_rows(4)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text("Add more detail…"),
+                            );
+
+                            ui.add_space(SPACING_MD);
+                            ui.label(egui::RichText::new("Label").color(theme.text_muted));
+                            ui.add_space(SPACING_XS);
+                            label_picker(ui, theme, card);
+
+                            ui.add_space(SPACING_LG);
+                            if ui
+                                .button(
+                                    egui::RichText::new("Delete card").color(theme.destructive),
+                                )
+                                .clicked()
+                            {
+                                delete = true;
+                            }
+                        });
+                });
+        });
+
+    if delete {
+        board.remove_card(card_id);
+        state.selected = None;
+    } else if close {
+        state.selected = None;
+    }
+}
+
+/// A wrapping row of color swatches (plus a "None" option) for choosing a
+/// card's label color.
+fn label_picker(ui: &mut egui::Ui, theme: &ColorTheme, card: &mut Card) {
+    let radius = egui::CornerRadius::same(RADIUS_SM as u8);
+    ui.horizontal_wrapped(|ui| {
+        if ui.selectable_label(card.label.is_none(), "None").clicked() {
+            card.label = None;
+        }
+        for (i, color) in PALETTE.iter().enumerate() {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
+            ui.painter().rect_filled(rect, radius, *color);
+            if card.label == Some(i) {
+                ui.painter().rect_stroke(
+                    rect,
+                    radius,
+                    egui::Stroke::new(2.0, theme.text_primary),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if resp.clicked() {
+                card.label = Some(i);
+            }
+        }
+    });
 }

@@ -11,6 +11,8 @@ pub struct Card {
     /// Stable identifier, used for drag-and-drop payloads and egui ids.
     pub id: u64,
     pub title: String,
+    /// Free-form body shown in the card detail view.
+    pub description: String,
     /// Optional colored label; index into [`notedeck::tokens::PALETTE`].
     pub label: Option<usize>,
 }
@@ -20,12 +22,18 @@ impl Card {
         Self {
             id,
             title: title.into(),
+            description: String::new(),
             label: None,
         }
     }
 
     pub fn with_label(mut self, label: usize) -> Self {
         self.label = Some(label);
+        self
+    }
+
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
         self
     }
 }
@@ -87,6 +95,23 @@ impl Board {
         dest.insert(to_row, card);
     }
 
+    /// Borrow a card mutably by id, searching every column.
+    pub fn card_mut(&mut self, id: u64) -> Option<&mut Card> {
+        self.columns
+            .iter_mut()
+            .find_map(|col| col.cards.iter_mut().find(|card| card.id == id))
+    }
+
+    /// Remove a card by id from whichever column holds it.
+    pub fn remove_card(&mut self, id: u64) {
+        for col in &mut self.columns {
+            if let Some(pos) = col.cards.iter().position(|card| card.id == id) {
+                col.cards.remove(pos);
+                return;
+            }
+        }
+    }
+
     fn locate(&self, card_id: u64) -> Option<(usize, usize)> {
         for (c, col) in self.columns.iter().enumerate() {
             if let Some(r) = col.cards.iter().position(|card| card.id == card_id) {
@@ -110,7 +135,12 @@ impl Default for Board {
         let backlog = Column {
             title: "Backlog".to_string(),
             cards: vec![
-                Card::new(mint(), "Define nostr event model for boards").with_label(3),
+                Card::new(mint(), "Define nostr event model for boards")
+                    .with_label(3)
+                    .with_description(
+                        "Decide how boards, columns and cards map to nostr events. \
+                         Likely an addressable (NIP-33) board event plus per-card events.",
+                    ),
                 Card::new(mint(), "Sync cards across relays"),
                 Card::new(mint(), "Card detail / comments view").with_label(5),
             ],
