@@ -1,5 +1,5 @@
-use egui_kittest::kittest::Queryable;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 use notedeck::{App, Notedeck};
 use notedeck_headway::Headway;
 

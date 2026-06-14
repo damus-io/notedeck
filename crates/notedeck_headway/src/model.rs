@@ -156,7 +156,13 @@ impl Default for Board {
 
         let in_progress = Column {
             title: "In Progress".to_string(),
-            cards: vec![Card::new(mint(), "Drag-and-drop between columns").with_label(0)],
+            cards: vec![
+                Card::new(mint(), "Drag-and-drop between columns")
+                    .with_label(0)
+                    .with_description(
+                        "Reorder within a lane and move across lanes with a live insertion line.",
+                    ),
+            ],
         };
 
         let done = Column {

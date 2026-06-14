@@ -1,6 +1,6 @@
 use notedeck::tokens::{
-    PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_SM, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS,
-    STROKE_THIN,
+    PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, RADIUS_SM, SPACING_LG, SPACING_MD, SPACING_SM,
+    SPACING_XS, STROKE_MEDIUM, STROKE_THIN,
 };
 use notedeck::{App, AppContext, AppResponse, ColorTheme};
 
@@ -70,7 +70,20 @@ impl App for Headway {
         egui::Frame::new()
             .inner_margin(egui::Margin::same(SPACING_LG as i8))
             .show(ui, |ui| {
+                // Board header: title plus a muted summary of its contents.
                 ui.heading(&board.title);
+                ui.add_space(SPACING_XS);
+                let total: usize = board.columns.iter().map(|c| c.cards.len()).sum();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{total} card{} · {} columns",
+                        if total == 1 { "" } else { "s" },
+                        board.columns.len()
+                    ))
+                    .color(theme.text_muted),
+                );
+                ui.add_space(SPACING_SM);
+                ui.separator();
                 ui.add_space(SPACING_MD);
 
                 egui::ScrollArea::horizontal()
@@ -80,7 +93,13 @@ impl App for Headway {
                             ui.spacing_mut().item_spacing.x = SPACING_MD;
                             for col_idx in 0..board.columns.len() {
                                 column_ui(
-                                    ui, &theme, board, state, col_idx, &mut action, &mut clicked,
+                                    ui,
+                                    &theme,
+                                    board,
+                                    state,
+                                    col_idx,
+                                    &mut action,
+                                    &mut clicked,
                                 );
                             }
                         });
@@ -138,13 +157,10 @@ fn column_ui(
             // inherited by this frame — without this the cards would stack
             // left-to-right instead of vertically.
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                // Header: title + card count.
+                // Header: title + a pill badge with the card count.
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(&column.title).strong());
-                    ui.label(
-                        egui::RichText::new(format!("{}", column.cards.len()))
-                            .color(theme.text_muted),
-                    );
+                    count_badge(ui, theme, column.cards.len());
                 });
                 ui.add_space(SPACING_SM);
 
@@ -194,6 +210,18 @@ fn cards_drop_zone(
                 *clicked = Some(card.id);
             }
 
+            // Hover affordance: cards are clickable, so highlight the border and
+            // switch to a pointing-hand cursor when the pointer is over one.
+            if response.hovered() {
+                ui.painter().rect_stroke(
+                    response.rect,
+                    egui::CornerRadius::same(RADIUS_MD as u8),
+                    egui::Stroke::new(STROKE_MEDIUM, theme.border_strong),
+                    egui::StrokeKind::Inside,
+                );
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
             // While something hovers this card, draw an insertion line and record
             // the resulting row so a release lands there.
             if let (Some(pointer), Some(_payload)) = (
@@ -235,12 +263,40 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &Card) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             if let Some(color) = card.label.map(|i| PALETTE[i % PALETTE.len()]) {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 4.0), egui::Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 4.0), egui::Sense::hover());
                 ui.painter()
-                    .rect_filled(rect, egui::CornerRadius::same(RADIUS_SM as u8), color);
+                    .rect_filled(rect, egui::CornerRadius::same(RADIUS_PILL as u8), color);
                 ui.add_space(SPACING_XS);
             }
             ui.label(egui::RichText::new(&card.title).color(theme.text_primary));
+
+            // A one-line preview hints that the card has more detail behind it.
+            if !card.description.is_empty() {
+                ui.add_space(2.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&card.description)
+                            .small()
+                            .color(theme.text_muted),
+                    )
+                    .truncate(),
+                );
+            }
+        });
+}
+
+/// A small rounded pill showing a count (e.g. cards in a column).
+fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
+    egui::Frame::new()
+        .fill(theme.surface_elevated)
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(n.to_string())
+                    .small()
+                    .color(theme.text_muted),
+            );
         });
 }
 
@@ -300,7 +356,12 @@ fn add_card_ui(
 /// card on wider ones. Edits the card in place; closing or deleting clears the
 /// selection. Rendered as overlay layers (scrim + sheet) rather than a
 /// draggable window so it feels native on touch.
-fn card_detail_ui(ui: &mut egui::Ui, theme: &ColorTheme, board: &mut Board, state: &mut BoardUiState) {
+fn card_detail_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    board: &mut Board,
+    state: &mut BoardUiState,
+) {
     let Some(card_id) = state.selected else {
         return;
     };
@@ -349,6 +410,12 @@ fn card_detail_ui(ui: &mut egui::Ui, theme: &ColorTheme, board: &mut Board, stat
                 .fill(theme.surface_primary)
                 .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
                 .corner_radius(egui::CornerRadius::same(RADIUS_LG as u8))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 8],
+                    blur: 24,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(120),
+                })
                 .inner_margin(egui::Margin::same(pad as i8))
                 .show(ui, |ui| {
                     ui.set_width(sheet_width);
@@ -358,11 +425,10 @@ fn card_detail_ui(ui: &mut egui::Ui, theme: &ColorTheme, board: &mut Board, stat
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Card").color(theme.text_muted));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let x = egui::Button::new(
-                                egui::RichText::new("✕").color(theme.text_muted),
-                            )
-                            .fill(egui::Color32::TRANSPARENT)
-                            .frame(false);
+                            let x =
+                                egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
+                                    .fill(egui::Color32::TRANSPARENT)
+                                    .frame(false);
                             if ui.add(x).clicked() {
                                 close = true;
                             }
@@ -403,9 +469,7 @@ fn card_detail_ui(ui: &mut egui::Ui, theme: &ColorTheme, board: &mut Board, stat
 
                             ui.add_space(SPACING_LG);
                             if ui
-                                .button(
-                                    egui::RichText::new("Delete card").color(theme.destructive),
-                                )
+                                .button(egui::RichText::new("Delete card").color(theme.destructive))
                                 .clicked()
                             {
                                 delete = true;
