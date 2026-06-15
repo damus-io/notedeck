@@ -16,6 +16,7 @@ pub mod scene;
 pub mod session_list;
 pub mod session_picker;
 mod settings;
+mod square_loading_spinner;
 pub mod task_list;
 mod top_buttons;
 pub mod worktree_creator;
@@ -31,6 +32,7 @@ pub use scene::{AgentScene, SceneAction, SceneResponse};
 pub use session_list::{SessionListAction, SessionListUi};
 pub use session_picker::{SessionPicker, SessionPickerAction};
 pub use settings::{DaveSettingsPanel, SettingsPanelAction};
+pub use square_loading_spinner::SquareLoadingSpinner;
 pub use worktree_creator::{WorktreeCreator, WorktreeCreatorAction};
 
 // =============================================================================

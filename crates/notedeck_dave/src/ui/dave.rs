@@ -4,6 +4,7 @@ use super::git_status_ui;
 use super::markdown_ui;
 use super::query_ui::query_call_ui;
 use super::run_ui;
+use super::square_loading_spinner::SquareLoadingSpinner;
 use super::top_buttons::top_buttons_ui;
 use crate::{
     backend::BackendType,
@@ -609,7 +610,7 @@ impl<'a> DaveUi<'a> {
 
         if let Some(status) = status_text {
             ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new().size(14.0));
+                ui.add(SquareLoadingSpinner::new().size(14.0));
                 ui.label(
                     egui::RichText::new(status)
                         .color(ui.visuals().weak_text_color())
@@ -1219,7 +1220,7 @@ impl<'a> DaveUi<'a> {
 
             // Show spinner for running subagents
             if info.status == SubagentStatus::Running {
-                ui.add(egui::Spinner::new().size(11.0));
+                ui.add(SquareLoadingSpinner::new().size(11.0));
             }
 
             // Tool count indicator (clickable to expand)
