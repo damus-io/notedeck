@@ -1,6 +1,6 @@
 use notedeck::tokens::{
     PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, RADIUS_SM, SPACING_LG, SPACING_MD, SPACING_SM,
-    SPACING_XS, STROKE_MEDIUM, STROKE_THIN,
+    SPACING_XS, STROKE_MEDIUM, STROKE_THICK, STROKE_THIN,
 };
 use notedeck::{App, AppContext, AppResponse, ColorTheme};
 
@@ -262,7 +262,7 @@ fn cards_drop_zone(
     // at the top of the bare lane while a card hovers so there's still feedback.
     if column.cards.is_empty() && zone.dnd_hover_payload::<DragCard>().is_some() {
         let rect = zone.rect;
-        let inset = SPACING_SM as f32;
+        let inset = SPACING_SM;
         ui.painter().hline(
             (rect.left() + inset)..=(rect.right() - inset),
             rect.top() + inset,
@@ -415,6 +415,15 @@ fn card_detail_ui(
 
     let mut close = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
     let mut delete = false;
+    let mut move_to: Option<usize> = None;
+
+    // Owned copies so the body can render the status pill and column chips
+    // without conflicting with the mutable card borrow taken inside the sheet.
+    let columns: Vec<String> = board.columns.iter().map(|c| c.title.clone()).collect();
+    let current_col = board
+        .columns
+        .iter()
+        .position(|col| col.cards.iter().any(|c| c.id == card_id));
 
     // Dimmed scrim behind the sheet; a tap outside closes the detail.
     let scrim = egui::Area::new(egui::Id::new("headway-detail-scrim"))
@@ -452,6 +461,9 @@ fn card_detail_ui(
                     // sheet has no draggable window chrome to dismiss it.
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Card").color(theme.text_muted));
+                        if let Some(ci) = current_col {
+                            status_pill(ui, theme, &columns[ci]);
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let x =
                                 egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
@@ -481,7 +493,7 @@ fn card_detail_ui(
                             );
 
                             ui.add_space(SPACING_MD);
-                            ui.label(egui::RichText::new("Description").color(theme.text_muted));
+                            section_label(ui, theme, "Description");
                             ui.add_space(SPACING_XS);
                             ui.add(
                                 egui::TextEdit::multiline(&mut card.description)
@@ -491,17 +503,44 @@ fn card_detail_ui(
                             );
 
                             ui.add_space(SPACING_MD);
-                            ui.label(egui::RichText::new("Label").color(theme.text_muted));
+                            section_label(ui, theme, "Label");
                             ui.add_space(SPACING_XS);
                             label_picker(ui, theme, card);
 
-                            ui.add_space(SPACING_LG);
-                            if ui
-                                .button(egui::RichText::new("Delete card").color(theme.destructive))
-                                .clicked()
-                            {
-                                delete = true;
+                            // Move the card between lanes without dragging.
+                            if columns.len() > 1 {
+                                ui.add_space(SPACING_MD);
+                                section_label(ui, theme, "Status");
+                                ui.add_space(SPACING_XS);
+                                ui.horizontal_wrapped(|ui| {
+                                    for (i, name) in columns.iter().enumerate() {
+                                        let selected = Some(i) == current_col;
+                                        if ui.selectable_label(selected, name).clicked()
+                                            && !selected
+                                        {
+                                            move_to = Some(i);
+                                        }
+                                    }
+                                });
                             }
+
+                            ui.add_space(SPACING_MD);
+                            ui.separator();
+                            ui.add_space(SPACING_SM);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .button(
+                                            egui::RichText::new("Delete card")
+                                                .color(theme.destructive),
+                                        )
+                                        .clicked()
+                                    {
+                                        delete = true;
+                                    }
+                                },
+                            );
                         });
                 });
         });
@@ -509,9 +548,39 @@ fn card_detail_ui(
     if delete {
         board.remove_card(card_id);
         state.selected = None;
+    } else if let Some(to) = move_to {
+        // Append to the end of the target lane; keep the sheet open so the
+        // move stays visible.
+        let row = board.columns[to].cards.len();
+        board.move_card(card_id, to, row);
     } else if close {
         state.selected = None;
     }
+}
+
+/// A small muted, uppercase section heading used inside the card detail sheet.
+fn section_label(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
+    ui.label(
+        egui::RichText::new(text.to_uppercase())
+            .small()
+            .strong()
+            .color(theme.text_muted),
+    );
+}
+
+/// A filled pill showing the card's current column (status) in the sheet header.
+fn status_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
+    egui::Frame::new()
+        .fill(theme.surface_elevated)
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .small()
+                    .color(theme.text_secondary),
+            );
+        });
 }
 
 /// A wrapping row of color swatches (plus a "None" option) for choosing a
@@ -529,9 +598,19 @@ fn label_picker(ui: &mut egui::Ui, theme: &ColorTheme, card: &mut Card) {
                 ui.painter().rect_stroke(
                     rect,
                     radius,
-                    egui::Stroke::new(2.0, theme.text_primary),
+                    egui::Stroke::new(STROKE_THICK, theme.text_primary),
                     egui::StrokeKind::Inside,
                 );
+            } else if resp.hovered() {
+                ui.painter().rect_stroke(
+                    rect,
+                    radius,
+                    egui::Stroke::new(STROKE_MEDIUM, theme.border_strong),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
             if resp.clicked() {
                 card.label = Some(i);
