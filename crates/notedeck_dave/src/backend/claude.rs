@@ -10,8 +10,8 @@ use crate::tools::Tool;
 use crate::Message;
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message as ClaudeMessage, PermissionMode,
-    PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolResultContent, ToolUseBlock,
-    UserContentBlock,
+    PermissionResult, PermissionResultAllow, PermissionResultDeny, ToolResultBlock,
+    ToolResultContent, ToolUseBlock, UserContentBlock, UserMessage,
 };
 use dashmap::DashMap;
 use futures::future::BoxFuture;
@@ -56,6 +56,56 @@ fn tool_result_content_to_value(content: &Option<ToolResultContent>) -> serde_js
         Some(ToolResultContent::Blocks(blocks)) => serde_json::Value::Array(blocks.to_vec()),
         None => serde_json::Value::Null,
     }
+}
+
+/// Tool results are nested in `extra["message"]["content"]` because the SDK's
+/// `UserMessage.content` field doesn't capture the inner message's content array.
+fn parse_user_content_blocks(user_msg: &UserMessage) -> Vec<ContentBlock> {
+    user_msg
+        .extra
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| serde_json::from_value::<ContentBlock>(v.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Process a single tool result: complete any in-flight subagent and forward
+/// the result to the UI.
+fn handle_tool_result(
+    tool_result: &ToolResultBlock,
+    pending_tools: &mut HashMap<String, (String, serde_json::Value)>,
+    subagent_stack: &mut Vec<String>,
+    response_tx: &mpsc::Sender<DaveApiResponse>,
+    ctx: &egui::Context,
+) {
+    let tool_use_id = &tool_result.tool_use_id;
+    let Some((tool_name, tool_input)) = pending_tools.remove(tool_use_id) else {
+        return;
+    };
+    let result_value = tool_result_content_to_value(&tool_result.content);
+
+    // A Task tool completion ends the current subagent.
+    if tool_name == "Task" {
+        let result_text =
+            extract_response_content(&result_value).unwrap_or_else(|| "completed".to_string());
+        shared::complete_subagent(tool_use_id, &result_text, subagent_stack, response_tx, ctx);
+    }
+
+    let file_update = FileUpdate::from_tool_call(&tool_name, &tool_input);
+    shared::send_tool_result(
+        &tool_name,
+        &tool_input,
+        &result_value,
+        file_update,
+        subagent_stack,
+        response_tx,
+        ctx,
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -569,37 +619,15 @@ async fn session_actor(
                                             stream_done = true;
                                         }
                                         ClaudeMessage::User(user_msg) => {
-                                            // Tool results are nested in extra["message"]["content"]
-                                            // since the SDK's UserMessage.content field doesn't
-                                            // capture the inner message's content array.
-                                            let content_blocks: Vec<ContentBlock> = user_msg
-                                                .extra
-                                                .get("message")
-                                                .and_then(|m| m.get("content"))
-                                                .and_then(|c| c.as_array())
-                                                .map(|arr| {
-                                                    arr.iter()
-                                                        .filter_map(|v| serde_json::from_value::<ContentBlock>(v.clone()).ok())
-                                                        .collect()
-                                                })
-                                                .unwrap_or_default();
-
-                                            for block in &content_blocks {
-                                                if let ContentBlock::ToolResult(tool_result_block) = block {
-                                                    let tool_use_id = &tool_result_block.tool_use_id;
-                                                    if let Some((tool_name, tool_input)) = pending_tools.remove(tool_use_id) {
-                                                        let result_value = tool_result_content_to_value(&tool_result_block.content);
-
-                                                        // Check if this is a Task tool completion
-                                                        if tool_name == "Task" {
-                                                            let result_text = extract_response_content(&result_value)
-                                                                .unwrap_or_else(|| "completed".to_string());
-                                                            shared::complete_subagent(tool_use_id, &result_text, &mut subagent_stack, &response_tx, &ctx);
-                                                        }
-
-                                                        let file_update = FileUpdate::from_tool_call(&tool_name, &tool_input);
-                                                        shared::send_tool_result(&tool_name, &tool_input, &result_value, file_update, &subagent_stack, &response_tx, &ctx);
-                                                    }
+                                            for block in parse_user_content_blocks(&user_msg) {
+                                                if let ContentBlock::ToolResult(tool_result) = block {
+                                                    handle_tool_result(
+                                                        &tool_result,
+                                                        &mut pending_tools,
+                                                        &mut subagent_stack,
+                                                        &response_tx,
+                                                        &ctx,
+                                                    );
                                                 }
                                             }
                                         }
