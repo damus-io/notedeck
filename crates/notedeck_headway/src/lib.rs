@@ -4,6 +4,7 @@ use notedeck::tokens::{
 };
 use notedeck::{App, AppContext, AppResponse, ColorTheme};
 
+pub mod event;
 mod model;
 
 pub use model::{Board, Card, Column};
