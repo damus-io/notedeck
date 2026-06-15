@@ -50,6 +50,16 @@ pub struct Chrome {
     /// Only opened apps receive `update()` calls each frame.
     opened: Vec<bool>,
 
+    /// The last-focused egui widget id for each app (keyed by app index).
+    /// egui drops keyboard focus when a widget isn't rendered for a frame, so
+    /// switching apps (Ctrl+Tab / tab click) would otherwise lose focus until
+    /// the user clicks back in. We remember each app's focus and re-request it
+    /// on switch-back. Generic — no per-app code needed.
+    app_focus: HashMap<usize, egui::Id>,
+
+    /// The active app index from the previous frame, used to detect switches.
+    prev_active: i32,
+
     /// The state of the soft keyboard animation
     soft_kb_anim_state: AnimState,
 
@@ -199,6 +209,8 @@ impl Chrome {
             options: ChromeOptions::default(),
             apps: Vec::new(),
             opened: Vec::new(),
+            app_focus: HashMap::new(),
+            prev_active: 0,
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
@@ -300,6 +312,8 @@ impl Chrome {
             options: ChromeOptions::default(),
             apps: Vec::new(),
             opened: Vec::new(),
+            app_focus: HashMap::new(),
+            prev_active: 0,
             soft_kb_anim_state: AnimState::default(),
             repaint_causes: HashMap::new(),
             nav: DrawerRouter::default(),
@@ -636,6 +650,19 @@ impl Chrome {
                     if show_app_tabs {
                         chrome_app_tabs(self, ctx, ui);
                     }
+                    // If the active app changed this frame (Ctrl+Tab above or a
+                    // tab click in chrome_app_tabs), restore that app's last
+                    // keyboard focus before rendering it, so the user can type
+                    // immediately instead of having to click back in. Skipped on
+                    // mobile to avoid popping the virtual keyboard on every switch.
+                    if self.active != self.prev_active {
+                        if !is_compiled_as_mobile() {
+                            if let Some(id) = self.app_focus.get(&(self.active as usize)) {
+                                ui.ctx().memory_mut(|m| m.request_focus(*id));
+                            }
+                        }
+                        self.prev_active = self.active;
+                    }
                     action = self.panel(ctx, ui, keyboard_height);
                 });
 
@@ -672,6 +699,13 @@ impl Chrome {
 
         if let Some(tb_action) = toolbar_action {
             self.process_toolbar_action(tb_action, ctx);
+        }
+
+        // Remember the active app's currently-focused widget so we can restore
+        // it when the user switches away and back. Only overwrite on Some so the
+        // last real focus is retained even after focus is transiently dropped.
+        if let Some(focused) = ui.ctx().memory(|m| m.focused()) {
+            self.app_focus.insert(self.active as usize, focused);
         }
 
         action
