@@ -1,25 +1,48 @@
+use enostr::NoteId;
+use nostrdb::Transaction;
 use notedeck::tokens::{
-    PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, RADIUS_SM, SPACING_LG, SPACING_MD, SPACING_SM,
-    SPACING_XS, STROKE_MEDIUM, STROKE_THICK, STROKE_THIN,
+    PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS,
+    STROKE_MEDIUM, STROKE_THIN,
 };
 use notedeck::{App, AppContext, AppResponse, ColorTheme};
 
 pub mod event;
-mod model;
+pub mod store;
 
-pub use model::{Board, Card, Column};
+use event::{BoardView, CardView, ColumnView};
+use store::BoardAction;
 
 /// Width of a single kanban column.
 const COLUMN_WIDTH: f32 = 280.0;
 
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
-/// The board currently runs on an in-memory [`Board`] (see [`model`]); the nostr
-/// event model is intentionally deferred until the UX settles.
-#[derive(Default)]
+/// The board is backed by nostr events in the local nostrdb: a board is loaded
+/// each frame with [`store::load_board`] and reduced into a [`BoardView`], and
+/// every edit is turned into a signed event that is ingested locally (see
+/// [`store`]). There is deliberately no relay publishing yet.
 pub struct Headway {
-    board: Board,
+    /// Which board this instance manages (single board for now).
+    board_id: String,
+    /// Transient, per-board UI state.
     state: BoardUiState,
+    /// Whether we've already auto-seeded a board this session, so we don't try
+    /// to seed twice while the first seed is still materialising.
+    seeded: bool,
+    /// Countdown of follow-up reloads after an async ingest, so a just-written
+    /// event surfaces without waiting for the next user interaction.
+    refresh_frames: u8,
+}
+
+impl Default for Headway {
+    fn default() -> Self {
+        Self {
+            board_id: store::BOARD_ID.to_string(),
+            state: BoardUiState::default(),
+            seeded: false,
+            refresh_frames: 0,
+        }
+    }
 }
 
 /// Transient, per-board UI state that must persist across frames but isn't part
@@ -31,7 +54,16 @@ struct BoardUiState {
     /// Buffer backing the new-card text field.
     compose_text: String,
     /// The card whose detail view is open, if any.
-    selected: Option<u64>,
+    selected: Option<NoteId>,
+    /// Which card the detail edit buffers below were seeded from. When this
+    /// differs from `selected`, the buffers are refreshed from the board.
+    detail_for: Option<NoteId>,
+    /// Edit buffer for the selected card's title.
+    detail_title: String,
+    /// Edit buffer for the selected card's description.
+    detail_desc: String,
+    /// Buffer backing the "add label" field in the detail sheet.
+    new_label: String,
     /// The column index whose title is being renamed inline, if any.
     renaming: Option<usize>,
     /// Buffer backing the column-rename text field.
@@ -46,60 +78,86 @@ struct BoardUiState {
     focus_column: bool,
 }
 
-/// Drag-and-drop payload: the stable id of the card being dragged.
+/// Drag-and-drop payload: the id of the card being dragged.
 #[derive(Clone)]
-struct DragCard(u64);
-
-/// A pending board mutation collected during rendering and applied afterwards,
-/// so the render pass can borrow the board immutably.
-enum BoardAction {
-    /// Move `card_id` into `(column, row)`.
-    Move {
-        card_id: u64,
-        col: usize,
-        row: usize,
-    },
-    /// Append a new card with `title` to `column`.
-    Add { col: usize, title: String },
-    /// Append a new column with `title`.
-    AddColumn { title: String },
-    /// Rename the column at `col`.
-    RenameColumn { col: usize, title: String },
-    /// Remove the column at `col` (and its cards).
-    RemoveColumn { col: usize },
-    /// Move the column at `from` to index `to`.
-    MoveColumn { from: usize, to: usize },
-}
+struct DragCard(NoteId);
 
 impl Headway {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Schedule several follow-up reloads so a just-ingested event (ingest is
+    /// async, on a writer thread) shows up promptly.
+    fn bump_refresh(&mut self) {
+        self.refresh_frames = 8;
+    }
+
+    /// Burn down the refresh countdown, requesting a delayed repaint each step.
+    fn pump_refresh(&mut self, ui: &egui::Ui) {
+        if self.refresh_frames > 0 {
+            self.refresh_frames -= 1;
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(60));
+        }
+    }
 }
 
 impl App for Headway {
-    fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let theme = ColorTheme::current(ui.ctx());
 
-        // Disjoint borrows: the render closure reads `board` immutably while
-        // mutating `state`; structural board edits are collected and applied after.
-        let Headway { board, state } = self;
+        let author = *ctx.accounts.selected_account_pubkey();
+        // Copy the secret out so we don't hold a borrow on `accounts` while we
+        // also touch `ndb`. `None` for a pubkey-only (watch) account.
+        let signer: Option<[u8; 32]> = ctx
+            .accounts
+            .selected_filled()
+            .map(|f| f.secret_key.secret_bytes());
+
+        // Load the current board view out of the local nostrdb.
+        let view = Transaction::new(ctx.ndb)
+            .ok()
+            .and_then(|txn| store::load_board(ctx.ndb, &txn, &author, &self.board_id));
+
+        let Some(view) = view else {
+            // No board yet: auto-seed one for an account that can sign.
+            match &signer {
+                Some(secret) => {
+                    if !self.seeded {
+                        store::seed_default_board(ctx.ndb, &author, secret, &self.board_id);
+                        self.seeded = true;
+                        self.bump_refresh();
+                    }
+                    empty_state(ui, &theme, "Setting up your board…");
+                }
+                None => empty_state(
+                    ui,
+                    &theme,
+                    "Sign in with a key to create your Headway board.",
+                ),
+            }
+            self.pump_refresh(ui);
+            return AppResponse::default();
+        };
+
+        let state = &mut self.state;
         let mut action: Option<BoardAction> = None;
         // The card a click landed on this frame; opens the detail view below.
-        let mut clicked: Option<u64> = None;
+        let mut clicked: Option<NoteId> = None;
 
         egui::Frame::new()
             .inner_margin(egui::Margin::same(SPACING_LG as i8))
             .show(ui, |ui| {
                 // Board header: title plus a muted summary of its contents.
-                ui.heading(&board.title);
+                ui.heading(&view.title);
                 ui.add_space(SPACING_XS);
-                let total: usize = board.columns.iter().map(|c| c.cards.len()).sum();
+                let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
                 ui.label(
                     egui::RichText::new(format!(
                         "{total} card{} · {} columns",
                         if total == 1 { "" } else { "s" },
-                        board.columns.len()
+                        view.columns.len()
                     ))
                     .color(theme.text_muted),
                 );
@@ -112,11 +170,11 @@ impl App for Headway {
                     .show(ui, |ui| {
                         ui.horizontal_top(|ui| {
                             ui.spacing_mut().item_spacing.x = SPACING_MD;
-                            for col_idx in 0..board.columns.len() {
+                            for col_idx in 0..view.columns.len() {
                                 column_ui(
                                     ui,
                                     &theme,
-                                    board,
+                                    &view,
                                     state,
                                     col_idx,
                                     &mut action,
@@ -128,32 +186,45 @@ impl App for Headway {
                     });
             });
 
-        if let Some(action) = action {
-            match action {
-                BoardAction::Move { card_id, col, row } => board.move_card(card_id, col, row),
-                BoardAction::Add { col, title } => {
-                    let id = board.next_id();
-                    if let Some(column) = board.columns.get_mut(col) {
-                        column.cards.push(Card::new(id, title));
-                    }
-                }
-                BoardAction::AddColumn { title } => board.add_column(title),
-                BoardAction::RenameColumn { col, title } => board.rename_column(col, title),
-                BoardAction::RemoveColumn { col } => board.remove_column(col),
-                BoardAction::MoveColumn { from, to } => board.move_column(from, to),
-            }
-        }
-
         if let Some(card_id) = clicked {
             state.selected = Some(card_id);
         }
 
-        // Detail view floats above the board; it borrows the board mutably to
-        // edit the selected card in place, so it runs after the render pass.
-        card_detail_ui(ui, &theme, board, state);
+        // Detail view floats above the board; emits edit actions like the rest.
+        card_detail_ui(ui, &theme, &view, state, &mut action);
 
+        // Apply the collected action by ingesting events locally. Mutations need
+        // a signing key; a watch-only account simply can't edit.
+        if let (Some(action), Some(secret)) = (action, &signer) {
+            store::apply(ctx.ndb, &self.board_id, &view, &author, secret, action);
+            self.bump_refresh();
+        }
+
+        self.pump_refresh(ui);
         AppResponse::default()
     }
+}
+
+/// A centered, muted message shown when there's no board to render yet.
+fn empty_state(ui: &mut egui::Ui, theme: &ColorTheme, message: &str) {
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(SPACING_LG as i8))
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(SPACING_LG * 2.0);
+                ui.heading("Headway");
+                ui.add_space(SPACING_SM);
+                ui.label(egui::RichText::new(message).color(theme.text_muted));
+            });
+        });
+}
+
+/// Find a card anywhere on the board, returning its column index and view.
+fn find_card(view: &BoardView, card: NoteId) -> Option<(usize, &CardView)> {
+    view.columns
+        .iter()
+        .enumerate()
+        .find_map(|(i, col)| col.cards.iter().find(|c| c.id == card).map(|c| (i, c)))
 }
 
 /// Render one column: header, the draggable card list (a drop zone), and the
@@ -161,13 +232,13 @@ impl App for Headway {
 fn column_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    board: &Board,
+    view: &BoardView,
     state: &mut BoardUiState,
     col_idx: usize,
     action: &mut Option<BoardAction>,
-    clicked: &mut Option<u64>,
+    clicked: &mut Option<NoteId>,
 ) {
-    let column = &board.columns[col_idx];
+    let column = &view.columns[col_idx];
     let height = ui.available_height();
 
     egui::Frame::new()
@@ -189,10 +260,10 @@ fn column_ui(
                     if state.renaming == Some(col_idx) {
                         column_rename_field(ui, state, col_idx, action);
                     } else {
-                        ui.label(egui::RichText::new(&column.title).strong());
+                        ui.label(egui::RichText::new(&column.name).strong());
                         count_badge(ui, theme, column.cards.len());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            column_menu(ui, theme, state, board, col_idx, action)
+                            column_menu(ui, theme, state, view, col_idx, action)
                         });
                     }
                 });
@@ -214,10 +285,10 @@ fn column_ui(
 fn cards_drop_zone(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    column: &Column,
+    column: &ColumnView,
     col_idx: usize,
     action: &mut Option<BoardAction>,
-    clicked: &mut Option<u64>,
+    clicked: &mut Option<NoteId>,
 ) {
     let frame = egui::Frame::new().inner_margin(egui::Margin::same(SPACING_XS as i8));
 
@@ -307,16 +378,16 @@ fn cards_drop_zone(
     // A release in this zone: use the hovered insertion row, else append to end.
     if let Some(payload) = zone.dnd_release_payload::<DragCard>() {
         let row = hover_target.unwrap_or(column.cards.len());
-        *action = Some(BoardAction::Move {
-            card_id: payload.0,
-            col: col_idx,
-            row,
+        *action = Some(BoardAction::MoveCard {
+            card: payload.0,
+            to_col: col_idx,
+            to_row: row,
         });
     }
 }
 
 /// Render a single card as a styled, draggable surface.
-fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &Card) {
+fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
     egui::Frame::new()
         .fill(theme.surface_elevated)
         .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
@@ -324,10 +395,12 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &Card) {
         .inner_margin(egui::Margin::same(SPACING_SM as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            if let Some(color) = card.label.map(|i| PALETTE[i % PALETTE.len()]) {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 4.0), egui::Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, egui::CornerRadius::same(RADIUS_PILL as u8), color);
+            if !card.labels.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for label in &card.labels {
+                        label_chip(ui, theme, label);
+                    }
+                });
                 ui.add_space(SPACING_XS);
             }
             ui.label(egui::RichText::new(&card.title).color(theme.text_primary));
@@ -344,6 +417,27 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &Card) {
                     .truncate(),
                 );
             }
+        });
+}
+
+/// A deterministic color for a label, derived from its text.
+fn label_color(label: &str) -> egui::Color32 {
+    let mut h: usize = 0;
+    for b in label.bytes() {
+        h = h.wrapping_mul(31).wrapping_add(b as usize);
+    }
+    PALETTE[h % PALETTE.len()]
+}
+
+/// A small colored pill showing a label's text.
+fn label_chip(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) {
+    let color = label_color(label);
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.30))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(label).small().color(theme.text_primary));
         });
 }
 
@@ -388,7 +482,7 @@ fn add_card_ui(
             if add {
                 let title = state.compose_text.trim().to_string();
                 if !title.is_empty() {
-                    *action = Some(BoardAction::Add {
+                    *action = Some(BoardAction::AddCard {
                         col: col_idx,
                         title,
                     });
@@ -434,12 +528,9 @@ fn column_rename_field(
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         state.renaming = None;
     } else if resp.lost_focus() {
-        let title = state.rename_text.trim().to_string();
-        if !title.is_empty() {
-            *action = Some(BoardAction::RenameColumn {
-                col: col_idx,
-                title,
-            });
+        let name = state.rename_text.trim().to_string();
+        if !name.is_empty() {
+            *action = Some(BoardAction::RenameColumn { col: col_idx, name });
         }
         state.renaming = None;
     }
@@ -450,14 +541,14 @@ fn column_menu(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     state: &mut BoardUiState,
-    board: &Board,
+    view: &BoardView,
     col_idx: usize,
     action: &mut Option<BoardAction>,
 ) {
-    let n = board.columns.len();
+    let n = view.columns.len();
     ui.menu_button("⋯", |ui| {
         if ui.button("Rename").clicked() {
-            state.rename_text = board.columns[col_idx].title.clone();
+            state.rename_text = view.columns[col_idx].name.clone();
             state.renaming = Some(col_idx);
             state.focus_rename = true;
             ui.close_menu();
@@ -526,9 +617,9 @@ fn add_column_ui(
                         let cancel = ui.button("Cancel").clicked()
                             || ui.input(|i| i.key_pressed(egui::Key::Escape));
                         if add {
-                            let title = state.column_text.trim().to_string();
-                            if !title.is_empty() {
-                                *action = Some(BoardAction::AddColumn { title });
+                            let name = state.column_text.trim().to_string();
+                            if !name.is_empty() {
+                                *action = Some(BoardAction::AddColumn { name });
                             }
                             state.column_text.clear();
                             state.adding_column = false;
@@ -557,14 +648,16 @@ fn add_column_ui(
 
 /// The card detail editor, shown as a responsive modal sheet while a card is
 /// selected: a near-full-width sheet on narrow (mobile) viewports, a centered
-/// card on wider ones. Edits the card in place; closing or deleting clears the
-/// selection. Rendered as overlay layers (scrim + sheet) rather than a
-/// draggable window so it feels native on touch.
+/// card on wider ones. Edits are emitted as [`BoardAction`]s (title/description
+/// commit on focus loss); closing clears the selection. Rendered as overlay
+/// layers (scrim + sheet) rather than a draggable window so it feels native on
+/// touch.
 fn card_detail_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    board: &mut Board,
+    view: &BoardView,
     state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
 ) {
     let Some(card_id) = state.selected else {
         return;
@@ -572,10 +665,25 @@ fn card_detail_ui(
 
     // The selected card may have been removed elsewhere; drop a dangling
     // selection rather than rendering an empty sheet.
-    if board.card_mut(card_id).is_none() {
+    let Some((current_col, card)) = find_card(view, card_id) else {
         state.selected = None;
+        state.detail_for = None;
         return;
+    };
+
+    // (Re)seed the edit buffers when the open card changes. The board is
+    // immutable here, so live editing happens against these buffers and is
+    // committed as events on focus loss.
+    if state.detail_for != Some(card_id) {
+        state.detail_for = Some(card_id);
+        state.detail_title = card.title.clone();
+        state.detail_desc = card.description.clone();
+        state.new_label.clear();
     }
+
+    let card_title = card.title.clone();
+    let card_desc = card.description.clone();
+    let card_labels = card.labels.clone();
 
     let screen = ui.ctx().screen_rect();
     // Narrow viewports get a near-full-width sheet; wider ones a centered modal.
@@ -592,14 +700,10 @@ fn card_detail_ui(
     let mut close = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
     let mut delete = false;
     let mut move_to: Option<usize> = None;
+    let mut add_label = false;
 
-    // Owned copies so the body can render the status pill and column chips
-    // without conflicting with the mutable card borrow taken inside the sheet.
-    let columns: Vec<String> = board.columns.iter().map(|c| c.title.clone()).collect();
-    let current_col = board
-        .columns
-        .iter()
-        .position(|col| col.cards.iter().any(|c| c.id == card_id));
+    // Owned copy so the body can render the status pill and column chips.
+    let columns: Vec<String> = view.columns.iter().map(|c| c.name.clone()).collect();
 
     // Dimmed scrim behind the sheet; a tap outside closes the detail.
     let scrim = egui::Area::new(egui::Id::new("headway-detail-scrim"))
@@ -637,9 +741,7 @@ fn card_detail_ui(
                     // sheet has no draggable window chrome to dismiss it.
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Card").color(theme.text_muted));
-                        if let Some(ci) = current_col {
-                            status_pill(ui, theme, &columns[ci]);
-                        }
+                        status_pill(ui, theme, &columns[current_col]);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let x =
                                 egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
@@ -656,32 +758,59 @@ fn card_detail_ui(
                         .max_height(max_body_height)
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
-                            // Re-borrow inside the closure to satisfy the borrow checker.
-                            let Some(card) = board.card_mut(card_id) else {
-                                return;
-                            };
-
-                            ui.add(
-                                egui::TextEdit::singleline(&mut card.title)
+                            let title_resp = ui.add(
+                                egui::TextEdit::singleline(&mut state.detail_title)
                                     .font(egui::TextStyle::Heading)
                                     .desired_width(f32::INFINITY)
                                     .hint_text("Title"),
                             );
+                            if title_resp.lost_focus() {
+                                let title = state.detail_title.trim().to_string();
+                                if !title.is_empty() && title != card_title {
+                                    *action = Some(BoardAction::EditTitle {
+                                        card: card_id,
+                                        title,
+                                    });
+                                }
+                            }
 
                             ui.add_space(SPACING_MD);
                             section_label(ui, theme, "Description");
                             ui.add_space(SPACING_XS);
-                            ui.add(
-                                egui::TextEdit::multiline(&mut card.description)
+                            let desc_resp = ui.add(
+                                egui::TextEdit::multiline(&mut state.detail_desc)
                                     .desired_rows(4)
                                     .desired_width(f32::INFINITY)
                                     .hint_text("Add more detail…"),
                             );
+                            if desc_resp.lost_focus() && state.detail_desc != card_desc {
+                                *action = Some(BoardAction::EditDescription {
+                                    card: card_id,
+                                    description: state.detail_desc.clone(),
+                                });
+                            }
 
                             ui.add_space(SPACING_MD);
-                            section_label(ui, theme, "Label");
+                            section_label(ui, theme, "Labels");
                             ui.add_space(SPACING_XS);
-                            label_picker(ui, theme, card);
+                            ui.horizontal_wrapped(|ui| {
+                                for label in &card_labels {
+                                    label_chip(ui, theme, label);
+                                }
+                            });
+                            ui.add_space(SPACING_XS);
+                            ui.horizontal(|ui| {
+                                let field = ui.add(
+                                    egui::TextEdit::singleline(&mut state.new_label)
+                                        .desired_width(140.0)
+                                        .hint_text("Add label…"),
+                                );
+                                let submit = field.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                if ui.button("Add").clicked() || submit {
+                                    add_label = true;
+                                }
+                            });
 
                             // Move the card between lanes without dragging.
                             if columns.len() > 1 {
@@ -690,7 +819,7 @@ fn card_detail_ui(
                                 ui.add_space(SPACING_XS);
                                 ui.horizontal_wrapped(|ui| {
                                     for (i, name) in columns.iter().enumerate() {
-                                        let selected = Some(i) == current_col;
+                                        let selected = i == current_col;
                                         if ui.selectable_label(selected, name).clicked()
                                             && !selected
                                         {
@@ -721,16 +850,33 @@ fn card_detail_ui(
                 });
         });
 
+    // Resolve the high-level outcomes after the sheet closure. Explicit buttons
+    // win over an incidental focus-loss edit collected above.
     if delete {
-        board.remove_card(card_id);
+        *action = Some(BoardAction::DeleteCard { card: card_id });
         state.selected = None;
+        state.detail_for = None;
     } else if let Some(to) = move_to {
-        // Append to the end of the target lane; keep the sheet open so the
-        // move stays visible.
-        let row = board.columns[to].cards.len();
-        board.move_card(card_id, to, row);
+        let to_row = view.columns[to].cards.len();
+        *action = Some(BoardAction::MoveCard {
+            card: card_id,
+            to_col: to,
+            to_row,
+        });
+    } else if add_label {
+        let new = state.new_label.trim().to_string();
+        if !new.is_empty() && !card_labels.contains(&new) {
+            let mut labels = card_labels.clone();
+            labels.push(new);
+            *action = Some(BoardAction::SetLabels {
+                card: card_id,
+                labels,
+            });
+        }
+        state.new_label.clear();
     } else if close {
         state.selected = None;
+        state.detail_for = None;
     }
 }
 
@@ -757,40 +903,4 @@ fn status_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
                     .color(theme.text_secondary),
             );
         });
-}
-
-/// A wrapping row of color swatches (plus a "None" option) for choosing a
-/// card's label color.
-fn label_picker(ui: &mut egui::Ui, theme: &ColorTheme, card: &mut Card) {
-    let radius = egui::CornerRadius::same(RADIUS_SM as u8);
-    ui.horizontal_wrapped(|ui| {
-        if ui.selectable_label(card.label.is_none(), "None").clicked() {
-            card.label = None;
-        }
-        for (i, color) in PALETTE.iter().enumerate() {
-            let (rect, resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-            ui.painter().rect_filled(rect, radius, *color);
-            if card.label == Some(i) {
-                ui.painter().rect_stroke(
-                    rect,
-                    radius,
-                    egui::Stroke::new(STROKE_THICK, theme.text_primary),
-                    egui::StrokeKind::Inside,
-                );
-            } else if resp.hovered() {
-                ui.painter().rect_stroke(
-                    rect,
-                    radius,
-                    egui::Stroke::new(STROKE_MEDIUM, theme.border_strong),
-                    egui::StrokeKind::Inside,
-                );
-            }
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-            if resp.clicked() {
-                card.label = Some(i);
-            }
-        }
-    });
 }
