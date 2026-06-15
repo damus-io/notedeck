@@ -1,5 +1,6 @@
 use crate::backend::session_info::parse_session_info;
 use crate::backend::shared::{self, SessionCommand, SessionHandle};
+use crate::backend::task_tracker::TaskTracker;
 use crate::backend::tool_summary::extract_response_content;
 use crate::backend::traits::AiBackend;
 use crate::file_update::FileUpdate;
@@ -74,12 +75,13 @@ fn parse_user_content_blocks(user_msg: &UserMessage) -> Vec<ContentBlock> {
         .unwrap_or_default()
 }
 
-/// Process a single tool result: complete any in-flight subagent and forward
-/// the result to the UI.
+/// Process a single tool result: complete any in-flight subagent, fold the
+/// harness task list into the sidebar, and forward the result to the UI.
 fn handle_tool_result(
     tool_result: &ToolResultBlock,
     pending_tools: &mut HashMap<String, (String, serde_json::Value)>,
     subagent_stack: &mut Vec<String>,
+    task_tracker: &mut TaskTracker,
     response_tx: &mpsc::Sender<DaveApiResponse>,
     ctx: &egui::Context,
 ) {
@@ -94,6 +96,13 @@ fn handle_tool_result(
         let result_text =
             extract_response_content(&result_value).unwrap_or_else(|| "completed".to_string());
         shared::complete_subagent(tool_use_id, &result_text, subagent_stack, response_tx, ctx);
+    }
+
+    // Fold TaskCreate/TaskUpdate into the task list sidebar (the id is
+    // assigned in the result, so this has to happen at result time).
+    if let Some(todos) = task_tracker.handle_tool(&tool_name, &tool_input, &result_value) {
+        let _ = response_tx.send(DaveApiResponse::TodoUpdate(todos));
+        ctx.request_repaint();
     }
 
     let file_update = FileUpdate::from_tool_call(&tool_name, &tool_input);
@@ -296,6 +305,10 @@ async fn session_actor(
     }
 
     tracing::debug!("Session {} connected successfully", session_id);
+
+    // Tracks the harness task list across turns. `TaskCreate`/`TaskUpdate` are
+    // incremental, so this must outlive the per-query loop below.
+    let mut task_tracker = TaskTracker::new();
 
     // Process commands
     while let Some(cmd) = command_rx.recv().await {
@@ -625,6 +638,7 @@ async fn session_actor(
                                                         &tool_result,
                                                         &mut pending_tools,
                                                         &mut subagent_stack,
+                                                        &mut task_tracker,
                                                         &response_tx,
                                                         &ctx,
                                                     );
