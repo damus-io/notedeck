@@ -190,60 +190,88 @@ fn cards_drop_zone(
     // Tracks where a release would land (also used to paint the insertion line).
     let mut hover_target: Option<usize> = None;
 
-    let (_, dropped) = ui.dnd_drop_zone::<DragCard, ()>(frame, |ui| {
-        ui.set_min_height(SPACING_LG);
-        ui.spacing_mut().item_spacing.y = SPACING_SM;
+    // Grow the drop zone to fill the column body so empty/sparse lists still
+    // present a generous target, reserving room for the add-card affordance
+    // that follows. Falls back to a small minimum when space is tight.
+    let reserve = 2.0 * SPACING_LG;
+    let fill_height = (ui.available_height() - reserve).max(SPACING_LG);
 
-        for (row_idx, card) in column.cards.iter().enumerate() {
-            let card_id = egui::Id::new(("headway-card", card.id));
-            let response = ui
-                .dnd_drag_source(card_id, DragCard(card.id), |ui| {
-                    card_ui(ui, theme, card);
-                })
-                .response;
+    let fill_width = ui.available_width();
 
-            // `dnd_drag_source` only senses dragging, so it never reports a
-            // click on its own — layer in click sensing so a plain tap (press +
-            // release without a drag) opens the card detail.
-            let response = response.interact(egui::Sense::click());
-            if response.clicked() {
-                *clicked = Some(card.id);
+    // Detect drops over a bare, transparent frame rather than `dnd_drop_zone`,
+    // which always paints a highlight box around the whole lane. The accent
+    // insertion line is the only feedback we want.
+    let zone = frame
+        .show(ui, |ui| {
+            // Fill the column body in both axes so the drop target spans the whole
+            // lane — otherwise an empty column collapses to a narrow vertical strip.
+            ui.set_min_height(fill_height);
+            ui.set_min_width(fill_width);
+            ui.spacing_mut().item_spacing.y = SPACING_SM;
+
+            for (row_idx, card) in column.cards.iter().enumerate() {
+                let card_id = egui::Id::new(("headway-card", card.id));
+                let response = ui
+                    .dnd_drag_source(card_id, DragCard(card.id), |ui| {
+                        card_ui(ui, theme, card);
+                    })
+                    .response;
+
+                // `dnd_drag_source` only senses dragging, so it never reports a
+                // click on its own — layer in click sensing so a plain tap (press +
+                // release without a drag) opens the card detail.
+                let response = response.interact(egui::Sense::click());
+                if response.clicked() {
+                    *clicked = Some(card.id);
+                }
+
+                // Hover affordance: cards are clickable, so highlight the border and
+                // switch to a pointing-hand cursor when the pointer is over one.
+                if response.hovered() {
+                    ui.painter().rect_stroke(
+                        response.rect,
+                        egui::CornerRadius::same(RADIUS_MD as u8),
+                        egui::Stroke::new(STROKE_MEDIUM, theme.border_strong),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+
+                // While something hovers this card, draw an insertion line and record
+                // the resulting row so a release lands there.
+                if let (Some(pointer), Some(_payload)) = (
+                    ui.input(|i| i.pointer.interact_pos()),
+                    response.dnd_hover_payload::<DragCard>(),
+                ) {
+                    let rect = response.rect;
+                    let stroke = egui::Stroke::new(STROKE_THIN, theme.accent);
+                    let insert_row = if pointer.y < rect.center().y {
+                        ui.painter().hline(rect.x_range(), rect.top(), stroke);
+                        row_idx
+                    } else {
+                        ui.painter().hline(rect.x_range(), rect.bottom(), stroke);
+                        row_idx + 1
+                    };
+                    hover_target = Some(insert_row);
+                }
             }
+        })
+        .response;
 
-            // Hover affordance: cards are clickable, so highlight the border and
-            // switch to a pointing-hand cursor when the pointer is over one.
-            if response.hovered() {
-                ui.painter().rect_stroke(
-                    response.rect,
-                    egui::CornerRadius::same(RADIUS_MD as u8),
-                    egui::Stroke::new(STROKE_MEDIUM, theme.border_strong),
-                    egui::StrokeKind::Inside,
-                );
-                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            }
-
-            // While something hovers this card, draw an insertion line and record
-            // the resulting row so a release lands there.
-            if let (Some(pointer), Some(_payload)) = (
-                ui.input(|i| i.pointer.interact_pos()),
-                response.dnd_hover_payload::<DragCard>(),
-            ) {
-                let rect = response.rect;
-                let stroke = egui::Stroke::new(STROKE_THIN, theme.accent);
-                let insert_row = if pointer.y < rect.center().y {
-                    ui.painter().hline(rect.x_range(), rect.top(), stroke);
-                    row_idx
-                } else {
-                    ui.painter().hline(rect.x_range(), rect.bottom(), stroke);
-                    row_idx + 1
-                };
-                hover_target = Some(insert_row);
-            }
-        }
-    });
+    // Empty columns have no card to anchor an insertion line against; draw one
+    // at the top of the bare lane while a card hovers so there's still feedback.
+    if column.cards.is_empty() && zone.dnd_hover_payload::<DragCard>().is_some() {
+        let rect = zone.rect;
+        let inset = SPACING_SM as f32;
+        ui.painter().hline(
+            (rect.left() + inset)..=(rect.right() - inset),
+            rect.top() + inset,
+            egui::Stroke::new(STROKE_THIN, theme.accent),
+        );
+    }
 
     // A release in this zone: use the hovered insertion row, else append to end.
-    if let Some(payload) = dropped {
+    if let Some(payload) = zone.dnd_release_payload::<DragCard>() {
         let row = hover_target.unwrap_or(column.cards.len());
         *action = Some(BoardAction::Move {
             card_id: payload.0,
