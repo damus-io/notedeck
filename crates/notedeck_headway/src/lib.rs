@@ -441,6 +441,29 @@ fn label_chip(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) {
         });
 }
 
+/// A label pill with a trailing ✕ to remove it. Returns true if ✕ was clicked.
+fn removable_label_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) -> bool {
+    let color = label_color(label);
+    let mut remove = false;
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.30))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(label).small().color(theme.text_primary));
+                if ui
+                    .add(egui::Button::new(egui::RichText::new("✕").small()).frame(false))
+                    .on_hover_text(format!("Remove {label}"))
+                    .clicked()
+                {
+                    remove = true;
+                }
+            });
+        });
+    remove
+}
+
 /// A small rounded pill showing a count (e.g. cards in a column).
 fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
     egui::Frame::new()
@@ -681,15 +704,20 @@ fn card_detail_ui(
         state.new_label.clear();
     }
 
-    let card_title = card.title.clone();
-    let card_desc = card.description.clone();
-    let card_labels = card.labels.clone();
+    let ctx = DetailCtx {
+        card_id,
+        current_col,
+        title: card.title.clone(),
+        desc: card.description.clone(),
+        labels: card.labels.clone(),
+        // Owned copy so the body can render the status pill and column chips.
+        columns: view.columns.iter().map(|c| c.name.clone()).collect(),
+    };
 
     let screen = ui.ctx().screen_rect();
-    // Narrow viewports get a near-full-width sheet; wider ones a centered modal.
-    let compact = notedeck::ui::is_narrow(ui.ctx());
     let pad = SPACING_LG;
-    let sheet_width = if compact {
+    // Narrow viewports get a near-full-width sheet; wider ones a centered modal.
+    let sheet_width = if notedeck::ui::is_narrow(ui.ctx()) {
         screen.width() - 2.0 * pad
     } else {
         460.0
@@ -697,16 +725,62 @@ fn card_detail_ui(
     // Cap the body so a long card stays on-screen and scrolls instead.
     let max_body_height = screen.height() - 6.0 * pad;
 
-    let mut close = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
-    let mut delete = false;
-    let mut move_to: Option<usize> = None;
-    let mut add_label = false;
-
-    // Owned copy so the body can render the status pill and column chips.
-    let columns: Vec<String> = view.columns.iter().map(|c| c.name.clone()).collect();
+    let mut outcome = DetailOutcome {
+        close: ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)),
+        ..Default::default()
+    };
 
     // Dimmed scrim behind the sheet; a tap outside closes the detail.
-    let scrim = egui::Area::new(egui::Id::new("headway-detail-scrim"))
+    if detail_scrim_ui(ui, screen) {
+        outcome.close = true;
+    }
+
+    egui::Area::new(egui::Id::new(("headway-detail", card_id)))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ui.ctx(), |ui| {
+            detail_sheet_frame(theme, pad).show(ui, |ui| {
+                ui.set_width(sheet_width);
+                detail_header_ui(ui, theme, &ctx, &mut outcome);
+                ui.add_space(SPACING_SM);
+                egui::ScrollArea::vertical()
+                    .max_height(max_body_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                    });
+            });
+        });
+
+    resolve_detail_outcome(state, action, view, &ctx, outcome);
+}
+
+/// The card data the detail sheet needs, copied out of the (immutable)
+/// `BoardView` so the sheet body doesn't borrow it while we also mutate `state`.
+struct DetailCtx {
+    card_id: NoteId,
+    current_col: usize,
+    title: String,
+    desc: String,
+    labels: Vec<String>,
+    columns: Vec<String>,
+}
+
+/// High-level user intents collected while rendering the detail sheet, resolved
+/// into a single [`BoardAction`] after the UI closures return.
+#[derive(Default)]
+struct DetailOutcome {
+    close: bool,
+    delete: bool,
+    move_to: Option<usize>,
+    add_label: bool,
+    remove_label: Option<String>,
+}
+
+/// The dimmed full-screen backdrop behind the sheet. Returns true if it was
+/// clicked (a tap outside the sheet, which closes the detail).
+fn detail_scrim_ui(ui: &mut egui::Ui, screen: egui::Rect) -> bool {
+    egui::Area::new(egui::Id::new("headway-detail-scrim"))
         .order(egui::Order::Middle)
         .fixed_pos(screen.min)
         .show(ui.ctx(), |ui| {
@@ -714,167 +788,208 @@ fn card_detail_ui(
             ui.painter()
                 .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
             resp
+        })
+        .inner
+        .clicked()
+}
+
+/// The elevated card surface the sheet's contents are drawn into. A builder, not
+/// a renderer, so it intentionally has no `_ui` suffix.
+fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme.surface_primary)
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .corner_radius(egui::CornerRadius::same(RADIUS_LG as u8))
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 24,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(120),
+        })
+        .inner_margin(egui::Margin::same(pad as i8))
+}
+
+/// Sheet header: a "Card" label, the current-status pill, and a close button
+/// (the sheet has no draggable window chrome to dismiss it).
+fn detail_header_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    outcome: &mut DetailOutcome,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Card").color(theme.text_muted));
+        status_pill(ui, theme, &ctx.columns[ctx.current_col]);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
+                .fill(egui::Color32::TRANSPARENT)
+                .frame(false);
+            if ui.add(x).clicked() {
+                outcome.close = true;
+            }
         });
-    if scrim.inner.clicked() {
-        close = true;
+    });
+}
+
+/// The scrollable sheet body: title, description, labels, status and delete.
+/// Title/description commit directly on focus loss; the rest is collected into
+/// `outcome` and resolved by the caller.
+fn detail_body_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+    outcome: &mut DetailOutcome,
+) {
+    let title_resp = ui.add(
+        egui::TextEdit::singleline(&mut state.detail_title)
+            .font(egui::TextStyle::Heading)
+            .desired_width(f32::INFINITY)
+            .hint_text("Title"),
+    );
+    if title_resp.lost_focus() {
+        let title = state.detail_title.trim().to_string();
+        if !title.is_empty() && title != ctx.title {
+            *action = Some(BoardAction::EditTitle {
+                card: ctx.card_id,
+                title,
+            });
+        }
     }
 
-    egui::Area::new(egui::Id::new(("headway-detail", card_id)))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::new()
-                .fill(theme.surface_primary)
-                .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
-                .corner_radius(egui::CornerRadius::same(RADIUS_LG as u8))
-                .shadow(egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 24,
-                    spread: 0,
-                    color: egui::Color32::from_black_alpha(120),
-                })
-                .inner_margin(egui::Margin::same(pad as i8))
-                .show(ui, |ui| {
-                    ui.set_width(sheet_width);
-
-                    // Header: a label plus an explicit close button, since the
-                    // sheet has no draggable window chrome to dismiss it.
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Card").color(theme.text_muted));
-                        status_pill(ui, theme, &columns[current_col]);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let x =
-                                egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
-                                    .fill(egui::Color32::TRANSPARENT)
-                                    .frame(false);
-                            if ui.add(x).clicked() {
-                                close = true;
-                            }
-                        });
-                    });
-                    ui.add_space(SPACING_SM);
-
-                    egui::ScrollArea::vertical()
-                        .max_height(max_body_height)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            let title_resp = ui.add(
-                                egui::TextEdit::singleline(&mut state.detail_title)
-                                    .font(egui::TextStyle::Heading)
-                                    .desired_width(f32::INFINITY)
-                                    .hint_text("Title"),
-                            );
-                            if title_resp.lost_focus() {
-                                let title = state.detail_title.trim().to_string();
-                                if !title.is_empty() && title != card_title {
-                                    *action = Some(BoardAction::EditTitle {
-                                        card: card_id,
-                                        title,
-                                    });
-                                }
-                            }
-
-                            ui.add_space(SPACING_MD);
-                            section_label(ui, theme, "Description");
-                            ui.add_space(SPACING_XS);
-                            let desc_resp = ui.add(
-                                egui::TextEdit::multiline(&mut state.detail_desc)
-                                    .desired_rows(4)
-                                    .desired_width(f32::INFINITY)
-                                    .hint_text("Add more detail…"),
-                            );
-                            if desc_resp.lost_focus() && state.detail_desc != card_desc {
-                                *action = Some(BoardAction::EditDescription {
-                                    card: card_id,
-                                    description: state.detail_desc.clone(),
-                                });
-                            }
-
-                            ui.add_space(SPACING_MD);
-                            section_label(ui, theme, "Labels");
-                            ui.add_space(SPACING_XS);
-                            ui.horizontal_wrapped(|ui| {
-                                for label in &card_labels {
-                                    label_chip(ui, theme, label);
-                                }
-                            });
-                            ui.add_space(SPACING_XS);
-                            ui.horizontal(|ui| {
-                                let field = ui.add(
-                                    egui::TextEdit::singleline(&mut state.new_label)
-                                        .desired_width(140.0)
-                                        .hint_text("Add label…"),
-                                );
-                                let submit = field.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                if ui.button("Add").clicked() || submit {
-                                    add_label = true;
-                                }
-                            });
-
-                            // Move the card between lanes without dragging.
-                            if columns.len() > 1 {
-                                ui.add_space(SPACING_MD);
-                                section_label(ui, theme, "Status");
-                                ui.add_space(SPACING_XS);
-                                ui.horizontal_wrapped(|ui| {
-                                    for (i, name) in columns.iter().enumerate() {
-                                        let selected = i == current_col;
-                                        if ui.selectable_label(selected, name).clicked()
-                                            && !selected
-                                        {
-                                            move_to = Some(i);
-                                        }
-                                    }
-                                });
-                            }
-
-                            ui.add_space(SPACING_MD);
-                            ui.separator();
-                            ui.add_space(SPACING_SM);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .button(
-                                            egui::RichText::new("Delete card")
-                                                .color(theme.destructive),
-                                        )
-                                        .clicked()
-                                    {
-                                        delete = true;
-                                    }
-                                },
-                            );
-                        });
-                });
+    ui.add_space(SPACING_MD);
+    section_label(ui, theme, "Description");
+    ui.add_space(SPACING_XS);
+    let desc_resp = ui.add(
+        egui::TextEdit::multiline(&mut state.detail_desc)
+            .desired_rows(4)
+            .desired_width(f32::INFINITY)
+            .hint_text("Add more detail…"),
+    );
+    if desc_resp.lost_focus() && state.detail_desc != ctx.desc {
+        *action = Some(BoardAction::EditDescription {
+            card: ctx.card_id,
+            description: state.detail_desc.clone(),
         });
+    }
 
-    // Resolve the high-level outcomes after the sheet closure. Explicit buttons
-    // win over an incidental focus-loss edit collected above.
-    if delete {
-        *action = Some(BoardAction::DeleteCard { card: card_id });
+    ui.add_space(SPACING_MD);
+    detail_labels_section_ui(ui, theme, ctx, state, outcome);
+
+    // Move the card between lanes without dragging.
+    if ctx.columns.len() > 1 {
+        ui.add_space(SPACING_MD);
+        detail_status_section_ui(ui, theme, ctx, outcome);
+    }
+
+    ui.add_space(SPACING_MD);
+    ui.separator();
+    ui.add_space(SPACING_SM);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if ui
+            .button(egui::RichText::new("Delete card").color(theme.destructive))
+            .clicked()
+        {
+            outcome.delete = true;
+        }
+    });
+}
+
+/// Labels section: removable chips plus an "add label" field.
+fn detail_labels_section_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    outcome: &mut DetailOutcome,
+) {
+    section_label(ui, theme, "Labels");
+    ui.add_space(SPACING_XS);
+    ui.horizontal_wrapped(|ui| {
+        for label in &ctx.labels {
+            if removable_label_chip_ui(ui, theme, label) {
+                outcome.remove_label = Some(label.clone());
+            }
+        }
+    });
+    ui.add_space(SPACING_XS);
+    ui.horizontal(|ui| {
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut state.new_label)
+                .desired_width(140.0)
+                .hint_text("Add label…"),
+        );
+        let submit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if ui.button("Add").clicked() || submit {
+            outcome.add_label = true;
+        }
+    });
+}
+
+/// Status section: a chip per column to move the card without dragging.
+fn detail_status_section_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    outcome: &mut DetailOutcome,
+) {
+    section_label(ui, theme, "Status");
+    ui.add_space(SPACING_XS);
+    ui.horizontal_wrapped(|ui| {
+        for (i, name) in ctx.columns.iter().enumerate() {
+            let selected = i == ctx.current_col;
+            if ui.selectable_label(selected, name).clicked() && !selected {
+                outcome.move_to = Some(i);
+            }
+        }
+    });
+}
+
+/// Resolve the collected [`DetailOutcome`] into a single [`BoardAction`].
+/// Explicit buttons (delete/move/label) win over an incidental focus-loss edit.
+fn resolve_detail_outcome(
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+    view: &BoardView,
+    ctx: &DetailCtx,
+    outcome: DetailOutcome,
+) {
+    if outcome.delete {
+        *action = Some(BoardAction::DeleteCard { card: ctx.card_id });
         state.selected = None;
         state.detail_for = None;
-    } else if let Some(to) = move_to {
+    } else if let Some(to) = outcome.move_to {
         let to_row = view.columns[to].cards.len();
         *action = Some(BoardAction::MoveCard {
-            card: card_id,
+            card: ctx.card_id,
             to_col: to,
             to_row,
         });
-    } else if add_label {
+    } else if let Some(target) = outcome.remove_label {
+        // Republish the set without the removed label (labels are latest-wins).
+        let labels: Vec<String> = ctx
+            .labels
+            .iter()
+            .filter(|l| **l != target)
+            .cloned()
+            .collect();
+        *action = Some(BoardAction::SetLabels {
+            card: ctx.card_id,
+            labels,
+        });
+    } else if outcome.add_label {
         let new = state.new_label.trim().to_string();
-        if !new.is_empty() && !card_labels.contains(&new) {
-            let mut labels = card_labels.clone();
+        if !new.is_empty() && !ctx.labels.contains(&new) {
+            let mut labels = ctx.labels.clone();
             labels.push(new);
             *action = Some(BoardAction::SetLabels {
-                card: card_id,
+                card: ctx.card_id,
                 labels,
             });
         }
         state.new_label.clear();
-    } else if close {
+    } else if outcome.close {
         state.selected = None;
         state.detail_for = None;
     }
