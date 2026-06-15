@@ -18,26 +18,19 @@ const COLUMN_WIDTH: f32 = 280.0;
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
 /// The board is backed by nostr events in the local nostrdb: a [`BoardView`] is
-/// reduced from the account's events (see [`store::load_board`]) and cached,
-/// then re-folded only when an ndb subscription reports the event set changed —
-/// not every frame. Every edit is turned into a signed event that is ingested
-/// locally (see [`store`]). There is deliberately no relay publishing yet.
+/// reduced from the account's events (see [`store::load_board`]) and cached by
+/// [`BoardSync`], then re-folded only when an ndb subscription reports the event
+/// set changed — not every frame. Every edit is turned into a signed event that
+/// is ingested locally (see [`store`]). There is deliberately no relay
+/// publishing yet.
 pub struct Headway {
     /// Which board this instance manages (single board for now).
     board_id: String,
     /// Transient, per-board UI state.
     state: BoardUiState,
-    /// The last reduced board, cached so we don't re-fold the whole event
-    /// history every frame. Refreshed only when [`needs_reload`](Self::needs_reload)
-    /// is set. `None` means "no such board" (or not loaded yet).
-    view: Option<BoardView>,
-    /// Live nostrdb subscription to this account's headway events; polling it is
-    /// how we learn the board changed (including our own async ingests landing).
-    sub: Option<Subscription>,
-    /// The account `sub`/`view` belong to, so we resubscribe on account switch.
-    sub_author: Option<Pubkey>,
-    /// Set when the cache is stale and must be re-folded this frame.
-    needs_reload: bool,
+    /// Subscription-backed cache of the reduced board (egui-free, so it's
+    /// unit-testable against a bare `Ndb`).
+    sync: BoardSync,
     /// Whether we've already auto-seeded a board this session, so we don't try
     /// to seed twice while the first seed is still materialising.
     seeded: bool,
@@ -51,11 +44,7 @@ impl Default for Headway {
         Self {
             board_id: store::BOARD_ID.to_string(),
             state: BoardUiState::default(),
-            view: None,
-            sub: None,
-            sub_author: None,
-            // Fold once on the first frame.
-            needs_reload: true,
+            sync: BoardSync::default(),
             seeded: false,
             repaint_frames: 0,
         }
@@ -104,6 +93,81 @@ impl Headway {
         Self::default()
     }
 
+    /// Schedule a short burst of repaints so a just-ingested event (ingest is
+    /// async, on a writer thread) gets polled and surfaced promptly.
+    fn wake(&mut self) {
+        self.repaint_frames = 8;
+    }
+
+    /// Burn down the repaint countdown, requesting a delayed repaint each step.
+    fn pump_repaint(&mut self, ui: &egui::Ui) {
+        if self.repaint_frames > 0 {
+            self.repaint_frames -= 1;
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(60));
+        }
+    }
+}
+
+/// Subscription-backed cache of a reduced [`BoardView`].
+///
+/// Holds a live nostrdb subscription to one account's headway events and the
+/// last board folded from them. [`poll`](Self::poll) re-folds only when
+/// something actually changed — a first load, an account switch, or the
+/// subscription reporting new notes — instead of walking the whole event
+/// history every frame. Deliberately free of any egui dependency so it can be
+/// unit-tested against a bare `Ndb`.
+#[derive(Default)]
+struct BoardSync {
+    /// The last reduced board. `None` means "no such board" (or not loaded yet).
+    view: Option<BoardView>,
+    /// Live subscription to `sub_author`'s headway events; polling it is how we
+    /// learn the board changed (including our own async ingests landing).
+    sub: Option<Subscription>,
+    /// The account `sub`/`view` belong to, so we resubscribe on account switch.
+    sub_author: Option<Pubkey>,
+    /// Set when the cache is stale and must be re-folded on the next poll.
+    needs_reload: bool,
+}
+
+impl BoardSync {
+    /// Ensure a live subscription to `author`, drain it, and re-fold `board_id`
+    /// if anything changed. Returns `true` if the board was re-folded this call
+    /// (a first load, account switch, or subscription hit) so the caller can
+    /// schedule follow-up repaints. The cached board is read via
+    /// [`view`](Self::view).
+    fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, board_id: &str) -> bool {
+        self.sync_subscription(ndb, author);
+
+        // Future optimisation: feed only the polled `NoteKey`s into a long-lived
+        // `BoardReducer` (reduce_delta) instead of re-folding the whole history.
+        // The reducer is a commutative, idempotent fold, so an incremental step
+        // yields the same accumulator — it's safe, just not worth the machinery
+        // until a board is large enough for the full refold to matter.
+        match self.sub {
+            Some(sub) if !ndb.poll_for_notes(sub, 64).is_empty() => {
+                self.needs_reload = true;
+            }
+            // Subscribe failed: degrade to reloading each frame so edits still show.
+            None => self.needs_reload = true,
+            _ => {}
+        }
+
+        if self.needs_reload {
+            self.view = Transaction::new(ndb)
+                .ok()
+                .and_then(|txn| store::load_board(ndb, &txn, author, board_id));
+            self.needs_reload = false;
+            return true;
+        }
+        false
+    }
+
+    /// The cached board, if one has been folded.
+    fn view(&self) -> Option<&BoardView> {
+        self.view.as_ref()
+    }
+
     /// Ensure we hold a live subscription to `author`'s headway events,
     /// resubscribing (and invalidating the cache) when the selected account
     /// changes. A fresh subscription only reports *future* ingests, so the
@@ -121,21 +185,6 @@ impl Headway {
         self.view = None;
         self.needs_reload = true;
     }
-
-    /// Schedule a short burst of repaints so a just-ingested event (ingest is
-    /// async, on a writer thread) gets polled and surfaced promptly.
-    fn wake(&mut self) {
-        self.repaint_frames = 8;
-    }
-
-    /// Burn down the repaint countdown, requesting a delayed repaint each step.
-    fn pump_repaint(&mut self, ui: &egui::Ui) {
-        if self.repaint_frames > 0 {
-            self.repaint_frames -= 1;
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(60));
-        }
-    }
 }
 
 impl App for Headway {
@@ -150,30 +199,14 @@ impl App for Headway {
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
 
-        // Keep a live subscription to this account's events, then drain it: any
-        // new notes (including our own ingests landing) mean the board changed,
-        // so flag a reload and keep waking up while the writer thread streams in.
-        self.sync_subscription(ctx.ndb, &author);
-        match self.sub {
-            Some(sub) if !ctx.ndb.poll_for_notes(sub, 64).is_empty() => {
-                self.needs_reload = true;
-                self.wake();
-            }
-            // No subscription (subscribe failed): degrade to reloading each frame.
-            None => self.needs_reload = true,
-            _ => {}
+        // Keep a live subscription to this account's events and re-fold the
+        // cached board only when something changed (first load, account switch,
+        // or our own async ingests landing); keep waking while it streams in.
+        if self.sync.poll(ctx.ndb, &author, &self.board_id) {
+            self.wake();
         }
 
-        // Re-fold the board only when something actually changed (first load,
-        // account switch, or a subscription hit) rather than every frame.
-        if self.needs_reload {
-            self.view = Transaction::new(ctx.ndb)
-                .ok()
-                .and_then(|txn| store::load_board(ctx.ndb, &txn, &author, &self.board_id));
-            self.needs_reload = false;
-        }
-
-        if self.view.is_none() {
+        if self.sync.view().is_none() {
             // No board yet: auto-seed one for an account that can sign.
             match &signer {
                 Some(secret) => {
@@ -194,18 +227,18 @@ impl App for Headway {
             return AppResponse::default();
         }
 
-        // Render against the cached view; `view` and `state` are disjoint fields.
+        // Render against the cached view; `sync` and `state` are disjoint fields.
         let action = board_ui(
             ui,
             &theme,
-            self.view.as_ref().expect("view present"),
+            self.sync.view().expect("view present"),
             &mut self.state,
         );
 
         // Apply the collected action by ingesting events locally. Mutations need
         // a signing key; a watch-only account simply can't edit.
         if let (Some(action), Some(secret)) = (action, &signer) {
-            let view = self.view.as_ref().expect("view present");
+            let view = self.sync.view().expect("view present");
             store::apply(ctx.ndb, &self.board_id, view, &author, secret, action);
             self.wake();
         }
@@ -1082,4 +1115,146 @@ fn status_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
                     .color(theme.text_secondary),
             );
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use enostr::FullKeypair;
+    use nostrdb::{Config, Ndb};
+    use std::time::{Duration, Instant};
+
+    /// A headless harness driving a [`BoardSync`] against a bare `Ndb` — the
+    /// subscription / poll / refold logic with no egui in sight. Mirrors the
+    /// `store::tests::TestNdb` poll-loop pattern (ingest is async).
+    struct TestSync {
+        ndb: Ndb,
+        _dir: tempfile::TempDir,
+        kp: FullKeypair,
+        sync: BoardSync,
+    }
+
+    impl TestSync {
+        fn new() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+            Self {
+                ndb,
+                _dir: dir,
+                kp: FullKeypair::generate(),
+                sync: BoardSync::default(),
+            }
+        }
+
+        fn secret(&self) -> [u8; 32] {
+            self.kp.secret_key.secret_bytes()
+        }
+
+        /// One poll cycle against this account's board. Returns whether the
+        /// board was re-folded this call.
+        fn poll(&mut self) -> bool {
+            self.sync
+                .poll(&mut self.ndb, &self.kp.pubkey, store::BOARD_ID)
+        }
+
+        fn seed(&mut self) {
+            store::seed_default_board(&self.ndb, &self.kp.pubkey, &self.secret(), store::BOARD_ID);
+        }
+
+        /// Poll until the cached view satisfies `pred` (ingest is async). Fails
+        /// the test if it never holds.
+        fn wait<F: Fn(&BoardView) -> bool>(&mut self, pred: F) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                self.poll();
+                if self.sync.view().is_some_and(&pred) {
+                    return;
+                }
+                assert!(Instant::now() < deadline, "sync predicate never held");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        /// Poll until the subscription stops reporting new notes, so the cache
+        /// is quiescent (the async writer has drained).
+        fn drain(&mut self) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.poll() {
+                assert!(Instant::now() < deadline, "sync never quiesced");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+
+    fn total_cards(view: &BoardView) -> usize {
+        view.columns.iter().map(|c| c.cards.len()).sum()
+    }
+
+    /// Subscribing before seeding, then polling, materialises the whole board
+    /// from events already in ndb.
+    #[test]
+    fn poll_materialises_the_board() {
+        let mut t = TestSync::new();
+        // Subscribe first so the seed's ingests are reported as new notes.
+        t.poll();
+        t.seed();
+
+        t.wait(|v| total_cards(v) == 7);
+        let view = t.sync.view().expect("board loaded");
+        assert_eq!(
+            view.columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Backlog", "Todo", "In Progress", "Done"]
+        );
+        assert_eq!(view.columns[0].cards.len(), 3);
+    }
+
+    /// An edit ingested after the initial load is picked up on a later poll —
+    /// the cache reflects the change, not a stale snapshot.
+    #[test]
+    fn poll_reloads_on_change() {
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed();
+        t.wait(|v| v.columns[1].cards.len() == 2);
+
+        // Apply against the cached pre-edit view (as render does).
+        {
+            let view = t.sync.view().expect("board loaded");
+            store::apply(
+                &t.ndb,
+                store::BOARD_ID,
+                view,
+                &t.kp.pubkey,
+                &t.secret(),
+                store::BoardAction::AddCard {
+                    col: 1,
+                    title: "Fresh card".to_string(),
+                },
+            );
+        }
+
+        // The new card only appears if a later poll re-folded the board.
+        t.wait(|v| v.columns[1].cards.len() == 3);
+        let view = t.sync.view().expect("board loaded");
+        assert_eq!(view.columns[1].cards.last().unwrap().title, "Fresh card");
+    }
+
+    /// Once quiescent, polling with nothing new must NOT re-fold — this is the
+    /// whole point of the cache (no per-frame walk of the event history).
+    #[test]
+    fn poll_does_not_refold_when_idle() {
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed();
+        t.wait(|v| total_cards(v) == 7);
+        t.drain();
+
+        assert!(
+            !t.poll(),
+            "cache re-folded with no new events — the per-frame fold is back"
+        );
+    }
 }
