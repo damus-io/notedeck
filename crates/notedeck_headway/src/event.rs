@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 
 use enostr::{NoteId, Pubkey};
-use nostrdb::{Note, NoteBuildOptions, NoteBuilder};
+use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
 
 /// Headway board: addressable, `d` = board id, holds title/description and the
 /// ordered column list.
@@ -472,6 +472,169 @@ pub struct BoardView {
     pub columns: Vec<ColumnView>,
 }
 
+/// Accumulates headway events into the maps needed to resolve effective board
+/// state, applying latest-authorised-wins as each event arrives. Keeping the
+/// reduction incremental lets it run *inside* an [`Ndb::fold`] over the index
+/// (see [`load_board`]) instead of collecting events into a `Vec` first.
+#[derive(Default)]
+struct BoardReducer {
+    /// Latest board event per (author, board_id).
+    boards: HashMap<(Vec<u8>, String), BoardEvent>,
+    /// Issues by id (immutable, but a relay may hand us duplicates).
+    issues: HashMap<[u8; 32], IssueEvent>,
+    placements: HashMap<[u8; 32], PlacementEvent>,
+    subjects: HashMap<[u8; 32], SubjectEdit>,
+    covers: HashMap<[u8; 32], CoverNote>,
+    label_sets: Vec<LabelSet>,
+}
+
+impl BoardReducer {
+    /// Fold a single event into the accumulator.
+    fn ingest(&mut self, event: HeadwayEvent) {
+        match event {
+            HeadwayEvent::Board(b) => {
+                let key = (b.author.to_vec(), b.id.clone());
+                if self
+                    .boards
+                    .get(&key)
+                    .is_none_or(|cur| b.created_at > cur.created_at)
+                {
+                    self.boards.insert(key, b);
+                }
+            }
+            HeadwayEvent::Issue(i) => {
+                self.issues.insert(i.id, i);
+            }
+            HeadwayEvent::Placement(p) => {
+                if self
+                    .placements
+                    .get(&p.issue_id)
+                    .is_none_or(|cur| newer(p.created_at, &p.author, cur.created_at, &cur.author))
+                {
+                    self.placements.insert(p.issue_id, p);
+                }
+            }
+            HeadwayEvent::Subject(s) => {
+                if self
+                    .subjects
+                    .get(&s.issue_id)
+                    .is_none_or(|cur| newer(s.created_at, &s.author, cur.created_at, &cur.author))
+                {
+                    self.subjects.insert(s.issue_id, s);
+                }
+            }
+            HeadwayEvent::Cover(c) => {
+                if self
+                    .covers
+                    .get(&c.issue_id)
+                    .is_none_or(|cur| newer(c.created_at, &c.author, cur.created_at, &cur.author))
+                {
+                    self.covers.insert(c.issue_id, c);
+                }
+            }
+            HeadwayEvent::Labels(l) => self.label_sets.push(l),
+        }
+    }
+
+    /// Assemble the accumulated events into board views.
+    fn finalize(self) -> Vec<BoardView> {
+        let mut views: Vec<BoardView> = Vec::new();
+
+        for ((author, board_id), board) in &self.boards {
+            // Group this board's cards by resolved column id.
+            let mut by_col: HashMap<String, Vec<CardView>> = HashMap::new();
+            let mut fallback: Vec<(u64, CardView)> = Vec::new();
+            let col_ids: Vec<&str> = board.columns.iter().map(|c| c.id.as_str()).collect();
+
+            for issue in self.issues.values() {
+                if &issue.board_author.to_vec() != author || &issue.board_id != board_id {
+                    continue;
+                }
+
+                // Authority: the card author or the board author may amend the card.
+                let authorised = |who: &[u8; 32]| who == &issue.author || who == &board.author;
+
+                let title = self
+                    .subjects
+                    .get(&issue.id)
+                    .filter(|s| authorised(&s.author))
+                    .map(|s| s.subject.clone())
+                    .unwrap_or_else(|| issue.subject.clone());
+
+                let description = self
+                    .covers
+                    .get(&issue.id)
+                    .filter(|c| authorised(&c.author))
+                    .map(|c| c.body.clone())
+                    .unwrap_or_else(|| issue.body.clone());
+
+                let mut labels = issue.inline_labels.clone();
+                for set in &self.label_sets {
+                    if set.issue_id == issue.id && authorised(&set.author) {
+                        labels.extend(set.labels.iter().cloned());
+                    }
+                }
+                labels.sort();
+                labels.dedup();
+
+                let placement = self
+                    .placements
+                    .get(&issue.id)
+                    .filter(|p| authorised(&p.author));
+                let rank = placement.map(|p| p.rank.clone()).unwrap_or_default();
+                let card = CardView {
+                    id: NoteId::new(issue.id),
+                    title,
+                    description,
+                    labels,
+                    rank,
+                };
+
+                match placement {
+                    Some(p) if col_ids.contains(&p.col.as_str()) => {
+                        by_col.entry(p.col.clone()).or_default().push(card);
+                    }
+                    _ => fallback.push((issue.created_at, card)),
+                }
+            }
+
+            let mut columns: Vec<ColumnView> = board
+                .columns
+                .iter()
+                .map(|def| {
+                    let mut cards = by_col.remove(&def.id).unwrap_or_default();
+                    cards.sort_by(|a, b| a.rank.cmp(&b.rank));
+                    ColumnView {
+                        id: def.id.clone(),
+                        name: def.name.clone(),
+                        cards,
+                    }
+                })
+                .collect();
+
+            // Unplaced cards fall into the first column, oldest first.
+            if let Some(first) = columns.first_mut() {
+                fallback.sort_by_key(|(created, _)| *created);
+                first
+                    .cards
+                    .extend(fallback.into_iter().map(|(_, card)| card));
+            }
+
+            views.push(BoardView {
+                id: board_id.clone(),
+                author: board.author,
+                title: board.title.clone(),
+                description: board.description.clone(),
+                columns,
+            });
+        }
+
+        // Stable output order: by board id.
+        views.sort_by(|a, b| a.id.cmp(&b.id));
+        views
+    }
+}
+
 /// Resolve a set of headway events into the boards they describe.
 ///
 /// For each board the latest board event (by `created_at`) wins. Cards are
@@ -480,152 +643,73 @@ pub struct BoardView {
 /// placement points at an unknown column, fall into the first column, ordered by
 /// creation time after the explicitly placed cards.
 pub fn reduce(events: &[HeadwayEvent]) -> Vec<BoardView> {
-    // Latest board event per (author, board_id).
-    let mut boards: HashMap<(Vec<u8>, String), &BoardEvent> = HashMap::new();
-    // Latest issue per id (issues are immutable, but a relay may hand us dups).
-    let mut issues: HashMap<[u8; 32], &IssueEvent> = HashMap::new();
-    let mut placements: HashMap<[u8; 32], &PlacementEvent> = HashMap::new();
-    let mut subjects: HashMap<[u8; 32], &SubjectEdit> = HashMap::new();
-    let mut covers: HashMap<[u8; 32], &CoverNote> = HashMap::new();
-    let mut label_sets: Vec<&LabelSet> = Vec::new();
-
+    let mut reducer = BoardReducer::default();
     for event in events {
-        match event {
-            HeadwayEvent::Board(b) => {
-                let key = (b.author.to_vec(), b.id.clone());
-                if boards
-                    .get(&key)
-                    .is_none_or(|cur| b.created_at > cur.created_at)
-                {
-                    boards.insert(key, b);
-                }
-            }
-            HeadwayEvent::Issue(i) => {
-                issues.insert(i.id, i);
-            }
-            HeadwayEvent::Placement(p) => {
-                if placements
-                    .get(&p.issue_id)
-                    .is_none_or(|cur| newer(p.created_at, &p.author, cur.created_at, &cur.author))
-                {
-                    placements.insert(p.issue_id, p);
-                }
-            }
-            HeadwayEvent::Subject(s) => {
-                if subjects
-                    .get(&s.issue_id)
-                    .is_none_or(|cur| newer(s.created_at, &s.author, cur.created_at, &cur.author))
-                {
-                    subjects.insert(s.issue_id, s);
-                }
-            }
-            HeadwayEvent::Cover(c) => {
-                if covers
-                    .get(&c.issue_id)
-                    .is_none_or(|cur| newer(c.created_at, &c.author, cur.created_at, &cur.author))
-                {
-                    covers.insert(c.issue_id, c);
-                }
-            }
-            HeadwayEvent::Labels(l) => label_sets.push(l),
-        }
+        reducer.ingest(event.clone());
     }
-
-    let mut views: Vec<BoardView> = Vec::new();
-
-    for ((author, board_id), board) in &boards {
-        // Group this board's cards by resolved column id.
-        let mut by_col: HashMap<String, Vec<CardView>> = HashMap::new();
-        let mut fallback: Vec<(u64, CardView)> = Vec::new();
-        let col_ids: Vec<&str> = board.columns.iter().map(|c| c.id.as_str()).collect();
-
-        for issue in issues.values() {
-            if &issue.board_author.to_vec() != author || &issue.board_id != board_id {
-                continue;
-            }
-
-            // Authority: the card author or the board author may amend the card.
-            let authorised = |who: &[u8; 32]| who == &issue.author || who == &board.author;
-
-            let title = subjects
-                .get(&issue.id)
-                .filter(|s| authorised(&s.author))
-                .map(|s| s.subject.clone())
-                .unwrap_or_else(|| issue.subject.clone());
-
-            let description = covers
-                .get(&issue.id)
-                .filter(|c| authorised(&c.author))
-                .map(|c| c.body.clone())
-                .unwrap_or_else(|| issue.body.clone());
-
-            let mut labels = issue.inline_labels.clone();
-            for set in &label_sets {
-                if set.issue_id == issue.id && authorised(&set.author) {
-                    labels.extend(set.labels.iter().cloned());
-                }
-            }
-            labels.sort();
-            labels.dedup();
-
-            let placement = placements.get(&issue.id).filter(|p| authorised(&p.author));
-            let rank = placement.map(|p| p.rank.clone()).unwrap_or_default();
-            let card = CardView {
-                id: NoteId::new(issue.id),
-                title,
-                description,
-                labels,
-                rank,
-            };
-
-            match placement {
-                Some(p) if col_ids.contains(&p.col.as_str()) => {
-                    by_col.entry(p.col.clone()).or_default().push(card);
-                }
-                _ => fallback.push((issue.created_at, card)),
-            }
-        }
-
-        let mut columns: Vec<ColumnView> = board
-            .columns
-            .iter()
-            .map(|def| {
-                let mut cards = by_col.remove(&def.id).unwrap_or_default();
-                cards.sort_by(|a, b| a.rank.cmp(&b.rank));
-                ColumnView {
-                    id: def.id.clone(),
-                    name: def.name.clone(),
-                    cards,
-                }
-            })
-            .collect();
-
-        // Unplaced cards fall into the first column, oldest first.
-        if let Some(first) = columns.first_mut() {
-            fallback.sort_by_key(|(created, _)| *created);
-            first
-                .cards
-                .extend(fallback.into_iter().map(|(_, card)| card));
-        }
-
-        views.push(BoardView {
-            id: board_id.clone(),
-            author: board.author,
-            title: board.title.clone(),
-            description: board.description.clone(),
-            columns,
-        });
-    }
-
-    // Stable output order: by board id.
-    views.sort_by(|a, b| a.id.cmp(&b.id));
-    views
+    reducer.finalize()
 }
 
 /// "Latest authorised wins" comparator: newer `created_at` wins, ties broken by
 /// author bytes so the result is deterministic.
 fn newer(a_at: u64, a_who: &[u8; 32], b_at: u64, b_who: &[u8; 32]) -> bool {
     (a_at, a_who) > (b_at, b_who)
+}
+
+// ---------------------------------------------------------------------------
+// ndb loading
+// ---------------------------------------------------------------------------
+
+/// Every kind headway cares about, for querying / subscribing.
+pub const HEADWAY_KINDS: [u32; 5] = [
+    KIND_BOARD,
+    KIND_ISSUE,
+    KIND_PLACEMENT,
+    KIND_LABEL,
+    KIND_COVER_NOTE,
+];
+
+/// A filter for every headway event authored by `author`.
+///
+/// Headway is single-author per board for now, so filtering by author captures
+/// the board, its cards and all metadata in one query. Collaborative boards will
+/// additionally need `#a`/`#e` filters to pull in other authors' events.
+pub fn headway_filter(author: &Pubkey) -> Filter {
+    Filter::new()
+        .authors([author.bytes()])
+        .kinds(HEADWAY_KINDS.iter().map(|k| *k as u64))
+        .limit(5000)
+        .build()
+}
+
+/// Fold `author`'s headway events out of `ndb` and reduce them into the board
+/// with the given `board_id`, if it exists.
+///
+/// The reduction runs inside the [`Ndb::fold`] index walk via [`BoardReducer`],
+/// so no intermediate event `Vec` is built. nostrdb doesn't replace addressable
+/// events, so the placement/board history is walked in full and the reducer
+/// resolves the effective state; `query_replaceable_filtered` can narrow the
+/// addressable kinds (board, placement) to their latest versions later.
+pub fn load_board(
+    ndb: &Ndb,
+    txn: &Transaction,
+    author: &Pubkey,
+    board_id: &str,
+) -> Option<BoardView> {
+    let filters = [headway_filter(author)];
+    let reducer = ndb
+        .fold(txn, &filters, BoardReducer::default(), |mut acc, note| {
+            if let Some(event) = parse(&note) {
+                acc.ingest(event);
+            }
+            acc
+        })
+        .ok()?;
+
+    reducer
+        .finalize()
+        .into_iter()
+        .find(|v| v.id == board_id && &v.author == author.bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -921,5 +1005,64 @@ mod tests {
         let hi = "n".to_string();
         let mid = rank_between(Some(&lo), Some(&hi));
         assert!(mid > lo && mid < hi, "{mid:?} not between {lo:?},{hi:?}");
+    }
+
+    /// End-to-end through a real nostrdb: build + sign events, ingest them, then
+    /// fold them back out with [`load_board`] and check the board reconstructs
+    /// (including a subject rename overriding the issue's original subject).
+    #[test]
+    fn load_board_roundtrips_through_ndb() {
+        use nostrdb::{Config, IngestMetadata, Ndb, Transaction};
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let ndb = Ndb::new(dir.path().to_str().unwrap(), &Config::new()).unwrap();
+        let kp = FullKeypair::generate();
+        let addr = board_address(&kp.pubkey, "headway");
+
+        let ingest = |b: NoteBuilder| -> NoteId {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            let id = NoteId::new(*note.id());
+            let json = enostr::ClientMessage::event(&note)
+                .unwrap()
+                .to_json()
+                .unwrap();
+            ndb.process_event_with(&json, IngestMetadata::new().client(true))
+                .unwrap();
+            id
+        };
+
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+        ingest(build_board("headway", "Headway", "", &cols));
+        let a = ingest(build_issue(&addr, "Card A", ""));
+        let b = ingest(build_issue(&addr, "Card B", ""));
+        ingest(build_placement("headway", &addr, &a, "todo", "g"));
+        ingest(build_placement("headway", &addr, &b, "done", "m"));
+        ingest(build_subject_edit(&a, "Card A (renamed)"));
+
+        // ndb ingests on a writer thread; poll until the board materialises.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let view = loop {
+            let txn = Transaction::new(&ndb).unwrap();
+            if let Some(view) = load_board(&ndb, &txn, &kp.pubkey, "headway")
+                && view.columns[0].cards.len() == 1
+                && view.columns[1].cards.len() == 1
+            {
+                break view;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "board did not materialise in ndb"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        assert_eq!(view.columns.len(), 2);
+        assert_eq!(view.columns[0].name, "Todo");
+        assert_eq!(view.columns[0].cards[0].title, "Card A (renamed)");
+        assert_eq!(view.columns[1].cards[0].title, "Card B");
     }
 }
