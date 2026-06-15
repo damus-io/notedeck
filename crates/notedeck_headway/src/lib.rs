@@ -1,5 +1,5 @@
-use enostr::NoteId;
-use nostrdb::Transaction;
+use enostr::{NoteId, Pubkey};
+use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::tokens::{
     PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS,
     STROKE_MEDIUM, STROKE_THIN,
@@ -17,21 +17,33 @@ const COLUMN_WIDTH: f32 = 280.0;
 
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
-/// The board is backed by nostr events in the local nostrdb: a board is loaded
-/// each frame with [`store::load_board`] and reduced into a [`BoardView`], and
-/// every edit is turned into a signed event that is ingested locally (see
-/// [`store`]). There is deliberately no relay publishing yet.
+/// The board is backed by nostr events in the local nostrdb: a [`BoardView`] is
+/// reduced from the account's events (see [`store::load_board`]) and cached,
+/// then re-folded only when an ndb subscription reports the event set changed —
+/// not every frame. Every edit is turned into a signed event that is ingested
+/// locally (see [`store`]). There is deliberately no relay publishing yet.
 pub struct Headway {
     /// Which board this instance manages (single board for now).
     board_id: String,
     /// Transient, per-board UI state.
     state: BoardUiState,
+    /// The last reduced board, cached so we don't re-fold the whole event
+    /// history every frame. Refreshed only when [`needs_reload`](Self::needs_reload)
+    /// is set. `None` means "no such board" (or not loaded yet).
+    view: Option<BoardView>,
+    /// Live nostrdb subscription to this account's headway events; polling it is
+    /// how we learn the board changed (including our own async ingests landing).
+    sub: Option<Subscription>,
+    /// The account `sub`/`view` belong to, so we resubscribe on account switch.
+    sub_author: Option<Pubkey>,
+    /// Set when the cache is stale and must be re-folded this frame.
+    needs_reload: bool,
     /// Whether we've already auto-seeded a board this session, so we don't try
     /// to seed twice while the first seed is still materialising.
     seeded: bool,
-    /// Countdown of follow-up reloads after an async ingest, so a just-written
-    /// event surfaces without waiting for the next user interaction.
-    refresh_frames: u8,
+    /// Countdown of follow-up repaints after an async ingest, so we keep waking
+    /// up to poll the subscription until the writer thread goes quiet.
+    repaint_frames: u8,
 }
 
 impl Default for Headway {
@@ -39,8 +51,13 @@ impl Default for Headway {
         Self {
             board_id: store::BOARD_ID.to_string(),
             state: BoardUiState::default(),
+            view: None,
+            sub: None,
+            sub_author: None,
+            // Fold once on the first frame.
+            needs_reload: true,
             seeded: false,
-            refresh_frames: 0,
+            repaint_frames: 0,
         }
     }
 }
@@ -87,16 +104,34 @@ impl Headway {
         Self::default()
     }
 
-    /// Schedule several follow-up reloads so a just-ingested event (ingest is
-    /// async, on a writer thread) shows up promptly.
-    fn bump_refresh(&mut self) {
-        self.refresh_frames = 8;
+    /// Ensure we hold a live subscription to `author`'s headway events,
+    /// resubscribing (and invalidating the cache) when the selected account
+    /// changes. A fresh subscription only reports *future* ingests, so the
+    /// caller still does a one-off fold to pick up what's already there.
+    fn sync_subscription(&mut self, ndb: &mut Ndb, author: &Pubkey) {
+        if self.sub.is_some() && self.sub_author.as_ref() == Some(author) {
+            return;
+        }
+        if let Some(old) = self.sub.take() {
+            let _ = ndb.unsubscribe(old);
+        }
+        self.sub = ndb.subscribe(&[event::headway_filter(author)]).ok();
+        self.sub_author = Some(*author);
+        // New account (or first run): cache belongs to nobody yet.
+        self.view = None;
+        self.needs_reload = true;
     }
 
-    /// Burn down the refresh countdown, requesting a delayed repaint each step.
-    fn pump_refresh(&mut self, ui: &egui::Ui) {
-        if self.refresh_frames > 0 {
-            self.refresh_frames -= 1;
+    /// Schedule a short burst of repaints so a just-ingested event (ingest is
+    /// async, on a writer thread) gets polled and surfaced promptly.
+    fn wake(&mut self) {
+        self.repaint_frames = 8;
+    }
+
+    /// Burn down the repaint countdown, requesting a delayed repaint each step.
+    fn pump_repaint(&mut self, ui: &egui::Ui) {
+        if self.repaint_frames > 0 {
+            self.repaint_frames -= 1;
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(60));
         }
@@ -115,19 +150,37 @@ impl App for Headway {
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
 
-        // Load the current board view out of the local nostrdb.
-        let view = Transaction::new(ctx.ndb)
-            .ok()
-            .and_then(|txn| store::load_board(ctx.ndb, &txn, &author, &self.board_id));
+        // Keep a live subscription to this account's events, then drain it: any
+        // new notes (including our own ingests landing) mean the board changed,
+        // so flag a reload and keep waking up while the writer thread streams in.
+        self.sync_subscription(ctx.ndb, &author);
+        match self.sub {
+            Some(sub) if !ctx.ndb.poll_for_notes(sub, 64).is_empty() => {
+                self.needs_reload = true;
+                self.wake();
+            }
+            // No subscription (subscribe failed): degrade to reloading each frame.
+            None => self.needs_reload = true,
+            _ => {}
+        }
 
-        let Some(view) = view else {
+        // Re-fold the board only when something actually changed (first load,
+        // account switch, or a subscription hit) rather than every frame.
+        if self.needs_reload {
+            self.view = Transaction::new(ctx.ndb)
+                .ok()
+                .and_then(|txn| store::load_board(ctx.ndb, &txn, &author, &self.board_id));
+            self.needs_reload = false;
+        }
+
+        if self.view.is_none() {
             // No board yet: auto-seed one for an account that can sign.
             match &signer {
                 Some(secret) => {
                     if !self.seeded {
                         store::seed_default_board(ctx.ndb, &author, secret, &self.board_id);
                         self.seeded = true;
-                        self.bump_refresh();
+                        self.wake();
                     }
                     empty_state(ui, &theme, "Setting up your board…");
                 }
@@ -137,72 +190,83 @@ impl App for Headway {
                     "Sign in with a key to create your Headway board.",
                 ),
             }
-            self.pump_refresh(ui);
+            self.pump_repaint(ui);
             return AppResponse::default();
-        };
-
-        let state = &mut self.state;
-        let mut action: Option<BoardAction> = None;
-        // The card a click landed on this frame; opens the detail view below.
-        let mut clicked: Option<NoteId> = None;
-
-        egui::Frame::new()
-            .inner_margin(egui::Margin::same(SPACING_LG as i8))
-            .show(ui, |ui| {
-                // Board header: title plus a muted summary of its contents.
-                ui.heading(&view.title);
-                ui.add_space(SPACING_XS);
-                let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{total} card{} · {} columns",
-                        if total == 1 { "" } else { "s" },
-                        view.columns.len()
-                    ))
-                    .color(theme.text_muted),
-                );
-                ui.add_space(SPACING_SM);
-                ui.separator();
-                ui.add_space(SPACING_MD);
-
-                egui::ScrollArea::horizontal()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = SPACING_MD;
-                            for col_idx in 0..view.columns.len() {
-                                column_ui(
-                                    ui,
-                                    &theme,
-                                    &view,
-                                    state,
-                                    col_idx,
-                                    &mut action,
-                                    &mut clicked,
-                                );
-                            }
-                            add_column_ui(ui, &theme, state, &mut action);
-                        });
-                    });
-            });
-
-        if let Some(card_id) = clicked {
-            state.selected = Some(card_id);
         }
 
-        // Detail view floats above the board; emits edit actions like the rest.
-        card_detail_ui(ui, &theme, &view, state, &mut action);
+        // Render against the cached view; `view` and `state` are disjoint fields.
+        let action = board_ui(
+            ui,
+            &theme,
+            self.view.as_ref().expect("view present"),
+            &mut self.state,
+        );
 
         // Apply the collected action by ingesting events locally. Mutations need
         // a signing key; a watch-only account simply can't edit.
         if let (Some(action), Some(secret)) = (action, &signer) {
-            store::apply(ctx.ndb, &self.board_id, &view, &author, secret, action);
-            self.bump_refresh();
+            let view = self.view.as_ref().expect("view present");
+            store::apply(ctx.ndb, &self.board_id, view, &author, secret, action);
+            self.wake();
         }
 
-        self.pump_refresh(ui);
+        self.pump_repaint(ui);
         AppResponse::default()
     }
+}
+
+/// Render the board (header, columns, the add-column affordance and the floating
+/// card detail sheet) and return the edit the user made this frame, if any.
+fn board_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let mut action: Option<BoardAction> = None;
+    // The card a click landed on this frame; opens the detail view below.
+    let mut clicked: Option<NoteId> = None;
+
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(SPACING_LG as i8))
+        .show(ui, |ui| {
+            // Board header: title plus a muted summary of its contents.
+            ui.heading(&view.title);
+            ui.add_space(SPACING_XS);
+            let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
+            ui.label(
+                egui::RichText::new(format!(
+                    "{total} card{} · {} columns",
+                    if total == 1 { "" } else { "s" },
+                    view.columns.len()
+                ))
+                .color(theme.text_muted),
+            );
+            ui.add_space(SPACING_SM);
+            ui.separator();
+            ui.add_space(SPACING_MD);
+
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = SPACING_MD;
+                        for col_idx in 0..view.columns.len() {
+                            column_ui(ui, theme, view, state, col_idx, &mut action, &mut clicked);
+                        }
+                        add_column_ui(ui, theme, state, &mut action);
+                    });
+                });
+        });
+
+    if let Some(card_id) = clicked {
+        state.selected = Some(card_id);
+    }
+
+    // Detail view floats above the board; emits edit actions like the rest.
+    card_detail_ui(ui, theme, view, state, &mut action);
+
+    action
 }
 
 /// A centered, muted message shown when there's no board to render yet.
@@ -439,6 +503,29 @@ fn label_chip(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) {
         .show(ui, |ui| {
             ui.label(egui::RichText::new(label).small().color(theme.text_primary));
         });
+}
+
+/// A label pill with a trailing ✕ to remove it. Returns true if ✕ was clicked.
+fn removable_label_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) -> bool {
+    let color = label_color(label);
+    let mut remove = false;
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.30))
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(label).small().color(theme.text_primary));
+                if ui
+                    .add(egui::Button::new(egui::RichText::new("✕").small()).frame(false))
+                    .on_hover_text(format!("Remove {label}"))
+                    .clicked()
+                {
+                    remove = true;
+                }
+            });
+        });
+    remove
 }
 
 /// A small rounded pill showing a count (e.g. cards in a column).
@@ -681,15 +768,20 @@ fn card_detail_ui(
         state.new_label.clear();
     }
 
-    let card_title = card.title.clone();
-    let card_desc = card.description.clone();
-    let card_labels = card.labels.clone();
+    let ctx = DetailCtx {
+        card_id,
+        current_col,
+        title: card.title.clone(),
+        desc: card.description.clone(),
+        labels: card.labels.clone(),
+        // Owned copy so the body can render the status pill and column chips.
+        columns: view.columns.iter().map(|c| c.name.clone()).collect(),
+    };
 
     let screen = ui.ctx().screen_rect();
-    // Narrow viewports get a near-full-width sheet; wider ones a centered modal.
-    let compact = notedeck::ui::is_narrow(ui.ctx());
     let pad = SPACING_LG;
-    let sheet_width = if compact {
+    // Narrow viewports get a near-full-width sheet; wider ones a centered modal.
+    let sheet_width = if notedeck::ui::is_narrow(ui.ctx()) {
         screen.width() - 2.0 * pad
     } else {
         460.0
@@ -697,16 +789,62 @@ fn card_detail_ui(
     // Cap the body so a long card stays on-screen and scrolls instead.
     let max_body_height = screen.height() - 6.0 * pad;
 
-    let mut close = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
-    let mut delete = false;
-    let mut move_to: Option<usize> = None;
-    let mut add_label = false;
-
-    // Owned copy so the body can render the status pill and column chips.
-    let columns: Vec<String> = view.columns.iter().map(|c| c.name.clone()).collect();
+    let mut outcome = DetailOutcome {
+        close: ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)),
+        ..Default::default()
+    };
 
     // Dimmed scrim behind the sheet; a tap outside closes the detail.
-    let scrim = egui::Area::new(egui::Id::new("headway-detail-scrim"))
+    if detail_scrim_ui(ui, screen) {
+        outcome.close = true;
+    }
+
+    egui::Area::new(egui::Id::new(("headway-detail", card_id)))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ui.ctx(), |ui| {
+            detail_sheet_frame(theme, pad).show(ui, |ui| {
+                ui.set_width(sheet_width);
+                detail_header_ui(ui, theme, &ctx, &mut outcome);
+                ui.add_space(SPACING_SM);
+                egui::ScrollArea::vertical()
+                    .max_height(max_body_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                    });
+            });
+        });
+
+    resolve_detail_outcome(state, action, view, &ctx, outcome);
+}
+
+/// The card data the detail sheet needs, copied out of the (immutable)
+/// `BoardView` so the sheet body doesn't borrow it while we also mutate `state`.
+struct DetailCtx {
+    card_id: NoteId,
+    current_col: usize,
+    title: String,
+    desc: String,
+    labels: Vec<String>,
+    columns: Vec<String>,
+}
+
+/// High-level user intents collected while rendering the detail sheet, resolved
+/// into a single [`BoardAction`] after the UI closures return.
+#[derive(Default)]
+struct DetailOutcome {
+    close: bool,
+    delete: bool,
+    move_to: Option<usize>,
+    add_label: bool,
+    remove_label: Option<String>,
+}
+
+/// The dimmed full-screen backdrop behind the sheet. Returns true if it was
+/// clicked (a tap outside the sheet, which closes the detail).
+fn detail_scrim_ui(ui: &mut egui::Ui, screen: egui::Rect) -> bool {
+    egui::Area::new(egui::Id::new("headway-detail-scrim"))
         .order(egui::Order::Middle)
         .fixed_pos(screen.min)
         .show(ui.ctx(), |ui| {
@@ -714,167 +852,208 @@ fn card_detail_ui(
             ui.painter()
                 .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
             resp
+        })
+        .inner
+        .clicked()
+}
+
+/// The elevated card surface the sheet's contents are drawn into. A builder, not
+/// a renderer, so it intentionally has no `_ui` suffix.
+fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme.surface_primary)
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .corner_radius(egui::CornerRadius::same(RADIUS_LG as u8))
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 8],
+            blur: 24,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(120),
+        })
+        .inner_margin(egui::Margin::same(pad as i8))
+}
+
+/// Sheet header: a "Card" label, the current-status pill, and a close button
+/// (the sheet has no draggable window chrome to dismiss it).
+fn detail_header_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    outcome: &mut DetailOutcome,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Card").color(theme.text_muted));
+        status_pill(ui, theme, &ctx.columns[ctx.current_col]);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
+                .fill(egui::Color32::TRANSPARENT)
+                .frame(false);
+            if ui.add(x).clicked() {
+                outcome.close = true;
+            }
         });
-    if scrim.inner.clicked() {
-        close = true;
+    });
+}
+
+/// The scrollable sheet body: title, description, labels, status and delete.
+/// Title/description commit directly on focus loss; the rest is collected into
+/// `outcome` and resolved by the caller.
+fn detail_body_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+    outcome: &mut DetailOutcome,
+) {
+    let title_resp = ui.add(
+        egui::TextEdit::singleline(&mut state.detail_title)
+            .font(egui::TextStyle::Heading)
+            .desired_width(f32::INFINITY)
+            .hint_text("Title"),
+    );
+    if title_resp.lost_focus() {
+        let title = state.detail_title.trim().to_string();
+        if !title.is_empty() && title != ctx.title {
+            *action = Some(BoardAction::EditTitle {
+                card: ctx.card_id,
+                title,
+            });
+        }
     }
 
-    egui::Area::new(egui::Id::new(("headway-detail", card_id)))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::new()
-                .fill(theme.surface_primary)
-                .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
-                .corner_radius(egui::CornerRadius::same(RADIUS_LG as u8))
-                .shadow(egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 24,
-                    spread: 0,
-                    color: egui::Color32::from_black_alpha(120),
-                })
-                .inner_margin(egui::Margin::same(pad as i8))
-                .show(ui, |ui| {
-                    ui.set_width(sheet_width);
-
-                    // Header: a label plus an explicit close button, since the
-                    // sheet has no draggable window chrome to dismiss it.
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Card").color(theme.text_muted));
-                        status_pill(ui, theme, &columns[current_col]);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let x =
-                                egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
-                                    .fill(egui::Color32::TRANSPARENT)
-                                    .frame(false);
-                            if ui.add(x).clicked() {
-                                close = true;
-                            }
-                        });
-                    });
-                    ui.add_space(SPACING_SM);
-
-                    egui::ScrollArea::vertical()
-                        .max_height(max_body_height)
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            let title_resp = ui.add(
-                                egui::TextEdit::singleline(&mut state.detail_title)
-                                    .font(egui::TextStyle::Heading)
-                                    .desired_width(f32::INFINITY)
-                                    .hint_text("Title"),
-                            );
-                            if title_resp.lost_focus() {
-                                let title = state.detail_title.trim().to_string();
-                                if !title.is_empty() && title != card_title {
-                                    *action = Some(BoardAction::EditTitle {
-                                        card: card_id,
-                                        title,
-                                    });
-                                }
-                            }
-
-                            ui.add_space(SPACING_MD);
-                            section_label(ui, theme, "Description");
-                            ui.add_space(SPACING_XS);
-                            let desc_resp = ui.add(
-                                egui::TextEdit::multiline(&mut state.detail_desc)
-                                    .desired_rows(4)
-                                    .desired_width(f32::INFINITY)
-                                    .hint_text("Add more detail…"),
-                            );
-                            if desc_resp.lost_focus() && state.detail_desc != card_desc {
-                                *action = Some(BoardAction::EditDescription {
-                                    card: card_id,
-                                    description: state.detail_desc.clone(),
-                                });
-                            }
-
-                            ui.add_space(SPACING_MD);
-                            section_label(ui, theme, "Labels");
-                            ui.add_space(SPACING_XS);
-                            ui.horizontal_wrapped(|ui| {
-                                for label in &card_labels {
-                                    label_chip(ui, theme, label);
-                                }
-                            });
-                            ui.add_space(SPACING_XS);
-                            ui.horizontal(|ui| {
-                                let field = ui.add(
-                                    egui::TextEdit::singleline(&mut state.new_label)
-                                        .desired_width(140.0)
-                                        .hint_text("Add label…"),
-                                );
-                                let submit = field.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                if ui.button("Add").clicked() || submit {
-                                    add_label = true;
-                                }
-                            });
-
-                            // Move the card between lanes without dragging.
-                            if columns.len() > 1 {
-                                ui.add_space(SPACING_MD);
-                                section_label(ui, theme, "Status");
-                                ui.add_space(SPACING_XS);
-                                ui.horizontal_wrapped(|ui| {
-                                    for (i, name) in columns.iter().enumerate() {
-                                        let selected = i == current_col;
-                                        if ui.selectable_label(selected, name).clicked()
-                                            && !selected
-                                        {
-                                            move_to = Some(i);
-                                        }
-                                    }
-                                });
-                            }
-
-                            ui.add_space(SPACING_MD);
-                            ui.separator();
-                            ui.add_space(SPACING_SM);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    if ui
-                                        .button(
-                                            egui::RichText::new("Delete card")
-                                                .color(theme.destructive),
-                                        )
-                                        .clicked()
-                                    {
-                                        delete = true;
-                                    }
-                                },
-                            );
-                        });
-                });
+    ui.add_space(SPACING_MD);
+    section_label(ui, theme, "Description");
+    ui.add_space(SPACING_XS);
+    let desc_resp = ui.add(
+        egui::TextEdit::multiline(&mut state.detail_desc)
+            .desired_rows(4)
+            .desired_width(f32::INFINITY)
+            .hint_text("Add more detail…"),
+    );
+    if desc_resp.lost_focus() && state.detail_desc != ctx.desc {
+        *action = Some(BoardAction::EditDescription {
+            card: ctx.card_id,
+            description: state.detail_desc.clone(),
         });
+    }
 
-    // Resolve the high-level outcomes after the sheet closure. Explicit buttons
-    // win over an incidental focus-loss edit collected above.
-    if delete {
-        *action = Some(BoardAction::DeleteCard { card: card_id });
+    ui.add_space(SPACING_MD);
+    detail_labels_section_ui(ui, theme, ctx, state, outcome);
+
+    // Move the card between lanes without dragging.
+    if ctx.columns.len() > 1 {
+        ui.add_space(SPACING_MD);
+        detail_status_section_ui(ui, theme, ctx, outcome);
+    }
+
+    ui.add_space(SPACING_MD);
+    ui.separator();
+    ui.add_space(SPACING_SM);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if ui
+            .button(egui::RichText::new("Delete card").color(theme.destructive))
+            .clicked()
+        {
+            outcome.delete = true;
+        }
+    });
+}
+
+/// Labels section: removable chips plus an "add label" field.
+fn detail_labels_section_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    outcome: &mut DetailOutcome,
+) {
+    section_label(ui, theme, "Labels");
+    ui.add_space(SPACING_XS);
+    ui.horizontal_wrapped(|ui| {
+        for label in &ctx.labels {
+            if removable_label_chip_ui(ui, theme, label) {
+                outcome.remove_label = Some(label.clone());
+            }
+        }
+    });
+    ui.add_space(SPACING_XS);
+    ui.horizontal(|ui| {
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut state.new_label)
+                .desired_width(140.0)
+                .hint_text("Add label…"),
+        );
+        let submit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if ui.button("Add").clicked() || submit {
+            outcome.add_label = true;
+        }
+    });
+}
+
+/// Status section: a chip per column to move the card without dragging.
+fn detail_status_section_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    outcome: &mut DetailOutcome,
+) {
+    section_label(ui, theme, "Status");
+    ui.add_space(SPACING_XS);
+    ui.horizontal_wrapped(|ui| {
+        for (i, name) in ctx.columns.iter().enumerate() {
+            let selected = i == ctx.current_col;
+            if ui.selectable_label(selected, name).clicked() && !selected {
+                outcome.move_to = Some(i);
+            }
+        }
+    });
+}
+
+/// Resolve the collected [`DetailOutcome`] into a single [`BoardAction`].
+/// Explicit buttons (delete/move/label) win over an incidental focus-loss edit.
+fn resolve_detail_outcome(
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+    view: &BoardView,
+    ctx: &DetailCtx,
+    outcome: DetailOutcome,
+) {
+    if outcome.delete {
+        *action = Some(BoardAction::DeleteCard { card: ctx.card_id });
         state.selected = None;
         state.detail_for = None;
-    } else if let Some(to) = move_to {
+    } else if let Some(to) = outcome.move_to {
         let to_row = view.columns[to].cards.len();
         *action = Some(BoardAction::MoveCard {
-            card: card_id,
+            card: ctx.card_id,
             to_col: to,
             to_row,
         });
-    } else if add_label {
+    } else if let Some(target) = outcome.remove_label {
+        // Republish the set without the removed label (labels are latest-wins).
+        let labels: Vec<String> = ctx
+            .labels
+            .iter()
+            .filter(|l| **l != target)
+            .cloned()
+            .collect();
+        *action = Some(BoardAction::SetLabels {
+            card: ctx.card_id,
+            labels,
+        });
+    } else if outcome.add_label {
         let new = state.new_label.trim().to_string();
-        if !new.is_empty() && !card_labels.contains(&new) {
-            let mut labels = card_labels.clone();
+        if !new.is_empty() && !ctx.labels.contains(&new) {
+            let mut labels = ctx.labels.clone();
             labels.push(new);
             *action = Some(BoardAction::SetLabels {
-                card: card_id,
+                card: ctx.card_id,
                 labels,
             });
         }
         state.new_label.clear();
-    } else if close {
+    } else if outcome.close {
         state.selected = None;
         state.detail_for = None;
     }

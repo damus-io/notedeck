@@ -4,7 +4,7 @@ use std::path::Path;
 
 /// Tracks which host and cwd groups are collapsed in the session list.
 ///
-/// Used by navigation (Ctrl+Tab, Ctrl+1-9, Ctrl+N/P) to skip sessions
+/// Used by navigation (Ctrl+J/K, Ctrl+1-9, Ctrl+N/P) to skip sessions
 /// hidden inside collapsed folders.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct CollapseState {

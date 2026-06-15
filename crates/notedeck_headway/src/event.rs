@@ -14,8 +14,9 @@
 //! | description edit  | `1624`  | gitworkshop cover note                     |
 //! | placement         | `30620` | addressable; `col` + fractional `rank`     |
 //!
-//! Effective state is resolved as **latest-authorised-wins** (placement,
-//! subject, cover note) or an **additive union** (labels), where "authorised"
+//! Effective state is resolved as **latest-authorised-wins** for every overlay
+//! (placement, subject, cover note, and labels — each label event carries the
+//! card's complete set, so the newest one wins), where "authorised"
 //! means the event's author is the card author or the board's author
 //! (maintainer). This mirrors the ngitstack/gitworkshop "Shared Issue / Patch /
 //! PR Metadata" spec.
@@ -499,7 +500,10 @@ struct BoardReducer {
     placements: HashMap<[u8; 32], PlacementEvent>,
     subjects: HashMap<[u8; 32], SubjectEdit>,
     covers: HashMap<[u8; 32], CoverNote>,
-    label_sets: Vec<LabelSet>,
+    /// Latest label set per issue. Each label event is the *complete* set for
+    /// the card (snapshot semantics), so the newest authorised one wins — this
+    /// is what makes label *removal* expressible: republish the set without it.
+    labels: HashMap<[u8; 32], LabelSet>,
 }
 
 impl BoardReducer {
@@ -546,7 +550,15 @@ impl BoardReducer {
                     self.covers.insert(c.issue_id, c);
                 }
             }
-            HeadwayEvent::Labels(l) => self.label_sets.push(l),
+            HeadwayEvent::Labels(l) => {
+                if self
+                    .labels
+                    .get(&l.issue_id)
+                    .is_none_or(|cur| newer(l.created_at, &l.author, cur.created_at, &cur.author))
+                {
+                    self.labels.insert(l.issue_id, l);
+                }
+            }
         }
     }
 
@@ -582,12 +594,15 @@ impl BoardReducer {
                     .map(|c| c.body.clone())
                     .unwrap_or_else(|| issue.body.clone());
 
-                let mut labels = issue.inline_labels.clone();
-                for set in &self.label_sets {
-                    if set.issue_id == issue.id && authorised(&set.author) {
-                        labels.extend(set.labels.iter().cloned());
-                    }
-                }
+                // Labels resolve latest-authorised-wins: the newest authorised
+                // label event is the card's complete set, overriding the issue's
+                // inline labels. (Removal = republish the set without the label.)
+                let mut labels = self
+                    .labels
+                    .get(&issue.id)
+                    .filter(|s| authorised(&s.author))
+                    .map(|s| s.labels.clone())
+                    .unwrap_or_else(|| issue.inline_labels.clone());
                 labels.sort();
                 labels.dedup();
 
@@ -959,6 +974,44 @@ mod tests {
 
         let views = reduce(&events);
         assert_eq!(views[0].columns[0].cards[0].title, "Original");
+    }
+
+    /// Labels are snapshot/latest-wins, not an additive union: republishing the
+    /// set without a label removes it. The newer (whole) set must win.
+    #[test]
+    fn reduce_label_removal_replaces_the_set() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let i1 = note_id(&owner, build_issue(&addr, "Card", ""));
+
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Card", ""), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            parse_owned(
+                build_labels(&i1, &["bug".to_string(), "ux".to_string()]),
+                &owner,
+            ),
+        ];
+
+        // Republish the set without "bug" — a later event so it wins latest-wins.
+        let mut shrunk = match parse_owned(build_labels(&i1, &["ux".to_string()]), &owner) {
+            HeadwayEvent::Labels(l) => l,
+            _ => unreachable!(),
+        };
+        shrunk.created_at += 1;
+        events.push(HeadwayEvent::Labels(shrunk));
+
+        let views = reduce(&events);
+        // "bug" is gone; only "ux" remains (not a union of both).
+        assert_eq!(views[0].columns[0].cards[0].labels, vec!["ux".to_string()]);
     }
 
     #[test]

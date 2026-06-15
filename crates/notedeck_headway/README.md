@@ -137,7 +137,9 @@ republishes only this one event.
 
 ### Labels — kind `1985` (NIP-32, `#t` namespace)
 
-One `l` per label. Labels are an **additive union** (see below).
+One `l` per label. Each label event carries the card's **complete** label set, so
+the newest authorised one wins (see below) — removing a label means republishing
+the set without it.
 
 ```jsonc
 {
@@ -168,23 +170,24 @@ One `l` per label. Labels are an **additive union** (see below).
 ## Resolution
 
 The reducer (`event::BoardReducer`) resolves the effective state of each card
-from all its events using two rules:
+from all its events using one rule:
 
-- **Latest-authorised-wins** — placement (column + rank), title, and
-  description: the newest *authorised* event wins, ties broken deterministically
-  by author bytes.
-- **Additive union** — labels: every *authorised* label set is unioned (then
-  sorted + deduped). There is no "remove label" event yet, so labels are
-  currently add-only (retraction is future work).
+- **Latest-authorised-wins** — placement (column + rank), title, description,
+  **and labels**: the newest *authorised* event wins, ties broken
+  deterministically by author bytes. A label event carries the card's *complete*
+  set (a snapshot), so adding, removing or reordering labels is just a newer set
+  that supersedes the old one — there's no separate "remove" event.
 
 **Authority.** An overlay event counts only if its author is **the card's
 author or the board's author (maintainer)**. The same rule gates every overlay
 (placement, title, labels, cover note), so an unauthorised edit simply never
 wins — no separate ACL machinery.
 
-This latest-authorised / union scheme mirrors the gitworkshop "Shared Issue /
+This latest-authorised-wins scheme mirrors the gitworkshop "Shared Issue /
 Patch / PR Metadata" spec and is what makes multi-author boards work without a
-central server.
+central server. (Labels use *snapshot* latest-wins rather than a per-label merge,
+so a concurrent relabel by two authors resolves to one author's set; per-label
+LWW is the upgrade path if collaborative labelling needs it.)
 
 ### Placement edge cases
 
@@ -211,9 +214,11 @@ rebalance (future work).
 - **Same-second ordering.** `created_at` is whole seconds, so two edits within
   the same second resolve by the author-bytes tiebreak rather than true
   recency. A logical clock / monotonic counter tag would make ordering airtight.
-- **Label removal** isn't supported (union is add-only).
-- **No relay sync** yet (local-only), and reloads after an edit use a short
-  reload countdown rather than an ndb subscription.
+- **Concurrent label edits** resolve by snapshot latest-wins (one author's set
+  supersedes the other's), not a per-label merge.
+- **No relay sync** yet (local-only). The board is cached and re-folded only
+  when an ndb subscription reports a change, so editing doesn't re-walk the
+  event history every frame.
 
 ## Source map
 
@@ -222,8 +227,9 @@ rebalance (future work).
 - `src/store.rs` — local-only persistence: sign + ingest (`ingest`), board
   seeding (`seed_default_board`), and `apply` which turns a `BoardAction` into
   events. **The single future home of relay publishing.**
-- `src/lib.rs` — the `Headway` Notedeck `App`: loads a `BoardView` each frame,
-  renders it, and collects `BoardAction`s.
+- `src/lib.rs` — the `Headway` Notedeck `App`: subscribes to the account's
+  events, caches the reduced `BoardView` (re-folding only on a subscription
+  hit), renders it, and collects `BoardAction`s.
 
 Tracking issue: [damus-io/notedeck#1479][issue].
 
