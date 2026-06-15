@@ -1,6 +1,8 @@
 use notedeck::{AppContext, AppResponse};
 
 use notedeck_columns::Damus;
+
+#[cfg(feature = "dave")]
 use notedeck_dave::Dave;
 
 #[cfg(feature = "clndash")]
@@ -23,6 +25,7 @@ use notedeck_nostrverse::NostrverseApp;
 
 #[allow(clippy::large_enum_variant)]
 pub enum NotedeckApp {
+    #[cfg(feature = "dave")]
     Dave(Box<Dave>),
     Columns(Box<Damus>),
 
@@ -50,6 +53,7 @@ impl notedeck::App for NotedeckApp {
     #[profiling::function]
     fn update(&mut self, ctx: &mut AppContext, egui_ctx: &egui::Context) {
         match self {
+            #[cfg(feature = "dave")]
             NotedeckApp::Dave(dave) => dave.update(ctx, egui_ctx),
             NotedeckApp::Columns(columns) => columns.update(ctx, egui_ctx),
 
@@ -78,6 +82,7 @@ impl notedeck::App for NotedeckApp {
     #[profiling::function]
     fn render(&mut self, ctx: &mut AppContext, ui: &mut egui::Ui) -> AppResponse {
         match self {
+            #[cfg(feature = "dave")]
             NotedeckApp::Dave(dave) => dave.render(ctx, ui),
             NotedeckApp::Columns(columns) => columns.render(ctx, ui),
 
@@ -105,6 +110,7 @@ impl notedeck::App for NotedeckApp {
 
     fn tab_notifications(&self, ctx: &AppContext<'_>) -> notedeck::TabNotifications {
         match self {
+            #[cfg(feature = "dave")]
             NotedeckApp::Dave(dave) => dave.tab_notifications(ctx),
             NotedeckApp::Columns(columns) => columns.tab_notifications(ctx),
 

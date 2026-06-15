@@ -25,6 +25,8 @@ use notedeck::{
     TabNotifications, UserAccount, WalletType,
 };
 use notedeck_columns::{timeline::TimelineKind, Damus};
+
+#[cfg(feature = "dave")]
 use notedeck_dave::{Dave, DaveAvatar};
 
 #[cfg(feature = "messages")]
@@ -178,6 +180,7 @@ impl Chrome {
         stop_debug_mode(notedeck_options);
 
         let app_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx);
+        #[cfg(feature = "dave")]
         let dave = Dave::new(
             cc.wgpu_render_state.as_ref(),
             app_ref.app_ctx.ndb.clone(),
@@ -217,6 +220,7 @@ impl Chrome {
             chrome.add_app(NotedeckApp::Columns(Box::new(columns)));
         }
 
+        #[cfg(feature = "dave")]
         chrome.add_app(NotedeckApp::Dave(Box::new(dave)));
 
         #[cfg(feature = "messages")]
@@ -375,6 +379,7 @@ impl Chrome {
         }
     }
 
+    #[cfg(feature = "dave")]
     fn get_dave_app(&mut self) -> Option<&mut Dave> {
         for app in &mut self.apps {
             if let NotedeckApp::Dave(dave) = app {
@@ -384,6 +389,7 @@ impl Chrome {
         None
     }
 
+    #[cfg(feature = "dave")]
     fn switch_to_dave(&mut self) {
         for (i, app) in self.apps.iter().enumerate() {
             if let NotedeckApp::Dave(_) = app {
@@ -1019,6 +1025,7 @@ fn headway_button(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
+#[cfg(feature = "dave")]
 fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui, rect: Rect) -> egui::Response {
     if let Some(avatar) = avatar {
         avatar.render(rect, ui)
@@ -1032,6 +1039,7 @@ fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui, rect: Rect) -
 /// chrome tab strip.
 fn app_label(loc: &mut Localization, app: &NotedeckApp) -> String {
     match app {
+        #[cfg(feature = "dave")]
         NotedeckApp::Dave(_) => tr!(loc, "Dave", "Button to go to the Dave app"),
         NotedeckApp::Columns(_) => tr!(loc, "Columns", "Button to go to the Columns app"),
 
@@ -1064,6 +1072,7 @@ fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
             ui.add(app_images::columns_image().max_width(size).max_height(size));
         }
 
+        #[cfg(feature = "dave")]
         NotedeckApp::Dave(dave) => {
             let (rect, _) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
             dave_button(dave.avatar_mut(), ui, rect);
@@ -1289,6 +1298,7 @@ fn chrome_handle_app_action(
 
         AppAction::Note(note_action) => {
             // Intercept SummarizeThread — route to Dave instead of Columns
+            #[cfg(feature = "dave")]
             if let notedeck::NoteAction::Context(ref context) = note_action {
                 if let notedeck::NoteContextSelection::SummarizeThread(note_id) = context.action {
                     chrome.switch_to_dave();
@@ -1629,6 +1639,7 @@ fn topdown_sidebar(
                                 ui.add(app_images::columns_image());
                             }
 
+                            #[cfg(feature = "dave")]
                             NotedeckApp::Dave(dave) => {
                                 dave_button(
                                     dave.avatar_mut(),
