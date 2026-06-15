@@ -1,5 +1,5 @@
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{Key, Queryable};
 use notedeck::{App, Notedeck};
 use notedeck_headway::Headway;
 
@@ -107,15 +107,11 @@ fn snapshot_headway_detail() {
     }
 }
 
-/// Drive the add-column flow through the real UI: open the composer, type a
-/// title, commit, and confirm a column was added and the composer closed.
-/// This exercises the full button → BoardAction → model → re-render path that
-/// the static snapshots don't touch.
-#[test]
-#[ignore] // requires lavapipe — run via scripts/snapshot-test
-fn add_column_flow() {
+/// Build a harness at `size` with the seeded board, fonts installed and one
+/// frame run. Use a width wide enough to keep every column plus the
+/// "+ Add column" affordance on-screen when driving clicks.
+fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
     let tmpdir = tempfile::TempDir::new().unwrap();
-
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
     let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
@@ -127,13 +123,35 @@ fn add_column_flow() {
         fonts_installed: false,
     };
 
-    // Wide enough that all four seeded columns plus the "+ Add column"
-    // affordance are on-screen, so the simulated clicks land on them.
     let mut harness = Harness::builder()
-        .with_size(egui::Vec2::new(1600.0, 800.0))
+        .with_size(size)
         .renderer(notedeck::software_renderer())
         .build_state(render_headway, state);
     harness.run();
+    harness
+}
+
+/// Open the first column's "⋯" overflow menu (there's one per column, so query
+/// all and take the leftmost) and run a frame so the popup is present.
+fn open_first_column_menu(harness: &mut Harness<'static, HeadwayTestState>) {
+    harness
+        .get_all_by_label("⋯")
+        .next()
+        .expect("at least one column menu")
+        .simulate_click();
+    harness.run();
+}
+
+/// Drive the add-column flow through the real UI: open the composer, type a
+/// title, commit, and confirm a column was added and the composer closed.
+/// This exercises the full button → BoardAction → model → re-render path that
+/// the static snapshots don't touch.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn add_column_flow() {
+    // Wide enough that all four seeded columns plus the "+ Add column"
+    // affordance are on-screen, so the simulated clicks land on them.
+    let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
 
     // Precondition: the seeded board has four columns.
     harness.get_by_label("7 cards · 4 columns");
@@ -159,4 +177,82 @@ fn add_column_flow() {
         harness.query_by_label("Add").is_none(),
         "composer should close after adding a column"
     );
+}
+
+/// Rename a column via its "⋯" menu: open menu → Rename → replace the inline
+/// field's text → commit with Enter, and confirm the new title replaced the old.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn rename_column_flow() {
+    let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
+
+    harness.get_by_label("Backlog"); // precondition
+
+    open_first_column_menu(&mut harness);
+    harness.get_by_label("Rename").simulate_click();
+    harness.run();
+
+    // The header is now an inline field seeded with "Backlog". Select all
+    // (Command+A maps to egui's select-all), replace it, and commit with Enter.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .key_combination(&[Key::Command, Key::A]);
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("Inbox");
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .key_press(Key::Enter);
+    harness.run_steps(2);
+
+    harness.get_by_label("Inbox");
+    assert!(
+        harness.query_by_label("Backlog").is_none(),
+        "old column title should be gone after rename"
+    );
+}
+
+/// Reorder a column via its "⋯" menu: Move right shifts Backlog past Todo.
+/// Asserted by comparing the columns' on-screen x positions.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn reorder_column_flow() {
+    let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
+
+    let backlog_x = harness.get_by_label("Backlog").bounding_box().unwrap().x0;
+    let todo_x = harness.get_by_label("Todo").bounding_box().unwrap().x0;
+    assert!(backlog_x < todo_x, "precondition: Backlog is left of Todo");
+
+    open_first_column_menu(&mut harness);
+    harness.get_by_label("Move right").simulate_click();
+    harness.run_steps(2);
+
+    let backlog_x = harness.get_by_label("Backlog").bounding_box().unwrap().x0;
+    let todo_x = harness.get_by_label("Todo").bounding_box().unwrap().x0;
+    assert!(
+        backlog_x > todo_x,
+        "Backlog should sit right of Todo after Move right"
+    );
+}
+
+/// Delete a column via its "⋯" menu. Backlog holds three cards, so removing it
+/// drops the board to three columns and four cards.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn delete_column_flow() {
+    let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
+
+    harness.get_by_label("7 cards · 4 columns"); // precondition
+
+    open_first_column_menu(&mut harness);
+    harness.get_by_label("Delete column").simulate_click();
+    harness.run_steps(2);
+
+    assert!(
+        harness.query_by_label("Backlog").is_none(),
+        "deleted column should be gone"
+    );
+    harness.get_by_label("4 cards · 3 columns");
 }
