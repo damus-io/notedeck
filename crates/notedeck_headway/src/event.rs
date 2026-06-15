@@ -45,6 +45,13 @@ pub const KIND_PLACEMENT: u32 = 30620;
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
 
+/// Sentinel placement column id meaning the card has been removed from the
+/// board. A card whose latest *authorised* placement points here is dropped by
+/// the reducer. This is a reversible "tombstone" (re-place the card to restore
+/// it) rather than a NIP-09 deletion, which keeps removal under the same
+/// authority/latest-wins rules as every other placement.
+pub const COL_DELETED: &str = "__deleted__";
+
 /// A column definition as carried on the board event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnDef {
@@ -161,7 +168,10 @@ pub fn build_subject_edit<'a>(issue: &NoteId, subject: &str) -> NoteBuilder<'a> 
 }
 
 /// Build a label event for `issue` (NIP-32, `#t` namespace), one `l` per label.
-pub fn build_labels<'a>(issue: &NoteId, labels: &[String]) -> NoteBuilder<'a> {
+///
+/// Generic over the label string type so both `&[&str]` (e.g. seed literals) and
+/// `&[String]` callers work without an intermediate allocation.
+pub fn build_labels<'a, S: AsRef<str>>(issue: &NoteId, labels: &[S]) -> NoteBuilder<'a> {
     let mut b = base(KIND_LABEL, "")
         .start_tag()
         .tag_str("e")
@@ -171,7 +181,11 @@ pub fn build_labels<'a>(issue: &NoteId, labels: &[String]) -> NoteBuilder<'a> {
         .tag_str(NS_TAG);
 
     for label in labels {
-        b = b.start_tag().tag_str("l").tag_str(label).tag_str(NS_TAG);
+        b = b
+            .start_tag()
+            .tag_str("l")
+            .tag_str(label.as_ref())
+            .tag_str(NS_TAG);
     }
 
     b
@@ -581,6 +595,12 @@ impl BoardReducer {
                     .placements
                     .get(&issue.id)
                     .filter(|p| authorised(&p.author));
+
+                // A tombstone placement removes the card from the board.
+                if placement.is_some_and(|p| p.col == COL_DELETED) {
+                    continue;
+                }
+
                 let rank = placement.map(|p| p.rank.clone()).unwrap_or_default();
                 let card = CardView {
                     id: NoteId::new(issue.id),
@@ -939,6 +959,46 @@ mod tests {
 
         let views = reduce(&events);
         assert_eq!(views[0].columns[0].cards[0].title, "Original");
+    }
+
+    #[test]
+    fn reduce_skips_deleted_cards() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let keep = note_id(&owner, build_issue(&addr, "Keep", ""));
+        let gone = note_id(&owner, build_issue(&addr, "Gone", ""));
+
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Keep", ""), &owner),
+            parse_owned(build_issue(&addr, "Gone", ""), &owner),
+            parse_owned(build_placement("b1", &addr, &keep, "todo", "m"), &owner),
+            parse_owned(build_placement("b1", &addr, &gone, "todo", "t"), &owner),
+        ];
+
+        // Tombstone the second card with a later placement.
+        let mut tombstone = match parse_owned(
+            build_placement("b1", &addr, &gone, COL_DELETED, "t"),
+            &owner,
+        ) {
+            HeadwayEvent::Placement(p) => p,
+            _ => unreachable!(),
+        };
+        // Ensure the tombstone wins the latest-wins race deterministically.
+        tombstone.created_at += 1;
+        events.push(HeadwayEvent::Placement(tombstone));
+
+        let views = reduce(&events);
+        let cards = &views[0].columns[0].cards;
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].title, "Keep");
     }
 
     #[test]
