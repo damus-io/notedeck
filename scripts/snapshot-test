@@ -27,7 +27,9 @@ else
 fi
 
 update=""
-filter="snapshot"
+# Empty filter runs every #[ignore]d test in the targeted binaries (all of
+# which are lavapipe tests). Pass a name to narrow to specific tests.
+filter=""
 only=""
 
 for arg in "$@"; do
@@ -67,5 +69,5 @@ for suite in "${suites[@]}"; do
     if [[ -n "$only" && "$only" != "$crate" ]]; then
         continue
     fi
-    cargo test --release -p "$crate" $cargo_args -- --ignored "$filter"
+    cargo test --release -p "$crate" $cargo_args -- --ignored ${filter:+"$filter"}
 done
