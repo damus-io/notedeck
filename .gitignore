@@ -27,5 +27,5 @@ local.properties
 keystore.properties
 .beads
 *.keystore
-# local nostrdb created by running the headway app from the repo root
-/headway
+# scratch dir for local nostrdb instances, e.g. --dbpath tmp/headway2
+/tmp
