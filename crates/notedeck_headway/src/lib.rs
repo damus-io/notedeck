@@ -31,6 +31,18 @@ struct BoardUiState {
     compose_text: String,
     /// The card whose detail view is open, if any.
     selected: Option<u64>,
+    /// The column index whose title is being renamed inline, if any.
+    renaming: Option<usize>,
+    /// Buffer backing the column-rename text field.
+    rename_text: String,
+    /// Set when a rename has just started, to grab focus once.
+    focus_rename: bool,
+    /// Whether the "add column" composer is open.
+    adding_column: bool,
+    /// Buffer backing the new-column text field.
+    column_text: String,
+    /// Set when the add-column composer has just opened, to grab focus once.
+    focus_column: bool,
 }
 
 /// Drag-and-drop payload: the stable id of the card being dragged.
@@ -48,6 +60,14 @@ enum BoardAction {
     },
     /// Append a new card with `title` to `column`.
     Add { col: usize, title: String },
+    /// Append a new column with `title`.
+    AddColumn { title: String },
+    /// Rename the column at `col`.
+    RenameColumn { col: usize, title: String },
+    /// Remove the column at `col` (and its cards).
+    RemoveColumn { col: usize },
+    /// Move the column at `from` to index `to`.
+    MoveColumn { from: usize, to: usize },
 }
 
 impl Headway {
@@ -102,6 +122,7 @@ impl App for Headway {
                                     &mut clicked,
                                 );
                             }
+                            add_column_ui(ui, &theme, state, &mut action);
                         });
                     });
             });
@@ -115,6 +136,10 @@ impl App for Headway {
                         column.cards.push(Card::new(id, title));
                     }
                 }
+                BoardAction::AddColumn { title } => board.add_column(title),
+                BoardAction::RenameColumn { col, title } => board.rename_column(col, title),
+                BoardAction::RemoveColumn { col } => board.remove_column(col),
+                BoardAction::MoveColumn { from, to } => board.move_column(from, to),
             }
         }
 
@@ -157,10 +182,18 @@ fn column_ui(
             // inherited by this frame — without this the cards would stack
             // left-to-right instead of vertically.
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                // Header: title + a pill badge with the card count.
+                // Header: title (editable inline) + count badge + a "⋯" menu
+                // for renaming, reordering and deleting the column.
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&column.title).strong());
-                    count_badge(ui, theme, column.cards.len());
+                    if state.renaming == Some(col_idx) {
+                        column_rename_field(ui, state, col_idx, action);
+                    } else {
+                        ui.label(egui::RichText::new(&column.title).strong());
+                        count_badge(ui, theme, column.cards.len());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            column_menu(ui, theme, state, board, col_idx, action)
+                        });
+                    }
                 });
                 ui.add_space(SPACING_SM);
 
@@ -377,6 +410,148 @@ fn add_card_ui(
             state.compose_text.clear();
         }
     }
+}
+
+/// The inline text field shown in a column header while renaming. Commits on
+/// Enter or focus loss, cancels on Escape.
+fn column_rename_field(
+    ui: &mut egui::Ui,
+    state: &mut BoardUiState,
+    col_idx: usize,
+    action: &mut Option<BoardAction>,
+) {
+    let resp = ui.add(
+        egui::TextEdit::singleline(&mut state.rename_text)
+            .desired_width(f32::INFINITY)
+            .hint_text("Column title…"),
+    );
+    if state.focus_rename {
+        resp.request_focus();
+        state.focus_rename = false;
+    }
+
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.renaming = None;
+    } else if resp.lost_focus() {
+        let title = state.rename_text.trim().to_string();
+        if !title.is_empty() {
+            *action = Some(BoardAction::RenameColumn {
+                col: col_idx,
+                title,
+            });
+        }
+        state.renaming = None;
+    }
+}
+
+/// The "⋯" overflow menu in a column header: rename, reorder, delete.
+fn column_menu(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    state: &mut BoardUiState,
+    board: &Board,
+    col_idx: usize,
+    action: &mut Option<BoardAction>,
+) {
+    let n = board.columns.len();
+    ui.menu_button("⋯", |ui| {
+        if ui.button("Rename").clicked() {
+            state.rename_text = board.columns[col_idx].title.clone();
+            state.renaming = Some(col_idx);
+            state.focus_rename = true;
+            ui.close_menu();
+        }
+        if ui
+            .add_enabled(col_idx > 0, egui::Button::new("Move left"))
+            .clicked()
+        {
+            *action = Some(BoardAction::MoveColumn {
+                from: col_idx,
+                to: col_idx - 1,
+            });
+            ui.close_menu();
+        }
+        if ui
+            .add_enabled(col_idx + 1 < n, egui::Button::new("Move right"))
+            .clicked()
+        {
+            *action = Some(BoardAction::MoveColumn {
+                from: col_idx,
+                to: col_idx + 1,
+            });
+            ui.close_menu();
+        }
+        ui.separator();
+        if ui
+            .button(egui::RichText::new("Delete column").color(theme.destructive))
+            .clicked()
+        {
+            *action = Some(BoardAction::RemoveColumn { col: col_idx });
+            ui.close_menu();
+        }
+    });
+}
+
+/// The "add a column" affordance at the right end of the board: a ghost column
+/// that expands into a title composer when clicked.
+fn add_column_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+) {
+    egui::Frame::new()
+        .fill(theme.surface_secondary)
+        .corner_radius(egui::CornerRadius::same(RADIUS_LG as u8))
+        .inner_margin(egui::Margin::same(SPACING_SM as i8))
+        .show(ui, |ui| {
+            ui.set_width(COLUMN_WIDTH);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                if state.adding_column {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut state.column_text)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Column title…"),
+                    );
+                    if state.focus_column {
+                        resp.request_focus();
+                        state.focus_column = false;
+                    }
+                    let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+                    ui.add_space(SPACING_SM);
+                    ui.horizontal(|ui| {
+                        let add = ui.button("Add").clicked() || submit;
+                        let cancel = ui.button("Cancel").clicked()
+                            || ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if add {
+                            let title = state.column_text.trim().to_string();
+                            if !title.is_empty() {
+                                *action = Some(BoardAction::AddColumn { title });
+                            }
+                            state.column_text.clear();
+                            state.adding_column = false;
+                        } else if cancel {
+                            state.column_text.clear();
+                            state.adding_column = false;
+                        }
+                    });
+                } else {
+                    let add = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("+ Add column").color(theme.text_muted),
+                        )
+                        .fill(egui::Color32::TRANSPARENT)
+                        .frame(false),
+                    );
+                    if add.clicked() {
+                        state.adding_column = true;
+                        state.column_text.clear();
+                        state.focus_column = true;
+                    }
+                }
+            });
+        });
 }
 
 /// The card detail editor, shown as a responsive modal sheet while a card is

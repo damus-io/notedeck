@@ -106,3 +106,57 @@ fn snapshot_headway_detail() {
         harness.snapshot(name);
     }
 }
+
+/// Drive the add-column flow through the real UI: open the composer, type a
+/// title, commit, and confirm a column was added and the composer closed.
+/// This exercises the full button → BoardAction → model → re-render path that
+/// the static snapshots don't touch.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn add_column_flow() {
+    let tmpdir = tempfile::TempDir::new().unwrap();
+
+    let ctx = egui::Context::default();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+
+    let state = HeadwayTestState {
+        notedeck,
+        headway: Headway::new(),
+        _tmpdir: tmpdir,
+        fonts_installed: false,
+    };
+
+    // Wide enough that all four seeded columns plus the "+ Add column"
+    // affordance are on-screen, so the simulated clicks land on them.
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(1600.0, 800.0))
+        .renderer(notedeck::software_renderer())
+        .build_state(render_headway, state);
+    harness.run();
+
+    // Precondition: the seeded board has four columns.
+    harness.get_by_label("7 cards · 4 columns");
+
+    // Open the add-column composer.
+    harness.get_by_label("+ Add column").simulate_click();
+    harness.run();
+
+    // Type into the (auto-focused) composer field, then commit via "Add". The
+    // field has no label, so target it by its text-input role.
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("Ideas");
+    harness.run();
+    harness.get_by_label("Add").simulate_click();
+    harness.run_steps(2);
+
+    // A fifth column now exists (asserted via the always-visible board summary,
+    // since the new column itself renders off-screen to the right), and the
+    // composer has closed.
+    harness.get_by_label("7 cards · 5 columns");
+    assert!(
+        harness.query_by_label("Add").is_none(),
+        "composer should close after adding a column"
+    );
+}

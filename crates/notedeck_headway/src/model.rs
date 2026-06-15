@@ -95,6 +95,35 @@ impl Board {
         dest.insert(to_row, card);
     }
 
+    /// Append a new, empty column to the right of the board.
+    pub fn add_column(&mut self, title: impl Into<String>) {
+        self.columns.push(Column::new(title));
+    }
+
+    /// Rename the column at `idx`, if it exists.
+    pub fn rename_column(&mut self, idx: usize, title: impl Into<String>) {
+        if let Some(col) = self.columns.get_mut(idx) {
+            col.title = title.into();
+        }
+    }
+
+    /// Remove the column at `idx` (and all of its cards).
+    pub fn remove_column(&mut self, idx: usize) {
+        if idx < self.columns.len() {
+            self.columns.remove(idx);
+        }
+    }
+
+    /// Move the column at `from` to index `to`, shifting the others. Out-of-range
+    /// or no-op moves are ignored.
+    pub fn move_column(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.columns.len() || to >= self.columns.len() {
+            return;
+        }
+        let col = self.columns.remove(from);
+        self.columns.insert(to, col);
+    }
+
     /// Borrow a card mutably by id, searching every column.
     pub fn card_mut(&mut self, id: u64) -> Option<&mut Card> {
         self.columns
@@ -175,5 +204,76 @@ impl Default for Board {
             columns: vec![backlog, todo, in_progress, done],
             next_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn titles(board: &Board) -> Vec<String> {
+        board.columns.iter().map(|c| c.title.clone()).collect()
+    }
+
+    #[test]
+    fn add_column_appends() {
+        let mut board = Board::default();
+        let before = board.columns.len();
+        board.add_column("Review");
+        assert_eq!(board.columns.len(), before + 1);
+        assert_eq!(board.columns.last().unwrap().title, "Review");
+        assert!(board.columns.last().unwrap().cards.is_empty());
+    }
+
+    #[test]
+    fn rename_column_changes_title_and_ignores_out_of_range() {
+        let mut board = Board::default();
+        board.rename_column(0, "Inbox");
+        assert_eq!(board.columns[0].title, "Inbox");
+
+        // Out-of-range rename is a no-op, not a panic.
+        let before = titles(&board);
+        board.rename_column(99, "Nope");
+        assert_eq!(titles(&board), before);
+    }
+
+    #[test]
+    fn remove_column_removes_the_right_one_and_ignores_out_of_range() {
+        let mut board = Board::default();
+        board.remove_column(1); // drop "Todo"
+        assert_eq!(titles(&board), ["Backlog", "In Progress", "Done"]);
+
+        let before = titles(&board);
+        board.remove_column(99);
+        assert_eq!(titles(&board), before);
+    }
+
+    #[test]
+    fn move_column_reorders() {
+        let mut board = Board::default();
+        // Backlog (0) to index 2.
+        board.move_column(0, 2);
+        assert_eq!(titles(&board), ["Todo", "In Progress", "Backlog", "Done"]);
+    }
+
+    #[test]
+    fn move_column_carries_its_cards() {
+        let mut board = Board::default();
+        let backlog_cards = board.columns[0].cards.len();
+        assert!(backlog_cards > 0);
+        board.move_column(0, 3);
+        let moved = &board.columns[3];
+        assert_eq!(moved.title, "Backlog");
+        assert_eq!(moved.cards.len(), backlog_cards);
+    }
+
+    #[test]
+    fn move_column_ignores_noop_and_out_of_range() {
+        let mut board = Board::default();
+        let before = titles(&board);
+        board.move_column(1, 1); // no-op
+        board.move_column(0, 99); // out of range
+        board.move_column(99, 0); // out of range
+        assert_eq!(titles(&board), before);
     }
 }
