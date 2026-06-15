@@ -1405,6 +1405,10 @@ impl<'a> DaveUi<'a> {
                 *self.focus_requested = false;
             }
 
+            // Browser-style autofocus: grab focus when the chrome switches to
+            // Dave for the first time and nothing was previously focused.
+            notedeck_ui::autofocus(r, ui.ctx());
+
             // Unfocus text input when there's a pending permission request
             // UNLESS we're in tentative state (user needs to type message)
             let in_tentative_state = self.permission_message_state != PermissionMessageState::None;

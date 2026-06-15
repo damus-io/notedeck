@@ -659,6 +659,11 @@ impl Chrome {
                         if !is_compiled_as_mobile() {
                             if let Some(id) = self.app_focus.get(&(self.active as usize)) {
                                 ui.ctx().memory_mut(|m| m.request_focus(*id));
+                            } else {
+                                // First activation, nothing remembered: ask the
+                                // app's autofocus widget (if any) to grab focus,
+                                // like browser autofocus.
+                                notedeck_ui::request_autofocus(ui.ctx());
                             }
                         }
                         self.prev_active = self.active;
