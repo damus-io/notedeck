@@ -1,5 +1,5 @@
-use enostr::NoteId;
-use nostrdb::Transaction;
+use enostr::{NoteId, Pubkey};
+use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::tokens::{
     PALETTE, RADIUS_LG, RADIUS_MD, RADIUS_PILL, SPACING_LG, SPACING_MD, SPACING_SM, SPACING_XS,
     STROKE_MEDIUM, STROKE_THIN,
@@ -17,21 +17,33 @@ const COLUMN_WIDTH: f32 = 280.0;
 
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
-/// The board is backed by nostr events in the local nostrdb: a board is loaded
-/// each frame with [`store::load_board`] and reduced into a [`BoardView`], and
-/// every edit is turned into a signed event that is ingested locally (see
-/// [`store`]). There is deliberately no relay publishing yet.
+/// The board is backed by nostr events in the local nostrdb: a [`BoardView`] is
+/// reduced from the account's events (see [`store::load_board`]) and cached,
+/// then re-folded only when an ndb subscription reports the event set changed —
+/// not every frame. Every edit is turned into a signed event that is ingested
+/// locally (see [`store`]). There is deliberately no relay publishing yet.
 pub struct Headway {
     /// Which board this instance manages (single board for now).
     board_id: String,
     /// Transient, per-board UI state.
     state: BoardUiState,
+    /// The last reduced board, cached so we don't re-fold the whole event
+    /// history every frame. Refreshed only when [`needs_reload`](Self::needs_reload)
+    /// is set. `None` means "no such board" (or not loaded yet).
+    view: Option<BoardView>,
+    /// Live nostrdb subscription to this account's headway events; polling it is
+    /// how we learn the board changed (including our own async ingests landing).
+    sub: Option<Subscription>,
+    /// The account `sub`/`view` belong to, so we resubscribe on account switch.
+    sub_author: Option<Pubkey>,
+    /// Set when the cache is stale and must be re-folded this frame.
+    needs_reload: bool,
     /// Whether we've already auto-seeded a board this session, so we don't try
     /// to seed twice while the first seed is still materialising.
     seeded: bool,
-    /// Countdown of follow-up reloads after an async ingest, so a just-written
-    /// event surfaces without waiting for the next user interaction.
-    refresh_frames: u8,
+    /// Countdown of follow-up repaints after an async ingest, so we keep waking
+    /// up to poll the subscription until the writer thread goes quiet.
+    repaint_frames: u8,
 }
 
 impl Default for Headway {
@@ -39,8 +51,13 @@ impl Default for Headway {
         Self {
             board_id: store::BOARD_ID.to_string(),
             state: BoardUiState::default(),
+            view: None,
+            sub: None,
+            sub_author: None,
+            // Fold once on the first frame.
+            needs_reload: true,
             seeded: false,
-            refresh_frames: 0,
+            repaint_frames: 0,
         }
     }
 }
@@ -87,16 +104,34 @@ impl Headway {
         Self::default()
     }
 
-    /// Schedule several follow-up reloads so a just-ingested event (ingest is
-    /// async, on a writer thread) shows up promptly.
-    fn bump_refresh(&mut self) {
-        self.refresh_frames = 8;
+    /// Ensure we hold a live subscription to `author`'s headway events,
+    /// resubscribing (and invalidating the cache) when the selected account
+    /// changes. A fresh subscription only reports *future* ingests, so the
+    /// caller still does a one-off fold to pick up what's already there.
+    fn sync_subscription(&mut self, ndb: &mut Ndb, author: &Pubkey) {
+        if self.sub.is_some() && self.sub_author.as_ref() == Some(author) {
+            return;
+        }
+        if let Some(old) = self.sub.take() {
+            let _ = ndb.unsubscribe(old);
+        }
+        self.sub = ndb.subscribe(&[event::headway_filter(author)]).ok();
+        self.sub_author = Some(*author);
+        // New account (or first run): cache belongs to nobody yet.
+        self.view = None;
+        self.needs_reload = true;
     }
 
-    /// Burn down the refresh countdown, requesting a delayed repaint each step.
-    fn pump_refresh(&mut self, ui: &egui::Ui) {
-        if self.refresh_frames > 0 {
-            self.refresh_frames -= 1;
+    /// Schedule a short burst of repaints so a just-ingested event (ingest is
+    /// async, on a writer thread) gets polled and surfaced promptly.
+    fn wake(&mut self) {
+        self.repaint_frames = 8;
+    }
+
+    /// Burn down the repaint countdown, requesting a delayed repaint each step.
+    fn pump_repaint(&mut self, ui: &egui::Ui) {
+        if self.repaint_frames > 0 {
+            self.repaint_frames -= 1;
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(60));
         }
@@ -115,19 +150,37 @@ impl App for Headway {
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
 
-        // Load the current board view out of the local nostrdb.
-        let view = Transaction::new(ctx.ndb)
-            .ok()
-            .and_then(|txn| store::load_board(ctx.ndb, &txn, &author, &self.board_id));
+        // Keep a live subscription to this account's events, then drain it: any
+        // new notes (including our own ingests landing) mean the board changed,
+        // so flag a reload and keep waking up while the writer thread streams in.
+        self.sync_subscription(ctx.ndb, &author);
+        match self.sub {
+            Some(sub) if !ctx.ndb.poll_for_notes(sub, 64).is_empty() => {
+                self.needs_reload = true;
+                self.wake();
+            }
+            // No subscription (subscribe failed): degrade to reloading each frame.
+            None => self.needs_reload = true,
+            _ => {}
+        }
 
-        let Some(view) = view else {
+        // Re-fold the board only when something actually changed (first load,
+        // account switch, or a subscription hit) rather than every frame.
+        if self.needs_reload {
+            self.view = Transaction::new(ctx.ndb)
+                .ok()
+                .and_then(|txn| store::load_board(ctx.ndb, &txn, &author, &self.board_id));
+            self.needs_reload = false;
+        }
+
+        if self.view.is_none() {
             // No board yet: auto-seed one for an account that can sign.
             match &signer {
                 Some(secret) => {
                     if !self.seeded {
                         store::seed_default_board(ctx.ndb, &author, secret, &self.board_id);
                         self.seeded = true;
-                        self.bump_refresh();
+                        self.wake();
                     }
                     empty_state(ui, &theme, "Setting up your board…");
                 }
@@ -137,72 +190,83 @@ impl App for Headway {
                     "Sign in with a key to create your Headway board.",
                 ),
             }
-            self.pump_refresh(ui);
+            self.pump_repaint(ui);
             return AppResponse::default();
-        };
-
-        let state = &mut self.state;
-        let mut action: Option<BoardAction> = None;
-        // The card a click landed on this frame; opens the detail view below.
-        let mut clicked: Option<NoteId> = None;
-
-        egui::Frame::new()
-            .inner_margin(egui::Margin::same(SPACING_LG as i8))
-            .show(ui, |ui| {
-                // Board header: title plus a muted summary of its contents.
-                ui.heading(&view.title);
-                ui.add_space(SPACING_XS);
-                let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{total} card{} · {} columns",
-                        if total == 1 { "" } else { "s" },
-                        view.columns.len()
-                    ))
-                    .color(theme.text_muted),
-                );
-                ui.add_space(SPACING_SM);
-                ui.separator();
-                ui.add_space(SPACING_MD);
-
-                egui::ScrollArea::horizontal()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.horizontal_top(|ui| {
-                            ui.spacing_mut().item_spacing.x = SPACING_MD;
-                            for col_idx in 0..view.columns.len() {
-                                column_ui(
-                                    ui,
-                                    &theme,
-                                    &view,
-                                    state,
-                                    col_idx,
-                                    &mut action,
-                                    &mut clicked,
-                                );
-                            }
-                            add_column_ui(ui, &theme, state, &mut action);
-                        });
-                    });
-            });
-
-        if let Some(card_id) = clicked {
-            state.selected = Some(card_id);
         }
 
-        // Detail view floats above the board; emits edit actions like the rest.
-        card_detail_ui(ui, &theme, &view, state, &mut action);
+        // Render against the cached view; `view` and `state` are disjoint fields.
+        let action = board_ui(
+            ui,
+            &theme,
+            self.view.as_ref().expect("view present"),
+            &mut self.state,
+        );
 
         // Apply the collected action by ingesting events locally. Mutations need
         // a signing key; a watch-only account simply can't edit.
         if let (Some(action), Some(secret)) = (action, &signer) {
-            store::apply(ctx.ndb, &self.board_id, &view, &author, secret, action);
-            self.bump_refresh();
+            let view = self.view.as_ref().expect("view present");
+            store::apply(ctx.ndb, &self.board_id, view, &author, secret, action);
+            self.wake();
         }
 
-        self.pump_refresh(ui);
+        self.pump_repaint(ui);
         AppResponse::default()
     }
+}
+
+/// Render the board (header, columns, the add-column affordance and the floating
+/// card detail sheet) and return the edit the user made this frame, if any.
+fn board_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    state: &mut BoardUiState,
+) -> Option<BoardAction> {
+    let mut action: Option<BoardAction> = None;
+    // The card a click landed on this frame; opens the detail view below.
+    let mut clicked: Option<NoteId> = None;
+
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(SPACING_LG as i8))
+        .show(ui, |ui| {
+            // Board header: title plus a muted summary of its contents.
+            ui.heading(&view.title);
+            ui.add_space(SPACING_XS);
+            let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
+            ui.label(
+                egui::RichText::new(format!(
+                    "{total} card{} · {} columns",
+                    if total == 1 { "" } else { "s" },
+                    view.columns.len()
+                ))
+                .color(theme.text_muted),
+            );
+            ui.add_space(SPACING_SM);
+            ui.separator();
+            ui.add_space(SPACING_MD);
+
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = SPACING_MD;
+                        for col_idx in 0..view.columns.len() {
+                            column_ui(ui, theme, view, state, col_idx, &mut action, &mut clicked);
+                        }
+                        add_column_ui(ui, theme, state, &mut action);
+                    });
+                });
+        });
+
+    if let Some(card_id) = clicked {
+        state.selected = Some(card_id);
+    }
+
+    // Detail view floats above the board; emits edit actions like the rest.
+    card_detail_ui(ui, theme, view, state, &mut action);
+
+    action
 }
 
 /// A centered, muted message shown when there's no board to render yet.

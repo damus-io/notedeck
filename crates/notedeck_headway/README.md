@@ -216,8 +216,9 @@ rebalance (future work).
   recency. A logical clock / monotonic counter tag would make ordering airtight.
 - **Concurrent label edits** resolve by snapshot latest-wins (one author's set
   supersedes the other's), not a per-label merge.
-- **No relay sync** yet (local-only), and reloads after an edit use a short
-  reload countdown rather than an ndb subscription.
+- **No relay sync** yet (local-only). The board is cached and re-folded only
+  when an ndb subscription reports a change, so editing doesn't re-walk the
+  event history every frame.
 
 ## Source map
 
@@ -226,8 +227,9 @@ rebalance (future work).
 - `src/store.rs` — local-only persistence: sign + ingest (`ingest`), board
   seeding (`seed_default_board`), and `apply` which turns a `BoardAction` into
   events. **The single future home of relay publishing.**
-- `src/lib.rs` — the `Headway` Notedeck `App`: loads a `BoardView` each frame,
-  renders it, and collects `BoardAction`s.
+- `src/lib.rs` — the `Headway` Notedeck `App`: subscribes to the account's
+  events, caches the reduced `BoardView` (re-folding only on a subscription
+  hit), renders it, and collects `BoardAction`s.
 
 Tracking issue: [damus-io/notedeck#1479][issue].
 
