@@ -9,7 +9,7 @@ use notedeck::{App, AppContext, AppResponse, ColorTheme};
 pub mod event;
 pub mod store;
 
-use event::{BoardView, CardView, ColumnView};
+use event::{BoardReducer, BoardView, CardView, ColumnView};
 use store::BoardAction;
 
 /// Width of a single kanban column.
@@ -17,12 +17,12 @@ const COLUMN_WIDTH: f32 = 280.0;
 
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
-/// The board is backed by nostr events in the local nostrdb: a [`BoardView`] is
-/// reduced from the account's events (see [`store::load_board`]) and cached by
-/// [`BoardSync`], then re-folded only when an ndb subscription reports the event
-/// set changed — not every frame. Every edit is turned into a signed event that
-/// is ingested locally (see [`store`]). There is deliberately no relay
-/// publishing yet.
+/// The board is backed by nostr events in the local nostrdb: [`BoardSync`] keeps
+/// a long-lived reducer over the account's events and the [`BoardView`] folded
+/// from them, folding only freshly-arrived notes in as an ndb subscription
+/// reports them — not re-walking the history every frame. Every edit is turned
+/// into a signed event that is ingested locally (see [`store`]). There is
+/// deliberately no relay publishing yet.
 pub struct Headway {
     /// Which board this instance manages (single board for now).
     board_id: String,
@@ -109,58 +109,78 @@ impl Headway {
     }
 }
 
-/// Subscription-backed cache of a reduced [`BoardView`].
+/// Subscription-backed, *online* reducer for one account's board.
 ///
-/// Holds a live nostrdb subscription to one account's headway events and the
-/// last board folded from them. [`poll`](Self::poll) re-folds only when
-/// something actually changed — a first load, an account switch, or the
-/// subscription reporting new notes — instead of walking the whole event
-/// history every frame. Deliberately free of any egui dependency so it can be
-/// unit-tested against a bare `Ndb`.
+/// Holds a live nostrdb subscription to the account's headway events **and a
+/// long-lived [`BoardReducer`]** that persists across frames. The first poll
+/// folds the whole history once to seed the reducer; every later poll feeds it
+/// only the freshly-arrived notes ([`event::reduce_delta`]) — an incremental
+/// step, not a re-walk of the history. The reducer is rebuilt from scratch only
+/// on a first load or an account switch.
+///
+/// This is correct because the fold is commutative and idempotent: applying a
+/// delta to an up-to-date reducer lands in the same state as a full re-fold.
+///
+/// Deliberately free of any egui dependency so it can be unit-tested against a
+/// bare `Ndb`.
 #[derive(Default)]
 struct BoardSync {
     /// The last reduced board. `None` means "no such board" (or not loaded yet).
     view: Option<BoardView>,
+    /// The accumulator, kept alive across polls so new notes fold in
+    /// incrementally. `None` until the first full fold (and again after an
+    /// account switch), which is the signal to re-fold from scratch.
+    reducer: Option<BoardReducer>,
     /// Live subscription to `sub_author`'s headway events; polling it is how we
     /// learn the board changed (including our own async ingests landing).
     sub: Option<Subscription>,
-    /// The account `sub`/`view` belong to, so we resubscribe on account switch.
+    /// The account `sub`/`reducer`/`view` belong to, so we resubscribe and
+    /// re-fold on an account switch.
     sub_author: Option<Pubkey>,
-    /// Set when the cache is stale and must be re-folded on the next poll.
-    needs_reload: bool,
+    /// Test-only count of full-history re-folds, used to assert that an ordinary
+    /// change folds in as a delta rather than re-walking the whole log.
+    #[cfg(test)]
+    full_reloads: u32,
 }
 
 impl BoardSync {
-    /// Ensure a live subscription to `author`, drain it, and re-fold `board_id`
-    /// if anything changed. Returns `true` if the board was re-folded this call
-    /// (a first load, account switch, or subscription hit) so the caller can
+    /// Ensure a live subscription to `author`, drain it, and update the cached
+    /// board. Returns `true` if the board was (re)reduced this call — a first
+    /// load, an account switch, or new notes folded in — so the caller can
     /// schedule follow-up repaints. The cached board is read via
     /// [`view`](Self::view).
     fn poll(&mut self, ndb: &mut Ndb, author: &Pubkey, board_id: &str) -> bool {
         self.sync_subscription(ndb, author);
 
-        // Future optimisation: feed only the polled `NoteKey`s into a long-lived
-        // `BoardReducer` (reduce_delta) instead of re-folding the whole history.
-        // The reducer is a commutative, idempotent fold, so an incremental step
-        // yields the same accumulator — it's safe, just not worth the machinery
-        // until a board is large enough for the full refold to matter.
-        match self.sub {
-            Some(sub) if !ndb.poll_for_notes(sub, 64).is_empty() => {
-                self.needs_reload = true;
-            }
-            // Subscribe failed: degrade to reloading each frame so edits still show.
-            None => self.needs_reload = true,
-            _ => {}
-        }
+        let Some(sub) = self.sub else {
+            // Subscribe failed: degrade to a full reload each frame so edits show.
+            self.reload(ndb, author, board_id);
+            return true;
+        };
 
-        if self.needs_reload {
-            self.view = Transaction::new(ndb)
-                .ok()
-                .and_then(|txn| store::load_board(ndb, &txn, author, board_id));
-            self.needs_reload = false;
+        let keys = ndb.poll_for_notes(sub, 64);
+
+        // First load (or just resubscribed): fold the whole history once to seed
+        // the long-lived reducer.
+        if self.reducer.is_none() {
+            self.reload(ndb, author, board_id);
             return true;
         }
-        false
+
+        // Nothing new since the last poll: the cached view stands, no re-fold.
+        if keys.is_empty() {
+            return false;
+        }
+
+        // Incremental: fold only the freshly-arrived notes into the live reducer
+        // and re-finalize (O(cards)). Commutative/idempotent, so this matches a
+        // full re-fold without walking the whole history.
+        if let Ok(txn) = Transaction::new(ndb) {
+            let reducer = self.reducer.as_mut().expect("reducer present");
+            event::reduce_delta(reducer, ndb, &txn, &keys);
+            self.view = event::pick_board(reducer, author, board_id);
+        }
+        true
     }
 
     /// The cached board, if one has been folded.
@@ -168,10 +188,26 @@ impl BoardSync {
         self.view.as_ref()
     }
 
+    /// Re-fold the whole event history into a fresh reducer (seeding or after an
+    /// account switch) and pick out our board.
+    fn reload(&mut self, ndb: &Ndb, author: &Pubkey, board_id: &str) {
+        let reducer = Transaction::new(ndb)
+            .ok()
+            .and_then(|txn| event::fold_board(ndb, &txn, author));
+        self.view = reducer
+            .as_ref()
+            .and_then(|r| event::pick_board(r, author, board_id));
+        self.reducer = reducer;
+        #[cfg(test)]
+        {
+            self.full_reloads += 1;
+        }
+    }
+
     /// Ensure we hold a live subscription to `author`'s headway events,
-    /// resubscribing (and invalidating the cache) when the selected account
-    /// changes. A fresh subscription only reports *future* ingests, so the
-    /// caller still does a one-off fold to pick up what's already there.
+    /// resubscribing (and dropping the cached reducer) when the selected account
+    /// changes. A fresh subscription only reports *future* ingests, so the next
+    /// poll does a one-off full fold to pick up what's already there.
     fn sync_subscription(&mut self, ndb: &mut Ndb, author: &Pubkey) {
         if self.sub.is_some() && self.sub_author.as_ref() == Some(author) {
             return;
@@ -181,9 +217,9 @@ impl BoardSync {
         }
         self.sub = ndb.subscribe(&[event::headway_filter(author)]).ok();
         self.sub_author = Some(*author);
-        // New account (or first run): cache belongs to nobody yet.
+        // New account (or first run): drop the cache so the next poll re-folds.
         self.view = None;
-        self.needs_reload = true;
+        self.reducer = None;
     }
 }
 
@@ -1255,6 +1291,45 @@ mod tests {
         assert!(
             !t.poll(),
             "cache re-folded with no new events — the per-frame fold is back"
+        );
+    }
+
+    /// A change after the initial load is absorbed incrementally: the live
+    /// reducer folds the delta, with no additional full-history re-fold. Guards
+    /// against a regression to reload-on-every-change.
+    #[test]
+    fn poll_folds_changes_as_a_delta() {
+        let mut t = TestSync::new();
+        t.poll();
+        t.seed();
+        t.wait(|v| v.columns[1].cards.len() == 2);
+        t.drain();
+
+        // Seeding does exactly one full fold; everything since is incremental.
+        assert_eq!(
+            t.sync.full_reloads, 1,
+            "seeding should fold the history once"
+        );
+
+        {
+            let view = t.sync.view().expect("board loaded");
+            store::apply(
+                &t.ndb,
+                store::BOARD_ID,
+                view,
+                &t.kp.pubkey,
+                &t.secret(),
+                store::BoardAction::AddCard {
+                    col: 1,
+                    title: "Delta card".to_string(),
+                },
+            );
+        }
+        t.wait(|v| v.columns[1].cards.len() == 3);
+
+        assert_eq!(
+            t.sync.full_reloads, 1,
+            "the edit triggered a full re-fold instead of a delta"
         );
     }
 }

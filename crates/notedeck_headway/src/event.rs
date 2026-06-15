@@ -27,7 +27,7 @@
 use std::collections::HashMap;
 
 use enostr::{NoteId, Pubkey};
-use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, Transaction};
+use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, NoteKey, Transaction};
 
 /// Headway board: addressable, `d` = board id, holds title/description and the
 /// ordered column list.
@@ -490,9 +490,13 @@ pub struct BoardView {
 /// Accumulates headway events into the maps needed to resolve effective board
 /// state, applying latest-authorised-wins as each event arrives. Keeping the
 /// reduction incremental lets it run *inside* an [`Ndb::fold`] over the index
-/// (see [`load_board`]) instead of collecting events into a `Vec` first.
+/// (see [`fold_board`]) and lets the app cache a live reducer and feed it only
+/// freshly-arrived notes (see [`reduce_delta`]) instead of re-folding the whole
+/// history. Both are sound because the fold is commutative and idempotent: each
+/// overlay is a latest-authorised-wins map keyed by id, so an event's effect
+/// doesn't depend on when (or how often) it's seen.
 #[derive(Default)]
-struct BoardReducer {
+pub struct BoardReducer {
     /// Latest board event per (author, board_id).
     boards: HashMap<(Vec<u8>, String), BoardEvent>,
     /// Issues by id (immutable, but a relay may hand us duplicates).
@@ -508,7 +512,7 @@ struct BoardReducer {
 
 impl BoardReducer {
     /// Fold a single event into the accumulator.
-    fn ingest(&mut self, event: HeadwayEvent) {
+    pub fn ingest(&mut self, event: HeadwayEvent) {
         match event {
             HeadwayEvent::Board(b) => {
                 let key = (b.author.to_vec(), b.id.clone());
@@ -563,7 +567,10 @@ impl BoardReducer {
     }
 
     /// Assemble the accumulated events into board views.
-    fn finalize(self) -> Vec<BoardView> {
+    /// Resolve the accumulated events into the boards they describe. Takes
+    /// `&self` so a cached reducer can be re-finalized after a delta without
+    /// being consumed.
+    pub fn finalize(&self) -> Vec<BoardView> {
         let mut views: Vec<BoardView> = Vec::new();
 
         for ((author, board_id), board) in &self.boards {
@@ -717,34 +724,61 @@ pub fn headway_filter(author: &Pubkey) -> Filter {
         .build()
 }
 
-/// Fold `author`'s headway events out of `ndb` and reduce them into the board
-/// with the given `board_id`, if it exists.
+/// Fold all of `author`'s headway events out of `ndb` into a fresh reducer.
 ///
 /// The reduction runs inside the [`Ndb::fold`] index walk via [`BoardReducer`],
 /// so no intermediate event `Vec` is built. nostrdb doesn't replace addressable
 /// events, so the placement/board history is walked in full and the reducer
 /// resolves the effective state; `query_replaceable_filtered` can narrow the
 /// addressable kinds (board, placement) to their latest versions later.
+///
+/// The caller can keep the returned reducer and feed later arrivals into it with
+/// [`reduce_delta`] rather than re-folding the whole history.
+pub fn fold_board(ndb: &Ndb, txn: &Transaction, author: &Pubkey) -> Option<BoardReducer> {
+    let filters = [headway_filter(author)];
+    ndb.fold(txn, &filters, BoardReducer::default(), |mut acc, note| {
+        if let Some(event) = parse(&note) {
+            acc.ingest(event);
+        }
+        acc
+    })
+    .ok()
+}
+
+/// Fold a batch of freshly-arrived notes (identified by `keys`) into an existing
+/// reducer. Sound because the fold is commutative and idempotent: applying a
+/// delta to an up-to-date reducer yields the same state as a full re-fold, so
+/// the app can subscribe-then-poll instead of walking the history every frame.
+/// Notes that aren't recognised headway events are skipped.
+pub fn reduce_delta(reducer: &mut BoardReducer, ndb: &Ndb, txn: &Transaction, keys: &[NoteKey]) {
+    for key in keys {
+        if let Ok(note) = ndb.get_note_by_key(txn, *key)
+            && let Some(event) = parse(&note)
+        {
+            reducer.ingest(event);
+        }
+    }
+}
+
+/// Pick the board with `board_id` authored by `author` out of a reducer's
+/// resolved boards, if it exists.
+pub fn pick_board(reducer: &BoardReducer, author: &Pubkey, board_id: &str) -> Option<BoardView> {
+    reducer
+        .finalize()
+        .into_iter()
+        .find(|v| v.id == board_id && &v.author == author.bytes())
+}
+
+/// Fold `author`'s headway events out of `ndb` and reduce them into the board
+/// with the given `board_id`, if it exists. A one-shot [`fold_board`] +
+/// [`pick_board`] for callers that don't keep the reducer around.
 pub fn load_board(
     ndb: &Ndb,
     txn: &Transaction,
     author: &Pubkey,
     board_id: &str,
 ) -> Option<BoardView> {
-    let filters = [headway_filter(author)];
-    let reducer = ndb
-        .fold(txn, &filters, BoardReducer::default(), |mut acc, note| {
-            if let Some(event) = parse(&note) {
-                acc.ingest(event);
-            }
-            acc
-        })
-        .ok()?;
-
-    reducer
-        .finalize()
-        .into_iter()
-        .find(|v| v.id == board_id && &v.author == author.bytes())
+    pick_board(&fold_board(ndb, txn, author)?, author, board_id)
 }
 
 // ---------------------------------------------------------------------------

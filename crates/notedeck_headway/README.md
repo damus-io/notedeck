@@ -216,20 +216,21 @@ rebalance (future work).
   recency. A logical clock / monotonic counter tag would make ordering airtight.
 - **Concurrent label edits** resolve by snapshot latest-wins (one author's set
   supersedes the other's), not a per-label merge.
-- **No relay sync** yet (local-only). The board is cached and re-folded only
-  when an ndb subscription reports a change, so editing doesn't re-walk the
-  event history every frame.
+- **No relay sync** yet (local-only). A long-lived reducer is cached and fed
+  only freshly-arrived notes as an ndb subscription reports them (an incremental
+  `reduce_delta`), so editing doesn't re-walk the event history every frame.
 
 ## Source map
 
 - `src/event.rs` — the pure schema: builders, parsers, the reducer
-  (`reduce` / `load_board` / `BoardReducer`), `rank_between`. No I/O.
+  (`BoardReducer` with full `fold_board` / incremental `reduce_delta` /
+  `pick_board`), `rank_between`. No I/O.
 - `src/store.rs` — local-only persistence: sign + ingest (`ingest`), board
   seeding (`seed_default_board`), and `apply` which turns a `BoardAction` into
   events. **The single future home of relay publishing.**
-- `src/lib.rs` — the `Headway` Notedeck `App`: subscribes to the account's
-  events, caches the reduced `BoardView` (re-folding only on a subscription
-  hit), renders it, and collects `BoardAction`s.
+- `src/lib.rs` — the `Headway` Notedeck `App`: `BoardSync` subscribes to the
+  account's events and keeps a live reducer, folding new notes in incrementally;
+  the app renders the cached `BoardView` and collects `BoardAction`s.
 
 Tracking issue: [damus-io/notedeck#1479][issue].
 
