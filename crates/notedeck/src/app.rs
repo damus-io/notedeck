@@ -116,6 +116,11 @@ pub struct Notedeck {
     i18n: Localization,
     sound: crate::SoundManager,
 
+    /// Embedded localhost nostr relay, when enabled. Held so it shuts down with
+    /// the app (its `Drop` stops the accept loop).
+    #[allow(dead_code)]
+    local_relay: Option<nostrdb_relay::RelayHandle>,
+
     #[cfg(target_os = "android")]
     android_app: Option<AndroidApp>,
 }
@@ -383,6 +388,25 @@ impl Notedeck {
             crate::SoundManager::new(s.sounds_enabled, s.sound_volume)
         };
 
+        // Embedded localhost relay for dogfooding tooling. On by default; tests
+        // never start it (no Tokio runtime, and it must not open a port).
+        let local_relay = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            None
+        } else {
+            parsed_args
+                .local_relay
+                .as_ref()
+                .and_then(|addr| match addr.parse() {
+                    Ok(socket_addr) => nostrdb_relay::spawn(ndb.clone(), socket_addr)
+                        .map_err(|err| error!("failed to start local relay on {addr}: {err}"))
+                        .ok(),
+                    Err(err) => {
+                        error!("invalid relay bind address '{addr}': {err}");
+                        None
+                    }
+                })
+        };
+
         Self {
             ndb,
             img_cache,
@@ -406,6 +430,7 @@ impl Notedeck {
             nip05_cache: Nip05Cache::new(),
             i18n,
             sound,
+            local_relay,
             #[cfg(target_os = "android")]
             android_app: None,
         }

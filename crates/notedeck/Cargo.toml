@@ -15,6 +15,7 @@ strum_macros = { workspace = true }
 dirs = { workspace = true }
 enostr = { workspace = true }
 nostr = { workspace = true }
+nostrdb_relay = { workspace = true }
 egui = { workspace = true }
 egui_extras = { workspace = true }
 eframe = { workspace = true }

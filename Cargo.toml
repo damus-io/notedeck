@@ -9,6 +9,7 @@ members = [
     "crates/notedeck_messages",
     "crates/notedeck_notebook",
     "crates/notedeck_headway",
+    "crates/nostrdb_relay",
     "crates/notedeck_nostrverse",
     "crates/notedeck_ui",
     "crates/notedeck_clndash",
@@ -82,6 +83,7 @@ notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 notedeck_headway = { path = "crates/notedeck_headway" }
+nostrdb_relay = { path = "crates/nostrdb_relay" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
 renderbud = { path = "crates/renderbud", features = ["egui"] }
 notedeck_ui = { path = "crates/notedeck_ui" }

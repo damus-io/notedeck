@@ -6,6 +6,9 @@ use enostr::{Keypair, Pubkey, SecretKey};
 use tracing::error;
 use unic_langid::{LanguageIdentifier, LanguageIdentifierError};
 
+/// Default bind address for the embedded localhost nostr relay.
+pub const DEFAULT_LOCAL_RELAY_ADDR: &str = "127.0.0.1:6677";
+
 pub struct Args {
     pub relays: Vec<String>,
     pub locale: Option<LanguageIdentifier>,
@@ -14,6 +17,10 @@ pub struct Args {
     pub dbpath: Option<String>,
     pub datapath: Option<String>,
     pub title: Option<String>,
+    /// Bind address for the embedded localhost nostr relay. Defaults to
+    /// `127.0.0.1:6677`; `--relay-bind <addr>` overrides it and
+    /// `--no-local-relay` disables the relay (`None`).
+    pub local_relay: Option<String>,
 }
 
 impl Args {
@@ -41,6 +48,7 @@ impl Args {
             datapath: None,
             locale: None,
             title: None,
+            local_relay: Some(DEFAULT_LOCAL_RELAY_ADDR.to_owned()),
         };
 
         let mut i = 0;
@@ -137,6 +145,15 @@ impl Args {
                     continue;
                 };
                 res.relays.push(relay.clone());
+            } else if arg == "--no-local-relay" {
+                res.local_relay = None;
+            } else if arg == "--relay-bind" {
+                i += 1;
+                let Some(addr) = args.get(i) else {
+                    error!("relay-bind argument missing?");
+                    continue;
+                };
+                res.local_relay = Some(addr.clone());
             } else if arg == "--no-keystore" {
                 res.options.set(NotedeckOptions::UseKeystore, false);
             } else if arg == "--all-apps-active" {

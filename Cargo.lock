@@ -4958,6 +4958,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostrdb_relay"
+version = "0.10.0-beta.4"
+dependencies = [
+ "futures-util",
+ "nostrdb",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+]
+
+[[package]]
 name = "notedeck"
 version = "0.10.0-beta.4"
 dependencies = [
@@ -5002,6 +5015,7 @@ dependencies = [
  "nostr 0.37.0",
  "nostr-relay-builder",
  "nostrdb",
+ "nostrdb_relay",
  "nwc",
  "once_cell",
  "poll-promise",
