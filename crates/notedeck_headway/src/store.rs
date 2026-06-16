@@ -11,8 +11,9 @@ use enostr::{NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 
 use crate::event::{
-    self, BoardView, COL_DELETED, CardView, ColumnDef, board_address, build_board,
-    build_cover_note, build_issue, build_labels, build_placement, build_subject_edit, rank_between,
+    self, BoardView, COL_DELETED, CardView, ColumnDef, board_address, build_archive_placement,
+    build_board, build_cover_note, build_issue, build_labels, build_placement, build_subject_edit,
+    rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -39,6 +40,12 @@ pub enum BoardAction {
     SetLabels { card: NoteId, labels: Vec<String> },
     /// Remove a card from the board (tombstone placement).
     DeleteCard { card: NoteId },
+    /// Archive a card: take it off the board but keep it recoverable, recording
+    /// the column it came from so a restore can put it back.
+    ArchiveCard { card: NoteId },
+    /// Restore an archived card to the column it was archived from (or the first
+    /// column if that column no longer exists).
+    RestoreCard { card: NoteId },
     /// Append a new column named `name`.
     AddColumn { name: String },
     /// Rename the column at `col`.
@@ -153,9 +160,11 @@ pub fn apply(
                 return;
             };
             let rank = rank_for_insert(&col.cards, Some(card), to_row);
+            let after = find_card(view, card).map_or(0, |c| c.placed_at);
             ingest(
                 ndb,
-                build_placement(board_id, &addr, &card, &col.id, &rank),
+                build_placement(board_id, &addr, &card, &col.id, &rank)
+                    .created_at(next_after(after)),
                 secret,
             );
         }
@@ -185,13 +194,48 @@ pub fn apply(
         BoardAction::DeleteCard { card } => {
             // build_placement needs a rank; reuse the card's current one (or a
             // midpoint) — the column is the tombstone sentinel either way.
-            let rank = find_card(view, card)
-                .map(|c| c.rank.clone())
-                .filter(|r| !r.is_empty())
-                .unwrap_or_else(|| "m".to_string());
+            let c = find_card(view, card);
+            let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
+            let after = c.map_or(0, |c| c.placed_at);
             ingest(
                 ndb,
-                build_placement(board_id, &addr, &card, COL_DELETED, &rank),
+                build_placement(board_id, &addr, &card, COL_DELETED, &rank)
+                    .created_at(next_after(after)),
+                secret,
+            );
+        }
+        BoardAction::ArchiveCard { card } => {
+            // Capture the card's current column so a restore can return it there.
+            let Some((from_col, c)) = find_card_col(view, card) else {
+                return;
+            };
+            let rank = non_empty_rank(&c.rank);
+            ingest(
+                ndb,
+                build_archive_placement(board_id, &addr, &card, from_col, &rank)
+                    .created_at(next_after(c.placed_at)),
+                secret,
+            );
+        }
+        BoardAction::RestoreCard { card } => {
+            let Some(entry) = view.archived.iter().find(|a| a.card.id == card) else {
+                return;
+            };
+            // Restore to the origin column, falling back to the first column if
+            // that column is gone (the reducer would reflow it there anyway).
+            let to_col = entry
+                .from
+                .as_deref()
+                .filter(|id| view.columns.iter().any(|c| c.id == *id))
+                .or_else(|| view.columns.first().map(|c| c.id.as_str()));
+            let Some(to_col) = to_col else {
+                return;
+            };
+            let rank = non_empty_rank(&entry.card.rank);
+            ingest(
+                ndb,
+                build_placement(board_id, &addr, &card, to_col, &rank)
+                    .created_at(next_after(entry.card.placed_at)),
                 secret,
             );
         }
@@ -250,6 +294,15 @@ fn republish_board(
     );
 }
 
+/// The `created_at` to stamp on a re-placement that must supersede a prior
+/// placement made at `prev`. Nostr timestamps are whole seconds, so a card
+/// moved/deleted/archived in the same second it was last placed would *tie* the
+/// reducer's latest-wins and silently no-op; stamp strictly past `prev` so the
+/// new placement always wins (mirrors [`republish_board`]).
+fn next_after(prev: u64) -> u64 {
+    now_secs().max(prev + 1)
+}
+
 /// Current wall-clock time in whole seconds since the Unix epoch (nostr's
 /// `created_at` unit). Falls back to 0 if the clock is before the epoch.
 fn now_secs() -> u64 {
@@ -274,6 +327,26 @@ fn find_card(view: &BoardView, card: NoteId) -> Option<&CardView> {
         .iter()
         .flat_map(|c| c.cards.iter())
         .find(|c| c.id == card)
+}
+
+/// Find a card and the id of the column it currently sits in.
+fn find_card_col(view: &BoardView, card: NoteId) -> Option<(&str, &CardView)> {
+    view.columns.iter().find_map(|col| {
+        col.cards
+            .iter()
+            .find(|c| c.id == card)
+            .map(|c| (col.id.as_str(), c))
+    })
+}
+
+/// A placement needs a rank; fall back to a midpoint when the card has none
+/// (e.g. it was sitting unplaced in the fallback column).
+fn non_empty_rank(rank: &str) -> String {
+    if rank.is_empty() {
+        "m".to_string()
+    } else {
+        rank.to_string()
+    }
 }
 
 /// Compute a fractional rank that lands a card at display index `to_row` in a
@@ -525,6 +598,35 @@ mod tests {
 
         let view = t.wait(|v| v.columns[0].cards.len() == 2);
         assert!(!view.columns[0].cards.iter().any(|c| c.id == card));
+    }
+
+    #[test]
+    fn archive_then_restore_round_trips_to_origin() {
+        let t = TestNdb::new();
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID);
+        // Pick a card out of "In Progress" (column 2), not the first column, so a
+        // restore that ignored the origin would land it somewhere else.
+        let view = t.wait(|v| v.columns[2].cards.len() == 1);
+        let card = view.columns[2].cards[0].id;
+
+        t.apply(&view, BoardAction::ArchiveCard { card });
+
+        // It leaves the columns and shows up in the archived list, with origin.
+        let view = t.wait(|v| !v.archived.is_empty());
+        assert!(
+            view.columns
+                .iter()
+                .all(|c| c.cards.iter().all(|c| c.id != card))
+        );
+        assert_eq!(view.archived.len(), 1);
+        assert_eq!(view.archived[0].card.id, card);
+        assert_eq!(view.archived[0].from.as_deref(), Some("in-progress"));
+
+        t.apply(&view, BoardAction::RestoreCard { card });
+
+        // Restored back into the exact column it came from, and unarchived.
+        let view = t.wait(|v| v.archived.is_empty() && v.columns[2].cards.len() == 1);
+        assert_eq!(view.columns[2].cards[0].id, card);
     }
 
     #[test]

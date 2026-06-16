@@ -9,7 +9,7 @@ use notedeck::{App, AppContext, AppResponse, ColorTheme};
 pub mod event;
 pub mod store;
 
-use event::{BoardReducer, BoardView, CardView, ColumnView};
+use event::{ArchivedCard, BoardReducer, BoardView, CardView, ColumnView};
 use store::BoardAction;
 
 /// Width of a single kanban column.
@@ -82,6 +82,8 @@ struct BoardUiState {
     column_text: String,
     /// Set when the add-column composer has just opened, to grab focus once.
     focus_column: bool,
+    /// Whether the archived-cards sheet is open.
+    showing_archived: bool,
 }
 
 /// Drag-and-drop payload: the id of the card being dragged.
@@ -303,14 +305,31 @@ fn board_ui(
             ui.heading(&view.title);
             ui.add_space(SPACING_XS);
             let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
-            ui.label(
-                egui::RichText::new(format!(
-                    "{total} card{} · {} columns",
-                    if total == 1 { "" } else { "s" },
-                    view.columns.len()
-                ))
-                .color(theme.text_muted),
-            );
+            let summary = egui::RichText::new(format!(
+                "{total} card{} · {} columns",
+                if total == 1 { "" } else { "s" },
+                view.columns.len()
+            ))
+            .color(theme.text_muted);
+            // Keep the header untouched when nothing is archived; only grow a row
+            // (with the entry point to the archived sheet) when there's something.
+            if view.archived.is_empty() {
+                ui.label(summary);
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(summary);
+                    ui.add_space(SPACING_SM);
+                    let label =
+                        egui::RichText::new(format!("View archived ({})", view.archived.len()))
+                            .color(theme.text_muted);
+                    if ui
+                        .add(egui::Button::new(label).fill(egui::Color32::TRANSPARENT))
+                        .clicked()
+                    {
+                        state.showing_archived = true;
+                    }
+                });
+            }
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
@@ -334,6 +353,9 @@ fn board_ui(
 
     // Detail view floats above the board; emits edit actions like the rest.
     card_detail_ui(ui, theme, view, state, &mut action);
+
+    // Archived-cards sheet floats above the board too.
+    archived_sheet_ui(ui, theme, view, state, &mut action);
 
     action
 }
@@ -861,14 +883,15 @@ fn card_detail_ui(
     // Cap the body so a long card stays on-screen and scrolls instead.
     let max_body_height = screen.height() - 6.0 * pad;
 
-    let mut outcome = DetailOutcome {
-        close: ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)),
-        ..Default::default()
+    let mut outcome = if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+        DetailOutcome::Close
+    } else {
+        DetailOutcome::None
     };
 
     // Dimmed scrim behind the sheet; a tap outside closes the detail.
     if detail_scrim_ui(ui, screen) {
-        outcome.close = true;
+        outcome = DetailOutcome::Close;
     }
 
     egui::Area::new(egui::Id::new(("headway-detail", card_id)))
@@ -902,15 +925,24 @@ struct DetailCtx {
     columns: Vec<String>,
 }
 
-/// High-level user intents collected while rendering the detail sheet, resolved
-/// into a single [`BoardAction`] after the UI closures return.
+/// The single user intent collected while rendering the detail sheet, resolved
+/// into a [`BoardAction`] after the UI closures return. At most one is produced
+/// per frame (distinct buttons / keys are mutually exclusive), so one enum
+/// models it better — and resolves more obviously — than a bag of bools.
 #[derive(Default)]
-struct DetailOutcome {
-    close: bool,
-    delete: bool,
-    move_to: Option<usize>,
-    add_label: bool,
-    remove_label: Option<String>,
+enum DetailOutcome {
+    #[default]
+    None,
+    /// Dismiss the sheet (✕, a tap on the scrim, or Escape).
+    Close,
+    Delete,
+    Archive,
+    /// Move the card to the column at this index.
+    MoveTo(usize),
+    /// Commit the "add label" field.
+    AddLabel,
+    /// Remove this label from the card's set.
+    RemoveLabel(String),
 }
 
 /// The dimmed full-screen backdrop behind the sheet. Returns true if it was
@@ -961,7 +993,7 @@ fn detail_header_ui(
                 .fill(egui::Color32::TRANSPARENT)
                 .frame(false);
             if ui.add(x).clicked() {
-                outcome.close = true;
+                *outcome = DetailOutcome::Close;
             }
         });
     });
@@ -1027,7 +1059,10 @@ fn detail_body_ui(
             .button(egui::RichText::new("Delete card").color(theme.destructive))
             .clicked()
         {
-            outcome.delete = true;
+            *outcome = DetailOutcome::Delete;
+        }
+        if ui.button("Archive").clicked() {
+            *outcome = DetailOutcome::Archive;
         }
     });
 }
@@ -1045,7 +1080,7 @@ fn detail_labels_section_ui(
     ui.horizontal_wrapped(|ui| {
         for label in &ctx.labels {
             if removable_label_chip_ui(ui, theme, label) {
-                outcome.remove_label = Some(label.clone());
+                *outcome = DetailOutcome::RemoveLabel(label.clone());
             }
         }
     });
@@ -1058,7 +1093,7 @@ fn detail_labels_section_ui(
         );
         let submit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if ui.button("Add").clicked() || submit {
-            outcome.add_label = true;
+            *outcome = DetailOutcome::AddLabel;
         }
     });
 }
@@ -1076,14 +1111,13 @@ fn detail_status_section_ui(
         for (i, name) in ctx.columns.iter().enumerate() {
             let selected = i == ctx.current_col;
             if ui.selectable_label(selected, name).clicked() && !selected {
-                outcome.move_to = Some(i);
+                *outcome = DetailOutcome::MoveTo(i);
             }
         }
     });
 }
 
 /// Resolve the collected [`DetailOutcome`] into a single [`BoardAction`].
-/// Explicit buttons (delete/move/label) win over an incidental focus-loss edit.
 fn resolve_detail_outcome(
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
@@ -1091,44 +1125,172 @@ fn resolve_detail_outcome(
     ctx: &DetailCtx,
     outcome: DetailOutcome,
 ) {
-    if outcome.delete {
-        *action = Some(BoardAction::DeleteCard { card: ctx.card_id });
+    // Removing a card from the board also dismisses its (now stale) sheet.
+    let mut close = || {
         state.selected = None;
         state.detail_for = None;
-    } else if let Some(to) = outcome.move_to {
-        let to_row = view.columns[to].cards.len();
-        *action = Some(BoardAction::MoveCard {
-            card: ctx.card_id,
-            to_col: to,
-            to_row,
-        });
-    } else if let Some(target) = outcome.remove_label {
-        // Republish the set without the removed label (labels are latest-wins).
-        let labels: Vec<String> = ctx
-            .labels
-            .iter()
-            .filter(|l| **l != target)
-            .cloned()
-            .collect();
-        *action = Some(BoardAction::SetLabels {
-            card: ctx.card_id,
-            labels,
-        });
-    } else if outcome.add_label {
-        let new = state.new_label.trim().to_string();
-        if !new.is_empty() && !ctx.labels.contains(&new) {
-            let mut labels = ctx.labels.clone();
-            labels.push(new);
+    };
+
+    match outcome {
+        DetailOutcome::None => {}
+        DetailOutcome::Close => close(),
+        DetailOutcome::Delete => {
+            *action = Some(BoardAction::DeleteCard { card: ctx.card_id });
+            close();
+        }
+        DetailOutcome::Archive => {
+            *action = Some(BoardAction::ArchiveCard { card: ctx.card_id });
+            close();
+        }
+        DetailOutcome::MoveTo(to) => {
+            let to_row = view.columns[to].cards.len();
+            *action = Some(BoardAction::MoveCard {
+                card: ctx.card_id,
+                to_col: to,
+                to_row,
+            });
+        }
+        DetailOutcome::RemoveLabel(target) => {
+            // Republish the set without the removed label (labels are latest-wins).
+            let labels: Vec<String> = ctx
+                .labels
+                .iter()
+                .filter(|l| **l != target)
+                .cloned()
+                .collect();
             *action = Some(BoardAction::SetLabels {
                 card: ctx.card_id,
                 labels,
             });
         }
-        state.new_label.clear();
-    } else if outcome.close {
-        state.selected = None;
-        state.detail_for = None;
+        DetailOutcome::AddLabel => {
+            let new = state.new_label.trim().to_string();
+            if !new.is_empty() && !ctx.labels.contains(&new) {
+                let mut labels = ctx.labels.clone();
+                labels.push(new);
+                *action = Some(BoardAction::SetLabels {
+                    card: ctx.card_id,
+                    labels,
+                });
+            }
+            state.new_label.clear();
+        }
     }
+}
+
+/// The archived-cards sheet: an overlay listing cards taken off the board, each
+/// with a Restore button that re-places it into the column it came from. Mirrors
+/// the detail sheet's scrim + centered-card presentation.
+fn archived_sheet_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+) {
+    if !state.showing_archived {
+        return;
+    }
+
+    let screen = ui.ctx().screen_rect();
+    let pad = SPACING_LG;
+    let sheet_width = if notedeck::ui::is_narrow(ui.ctx()) {
+        screen.width() - 2.0 * pad
+    } else {
+        460.0
+    };
+    let max_body_height = screen.height() - 6.0 * pad;
+
+    let mut close = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
+    if detail_scrim_ui(ui, screen) {
+        close = true;
+    }
+
+    egui::Area::new(egui::Id::new("headway-archived"))
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .show(ui.ctx(), |ui| {
+            detail_sheet_frame(theme, pad).show(ui, |ui| {
+                ui.set_width(sheet_width);
+                ui.horizontal(|ui| {
+                    ui.heading("Archived");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
+                            .fill(egui::Color32::TRANSPARENT)
+                            .frame(false);
+                        if ui.add(x).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(SPACING_SM);
+                egui::ScrollArea::vertical()
+                    .max_height(max_body_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        if view.archived.is_empty() {
+                            ui.label(
+                                egui::RichText::new("No archived cards.").color(theme.text_muted),
+                            );
+                        }
+                        for entry in &view.archived {
+                            archived_row_ui(ui, theme, view, entry, action);
+                        }
+                    });
+            });
+        });
+
+    if close {
+        state.showing_archived = false;
+    }
+}
+
+/// One row in the archived sheet: the card's title, where it came from, and a
+/// Restore button.
+fn archived_row_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    entry: &ArchivedCard,
+    action: &mut Option<BoardAction>,
+) {
+    egui::Frame::new()
+        .fill(theme.surface_elevated)
+        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
+        .inner_margin(egui::Margin::same(SPACING_SM as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    let title = if entry.card.title.is_empty() {
+                        "Untitled card"
+                    } else {
+                        &entry.card.title
+                    };
+                    ui.label(egui::RichText::new(title).strong());
+                    // Where it'll be restored to, resolved to the column's name.
+                    let from = entry
+                        .from
+                        .as_deref()
+                        .and_then(|id| view.columns.iter().find(|c| c.id == id))
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("first column");
+                    ui.label(
+                        egui::RichText::new(format!("from {from}"))
+                            .small()
+                            .color(theme.text_muted),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Restore").clicked() {
+                        *action = Some(BoardAction::RestoreCard {
+                            card: entry.card.id,
+                        });
+                    }
+                });
+            });
+        });
+    ui.add_space(SPACING_XS);
 }
 
 /// A small muted, uppercase section heading used inside the card detail sheet.

@@ -53,6 +53,16 @@ const NS_TAG: &str = "#t";
 /// authority/latest-wins rules as every other placement.
 pub const COL_DELETED: &str = "__deleted__";
 
+/// Sentinel placement column id meaning the card has been *archived*: taken off
+/// the active board but kept (and recoverable) rather than tombstoned. A card
+/// whose latest *authorised* placement points here is collected onto
+/// [`BoardView::archived`] instead of a column. The archive placement also
+/// carries a `from` tag (the column it was archived from) so a restore lands the
+/// card back where it was — see [`build_archive_placement`]. Like `COL_DELETED`
+/// this keeps archival under the same authority/latest-wins rules as any
+/// placement.
+pub const COL_ARCHIVED: &str = "__archived__";
+
 /// A column definition as carried on the board event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnDef {
@@ -153,6 +163,23 @@ pub fn build_placement<'a>(
         .tag_str(rank)
 }
 
+/// Build an *archive* placement for `issue`: a placement into the
+/// [`COL_ARCHIVED`] sentinel that also records `from_col`, the column the card
+/// is being archived from, so a later restore can put it back where it was.
+/// `rank` is preserved (reuse the card's current rank) so restore keeps its slot.
+pub fn build_archive_placement<'a>(
+    board_id: &str,
+    board_addr: &str,
+    issue: &NoteId,
+    from_col: &str,
+    rank: &str,
+) -> NoteBuilder<'a> {
+    build_placement(board_id, board_addr, issue, COL_ARCHIVED, rank)
+        .start_tag()
+        .tag_str("from")
+        .tag_str(from_col)
+}
+
 /// Build a subject (title) edit for `issue` (NIP-32 label, `#subject`).
 pub fn build_subject_edit<'a>(issue: &NoteId, subject: &str) -> NoteBuilder<'a> {
     base(KIND_LABEL, "")
@@ -240,6 +267,10 @@ pub struct PlacementEvent {
     pub issue_id: [u8; 32],
     pub col: String,
     pub rank: String,
+    /// The column the card was archived *from*, present only on archive
+    /// placements (`col == COL_ARCHIVED`). Lets a restore put the card back
+    /// where it was rather than reflowing it to the first column.
+    pub from: Option<String>,
     pub created_at: u64,
 }
 
@@ -369,12 +400,14 @@ fn parse_placement(note: &Note) -> Option<PlacementEvent> {
     let mut issue_id = None;
     let mut col = None;
     let mut rank = None;
+    let mut from = None;
 
     for tag in note.tags() {
         match tag.get_str(0) {
             Some("e") => issue_id = tag.get_id(1).copied(),
             Some("col") => col = tag.get_str(1).map(|s| s.to_owned()),
             Some("rank") => rank = tag.get_str(1).map(|s| s.to_owned()),
+            Some("from") => from = tag.get_str(1).map(|s| s.to_owned()),
             _ => {}
         }
     }
@@ -384,6 +417,7 @@ fn parse_placement(note: &Note) -> Option<PlacementEvent> {
         issue_id: issue_id?,
         col: col?,
         rank: rank?,
+        from,
         created_at: note.created_at(),
     })
 }
@@ -469,6 +503,10 @@ pub struct CardView {
     pub labels: Vec<String>,
     /// Fractional rank within its column; cards are sorted ascending.
     pub rank: String,
+    /// `created_at` of the winning placement (0 if the card is unplaced). A
+    /// re-placement (move/delete/archive) must stamp a strictly-greater
+    /// timestamp so it wins latest-wins even within the same wall-clock second.
+    pub placed_at: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -476,6 +514,15 @@ pub struct ColumnView {
     pub id: String,
     pub name: String,
     pub cards: Vec<CardView>,
+}
+
+/// An archived card plus the column it was archived from, for the archived view
+/// and restore. `from` is `None` if the card was archived before origin
+/// tracking existed, or its origin column has since been forgotten.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchivedCard {
+    pub card: CardView,
+    pub from: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -490,6 +537,9 @@ pub struct BoardView {
     /// `store::republish_board`).
     pub created_at: u64,
     pub columns: Vec<ColumnView>,
+    /// Cards archived off this board, with their origin column for restore.
+    /// Sorted deterministically by card id.
+    pub archived: Vec<ArchivedCard>,
 }
 
 /// Accumulates headway events into the maps needed to resolve effective board
@@ -582,6 +632,7 @@ impl BoardReducer {
             // Group this board's cards by resolved column id.
             let mut by_col: HashMap<String, Vec<CardView>> = HashMap::new();
             let mut fallback: Vec<(u64, CardView)> = Vec::new();
+            let mut archived: Vec<ArchivedCard> = Vec::new();
             let col_ids: Vec<&str> = board.columns.iter().map(|c| c.id.as_str()).collect();
 
             for issue in self.issues.values() {
@@ -623,23 +674,28 @@ impl BoardReducer {
                     .get(&issue.id)
                     .filter(|p| authorised(&p.author));
 
-                // A tombstone placement removes the card from the board.
-                if placement.is_some_and(|p| p.col == COL_DELETED) {
-                    continue;
-                }
-
                 let rank = placement.map(|p| p.rank.clone()).unwrap_or_default();
+                let placed_at = placement.map(|p| p.created_at).unwrap_or(0);
                 let card = CardView {
                     id: NoteId::new(issue.id),
                     title,
                     description,
                     labels,
                     rank,
+                    placed_at,
                 };
 
-                match placement {
-                    Some(p) if col_ids.contains(&p.col.as_str()) => {
-                        by_col.entry(p.col.clone()).or_default().push(card);
+                match placement.map(|p| p.col.as_str()) {
+                    // A tombstone placement removes the card from the board.
+                    Some(COL_DELETED) => continue,
+                    // Archived: kept off the columns but recoverable, with its
+                    // origin column so a restore lands it back where it was.
+                    Some(COL_ARCHIVED) => archived.push(ArchivedCard {
+                        card,
+                        from: placement.and_then(|p| p.from.clone()),
+                    }),
+                    Some(col) if col_ids.contains(&col) => {
+                        by_col.entry(col.to_string()).or_default().push(card);
                     }
                     _ => fallback.push((issue.created_at, card)),
                 }
@@ -667,6 +723,9 @@ impl BoardReducer {
                     .extend(fallback.into_iter().map(|(_, card)| card));
             }
 
+            // Stable order so the archived view and snapshots don't churn.
+            archived.sort_by(|a, b| a.card.id.bytes().cmp(b.card.id.bytes()));
+
             views.push(BoardView {
                 id: board_id.clone(),
                 author: board.author,
@@ -674,6 +733,7 @@ impl BoardReducer {
                 description: board.description.clone(),
                 created_at: board.created_at,
                 columns,
+                archived,
             });
         }
 
@@ -1092,6 +1152,47 @@ mod tests {
         let cards = &views[0].columns[0].cards;
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].title, "Keep");
+    }
+
+    #[test]
+    fn reduce_archives_cards_with_their_origin() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let card = note_id(&owner, build_issue(&addr, "Shelve me", ""));
+
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Shelve me", ""), &owner),
+            parse_owned(build_placement("b1", &addr, &card, "done", "m"), &owner),
+        ];
+
+        // Archive it from "done" with a later placement so it wins latest-wins.
+        let mut archive = match parse_owned(
+            build_archive_placement("b1", &addr, &card, "done", "m"),
+            &owner,
+        ) {
+            HeadwayEvent::Placement(p) => p,
+            _ => unreachable!(),
+        };
+        archive.created_at += 1;
+        events.push(HeadwayEvent::Placement(archive));
+
+        let views = reduce(&events);
+        // Gone from every column, present in `archived` with its origin recorded.
+        assert!(views[0].columns.iter().all(|c| c.cards.is_empty()));
+        assert_eq!(views[0].archived.len(), 1);
+        assert_eq!(views[0].archived[0].card.title, "Shelve me");
+        assert_eq!(views[0].archived[0].from.as_deref(), Some("done"));
     }
 
     #[test]

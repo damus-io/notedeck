@@ -116,8 +116,10 @@ republishes only this one event.
     ["d", "headway:<issue-id-hex>"],      // board id : card id
     ["a", "30619:<author-hex>:headway"],  // board
     ["e", "<issue-id>"],                  // card
-    ["col", "todo"],                       // target column id (or "__deleted__")
-    ["rank", "m"]                          // fractional rank within the column
+    ["col", "todo"],                       // target column id, or a sentinel
+                                           //   ("__deleted__" / "__archived__")
+    ["rank", "m"],                         // fractional rank within the column
+    ["from", "in-progress"]                // archive only: origin column, for restore
   ]
 }
 ```
@@ -197,6 +199,13 @@ LWW is the upgrade path if collaborative labelling needs it.)
 - A placement whose `col` is the sentinel `COL_DELETED` (`"__deleted__"`) is a
   **tombstone**: the reducer drops that card. It's reversible (re-place the card
   to restore it) rather than a NIP-09 deletion.
+- A placement whose `col` is the sentinel `COL_ARCHIVED` (`"__archived__"`)
+  **archives** the card: the reducer takes it off the columns and collects it
+  onto `BoardView::archived` instead of dropping it. The archive placement also
+  carries a `from` tag (the column it was archived from), so a restore re-places
+  it there — or into the first column if that column is gone. Archive and
+  restore are just placements, so they obey the same authority/latest-wins rules
+  as any move.
 
 ## Ranking
 
@@ -211,9 +220,14 @@ rebalance (future work).
 
 ## Known limitations
 
-- **Same-second ordering.** `created_at` is whole seconds, so two edits within
-  the same second resolve by the author-bytes tiebreak rather than true
-  recency. A logical clock / monotonic counter tag would make ordering airtight.
+- **Same-second ordering.** `created_at` is whole seconds, so two *independent*
+  edits within the same second resolve by the author-bytes tiebreak rather than
+  true recency. The cases we control are made airtight by stamping a republish a
+  second past the version it supersedes: board edits (`republish_board`) and
+  re-placements — move/delete/archive/restore (`next_after`) — so a card acted
+  on in the same second it was last placed still wins. Cross-author concurrent
+  edits in the same second remain tiebreak-resolved; a logical clock tag is the
+  general fix.
 - **Concurrent label edits** resolve by snapshot latest-wins (one author's set
   supersedes the other's), not a per-label merge.
 - **No relay sync** yet (local-only). A long-lived reducer is cached and fed
