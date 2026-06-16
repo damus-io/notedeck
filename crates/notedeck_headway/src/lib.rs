@@ -428,12 +428,9 @@ fn cards_drop_zone(
     // Tracks where a release would land (also used to paint the insertion line).
     let mut hover_target: Option<usize> = None;
 
-    // Grow the drop zone to fill the column body so empty/sparse lists still
-    // present a generous target, reserving room for the add-card affordance
-    // that follows. Falls back to a small minimum when space is tight.
-    let reserve = 2.0 * SPACING_LG;
-    let fill_height = (ui.available_height() - reserve).max(SPACING_LG);
-
+    // Span the column's full width so empty/sparse lanes still present a wide
+    // drop target, but let the height track the cards so the add-card
+    // affordance sits right beneath them instead of being pushed to the bottom.
     let fill_width = ui.available_width();
 
     // Detect drops over a bare, transparent frame rather than `dnd_drop_zone`,
@@ -441,9 +438,9 @@ fn cards_drop_zone(
     // insertion line is the only feedback we want.
     let zone = frame
         .show(ui, |ui| {
-            // Fill the column body in both axes so the drop target spans the whole
-            // lane — otherwise an empty column collapses to a narrow vertical strip.
-            ui.set_min_height(fill_height);
+            // Fill the column width so the drop target spans the whole lane —
+            // otherwise an empty column collapses to a narrow vertical strip.
+            ui.set_min_height(SPACING_LG);
             ui.set_min_width(fill_width);
             ui.spacing_mut().item_spacing.y = SPACING_SM;
 
