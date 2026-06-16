@@ -534,9 +534,6 @@ pub struct ChatSession {
     pub backend_type: BackendType,
     /// When the last AI response token was received (for "5m ago" display)
     pub last_activity: Option<Instant>,
-    /// When any backend message was last received (for stall detection).
-    /// Set when `incoming_tokens` is assigned, updated on every message.
-    pub last_backend_msg: Option<Instant>,
     /// Focus indicator dot state (persisted in kind-31988 note).
     /// Set on status transitions, cleared when user dismisses it.
     pub indicator: Option<FocusPriority>,
@@ -597,7 +594,6 @@ impl ChatSession {
             },
             backend_type,
             last_activity: None,
-            last_backend_msg: None,
             indicator: None,
             pending_created_at: None,
             spawn_id: None,
@@ -657,7 +653,6 @@ impl ChatSession {
             },
             backend_type,
             last_activity: None,
-            last_backend_msg: None,
             indicator: None,
             pending_images: vec![],
             pending_created_at: Some(Instant::now()),
