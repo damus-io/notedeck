@@ -35,6 +35,7 @@ impl Accounts {
     pub fn new(
         key_store: Option<AccountStorage>,
         forced_relays: Vec<String>,
+        bootstrap_relays: Vec<String>,
         fallback: Pubkey,
         ndb: &mut Ndb,
         txn: &Transaction,
@@ -71,7 +72,7 @@ impl Accounts {
             storage_writer = Some(writer);
         };
 
-        let relay_defaults = RelayDefaults::new(forced_relays);
+        let relay_defaults = RelayDefaults::new(forced_relays, bootstrap_relays);
 
         let selected = cache.selected_mut();
         let selected_data = &mut selected.data;
@@ -700,6 +701,7 @@ mod tests {
             let accounts = Accounts::new(
                 None,
                 forced_relays,
+                crate::account::relay::default_bootstrap_relays(),
                 FALLBACK_PUBKEY(),
                 &mut ndb,
                 &txn,

@@ -5237,7 +5237,6 @@ dependencies = [
  "notedeck_testing",
  "notedeck_ui",
  "tempfile",
- "tokio",
 ]
 
 [[package]]

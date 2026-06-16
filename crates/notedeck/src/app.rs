@@ -306,9 +306,19 @@ impl Notedeck {
         let job_pool = JobPool::default();
         let remote = RemoteState::new(&ndb, job_pool.spawner());
 
+        // Tests must not reach the network: hand a fresh account an empty
+        // bootstrap set so it connects to nothing (the outbox then has nothing
+        // to flush on `AppContext` drop, so no Tokio runtime is required).
+        let bootstrap_relays = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            Vec::new()
+        } else {
+            crate::account::relay::default_bootstrap_relays()
+        };
+
         let mut accounts = Accounts::new(
             keystore,
             parsed_args.relays.clone(),
+            bootstrap_relays,
             FALLBACK_PUBKEY(),
             &mut ndb,
             &txn,

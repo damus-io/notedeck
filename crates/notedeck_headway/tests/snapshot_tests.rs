@@ -13,18 +13,11 @@ struct HeadwayTestState {
     /// Signing account injected on first frame so Headway can seed + edit its
     /// event-backed board.
     account: FullKeypair,
-    /// Selecting a signing account queues an outbox session that, when the
-    /// per-frame `AppContext` is dropped, opens a relay websocket via
-    /// `ewebsock` — which calls `tokio::spawn` and panics without a runtime.
-    /// Hold one and enter it for the duration of each frame.
-    runtime: tokio::runtime::Runtime,
     _tmpdir: tempfile::TempDir,
     fonts_installed: bool,
 }
 
 fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
-    let _runtime_guard = state.runtime.enter();
-
     // Fonts/styles must be installed before the first real frame; do it once,
     // and take the same first frame to inject a signing account.
     if !state.fonts_installed {
@@ -57,18 +50,15 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
     let tmpdir = tempfile::TempDir::new().unwrap();
     let ctx = egui::Context::default();
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    // `--testrunner` hands a fresh account an empty bootstrap relay set, so
+    // selecting it never opens a relay websocket and the outbox has nothing to
+    // flush on `AppContext` drop — no Tokio runtime required.
     let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
-
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
     let state = HeadwayTestState {
         notedeck,
         headway: Headway::new(),
         account: FullKeypair::generate(),
-        runtime,
         _tmpdir: tmpdir,
         fonts_installed: false,
     };

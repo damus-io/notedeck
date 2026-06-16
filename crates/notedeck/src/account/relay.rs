@@ -139,23 +139,37 @@ pub(crate) struct RelayDefaults {
     pub bootstrap_relays: BTreeSet<RelaySpec>,
 }
 
+/// Fallback relays an account with no relays of its own connects to. Callers
+/// pass this into [`RelayDefaults::new`] in normal operation; passing an empty
+/// set instead (e.g. in tests) keeps a fresh account from connecting anywhere,
+/// so the suite never reaches out to production relays.
+pub const DEFAULT_BOOTSTRAP_RELAYS: &[&str] = &[
+    "wss://relay.damus.io",
+    // "wss://pyramid.fiatjaf.com",  // Uncomment if needed
+    "wss://nos.lol",
+    "wss://nostr.wine",
+    "wss://purplepag.es",
+];
+
+/// The default fallback relays as an owned list, for passing to
+/// [`RelayDefaults::new`]/[`crate::Accounts::new`] in normal operation.
+pub fn default_bootstrap_relays() -> Vec<String> {
+    DEFAULT_BOOTSTRAP_RELAYS
+        .iter()
+        .map(|&url| url.to_string())
+        .collect()
+}
+
 impl RelayDefaults {
-    pub(crate) fn new(forced_relays: Vec<String>) -> Self {
+    pub(crate) fn new(forced_relays: Vec<String>, bootstrap_relays: Vec<String>) -> Self {
         let forced_relays: BTreeSet<RelaySpec> = forced_relays
             .into_iter()
             .filter_map(|u| Some(RelaySpec::new(NormRelayUrl::new(&u).ok()?, false, false)))
             .collect();
-        let bootstrap_relays = [
-            "wss://relay.damus.io",
-            // "wss://pyramid.fiatjaf.com",  // Uncomment if needed
-            "wss://nos.lol",
-            "wss://nostr.wine",
-            "wss://purplepag.es",
-        ]
-        .iter()
-        .map(|&url| url.to_string())
-        .filter_map(|u| Some(RelaySpec::new(NormRelayUrl::new(&u).ok()?, false, false)))
-        .collect();
+        let bootstrap_relays = bootstrap_relays
+            .into_iter()
+            .filter_map(|u| Some(RelaySpec::new(NormRelayUrl::new(&u).ok()?, false, false)))
+            .collect();
 
         Self {
             forced_relays,
