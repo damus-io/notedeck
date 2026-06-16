@@ -484,6 +484,11 @@ pub struct BoardView {
     pub author: [u8; 32],
     pub title: String,
     pub description: String,
+    /// `created_at` of the winning board event. Republishing an addressable
+    /// board edit must carry a strictly-greater timestamp so the latest version
+    /// wins; same-second nostr timestamps would otherwise tie (see
+    /// `store::republish_board`).
+    pub created_at: u64,
     pub columns: Vec<ColumnView>,
 }
 
@@ -667,6 +672,7 @@ impl BoardReducer {
                 author: board.author,
                 title: board.title.clone(),
                 description: board.description.clone(),
+                created_at: board.created_at,
                 columns,
             });
         }

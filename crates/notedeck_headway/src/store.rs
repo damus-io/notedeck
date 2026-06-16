@@ -229,6 +229,12 @@ pub fn apply(
 }
 
 /// Republish the board event with a new column list, preserving title/description.
+///
+/// The board is an addressable event, so a republish supersedes the prior one by
+/// `created_at`. Nostr timestamps are whole seconds, so a quick succession of
+/// edits (or our own seed-then-edit in tests) would tie and the reducer would
+/// keep the *old* board — dropping the edit. Stamp a timestamp strictly greater
+/// than the version we're editing so the new board always wins.
 fn republish_board(
     ndb: &Ndb,
     board_id: &str,
@@ -236,11 +242,21 @@ fn republish_board(
     secret: &[u8; 32],
     columns: &[ColumnDef],
 ) {
+    let created_at = now_secs().max(view.created_at + 1);
     ingest(
         ndb,
-        build_board(board_id, &view.title, &view.description, columns),
+        build_board(board_id, &view.title, &view.description, columns).created_at(created_at),
         secret,
     );
+}
+
+/// Current wall-clock time in whole seconds since the Unix epoch (nostr's
+/// `created_at` unit). Falls back to 0 if the clock is before the epoch.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// The current column definitions carried by `view`, ready to be edited and
