@@ -372,7 +372,13 @@ fn column_ui(
     clicked: &mut Option<NoteId>,
 ) {
     let column = &view.columns[col_idx];
-    let height = ui.available_height();
+    // Fit the column to the height its parent gives us, *minus* this frame's own
+    // top+bottom inner margin. Sizing to the full available height made the frame
+    // (margins included) a margin taller than its slot, so the bottom of the card
+    // list — and the add-card button — spilled past the board's padding and got
+    // clipped (worse the more the UI was zoomed in). Floor at zero so a tiny
+    // viewport still lays out.
+    let height = (ui.available_height() - 2.0 * SPACING_SM).max(0.0);
 
     egui::Frame::new()
         .fill(theme.surface_secondary)

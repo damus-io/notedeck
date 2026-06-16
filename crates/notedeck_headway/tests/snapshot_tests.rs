@@ -314,3 +314,53 @@ fn add_card_flow() {
     wait_for_label(&mut harness, "Write integration tests");
     harness.get_by_label("8 cards · 4 columns");
 }
+
+/// Regression: when a column's cards overflow its height you must still be able
+/// to scroll all the way down to the "+ Add card" button. `column_ui` sized the
+/// column frame's min-height to the *pre-margin* available height, so the frame
+/// plus its inner margin overflowed the viewport and clipped the bottom of the
+/// card list beneath the board — worse the more the UI was zoomed in.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn add_card_reachable_when_column_overflows() {
+    // Narrow enough that the columns overflow horizontally (so the board shows a
+    // horizontal scrollbar along the bottom) and short enough that the Backlog
+    // column's three cards overflow vertically.
+    let mut harness = headway_harness(egui::Vec2::new(700.0, 300.0));
+
+    // Hover the first (Backlog) column and wheel it to the bottom.
+    let col = harness.get_by_label("Backlog").bounding_box().unwrap();
+    let pos = egui::pos2(col.x0 as f32 + 20.0, col.y0 as f32 + 90.0);
+    for _ in 0..40 {
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::PointerMoved(pos));
+        harness.input_mut().events.push(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -120.0),
+            modifiers: egui::Modifiers::default(),
+        });
+        harness.run();
+    }
+
+    // The add-card button, fully scrolled, must land inside the board's padded
+    // content area with the column's own bottom margin intact below it — not
+    // flush against (or past) the board edge. The board frame reserves SPACING_LG
+    // (16pt) of bottom padding and each column reserves SPACING_SM (8pt); the
+    // button's bottom must clear both. Before the fix the column overflowed its
+    // slot and the button sat exactly on the board edge (failing this bound).
+    let limit = harness.ctx.screen_rect().max.y - 16.0 - 8.0;
+    let btn = harness
+        .get_all_by_label("+ Add card")
+        .next()
+        .expect("an add-card affordance")
+        .bounding_box()
+        .unwrap();
+    assert!(
+        btn.y1 as f32 <= limit,
+        "add-card button bottom {} should sit within the padded board area \
+         (limit {limit}); the column is overflowing its slot",
+        btn.y1,
+    );
+}
