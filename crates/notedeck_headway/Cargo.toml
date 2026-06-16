@@ -15,6 +15,7 @@ egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
 notedeck_testing = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true }
 
 [features]
 default = []

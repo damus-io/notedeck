@@ -13,11 +13,18 @@ struct HeadwayTestState {
     /// Signing account injected on first frame so Headway can seed + edit its
     /// event-backed board.
     account: FullKeypair,
+    /// Selecting a signing account queues an outbox session that, when the
+    /// per-frame `AppContext` is dropped, opens a relay websocket via
+    /// `ewebsock` — which calls `tokio::spawn` and panics without a runtime.
+    /// Hold one and enter it for the duration of each frame.
+    runtime: tokio::runtime::Runtime,
     _tmpdir: tempfile::TempDir,
     fonts_installed: bool,
 }
 
 fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
+    let _runtime_guard = state.runtime.enter();
+
     // Fonts/styles must be installed before the first real frame; do it once,
     // and take the same first frame to inject a signing account.
     if !state.fonts_installed {
@@ -52,16 +59,27 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
     let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
     let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
     let state = HeadwayTestState {
         notedeck,
         headway: Headway::new(),
         account: FullKeypair::generate(),
+        runtime,
         _tmpdir: tmpdir,
         fonts_installed: false,
     };
 
+    // `wake()` schedules an 8-frame `request_repaint_after` burst to poll for
+    // async ndb ingests; the harness's simulated clock elapses each delay
+    // immediately, so a single `run()` can take ~8 steps. Lift the default cap
+    // of 4 above that burst so the wait loops don't spuriously panic.
     let mut harness = Harness::builder()
         .with_size(size)
+        .with_max_steps(16)
         .renderer(notedeck::software_renderer())
         .build_state(render_headway, state);
 
@@ -70,9 +88,11 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
 }
 
 /// The board is seeded by ingesting events into nostrdb, which lands on an async
-/// writer thread. Pump frames until the seeded board is on screen.
+/// writer thread, and each card folds in across several events. Wait for the
+/// header's full-count summary rather than just the first column, so every test
+/// starts from a fully-materialised board instead of a half-ingested one.
 fn wait_for_board(harness: &mut Harness<'static, HeadwayTestState>) {
-    wait_for_label(harness, "Backlog");
+    wait_for_label(harness, "7 cards · 4 columns");
 }
 
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
@@ -295,7 +315,8 @@ fn add_card_flow() {
     harness.run();
 
     harness
-        .get_by_role(egui::accesskit::Role::TextInput)
+        // The card composer is multiline, so it has the MultilineTextInput role.
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("Write integration tests");
     harness.run();
     harness.get_by_label("Add").simulate_click();
