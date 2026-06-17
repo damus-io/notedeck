@@ -15,6 +15,15 @@ impl Notebook {
     pub fn new() -> Self {
         Notebook::default()
     }
+
+    /// Build a notebook displaying the given canvas.
+    pub fn from_canvas(canvas: JsonCanvas) -> Self {
+        Notebook {
+            canvas,
+            scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
+            loaded: false,
+        }
+    }
 }
 
 impl Default for Notebook {

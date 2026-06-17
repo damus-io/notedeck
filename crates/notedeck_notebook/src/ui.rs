@@ -1,11 +1,39 @@
-use egui::{Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
+use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
 use jsoncanvas::{
     FileNode, GroupNode, LinkNode, Node, NodeId, TextNode,
+    color::{Color, PresetColor},
     edge::{Edge, Side},
     node::GenericNode,
 };
 use std::collections::HashMap;
 use std::ops::Neg;
+
+/// Resolve a JSONCanvas color (preset palette index or hex) to an egui color.
+///
+/// Preset values follow Obsidian's canvas palette ordering.
+fn canvas_color(color: &Color) -> Color32 {
+    match color {
+        Color::Preset(preset) => match preset {
+            PresetColor::Red => Color32::from_rgb(0xE0, 0x31, 0x31),
+            PresetColor::Orange => Color32::from_rgb(0xE6, 0x77, 0x00),
+            PresetColor::Yellow => Color32::from_rgb(0xE0, 0xAC, 0x00),
+            PresetColor::Green => Color32::from_rgb(0x2C, 0xA0, 0x2C),
+            PresetColor::Cyan => Color32::from_rgb(0x00, 0xA0, 0xBE),
+            PresetColor::Purple => Color32::from_rgb(0x96, 0x50, 0xC8),
+        },
+        Color::Color(hex) => Color32::from_rgb(hex.r, hex.g, hex.b),
+    }
+}
+
+/// Linear blend from `base` toward `accent` by `t` (0..=1).
+fn blend(base: Color32, accent: Color32, t: f32) -> Color32 {
+    let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Color32::from_rgb(
+        lerp(base.r(), accent.r()),
+        lerp(base.g(), accent.g()),
+        lerp(base.b(), accent.b()),
+    )
+}
 
 fn node_rect(node: &GenericNode) -> Rect {
     let x = node.x as f32;
@@ -73,7 +101,10 @@ pub fn edge_ui(
     // c2 = anchor B + (inward tangent)  * d
     let c2 = p3 - side_tangent(to_side).neg() * d;
 
-    let color = ui.visuals().noninteractive().bg_stroke.color;
+    let color = edge
+        .color()
+        .map(canvas_color)
+        .unwrap_or_else(|| ui.visuals().noninteractive().bg_stroke.color);
     let stroke = egui::Stroke::new(4.0, color);
     let bezier = CubicBezierShape::from_points_stroke([p0, c1, c2, p3], false, color, stroke);
 
@@ -163,14 +194,23 @@ fn node_box_ui(
 ) -> egui::Response {
     let pos = node_rect(node);
 
+    // Colored nodes get an accent border and a faint accent-tinted fill; plain
+    // nodes fall back to the neutral theme colors.
+    let base_fill = ui.visuals().noninteractive().weak_bg_fill;
+    let base_stroke = ui.visuals().noninteractive().bg_stroke.color;
+    let (fill, stroke_color) = match node.color.as_ref().map(canvas_color) {
+        Some(accent) => (blend(base_fill, accent, 0.12), accent),
+        None => (base_fill, base_stroke),
+    };
+
     ui.put(pos, |ui: &mut egui::Ui| {
         egui::Frame::default()
-            .fill(ui.visuals().noninteractive().weak_bg_fill)
+            .fill(fill)
             .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
             .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
             .stroke(egui::Stroke::new(
                 notedeck::tokens::STROKE_THICK,
-                ui.visuals().noninteractive().bg_stroke.color,
+                stroke_color,
             ))
             .show(ui, |ui| {
                 let rect = ui.available_rect_before_wrap();
