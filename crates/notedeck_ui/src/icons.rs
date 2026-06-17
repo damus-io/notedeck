@@ -367,13 +367,50 @@ fn draw_app_icon(ui: &mut egui::Ui, size: f32, draw: IconDraw) {
     draw(&painter, rect.center(), size, color, size * 0.07);
 }
 
-/// Painter-drawn notebook icon (cover, spine and ruled lines).
-fn draw_notebook(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, stroke_width: f32) {
-    let stroke = Stroke::new(stroke_width, color);
+/// Midpoint blend of two colors.
+fn mix(a: Color32, b: Color32) -> Color32 {
+    Color32::from_rgb(
+        ((a.r() as u16 + b.r() as u16) / 2) as u8,
+        ((a.g() as u16 + b.g() as u16) / 2) as u8,
+        ((a.b() as u16 + b.b() as u16) / 2) as u8,
+    )
+}
+
+/// Fill `rect` with a diagonal gradient from `c1` (top-left) to `c2`
+/// (bottom-right).
+fn gradient_rect(painter: &egui::Painter, rect: egui::Rect, c1: Color32, c2: Color32) {
+    use egui::epaint::{Mesh, Vertex, WHITE_UV};
+    let mid = mix(c1, c2);
+    let mut mesh = Mesh::default();
+    let v = |pos: Pos2, color: Color32| Vertex {
+        pos,
+        uv: WHITE_UV,
+        color,
+    };
+    mesh.vertices.push(v(rect.left_top(), c1));
+    mesh.vertices.push(v(rect.right_top(), mid));
+    mesh.vertices.push(v(rect.right_bottom(), c2));
+    mesh.vertices.push(v(rect.left_bottom(), mid));
+    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// Painter-drawn notebook icon: an amber cover with a darker spine and lines.
+fn draw_notebook(
+    painter: &egui::Painter,
+    center: Pos2,
+    s: f32,
+    _color: Color32,
+    stroke_width: f32,
+) {
+    let cover_hi = Color32::from_rgb(0xFB, 0xBF, 0x24); // amber-400
+    let cover_lo = Color32::from_rgb(0xF5, 0x9E, 0x0B); // amber-500
+    let ink = Color32::from_rgb(0x9A, 0x3C, 0x12); // warm brown
 
     let rect = egui::Rect::from_center_size(center, vec2(s * 0.66, s * 0.9));
-    let rounding = s * 0.1;
-    painter.rect_stroke(rect, rounding, stroke, egui::StrokeKind::Inside);
+    gradient_rect(painter, rect, cover_hi, cover_lo);
+
+    let stroke = Stroke::new(stroke_width, ink);
 
     // Binding spine
     let spine_x = rect.left() + s * 0.18;
@@ -391,9 +428,10 @@ fn draw_notebook(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, 
     }
 }
 
-/// Painter-drawn headway icon: ascending bars under a rising trend arrow.
+/// Painter-drawn headway icon: emerald bars under a rising trend arrow.
 fn draw_headway(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, stroke_width: f32) {
-    let stroke = Stroke::new(stroke_width, color);
+    let bar_hi = Color32::from_rgb(0x6E, 0xE7, 0xB7); // emerald-300
+    let bar_lo = Color32::from_rgb(0x05, 0x96, 0x69); // emerald-600
 
     // Ascending bars
     let baseline = center.y + s * 0.4;
@@ -402,20 +440,70 @@ fn draw_headway(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, s
     let total_w = bar_w * 3.0 + gap * 2.0;
     let start_x = center.x - total_w / 2.0;
     let heights = [s * 0.32, s * 0.52, s * 0.74];
-    let rounding = s * 0.04;
     for (i, &bh) in heights.iter().enumerate() {
         let x0 = start_x + i as f32 * (bar_w + gap);
         let bar = egui::Rect::from_min_max(pos2(x0, baseline - bh), pos2(x0 + bar_w, baseline));
-        painter.rect_filled(bar, rounding, color);
+        gradient_rect(painter, bar, bar_hi, bar_lo);
     }
 
-    // Rising trend arrow
+    // Rising trend arrow, drawn in the theme's text color so it stays legible
+    let stroke = Stroke::new(stroke_width, color);
     let a_start = pos2(center.x - s * 0.45, center.y);
     let a_end = pos2(center.x + s * 0.45, center.y - s * 0.46);
     painter.line_segment([a_start, a_end], stroke);
     let head = s * 0.17;
     painter.line_segment([a_end, a_end + vec2(-head, 0.0)], stroke);
     painter.line_segment([a_end, a_end + vec2(0.0, head)], stroke);
+}
+
+/// Painter-drawn dashboard icon: an asymmetric grid of gradient widget panels.
+fn draw_dashboard(
+    painter: &egui::Painter,
+    center: Pos2,
+    s: f32,
+    _color: Color32,
+    _stroke_width: f32,
+) {
+    let indigo_hi = Color32::from_rgb(0x81, 0x8C, 0xF8); // indigo-400
+    let indigo_lo = Color32::from_rgb(0x4F, 0x46, 0xE5); // indigo-600
+    let sky_hi = Color32::from_rgb(0x38, 0xBD, 0xF8); // sky-400
+    let sky_lo = Color32::from_rgb(0x0E, 0xA5, 0xE9); // sky-500
+
+    let half = s * 0.42;
+    let left = center.x - half;
+    let right = center.x + half;
+    let top = center.y - half;
+    let bottom = center.y + half;
+    let gap = s * 0.09;
+
+    // Tall panel on the left
+    let split_x = left + (right - left) * 0.42;
+    gradient_rect(
+        painter,
+        egui::Rect::from_min_max(pos2(left, top), pos2(split_x, bottom)),
+        indigo_hi,
+        indigo_lo,
+    );
+
+    // Two stacked panels on the right
+    let rx = split_x + gap;
+    gradient_rect(
+        painter,
+        egui::Rect::from_min_max(pos2(rx, top), pos2(right, center.y - gap / 2.0)),
+        sky_hi,
+        sky_lo,
+    );
+    gradient_rect(
+        painter,
+        egui::Rect::from_min_max(pos2(rx, center.y + gap / 2.0), pos2(right, bottom)),
+        indigo_hi,
+        indigo_lo,
+    );
+}
+
+/// Fixed-size Dashboard app icon (sidebar drawer and chrome tab strip).
+pub fn dashboard_icon(ui: &mut egui::Ui, size: f32) {
+    draw_app_icon(ui, size, draw_dashboard);
 }
 
 /// Fixed-size Notebook app icon (sidebar drawer and chrome tab strip).

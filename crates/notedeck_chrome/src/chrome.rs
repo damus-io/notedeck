@@ -1095,7 +1095,7 @@ fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
 
         #[cfg(feature = "dashboard")]
         NotedeckApp::Dashboard(_) => {
-            ui.add(app_images::algo_image().max_width(size).max_height(size));
+            notedeck_ui::icons::dashboard_icon(ui, size);
         }
 
         #[cfg(feature = "messages")]
@@ -1668,7 +1668,7 @@ fn topdown_sidebar(
 
                             #[cfg(feature = "dashboard")]
                             NotedeckApp::Dashboard(_columns_app) => {
-                                ui.add(app_images::algo_image());
+                                notedeck_ui::icons::dashboard_icon(ui, 24.0);
                             }
 
                             #[cfg(feature = "messages")]
