@@ -1,3 +1,4 @@
+use crate::Notebook;
 use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
 use jsoncanvas::{
     FileNode, GroupNode, LinkNode, Node, NodeId, TextNode,
@@ -7,6 +8,72 @@ use jsoncanvas::{
 };
 use std::collections::HashMap;
 use std::ops::Neg;
+
+/// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
+/// with draggable, selectable nodes. Position and selection changes are written
+/// back into `notebook`.
+pub fn notebook_ui(notebook: &mut Notebook, ui: &mut egui::Ui) {
+    if !notebook.loaded {
+        notebook.scene_rect = ui.available_rect_before_wrap();
+        notebook.loaded = true;
+    }
+
+    // Effective rects for every node, accounting for drag overrides. Edges and
+    // nodes both read from this so a dragged node's edges follow it.
+    let rects: HashMap<NodeId, Rect> = notebook
+        .canvas
+        .get_nodes()
+        .iter()
+        .map(|(id, node)| (id.clone(), notebook.node_rect(id, node)))
+        .collect();
+
+    // Collect interactions inside the scene closure and apply them after, so the
+    // closure only borrows the canvas immutably (Scene needs &mut scene_rect).
+    let mut scene_rect = notebook.scene_rect;
+    let view = notebook.scene_rect;
+    let mut dragged: Option<(NodeId, Pos2)> = None;
+    let mut clicked: Option<NodeId> = None;
+    let mut bg_clicked = false;
+    let canvas = &notebook.canvas;
+    let selected = notebook.selected.as_ref();
+
+    egui::Scene::new().show(ui, &mut scene_rect, |ui| {
+        // Background handle first (underneath the nodes) covering the visible
+        // region, so a click on empty canvas clears the selection.
+        let bg = ui.interact(view, ui.id().with("notebook_bg"), egui::Sense::click());
+        if bg.clicked() {
+            bg_clicked = true;
+        }
+
+        // Edges next, then nodes on top so node drag handles win interaction.
+        for (_edge_id, edge) in canvas.get_edges().iter() {
+            edge_ui(ui, &rects, edge);
+        }
+
+        for (id, node) in canvas.get_nodes().iter() {
+            let rect = rects[id];
+            let resp = node_ui(ui, node, rect, selected == Some(id));
+
+            if resp.dragged() {
+                dragged = Some((id.clone(), rect.min + resp.drag_delta()));
+            }
+            if resp.clicked() {
+                clicked = Some(id.clone());
+            }
+        }
+    });
+
+    notebook.scene_rect = scene_rect;
+
+    if let Some((id, pos)) = dragged {
+        notebook.positions.insert(id, pos);
+    }
+    if let Some(id) = clicked {
+        notebook.selected = Some(id);
+    } else if bg_clicked {
+        notebook.selected = None;
+    }
+}
 
 /// Resolve a JSONCanvas color (preset palette index or hex) to an egui color.
 ///
@@ -35,7 +102,9 @@ fn blend(base: Color32, accent: Color32, t: f32) -> Color32 {
     )
 }
 
-fn node_rect(node: &GenericNode) -> Rect {
+/// The node's rect at its canvas-declared position. Callers that move nodes
+/// around (dragging) substitute their own position for `rect.min`.
+pub fn node_rect(node: &GenericNode) -> Rect {
     let x = node.x as f32;
     let y = node.y as f32;
     let width = node.width as f32;
@@ -47,9 +116,7 @@ fn node_rect(node: &GenericNode) -> Rect {
     Rect::from_min_max(min, max)
 }
 
-fn side_point(side: &Side, node: &GenericNode) -> Pos2 {
-    let rect = node_rect(node);
-
+fn side_point(side: &Side, rect: Rect) -> Pos2 {
     match side {
         Side::Top => rect.center_top(),
         Side::Left => rect.left_center(),
@@ -70,19 +137,19 @@ fn side_tangent(side: &Side) -> egui::Vec2 {
 
 pub fn edge_ui(
     ui: &mut egui::Ui,
-    nodes: &HashMap<NodeId, Node>,
+    rects: &HashMap<NodeId, Rect>,
     edge: &Edge,
 ) -> Option<egui::Response> {
-    let from_node = nodes.get(edge.from_node())?;
-    let to_node = nodes.get(edge.to_node())?;
+    let from_rect = *rects.get(edge.from_node())?;
+    let to_rect = *rects.get(edge.to_node())?;
     let to_side = edge.to_side()?;
     let from_side = edge.from_side()?;
 
     // anchor from-side
-    let p0 = side_point(from_side, from_node.node());
+    let p0 = side_point(from_side, from_rect);
 
     // anchor b
-    let to_anchor = side_point(to_side, to_node.node());
+    let to_anchor = side_point(to_side, to_rect);
 
     // to-point is slightly offset to accomidate arrow
     let p3 = to_anchor + side_tangent(to_side) * 2.0;
@@ -155,68 +222,97 @@ pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32
     ));
 }
 
-pub fn node_ui(ui: &mut egui::Ui, node: &Node) -> egui::Response {
+pub fn node_ui(ui: &mut egui::Ui, node: &Node, rect: Rect, selected: bool) -> egui::Response {
     match node {
-        Node::Text(text_node) => text_node_ui(ui, text_node),
-        Node::File(file_node) => file_node_ui(ui, file_node),
-        Node::Link(link_node) => link_node_ui(ui, link_node),
-        Node::Group(group_node) => group_node_ui(ui, group_node),
+        Node::Text(text_node) => text_node_ui(ui, text_node, rect, selected),
+        Node::File(file_node) => file_node_ui(ui, file_node, rect, selected),
+        Node::Link(link_node) => link_node_ui(ui, link_node, rect, selected),
+        Node::Group(group_node) => group_node_ui(ui, group_node, rect, selected),
     }
 }
 
-fn text_node_ui(ui: &mut egui::Ui, node: &TextNode) -> egui::Response {
-    node_box_ui(ui, node.node(), |ui| {
-        egui::ScrollArea::vertical()
-            .show(ui, |ui| {
-                notedeck_ui::markdown::render_markdown(node.text(), ui);
-                ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
-            })
-            .inner
+fn text_node_ui(ui: &mut egui::Ui, node: &TextNode, rect: Rect, selected: bool) -> egui::Response {
+    node_box_ui(ui, node.node(), rect, selected, |ui| {
+        notedeck_ui::markdown::render_markdown(node.text(), ui);
     })
 }
 
-fn file_node_ui(ui: &mut egui::Ui, node: &FileNode) -> egui::Response {
-    node_box_ui(ui, node.node(), |ui| ui.label("file node"))
+fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) -> egui::Response {
+    node_box_ui(ui, node.node(), rect, selected, |ui| {
+        ui.label("file node");
+    })
 }
 
-fn link_node_ui(ui: &mut egui::Ui, node: &LinkNode) -> egui::Response {
-    node_box_ui(ui, node.node(), |ui| ui.label("link node"))
+fn link_node_ui(ui: &mut egui::Ui, node: &LinkNode, rect: Rect, selected: bool) -> egui::Response {
+    node_box_ui(ui, node.node(), rect, selected, |ui| {
+        ui.label("link node");
+    })
 }
 
-fn group_node_ui(ui: &mut egui::Ui, node: &GroupNode) -> egui::Response {
-    node_box_ui(ui, node.node(), |ui| ui.label("group node"))
+fn group_node_ui(
+    ui: &mut egui::Ui,
+    node: &GroupNode,
+    rect: Rect,
+    selected: bool,
+) -> egui::Response {
+    node_box_ui(ui, node.node(), rect, selected, |ui| {
+        ui.label("group node");
+    })
 }
 
+/// Render a node's frame and contents at `rect`, returning a click-and-drag
+/// response covering the whole node so the caller can move/select it. The
+/// background handle is registered before the content, so non-interactive
+/// content widgets (labels) fall through to it and dragging the body moves the
+/// node.
 fn node_box_ui(
     ui: &mut egui::Ui,
     node: &GenericNode,
-    contents: impl FnOnce(&mut egui::Ui) -> egui::Response,
+    rect: Rect,
+    selected: bool,
+    contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Response {
-    let pos = node_rect(node);
-
     // Colored nodes get an accent border and a faint accent-tinted fill; plain
-    // nodes fall back to the neutral theme colors.
+    // nodes fall back to the neutral theme colors. Selected nodes get a
+    // brighter, thicker border.
     let base_fill = ui.visuals().noninteractive().weak_bg_fill;
     let base_stroke = ui.visuals().noninteractive().bg_stroke.color;
-    let (fill, stroke_color) = match node.color.as_ref().map(canvas_color) {
+    let (fill, accent) = match node.color.as_ref().map(canvas_color) {
         Some(accent) => (blend(base_fill, accent, 0.12), accent),
         None => (base_fill, base_stroke),
     };
+    let (stroke_width, stroke_color) = if selected {
+        (
+            notedeck::tokens::STROKE_THICK * 2.0,
+            ui.visuals().selection.stroke.color,
+        )
+    } else {
+        (notedeck::tokens::STROKE_THICK, accent)
+    };
 
-    ui.put(pos, |ui: &mut egui::Ui| {
+    ui.put(rect, |ui: &mut egui::Ui| {
         egui::Frame::default()
             .fill(fill)
             .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
             .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
-            .stroke(egui::Stroke::new(
-                notedeck::tokens::STROKE_THICK,
-                stroke_color,
-            ))
+            .stroke(egui::Stroke::new(stroke_width, stroke_color))
             .show(ui, |ui| {
-                let rect = ui.available_rect_before_wrap();
-                ui.allocate_at_least(ui.available_size(), egui::Sense::click());
-                ui.put(rect, contents);
+                let inner = ui.available_rect_before_wrap();
+                ui.allocate_at_least(ui.available_size(), egui::Sense::hover());
+                ui.put(inner, |ui: &mut egui::Ui| {
+                    contents(ui);
+                    ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
+                });
             })
             .response
-    })
+    });
+
+    // Drag/select handle covering the whole node, registered last so it's the
+    // topmost interactive widget — the content above is non-interactive and
+    // would otherwise swallow nothing, but a top-level handle is unambiguous.
+    ui.interact(
+        rect,
+        ui.id().with(("notebook_node", node.id.as_str())),
+        egui::Sense::click_and_drag(),
+    )
 }

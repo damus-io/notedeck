@@ -1,7 +1,8 @@
-use crate::ui::{edge_ui, node_ui};
+use crate::ui::{node_rect, notebook_ui};
 use egui::{Pos2, Rect};
-use jsoncanvas::JsonCanvas;
+use jsoncanvas::{JsonCanvas, NodeId};
 use notedeck::{AppContext, AppResponse};
+use std::collections::HashMap;
 
 mod ui;
 
@@ -9,6 +10,11 @@ pub struct Notebook {
     canvas: JsonCanvas,
     scene_rect: Rect,
     loaded: bool,
+    /// Per-node position overrides applied by dragging. The canvas remains the
+    /// source of truth for the declared positions; this layers moves on top.
+    positions: HashMap<NodeId, Pos2>,
+    /// Currently selected node, if any.
+    selected: Option<NodeId>,
 }
 
 impl Notebook {
@@ -22,39 +28,41 @@ impl Notebook {
             canvas,
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
             loaded: false,
+            positions: HashMap::new(),
+            selected: None,
         }
+    }
+
+    /// The node's current rect, accounting for any drag override.
+    pub(crate) fn node_rect(&self, id: &NodeId, node: &jsoncanvas::Node) -> Rect {
+        let default = node_rect(node.node());
+        match self.positions.get(id) {
+            Some(pos) => Rect::from_min_size(*pos, default.size()),
+            None => default,
+        }
+    }
+
+    /// The node's current top-left position (after any drag override).
+    pub fn node_position(&self, id: &NodeId) -> Option<Pos2> {
+        let node = self.canvas.get_nodes().get(id)?;
+        Some(self.node_rect(id, node).min)
+    }
+
+    /// The currently selected node, if any.
+    pub fn selected(&self) -> Option<&NodeId> {
+        self.selected.as_ref()
     }
 }
 
 impl Default for Notebook {
     fn default() -> Self {
-        Notebook {
-            canvas: demo_canvas(),
-            scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
-            loaded: false,
-        }
+        Notebook::from_canvas(demo_canvas())
     }
 }
 
 impl notedeck::App for Notebook {
     fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        if !self.loaded {
-            self.scene_rect = ui.available_rect_before_wrap();
-            self.loaded = true;
-        }
-
-        egui::Scene::new().show(ui, &mut self.scene_rect, |ui| {
-            // render nodes
-            for (_node_id, node) in self.canvas.get_nodes().iter() {
-                let _resp = node_ui(ui, node);
-            }
-
-            // render edges
-            for (_edge_id, edge) in self.canvas.get_edges().iter() {
-                let _resp = edge_ui(ui, self.canvas.get_nodes(), edge);
-            }
-        });
-
+        notebook_ui(self, ui);
         AppResponse::none()
     }
 }
