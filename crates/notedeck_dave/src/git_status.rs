@@ -18,6 +18,10 @@ pub struct GitStatusData {
     pub branch: Option<String>,
     /// List of file entries
     pub files: Vec<GitFileEntry>,
+    /// Total inserted lines in tracked files vs HEAD (from `git diff --numstat`)
+    pub added_lines: usize,
+    /// Total deleted lines in tracked files vs HEAD (from `git diff --numstat`)
+    pub deleted_lines: usize,
     /// When this data was fetched
     pub fetched_at: Instant,
 }
@@ -179,7 +183,52 @@ fn parse_git_status(output: &str) -> GitStatusData {
     GitStatusData {
         branch,
         files,
+        added_lines: 0,
+        deleted_lines: 0,
         fetched_at: Instant::now(),
+    }
+}
+
+/// Parse `git diff --numstat` output into total (added, deleted) line counts.
+/// Each line is `added<TAB>deleted<TAB>path`; binary files report `-` and are
+/// counted as zero.
+fn parse_numstat(output: &str) -> (usize, usize) {
+    let mut added = 0;
+    let mut deleted = 0;
+    for line in output.lines() {
+        let mut parts = line.split('\t');
+        let a = parts.next().unwrap_or("");
+        let d = parts.next().unwrap_or("");
+        added += a.parse::<usize>().unwrap_or(0);
+        deleted += d.parse::<usize>().unwrap_or(0);
+    }
+    (added, deleted)
+}
+
+/// Apply the platform-specific flags we want on every git invocation.
+fn configure_git_command(cmd: &mut std::process::Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd;
+}
+
+/// Total inserted/deleted lines in tracked files relative to HEAD. Returns
+/// (0, 0) if the diff can't be computed (e.g. a repo with no commits yet).
+fn run_git_numstat(cwd: &Path) -> (usize, usize) {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-c", "color.ui=never", "diff", "--numstat", "HEAD"])
+        .current_dir(cwd);
+    configure_git_command(&mut cmd);
+
+    match cmd.output() {
+        Ok(output) if output.status.success() => {
+            parse_numstat(&String::from_utf8_lossy(&output.stdout))
+        }
+        _ => (0, 0),
     }
 }
 
@@ -187,13 +236,7 @@ fn run_git_status(cwd: &Path) -> GitStatusResult {
     let mut cmd = std::process::Command::new("git");
     cmd.args(["-c", "color.ui=never", "status", "--short", "--branch"])
         .current_dir(cwd);
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    configure_git_command(&mut cmd);
 
     let output = cmd
         .output()
@@ -208,7 +251,11 @@ fn run_git_status(cwd: &Path) -> GitStatusResult {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_git_status(&stdout))
+    let mut data = parse_git_status(&stdout);
+    let (added_lines, deleted_lines) = run_git_numstat(cwd);
+    data.added_lines = added_lines;
+    data.deleted_lines = deleted_lines;
+    Ok(data)
 }
 
 #[cfg(test)]
@@ -248,5 +295,18 @@ mod tests {
         let output = "## main\n D deleted.rs\n";
         let data = parse_git_status(output);
         assert_eq!(data.deleted_count(), 1);
+    }
+
+    #[test]
+    fn test_parse_numstat() {
+        let output = "12\t3\tsrc/a.rs\n0\t7\tsrc/b.rs\n-\t-\tassets/logo.png\n";
+        let (added, deleted) = parse_numstat(output);
+        assert_eq!(added, 12);
+        assert_eq!(deleted, 10);
+    }
+
+    #[test]
+    fn test_parse_numstat_empty() {
+        assert_eq!(parse_numstat(""), (0, 0));
     }
 }

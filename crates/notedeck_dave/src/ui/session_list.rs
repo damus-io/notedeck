@@ -166,6 +166,16 @@ impl<'a> SessionListUi<'a> {
         } else {
             session.details.display_title()
         };
+        // Total +/- lines vs HEAD, shown bottom-right on standalone (cwd) rows
+        // so a dirty worktree is obvious at a glance. None unless the repo has
+        // tracked changes.
+        let git_lines = session
+            .agentic
+            .as_ref()
+            .and_then(|a| a.git_status.current())
+            .and_then(|r| r.as_ref().ok())
+            .map(|d| (d.added_lines, d.deleted_lines))
+            .filter(|(added, deleted)| *added > 0 || *deleted > 0);
         let (response, dot_action) = if session.ai_mode == AiMode::Agentic {
             self.agent_row_ui(
                 ui,
@@ -177,6 +187,7 @@ impl<'a> SessionListUi<'a> {
                 session.status(),
                 queue_priority,
                 session.backend_type,
+                git_lines,
             )
         } else {
             self.chat_row_ui(
@@ -326,6 +337,7 @@ impl<'a> SessionListUi<'a> {
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
         backend_type: BackendType,
+        git_lines: Option<(usize, usize)>,
     ) -> (egui::Response, Option<SessionListAction>) {
         let row_height = if cwd_display.is_some() { 48.0 } else { 32.0 };
         let desired_size = egui::vec2(ui.available_width(), row_height);
@@ -356,18 +368,37 @@ impl<'a> SessionListUi<'a> {
         }
 
         let hints: &[(&str, &str)] = &[("⇧T", "Duplicate"), ("⇧K", "Clear"), ("⇧R", "Rename")];
-        let (right_used, dot_action) = render_row_right_side(
-            ui,
-            rect,
-            session_id,
-            is_active,
-            self.ctrl_held,
-            shortcut_hint,
-            queue_priority,
-            hints,
-        );
+        // Standalone (cwd) rows get the worktree treatment: status dot moves to
+        // the top-right and the git +/- line stats sit on the bottom-right next
+        // to the cwd path. Grouped rows keep the original centered layout.
+        let (title_right, cwd_right, dot_action) = if cwd_display.is_some() {
+            render_agent_row_right_side(
+                ui,
+                rect,
+                session_id,
+                is_active,
+                self.ctrl_held,
+                shortcut_hint,
+                queue_priority,
+                git_lines,
+                hints,
+            )
+        } else {
+            let (used, action) = render_row_right_side(
+                ui,
+                rect,
+                session_id,
+                is_active,
+                self.ctrl_held,
+                shortcut_hint,
+                queue_priority,
+                hints,
+            );
+            (used, used, action)
+        };
 
-        let max_text_width = rect.width() - text_start_x - right_used;
+        let title_max_width = rect.width() - text_start_x - title_right;
+        let cwd_max_width = rect.width() - text_start_x - cwd_right;
         let font_id = egui::FontId::proportional(14.0);
         let title_height = ui
             .painter()
@@ -384,12 +415,12 @@ impl<'a> SessionListUi<'a> {
             title,
             rect.left() + text_start_x,
             title_top,
-            max_text_width,
+            title_max_width,
         );
 
         if let Some(cwd) = cwd_display {
             let cwd_pos = egui::pos2(rect.left() + text_start_x, title_top + title_height + 1.0);
-            cwd_inline_ui(ui, cwd, cwd_pos, max_text_width);
+            cwd_inline_ui(ui, cwd, cwd_pos, cwd_max_width);
         }
 
         (response, dot_action)
@@ -665,6 +696,127 @@ fn render_row_right_side(
     }
 
     (right_offset, dot_action)
+}
+
+const GIT_ADDED_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 60);
+const GIT_DELETED_COLOR: egui::Color32 = egui::Color32::from_rgb(200, 60, 60);
+
+/// Right side of a standalone (cwd) agent row: keybind hints stay vertically
+/// centered, the focus/status dot moves to the top-right, and the git +/- line
+/// stats render on the bottom-right. Returns the horizontal space to reserve on
+/// the title (top) line and the cwd (bottom) line respectively, plus any dot
+/// action.
+#[allow(clippy::too_many_arguments)]
+fn render_agent_row_right_side(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    session_id: SessionId,
+    is_active: bool,
+    ctrl_held: bool,
+    shortcut_hint: Option<usize>,
+    queue_priority: Option<FocusPriority>,
+    git_lines: Option<(usize, usize)>,
+    hints: &[(&str, &str)],
+) -> (f32, f32, Option<SessionListAction>) {
+    let mut center_offset = 8.0;
+    let mut dot_action = None;
+
+    if let Some(num) = shortcut_hint {
+        let hint_size = 18.0;
+        let hint_text = format!("{}", num);
+        let hint_center = rect.right_center() - egui::vec2(8.0 + hint_size / 2.0, 0.0);
+        paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
+        center_offset = 8.0 + hint_size + 6.0;
+    }
+
+    if is_active && ctrl_held {
+        let hint_size = 16.0;
+        let hint_width = 26.0;
+        let gap = 3.0;
+
+        for (hint_text, tooltip) in hints {
+            let center = rect.right_center() - egui::vec2(center_offset + hint_width / 2.0, 0.0);
+            KeybindHint::new(hint_text)
+                .size(hint_size)
+                .width(hint_width)
+                .paint_at(ui, center);
+            let hint_rect = egui::Rect::from_center_size(center, egui::vec2(hint_width, hint_size));
+            ui.interact(
+                hint_rect,
+                ui.id().with(("keybind_tip", *hint_text)),
+                Sense::hover(),
+            )
+            .on_hover_text(*tooltip);
+            center_offset += hint_width + gap;
+        }
+    }
+
+    // Status dot, top-right corner.
+    let mut dot_width = 0.0;
+    if let Some(priority) = queue_priority {
+        let dot_radius = 5.0;
+        let dot_center = egui::pos2(rect.right() - 4.0 - dot_radius, rect.top() + 9.0);
+        ui.painter()
+            .circle_filled(dot_center, dot_radius, priority.color());
+
+        if priority == FocusPriority::Done {
+            let dot_rect = egui::Rect::from_center_size(
+                dot_center,
+                egui::vec2(dot_radius * 4.0, dot_radius * 4.0),
+            );
+            let dot_response = ui.interact(
+                dot_rect,
+                ui.id().with(("dismiss_dot", session_id)),
+                egui::Sense::click(),
+            );
+            if dot_response.clicked() {
+                dot_action = Some(SessionListAction::DismissDone(session_id));
+            }
+            if dot_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+
+        dot_width = dot_radius * 2.0 + 8.0;
+    }
+
+    // Git +/- line stats, bottom-right corner.
+    let mut git_width = 0.0;
+    if let Some((added, deleted)) = git_lines {
+        let font = egui::FontId::monospace(10.0);
+        let gap = 5.0;
+        let mut galleys = Vec::new();
+        if added > 0 {
+            galleys.push(ui.painter().layout_no_wrap(
+                format!("+{added}"),
+                font.clone(),
+                GIT_ADDED_COLOR,
+            ));
+        }
+        if deleted > 0 {
+            galleys.push(ui.painter().layout_no_wrap(
+                format!("-{deleted}"),
+                font.clone(),
+                GIT_DELETED_COLOR,
+            ));
+        }
+
+        let total_w: f32 = galleys.iter().map(|g| g.size().x).sum::<f32>()
+            + gap * galleys.len().saturating_sub(1) as f32;
+        let y_center = rect.bottom() - 9.0;
+        let mut x = rect.right() - 6.0 - total_w;
+        for galley in &galleys {
+            let pos = egui::pos2(x, y_center - galley.size().y / 2.0);
+            x += galley.size().x + gap;
+            ui.painter()
+                .galley(pos, galley.clone(), egui::Color32::WHITE);
+        }
+        git_width = total_w + 10.0;
+    }
+
+    let title_right = center_offset.max(dot_width);
+    let cwd_right = center_offset.max(git_width);
+    (title_right, cwd_right, dot_action)
 }
 
 /// Render a title string at the given position, clipping if it exceeds max_width.
