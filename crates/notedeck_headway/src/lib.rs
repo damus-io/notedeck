@@ -257,7 +257,13 @@ impl App for Headway {
             match &signer {
                 Some(secret) => {
                     if !self.seeded {
-                        store::seed_default_board(ctx.ndb, &author, secret, &self.board_id);
+                        store::seed_default_board(
+                            ctx.ndb,
+                            &author,
+                            secret,
+                            &self.board_id,
+                            &mut store::NoPublish,
+                        );
                         self.seeded = true;
                         self.wake();
                     }
@@ -285,7 +291,15 @@ impl App for Headway {
         // a signing key; a watch-only account simply can't edit.
         if let (Some(action), Some(secret)) = (action, &signer) {
             let view = self.sync.view().expect("view present");
-            store::apply(ctx.ndb, &self.board_id, view, &author, secret, action);
+            store::apply(
+                ctx.ndb,
+                &self.board_id,
+                view,
+                &author,
+                secret,
+                action,
+                &mut store::NoPublish,
+            );
             self.wake();
         }
 
@@ -1410,7 +1424,13 @@ mod tests {
         }
 
         fn seed(&mut self) {
-            store::seed_default_board(&self.ndb, &self.kp.pubkey, &self.secret(), store::BOARD_ID);
+            store::seed_default_board(
+                &self.ndb,
+                &self.kp.pubkey,
+                &self.secret(),
+                store::BOARD_ID,
+                &mut store::NoPublish,
+            );
         }
 
         /// Poll until the cached view satisfies `pred` (ingest is async). Fails
@@ -1485,6 +1505,7 @@ mod tests {
                     col: 1,
                     title: "Fresh card".to_string(),
                 },
+                &mut store::NoPublish,
             );
         }
 
@@ -1539,6 +1560,7 @@ mod tests {
                     col: 1,
                     title: "Delta card".to_string(),
                 },
+                &mut store::NoPublish,
             );
         }
         t.wait(|v| v.columns[1].cards.len() == 3);

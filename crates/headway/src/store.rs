@@ -1,11 +1,13 @@
-//! Local-only persistence for headway boards.
+//! Persistence for headway boards.
 //!
 //! This is the app-layer bridge between the pure schema in [`crate::event`] and
 //! nostrdb. It seeds the default board and translates UI intents
-//! ([`BoardAction`]) into signed nostr events that are **ingested into the local
-//! nostrdb only** — there is deliberately no relay publishing yet (see the
-//! `headway-local-only` constraint). When we "go remote" this is the single
-//! place that grows a `publisher.publish_note(...)` call alongside each ingest.
+//! ([`BoardAction`]) into signed nostr events that are ingested into a local
+//! nostrdb. Every ingested event is also handed to a [`Publisher`], the single
+//! seam for fanning changes outward to a relay: the egui app ingests straight
+//! into the nostrdb its embedded relay serves and so uses [`NoPublish`], while
+//! the CLI keeps its own nostrdb and publishes each event to the running app's
+//! relay over its websocket.
 
 use enostr::{NoteId, Pubkey};
 use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
@@ -57,16 +59,41 @@ pub enum BoardAction {
     MoveColumn { from: usize, to: usize },
 }
 
+/// A sink for events that have been ingested locally and should also be fanned
+/// out — typically published to a relay. [`ingest`] hands every event it stores
+/// to the publisher as a ready-to-send NIP-01 `["EVENT", {...}]` frame, in the
+/// order they were ingested.
+pub trait Publisher {
+    /// Called once per successfully ingested event with its `["EVENT", {...}]`
+    /// JSON frame, ready to write to a relay websocket.
+    fn publish(&mut self, event_frame: &str);
+}
+
+/// A [`Publisher`] that drops everything: local ingest only, no fan-out. Used by
+/// the egui app, whose embedded relay already serves the same nostrdb it ingests
+/// into, so there is nothing to publish.
+pub struct NoPublish;
+
+impl Publisher for NoPublish {
+    fn publish(&mut self, _event_frame: &str) {}
+}
+
 /// Sign `builder` with `secret` and ingest the resulting note into the local
-/// nostrdb. Returns the note id, or `None` if building/ingesting failed.
-///
-/// Local-only: this does *not* publish to relays.
-pub fn ingest(ndb: &Ndb, builder: NoteBuilder, secret: &[u8; 32]) -> Option<NoteId> {
+/// nostrdb, then hand its `["EVENT", {...}]` frame to `publisher`. Returns the
+/// note id, or `None` if building/ingesting failed (in which case nothing is
+/// published).
+pub fn ingest(
+    ndb: &Ndb,
+    builder: NoteBuilder,
+    secret: &[u8; 32],
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
     let note = builder.sign(secret).build()?;
     let id = NoteId::new(*note.id());
     let json = enostr::ClientMessage::event(&note).ok()?.to_json().ok()?;
     ndb.process_event_with(&json, IngestMetadata::new().client(true))
         .ok()?;
+    publisher.publish(&json);
     Some(id)
 }
 
@@ -113,15 +140,26 @@ fn default_cards() -> Vec<SeedCard> {
 
 /// Seed a fresh default board for `author` into the local nostrdb: one board
 /// event, plus an issue + placement per default card.
-pub fn seed_default_board(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], board_id: &str) {
+pub fn seed_default_board(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    publisher: &mut dyn Publisher,
+) {
     let addr = board_address(author, board_id);
     let columns = default_columns();
-    ingest(ndb, build_board(board_id, "Headway", "", &columns), secret);
+    ingest(
+        ndb,
+        build_board(board_id, "Headway", "", &columns),
+        secret,
+        publisher,
+    );
 
     // Hand out increasing ranks per column so cards keep their seeded order.
     let mut last_rank: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     for (col_id, title, body, labels) in default_cards() {
-        let Some(id) = ingest(ndb, build_issue(&addr, title, body), secret) else {
+        let Some(id) = ingest(ndb, build_issue(&addr, title, body), secret, publisher) else {
             continue;
         };
         let rank = rank_between(last_rank.get(col_id).map(|s| s.as_str()), None);
@@ -129,9 +167,10 @@ pub fn seed_default_board(ndb: &Ndb, author: &Pubkey, secret: &[u8; 32], board_i
             ndb,
             build_placement(board_id, &addr, &id, col_id, &rank),
             secret,
+            publisher,
         );
         if !labels.is_empty() {
-            ingest(ndb, build_labels(&id, labels), secret);
+            ingest(ndb, build_labels(&id, labels), secret, publisher);
         }
         last_rank.insert(col_id, rank);
     }
@@ -147,6 +186,7 @@ pub fn apply(
     author: &Pubkey,
     secret: &[u8; 32],
     action: BoardAction,
+    publisher: &mut dyn Publisher,
 ) {
     let addr = board_address(author, board_id);
 
@@ -166,13 +206,14 @@ pub fn apply(
                 build_placement(board_id, &addr, &card, &col.id, &rank)
                     .created_at(next_after(after)),
                 secret,
+                publisher,
             );
         }
         BoardAction::AddCard { col, title } => {
             let Some(c) = view.columns.get(col) else {
                 return;
             };
-            let Some(id) = ingest(ndb, build_issue(&addr, &title, ""), secret) else {
+            let Some(id) = ingest(ndb, build_issue(&addr, &title, ""), secret, publisher) else {
                 return;
             };
             let rank = rank_for_insert(&c.cards, None, c.cards.len());
@@ -180,16 +221,22 @@ pub fn apply(
                 ndb,
                 build_placement(board_id, &addr, &id, &c.id, &rank),
                 secret,
+                publisher,
             );
         }
         BoardAction::EditTitle { card, title } => {
-            ingest(ndb, build_subject_edit(&card, &title), secret);
+            ingest(ndb, build_subject_edit(&card, &title), secret, publisher);
         }
         BoardAction::EditDescription { card, description } => {
-            ingest(ndb, build_cover_note(&card, author, &description), secret);
+            ingest(
+                ndb,
+                build_cover_note(&card, author, &description),
+                secret,
+                publisher,
+            );
         }
         BoardAction::SetLabels { card, labels } => {
-            ingest(ndb, build_labels(&card, &labels), secret);
+            ingest(ndb, build_labels(&card, &labels), secret, publisher);
         }
         BoardAction::DeleteCard { card } => {
             // build_placement needs a rank; reuse the card's current one (or a
@@ -202,6 +249,7 @@ pub fn apply(
                 build_placement(board_id, &addr, &card, COL_DELETED, &rank)
                     .created_at(next_after(after)),
                 secret,
+                publisher,
             );
         }
         BoardAction::ArchiveCard { card } => {
@@ -215,6 +263,7 @@ pub fn apply(
                 build_archive_placement(board_id, &addr, &card, from_col, &rank)
                     .created_at(next_after(c.placed_at)),
                 secret,
+                publisher,
             );
         }
         BoardAction::RestoreCard { card } => {
@@ -237,12 +286,13 @@ pub fn apply(
                 build_placement(board_id, &addr, &card, to_col, &rank)
                     .created_at(next_after(entry.card.placed_at)),
                 secret,
+                publisher,
             );
         }
         BoardAction::AddColumn { name } => {
             let mut cols = column_defs(view);
             cols.push(ColumnDef::new(unique_col_id(&cols, &name), name));
-            republish_board(ndb, board_id, view, secret, &cols);
+            republish_board(ndb, board_id, view, secret, &cols, publisher);
         }
         BoardAction::RenameColumn { col, name } => {
             let mut cols = column_defs(view);
@@ -250,7 +300,7 @@ pub fn apply(
                 return;
             };
             def.name = name;
-            republish_board(ndb, board_id, view, secret, &cols);
+            republish_board(ndb, board_id, view, secret, &cols, publisher);
         }
         BoardAction::RemoveColumn { col } => {
             let mut cols = column_defs(view);
@@ -258,7 +308,7 @@ pub fn apply(
                 return;
             }
             cols.remove(col);
-            republish_board(ndb, board_id, view, secret, &cols);
+            republish_board(ndb, board_id, view, secret, &cols, publisher);
         }
         BoardAction::MoveColumn { from, to } => {
             let mut cols = column_defs(view);
@@ -267,7 +317,7 @@ pub fn apply(
             }
             let def = cols.remove(from);
             cols.insert(to, def);
-            republish_board(ndb, board_id, view, secret, &cols);
+            republish_board(ndb, board_id, view, secret, &cols, publisher);
         }
     }
 }
@@ -285,12 +335,14 @@ fn republish_board(
     view: &BoardView,
     secret: &[u8; 32],
     columns: &[ColumnDef],
+    publisher: &mut dyn Publisher,
 ) {
     let created_at = now_secs().max(view.created_at + 1);
     ingest(
         ndb,
         build_board(board_id, &view.title, &view.description, columns).created_at(created_at),
         secret,
+        publisher,
     );
 }
 
@@ -467,6 +519,7 @@ mod tests {
                 &self.kp.pubkey,
                 &self.secret(),
                 action,
+                &mut NoPublish,
             );
         }
     }
@@ -486,7 +539,7 @@ mod tests {
     #[test]
     fn seed_materialises_default_board() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
 
         let view = t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7);
         assert_eq!(
@@ -506,7 +559,7 @@ mod tests {
     #[test]
     fn add_card_appends_to_column() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
         let view = t.wait(|v| v.columns[1].cards.len() == 2);
 
         t.apply(
@@ -522,9 +575,48 @@ mod tests {
     }
 
     #[test]
+    fn publisher_receives_a_frame_per_ingested_event() {
+        #[derive(Default)]
+        struct Collect(Vec<String>);
+        impl Publisher for Collect {
+            fn publish(&mut self, frame: &str) {
+                self.0.push(frame.to_string());
+            }
+        }
+
+        let t = TestNdb::new();
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+
+        // AddCard ingests two events — the issue and its placement — so the
+        // publisher should see exactly two ready-to-send EVENT frames.
+        let mut sink = Collect::default();
+        super::apply(
+            &t.ndb,
+            BOARD_ID,
+            &view,
+            &t.kp.pubkey,
+            &t.secret(),
+            BoardAction::AddCard {
+                col: 1,
+                title: "Tracked".to_string(),
+            },
+            &mut sink,
+        );
+
+        assert_eq!(sink.0.len(), 2, "issue + placement each publish a frame");
+        for frame in &sink.0 {
+            assert!(
+                frame.starts_with("[\"EVENT\","),
+                "frame is a NIP-01 EVENT message: {frame}"
+            );
+        }
+    }
+
+    #[test]
     fn move_card_changes_column() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
         let view = t.wait(|v| v.columns[0].cards.len() == 3);
 
         let card = view.columns[0].cards[0].id;
@@ -545,7 +637,7 @@ mod tests {
     #[test]
     fn edit_title_description_and_labels() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
         let view = t.wait(|v| v.columns[1].cards.len() == 2);
         // The second Todo card ("Column reordering") is seeded without labels,
         // so the SetLabels union below is exactly the two we add.
@@ -590,7 +682,7 @@ mod tests {
     #[test]
     fn delete_card_removes_it() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
         let view = t.wait(|v| v.columns[0].cards.len() == 3);
         let card = view.columns[0].cards[0].id;
 
@@ -603,7 +695,7 @@ mod tests {
     #[test]
     fn archive_then_restore_round_trips_to_origin() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
         // Pick a card out of "In Progress" (column 2), not the first column, so a
         // restore that ignored the origin would land it somewhere else.
         let view = t.wait(|v| v.columns[2].cards.len() == 1);
@@ -632,7 +724,7 @@ mod tests {
     #[test]
     fn column_ops_round_trip() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
         let view = t.wait(|v| v.columns.len() == 4);
 
         t.apply(
