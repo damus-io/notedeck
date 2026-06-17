@@ -501,9 +501,54 @@ fn draw_dashboard(
     );
 }
 
+/// Painter-drawn messages icon: a violet speech bubble with text lines.
+fn draw_messages(
+    painter: &egui::Painter,
+    center: Pos2,
+    s: f32,
+    _color: Color32,
+    stroke_width: f32,
+) {
+    let bubble_hi = Color32::from_rgb(0xA7, 0x8B, 0xFA); // violet-400
+    let bubble_lo = Color32::from_rgb(0x7C, 0x3A, 0xED); // violet-600
+
+    // Bubble body, lifted slightly to make room for the tail.
+    let body =
+        egui::Rect::from_center_size(pos2(center.x, center.y - s * 0.07), vec2(s * 0.82, s * 0.6));
+    gradient_rect(painter, body, bubble_hi, bubble_lo);
+
+    // Tail pointing down-left from the bottom of the bubble.
+    let tail = vec![
+        pos2(body.left() + s * 0.16, body.bottom() - stroke_width),
+        pos2(body.left() + s * 0.36, body.bottom() - stroke_width),
+        pos2(body.left() + s * 0.12, body.bottom() + s * 0.22),
+    ];
+    painter.add(egui::Shape::convex_polygon(tail, bubble_lo, Stroke::NONE));
+
+    // Text lines inside the bubble (last one shorter), drawn in a soft white.
+    let ink = Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0xD0);
+    let stroke = Stroke::new(stroke_width, ink);
+    let line_left = body.left() + s * 0.15;
+    let line_right = body.right() - s * 0.15;
+    for i in -1..=1 {
+        let y = body.center().y + i as f32 * s * 0.16;
+        let right = if i == 1 {
+            line_left + (line_right - line_left) * 0.55
+        } else {
+            line_right
+        };
+        painter.line_segment([pos2(line_left, y), pos2(right, y)], stroke);
+    }
+}
+
 /// Fixed-size Dashboard app icon (sidebar drawer and chrome tab strip).
 pub fn dashboard_icon(ui: &mut egui::Ui, size: f32) {
     draw_app_icon(ui, size, draw_dashboard);
+}
+
+/// Fixed-size Messages app icon (sidebar drawer and chrome tab strip).
+pub fn messages_icon(ui: &mut egui::Ui, size: f32) {
+    draw_app_icon(ui, size, draw_messages);
 }
 
 /// Fixed-size Notebook app icon (sidebar drawer and chrome tab strip).

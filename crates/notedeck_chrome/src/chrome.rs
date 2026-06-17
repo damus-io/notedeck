@@ -1100,11 +1100,7 @@ fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
 
         #[cfg(feature = "messages")]
         NotedeckApp::Messages(_) => {
-            ui.add(
-                app_images::new_message_image()
-                    .max_width(size)
-                    .max_height(size),
-            );
+            notedeck_ui::icons::messages_icon(ui, size);
         }
 
         #[cfg(feature = "clndash")]
@@ -1680,7 +1676,7 @@ fn topdown_sidebar(
 
                                     #[cfg(feature = "messages")]
                                     NotedeckApp::Messages(_dms) => {
-                                        ui.add(app_images::new_message_image());
+                                        notedeck_ui::icons::messages_icon(ui, 24.0);
                                     }
 
                                     #[cfg(feature = "clndash")]

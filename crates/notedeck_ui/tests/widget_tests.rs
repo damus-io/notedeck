@@ -207,6 +207,16 @@ fn snapshot_dashboard_icon() {
 
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_messages_icon() {
+    let mut h = icon_harness(|ui| {
+        icons::messages_icon(ui, 24.0);
+    });
+    h.run();
+    h.snapshot("messages_icon");
+}
+
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_notebook_icon() {
     let mut h = icon_harness(|ui| {
         icons::notebook_icon(ui, 24.0);
