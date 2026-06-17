@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use futures_util::{SinkExt, StreamExt};
-use nostrdb::{Filter, Ndb, Transaction};
+use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -257,31 +257,36 @@ fn handle_req(
 /// Live-stream newly ingested matches for one subscription until it's cancelled
 /// (CLOSE, re-REQ, or connection drop) or the client's outgoing channel closes.
 /// Captures only `Send` values so it can live on a spawned task.
+///
+/// Holds a single long-lived [`SubscriptionStream`] for the subscription's whole
+/// life and polls it in the loop. Dropping the stream on exit unsubscribes from
+/// ndb. (The deprecated `wait_for_notes` can't be used here: it builds a stream,
+/// awaits one batch, then drops it — unsubscribing after the first note.)
 async fn stream_subscription(
-    mut ndb: Ndb,
+    ndb: Ndb,
     sub: nostrdb::Subscription,
     sub_id: String,
     out_tx: mpsc::UnboundedSender<Message>,
     mut cancel_rx: oneshot::Receiver<()>,
 ) {
+    let mut stream = SubscriptionStream::new(ndb.clone(), sub).notes_per_await(LIVE_BATCH);
     loop {
         tokio::select! {
             _ = &mut cancel_rx => break,
-            notes = ndb.wait_for_notes(sub, LIVE_BATCH) => {
-                let Ok(keys) = notes else { break };
+            next = stream.next() => {
+                let Some(keys) = next else { break };
                 let Ok(txn) = Transaction::new(&ndb) else { break };
                 for key in keys {
                     if let Ok(note) = ndb.get_note_by_key(&txn, key)
                         && let Ok(note_json) = note.json()
-                            && out_tx.send(event(&sub_id, &note_json)).is_err() {
-                                let _ = ndb.unsubscribe(sub);
-                                return;
-                            }
+                        && out_tx.send(event(&sub_id, &note_json)).is_err()
+                    {
+                        return;
+                    }
                 }
             }
         }
     }
-    let _ = ndb.unsubscribe(sub);
 }
 
 fn ok(event_id: &str, status: bool, message: &str) -> Message {
