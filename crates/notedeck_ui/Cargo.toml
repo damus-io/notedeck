@@ -21,6 +21,7 @@ image = { workspace = true }
 bitflags = { workspace = true }
 enostr = { workspace = true }
 hashbrown = { workspace = true }
+md-stream = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }

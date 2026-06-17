@@ -1,4 +1,4 @@
-use egui::{Align, Label, Pos2, Rect, Shape, Stroke, TextWrapMode, epaint::CubicBezierShape, vec2};
+use egui::{Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
 use jsoncanvas::{
     FileNode, GroupNode, LinkNode, Node, NodeId, TextNode,
     edge::{Edge, Side},
@@ -137,12 +137,10 @@ fn text_node_ui(ui: &mut egui::Ui, node: &TextNode) -> egui::Response {
     node_box_ui(ui, node.node(), |ui| {
         egui::ScrollArea::vertical()
             .show(ui, |ui| {
-                ui.with_layout(egui::Layout::left_to_right(Align::Min), |ui| {
-                    ui.add(Label::new(node.text()).wrap_mode(TextWrapMode::Wrap))
-                })
+                notedeck_ui::markdown::render_markdown(node.text(), ui);
+                ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
             })
             .inner
-            .response
     })
 }
 

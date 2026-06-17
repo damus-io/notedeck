@@ -6,4 +6,10 @@ version.workspace = true
 [dependencies]
 jsoncanvas = { git = "https://github.com/jb55/jsoncanvas", rev = "ae60f96e4d022cf037e086b793cacc3225bc14e5" }
 notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
 egui = { workspace = true }
+
+[dev-dependencies]
+egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
+notedeck = { workspace = true, features = ["snapshot-testing"] }
+tempfile = { workspace = true }

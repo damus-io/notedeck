@@ -9,6 +9,7 @@ pub mod focus;
 pub mod header;
 pub mod icons;
 pub mod images;
+pub mod markdown;
 pub mod media;
 pub mod mention;
 pub mod nip51_set;

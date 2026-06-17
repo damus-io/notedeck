@@ -5312,8 +5312,11 @@ name = "notedeck_notebook"
 version = "0.10.0-beta.4"
 dependencies = [
  "egui",
+ "egui_kittest",
  "jsoncanvas",
  "notedeck",
+ "notedeck_ui",
+ "tempfile",
 ]
 
 [[package]]
@@ -5366,6 +5369,7 @@ dependencies = [
  "enostr",
  "hashbrown 0.15.5",
  "image",
+ "md-stream",
  "nostrdb",
  "notedeck",
  "poll-promise",

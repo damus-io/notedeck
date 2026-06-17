@@ -55,6 +55,7 @@ suites=(
     "notedeck_dave|--test dave_button_tests"
     "notedeck_nostrverse|--test snapshot_tests"
     "notedeck_headway|--features snapshot-testing --test snapshot_tests"
+    "notedeck_notebook|--test snapshot_tests"
     # dashboard disabled for now: can't seem to regenerate its snapshots
     # "notedeck_dashboard|--features snapshot-testing --test snapshot_tests"
 )
