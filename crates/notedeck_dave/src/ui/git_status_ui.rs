@@ -15,6 +15,10 @@ pub struct StatusSnapshot {
     added: usize,
     deleted: usize,
     untracked: usize,
+    /// Total inserted lines vs HEAD (line churn, not file count).
+    added_lines: usize,
+    /// Total deleted lines vs HEAD (line churn, not file count).
+    deleted_lines: usize,
     is_clean: bool,
     files: Vec<(String, String)>, // (status, path)
 }
@@ -28,6 +32,8 @@ impl StatusSnapshot {
                 added: data.added_count(),
                 deleted: data.deleted_count(),
                 untracked: data.untracked_count(),
+                added_lines: data.added_lines,
+                deleted_lines: data.deleted_lines,
                 is_clean: data.is_clean(),
                 files: data
                     .files
@@ -127,6 +133,14 @@ pub fn git_status_content_ui(
                 count_label(ui, "+", snap.added, ADDED_COLOR);
                 count_label(ui, "-", snap.deleted, DELETED_COLOR);
                 count_label(ui, "○", snap.untracked, UNTRACKED_COLOR);
+
+                // Line churn vs HEAD (distinct from the file counts above), set
+                // off by a separator so the +/- here reads as lines, not files.
+                if snap.added_lines > 0 || snap.deleted_lines > 0 {
+                    ui.separator();
+                    count_label(ui, "+", snap.added_lines, ADDED_COLOR);
+                    count_label(ui, "-", snap.deleted_lines, DELETED_COLOR);
+                }
             }
         }
         Some(Err(_)) => {
@@ -175,5 +189,59 @@ pub fn git_expanded_files_ui(
                     });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git_status::GitStatusCache;
+    use egui_kittest::Harness;
+    use std::path::PathBuf;
+
+    /// Render the git status content line in isolation so the layout — branch,
+    /// file counts, and the line-churn group set off by a separator — can be
+    /// verified visually. A leading `ui.separator()` mirrors the real toolbar
+    /// (the divider after the Run button) so both separators can be compared.
+    #[allow(clippy::too_many_arguments)]
+    fn status_line_harness(
+        modified: usize,
+        added: usize,
+        deleted: usize,
+        untracked: usize,
+        added_lines: usize,
+        deleted_lines: usize,
+    ) -> Harness<'static> {
+        Harness::builder()
+            .with_size(egui::Vec2::new(360.0, 28.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let snap = StatusSnapshot {
+                    branch: Some("dave".to_string()),
+                    modified,
+                    added,
+                    deleted,
+                    untracked,
+                    added_lines,
+                    deleted_lines,
+                    is_clean: false,
+                    files: Vec::new(),
+                };
+                let mut cache = GitStatusCache::new(PathBuf::from("/tmp/project"));
+                let snapshot = Some(Ok(snap));
+                ui.horizontal(|ui| {
+                    ui.label("Run");
+                    ui.separator();
+                    git_status_content_ui(&mut cache, &snapshot, ui);
+                });
+            })
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_git_status_line_churn() {
+        let mut harness = status_line_harness(2, 0, 0, 1, 142, 37);
+        harness.run();
+        harness.snapshot("git_status_line_churn");
     }
 }
