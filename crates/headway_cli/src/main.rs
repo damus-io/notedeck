@@ -91,7 +91,20 @@ async fn run() -> Result<()> {
     };
 
     let ndb = open_ndb(cli.db.as_deref())?;
-    let mut relay = Relay::connect(&cli.relay).await?;
+
+    // The relay is best-effort: it's how we sync fresh events in and fan edits
+    // back out to the running app, but the CLI keeps its own nostrdb cache and
+    // folds the board from that. So if nothing is listening we carry on offline
+    // against the cache rather than aborting — `show` still reads, `seed`/edits
+    // still ingest locally (they just don't reach the app until a relay is up).
+    let mut relay = match Relay::connect(&cli.relay).await {
+        Ok(relay) => Some(relay),
+        Err(e) => {
+            eprintln!("warning: {e}");
+            eprintln!("working offline against the local cache (--relay to point elsewhere)");
+            None
+        }
+    };
 
     // nostrdb is our cursor: pull only events newer than the newest one already
     // cached. `since` is inclusive in NIP-01, so we re-fetch just the boundary
@@ -100,12 +113,14 @@ async fn run() -> Result<()> {
     //
     // This assumes one cache talks to one relay (Option A); pointing the same
     // cache at a different relay could skip events older than the cursor.
-    let mut filter = json!({ "kinds": event::HEADWAY_KINDS, "authors": [author.hex()] });
-    if let Some(since) = max_created_at(&ndb, &author) {
-        filter["since"] = json!(since);
+    if let Some(relay) = &mut relay {
+        let mut filter = json!({ "kinds": event::HEADWAY_KINDS, "authors": [author.hex()] });
+        if let Some(since) = max_created_at(&ndb, &author) {
+            filter["since"] = json!(since);
+        }
+        let received = relay.sync_into(&ndb, &filter.to_string()).await?;
+        await_ingest(&ndb, &received).await;
     }
-    let received = relay.sync_into(&ndb, &filter.to_string()).await?;
-    await_ingest(&ndb, &received).await;
 
     let board = cli.board;
     let as_json = cli.json;
@@ -129,8 +144,12 @@ async fn run() -> Result<()> {
             }
             let mut sink = Collect::default();
             store::seed_default_board(&ndb, &author, &secret, &board, &mut sink);
-            relay.publish(&sink.0).await?;
-            println!("seeded board '{board}' ({} events)", sink.0.len());
+            let n = sink.0.len();
+            publish(&mut relay, sink).await?;
+            println!(
+                "seeded board '{board}' ({n} events){}",
+                offline_note(&relay)
+            );
         }
 
         edit => {
@@ -144,8 +163,9 @@ async fn run() -> Result<()> {
             if sink.0.is_empty() {
                 return Err("action produced no events (unknown card or column?)".into());
             }
-            relay.publish(&sink.0).await?;
-            println!("ok ({} events)", sink.0.len());
+            let n = sink.0.len();
+            publish(&mut relay, sink).await?;
+            println!("ok ({n} events){}", offline_note(&relay));
         }
     }
 
@@ -257,6 +277,26 @@ struct Collect(Vec<String>);
 impl Publisher for Collect {
     fn publish(&mut self, frame: &str) {
         self.0.push(frame.to_string());
+    }
+}
+
+/// Forward an edit's collected frames to the relay if one is connected. With no
+/// relay the events are already in the local cache; they simply won't reach the
+/// running app until it's reachable, so this is a no-op.
+async fn publish(relay: &mut Option<Relay>, sink: Collect) -> Result<()> {
+    if let Some(relay) = relay {
+        relay.publish(&sink.0).await?;
+    }
+    Ok(())
+}
+
+/// A trailing note for command output, flagging when a change landed only in the
+/// local cache because no relay was reachable.
+fn offline_note(relay: &Option<Relay>) -> &'static str {
+    if relay.is_some() {
+        ""
+    } else {
+        " — offline, not forwarded to the app"
     }
 }
 
