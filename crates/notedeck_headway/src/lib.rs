@@ -6,8 +6,7 @@ use notedeck::tokens::{
 };
 use notedeck::{App, AppContext, AppResponse, ColorTheme};
 
-pub mod event;
-pub mod store;
+pub use headway::{event, store};
 
 use event::{ArchivedCard, BoardReducer, BoardView, CardView, ColumnView};
 use store::BoardAction;

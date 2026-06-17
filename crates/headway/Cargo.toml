@@ -1,0 +1,11 @@
+[package]
+name = "headway"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+nostrdb = { workspace = true }
+enostr = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

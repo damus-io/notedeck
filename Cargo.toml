@@ -8,6 +8,7 @@ members = [
     "crates/notedeck_dave",
     "crates/notedeck_messages",
     "crates/notedeck_notebook",
+    "crates/headway",
     "crates/notedeck_headway",
     "crates/nostrdb_relay",
     "crates/notedeck_nostrverse",
@@ -82,6 +83,7 @@ notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
+headway = { path = "crates/headway" }
 notedeck_headway = { path = "crates/notedeck_headway" }
 nostrdb_relay = { path = "crates/nostrdb_relay" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
