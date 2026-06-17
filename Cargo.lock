@@ -3435,7 +3435,25 @@ version = "0.10.0-beta.4"
 dependencies = [
  "enostr",
  "nostrdb",
+ "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "headway_cli"
+version = "0.10.0-beta.4"
+dependencies = [
+ "bech32",
+ "dirs",
+ "enostr",
+ "futures-util",
+ "headway",
+ "nostrdb",
+ "nostrdb_relay",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
 ]
 
 [[package]]

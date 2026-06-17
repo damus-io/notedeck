@@ -9,6 +9,7 @@ members = [
     "crates/notedeck_messages",
     "crates/notedeck_notebook",
     "crates/headway",
+    "crates/headway_cli",
     "crates/notedeck_headway",
     "crates/nostrdb_relay",
     "crates/notedeck_nostrverse",

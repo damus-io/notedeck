@@ -542,6 +542,38 @@ pub struct BoardView {
     pub archived: Vec<ArchivedCard>,
 }
 
+/// Render `view` as a stable, machine-readable JSON value: a curated schema for
+/// external tooling (e.g. the CLI's `--json`) with hex ids, independent of the
+/// internal view types.
+pub fn board_json(view: &BoardView) -> serde_json::Value {
+    serde_json::json!({
+        "id": view.id,
+        "title": view.title,
+        "description": view.description,
+        "columns": view.columns.iter().map(|c| serde_json::json!({
+            "id": c.id,
+            "name": c.name,
+            "cards": c.cards.iter().map(card_json).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "archived": view.archived.iter().map(|a| {
+            let mut card = card_json(&a.card);
+            card["from"] = serde_json::json!(a.from);
+            card
+        }).collect::<Vec<_>>(),
+    })
+}
+
+/// Render a single card as JSON. See [`board_json`].
+pub fn card_json(card: &CardView) -> serde_json::Value {
+    serde_json::json!({
+        "id": card.id.hex(),
+        "title": card.title,
+        "description": card.description,
+        "labels": card.labels,
+        "rank": card.rank,
+    })
+}
+
 /// Accumulates headway events into the maps needed to resolve effective board
 /// state, applying latest-authorised-wins as each event arrives. Keeping the
 /// reduction incremental lets it run *inside* an [`Ndb::fold`] over the index

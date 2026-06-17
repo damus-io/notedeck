@@ -1,0 +1,114 @@
+//! End-to-end: drive the real `headway` binary against a real embedded relay,
+//! exercising the full loop — CLI → relay → app nostrdb → relay → CLI.
+
+use std::process::Command;
+use std::time::Duration;
+
+use nostrdb::{Config, Ndb};
+use serde_json::Value;
+
+/// Test signing key — the same all-`0x42` secret the relay's own roundtrip test
+/// uses (a valid secp256k1 key).
+const SECRET: [u8; 32] = [0x42; 32];
+
+fn nsec() -> String {
+    let hrp = bech32::Hrp::parse("nsec").expect("hrp");
+    bech32::encode::<bech32::Bech32>(hrp, &SECRET).expect("encode nsec")
+}
+
+/// Run the `headway` binary with the shared connection args plus `extra`.
+fn headway(url: &str, db: &str, extra: &[&str]) -> std::process::Output {
+    let mut args = vec!["--nsec", "<nsec>", "--relay", url, "--db", db];
+    let nsec = nsec();
+    args[1] = &nsec;
+    args.extend_from_slice(extra);
+    Command::new(env!("CARGO_BIN_EXE_headway"))
+        .args(&args)
+        .output()
+        .expect("run headway")
+}
+
+fn total_cards(board: &Value) -> usize {
+    board["columns"]
+        .as_array()
+        .map(|cols| {
+            cols.iter()
+                .map(|c| c["cards"].as_array().map_or(0, Vec::len))
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Poll `show --json` until the board has `cards` cards (the relay ingests
+/// asynchronously, so it may take a moment to fully materialise).
+fn show_until(url: &str, db: &str, cards: usize) -> Value {
+    for _ in 0..50 {
+        let out = headway(url, db, &["show", "--json"]);
+        if out.status.success()
+            && let Ok(board) = serde_json::from_slice::<Value>(&out.stdout)
+            && total_cards(&board) == cards
+        {
+            return board;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("board never reached {cards} cards");
+}
+
+#[test]
+fn seed_show_and_add_round_trip() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    // The "app" side: a relay serving its own nostrdb, like a running notedeck.
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    // The CLI keeps its own separate nostrdb cache.
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // Seed the default board through the relay.
+    let seed = headway(&url, db, &["seed"]);
+    assert!(
+        seed.status.success(),
+        "seed failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    // The seeded board comes back through a fresh sync: 4 columns, 7 cards.
+    let board = show_until(&url, db, 7);
+    let cols = board["columns"].as_array().unwrap();
+    assert_eq!(cols.len(), 4);
+    assert_eq!(cols[0]["name"], "Backlog");
+
+    // Add a card to Todo; it must round-trip back through the relay.
+    let add = headway(&url, db, &["add", "Wire up the CLI", "--col", "Todo"]);
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let board = show_until(&url, db, 8);
+    let todo = board["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "Todo")
+        .expect("todo column");
+    assert!(
+        todo["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["title"] == "Wire up the CLI"),
+        "added card not found in Todo: {board:#}"
+    );
+}
