@@ -1635,85 +1635,93 @@ fn topdown_sidebar(
             });
         });
 
-    for (i, app) in chrome.apps.iter_mut().enumerate() {
-        if chrome.active == i as i32 {
-            continue;
-        }
+    // Scroll the app list so it doesn't overflow the sidebar as more apps
+    // are added. Reserve a bit of space at the bottom for the milestone label.
+    let apps_scroll_height = (ui.available_height() - 32.0).max(0.0);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, true])
+        .max_height(apps_scroll_height)
+        .show(ui, |ui| {
+            for (i, app) in chrome.apps.iter_mut().enumerate() {
+                if chrome.active == i as i32 {
+                    continue;
+                }
 
-        let text = app_label(loc, app);
+                let text = app_label(loc, app);
 
-        StripBuilder::new(ui)
-            .size(Size::exact(40.0))
-            .clip(true)
-            .vertical(|mut strip| {
-                strip.strip(|b| {
-                    let resp = drawer_item(
-                        b,
-                        |ui| match app {
-                            NotedeckApp::Columns(_columns_app) => {
-                                ui.add(app_images::columns_image());
+                StripBuilder::new(ui)
+                    .size(Size::exact(40.0))
+                    .clip(true)
+                    .vertical(|mut strip| {
+                        strip.strip(|b| {
+                            let resp = drawer_item(
+                                b,
+                                |ui| match app {
+                                    NotedeckApp::Columns(_columns_app) => {
+                                        ui.add(app_images::columns_image());
+                                    }
+
+                                    #[cfg(feature = "dave")]
+                                    NotedeckApp::Dave(dave) => {
+                                        dave_button(
+                                            dave.avatar_mut(),
+                                            ui,
+                                            Rect::from_center_size(
+                                                ui.available_rect_before_wrap().center(),
+                                                vec2(30.0, 30.0),
+                                            ),
+                                        );
+                                    }
+
+                                    #[cfg(feature = "dashboard")]
+                                    NotedeckApp::Dashboard(_columns_app) => {
+                                        notedeck_ui::icons::dashboard_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "messages")]
+                                    NotedeckApp::Messages(_dms) => {
+                                        ui.add(app_images::new_message_image());
+                                    }
+
+                                    #[cfg(feature = "clndash")]
+                                    NotedeckApp::ClnDash(_clndash) => {
+                                        clndash_button(ui);
+                                    }
+
+                                    #[cfg(feature = "notebook")]
+                                    NotedeckApp::Notebook(_notebook) => {
+                                        notedeck_ui::icons::notebook_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "headway")]
+                                    NotedeckApp::Headway(_headway) => {
+                                        notedeck_ui::icons::headway_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "nostrverse")]
+                                    NotedeckApp::Nostrverse(_nostrverse) => {
+                                        ui.add(app_images::universe_image());
+                                    }
+
+                                    NotedeckApp::Other(_name, _other) => {
+                                        ui.label("W");
+                                    }
+                                },
+                                text,
+                            )
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+
+                            if resp.clicked() {
+                                chrome.active = i as i32;
+                                if let Some(opened) = chrome.opened.get_mut(i) {
+                                    *opened = true;
+                                }
+                                chrome.nav.close();
                             }
-
-                            #[cfg(feature = "dave")]
-                            NotedeckApp::Dave(dave) => {
-                                dave_button(
-                                    dave.avatar_mut(),
-                                    ui,
-                                    Rect::from_center_size(
-                                        ui.available_rect_before_wrap().center(),
-                                        vec2(30.0, 30.0),
-                                    ),
-                                );
-                            }
-
-                            #[cfg(feature = "dashboard")]
-                            NotedeckApp::Dashboard(_columns_app) => {
-                                notedeck_ui::icons::dashboard_icon(ui, 24.0);
-                            }
-
-                            #[cfg(feature = "messages")]
-                            NotedeckApp::Messages(_dms) => {
-                                ui.add(app_images::new_message_image());
-                            }
-
-                            #[cfg(feature = "clndash")]
-                            NotedeckApp::ClnDash(_clndash) => {
-                                clndash_button(ui);
-                            }
-
-                            #[cfg(feature = "notebook")]
-                            NotedeckApp::Notebook(_notebook) => {
-                                notedeck_ui::icons::notebook_icon(ui, 24.0);
-                            }
-
-                            #[cfg(feature = "headway")]
-                            NotedeckApp::Headway(_headway) => {
-                                notedeck_ui::icons::headway_icon(ui, 24.0);
-                            }
-
-                            #[cfg(feature = "nostrverse")]
-                            NotedeckApp::Nostrverse(_nostrverse) => {
-                                ui.add(app_images::universe_image());
-                            }
-
-                            NotedeckApp::Other(_name, _other) => {
-                                ui.label("W");
-                            }
-                        },
-                        text,
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-
-                    if resp.clicked() {
-                        chrome.active = i as i32;
-                        if let Some(opened) = chrome.opened.get_mut(i) {
-                            *opened = true;
-                        }
-                        chrome.nav.close();
-                    }
-                })
-            });
-    }
+                        })
+                    });
+            }
+        });
 
     if ctx.args.options.contains(NotedeckOptions::Debug) {
         let r = ui
