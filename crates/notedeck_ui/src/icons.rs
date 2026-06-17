@@ -355,6 +355,79 @@ pub fn draw_update_icon(
     painter.line_segment([shaft_top, arrow_right], stroke);
 }
 
+/// Function pointer for a vector icon painted into a square region.
+type IconDraw = fn(&egui::Painter, Pos2, f32, Color32, f32);
+
+/// Allocate a `size` square and paint a vector `draw` icon into it, centered
+/// and left-aligned within its cell (matching the image-based app icons).
+fn draw_app_icon(ui: &mut egui::Ui, size: f32, draw: IconDraw) {
+    let (rect, _) = ui.allocate_exact_size(vec2(size, size), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let color = ui.visuals().text_color();
+    draw(&painter, rect.center(), size, color, size * 0.07);
+}
+
+/// Painter-drawn notebook icon (cover, spine and ruled lines).
+fn draw_notebook(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, stroke_width: f32) {
+    let stroke = Stroke::new(stroke_width, color);
+
+    let rect = egui::Rect::from_center_size(center, vec2(s * 0.66, s * 0.9));
+    let rounding = s * 0.1;
+    painter.rect_stroke(rect, rounding, stroke, egui::StrokeKind::Inside);
+
+    // Binding spine
+    let spine_x = rect.left() + s * 0.18;
+    painter.line_segment(
+        [pos2(spine_x, rect.top()), pos2(spine_x, rect.bottom())],
+        stroke,
+    );
+
+    // Ruled lines on the page
+    let line_left = spine_x + s * 0.08;
+    let line_right = rect.right() - s * 0.12;
+    for i in -1..=1 {
+        let y = center.y + i as f32 * s * 0.21;
+        painter.line_segment([pos2(line_left, y), pos2(line_right, y)], stroke);
+    }
+}
+
+/// Painter-drawn headway icon: ascending bars under a rising trend arrow.
+fn draw_headway(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, stroke_width: f32) {
+    let stroke = Stroke::new(stroke_width, color);
+
+    // Ascending bars
+    let baseline = center.y + s * 0.4;
+    let bar_w = s * 0.2;
+    let gap = s * 0.11;
+    let total_w = bar_w * 3.0 + gap * 2.0;
+    let start_x = center.x - total_w / 2.0;
+    let heights = [s * 0.32, s * 0.52, s * 0.74];
+    let rounding = s * 0.04;
+    for (i, &bh) in heights.iter().enumerate() {
+        let x0 = start_x + i as f32 * (bar_w + gap);
+        let bar = egui::Rect::from_min_max(pos2(x0, baseline - bh), pos2(x0 + bar_w, baseline));
+        painter.rect_filled(bar, rounding, color);
+    }
+
+    // Rising trend arrow
+    let a_start = pos2(center.x - s * 0.45, center.y);
+    let a_end = pos2(center.x + s * 0.45, center.y - s * 0.46);
+    painter.line_segment([a_start, a_end], stroke);
+    let head = s * 0.17;
+    painter.line_segment([a_end, a_end + vec2(-head, 0.0)], stroke);
+    painter.line_segment([a_end, a_end + vec2(0.0, head)], stroke);
+}
+
+/// Fixed-size Notebook app icon (sidebar drawer and chrome tab strip).
+pub fn notebook_icon(ui: &mut egui::Ui, size: f32) {
+    draw_app_icon(ui, size, draw_notebook);
+}
+
+/// Fixed-size Headway app icon (sidebar drawer and chrome tab strip).
+pub fn headway_icon(ui: &mut egui::Ui, size: f32) {
+    draw_app_icon(ui, size, draw_headway);
+}
+
 fn paint_unseen_indicator(ui: &mut egui::Ui, rect: egui::Rect, radius: f32) {
     let center = rect.center();
     let top_right = rect.right_top();

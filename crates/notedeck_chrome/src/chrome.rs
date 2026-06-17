@@ -1040,30 +1040,6 @@ fn clndash_button(ui: &mut egui::Ui) -> egui::Response {
     )
 }
 
-#[cfg(feature = "notebook")]
-fn notebook_button(ui: &mut egui::Ui) -> egui::Response {
-    notedeck_ui::expanding_button(
-        "notebook-button",
-        40.0,
-        app_images::algo_image(),
-        app_images::algo_image(),
-        ui,
-        false,
-    )
-}
-
-#[cfg(feature = "headway")]
-fn headway_button(ui: &mut egui::Ui) -> egui::Response {
-    notedeck_ui::expanding_button(
-        "headway-button",
-        40.0,
-        app_images::algo_image(),
-        app_images::algo_image(),
-        ui,
-        false,
-    )
-}
-
 #[cfg(feature = "dave")]
 fn dave_button(avatar: Option<&mut DaveAvatar>, ui: &mut egui::Ui, rect: Rect) -> egui::Response {
     if let Some(avatar) = avatar {
@@ -1138,12 +1114,12 @@ fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
 
         #[cfg(feature = "notebook")]
         NotedeckApp::Notebook(_) => {
-            ui.add(app_images::algo_image().max_width(size).max_height(size));
+            notedeck_ui::icons::notebook_icon(ui, size);
         }
 
         #[cfg(feature = "headway")]
         NotedeckApp::Headway(_) => {
-            ui.add(app_images::algo_image().max_width(size).max_height(size));
+            notedeck_ui::icons::headway_icon(ui, size);
         }
 
         #[cfg(feature = "nostrverse")]
@@ -1707,12 +1683,12 @@ fn topdown_sidebar(
 
                             #[cfg(feature = "notebook")]
                             NotedeckApp::Notebook(_notebook) => {
-                                notebook_button(ui);
+                                notedeck_ui::icons::notebook_icon(ui, 24.0);
                             }
 
                             #[cfg(feature = "headway")]
                             NotedeckApp::Headway(_headway) => {
-                                headway_button(ui);
+                                notedeck_ui::icons::headway_icon(ui, 24.0);
                             }
 
                             #[cfg(feature = "nostrverse")]
