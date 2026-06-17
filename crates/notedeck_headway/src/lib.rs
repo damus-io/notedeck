@@ -434,9 +434,7 @@ fn column_ui(
                     .id_salt(("headway-col", col_idx))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        cards_drop_zone(ui, theme, column, col_idx, action, clicked);
-                        ui.add_space(SPACING_SM);
-                        add_card_ui(ui, theme, state, col_idx, action);
+                        cards_drop_zone(ui, theme, column, state, col_idx, action, clicked);
                     });
             });
         });
@@ -447,6 +445,7 @@ fn cards_drop_zone(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     column: &ColumnView,
+    state: &mut BoardUiState,
     col_idx: usize,
     action: &mut Option<BoardAction>,
     clicked: &mut Option<NoteId>,
@@ -456,9 +455,12 @@ fn cards_drop_zone(
     // Tracks where a release would land (also used to paint the insertion line).
     let mut hover_target: Option<usize> = None;
 
-    // Span the column's full width so empty/sparse lanes still present a wide
-    // drop target, but let the height track the cards so the add-card
-    // affordance sits right beneath them instead of being pushed to the bottom.
+    // Fill the column body in both axes so the drop target spans the whole lane
+    // — a release anywhere in the column lands the card, and empty/sparse lanes
+    // still present a generous target instead of a narrow strip. The add-card
+    // affordance is rendered inside the zone right beneath the cards, so it stays
+    // reachable while the filled space below it remains a valid drop target.
+    let fill_height = ui.available_height();
     let fill_width = ui.available_width();
 
     // Detect drops over a bare, transparent frame rather than `dnd_drop_zone`,
@@ -466,9 +468,7 @@ fn cards_drop_zone(
     // insertion line is the only feedback we want.
     let zone = frame
         .show(ui, |ui| {
-            // Fill the column width so the drop target spans the whole lane —
-            // otherwise an empty column collapses to a narrow vertical strip.
-            ui.set_min_height(SPACING_LG);
+            ui.set_min_height(fill_height);
             ui.set_min_width(fill_width);
             ui.spacing_mut().item_spacing.y = SPACING_SM;
 
@@ -518,6 +518,11 @@ fn cards_drop_zone(
                     hover_target = Some(insert_row);
                 }
             }
+
+            // Keep the composer beneath the cards (inside the filled zone) so the
+            // empty space below it still acts as a drop target.
+            ui.add_space(SPACING_SM);
+            add_card_ui(ui, theme, state, col_idx, action);
         })
         .response;
 
