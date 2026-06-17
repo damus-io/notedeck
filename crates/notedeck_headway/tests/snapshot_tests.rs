@@ -287,8 +287,10 @@ fn delete_column_flow() {
     harness.get_by_label("7 cards · 3 columns");
 }
 
-/// Drive the add-card flow: open a column's composer, type a title, commit, and
-/// confirm the new card shows up in that column.
+/// Drive the add-card flow: open a column's composer, type a title, commit with
+/// Enter, and confirm the new card shows up in that column. Then — without
+/// re-opening the composer — type a second title and commit again, exercising
+/// the rapid-entry path where the composer stays open and focused after an add.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn add_card_flow() {
@@ -304,15 +306,33 @@ fn add_card_flow() {
         .simulate_click();
     harness.run();
 
+    // Enter (not the "Add" button) must commit the card — the composer is a
+    // multiline field, which swallows Enter into a newline, so this is the path
+    // that used to silently do nothing.
     harness
         // The card composer is multiline, so it has the MultilineTextInput role.
         .get_by_role(egui::accesskit::Role::MultilineTextInput)
         .type_text("Write integration tests");
     harness.run();
-    harness.get_by_label("Add").simulate_click();
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .key_press(Key::Enter);
 
     wait_for_label(&mut harness, "Write integration tests");
     harness.get_by_label("8 cards · 4 columns");
+
+    // Rapid entry: the composer is still open and focused, so a second title can
+    // go straight in without clicking "+ Add card" again.
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .type_text("Ship the feature");
+    harness.run();
+    harness
+        .get_by_role(egui::accesskit::Role::MultilineTextInput)
+        .key_press(Key::Enter);
+
+    wait_for_label(&mut harness, "Ship the feature");
+    harness.get_by_label("9 cards · 4 columns");
 }
 
 /// Regression: when a column's cards overflow its height you must still be able

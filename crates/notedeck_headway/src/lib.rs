@@ -55,10 +55,14 @@ impl Default for Headway {
 /// of the data model (e.g. which column has an open "add card" composer).
 #[derive(Default)]
 struct BoardUiState {
-    /// The column index currently composing a new card, if any.
-    composing: Option<usize>,
-    /// Buffer backing the new-card text field.
-    compose_text: String,
+    /// Which inline text editor is open on the board, if any.
+    edit: InlineEdit,
+    /// Shared buffer backing whichever inline editor ([`InlineEdit`]) is open;
+    /// only one can be active at a time.
+    edit_text: String,
+    /// Set when the active inline editor should grab focus once — on open, and
+    /// after each card is added, so rapid keyboard entry keeps working.
+    focus_edit: bool,
     /// The card whose detail view is open, if any.
     selected: Option<NoteId>,
     /// Which card the detail edit buffers below were seeded from. When this
@@ -70,20 +74,25 @@ struct BoardUiState {
     detail_desc: String,
     /// Buffer backing the "add label" field in the detail sheet.
     new_label: String,
-    /// The column index whose title is being renamed inline, if any.
-    renaming: Option<usize>,
-    /// Buffer backing the column-rename text field.
-    rename_text: String,
-    /// Set when a rename has just started, to grab focus once.
-    focus_rename: bool,
-    /// Whether the "add column" composer is open.
-    adding_column: bool,
-    /// Buffer backing the new-column text field.
-    column_text: String,
-    /// Set when the add-column composer has just opened, to grab focus once.
-    focus_column: bool,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
+}
+
+/// The board's inline text editors are mutually exclusive — you can only be
+/// composing a card, renaming a column, or adding a column at any one moment —
+/// so they share [`BoardUiState::edit_text`] and [`BoardUiState::focus_edit`]
+/// and this enum tracks which (if any) is live.
+#[derive(Default, PartialEq, Eq)]
+enum InlineEdit {
+    /// No inline editor open.
+    #[default]
+    None,
+    /// Composing a new card in the column at this index.
+    AddCard(usize),
+    /// Renaming the column at this index.
+    RenameColumn(usize),
+    /// Composing a new column.
+    AddColumn,
 }
 
 /// Drag-and-drop payload: the id of the card being dragged.
@@ -418,7 +427,7 @@ fn column_ui(
                 // Header: title (editable inline) + count badge + a "⋯" menu
                 // for renaming, reordering and deleting the column.
                 ui.horizontal(|ui| {
-                    if state.renaming == Some(col_idx) {
+                    if state.edit == InlineEdit::RenameColumn(col_idx) {
                         column_rename_field(ui, state, col_idx, action);
                     } else {
                         ui.label(egui::RichText::new(&column.name).strong());
@@ -650,36 +659,73 @@ fn add_card_ui(
     col_idx: usize,
     action: &mut Option<BoardAction>,
 ) {
-    if state.composing == Some(col_idx) {
-        let edit = egui::TextEdit::multiline(&mut state.compose_text)
+    if state.edit == InlineEdit::AddCard(col_idx) {
+        let empty = state.edit_text.is_empty();
+        let edit = egui::TextEdit::multiline(&mut state.edit_text)
             .hint_text("Card title…")
             .desired_rows(2)
             .desired_width(f32::INFINITY);
-        let edit_response = ui.add(edit);
 
-        let submit_chord = edit_response.lost_focus()
-            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
-
-        ui.horizontal(|ui| {
-            let add = ui.button("Add").clicked() || submit_chord;
-            let cancel =
-                ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
-
-            if add {
-                let title = state.compose_text.trim().to_string();
-                if !title.is_empty() {
-                    *action = Some(BoardAction::AddCard {
-                        col: col_idx,
-                        title,
-                    });
+        // egui always paints the hint with `weak_text_color()` (it ignores any
+        // RichText color), which lands brighter than our muted token. That color
+        // is `tint(text_color, noninteractive.weak_bg_fill)`, so pointing both
+        // inputs at `text_muted` makes it resolve to exactly `text_muted`. Scope
+        // it to the empty field so it only tints the hint, never typed text.
+        let edit_response = ui
+            .scope(|ui| {
+                if empty {
+                    let v = ui.visuals_mut();
+                    v.override_text_color = Some(theme.text_muted);
+                    v.widgets.noninteractive.weak_bg_fill = theme.text_muted;
                 }
-                state.compose_text.clear();
-                state.composing = None;
-            } else if cancel {
-                state.compose_text.clear();
-                state.composing = None;
+                ui.add(edit)
+            })
+            .inner;
+
+        // Grab focus when the composer first opens (and after each add) so you
+        // can start typing immediately without clicking into the field.
+        let refocusing = state.focus_edit;
+        if refocusing {
+            edit_response.request_focus();
+            state.focus_edit = false;
+        }
+
+        // Enter (without Shift) commits the card; Shift+Enter inserts a line
+        // break so multi-line titles are still possible. A multiline field
+        // swallows Enter into a newline, so `lost_focus()` never fires on it —
+        // sense the key directly while focused instead, and trim the stray
+        // newline back off the title below.
+        let submit = edit_response.has_focus()
+            && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+        let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+        let add = ui.button("Add").clicked();
+
+        if escape {
+            state.edit_text.clear();
+            state.edit = InlineEdit::None;
+        } else if submit || add {
+            let title = state.edit_text.trim().to_string();
+            state.edit_text.clear();
+            if title.is_empty() {
+                // Committing nothing means "I'm done" — close the composer.
+                state.edit = InlineEdit::None;
+            } else {
+                *action = Some(BoardAction::AddCard {
+                    col: col_idx,
+                    title,
+                });
+                // Keep the composer open and refocused so you can rattle off
+                // several cards in a row without re-clicking "+ Add card".
+                state.focus_edit = true;
             }
-        });
+        } else if !refocusing && edit_response.lost_focus() {
+            // No Cancel button: clicking away (or Tab) dismisses the composer.
+            // Guarded by `refocusing` so the focus we re-grab right after an add
+            // isn't misread as a blur that closes it.
+            state.edit_text.clear();
+            state.edit = InlineEdit::None;
+        }
     } else {
         let add = ui.add(
             egui::Button::new(egui::RichText::new("+ Add card").color(theme.text_muted))
@@ -687,8 +733,9 @@ fn add_card_ui(
                 .frame(false),
         );
         if add.clicked() {
-            state.composing = Some(col_idx);
-            state.compose_text.clear();
+            state.edit = InlineEdit::AddCard(col_idx);
+            state.edit_text.clear();
+            state.focus_edit = true;
         }
     }
 }
@@ -702,23 +749,23 @@ fn column_rename_field(
     action: &mut Option<BoardAction>,
 ) {
     let resp = ui.add(
-        egui::TextEdit::singleline(&mut state.rename_text)
+        egui::TextEdit::singleline(&mut state.edit_text)
             .desired_width(f32::INFINITY)
             .hint_text("Column title…"),
     );
-    if state.focus_rename {
+    if state.focus_edit {
         resp.request_focus();
-        state.focus_rename = false;
+        state.focus_edit = false;
     }
 
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        state.renaming = None;
+        state.edit = InlineEdit::None;
     } else if resp.lost_focus() {
-        let name = state.rename_text.trim().to_string();
+        let name = state.edit_text.trim().to_string();
         if !name.is_empty() {
             *action = Some(BoardAction::RenameColumn { col: col_idx, name });
         }
-        state.renaming = None;
+        state.edit = InlineEdit::None;
     }
 }
 
@@ -734,9 +781,9 @@ fn column_menu(
     let n = view.columns.len();
     ui.menu_button("⋯", |ui| {
         if ui.button("Rename").clicked() {
-            state.rename_text = view.columns[col_idx].name.clone();
-            state.renaming = Some(col_idx);
-            state.focus_rename = true;
+            state.edit_text = view.columns[col_idx].name.clone();
+            state.edit = InlineEdit::RenameColumn(col_idx);
+            state.focus_edit = true;
             ui.close_menu();
         }
         if ui
@@ -785,15 +832,15 @@ fn add_column_ui(
         .show(ui, |ui| {
             ui.set_width(COLUMN_WIDTH);
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                if state.adding_column {
+                if state.edit == InlineEdit::AddColumn {
                     let resp = ui.add(
-                        egui::TextEdit::singleline(&mut state.column_text)
+                        egui::TextEdit::singleline(&mut state.edit_text)
                             .desired_width(f32::INFINITY)
                             .hint_text("Column title…"),
                     );
-                    if state.focus_column {
+                    if state.focus_edit {
                         resp.request_focus();
-                        state.focus_column = false;
+                        state.focus_edit = false;
                     }
                     let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
 
@@ -803,15 +850,15 @@ fn add_column_ui(
                         let cancel = ui.button("Cancel").clicked()
                             || ui.input(|i| i.key_pressed(egui::Key::Escape));
                         if add {
-                            let name = state.column_text.trim().to_string();
+                            let name = state.edit_text.trim().to_string();
                             if !name.is_empty() {
                                 *action = Some(BoardAction::AddColumn { name });
                             }
-                            state.column_text.clear();
-                            state.adding_column = false;
+                            state.edit_text.clear();
+                            state.edit = InlineEdit::None;
                         } else if cancel {
-                            state.column_text.clear();
-                            state.adding_column = false;
+                            state.edit_text.clear();
+                            state.edit = InlineEdit::None;
                         }
                     });
                 } else {
@@ -823,9 +870,9 @@ fn add_column_ui(
                         .frame(false),
                     );
                     if add.clicked() {
-                        state.adding_column = true;
-                        state.column_text.clear();
-                        state.focus_column = true;
+                        state.edit = InlineEdit::AddColumn;
+                        state.edit_text.clear();
+                        state.focus_edit = true;
                     }
                 }
             });
