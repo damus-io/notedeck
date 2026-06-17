@@ -1075,10 +1075,11 @@ fn delete_worktree_menu_item(
 #[cfg(test)]
 mod tests {
     use super::{SessionListAction, SessionListUi};
+    use crate::agent_status::AgentStatus;
     use crate::backend::BackendType;
     use crate::collapse_state::CollapseState;
     use crate::config::AiMode;
-    use crate::focus_queue::FocusQueue;
+    use crate::focus_queue::{FocusPriority, FocusQueue};
     use crate::session::SessionManager;
     use egui::Event;
     use egui_kittest::{kittest::Queryable, Harness};
@@ -1189,5 +1190,65 @@ mod tests {
             }
             other => panic!("expected NewSessionInCwd action, got {:?}", other),
         }
+    }
+
+    /// Render a single standalone (cwd) agentic row in isolation so the
+    /// worktree layout — status dot top-right, git +/- bottom-right — can be
+    /// verified visually via snapshot.
+    fn agent_row_harness(
+        priority: Option<FocusPriority>,
+        git_lines: Option<(usize, usize)>,
+    ) -> Harness<'static> {
+        Harness::builder()
+            .with_size(egui::Vec2::new(260.0, 56.0))
+            .renderer(notedeck::software_renderer())
+            .build_ui(move |ui| {
+                let mut session_manager = SessionManager::new();
+                let id = session_manager.new_session(
+                    PathBuf::from("/tmp/project"),
+                    AiMode::Agentic,
+                    BackendType::Claude,
+                );
+                let focus_queue = FocusQueue::new();
+                let collapse_state = CollapseState::new();
+                let list =
+                    SessionListUi::new(&mut session_manager, &focus_queue, &collapse_state, false);
+                list.agent_row_ui(
+                    ui,
+                    id,
+                    "refactor auth module",
+                    Some("~/src/notedeck-wt"),
+                    false,
+                    None,
+                    AgentStatus::NeedsInput,
+                    priority,
+                    BackendType::Claude,
+                    git_lines,
+                );
+            })
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agent_row_git_status_and_dot() {
+        let mut harness = agent_row_harness(Some(FocusPriority::NeedsInput), Some((142, 37)));
+        harness.run();
+        harness.snapshot("agent_row_git_status_and_dot");
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agent_row_git_status_additions_only() {
+        let mut harness = agent_row_harness(None, Some((88, 0)));
+        harness.run();
+        harness.snapshot("agent_row_git_status_additions_only");
+    }
+
+    #[test]
+    #[ignore] // requires lavapipe — run via scripts/snapshot-test
+    fn snapshot_agent_row_clean() {
+        let mut harness = agent_row_harness(None, None);
+        harness.run();
+        harness.snapshot("agent_row_clean");
     }
 }
