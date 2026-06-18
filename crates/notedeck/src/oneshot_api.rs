@@ -1,4 +1,5 @@
-use enostr::RelayUrlPkgs;
+use enostr::{NormRelayUrl, RelayUrlPkgs};
+use hashbrown::HashSet;
 use nostrdb::Filter;
 
 use crate::{Accounts, Outbox};
@@ -23,6 +24,15 @@ impl<'o, 'a> OneshotApi<'o, 'a> {
             filters,
             RelayUrlPkgs::new(self.accounts.selected_account_read_relays()),
         );
+    }
+
+    /// Send a one-shot request to specific relay URLs (hint-based routing).
+    ///
+    /// Unlike `oneshot()` which routes to the selected account's read relays,
+    /// this routes to explicitly provided relay URLs. Used when relay hints
+    /// are available from nprofile/nevent mentions.
+    pub fn oneshot_to_relays(&mut self, filters: Vec<Filter>, relay_urls: HashSet<NormRelayUrl>) {
+        self.pool.oneshot(filters, RelayUrlPkgs::new(relay_urls));
     }
 }
 

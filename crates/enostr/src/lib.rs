@@ -16,7 +16,7 @@ pub use keypair::{FilledKeypair, FullKeypair, Keypair, KeypairUnowned, Serializa
 pub use nostr::SecretKey;
 pub use note::{Note, NoteId};
 pub use profile::ProfileState;
-pub use pubkey::{Pubkey, PubkeyRef};
+pub use pubkey::{ParsedNprofile, Pubkey, PubkeyRef};
 pub use relay::message::{RelayEvent, RelayMessage};
 pub use relay::same_canonical_filter_set;
 pub use relay::{
