@@ -4,6 +4,7 @@ use egui::TextureHandle;
 
 use crate::jobs::JobCache;
 use crate::media::images::TextureRequestKey;
+use crate::media::webp::WebpCacheEntry;
 use crate::{Animation, Error, TextureState, TexturesCache};
 
 use crate::jobs::types::{JobComplete, JobId, JobPackage};
@@ -16,12 +17,15 @@ pub enum MediaJobKind {
     Blurhash,
     StaticImg { request_key: TextureRequestKey },
     AnimatedImg { request_key: TextureRequestKey },
+    WebpImg,
 }
 
 pub enum MediaJobResult {
     StaticImg(Result<TextureHandle, Error>),
     Blurhash(Result<TextureHandle, Error>),
     Animation(Result<Animation, Error>),
+    /// Completed result for a `WebpImg` job — routes to `tex_cache.webp`.
+    WebpImg(Result<WebpCacheEntry, Error>),
 }
 
 /// Converts a job result into the shared texture cache state shape.
@@ -77,6 +81,13 @@ pub fn deliver_completed_media_job(
                 .cache
                 .insert(id, into_texture_state(texture_handle).into());
         }
+        (MediaJobKind::WebpImg, MediaJobResult::WebpImg(result)) => {
+            let r = match result {
+                Ok(entry) => TextureState::Loaded(entry),
+                Err(e) => TextureState::Error(e),
+            };
+            tex_cache.webp.cache.insert(id, r);
+        }
         (job_kind, _) => {
             tracing::error!(
                 "mismatched media job completion kind for id {id_c}: {:?}",
@@ -102,6 +113,9 @@ pub fn run_media_job_pre_action(job_id: &JobId<MediaJobKind>, tex_cache: &mut Te
         }
         MediaJobKind::AnimatedImg { request_key } => {
             tex_cache.animated.set_pending(request_key.clone());
+        }
+        MediaJobKind::WebpImg => {
+            tex_cache.webp.cache.insert(id, TextureState::Pending);
         }
     }
 }

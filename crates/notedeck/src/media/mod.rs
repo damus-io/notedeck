@@ -1,4 +1,5 @@
 pub mod action;
+pub mod animated;
 pub mod blur;
 pub mod gif;
 pub mod images;
@@ -7,6 +8,7 @@ pub mod latest;
 pub mod network;
 pub mod renderable;
 pub mod static_imgs;
+pub mod webp;
 
 pub use action::{MediaAction, MediaInfo, ViewMediaInfo};
 pub use blur::{

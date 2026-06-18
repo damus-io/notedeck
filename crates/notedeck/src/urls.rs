@@ -531,6 +531,8 @@ impl SupportedMimeType {
 fn mime_to_cache_type(mime: &Mime) -> MediaCacheType {
     if *mime == mime_guess::mime::IMAGE_GIF {
         MediaCacheType::Gif
+    } else if mime.essence_str() == "image/webp" {
+        MediaCacheType::Webp
     } else {
         MediaCacheType::Image
     }
