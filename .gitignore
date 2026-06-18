@@ -1,6 +1,8 @@
 .DS_Store
 .buildcmd
-.claude/
+# ignore local .claude/ files (settings etc.) but track shared project skills
+/.claude/*
+!/.claude/skills/
 TODO.bak
 android-config.json
 logcat.txt

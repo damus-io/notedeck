@@ -1,14 +1,18 @@
 # Notedeck - Claude Code Guidelines
 
-## GitHub Issue Tracking
+## Work Tracking
 
-All work MUST be tracked through GitHub Issues on `damus-io/notedeck`:
+All work is tracked on the **Headway board** via the `headway` CLI, not GitHub
+Issues. See the `headway` skill (`.claude/skills/headway/SKILL.md`) for the full
+command reference; the board flows `Backlog → Todo → In Progress → Done`.
 
-- **Before starting work**: Search for an existing GitHub issue first using `gh issue list --search "keywords"`. If none exists, create one with `gh issue create`.
-- **Task breakdown**: For multi-step tasks, use GitHub task lists (checkboxes) in the issue body or create linked sub-issues.
-- **Labels**: Use labels to categorize issues (bug, enhancement, etc.).
-- **Assignee**: Assign issues to the person doing the work.
-- **Close on merge**: Reference issues in commit messages or PR descriptions (e.g., `Fixes #123`, `Closes #456`) so they close automatically when merged.
+- **Before starting work**: `headway show` to read the board. If a card for the
+  work exists, move it to In Progress: `headway move <card> --col in-progress`.
+  If none exists, add one: `headway add "<title>" --col in-progress`.
+- **Task breakdown**: Use one card per unit of work; `desc`/`label` for detail.
+- **On completion**: Move the card to Done: `headway move <card> --col done`.
+- Cards are addressed by a short id prefix (from `show`); always `show` before
+  editing. The CLI reads the signing key from `$HEADWAY_NSEC`.
 
 ## Committing
 
@@ -18,7 +22,7 @@ Before committing, run the local CI checks:
 
 This runs changelog trailer checks, lint (fmt + clippy), tests, and the android build — all parsed directly from the GitHub workflow YAML. You can also run individual jobs via `./scripts/ci.py`, e.g. `./scripts/ci.py lint`.
 
-Reference the GitHub issue number in the commit message or PR description (e.g., `Fixes #123`) so issues close automatically on merge.
+After a change lands, move its Headway card to Done (`headway move <card> --col done`).
 
 Every commit must include a Changelog git trailer. For user-facing changes, use `Changelog-{Added,Changed,Fixed,Removed}`. For internal changes (refactors, CI, tooling, docs, etc), use `Changelog-None:`. Examples:
 
