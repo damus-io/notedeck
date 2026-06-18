@@ -84,6 +84,59 @@ async fn serve(stream: TcpStream, store: Arc<Mutex<Vec<String>>>) {
     }
 }
 
+/// A relay that rejects every EVENT the way strfry rejects a superseded
+/// addressable event: `OK: false, "replaced: have newer event"`. Headway's
+/// board and placement events are replaceable, so reconcile routinely flushes a
+/// cached id the relay has already replaced — that rejection is benign and must
+/// not abort the command.
+async fn spawn_replacing_relay() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(serve_replacing(stream));
+        }
+    });
+    format!("ws://{addr}")
+}
+
+async fn serve_replacing(stream: TcpStream) {
+    let Ok(ws) = accept_async(stream).await else {
+        return;
+    };
+    let (mut tx, mut rx) = ws.split();
+
+    while let Some(Ok(Message::Text(text))) = rx.next().await {
+        let frame: Vec<Value> = serde_json::from_str(&text).unwrap_or_default();
+        match frame.first().and_then(Value::as_str) {
+            Some("EVENT") => {
+                let note = frame.get(1).cloned().unwrap_or(Value::Null);
+                let id = note.get("id").and_then(Value::as_str).unwrap_or("");
+                let ack = json!(["OK", id, false, "replaced: have newer event"]).to_string();
+                let _ = tx.send(Message::Text(ack)).await;
+            }
+            Some("REQ") => {
+                let sub = frame
+                    .get(1)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let _ = tx
+                    .send(Message::Text(json!(["EOSE", sub]).to_string()))
+                    .await;
+            }
+            Some("NEG-OPEN") | Some("NEG-MSG") => {
+                let _ = tx
+                    .send(Message::Text(
+                        json!(["NOTICE", "unrecognized message"]).to_string(),
+                    ))
+                    .await;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Run the `headway` binary, failing the test if it doesn't exit within `secs`
 /// (a hang is the exact regression we're guarding against).
 fn run_timed(url: &str, db: &str, args: &[&str], secs: u64) -> std::process::Output {
@@ -161,5 +214,36 @@ fn falls_back_to_nip01_when_relay_lacks_negentropy() {
     assert_eq!(
         cards, 7,
         "fallback show should reconstruct the seeded board"
+    );
+}
+
+#[test]
+fn benign_replaced_rejection_does_not_abort() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let url = rt.block_on(spawn_replacing_relay());
+
+    // `seed` publishes its events; the relay rejects each as "replaced". That's
+    // benign — the relay's state is already at-or-ahead — so the command must
+    // succeed and seed the local board rather than erroring out.
+    let dir = tempfile::tempdir().expect("dir");
+    let out = run_timed(&url, dir.path().to_str().unwrap(), &["seed"], 15);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "seed should survive a 'replaced' rejection, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("rejected"),
+        "a benign 'replaced' must not surface as a rejection: {stderr}"
+    );
+
+    // And the board really landed in the local cache.
+    let out = run_timed(&url, dir.path().to_str().unwrap(), &["show", "--json"], 15);
+    let board: Value = serde_json::from_slice(&out.stdout).expect("board json");
+    assert_eq!(
+        total_cards(&board),
+        7,
+        "seed must populate the local board despite the rejections"
     );
 }

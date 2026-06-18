@@ -143,11 +143,17 @@ async fn run() -> Result<()> {
                 }
 
                 // Push events the relay is missing (e.g. edits made offline).
+                // Best-effort: a rejected flush (or a dropped connection mid-push)
+                // mustn't abort the command — `show` should still print.
                 let have: HashSet<[u8; 32]> = diff.have.iter().copied().collect();
                 let pending = frames_where(&ndb, &author, |id| have.contains(id));
                 if !pending.is_empty() {
-                    relay.publish(&pending).await?;
-                    eprintln!("flushed {} local event(s) to the relay", pending.len());
+                    match relay.publish(&pending).await {
+                        Ok(()) => {
+                            eprintln!("flushed {} local event(s) to the relay", pending.len())
+                        }
+                        Err(e) => eprintln!("warning: couldn't flush local events: {e}"),
+                    }
                 }
             }
             // Sync is best-effort. A relay that doesn't speak NIP-77 (an older

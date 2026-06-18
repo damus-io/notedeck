@@ -172,7 +172,14 @@ impl Relay {
     }
 
     /// Send each `["EVENT", {...}]` frame and wait for its `OK`, erroring if the
-    /// relay rejects one.
+    /// relay genuinely rejects one.
+    ///
+    /// A `duplicate`/`replaced` rejection is **not** an error: it means the relay
+    /// already holds the event (or, for an addressable event like a board or
+    /// placement, a newer version with the same `d`-tag). Either way our copy —
+    /// or something better — is already there, so the push has nothing to do.
+    /// This is the common case when reconcile flushes a cached placement whose
+    /// newer replacement made the relay drop the old id we still hold.
     pub async fn publish(&mut self, frames: &[String]) -> Result<()> {
         for frame in frames {
             self.ws.send(Message::Text(frame.clone())).await?;
@@ -185,7 +192,9 @@ impl Relay {
                 let accepted = frame.get(2).and_then(Value::as_bool).unwrap_or(false);
                 if !accepted {
                     let reason = frame.get(3).and_then(Value::as_str).unwrap_or("");
-                    return Err(format!("relay rejected event: {reason}").into());
+                    if !is_benign_reject(reason) {
+                        return Err(format!("relay rejected event: {reason}").into());
+                    }
                 }
                 acked += 1;
             }
@@ -205,5 +214,33 @@ impl Relay {
                 return Ok(text);
             }
         }
+    }
+}
+
+/// Whether an `OK: false` reason means the relay already has the event (or a
+/// newer replaceable version) rather than truly refusing it. NIP-01 machine
+/// reasons are `<prefix>: <message>`; strfry replies `duplicate: ...` for an
+/// event it already stored and `replaced: have newer event` for an addressable
+/// event superseded by a newer one. Both leave the relay's state at-or-ahead of
+/// what we pushed, so a best-effort sync should treat them as delivered.
+fn is_benign_reject(reason: &str) -> bool {
+    let prefix = reason.split(':').next().unwrap_or("").trim();
+    matches!(prefix, "duplicate" | "replaced")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_benign_reject;
+
+    #[test]
+    fn classifies_ok_reasons() {
+        // The relay already has this (or a newer replaceable version): nothing to do.
+        assert!(is_benign_reject("replaced: have newer event"));
+        assert!(is_benign_reject("duplicate: already have this event"));
+        // A real refusal must still surface as an error.
+        assert!(!is_benign_reject("blocked: pubkey not allowed"));
+        assert!(!is_benign_reject("invalid: bad signature"));
+        assert!(!is_benign_reject("rate-limited: slow down"));
+        assert!(!is_benign_reject(""));
     }
 }
