@@ -27,8 +27,11 @@ fn client_variant() -> &'static str {
     {
         "Damus Android"
     }
-
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "macos")]
+    {
+        "Damus NoteDeck (MacOS)"
+    }
+    #[cfg(all(not(target_os = "android"), not(target_os = "macos")))]
     {
         "Damus Notedeck"
     }
