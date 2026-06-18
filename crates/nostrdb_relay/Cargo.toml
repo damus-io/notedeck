@@ -10,6 +10,8 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["net", "sync"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
+negentropy = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

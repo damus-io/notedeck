@@ -9,16 +9,27 @@
 //!   live-stream newly ingested matches until the subscription is closed.
 //! - `["CLOSE", <sub>]` — stop a live subscription.
 //!
-//! There is deliberately no NIP-11, NIP-42 auth, or NIP-77 negentropy. Access
-//! control is "bind to localhost" — this is a dogfooding port, not a public
-//! relay.
+//! It also speaks [NIP-77] negentropy as the responder, so clients can
+//! reconcile their set against the relay's in O(difference) rather than
+//! re-downloading everything:
+//!
+//! - `["NEG-OPEN", <sub>, <filter>, <msg-hex>]` — start a reconciliation over a
+//!   filter's matches; reply with `NEG-MSG`.
+//! - `["NEG-MSG", <sub>, <msg-hex>]` — one reconciliation round; reply with
+//!   `NEG-MSG`.
+//! - `["NEG-CLOSE", <sub>]` — end a reconciliation.
+//!
+//! There is deliberately no NIP-11 or NIP-42 auth. Access control is "bind to
+//! localhost" — this is a dogfooding port, not a public relay.
 //!
 //! [NIP-01]: https://github.com/nostr-protocol/nips/blob/master/01.md
+//! [NIP-77]: https://github.com/nostr-protocol/nips/blob/master/77.md
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use futures_util::{SinkExt, StreamExt};
+use negentropy::{Id, Negentropy, NegentropyStorageVector};
 use nostrdb::{Filter, Ndb, SubscriptionStream, Transaction};
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
@@ -28,10 +39,23 @@ use tokio_tungstenite::tungstenite::Message;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// A negentropy reconciliation in progress. The storage is owned, so the
+/// instance is `'static` and can live in the connection's session map across
+/// `NEG-MSG` rounds. Each round reuses the same sealed item set.
+type NegSession = Negentropy<'static, NegentropyStorageVector>;
+
 /// How many stored events a single `REQ` replays before `EOSE`.
 const STORED_QUERY_LIMIT: i32 = 500;
 /// How many freshly-ingested notes we drain per subscription wakeup.
 const LIVE_BATCH: u32 = 64;
+/// Upper bound on the events a single negentropy reconciliation covers. Unlike a
+/// `REQ` (which pages with `EOSE`), reconciliation needs the *whole* matching set
+/// at once, so this is set high; a board larger than this would reconcile only a
+/// truncated prefix.
+const NEG_QUERY_LIMIT: i32 = 100_000;
+/// Negentropy frame size limit (`0` = unlimited). Localhost + small boards, so we
+/// don't bound per-message size; the protocol still recurses across rounds.
+const NEG_FRAME_LIMIT: u64 = 0;
 
 /// A running relay. Dropping the handle (or calling [`shutdown`](Self::shutdown))
 /// stops the accept loop; in-flight connection tasks then wind down on their own.
@@ -120,6 +144,8 @@ async fn serve_connection(
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
     // subscription id -> cancel signal for its live-streaming task.
     let mut subs: HashMap<String, oneshot::Sender<()>> = HashMap::new();
+    // subscription id -> in-progress negentropy reconciliation.
+    let mut neg_sessions: HashMap<String, NegSession> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -132,7 +158,7 @@ async fn serve_connection(
                 let Some(msg) = incoming else { break };
                 match msg? {
                     Message::Text(text) => {
-                        handle_client_frame(&text, &ndb, &out_tx, &mut subs);
+                        handle_client_frame(&text, &ndb, &out_tx, &mut subs, &mut neg_sessions);
                     }
                     Message::Ping(payload) => ws_tx.send(Message::Pong(payload)).await?,
                     Message::Close(_) => break,
@@ -160,6 +186,7 @@ fn handle_client_frame(
     ndb: &Ndb,
     out_tx: &mpsc::UnboundedSender<Message>,
     subs: &mut HashMap<String, oneshot::Sender<()>>,
+    neg_sessions: &mut HashMap<String, NegSession>,
 ) {
     let Ok(Value::Array(frame)) = serde_json::from_str::<Value>(text) else {
         let _ = out_tx.send(notice("could not parse message"));
@@ -172,6 +199,13 @@ fn handle_client_frame(
         Some("CLOSE") => {
             if let Some(sub_id) = frame.get(1).and_then(Value::as_str) {
                 subs.remove(sub_id);
+            }
+        }
+        Some("NEG-OPEN") => handle_neg_open(&frame, ndb, out_tx, neg_sessions),
+        Some("NEG-MSG") => handle_neg_msg(&frame, out_tx, neg_sessions),
+        Some("NEG-CLOSE") => {
+            if let Some(sub_id) = frame.get(1).and_then(Value::as_str) {
+                neg_sessions.remove(sub_id);
             }
         }
         _ => {
@@ -289,8 +323,117 @@ async fn stream_subscription(
     }
 }
 
+/// Start a negentropy reconciliation: `["NEG-OPEN", <sub>, <filter>, <msg-hex>]`.
+///
+/// We're the responder. Build the reconciliation set from everything in ndb that
+/// matches `filter`, run the client's opening message through it, and reply with
+/// our `NEG-MSG`. The session is kept so subsequent `NEG-MSG` rounds reuse the
+/// same item set. A re-`NEG-OPEN` of a live id replaces the prior session.
+fn handle_neg_open(
+    frame: &[Value],
+    ndb: &Ndb,
+    out_tx: &mpsc::UnboundedSender<Message>,
+    neg_sessions: &mut HashMap<String, NegSession>,
+) {
+    let Some(sub_id) = frame.get(1).and_then(Value::as_str) else {
+        let _ = out_tx.send(notice("NEG-OPEN missing subscription id"));
+        return;
+    };
+
+    let Some(filter_json) = frame.get(2).map(Value::to_string) else {
+        let _ = out_tx.send(neg_err(sub_id, "NEG-OPEN missing filter"));
+        return;
+    };
+    let Ok(filter) = Filter::from_json(&filter_json) else {
+        let _ = out_tx.send(neg_err(sub_id, "NEG-OPEN filter is invalid"));
+        return;
+    };
+
+    let Some(Ok(query)) = frame.get(3).and_then(Value::as_str).map(hex::decode) else {
+        let _ = out_tx.send(neg_err(sub_id, "NEG-OPEN message is not valid hex"));
+        return;
+    };
+
+    let mut session = match build_neg_session(ndb, filter) {
+        Ok(session) => session,
+        Err(err) => {
+            let _ = out_tx.send(neg_err(sub_id, &format!("could not build set: {err}")));
+            return;
+        }
+    };
+
+    match session.reconcile(&query) {
+        Ok(reply) => {
+            let _ = out_tx.send(neg_msg(sub_id, &reply));
+            neg_sessions.insert(sub_id.to_owned(), session);
+        }
+        Err(err) => {
+            let _ = out_tx.send(neg_err(sub_id, &format!("reconcile failed: {err}")));
+        }
+    }
+}
+
+/// One reconciliation round: `["NEG-MSG", <sub>, <msg-hex>]`. Looks up the open
+/// session, folds the client's message in, and replies with the next `NEG-MSG`.
+fn handle_neg_msg(
+    frame: &[Value],
+    out_tx: &mpsc::UnboundedSender<Message>,
+    neg_sessions: &mut HashMap<String, NegSession>,
+) {
+    let Some(sub_id) = frame.get(1).and_then(Value::as_str) else {
+        let _ = out_tx.send(notice("NEG-MSG missing subscription id"));
+        return;
+    };
+    let Some(session) = neg_sessions.get_mut(sub_id) else {
+        let _ = out_tx.send(neg_err(sub_id, "no open negentropy session for this id"));
+        return;
+    };
+    let Some(Ok(query)) = frame.get(2).and_then(Value::as_str).map(hex::decode) else {
+        let _ = out_tx.send(neg_err(sub_id, "NEG-MSG message is not valid hex"));
+        return;
+    };
+
+    match session.reconcile(&query) {
+        Ok(reply) => {
+            let _ = out_tx.send(neg_msg(sub_id, &reply));
+        }
+        Err(err) => {
+            let _ = out_tx.send(neg_err(sub_id, &format!("reconcile failed: {err}")));
+            neg_sessions.remove(sub_id);
+        }
+    }
+}
+
+/// Build a sealed negentropy reconciliation set from every event in ndb matching
+/// `filter`, keyed by `(created_at, id)` as the protocol requires.
+fn build_neg_session(ndb: &Ndb, filter: Filter) -> Result<NegSession, BoxError> {
+    let txn = Transaction::new(ndb)?;
+    let results = ndb.query(&txn, &[filter], NEG_QUERY_LIMIT)?;
+
+    let mut storage = NegentropyStorageVector::with_capacity(results.len());
+    for result in results {
+        storage.insert(
+            result.note.created_at(),
+            Id::from_byte_array(*result.note.id()),
+        )?;
+    }
+    storage.seal()?;
+
+    Ok(Negentropy::owned(storage, NEG_FRAME_LIMIT)?)
+}
+
 fn ok(event_id: &str, status: bool, message: &str) -> Message {
     Message::Text(json!(["OK", event_id, status, message]).to_string())
+}
+
+/// `["NEG-MSG", <sub>, <msg-hex>]` — one reconciliation round back to the client.
+fn neg_msg(sub_id: &str, msg: &[u8]) -> Message {
+    Message::Text(json!(["NEG-MSG", sub_id, hex::encode(msg)]).to_string())
+}
+
+/// `["NEG-ERR", <sub>, <reason>]` — abort a reconciliation with a reason.
+fn neg_err(sub_id: &str, reason: &str) -> Message {
+    Message::Text(json!(["NEG-ERR", sub_id, reason]).to_string())
 }
 
 fn eose(sub_id: &str) -> Message {
