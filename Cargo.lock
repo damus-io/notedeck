@@ -3448,6 +3448,8 @@ dependencies = [
  "enostr",
  "futures-util",
  "headway",
+ "hex",
+ "negentropy 0.5.0",
  "nostrdb",
  "nostrdb_relay",
  "serde_json",

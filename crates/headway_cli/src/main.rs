@@ -1,10 +1,11 @@
 //! `headway` — a CLI for reading and mutating a Headway board against a running
 //! notedeck's embedded relay.
 //!
-//! The CLI keeps its **own** nostrdb as a cache. Each run it `REQ`s the board's
-//! events from the relay into that cache, folds the board locally with the pure
-//! [`headway`] reducer, and — for edits — forwards the resulting events back to
-//! the relay so the running app sees the change.
+//! The CLI keeps its **own** nostrdb as a cache. Each run it reconciles that
+//! cache against the relay with NIP-77 negentropy — pulling the events the relay
+//! has that it lacks and pushing the ones it holds that the relay lacks — then
+//! folds the board locally with the pure [`headway`] reducer. Edits forward the
+//! events they produce back to the relay so the running app sees the change.
 
 mod relay;
 
@@ -14,6 +15,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use enostr::{NoteId, Pubkey};
+use negentropy::{Id, NegentropyStorageVector};
 use nostrdb::{Config, Ndb, Transaction};
 use serde_json::json;
 
@@ -27,6 +29,11 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 /// Default URL of notedeck's embedded relay (see `--relay-bind`, default
 /// `127.0.0.1:6677`).
 const DEFAULT_RELAY: &str = "ws://127.0.0.1:6677";
+
+/// How many event ids to request per `REQ` when pulling reconciled events down.
+/// The relay caps a single `REQ`'s stored replay, so we fetch in chunks under
+/// that cap.
+const ID_FETCH_CHUNK: usize = 300;
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -108,26 +115,33 @@ async fn run() -> Result<()> {
     };
 
     // When a relay is reachable, reconcile both ways so the local cache and the
-    // app converge regardless of which side an edit happened on:
+    // app converge regardless of which side an edit happened on. NIP-77
+    // negentropy gives us the set difference in O(difference) — without
+    // transferring the board — and from it:
     //
-    //   pull  — `REQ` the author's whole board in and ingest it, so we fold from
-    //           the relay's latest state.
-    //   push  — forward any local event the relay didn't send back. That's how
-    //           edits made while offline reach the app on the next connected run;
+    //   pull  — `REQ` the ids the relay has that we lack, and ingest them, so we
+    //           fold from the relay's latest state.
+    //   push  — forward the events we hold that the relay lacks. That's how edits
+    //           made while offline reach the app on the next connected run;
     //           without this they'd stay stranded in the cache.
-    //
-    // We pull the full set (no `since` cursor): we need to know exactly what the
-    // relay has to compute the push set, and a cursor derived from the local max
-    // is poisoned by un-pushed offline edits anyway. The board is small and this
-    // is localhost, so a full sync per run is cheap. The relay dedups, so any
-    // event it already has that we re-push is a harmless no-op.
     if let Some(relay) = &mut relay {
         let filter = json!({ "kinds": event::HEADWAY_KINDS, "authors": [author.hex()] });
-        let received = relay.sync_into(&ndb, &filter.to_string()).await?;
-        await_ingest(&ndb, &received).await;
+        let diff = relay
+            .reconcile(&filter.to_string(), local_set(&ndb, &author)?)
+            .await?;
 
-        let on_relay: HashSet<[u8; 32]> = received.into_iter().collect();
-        let pending = local_events_missing_from(&ndb, &author, &on_relay);
+        // Pull missing events by id. The relay caps a single `REQ`'s stored
+        // replay, so fetch in chunks rather than one oversized filter.
+        for chunk in diff.need.chunks(ID_FETCH_CHUNK) {
+            let ids: Vec<String> = chunk.iter().map(hex::encode).collect();
+            let received = relay
+                .sync_into(&ndb, &json!({ "ids": ids }).to_string())
+                .await?;
+            await_ingest(&ndb, &received).await;
+        }
+
+        // Push events the relay is missing (e.g. edits made while offline).
+        let pending = frames_for_ids(&ndb, &author, &diff.have);
         if !pending.is_empty() {
             relay.publish(&pending).await?;
             eprintln!("flushed {} local event(s) to the relay", pending.len());
@@ -270,14 +284,33 @@ fn all_present(ndb: &Ndb, ids: &[[u8; 32]]) -> bool {
     ids.iter().all(|id| ndb.get_note_by_id(&txn, id).is_ok())
 }
 
-/// The `["EVENT", {...}]` frames for every cached headway event of `author` that
-/// the relay didn't send back (`on_relay`) — i.e. local-only events, typically
-/// edits made while offline. These are the ones to push so the app catches up.
-fn local_events_missing_from(
-    ndb: &Ndb,
-    author: &Pubkey,
-    on_relay: &HashSet<[u8; 32]>,
-) -> Vec<String> {
+/// The sealed negentropy set of `author`'s cached headway events, keyed by
+/// `(created_at, id)`. This is the local side handed to [`Relay::reconcile`].
+fn local_set(ndb: &Ndb, author: &Pubkey) -> Result<NegentropyStorageVector> {
+    let txn = Transaction::new(ndb)?;
+    let mut storage = NegentropyStorageVector::new();
+    ndb.fold(
+        &txn,
+        &[event::headway_filter(author)],
+        &mut storage,
+        |acc, note| {
+            // insert only fails on a bad id length, which can't happen for a stored
+            // note; ignore the Result to keep the fold infallible.
+            let _ = acc.insert(note.created_at(), Id::from_byte_array(*note.id()));
+            acc
+        },
+    )?;
+    storage.seal()?;
+    Ok(storage)
+}
+
+/// The `["EVENT", {...}]` frames for the cached headway events of `author` whose
+/// ids are in `ids` — the events to push so the relay (and app) catch up.
+fn frames_for_ids(ndb: &Ndb, author: &Pubkey, ids: &[[u8; 32]]) -> Vec<String> {
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let wanted: HashSet<[u8; 32]> = ids.iter().copied().collect();
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
@@ -286,7 +319,7 @@ fn local_events_missing_from(
         &[event::headway_filter(author)],
         Vec::new(),
         |mut acc, note| {
-            if !on_relay.contains(note.id())
+            if wanted.contains(note.id())
                 && let Ok(msg) = enostr::ClientMessage::event(&note)
                 && let Ok(frame) = msg.to_json()
             {
