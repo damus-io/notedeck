@@ -8,6 +8,7 @@
 
 mod relay;
 
+use std::collections::HashSet;
 use std::env;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -106,20 +107,31 @@ async fn run() -> Result<()> {
         }
     };
 
-    // nostrdb is our cursor: pull only events newer than the newest one already
-    // cached. `since` is inclusive in NIP-01, so we re-fetch just the boundary
-    // second forward (ingest dedups it) rather than risk missing a same-second
-    // event. The board is always folded from the full local history regardless.
+    // When a relay is reachable, reconcile both ways so the local cache and the
+    // app converge regardless of which side an edit happened on:
     //
-    // This assumes one cache talks to one relay (Option A); pointing the same
-    // cache at a different relay could skip events older than the cursor.
+    //   pull  — `REQ` the author's whole board in and ingest it, so we fold from
+    //           the relay's latest state.
+    //   push  — forward any local event the relay didn't send back. That's how
+    //           edits made while offline reach the app on the next connected run;
+    //           without this they'd stay stranded in the cache.
+    //
+    // We pull the full set (no `since` cursor): we need to know exactly what the
+    // relay has to compute the push set, and a cursor derived from the local max
+    // is poisoned by un-pushed offline edits anyway. The board is small and this
+    // is localhost, so a full sync per run is cheap. The relay dedups, so any
+    // event it already has that we re-push is a harmless no-op.
     if let Some(relay) = &mut relay {
-        let mut filter = json!({ "kinds": event::HEADWAY_KINDS, "authors": [author.hex()] });
-        if let Some(since) = max_created_at(&ndb, &author) {
-            filter["since"] = json!(since);
-        }
+        let filter = json!({ "kinds": event::HEADWAY_KINDS, "authors": [author.hex()] });
         let received = relay.sync_into(&ndb, &filter.to_string()).await?;
         await_ingest(&ndb, &received).await;
+
+        let on_relay: HashSet<[u8; 32]> = received.into_iter().collect();
+        let pending = local_events_missing_from(&ndb, &author, &on_relay);
+        if !pending.is_empty() {
+            relay.publish(&pending).await?;
+            eprintln!("flushed {} local event(s) to the relay", pending.len());
+        }
     }
 
     let board = cli.board;
@@ -258,15 +270,32 @@ fn all_present(ndb: &Ndb, ids: &[[u8; 32]]) -> bool {
     ids.iter().all(|id| ndb.get_note_by_id(&txn, id).is_ok())
 }
 
-/// The newest `created_at` among the author's cached headway events, used as the
-/// next sync cursor. `None` if the cache holds none.
-fn max_created_at(ndb: &Ndb, author: &Pubkey) -> Option<u64> {
-    let txn = Transaction::new(ndb).ok()?;
-    ndb.fold(&txn, &[event::headway_filter(author)], 0u64, |max, note| {
-        max.max(note.created_at())
-    })
-    .ok()
-    .filter(|&max| max > 0)
+/// The `["EVENT", {...}]` frames for every cached headway event of `author` that
+/// the relay didn't send back (`on_relay`) — i.e. local-only events, typically
+/// edits made while offline. These are the ones to push so the app catches up.
+fn local_events_missing_from(
+    ndb: &Ndb,
+    author: &Pubkey,
+    on_relay: &HashSet<[u8; 32]>,
+) -> Vec<String> {
+    let Ok(txn) = Transaction::new(ndb) else {
+        return Vec::new();
+    };
+    ndb.fold(
+        &txn,
+        &[event::headway_filter(author)],
+        Vec::new(),
+        |mut acc, note| {
+            if !on_relay.contains(note.id())
+                && let Ok(msg) = enostr::ClientMessage::event(&note)
+                && let Ok(frame) = msg.to_json()
+            {
+                acc.push(frame);
+            }
+            acc
+        },
+    )
+    .unwrap_or_default()
 }
 
 /// Collects the `["EVENT", {...}]` frames an edit produces so they can be

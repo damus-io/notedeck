@@ -112,3 +112,38 @@ fn seed_show_and_add_round_trip() {
         "added card not found in Todo: {board:#}"
     );
 }
+
+/// Edits made while no relay is reachable land only in the CLI's cache; the next
+/// connected run must flush them up so the app catches up.
+#[test]
+fn offline_edits_flush_on_reconnect() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+    // A port nothing listens on, so the CLI falls back to offline.
+    let dead = "ws://127.0.0.1:1";
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // Seed offline: 21 events land in the CLI cache, none reach the relay.
+    let seed = headway(dead, db, &["seed"]);
+    assert!(seed.status.success(), "offline seed should still succeed");
+
+    // Reconnect and run a plain `show`: the reconcile must push the stranded
+    // seed up, so a fresh cache pointed at the relay sees the full board.
+    let _ = headway(&url, db, &["show"]);
+
+    let fresh_dir = tempfile::tempdir().expect("fresh dir");
+    let fresh = fresh_dir.path().to_str().unwrap();
+    let board = show_until(&url, fresh, 7);
+    assert_eq!(board["columns"].as_array().unwrap().len(), 4);
+}
