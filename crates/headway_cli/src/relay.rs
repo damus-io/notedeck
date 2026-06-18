@@ -110,7 +110,21 @@ impl Relay {
                     let reason = frame.get(2).and_then(Value::as_str).unwrap_or("");
                     return Err(format!("relay refused reconciliation: {reason}").into());
                 }
-                _ => {}
+                // A relay that doesn't speak NIP-77 answers NEG-OPEN with a
+                // NOTICE (or nothing). Anything that isn't a reconciliation frame
+                // means the handshake won't progress — bail rather than block
+                // forever waiting for a NEG-MSG that will never come.
+                Some("NOTICE") => {
+                    let msg = frame.get(1).and_then(Value::as_str).unwrap_or("");
+                    return Err(format!("relay does not support NIP-77 negentropy: {msg}").into());
+                }
+                other => {
+                    return Err(format!(
+                        "unexpected '{}' frame during negentropy reconcile",
+                        other.unwrap_or("?")
+                    )
+                    .into());
+                }
             }
         }
         self.ws

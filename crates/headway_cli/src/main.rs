@@ -126,25 +126,40 @@ async fn run() -> Result<()> {
     //           without this they'd stay stranded in the cache.
     if let Some(relay) = &mut relay {
         let filter = json!({ "kinds": event::HEADWAY_KINDS, "authors": [author.hex()] });
-        let diff = relay
+        match relay
             .reconcile(&filter.to_string(), local_set(&ndb, &author)?)
-            .await?;
+            .await
+        {
+            Ok(diff) => {
+                // Pull missing events by id. The relay caps a single `REQ`'s
+                // stored replay, so fetch in chunks rather than one oversized
+                // filter.
+                for chunk in diff.need.chunks(ID_FETCH_CHUNK) {
+                    let ids: Vec<String> = chunk.iter().map(hex::encode).collect();
+                    let received = relay
+                        .sync_into(&ndb, &json!({ "ids": ids }).to_string())
+                        .await?;
+                    await_ingest(&ndb, &received).await;
+                }
 
-        // Pull missing events by id. The relay caps a single `REQ`'s stored
-        // replay, so fetch in chunks rather than one oversized filter.
-        for chunk in diff.need.chunks(ID_FETCH_CHUNK) {
-            let ids: Vec<String> = chunk.iter().map(hex::encode).collect();
-            let received = relay
-                .sync_into(&ndb, &json!({ "ids": ids }).to_string())
-                .await?;
-            await_ingest(&ndb, &received).await;
-        }
-
-        // Push events the relay is missing (e.g. edits made while offline).
-        let pending = frames_for_ids(&ndb, &author, &diff.have);
-        if !pending.is_empty() {
-            relay.publish(&pending).await?;
-            eprintln!("flushed {} local event(s) to the relay", pending.len());
+                // Push events the relay is missing (e.g. edits made offline).
+                let have: HashSet<[u8; 32]> = diff.have.iter().copied().collect();
+                let pending = frames_where(&ndb, &author, |id| have.contains(id));
+                if !pending.is_empty() {
+                    relay.publish(&pending).await?;
+                    eprintln!("flushed {} local event(s) to the relay", pending.len());
+                }
+            }
+            // Sync is best-effort. A relay that doesn't speak NIP-77 (an older
+            // notedeck, or a plain NIP-01 relay) can't reconcile — fall back to a
+            // full NIP-01 sync rather than failing or, worse, hanging. If even
+            // that fails, warn and carry on against the cache.
+            Err(e) => {
+                eprintln!("warning: negentropy reconcile unavailable: {e}");
+                if let Err(e) = fallback_sync(relay, &ndb, &author, &filter).await {
+                    eprintln!("warning: fallback sync failed: {e}");
+                }
+            }
         }
     }
 
@@ -305,12 +320,10 @@ fn local_set(ndb: &Ndb, author: &Pubkey) -> Result<NegentropyStorageVector> {
 }
 
 /// The `["EVENT", {...}]` frames for the cached headway events of `author` whose
-/// ids are in `ids` — the events to push so the relay (and app) catch up.
-fn frames_for_ids(ndb: &Ndb, author: &Pubkey, ids: &[[u8; 32]]) -> Vec<String> {
-    if ids.is_empty() {
-        return Vec::new();
-    }
-    let wanted: HashSet<[u8; 32]> = ids.iter().copied().collect();
+/// id satisfies `keep` — the events to push so the relay (and app) catch up.
+/// `keep` selects which side of a reconcile to forward (the ids we hold that the
+/// relay lacks).
+fn frames_where(ndb: &Ndb, author: &Pubkey, keep: impl Fn(&[u8; 32]) -> bool) -> Vec<String> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
@@ -319,7 +332,7 @@ fn frames_for_ids(ndb: &Ndb, author: &Pubkey, ids: &[[u8; 32]]) -> Vec<String> {
         &[event::headway_filter(author)],
         Vec::new(),
         |mut acc, note| {
-            if wanted.contains(note.id())
+            if keep(note.id())
                 && let Ok(msg) = enostr::ClientMessage::event(&note)
                 && let Ok(frame) = msg.to_json()
             {
@@ -329,6 +342,28 @@ fn frames_for_ids(ndb: &Ndb, author: &Pubkey, ids: &[[u8; 32]]) -> Vec<String> {
         },
     )
     .unwrap_or_default()
+}
+
+/// Degraded sync for relays that don't speak NIP-77: `REQ` the whole board in,
+/// ingest it, then push any local event the relay didn't return. O(board) on the
+/// wire instead of O(difference), but it keeps the CLI working against plain
+/// NIP-01 relays (or a notedeck whose relay predates negentropy).
+async fn fallback_sync(
+    relay: &mut Relay,
+    ndb: &Ndb,
+    author: &Pubkey,
+    filter: &serde_json::Value,
+) -> Result<()> {
+    let received = relay.sync_into(ndb, &filter.to_string()).await?;
+    await_ingest(ndb, &received).await;
+
+    let on_relay: HashSet<[u8; 32]> = received.into_iter().collect();
+    let pending = frames_where(ndb, author, |id| !on_relay.contains(id));
+    if !pending.is_empty() {
+        relay.publish(&pending).await?;
+        eprintln!("flushed {} local event(s) to the relay", pending.len());
+    }
+    Ok(())
 }
 
 /// Collects the `["EVENT", {...}]` frames an edit produces so they can be
