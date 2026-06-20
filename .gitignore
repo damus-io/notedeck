@@ -1,7 +1,7 @@
 .DS_Store
 .buildcmd
-# ignore local .claude/ files (settings etc.) but track shared project skills
 /.claude/*
+!/.claude/settings.json
 !/.claude/skills/
 TODO.bak
 android-config.json

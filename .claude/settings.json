@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(target/debug/headway:*)",
+      "Bash(headway:*)"
+    ]
+  }
+}
