@@ -28,6 +28,24 @@ fn headway(url: &str, db: &str, extra: &[&str]) -> std::process::Output {
         .expect("run headway")
 }
 
+/// The full hex id of the first card on the board, for addressing a `move`.
+fn first_card_id(board: &Value) -> String {
+    board["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|c| c["cards"].as_array().unwrap().iter())
+        .next()
+        .expect("a card")["id"]
+        .as_str()
+        .expect("card id")
+        .to_string()
+}
+
+fn flushed(out: &std::process::Output) -> bool {
+    String::from_utf8_lossy(&out.stderr).contains("flushed")
+}
+
 fn total_cards(board: &Value) -> usize {
     board["columns"]
         .as_array()
@@ -146,4 +164,57 @@ fn offline_edits_flush_on_reconnect() {
     let fresh = fresh_dir.path().to_str().unwrap();
     let board = show_until(&url, fresh, 7);
     assert_eq!(board["columns"].as_array().unwrap().len(), 4);
+}
+
+/// Moving a card writes a new placement revision and supersedes the old one,
+/// which lingers in the CLI's append-only cache after the relay has replaced it.
+/// A settled board must not keep re-flushing that dropped revision every run —
+/// the reconcile has to converge.
+#[test]
+fn reconcile_converges_after_replacing_a_placement() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    assert!(headway(&url, db, &["seed"]).status.success(), "seed");
+    let board = show_until(&url, db, 7);
+
+    // Move a card: a fresh placement (same d-tag, newer created_at) replaces the
+    // seeded one, so the relay drops the old id the cache still holds.
+    let card = first_card_id(&board);
+    let mv = headway(&url, db, &["move", &card, "--col", "done"]);
+    assert!(
+        mv.status.success(),
+        "move failed: {}",
+        String::from_utf8_lossy(&mv.stderr)
+    );
+
+    // Once the relay has ingested the new placement, `show` should stop finding
+    // anything to flush. Allow a few runs for async ingest, then require it.
+    let mut converged = false;
+    for _ in 0..50 {
+        if !flushed(&headway(&url, db, &["show"])) {
+            converged = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(converged, "show kept re-flushing the superseded placement");
+
+    // And it stays converged — the next run is silent too.
+    assert!(
+        !flushed(&headway(&url, db, &["show"])),
+        "a settled board must not re-flush superseded events"
+    );
 }

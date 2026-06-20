@@ -9,7 +9,7 @@
 
 mod relay;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -329,25 +329,73 @@ fn local_set(ndb: &Ndb, author: &Pubkey) -> Result<NegentropyStorageVector> {
 /// id satisfies `keep` — the events to push so the relay (and app) catch up.
 /// `keep` selects which side of a reconcile to forward (the ids we hold that the
 /// relay lacks).
+///
+/// Addressable events (board/placement) are deduplicated to their latest
+/// revision per `(kind, d-tag)` right in the query; immutable events (issues,
+/// labels, covers) pass through untouched. The local cache is append-only and
+/// keeps every old revision, but a relay holds only the latest and rejects the
+/// rest as "replaced" — pushing stale revisions is pointless and would keep the
+/// reconcile from ever converging (the dropped id can never land, so it
+/// re-flushes every run). The winner follows NIP-33 resolution: newest
+/// `created_at`, ties broken by the lexically lowest id, matching what the relay
+/// and app keep.
 fn frames_where(ndb: &Ndb, author: &Pubkey, keep: impl Fn(&[u8; 32]) -> bool) -> Vec<String> {
     let Ok(txn) = Transaction::new(ndb) else {
         return Vec::new();
     };
-    ndb.fold(
-        &txn,
-        &[event::headway_filter(author)],
-        Vec::new(),
-        |mut acc, note| {
-            if keep(note.id())
-                && let Ok(msg) = enostr::ClientMessage::event(&note)
-                && let Ok(frame) = msg.to_json()
-            {
-                acc.push(frame);
-            }
-            acc
-        },
-    )
-    .unwrap_or_default()
+
+    // Threaded accumulator: the winning revision per addressable coordinate, plus
+    // every immutable event in arrival order.
+    type Latest = HashMap<(u32, String), (u64, [u8; 32], String)>;
+    let (latest, plain) = ndb
+        .fold(
+            &txn,
+            &[event::headway_filter(author)],
+            (Latest::new(), Vec::<([u8; 32], String)>::new()),
+            |(mut latest, mut plain), note| {
+                let id = *note.id();
+                let Ok(msg) = enostr::ClientMessage::event(&note) else {
+                    return (latest, plain);
+                };
+                let Ok(frame) = msg.to_json() else {
+                    return (latest, plain);
+                };
+
+                let kind = note.kind();
+                if (kind == event::KIND_BOARD || kind == event::KIND_PLACEMENT)
+                    && let Some(d) = d_tag(&note)
+                {
+                    let at = note.created_at();
+                    let win = latest
+                        .get(&(kind, d.clone()))
+                        .is_none_or(|(t, i, _)| at > *t || (at == *t && id < *i));
+                    if win {
+                        latest.insert((kind, d), (at, id, frame));
+                    }
+                } else {
+                    plain.push((id, frame));
+                }
+                (latest, plain)
+            },
+        )
+        .unwrap_or_default();
+
+    latest
+        .into_values()
+        .map(|(_, id, frame)| (id, frame))
+        .chain(plain)
+        .filter(|(id, _)| keep(id))
+        .map(|(_, frame)| frame)
+        .collect()
+}
+
+/// The value of a note's `d` tag, if any.
+fn d_tag(note: &nostrdb::Note) -> Option<String> {
+    note.tags().iter().find_map(|tag| {
+        (tag.get_str(0) == Some("d"))
+            .then(|| tag.get_str(1).map(str::to_owned))
+            .flatten()
+    })
 }
 
 /// Degraded sync for relays that don't speak NIP-77: `REQ` the whole board in,
