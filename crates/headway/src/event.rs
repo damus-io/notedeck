@@ -867,6 +867,27 @@ pub fn pick_board(reducer: &BoardReducer, author: &Pubkey, board_id: &str) -> Op
         .find(|v| v.id == board_id && &v.author == author.bytes())
 }
 
+/// Pick a single card's *resolved* [`CardView`] (latest subject, labels, cover
+/// and placement applied) out of a folded board, by the issue's note id.
+/// Searches the live columns and the archived set. `None` if the board or the
+/// card within it is absent. Unlike parsing the kind-1621 note directly — which
+/// only yields its creation-time snapshot — this reflects later edits.
+pub fn pick_card(
+    reducer: &BoardReducer,
+    author: &Pubkey,
+    board_id: &str,
+    issue_id: &[u8; 32],
+) -> Option<CardView> {
+    let want = NoteId::new(*issue_id);
+    let board = pick_board(reducer, author, board_id)?;
+    board
+        .columns
+        .into_iter()
+        .flat_map(|col| col.cards)
+        .chain(board.archived.into_iter().map(|a| a.card))
+        .find(|card| card.id == want)
+}
+
 /// Fold `author`'s headway events out of `ndb` and reduce them into the board
 /// with the given `board_id`, if it exists. A one-shot [`fold_board`] +
 /// [`pick_board`] for callers that don't keep the reducer around.
@@ -1350,5 +1371,41 @@ mod tests {
         assert_eq!(view.columns[0].name, "Todo");
         assert_eq!(view.columns[0].cards[0].title, "Card A (renamed)");
         assert_eq!(view.columns[1].cards[0].title, "Card B");
+    }
+
+    /// [`pick_card`] resolves a single card to its *current* state — the latest
+    /// subject and label edits applied — not the issue's creation-time snapshot,
+    /// and returns `None` for an unknown card id.
+    #[test]
+    fn pick_card_resolves_current_state() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder| {
+            let note = b.sign(&owner.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let i1 = note_id(&owner, build_issue(&addr, "Original", "body"));
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols)),
+            parse_owned(build_issue(&addr, "Original", "body")),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m")),
+            parse_owned(build_subject_edit(&i1, "Renamed")),
+            parse_owned(build_labels(&i1, &["bug".to_string()])),
+        ];
+
+        let mut reducer = BoardReducer::default();
+        for event in &events {
+            reducer.ingest(event.clone());
+        }
+
+        let card = pick_card(&reducer, &owner.pubkey, "b1", i1.bytes()).unwrap();
+        assert_eq!(card.title, "Renamed");
+        assert_eq!(card.labels, vec!["bug".to_string()]);
+
+        // Unknown card id -> None.
+        assert!(pick_card(&reducer, &owner.pubkey, "b1", &[0u8; 32]).is_none());
     }
 }
