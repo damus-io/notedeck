@@ -52,6 +52,7 @@ enum Command {
     Add {
         title: String,
         col: Option<String>,
+        labels: Vec<String>,
     },
     Move {
         card: String,
@@ -223,9 +224,9 @@ async fn run() -> Result<()> {
 /// column arguments against `view`.
 fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
     Ok(match command {
-        Command::Add { title, col } => {
+        Command::Add { title, col, labels } => {
             let col = col.as_deref().map_or(Ok(0), |c| resolve_col(view, c))?;
-            BoardAction::AddCard { col, title }
+            BoardAction::AddCard { col, title, labels }
         }
         Command::Move { card, col, row } => {
             let card = resolve_card(view, &card)?;
@@ -564,6 +565,7 @@ impl Cli {
         let mut json = false;
         let mut col = None;
         let mut row = None;
+        let mut labels: Vec<String> = Vec::new();
         let mut positionals: Vec<String> = Vec::new();
 
         let mut args = args;
@@ -581,6 +583,17 @@ impl Cli {
                 "--board" => board = value("--board")?,
                 "--author" => author = Some(Pubkey::parse(&value("--author")?)?),
                 "--col" => col = Some(value("--col")?),
+                "-l" | "--label" | "--labels" => {
+                    // Repeatable, and each value may be a comma-separated list,
+                    // so `-l a,b --label c` and `-l a -l b -l c` are equivalent.
+                    labels.extend(
+                        value("--label")?
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string),
+                    );
+                }
                 "--row" => {
                     row = Some(
                         value("--row")?
@@ -599,7 +612,7 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
-        let command = parse_command(name, rest, col, row)?;
+        let command = parse_command(name, rest, col, row, labels)?;
 
         let secret = match nsec {
             Some(nsec) => Some(parse_nsec(&nsec)?),
@@ -623,6 +636,7 @@ fn parse_command(
     rest: &[String],
     col: Option<String>,
     row: Option<usize>,
+    labels: Vec<String>,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
     Ok(match name {
@@ -631,6 +645,7 @@ fn parse_command(
         "add" => Command::Add {
             title: joined(rest, 0, name)?,
             col,
+            labels,
         },
         "move" => Command::Move {
             card: card()?,
@@ -696,7 +711,7 @@ USAGE:
 COMMANDS:
     show                       Print the board (--json for machine output)
     seed                       Seed the default board if none exists
-    add <title...>             Add a card (defaults to the first column)
+    add <title...>             Add a card (--col <c> column, -l <labels> to tag)
     move <card> --col <c>      Move a card to a column (--row to position)
     title <card> <title...>    Edit a card's title
     desc <card> <text...>      Edit a card's description
@@ -714,6 +729,8 @@ OPTIONS:
     --relay <url>     Relay URL (or $HEADWAY_RELAY) [default: {DEFAULT_RELAY}]
     --board <id>      Board id [default: {board}]
     --db <path>       nostrdb cache dir [default: <data-dir>/headway-cli]
+    -l, --label <l>   Label(s) for `add` (repeatable; comma-separated allowed)
+    --col <c>         Column for `add`/`move` (id or name)
     --json            Machine-readable output (show)
     -h, --help        Print this help",
         board = store::BOARD_ID,

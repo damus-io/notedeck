@@ -32,8 +32,13 @@ pub enum BoardAction {
         to_col: usize,
         to_row: usize,
     },
-    /// Create a new card titled `title` at the end of column `col`.
-    AddCard { col: usize, title: String },
+    /// Create a new card titled `title` at the end of column `col`, optionally
+    /// tagging it with `labels`.
+    AddCard {
+        col: usize,
+        title: String,
+        labels: Vec<String>,
+    },
     /// Replace a card's title (subject edit).
     EditTitle { card: NoteId, title: String },
     /// Replace a card's description (cover note).
@@ -209,7 +214,7 @@ pub fn apply(
                 publisher,
             );
         }
-        BoardAction::AddCard { col, title } => {
+        BoardAction::AddCard { col, title, labels } => {
             let Some(c) = view.columns.get(col) else {
                 return;
             };
@@ -223,6 +228,9 @@ pub fn apply(
                 secret,
                 publisher,
             );
+            if !labels.is_empty() {
+                ingest(ndb, build_labels(&id, &labels), secret, publisher);
+            }
         }
         BoardAction::EditTitle { card, title } => {
             ingest(ndb, build_subject_edit(&card, &title), secret, publisher);
@@ -567,11 +575,41 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "New idea".to_string(),
+                labels: vec![],
             },
         );
 
         let view = t.wait(|v| v.columns[1].cards.len() == 3);
         assert_eq!(card_titles(&view, 1).last().unwrap(), "New idea");
+    }
+
+    #[test]
+    fn add_card_with_labels_tags_the_new_card() {
+        let t = TestNdb::new();
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+
+        t.apply(
+            &view,
+            BoardAction::AddCard {
+                col: 1,
+                title: "Tagged idea".to_string(),
+                labels: vec!["bug".to_string(), "ux".to_string()],
+            },
+        );
+
+        let view = t.wait(|v| {
+            v.columns[1]
+                .cards
+                .iter()
+                .any(|c| c.title == "Tagged idea" && c.labels.len() == 2)
+        });
+        let card = view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.title == "Tagged idea")
+            .unwrap();
+        assert_eq!(card.labels, vec!["bug".to_string(), "ux".to_string()]);
     }
 
     #[test]
@@ -600,6 +638,7 @@ mod tests {
             BoardAction::AddCard {
                 col: 1,
                 title: "Tracked".to_string(),
+                labels: vec![],
             },
             &mut sink,
         );

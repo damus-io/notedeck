@@ -106,8 +106,22 @@ fn seed_show_and_add_round_trip() {
     assert_eq!(cols.len(), 4);
     assert_eq!(cols[0]["name"], "Backlog");
 
-    // Add a card to Todo; it must round-trip back through the relay.
-    let add = headway(&url, db, &["add", "Wire up the CLI", "--col", "Todo"]);
+    // Add a card to Todo with labels; both the card and its labels must
+    // round-trip back through the relay. `-l` is repeatable and comma-splittable.
+    let add = headway(
+        &url,
+        db,
+        &[
+            "add",
+            "Wire up the CLI",
+            "--col",
+            "Todo",
+            "-l",
+            "cli,ux",
+            "--label",
+            "p1",
+        ],
+    );
     assert!(
         add.status.success(),
         "add failed: {}",
@@ -121,13 +135,23 @@ fn seed_show_and_add_round_trip() {
         .iter()
         .find(|c| c["name"] == "Todo")
         .expect("todo column");
-    assert!(
-        todo["cards"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["title"] == "Wire up the CLI"),
-        "added card not found in Todo: {board:#}"
+    let card = todo["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["title"] == "Wire up the CLI")
+        .unwrap_or_else(|| panic!("added card not found in Todo: {board:#}"));
+    let mut labels: Vec<&str> = card["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l.as_str().unwrap())
+        .collect();
+    labels.sort_unstable();
+    assert_eq!(
+        labels,
+        vec!["cli", "p1", "ux"],
+        "labels did not round-trip: {card:#}"
     );
 }
 
