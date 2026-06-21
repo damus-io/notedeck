@@ -16,6 +16,7 @@ mod frame_history;
 pub mod i18n;
 mod imgcache;
 pub mod jobs;
+pub mod kind_renderer;
 pub mod media;
 mod muted;
 pub mod name;
@@ -86,6 +87,7 @@ pub use jobs::{
     deliver_completed_media_job, run_media_job_pre_action, JobCache, JobPool, MediaJobSender,
     MediaJobs,
 };
+pub use kind_renderer::{KindRenderer, KindRendererRegistry};
 pub use media::{
     update_imeta_blurhashes, ImageMetadata, ImageType, MediaAction, ObfuscationType,
     PixelDimensions, PointDimensions, RenderableMedia,

@@ -5345,7 +5345,10 @@ version = "0.10.0-beta.4"
 dependencies = [
  "egui",
  "egui_kittest",
+ "enostr",
  "jsoncanvas",
+ "nostr 0.37.0",
+ "nostrdb",
  "notedeck",
  "notedeck_ui",
  "tempfile",

@@ -34,6 +34,8 @@ pub struct AppContext<'a> {
     pub nip05_cache: &'a mut Nip05Cache,
     pub i18n: &'a mut Localization,
     pub sound: &'a SoundManager,
+    /// Renderers for nostr events embedded inline, keyed by kind.
+    pub kind_renderers: &'a crate::kind_renderer::KindRendererRegistry,
 
     #[cfg(target_os = "android")]
     pub android: AndroidApp,

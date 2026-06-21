@@ -108,6 +108,34 @@ impl notedeck::App for NotedeckApp {
         }
     }
 
+    fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
+        match self {
+            #[cfg(feature = "dave")]
+            NotedeckApp::Dave(dave) => dave.kind_renderers(),
+            NotedeckApp::Columns(columns) => columns.kind_renderers(),
+
+            #[cfg(feature = "notebook")]
+            NotedeckApp::Notebook(notebook) => notebook.kind_renderers(),
+
+            #[cfg(feature = "headway")]
+            NotedeckApp::Headway(headway) => headway.kind_renderers(),
+
+            #[cfg(feature = "clndash")]
+            NotedeckApp::ClnDash(clndash) => clndash.kind_renderers(),
+
+            #[cfg(feature = "messages")]
+            NotedeckApp::Messages(dms) => dms.kind_renderers(),
+
+            #[cfg(feature = "dashboard")]
+            NotedeckApp::Dashboard(db) => db.kind_renderers(),
+
+            #[cfg(feature = "nostrverse")]
+            NotedeckApp::Nostrverse(nostrverse) => nostrverse.kind_renderers(),
+
+            NotedeckApp::Other(_name, other) => other.kind_renderers(),
+        }
+    }
+
     fn tab_notifications(&self, ctx: &AppContext<'_>) -> notedeck::TabNotifications {
         match self {
             #[cfg(feature = "dave")]

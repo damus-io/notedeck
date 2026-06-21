@@ -189,7 +189,10 @@ impl Chrome {
         let notedeck_options = notedeck.options();
         stop_debug_mode(notedeck_options);
 
-        let app_ref = &mut notedeck.notedeck_ref(&cc.egui_ctx);
+        // Named (not a borrowed temporary) so we can drop it below to release
+        // the `&mut notedeck` borrow and register kind-renderers afterwards.
+        let mut notedeck_ref = notedeck.notedeck_ref(&cc.egui_ctx);
+        let app_ref = &mut notedeck_ref;
         #[cfg(feature = "dave")]
         let dave = Dave::new(
             cc.wgpu_render_state.as_ref(),
@@ -295,6 +298,21 @@ impl Chrome {
         chrome.set_active(0);
 
         app_ref.app_ctx.sound.play(notedeck::SoundEffect::Startup);
+
+        // Release the `&mut notedeck` borrow so we can register renderers below.
+        drop(notedeck_ref);
+
+        // Register every app's inline kind-renderers up front, so a `nostr:`
+        // reference (e.g. in a notebook note) resolves even for apps the user
+        // hasn't opened yet.
+        let renderers: Vec<_> = chrome
+            .apps
+            .iter()
+            .flat_map(|app| app.kind_renderers())
+            .collect();
+        for renderer in renderers {
+            notedeck.register_kind_renderer(renderer);
+        }
 
         Ok(chrome)
     }

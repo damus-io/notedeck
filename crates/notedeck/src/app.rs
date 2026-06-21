@@ -65,6 +65,14 @@ pub trait App {
     fn tab_notifications(&self, _ctx: &AppContext<'_>) -> TabNotifications {
         TabNotifications::default()
     }
+
+    /// Renderers this app contributes for nostr events embedded inline (by
+    /// kind), e.g. a notebook note referencing one of the app's entities. These
+    /// are registered once at startup so references resolve even for apps the
+    /// user never opens. Defaults to none.
+    fn kind_renderers(&self) -> Vec<Box<dyn crate::KindRenderer>> {
+        Vec::new()
+    }
 }
 
 #[derive(Default)]
@@ -115,6 +123,9 @@ pub struct Notedeck {
     nip05_cache: Nip05Cache,
     i18n: Localization,
     sound: crate::SoundManager,
+    /// Renderers for nostr events embedded inline (by kind), e.g. headway issues
+    /// referenced from a notebook note. Populated at app startup.
+    kind_renderers: crate::kind_renderer::KindRendererRegistry,
 
     /// Embedded localhost nostr relay, when enabled. Held so it shuts down with
     /// the app (its `Drop` stops the accept loop). Gated behind the `local-relay`
@@ -433,6 +444,7 @@ impl Notedeck {
             nip05_cache: Nip05Cache::new(),
             i18n,
             sound,
+            kind_renderers: crate::kind_renderer::KindRendererRegistry::default(),
             #[cfg(feature = "local-relay")]
             local_relay,
             #[cfg(target_os = "android")]
@@ -488,6 +500,7 @@ impl Notedeck {
                 nip05_cache: &mut self.nip05_cache,
                 i18n: &mut self.i18n,
                 sound: &self.sound,
+                kind_renderers: &self.kind_renderers,
                 #[cfg(target_os = "android")]
                 android: self.android_app.as_ref().unwrap().clone(),
             },
@@ -499,6 +512,12 @@ impl Notedeck {
 
     pub fn set_app<T: App + 'static>(&mut self, app: T) {
         self.app = Some(Rc::new(RefCell::new(app)));
+    }
+
+    /// Register a renderer for nostr events of one or more kinds, so surfaces
+    /// like the notebook can draw referenced entities inline. Call at startup.
+    pub fn register_kind_renderer(&mut self, renderer: Box<dyn crate::KindRenderer>) {
+        self.kind_renderers.register(renderer);
     }
 
     pub fn args(&self) -> &Args {

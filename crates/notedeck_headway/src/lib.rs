@@ -234,6 +234,13 @@ impl BoardSync {
 }
 
 impl App for Headway {
+    fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
+        vec![
+            Box::new(HeadwayIssueRenderer),
+            Box::new(HeadwayBoardRenderer),
+        ]
+    }
+
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         let theme = ColorTheme::current(ui.ctx());
 
@@ -1381,6 +1388,157 @@ fn status_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
                     .color(theme.text_secondary),
             );
         });
+}
+
+// ---------------------------------------------------------------------------
+// Inline renderers — drawing a single headway entity referenced from elsewhere
+// (e.g. a `nostr:` link in a notebook note), via notedeck's `KindRenderer`
+// registry. These are read-only and self-contained, unlike the editable board.
+// ---------------------------------------------------------------------------
+
+/// Render a single headway issue (kind 1621) as a compact, read-only card:
+/// labels, subject, and a one-line body preview. Reuses the board card styling.
+pub fn issue_inline_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    issue: &event::IssueEvent,
+) -> egui::Response {
+    egui::Frame::new()
+        .fill(theme.surface_elevated)
+        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .inner_margin(egui::Margin::same(SPACING_SM as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if !issue.inline_labels.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for label in &issue.inline_labels {
+                        label_chip(ui, theme, label);
+                    }
+                });
+                ui.add_space(SPACING_XS);
+            }
+            ui.label(egui::RichText::new(&issue.subject).color(theme.text_primary));
+            if !issue.body.is_empty() {
+                ui.add_space(2.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&issue.body)
+                            .small()
+                            .color(theme.text_muted),
+                    )
+                    .truncate(),
+                );
+            }
+        })
+        .response
+}
+
+/// Render a headway board (kind 30619) as a compact, read-only summary: the
+/// title, an optional description preview, and a column-name + card-count chip
+/// per column.
+pub fn board_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, view: &BoardView) -> egui::Response {
+    egui::Frame::new()
+        .fill(theme.surface_elevated)
+        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
+        .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
+        .inner_margin(egui::Margin::same(SPACING_SM as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                egui::RichText::new(&view.title)
+                    .strong()
+                    .color(theme.text_primary),
+            );
+            if !view.description.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(&view.description)
+                            .small()
+                            .color(theme.text_muted),
+                    )
+                    .truncate(),
+                );
+            }
+            ui.add_space(SPACING_XS);
+            ui.horizontal_wrapped(|ui| {
+                for col in &view.columns {
+                    ui.label(
+                        egui::RichText::new(&col.name)
+                            .small()
+                            .color(theme.text_secondary),
+                    );
+                    count_badge(ui, theme, col.cards.len());
+                    ui.add_space(SPACING_SM);
+                }
+            });
+        })
+        .response
+}
+
+/// Renders a headway issue (kind 1621) referenced inline, e.g. from a notebook
+/// note. Registered into [`notedeck::KindRendererRegistry`] at app startup.
+pub struct HeadwayIssueRenderer;
+
+impl notedeck::KindRenderer for HeadwayIssueRenderer {
+    fn id(&self) -> &'static str {
+        "headway.issue"
+    }
+    fn name(&self) -> &'static str {
+        "Headway issue"
+    }
+    fn kinds(&self) -> &'static [u32] {
+        &[event::KIND_ISSUE]
+    }
+    fn render(
+        &self,
+        ui: &mut egui::Ui,
+        _ndb: &Ndb,
+        _txn: &Transaction,
+        note: &nostrdb::Note,
+    ) -> egui::Response {
+        let theme = ColorTheme::current(ui.ctx());
+        match event::parse(note) {
+            Some(event::HeadwayEvent::Issue(issue)) => issue_inline_ui(ui, &theme, &issue),
+            _ => ui.weak("invalid headway issue"),
+        }
+    }
+}
+
+/// Renders a headway board (kind 30619) referenced inline. The note is the
+/// addressable board event; we recover its `(author, board_id)` and fold the
+/// full board off the local db to summarise it.
+pub struct HeadwayBoardRenderer;
+
+impl notedeck::KindRenderer for HeadwayBoardRenderer {
+    fn id(&self) -> &'static str {
+        "headway.board"
+    }
+    fn name(&self) -> &'static str {
+        "Headway board"
+    }
+    fn kinds(&self) -> &'static [u32] {
+        &[event::KIND_BOARD]
+    }
+    fn render(
+        &self,
+        ui: &mut egui::Ui,
+        ndb: &Ndb,
+        txn: &Transaction,
+        note: &nostrdb::Note,
+    ) -> egui::Response {
+        let theme = ColorTheme::current(ui.ctx());
+        let Some(event::HeadwayEvent::Board(board)) = event::parse(note) else {
+            return ui.weak("invalid headway board");
+        };
+        let author = Pubkey::new(board.author);
+        match event::fold_board(ndb, txn, &author)
+            .and_then(|reducer| event::pick_board(&reducer, &author, &board.id))
+        {
+            Some(view) => board_inline_ui(ui, &theme, &view),
+            None => ui.weak("headway board not found"),
+        }
+    }
 }
 
 #[cfg(test)]

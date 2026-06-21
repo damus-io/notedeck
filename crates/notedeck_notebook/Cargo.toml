@@ -8,6 +8,9 @@ jsoncanvas = { git = "https://github.com/jb55/jsoncanvas", rev = "ae60f96e4d022c
 notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
 egui = { workspace = true }
+enostr = { workspace = true }
+nostrdb = { workspace = true }
+nostr = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }

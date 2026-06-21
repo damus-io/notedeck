@@ -61,8 +61,8 @@ impl Default for Notebook {
 }
 
 impl notedeck::App for Notebook {
-    fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        notebook_ui(self, ui);
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        notebook_ui(self, ctx, ui);
         AppResponse::none()
     }
 }

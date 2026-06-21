@@ -1,18 +1,21 @@
 use crate::Notebook;
 use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
+use enostr::NoteId;
 use jsoncanvas::{
     FileNode, GroupNode, LinkNode, Node, NodeId, TextNode,
     color::{Color, PresetColor},
     edge::{Edge, Side},
     node::GenericNode,
 };
+use nostrdb::{Filter, Note, Transaction};
+use notedeck::AppContext;
 use std::collections::HashMap;
 use std::ops::Neg;
 
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable nodes. Position and selection changes are written
 /// back into `notebook`.
-pub fn notebook_ui(notebook: &mut Notebook, ui: &mut egui::Ui) {
+pub fn notebook_ui(notebook: &mut Notebook, ctx: &AppContext, ui: &mut egui::Ui) {
     if !notebook.loaded {
         notebook.scene_rect = ui.available_rect_before_wrap();
         notebook.loaded = true;
@@ -52,7 +55,7 @@ pub fn notebook_ui(notebook: &mut Notebook, ui: &mut egui::Ui) {
 
         for (id, node) in canvas.get_nodes().iter() {
             let rect = rects[id];
-            let resp = node_ui(ui, node, rect, selected == Some(id));
+            let resp = node_ui(ui, ctx, node, rect, selected == Some(id));
 
             if resp.dragged() {
                 dragged = Some((id.clone(), rect.min + resp.drag_delta()));
@@ -222,19 +225,116 @@ pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32
     ));
 }
 
-pub fn node_ui(ui: &mut egui::Ui, node: &Node, rect: Rect, selected: bool) -> egui::Response {
+pub fn node_ui(
+    ui: &mut egui::Ui,
+    ctx: &AppContext,
+    node: &Node,
+    rect: Rect,
+    selected: bool,
+) -> egui::Response {
     match node {
-        Node::Text(text_node) => text_node_ui(ui, text_node, rect, selected),
+        Node::Text(text_node) => text_node_ui(ui, ctx, text_node, rect, selected),
         Node::File(file_node) => file_node_ui(ui, file_node, rect, selected),
         Node::Link(link_node) => link_node_ui(ui, link_node, rect, selected),
         Node::Group(group_node) => group_node_ui(ui, group_node, rect, selected),
     }
 }
 
-fn text_node_ui(ui: &mut egui::Ui, node: &TextNode, rect: Rect, selected: bool) -> egui::Response {
+fn text_node_ui(
+    ui: &mut egui::Ui,
+    ctx: &AppContext,
+    node: &TextNode,
+    rect: Rect,
+    selected: bool,
+) -> egui::Response {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
-        notedeck_ui::markdown::render_markdown(node.text(), ui);
+        node_text_ui(ui, ctx, node.text());
     })
+}
+
+/// Render a text node's body, splicing in inline widgets for any `nostr:`
+/// references. Plain text outside references is rendered as markdown, so a note
+/// reads the same as before unless it actually links to a nostr entity. Scans in
+/// place — no per-frame allocation for the common reference-free case.
+fn node_text_ui(ui: &mut egui::Ui, ctx: &AppContext, text: &str) {
+    let mut rest = text;
+    while let Some(pos) = rest.find("nostr:") {
+        let after = &rest[pos + "nostr:".len()..];
+        // The bech32 token is a run of lowercase letters/digits (hrp + data).
+        let end = after
+            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
+            .unwrap_or(after.len());
+        if end == 0 {
+            // A bare "nostr:" with no entity after it: keep it as text.
+            let upto = pos + "nostr:".len();
+            notedeck_ui::markdown::render_markdown(&rest[..upto], ui);
+            rest = &rest[upto..];
+            continue;
+        }
+        if pos > 0 {
+            notedeck_ui::markdown::render_markdown(&rest[..pos], ui);
+        }
+        nostr_ref_ui(ui, ctx, &after[..end]);
+        rest = &after[end..];
+    }
+    if !rest.is_empty() {
+        notedeck_ui::markdown::render_markdown(rest, ui);
+    }
+}
+
+/// Resolve a `nostr:` reference to a note and hand it to the registered
+/// renderer for its kind. Falls back to plain link text when the entity can't be
+/// parsed, isn't in the db yet, or has no renderer.
+fn nostr_ref_ui(ui: &mut egui::Ui, ctx: &AppContext, bech: &str) {
+    let Ok(txn) = Transaction::new(ctx.ndb) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    let Some(note) = resolve_nostr_ref(ctx.ndb, &txn, bech) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    // TODO: per-kind default renderer id from settings (see "Settings UI" card).
+    match ctx.kind_renderers.default_for(note.kind(), None) {
+        Some(renderer) => {
+            renderer.render(ui, ctx.ndb, &txn, &note);
+        }
+        None => nostr_ref_fallback_ui(ui, bech),
+    }
+}
+
+/// Resolve a bech32 entity to a concrete note: `nevent`/`note` directly, `naddr`
+/// to the latest replaceable event for its coordinate.
+fn resolve_nostr_ref<'a>(ndb: &nostrdb::Ndb, txn: &'a Transaction, bech: &str) -> Option<Note<'a>> {
+    if bech.starts_with("nevent1") {
+        let id = NoteId::from_nevent_bech(bech)?;
+        ndb.get_note_by_id(txn, id.bytes()).ok()
+    } else if bech.starts_with("note1") {
+        let id = NoteId::from_bech(bech)?;
+        ndb.get_note_by_id(txn, id.bytes()).ok()
+    } else if bech.starts_with("naddr1") {
+        use nostr::nips::nip19::FromBech32;
+        let coord = nostr::nips::nip01::Coordinate::from_bech32(bech).ok()?;
+        let author = coord.public_key.to_bytes();
+        let filter = Filter::new()
+            .authors([&author])
+            .kinds([coord.kind.as_u16() as u64])
+            .tags([coord.identifier.as_str()], 'd')
+            .limit(1)
+            .build();
+        ndb.query(txn, &[filter], 1)
+            .ok()?
+            .into_iter()
+            .next()
+            .map(|r| r.note)
+    } else {
+        None
+    }
+}
+
+/// Plain, unobtrusive representation of a `nostr:` reference we couldn't render.
+fn nostr_ref_fallback_ui(ui: &mut egui::Ui, bech: &str) {
+    ui.weak(format!("nostr:{bech}"));
 }
 
 fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) -> egui::Response {
