@@ -5278,6 +5278,7 @@ dependencies = [
  "egui_kittest",
  "enostr",
  "headway",
+ "nostr 0.37.0",
  "nostrdb",
  "notedeck",
  "notedeck_testing",

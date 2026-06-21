@@ -10,6 +10,7 @@ notedeck_ui = { workspace = true }
 egui = { workspace = true }
 nostrdb = { workspace = true }
 enostr = { workspace = true }
+nostr = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }

@@ -517,6 +517,17 @@ fn cards_drop_zone(
                     *clicked = Some(card.id);
                 }
 
+                // Right-click to copy a pasteable `nostr:nevent…` reference to the
+                // issue (e.g. for embedding in a notebook note).
+                notedeck_ui::context_menu::context_menu(&response, |ui| {
+                    if ui.button("Copy Id").clicked() {
+                        if let Some(uri) = issue_nostr_uri(&card.id) {
+                            ui.ctx().copy_text(uri);
+                        }
+                        ui.close_menu();
+                    }
+                });
+
                 // Hover affordance: cards are clickable, so highlight the border and
                 // switch to a pointing-hand cursor when the pointer is over one.
                 if response.hovered() {
@@ -800,6 +811,14 @@ fn column_menu(
 ) {
     let n = view.columns.len();
     ui.menu_button("⋯", |ui| {
+        // Board-level: copy a pasteable `nostr:naddr…` reference to this board.
+        if ui.button("Copy Id").clicked() {
+            if let Some(uri) = board_nostr_uri(&view.author, &view.id) {
+                ui.ctx().copy_text(uri);
+            }
+            ui.close_menu();
+        }
+        ui.separator();
         if ui.button("Rename").clicked() {
             state.edit_text = view.columns[col_idx].name.clone();
             state.edit = InlineEdit::RenameColumn(col_idx);
@@ -1395,6 +1414,27 @@ fn status_pill(ui: &mut egui::Ui, theme: &ColorTheme, text: &str) {
 // (e.g. a `nostr:` link in a notebook note), via notedeck's `KindRenderer`
 // registry. These are read-only and self-contained, unlike the editable board.
 // ---------------------------------------------------------------------------
+
+/// A `nostr:nevent…` URI for an issue card, ready to paste into a notebook note
+/// (or anywhere else that resolves nostr refs). Carries the issue kind as a hint.
+fn issue_nostr_uri(card_id: &NoteId) -> Option<String> {
+    use nostr::nips::nip19::ToBech32;
+    let event_id = nostr::EventId::from_slice(card_id.bytes()).ok()?;
+    let nevent = nostr::nips::nip19::Nip19Event::new(event_id, Vec::<String>::new())
+        .kind(nostr::Kind::from(event::KIND_ISSUE as u16));
+    Some(format!("nostr:{}", nevent.to_bech32().ok()?))
+}
+
+/// A `nostr:naddr…` URI for a board, addressing the replaceable board event by
+/// its `(kind, author, identifier)` coordinate.
+fn board_nostr_uri(author: &[u8; 32], board_id: &str) -> Option<String> {
+    use nostr::nips::nip19::ToBech32;
+    let pubkey = nostr::PublicKey::from_slice(author).ok()?;
+    let mut coord =
+        nostr::nips::nip01::Coordinate::new(nostr::Kind::from(event::KIND_BOARD as u16), pubkey);
+    coord.identifier = board_id.to_string();
+    Some(format!("nostr:{}", coord.to_bech32().ok()?))
+}
 
 /// Render a single headway issue (kind 1621) as a compact, read-only card:
 /// labels, subject, and a one-line body preview. Reuses the board card styling.
