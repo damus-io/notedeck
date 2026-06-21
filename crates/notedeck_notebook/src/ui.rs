@@ -1,8 +1,8 @@
-use crate::Notebook;
+use crate::{NodeEdit, Notebook};
 use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
 use enostr::NoteId;
 use jsoncanvas::{
-    FileNode, GroupNode, LinkNode, Node, NodeId, TextNode,
+    FileNode, GroupNode, JsonCanvas, LinkNode, Node, NodeId, TextNode,
     color::{Color, PresetColor},
     edge::{Edge, Side},
     node::GenericNode,
@@ -32,11 +32,17 @@ pub fn notebook_ui(notebook: &mut Notebook, ctx: &AppContext, ui: &mut egui::Ui)
 
     // Collect interactions inside the scene closure and apply them after, so the
     // closure only borrows the canvas immutably (Scene needs &mut scene_rect).
+    // The edit state is moved out so the editor can mutate its buffer in place.
     let mut scene_rect = notebook.scene_rect;
     let view = notebook.scene_rect;
     let mut dragged: Option<(NodeId, Pos2)> = None;
     let mut clicked: Option<NodeId> = None;
     let mut bg_clicked = false;
+    let mut start_edit: Option<NodeId> = None;
+    let mut create_at: Option<Pos2> = None;
+    let mut commit_edit = false;
+    let mut cancel_edit = false;
+    let mut edit = std::mem::replace(&mut notebook.edit, NodeEdit::Idle);
     let canvas = &notebook.canvas;
     let selected = notebook.selected.as_ref();
 
@@ -47,6 +53,10 @@ pub fn notebook_ui(notebook: &mut Notebook, ctx: &AppContext, ui: &mut egui::Ui)
         if bg.clicked() {
             bg_clicked = true;
         }
+        // Double-clicking empty canvas drops a fresh text node there to edit.
+        if bg.double_clicked() {
+            create_at = bg.interact_pointer_pos();
+        }
 
         // Edges next, then nodes on top so node drag handles win interaction.
         for (_edge_id, edge) in canvas.get_edges().iter() {
@@ -55,13 +65,42 @@ pub fn notebook_ui(notebook: &mut Notebook, ctx: &AppContext, ui: &mut egui::Ui)
 
         for (id, node) in canvas.get_nodes().iter() {
             let rect = rects[id];
-            let resp = node_ui(ui, ctx, node, rect, selected == Some(id));
 
+            // The node being edited renders an inline text field instead of its
+            // usual contents; everything else renders normally and can enter
+            // edit mode on a double-click.
+            let editing_this = matches!(&edit, NodeEdit::Editing { node, .. } if node == id);
+            if editing_this {
+                let NodeEdit::Editing {
+                    buffer,
+                    request_focus,
+                    ..
+                } = &mut edit
+                else {
+                    unreachable!()
+                };
+                let resp = text_edit_node_ui(ui, node.node(), rect, buffer, *request_focus);
+                *request_focus = false;
+                if resp.lost_focus() {
+                    // Esc abandons the edit; any other blur commits it.
+                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel_edit = true;
+                    } else {
+                        commit_edit = true;
+                    }
+                }
+                continue;
+            }
+
+            let resp = node_ui(ui, ctx, node, rect, selected == Some(id));
             if resp.dragged() {
                 dragged = Some((id.clone(), rect.min + resp.drag_delta()));
             }
             if resp.clicked() {
                 clicked = Some(id.clone());
+            }
+            if resp.double_clicked() && matches!(node, Node::Text(_)) {
+                start_edit = Some(id.clone());
             }
         }
     });
@@ -75,6 +114,169 @@ pub fn notebook_ui(notebook: &mut Notebook, ctx: &AppContext, ui: &mut egui::Ui)
         notebook.selected = Some(id);
     } else if bg_clicked {
         notebook.selected = None;
+    }
+
+    // Apply edit transitions. Commit/cancel resolve the current edit; a fresh
+    // double-click then opens the next one (committing the previous first, since
+    // moving focus blurs it). Edits that end up blank drop their node so stray
+    // double-clicks don't litter the canvas with empty boxes.
+    if cancel_edit {
+        if let NodeEdit::Editing { node, .. } = &edit
+            && text_node_text(&notebook.canvas, node).trim().is_empty()
+        {
+            remove_node(notebook, node);
+        }
+        edit = NodeEdit::Idle;
+    } else if commit_edit {
+        if let NodeEdit::Editing { node, buffer, .. } = &edit {
+            if buffer.trim().is_empty() {
+                remove_node(notebook, node);
+            } else {
+                set_text_node_text(&mut notebook.canvas, node, buffer.clone());
+            }
+        }
+        edit = NodeEdit::Idle;
+    }
+    if let Some(id) = start_edit {
+        let buffer = text_node_text(&notebook.canvas, &id);
+        edit = NodeEdit::Editing {
+            node: id,
+            buffer,
+            request_focus: true,
+        };
+    } else if let Some(pos) = create_at {
+        let id = new_text_node(&mut notebook.canvas, pos);
+        notebook.selected = Some(id.clone());
+        edit = NodeEdit::Editing {
+            node: id,
+            buffer: String::new(),
+            request_focus: true,
+        };
+    }
+    notebook.edit = edit;
+}
+
+/// Render the inline editor for a text node: a multiline field filling the node's
+/// rect, with a selection-colored border. Returns the text field's response so
+/// the caller can detect blur. Grabs keyboard focus once when `request_focus`.
+fn text_edit_node_ui(
+    ui: &mut egui::Ui,
+    node: &GenericNode,
+    rect: Rect,
+    buffer: &mut String,
+    request_focus: bool,
+) -> egui::Response {
+    let base_fill = ui.visuals().extreme_bg_color;
+    let accent = node
+        .color
+        .as_ref()
+        .map(canvas_color)
+        .unwrap_or_else(|| ui.visuals().selection.stroke.color);
+    let fill = blend(base_fill, accent, 0.12);
+
+    let mut text_resp = None;
+    ui.put(rect, |ui: &mut egui::Ui| {
+        egui::Frame::default()
+            .fill(fill)
+            .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
+            .corner_radius(egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8))
+            .stroke(egui::Stroke::new(
+                notedeck::tokens::STROKE_THICK * 2.0,
+                ui.visuals().selection.stroke.color,
+            ))
+            .show(ui, |ui| {
+                let resp = ui.add_sized(
+                    ui.available_size(),
+                    egui::TextEdit::multiline(buffer).frame(false),
+                );
+                if request_focus {
+                    resp.request_focus();
+                }
+                text_resp = Some(resp);
+            })
+            .response
+    });
+    text_resp.expect("frame body always runs")
+}
+
+/// Add a new, empty text node at `pos` (canvas coords) and return its id.
+fn new_text_node(canvas: &mut JsonCanvas, pos: Pos2) -> NodeId {
+    let id = unique_node_id(canvas);
+    let node = TextNode::new(
+        id.clone(),
+        pos.x as i64,
+        pos.y as i64,
+        250,
+        120,
+        None,
+        String::new(),
+    );
+    let _ = canvas.add_node(node.into());
+    id
+}
+
+/// A `notebook-N` id not already present in the canvas.
+fn unique_node_id(canvas: &JsonCanvas) -> NodeId {
+    let mut n = 0u64;
+    loop {
+        let candidate = format!("notebook-{n}");
+        if !canvas.get_nodes().keys().any(|k| k.as_str() == candidate) {
+            return candidate.parse().expect("non-empty id");
+        }
+        n += 1;
+    }
+}
+
+/// Drop a node from the canvas along with any drag override / selection on it.
+fn remove_node(notebook: &mut Notebook, id: &NodeId) {
+    notebook.canvas.get_mut_nodes().remove(id);
+    notebook.positions.remove(id);
+    if notebook.selected.as_ref() == Some(id) {
+        notebook.selected = None;
+    }
+}
+
+/// The text of a text node, or empty if it isn't one / doesn't exist.
+fn text_node_text(canvas: &JsonCanvas, id: &NodeId) -> String {
+    match canvas.get_nodes().get(id) {
+        Some(Node::Text(node)) => node.text().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Replace a text node's text in place, preserving its geometry and color.
+/// `TextNode` exposes no text setter, so we rebuild the node and swap it in.
+fn set_text_node_text(canvas: &mut JsonCanvas, id: &NodeId, text: String) {
+    let geom = {
+        let Some(Node::Text(node)) = canvas.get_nodes().get(id) else {
+            return;
+        };
+        let g = node.node();
+        (
+            g.x,
+            g.y,
+            g.width,
+            g.height,
+            g.color.as_ref().map(clone_color),
+        )
+    };
+    let (x, y, width, height, color) = geom;
+    let node = TextNode::new(id.clone(), x, y, width, height, color, text);
+    canvas.get_mut_nodes().insert(id.clone(), node.into());
+}
+
+/// `jsoncanvas::Color` isn't `Clone`, so rebuild it by hand.
+fn clone_color(color: &Color) -> Color {
+    match color {
+        Color::Preset(preset) => Color::Preset(match preset {
+            PresetColor::Red => PresetColor::Red,
+            PresetColor::Orange => PresetColor::Orange,
+            PresetColor::Yellow => PresetColor::Yellow,
+            PresetColor::Green => PresetColor::Green,
+            PresetColor::Cyan => PresetColor::Cyan,
+            PresetColor::Purple => PresetColor::Purple,
+        }),
+        Color::Color(hex) => Color::Color(*hex),
     }
 }
 

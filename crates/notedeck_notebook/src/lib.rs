@@ -15,6 +15,22 @@ pub struct Notebook {
     positions: HashMap<NodeId, Pos2>,
     /// Currently selected node, if any.
     selected: Option<NodeId>,
+    /// Inline text-editing state.
+    edit: NodeEdit,
+}
+
+/// Inline text-editing state for the notebook canvas.
+pub(crate) enum NodeEdit {
+    /// No node is being edited.
+    Idle,
+    /// A text node is being edited. `buffer` holds the working text (committed
+    /// back into the canvas on blur, discarded on Esc); `request_focus` is set
+    /// the frame editing begins so the text field grabs keyboard focus once.
+    Editing {
+        node: NodeId,
+        buffer: String,
+        request_focus: bool,
+    },
 }
 
 impl Notebook {
@@ -30,6 +46,7 @@ impl Notebook {
             loaded: false,
             positions: HashMap::new(),
             selected: None,
+            edit: NodeEdit::Idle,
         }
     }
 
