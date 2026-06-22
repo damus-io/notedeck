@@ -246,19 +246,20 @@ impl notedeck::App for Notebook {
         // Apply it by ingesting events into the local nostrdb. Mutations need a
         // signing key; a watch-only account simply can't edit.
         if let (Some(intent), Some(secret)) = (intent, &signer)
-            && let Some(action) = self.intent_to_action(intent) {
-                let view = self.sync.view().expect("view present");
-                store::apply(
-                    ctx.ndb,
-                    &self.canvas_id,
-                    view,
-                    &author,
-                    secret,
-                    action,
-                    &mut store::NoPublish,
-                );
-                self.wake();
-            }
+            && let Some(action) = self.intent_to_action(intent)
+        {
+            let view = self.sync.view().expect("view present");
+            store::apply(
+                ctx.ndb,
+                &self.canvas_id,
+                view,
+                &author,
+                secret,
+                action,
+                &mut store::NoPublish,
+            );
+            self.wake();
+        }
 
         self.pump_repaint(ui);
         AppResponse::default()
