@@ -80,6 +80,10 @@ enum Command {
     Restore {
         card: String,
     },
+    Login {
+        nsec: String,
+    },
+    Logout,
 }
 
 async fn run() -> Result<()> {
@@ -90,6 +94,14 @@ async fn run() -> Result<()> {
             return Ok(());
         }
     };
+
+    // `login`/`logout` manage the stored key and touch neither the cache nor a
+    // relay, so handle them before any of that machinery spins up.
+    match &cli.command {
+        Command::Login { nsec } => return login(nsec),
+        Command::Logout => return logout(),
+        _ => {}
+    }
 
     // The author whose board we read/write: an explicit override, else the
     // signing key's own pubkey.
@@ -259,7 +271,9 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Restore { card } => BoardAction::RestoreCard {
             card: resolve_card(view, &card)?,
         },
-        Command::Show | Command::Seed => unreachable!("handled before build_action"),
+        Command::Show | Command::Seed | Command::Login { .. } | Command::Logout => {
+            unreachable!("handled before build_action")
+        }
     })
 }
 
@@ -555,7 +569,9 @@ impl Cli {
     /// Parse args (without the program name). Returns `Ok(None)` when usage
     /// should be printed (no command, `-h`/`--help`).
     fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>> {
-        let mut nsec = env::var("HEADWAY_NSEC").ok();
+        // Precedence: `--nsec` (set below) overrides the `HEADWAY_NSEC` env var,
+        // which overrides the key stored by `login`.
+        let mut nsec = env::var("HEADWAY_NSEC").ok().or_else(stored_nsec);
         let mut relay = env::var("HEADWAY_RELAY")
             .ok()
             .unwrap_or_else(|| DEFAULT_RELAY.to_string());
@@ -614,9 +630,13 @@ impl Cli {
         };
         let command = parse_command(name, rest, col, row, labels)?;
 
-        let secret = match nsec {
-            Some(nsec) => Some(parse_nsec(&nsec)?),
-            None => None,
+        // `login`/`logout` manage the stored key themselves, so don't parse (and
+        // potentially reject on) whatever key is currently configured — that would
+        // keep `login` from replacing a stale or malformed stored key.
+        let secret = match (&command, nsec) {
+            (Command::Login { .. } | Command::Logout, _) => None,
+            (_, Some(nsec)) => Some(parse_nsec(&nsec)?),
+            (_, None) => None,
         };
 
         Ok(Some(Cli {
@@ -667,6 +687,10 @@ fn parse_command(
         "delete" => Command::Delete { card: card()? },
         "archive" => Command::Archive { card: card()? },
         "restore" => Command::Restore { card: card()? },
+        "login" => Command::Login {
+            nsec: arg(rest, 0, name)?,
+        },
+        "logout" => Command::Logout,
         other => return Err(format!("unknown command '{other}' (try `headway --help`)").into()),
     })
 }
@@ -685,6 +709,64 @@ fn joined(rest: &[String], idx: usize, cmd: &str) -> Result<String> {
         return Err(format!("`{cmd}` is missing text").into());
     }
     Ok(parts.join(" "))
+}
+
+// ---------------------------------------------------------------------------
+// stored signing key
+// ---------------------------------------------------------------------------
+
+/// Where the signing key lives when stored via `login`: a single `nsec...` line
+/// in `<data-dir>/headway-cli/nsec` (e.g. `~/.local/share/headway-cli/nsec` on
+/// Linux), alongside the cache. It lets a key be set once so later runs — and the
+/// agents driving them — never have to pass `--nsec` or export `HEADWAY_NSEC`.
+fn nsec_config_path() -> Result<std::path::PathBuf> {
+    Ok(dirs::data_dir()
+        .ok_or("no data dir; set HEADWAY_NSEC or pass --nsec")?
+        .join("headway-cli")
+        .join("nsec"))
+}
+
+/// Read the stored signing key, if any. Missing file, unreadable file, or an
+/// empty one all read as "no stored key" — the caller falls back to the env var
+/// or `--nsec`.
+fn stored_nsec() -> Option<String> {
+    let contents = std::fs::read_to_string(nsec_config_path().ok()?).ok()?;
+    let trimmed = contents.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Validate `nsec` and store it for later runs. We derive the pubkey first so a
+/// malformed key is rejected before it's written, and lock the file to the owner
+/// since it holds a secret.
+fn login(nsec: &str) -> Result<()> {
+    let (_, pubkey) = parse_nsec(nsec)?;
+    let path = nsec_config_path()?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, format!("{nsec}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    println!(
+        "stored signing key for {} in {}",
+        pubkey.hex(),
+        path.display()
+    );
+    Ok(())
+}
+
+/// Forget the stored signing key. Removing a key that isn't there is not an error.
+fn logout() -> Result<()> {
+    let path = nsec_config_path()?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => println!("removed stored signing key at {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("no stored signing key"),
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
 }
 
 /// Decode an `nsec...` into raw secret bytes and its derived pubkey.
@@ -719,12 +801,16 @@ COMMANDS:
     delete <card>              Remove a card (reversible tombstone)
     archive <card>             Archive a card off the board
     restore <card>             Restore an archived card
+    login <nsec>               Store a signing key for later runs
+    logout                     Forget the stored signing key
 
     <card> is a card id or a unique short prefix (see `show`).
     <c> is a column id or name (case-insensitive).
 
 OPTIONS:
-    --nsec <nsec>     Signing key (or $HEADWAY_NSEC). Required to edit.
+    --nsec <nsec>     Signing key for this run. Normally unnecessary — run
+                      `headway login` once and it's reused. ($HEADWAY_NSEC,
+                      if set, takes precedence over the stored key.)
     --author <pk>     Board author to read (defaults to the signer)
     --relay <url>     Relay URL (or $HEADWAY_RELAY) [default: {DEFAULT_RELAY}]
     --board <id>      Board id [default: {board}]

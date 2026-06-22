@@ -12,7 +12,8 @@ command reference; the board flows `Backlog → Todo → In Progress → Done`.
 - **Task breakdown**: Use one card per unit of work; `desc`/`label` for detail.
 - **On completion**: Move the card to Done: `headway move <card> --col done`.
 - Cards are addressed by a short id prefix (from `show`); always `show` before
-  editing. The CLI reads the signing key from `$HEADWAY_NSEC`.
+  editing. If a command fails because you're not logged in, ask the user to run
+  `headway login`.
 
 ## Committing
 

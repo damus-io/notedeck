@@ -25,24 +25,16 @@ cargo run -q -p headway_cli -- <command>
 
 In examples below, `headway` means whichever form you're using.
 
-## Authentication
+## Logging in
 
-- **Reading** (`show`) needs only `--author <pubkey>`, or nothing if a signing
-  key is set (it reads the signer's own board).
-- **Editing** (everything else) needs a signing key: `--nsec <nsec>` or the
-  `HEADWAY_NSEC` env var. The board you edit is the signer's own board.
-- Relay defaults to `ws://127.0.0.1:6677` (notedeck's embedded relay). Override
-  with `--relay <url>` or `HEADWAY_RELAY`. If no relay answers, the CLI works
-  offline against its cache and edits reach the app on the next connected run.
+Everything operates on your own board once you're logged in — `show` to read,
+the rest to edit. Relay defaults to `ws://127.0.0.1:6677` (notedeck's embedded
+relay); override with `--relay <url>` or `HEADWAY_RELAY`. If no relay answers,
+the CLI works offline against its cache and edits reach the app on the next
+connected run.
 
-Set the key once per shell so commands stay short and the nsec stays out of logs:
-
-```bash
-export HEADWAY_NSEC=nsec1...
-```
-
-If you don't know the user's nsec, ask for it (or have them export
-`HEADWAY_NSEC`) before attempting an edit — don't guess.
+If a command fails because you're not logged in, ask the user to run
+`headway login`. Don't handle the key yourself.
 
 ## The golden rule: `show` before you edit
 
@@ -78,6 +70,8 @@ equivalent.
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
 | `restore <card>` | Restore an archived card |
+| `login <nsec>` | Store a signing key so later runs just work |
+| `logout` | Forget the stored signing key |
 
 `add` accepts `-l`/`--label` to tag the new card in one step. The flag is
 repeatable and each value may be comma-separated, so `-l a,b --label c` and
