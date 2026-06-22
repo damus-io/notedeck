@@ -1,6 +1,6 @@
 //! Core streaming parser implementation.
 
-use crate::element::{CodeBlock, ListItem, MdElement, Span};
+use crate::element::{CodeBlock, ListItem, MdElement, Span, TaskMarker};
 use crate::inline::parse_inline;
 use crate::partial::{Partial, PartialKind};
 
@@ -1096,12 +1096,13 @@ fn could_be_list_marker(s: &str) -> bool {
 }
 
 /// Strip a leading GFM task-list checkbox (`[ ]`, `[x]`, `[X]`) from `content`,
-/// returning its checked state plus the remaining body and its buffer offset.
-/// Returns `(None, content, abs)` unchanged when there's no checkbox.
-fn strip_checkbox(content: &str, abs: usize) -> (Option<bool>, &str, usize) {
+/// returning a [`TaskMarker`] (with its source span) plus the remaining body and
+/// its buffer offset. Returns `(None, content, abs)` unchanged when there's no
+/// checkbox. `abs` is the buffer offset of `content`, so the `[` sits at `abs`.
+fn strip_checkbox(content: &str, abs: usize) -> (Option<TaskMarker>, &str, usize) {
     let checked = match content.as_bytes() {
-        [b'[', b' ', b']', ..] => Some(false),
-        [b'[', b'x' | b'X', b']', ..] => Some(true),
+        [b'[', b' ', b']', ..] => false,
+        [b'[', b'x' | b'X', b']', ..] => true,
         _ => return (None, content, abs),
     };
     let rest = &content[3..];
@@ -1111,7 +1112,11 @@ fn strip_checkbox(content: &str, abs: usize) -> (Option<bool>, &str, usize) {
     }
     let body = rest.trim_start();
     let skipped = content.len() - body.len();
-    (checked, body, abs + skipped)
+    let marker = TaskMarker {
+        checked,
+        marker: Span::new(abs, abs + 3),
+    };
+    (Some(marker), body, abs + skipped)
 }
 
 /// Check if a line is a table separator row (e.g. `|---|---|`).

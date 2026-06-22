@@ -1076,11 +1076,20 @@ fn detail_description_section_ui(
 
     match state.detail_desc_mode {
         DescMode::Rendered => {
+            // Render with interactive task-list checkboxes; a click flips the
+            // box in `detail_desc` in place and we persist it like any edit.
+            let scope = ui.scope(|ui| {
+                notedeck_ui::markdown::render_markdown_editable(&mut state.detail_desc, ui)
+            });
+            let toggled = scope.inner;
             // The whole rendered block is a double-click target into the editor.
-            let resp = ui
-                .scope(|ui| notedeck_ui::markdown::render_markdown(&state.detail_desc, ui))
-                .response
-                .interact(egui::Sense::click());
+            let resp = scope.response.interact(egui::Sense::click());
+            if toggled {
+                *action = Some(BoardAction::EditDescription {
+                    card: ctx.card_id,
+                    description: state.detail_desc.clone(),
+                });
+            }
             if resp.double_clicked() {
                 state.detail_desc_mode = DescMode::Editing { focus: true };
             }

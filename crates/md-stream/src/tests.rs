@@ -1066,6 +1066,11 @@ fn item_text(item: &ListItem, buf: &str) -> String {
     out
 }
 
+/// `Some(checked)` if the item carries a task-list checkbox, else `None`.
+fn checkbox_state(item: &ListItem) -> Option<bool> {
+    item.checkbox.map(|c| c.checked)
+}
+
 fn unordered(el: &MdElement) -> &[ListItem] {
     match el {
         MdElement::UnorderedList(items) => items,
@@ -1129,13 +1134,13 @@ fn test_task_list_checkboxes() {
     let (els, buf) = parse_doc("- [ ] todo\n- [x] done\n- [X] also done\n- plain\n");
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 4);
-    assert_eq!(items[0].checkbox, Some(false));
+    assert_eq!(checkbox_state(&items[0]), Some(false));
     assert_eq!(item_text(&items[0], &buf), "todo");
-    assert_eq!(items[1].checkbox, Some(true));
+    assert_eq!(checkbox_state(&items[1]), Some(true));
     assert_eq!(item_text(&items[1], &buf), "done");
-    assert_eq!(items[2].checkbox, Some(true));
+    assert_eq!(checkbox_state(&items[2]), Some(true));
     assert_eq!(item_text(&items[2], &buf), "also done");
-    assert_eq!(items[3].checkbox, None);
+    assert_eq!(checkbox_state(&items[3]), None);
     assert_eq!(item_text(&items[3], &buf), "plain");
 }
 
@@ -1146,7 +1151,7 @@ fn test_checkbox_body_offset_is_correct() {
     let items = unordered(&els[0]);
     assert_eq!(item_text(&items[0], &buf), "ship it");
     // And it really is checked.
-    assert_eq!(items[0].checkbox, Some(true));
+    assert_eq!(checkbox_state(&items[0]), Some(true));
 }
 
 #[test]
@@ -1154,7 +1159,7 @@ fn test_bracket_text_is_not_a_checkbox() {
     // "[y]" is not a task marker; the brackets stay as content.
     let (els, buf) = parse_doc("- [y] nope\n");
     let items = unordered(&els[0]);
-    assert_eq!(items[0].checkbox, None);
+    assert_eq!(checkbox_state(&items[0]), None);
     assert_eq!(item_text(&items[0], &buf), "[y] nope");
 }
 
@@ -1279,7 +1284,7 @@ fn test_single_item_no_newline() {
     let (els, buf) = parse_doc("- [ ] only");
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 1);
-    assert_eq!(items[0].checkbox, Some(false));
+    assert_eq!(checkbox_state(&items[0]), Some(false));
     assert_eq!(item_text(&items[0], &buf), "only");
 }
 
@@ -1296,11 +1301,11 @@ fn test_list_streaming_split_across_chunks() {
     assert_eq!(els.len(), 1, "got {:?}", els);
     let items = unordered(&els[0]);
     assert_eq!(items.len(), 3);
-    assert_eq!(items[0].checkbox, Some(false));
+    assert_eq!(checkbox_state(&items[0]), Some(false));
     assert_eq!(item_text(&items[0], &buf), "a");
-    assert_eq!(items[1].checkbox, Some(true));
+    assert_eq!(checkbox_state(&items[1]), Some(true));
     assert_eq!(item_text(&items[1], &buf), "b");
-    assert_eq!(items[2].checkbox, None);
+    assert_eq!(checkbox_state(&items[2]), None);
     assert_eq!(item_text(&items[2], &buf), "c");
 }
 

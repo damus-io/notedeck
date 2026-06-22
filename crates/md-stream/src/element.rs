@@ -72,9 +72,27 @@ pub struct CodeBlock {
 pub struct ListItem {
     pub content: Vec<InlineElement>,
     pub nested: Option<Box<MdElement>>, // Nested list
-    /// GFM task-list state: `None` for a plain item, `Some(false)` for an
-    /// unchecked `[ ]` checkbox, `Some(true)` for a checked `[x]` one.
-    pub checkbox: Option<bool>,
+    /// GFM task-list state: `None` for a plain item, `Some(..)` for a `[ ]`/`[x]`
+    /// checkbox. Carries the marker's source span so an editor can flip it.
+    pub checkbox: Option<TaskMarker>,
+}
+
+/// A GFM task-list checkbox marker (`[ ]` or `[x]`) within a [`ListItem`].
+///
+/// `marker` is the span of the three-byte `[ ]`/`[x]` token in the source
+/// buffer. The state char is the single ASCII byte at `marker.start + 1`, so an
+/// editor can toggle ` ` <-> `x` in place without shifting any later offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskMarker {
+    pub checked: bool,
+    pub marker: Span,
+}
+
+impl TaskMarker {
+    /// Byte offset of the state char (the ` ` or `x`) in the source buffer.
+    pub fn state_offset(&self) -> usize {
+        self.marker.start + 1
+    }
 }
 
 /// Inline elements within a paragraph or list item.
