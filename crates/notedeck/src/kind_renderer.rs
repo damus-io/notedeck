@@ -16,9 +16,45 @@
 
 use std::collections::HashMap;
 
-use nostrdb::{Note, Transaction};
+use enostr::NoteId;
+use nostrdb::{Filter, Ndb, Note, Transaction};
 
 use crate::NoteContext;
+
+/// Resolve a bech32 `nostr:` entity to a concrete note: `nevent`/`note` point
+/// straight at one, `naddr` resolves to the latest replaceable event for its
+/// coordinate (see this module's docs). Returns `None` for an unparseable ref,
+/// an unhandled prefix, or an entity not yet in `ndb`.
+///
+/// The shared resolver behind every inline `nostr:` reference — text surfaces
+/// (the notebook, chat, …) call this and then hand the note to the
+/// [`KindRenderer`] for its kind.
+pub fn resolve_ref<'a>(ndb: &Ndb, txn: &'a Transaction, bech: &str) -> Option<Note<'a>> {
+    if bech.starts_with("nevent1") {
+        let id = NoteId::from_nevent_bech(bech)?;
+        ndb.get_note_by_id(txn, id.bytes()).ok()
+    } else if bech.starts_with("note1") {
+        let id = NoteId::from_bech(bech)?;
+        ndb.get_note_by_id(txn, id.bytes()).ok()
+    } else if bech.starts_with("naddr1") {
+        use nostr::nips::nip19::FromBech32;
+        let coord = nostr::nips::nip01::Coordinate::from_bech32(bech).ok()?;
+        let author = coord.public_key.to_bytes();
+        let filter = Filter::new()
+            .authors([&author])
+            .kinds([coord.kind.as_u16() as u64])
+            .tags([coord.identifier.as_str()], 'd')
+            .limit(1)
+            .build();
+        ndb.query(txn, &[filter], 1)
+            .ok()?
+            .into_iter()
+            .next()
+            .map(|r| r.note)
+    } else {
+        None
+    }
+}
 
 /// Renders a nostr entity of one or more kinds inline.
 ///

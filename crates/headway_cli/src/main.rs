@@ -184,11 +184,12 @@ async fn run() -> Result<()> {
 
     let board = cli.board;
     let as_json = cli.json;
+    let show_archived = cli.archived;
     let secret = cli.secret.map(|(s, _)| s);
 
     match cli.command {
         Command::Show => match load_board(&ndb, &author, &board) {
-            Some(view) => print_board(&view, as_json),
+            Some(view) => print_board(&view, as_json, show_archived),
             None if as_json => println!("null"),
             None => println!(
                 "no board '{}' for {} — run `headway seed`",
@@ -506,7 +507,7 @@ fn all_cards(view: &BoardView) -> impl Iterator<Item = &CardView> {
 // output
 // ---------------------------------------------------------------------------
 
-fn print_board(view: &BoardView, as_json: bool) {
+fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
     if as_json {
         println!(
             "{}",
@@ -532,9 +533,16 @@ fn print_board(view: &BoardView, as_json: bool) {
         }
     }
     if !view.archived.is_empty() {
-        println!("\nArchived ({})", view.archived.len());
-        for a in &view.archived {
-            println!("  {}  {}", short(&a.card.id), a.card.title);
+        if show_archived {
+            println!("\nArchived ({})", view.archived.len());
+            for a in &view.archived {
+                println!("  {}  {}", short(&a.card.id), a.card.title);
+            }
+        } else {
+            println!(
+                "\nArchived ({}) — use `show --archived` to list",
+                view.archived.len()
+            );
         }
     }
 }
@@ -562,6 +570,7 @@ struct Cli {
     db: Option<String>,
     board: String,
     json: bool,
+    archived: bool,
     command: Command,
 }
 
@@ -579,6 +588,7 @@ impl Cli {
         let mut board = store::BOARD_ID.to_string();
         let mut author = None;
         let mut json = false;
+        let mut archived = false;
         let mut col = None;
         let mut row = None;
         let mut labels: Vec<String> = Vec::new();
@@ -618,6 +628,7 @@ impl Cli {
                     )
                 }
                 "--json" => json = true,
+                "--archived" => archived = true,
                 other if other.starts_with("--") => {
                     return Err(format!("unknown flag '{other}'").into());
                 }
@@ -646,6 +657,7 @@ impl Cli {
             db,
             board,
             json,
+            archived,
             command,
         }))
     }
@@ -791,7 +803,8 @@ USAGE:
     headway [OPTIONS] <COMMAND>
 
 COMMANDS:
-    show                       Print the board (--json for machine output)
+    show                       Print the board (--archived to list archived,
+                               --json for machine output)
     seed                       Seed the default board if none exists
     add <title...>             Add a card (--col <c> column, -l <labels> to tag)
     move <card> --col <c>      Move a card to a column (--row to position)
@@ -818,6 +831,7 @@ OPTIONS:
     -l, --label <l>   Label(s) for `add` (repeatable; comma-separated allowed)
     --col <c>         Column for `add`/`move` (id or name)
     --json            Machine-readable output (show)
+    --archived        List archived cards in full (show)
     -h, --help        Print this help",
         board = store::BOARD_ID,
     );

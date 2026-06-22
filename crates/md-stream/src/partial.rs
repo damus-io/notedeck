@@ -83,11 +83,14 @@ pub enum PartialKind {
     /// Heading started with # at line start, collecting content
     Heading { level: u8 },
 
-    /// List item started, collecting content
-    ListItem {
+    /// List being accumulated item-by-item until a blank or non-list line.
+    /// `start` is the first ordered item's number (1 for unordered lists).
+    /// Items hold span-based inline content, so this stays zero-copy — it
+    /// mirrors how `Table` accumulates its `Span` rows.
+    List {
         ordered: bool,
-        number: Option<u32>,
-        indent: usize,
+        start: u32,
+        items: Vec<crate::element::ListItem>,
     },
 
     /// Blockquote started with >, collecting content

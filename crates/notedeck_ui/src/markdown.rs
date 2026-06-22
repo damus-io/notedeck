@@ -9,6 +9,8 @@ use md_stream::{
     parse_inline, CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Partial, PartialKind,
     Span, StreamParser,
 };
+use nostrdb::Transaction;
+use notedeck::AppContext;
 
 /// Theme for markdown rendering, derived from egui visuals.
 pub struct MdTheme {
@@ -52,6 +54,109 @@ pub fn render_markdown(text: &str, ui: &mut Ui) {
     render_assistant_message(&elements, None, &source, ui);
 }
 
+/// Render `source` as markdown with **interactive** GFM task-list checkboxes.
+///
+/// Like [`render_markdown`], but each `- [ ]`/`- [x]` checkbox is clickable;
+/// clicking one flips its state byte in `source` (`[ ]` <-> `[x]`) in place and
+/// returns `true` so the caller can persist the edit. Returns `false` when
+/// nothing was toggled this frame. Both state chars (` ` and `x`) are one ASCII
+/// byte, so a toggle never shifts later spans — multiple boxes coexist safely.
+pub fn render_markdown_editable(source: &mut String, ui: &mut Ui) -> bool {
+    let mut parser = StreamParser::new();
+    parser.push(source);
+    parser.finalize();
+    let (elements, buffer) = parser.into_parts();
+
+    let mut edits = CheckboxEdits::default();
+    render_md_elements(&elements, None, &buffer, Some(&mut edits), ui);
+
+    if edits.toggled.is_empty() {
+        return false;
+    }
+
+    // Flip the single state byte under each toggled checkbox. Offsets index the
+    // freshly-parsed `buffer`, which (single push) is byte-identical to `source`.
+    let mut bytes = buffer.into_bytes();
+    for off in edits.toggled {
+        if let Some(b) = bytes.get_mut(off) {
+            *b = if *b == b' ' { b'x' } else { b' ' };
+        }
+    }
+    *source = String::from_utf8(bytes).expect("toggling an ascii state byte keeps utf8 valid");
+    true
+}
+
+/// Collects task-list checkbox toggles during an editable render pass. Threaded
+/// as `Option<&mut CheckboxEdits>`: `None` renders read-only (disabled) boxes,
+/// `Some` renders enabled boxes and records the state-char byte offset of each
+/// box clicked this frame (see [`md_stream::TaskMarker::state_offset`]).
+#[derive(Default)]
+struct CheckboxEdits {
+    toggled: Vec<usize>,
+}
+
+/// Render markdown `text`, splicing in inline widgets for any `nostr:`
+/// references. Plain spans outside references go through [`render_markdown`], so
+/// a body reads the same as before unless it actually links to a nostr entity;
+/// each reference is resolved with [`notedeck::resolve_ref`] and handed to the
+/// registered [`notedeck::KindRenderer`] for its kind. Scans in place — no
+/// per-frame allocation for the common reference-free case.
+pub fn render_markdown_with_refs(ui: &mut Ui, ctx: &mut AppContext, text: &str) {
+    let mut rest = text;
+    while let Some(pos) = rest.find("nostr:") {
+        let after = &rest[pos + "nostr:".len()..];
+        // The bech32 token is a run of lowercase letters/digits (hrp + data).
+        let end = after
+            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
+            .unwrap_or(after.len());
+        if end == 0 {
+            // A bare "nostr:" with no entity after it: keep it as text.
+            let upto = pos + "nostr:".len();
+            render_markdown(&rest[..upto], ui);
+            rest = &rest[upto..];
+            continue;
+        }
+        if pos > 0 {
+            render_markdown(&rest[..pos], ui);
+        }
+        nostr_ref_ui(ui, ctx, &after[..end]);
+        rest = &after[end..];
+    }
+    if !rest.is_empty() {
+        render_markdown(rest, ui);
+    }
+}
+
+/// Resolve a `nostr:` reference to a note and hand it to the registered renderer
+/// for its kind. Falls back to plain link text when the entity can't be parsed,
+/// isn't in the db yet, or has no renderer.
+fn nostr_ref_ui(ui: &mut Ui, ctx: &mut AppContext, bech: &str) {
+    let Ok(txn) = Transaction::new(ctx.ndb) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    let Some(note) = notedeck::resolve_ref(ctx.ndb, &txn, bech) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    // The registry is a `&'a` reference held in AppContext; copy it out so the
+    // borrowed renderer doesn't alias the mutable borrow `note_context()` takes
+    // of ctx's other fields below.
+    let registry = ctx.kind_renderers;
+    // TODO: per-kind default renderer id from settings (see "Settings UI" card).
+    let Some(renderer) = registry.default_for(note.kind(), None) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    let mut note_context = ctx.note_context();
+    renderer.render(ui, &mut note_context, &txn, &note);
+}
+
+/// Plain, unobtrusive representation of a `nostr:` reference we couldn't render.
+fn nostr_ref_fallback_ui(ui: &mut Ui, bech: &str) {
+    ui.weak(format!("nostr:{bech}"));
+}
+
 /// Render all parsed markdown elements plus any partial state.
 pub fn render_assistant_message(
     elements: &[MdElement],
@@ -59,21 +164,40 @@ pub fn render_assistant_message(
     buffer: &str,
     ui: &mut Ui,
 ) {
+    render_md_elements(elements, partial, buffer, None, ui);
+}
+
+/// Shared rendering core. `edits` is `None` for read-only renders and `Some`
+/// for an editable pass (interactive checkboxes); see [`render_markdown_editable`].
+fn render_md_elements(
+    elements: &[MdElement],
+    partial: Option<&Partial>,
+    buffer: &str,
+    mut edits: Option<&mut CheckboxEdits>,
+    ui: &mut Ui,
+) {
     let theme = MdTheme::from_visuals(ui.visuals());
 
     ui.vertical(|ui| {
         for element in elements {
-            render_element(element, &theme, buffer, ui);
+            render_element(element, &theme, buffer, edits.as_deref_mut(), ui);
         }
 
-        // Render partial (speculative) content for immediate feedback
+        // Render partial (speculative) content for immediate feedback. Partials
+        // only arise while streaming, which is always a read-only render.
         if let Some(partial) = partial {
             render_partial(partial, &theme, buffer, ui);
         }
     });
 }
 
-fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+fn render_element(
+    element: &MdElement,
+    theme: &MdTheme,
+    buffer: &str,
+    mut edits: Option<&mut CheckboxEdits>,
+    ui: &mut Ui,
+) {
     match element {
         MdElement::Heading { level, content } => {
             let size = theme.heading_sizes[(*level as usize).saturating_sub(1).min(5)];
@@ -112,25 +236,18 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
                 ))
                 .show(ui, |ui| {
                     for elem in nested {
-                        render_element(elem, theme, buffer, ui);
+                        render_element(elem, theme, buffer, edits.as_deref_mut(), ui);
                     }
                 });
             ui.add_space(notedeck::tokens::SPACING_SM);
         }
 
         MdElement::UnorderedList(items) => {
-            for item in items {
-                render_list_item(item, "\u{2022}", theme, buffer, ui);
-            }
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            render_list_items(false, 1, items, theme, buffer, edits, ui);
         }
 
         MdElement::OrderedList { start, items } => {
-            for (i, item) in items.iter().enumerate() {
-                let marker = format!("{}.", start + i as u32);
-                render_list_item(item, &marker, theme, buffer, ui);
-            }
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            render_list_items(true, *start, items, theme, buffer, edits, ui);
         }
 
         MdElement::Table { headers, rows } => {
@@ -493,9 +610,56 @@ fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui:
     ui.add_space(8.0);
 }
 
-fn render_list_item(item: &ListItem, marker: &str, theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+/// Render a list's items with bullets (unordered) or incrementing numbers
+/// (ordered, counting up from `start`). Shared by the completed-element and
+/// streaming-partial paths.
+fn render_list_items(
+    ordered: bool,
+    start: u32,
+    items: &[ListItem],
+    theme: &MdTheme,
+    buffer: &str,
+    mut edits: Option<&mut CheckboxEdits>,
+    ui: &mut Ui,
+) {
+    for (i, item) in items.iter().enumerate() {
+        if ordered {
+            let marker = format!("{}.", start + i as u32);
+            render_list_item(item, &marker, theme, buffer, edits.as_deref_mut(), ui);
+        } else {
+            render_list_item(item, "\u{2022}", theme, buffer, edits.as_deref_mut(), ui);
+        }
+    }
+    ui.add_space(notedeck::tokens::SPACING_SM);
+}
+
+fn render_list_item(
+    item: &ListItem,
+    marker: &str,
+    theme: &MdTheme,
+    buffer: &str,
+    mut edits: Option<&mut CheckboxEdits>,
+    ui: &mut Ui,
+) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(marker).weak());
+        // GFM task-list items render a checkbox in place of the bullet/number
+        // marker; plain items keep their marker. In an editable pass the box is
+        // enabled and a click records the toggle; otherwise it's read-only.
+        if let Some(task) = item.checkbox {
+            let mut checked = task.checked;
+            match edits.as_deref_mut() {
+                Some(edits) => {
+                    if ui.add(egui::Checkbox::without_text(&mut checked)).changed() {
+                        edits.toggled.push(task.state_offset());
+                    }
+                }
+                None => {
+                    ui.add_enabled(false, egui::Checkbox::without_text(&mut checked));
+                }
+            }
+        } else {
+            ui.label(RichText::new(marker).weak());
+        }
         ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
                 render_inlines(&item.content, theme, buffer, ui);
@@ -503,7 +667,7 @@ fn render_list_item(item: &ListItem, marker: &str, theme: &MdTheme, buffer: &str
             // Render nested list if present
             if let Some(nested) = &item.nested {
                 ui.indent("nested", |ui| {
-                    render_element(nested, theme, buffer, ui);
+                    render_element(nested, theme, buffer, edits.as_deref_mut(), ui);
                 });
             }
         });
@@ -574,6 +738,19 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
 }
 
 fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+    // A streaming list keeps its completed items in `partial.kind` (its content
+    // span stays empty), so render those for progressive feedback before the
+    // empty-content guard below would bail out.
+    if let PartialKind::List {
+        ordered,
+        start,
+        items,
+    } = &partial.kind
+    {
+        render_list_items(*ordered, *start, items, theme, buffer, None, ui);
+        return;
+    }
+
     let content = partial.content(buffer);
     if content.is_empty() {
         return;
@@ -915,5 +1092,109 @@ mod tests {
         assert!(toks
             .iter()
             .any(|(t, s)| *t == SandToken::String && *s == "\"notedeck\""));
+    }
+
+    #[test]
+    fn test_render_task_list_shows_items() {
+        // End-to-end: a GFM task list parses and renders its item text without
+        // panicking (guards the checkbox render path and the partial early-out).
+        let md = "- [ ] todo item\n- [x] done item\n- plain item\n";
+        let mut harness = Harness::new_ui(move |ui| {
+            render_markdown(md, ui);
+        });
+        harness.run();
+
+        // get_by_label panics if the label isn't present, so these assert it is.
+        let _ = harness.get_by_label("todo item");
+        let _ = harness.get_by_label("done item");
+        let _ = harness.get_by_label("plain item");
+    }
+
+    #[test]
+    fn test_render_ordered_list_shows_items() {
+        let md = "1. alpha\n2. beta\n";
+        let mut harness = Harness::new_ui(move |ui| {
+            render_markdown(md, ui);
+        });
+        harness.run();
+        let _ = harness.get_by_label("alpha");
+        let _ = harness.get_by_label("beta");
+    }
+
+    #[test]
+    fn test_editable_checkbox_click_checks_source() {
+        use egui::accesskit::Role;
+        use std::cell::RefCell;
+
+        // Clicking an unchecked box rewrites the source `[ ]` -> `[x]`.
+        let source = RefCell::new(String::from("- [ ] task\n"));
+        let mut harness = Harness::new_ui(|ui| {
+            let mut s = source.borrow_mut();
+            render_markdown_editable(&mut s, ui);
+        });
+        harness.run();
+
+        harness.get_by_role(Role::CheckBox).click();
+        harness.run();
+
+        assert_eq!(*source.borrow(), "- [x] task\n");
+    }
+
+    #[test]
+    fn test_editable_checkbox_click_unchecks_source() {
+        use egui::accesskit::Role;
+        use std::cell::RefCell;
+
+        // ...and clicking a checked box rewrites `[x]` -> `[ ]`.
+        let source = RefCell::new(String::from("- [x] task\n"));
+        let mut harness = Harness::new_ui(|ui| {
+            let mut s = source.borrow_mut();
+            render_markdown_editable(&mut s, ui);
+        });
+        harness.run();
+
+        harness.get_by_role(Role::CheckBox).click();
+        harness.run();
+
+        assert_eq!(*source.borrow(), "- [ ] task\n");
+    }
+
+    #[test]
+    fn test_editable_checkbox_click_targets_right_box() {
+        use egui::accesskit::Role;
+        use std::cell::RefCell;
+
+        // With several boxes, only the clicked one flips; the byte offsets keep
+        // the others (and surrounding text) untouched.
+        let source = RefCell::new(String::from("- [ ] first\n- [ ] second\n- [ ] third\n"));
+        let mut harness = Harness::new_ui(|ui| {
+            let mut s = source.borrow_mut();
+            render_markdown_editable(&mut s, ui);
+        });
+        harness.run();
+
+        // Boxes render top-to-bottom in source order; click the second.
+        harness
+            .get_all_by_role(Role::CheckBox)
+            .nth(1)
+            .unwrap()
+            .click();
+        harness.run();
+
+        assert_eq!(*source.borrow(), "- [ ] first\n- [x] second\n- [ ] third\n");
+    }
+
+    #[test]
+    fn test_editable_render_no_click_leaves_source_unchanged() {
+        use std::cell::RefCell;
+
+        // Rendering without interacting must not rewrite the source.
+        let source = RefCell::new(String::from("- [ ] a\n- [x] b\n"));
+        let mut harness = Harness::new_ui(|ui| {
+            let mut s = source.borrow_mut();
+            assert!(!render_markdown_editable(&mut s, ui));
+        });
+        harness.run();
+        assert_eq!(*source.borrow(), "- [ ] a\n- [x] b\n");
     }
 }
