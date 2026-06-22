@@ -70,7 +70,7 @@ equivalent.
 | --- | --- |
 | `show [--json]` | Print the board |
 | `seed` | Create the default board if none exists |
-| `add <title...> [--col <c>]` | Add a card (defaults to the first column) |
+| `add <title...> [--col <c>] [-l <labels>]` | Add a card (defaults to the first column; `-l`/`--label` tags it) |
 | `move <card> --col <c> [--row <n>]` | Move a card to a column (optional position) |
 | `title <card> <title...>` | Edit a card's title |
 | `desc <card> <text...>` | Edit a card's description |
@@ -78,6 +78,14 @@ equivalent.
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
 | `restore <card>` | Restore an archived card |
+
+`add` accepts `-l`/`--label` to tag the new card in one step. The flag is
+repeatable and each value may be comma-separated, so `-l a,b --label c` and
+`-l a -l b -l c` are equivalent:
+
+```bash
+headway add "Fix the relay reconnect" --col todo -l bug,p1
+```
 
 Other flags: `--board <id>` (non-default board), `--db <path>` (cache dir),
 `--author <pk>` (read someone else's board), `-h`/`--help`.
