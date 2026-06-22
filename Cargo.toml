@@ -136,6 +136,7 @@ android-keyring = "0.2.0"
 rfd = "0.15"
 egui_kittest = "0.31.1"
 pollster = "0.4"
+futures-util = "0.3"
 arboard = { git = "https://github.com/jb55/arboard", rev = "05755435fc8cf910449a8388bb8926a92b2db51e" }
 flate2 = "1"
 self-replace = "1"

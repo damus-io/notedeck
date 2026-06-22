@@ -81,7 +81,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net", "sync", "time"] }
 nostr-relay-builder = "0.37"
 tokio-tungstenite = "0.24"
-futures-util = "0.3"
+futures-util = { workspace = true }
 
 [dependencies.egui_kittest]
 workspace = true

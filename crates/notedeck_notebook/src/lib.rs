@@ -4,6 +4,7 @@ use jsoncanvas::{JsonCanvas, NodeId};
 use notedeck::{AppContext, AppResponse};
 use std::collections::HashMap;
 
+pub mod event;
 mod ui;
 
 pub struct Notebook {

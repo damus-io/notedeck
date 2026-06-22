@@ -5347,11 +5347,13 @@ dependencies = [
  "egui",
  "egui_kittest",
  "enostr",
+ "futures-util",
  "jsoncanvas",
  "nostr 0.37.0",
  "nostrdb",
  "notedeck",
  "notedeck_ui",
+ "pollster",
  "tempfile",
 ]
 

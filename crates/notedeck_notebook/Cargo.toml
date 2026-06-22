@@ -16,3 +16,5 @@ nostr = { workspace = true }
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
 tempfile = { workspace = true }
+pollster = { workspace = true }
+futures-util = { workspace = true }
