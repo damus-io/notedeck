@@ -183,18 +183,11 @@ fn render_element(element: &MdElement, theme: &MdTheme, buffer: &str, ui: &mut U
         }
 
         MdElement::UnorderedList(items) => {
-            for item in items {
-                render_list_item(item, "\u{2022}", theme, buffer, ui);
-            }
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            render_list_items(false, 1, items, theme, buffer, ui);
         }
 
         MdElement::OrderedList { start, items } => {
-            for (i, item) in items.iter().enumerate() {
-                let marker = format!("{}.", start + i as u32);
-                render_list_item(item, &marker, theme, buffer, ui);
-            }
-            ui.add_space(notedeck::tokens::SPACING_SM);
+            render_list_items(true, *start, items, theme, buffer, ui);
         }
 
         MdElement::Table { headers, rows } => {
@@ -557,9 +550,38 @@ fn render_code_block(language: Option<&str>, content: &str, theme: &MdTheme, ui:
     ui.add_space(8.0);
 }
 
+/// Render a list's items with bullets (unordered) or incrementing numbers
+/// (ordered, counting up from `start`). Shared by the completed-element and
+/// streaming-partial paths.
+fn render_list_items(
+    ordered: bool,
+    start: u32,
+    items: &[ListItem],
+    theme: &MdTheme,
+    buffer: &str,
+    ui: &mut Ui,
+) {
+    for (i, item) in items.iter().enumerate() {
+        if ordered {
+            let marker = format!("{}.", start + i as u32);
+            render_list_item(item, &marker, theme, buffer, ui);
+        } else {
+            render_list_item(item, "\u{2022}", theme, buffer, ui);
+        }
+    }
+    ui.add_space(notedeck::tokens::SPACING_SM);
+}
+
 fn render_list_item(item: &ListItem, marker: &str, theme: &MdTheme, buffer: &str, ui: &mut Ui) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(marker).weak());
+        // GFM task-list items render a (read-only) checkbox in place of the
+        // bullet/number marker; plain items keep their marker.
+        if let Some(checked) = item.checkbox {
+            let mut checked = checked;
+            ui.add_enabled(false, egui::Checkbox::without_text(&mut checked));
+        } else {
+            ui.label(RichText::new(marker).weak());
+        }
         ui.vertical(|ui| {
             ui.horizontal_wrapped(|ui| {
                 render_inlines(&item.content, theme, buffer, ui);
@@ -638,6 +660,19 @@ fn render_table(headers: &[Span], rows: &[Vec<Span>], theme: &MdTheme, buffer: &
 }
 
 fn render_partial(partial: &Partial, theme: &MdTheme, buffer: &str, ui: &mut Ui) {
+    // A streaming list keeps its completed items in `partial.kind` (its content
+    // span stays empty), so render those for progressive feedback before the
+    // empty-content guard below would bail out.
+    if let PartialKind::List {
+        ordered,
+        start,
+        items,
+    } = &partial.kind
+    {
+        render_list_items(*ordered, *start, items, theme, buffer, ui);
+        return;
+    }
+
     let content = partial.content(buffer);
     if content.is_empty() {
         return;
@@ -979,5 +1014,32 @@ mod tests {
         assert!(toks
             .iter()
             .any(|(t, s)| *t == SandToken::String && *s == "\"notedeck\""));
+    }
+
+    #[test]
+    fn test_render_task_list_shows_items() {
+        // End-to-end: a GFM task list parses and renders its item text without
+        // panicking (guards the checkbox render path and the partial early-out).
+        let md = "- [ ] todo item\n- [x] done item\n- plain item\n";
+        let mut harness = Harness::new_ui(move |ui| {
+            render_markdown(md, ui);
+        });
+        harness.run();
+
+        // get_by_label panics if the label isn't present, so these assert it is.
+        let _ = harness.get_by_label("todo item");
+        let _ = harness.get_by_label("done item");
+        let _ = harness.get_by_label("plain item");
+    }
+
+    #[test]
+    fn test_render_ordered_list_shows_items() {
+        let md = "1. alpha\n2. beta\n";
+        let mut harness = Harness::new_ui(move |ui| {
+            render_markdown(md, ui);
+        });
+        harness.run();
+        let _ = harness.get_by_label("alpha");
+        let _ = harness.get_by_label("beta");
     }
 }

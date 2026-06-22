@@ -72,6 +72,9 @@ pub struct CodeBlock {
 pub struct ListItem {
     pub content: Vec<InlineElement>,
     pub nested: Option<Box<MdElement>>, // Nested list
+    /// GFM task-list state: `None` for a plain item, `Some(false)` for an
+    /// unchecked `[ ]` checkbox, `Some(true)` for a checked `[x]` one.
+    pub checkbox: Option<bool>,
 }
 
 /// Inline elements within a paragraph or list item.

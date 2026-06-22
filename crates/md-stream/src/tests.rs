@@ -1,6 +1,6 @@
 //! Tests for streaming parser behavior.
 
-use crate::element::Span;
+use crate::element::{ListItem, Span};
 use crate::partial::PartialKind;
 use crate::{InlineElement, InlineStyle, MdElement, StreamParser};
 
@@ -1039,4 +1039,296 @@ fn test_consecutive_code_blocks_preserve_language() {
     assert_eq!(r(&code_blocks[0].content, parser.buffer()), "let x = 1;\n");
     assert_eq!(r(&code_blocks[1].content, parser.buffer()), "x = 1\n");
     assert_eq!(r(&code_blocks[2].content, parser.buffer()), "int x = 1;\n");
+}
+
+// ---- Lists & GFM task-list checkboxes ----
+
+/// Parse a complete document (push all, then finalize) and return the elements
+/// alongside the buffer for span resolution.
+fn parse_doc(input: &str) -> (Vec<MdElement>, String) {
+    let mut parser = StreamParser::new();
+    parser.push(input);
+    parser.finalize();
+    parser.into_parts()
+}
+
+/// Concatenate the plain text of an item's inline content (Text/Code/Styled).
+fn item_text(item: &ListItem, buf: &str) -> String {
+    let mut out = String::new();
+    for inline in &item.content {
+        match inline {
+            InlineElement::Text(s) | InlineElement::Code(s) => out.push_str(r(s, buf)),
+            InlineElement::Styled { content, .. } => out.push_str(r(content, buf)),
+            InlineElement::Link { text, .. } => out.push_str(r(text, buf)),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn unordered(el: &MdElement) -> &[ListItem] {
+    match el {
+        MdElement::UnorderedList(items) => items,
+        other => panic!("expected UnorderedList, got {:?}", other),
+    }
+}
+
+fn ordered(el: &MdElement) -> (u32, &[ListItem]) {
+    match el {
+        MdElement::OrderedList { start, items } => (*start, items),
+        other => panic!("expected OrderedList, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_unordered_list_dash() {
+    let (els, buf) = parse_doc("- one\n- two\n- three\n");
+    assert_eq!(els.len(), 1);
+    let items = unordered(&els[0]);
+    assert_eq!(items.len(), 3);
+    assert_eq!(item_text(&items[0], &buf), "one");
+    assert_eq!(item_text(&items[1], &buf), "two");
+    assert_eq!(item_text(&items[2], &buf), "three");
+    assert!(items.iter().all(|i| i.checkbox.is_none()));
+}
+
+#[test]
+fn test_unordered_list_star_and_plus() {
+    for marker in ["*", "+"] {
+        let input = format!("{marker} a\n{marker} b\n");
+        let (els, buf) = parse_doc(&input);
+        assert_eq!(els.len(), 1, "marker {marker:?}");
+        let items = unordered(&els[0]);
+        assert_eq!(items.len(), 2);
+        assert_eq!(item_text(&items[0], &buf), "a");
+        assert_eq!(item_text(&items[1], &buf), "b");
+    }
+}
+
+#[test]
+fn test_ordered_list() {
+    let (els, buf) = parse_doc("1. first\n2. second\n3. third\n");
+    assert_eq!(els.len(), 1);
+    let (start, items) = ordered(&els[0]);
+    assert_eq!(start, 1);
+    assert_eq!(items.len(), 3);
+    assert_eq!(item_text(&items[2], &buf), "third");
+}
+
+#[test]
+fn test_ordered_list_custom_start_and_paren() {
+    let (els, buf) = parse_doc("5) five\n6) six\n");
+    let (start, items) = ordered(&els[0]);
+    assert_eq!(start, 5);
+    assert_eq!(items.len(), 2);
+    assert_eq!(item_text(&items[0], &buf), "five");
+}
+
+#[test]
+fn test_task_list_checkboxes() {
+    let (els, buf) = parse_doc("- [ ] todo\n- [x] done\n- [X] also done\n- plain\n");
+    let items = unordered(&els[0]);
+    assert_eq!(items.len(), 4);
+    assert_eq!(items[0].checkbox, Some(false));
+    assert_eq!(item_text(&items[0], &buf), "todo");
+    assert_eq!(items[1].checkbox, Some(true));
+    assert_eq!(item_text(&items[1], &buf), "done");
+    assert_eq!(items[2].checkbox, Some(true));
+    assert_eq!(item_text(&items[2], &buf), "also done");
+    assert_eq!(items[3].checkbox, None);
+    assert_eq!(item_text(&items[3], &buf), "plain");
+}
+
+#[test]
+fn test_checkbox_body_offset_is_correct() {
+    // The body span must point past the "[ ] " prefix, not at it.
+    let (els, buf) = parse_doc("- [x] ship it\n");
+    let items = unordered(&els[0]);
+    assert_eq!(item_text(&items[0], &buf), "ship it");
+    // And it really is checked.
+    assert_eq!(items[0].checkbox, Some(true));
+}
+
+#[test]
+fn test_bracket_text_is_not_a_checkbox() {
+    // "[y]" is not a task marker; the brackets stay as content.
+    let (els, buf) = parse_doc("- [y] nope\n");
+    let items = unordered(&els[0]);
+    assert_eq!(items[0].checkbox, None);
+    assert_eq!(item_text(&items[0], &buf), "[y] nope");
+}
+
+#[test]
+fn test_dash_without_space_is_not_a_list() {
+    let (els, buf) = parse_doc("-not a list\n");
+    assert_eq!(els.len(), 1);
+    match &els[0] {
+        MdElement::Paragraph(inlines) => {
+            let s: String = inlines
+                .iter()
+                .map(|i| match i {
+                    InlineElement::Text(sp) => r(sp, &buf),
+                    _ => "",
+                })
+                .collect();
+            assert_eq!(s, "-not a list");
+        }
+        other => panic!("expected paragraph, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_thematic_break_still_wins_over_list() {
+    let (els, _buf) = parse_doc("---\n");
+    assert_eq!(els.len(), 1);
+    assert!(matches!(els[0], MdElement::ThematicBreak));
+}
+
+#[test]
+fn test_list_terminated_by_paragraph() {
+    let (els, buf) = parse_doc("- a\n- b\nafter the list\n");
+    assert_eq!(els.len(), 2);
+    let items = unordered(&els[0]);
+    assert_eq!(items.len(), 2);
+    match &els[1] {
+        MdElement::Paragraph(inlines) => {
+            assert_eq!(
+                r(
+                    match &inlines[0] {
+                        InlineElement::Text(s) => s,
+                        other => panic!("expected text, got {:?}", other),
+                    },
+                    &buf
+                ),
+                "after the list"
+            );
+        }
+        other => panic!("expected paragraph, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_list_terminated_by_blank_line() {
+    let (els, buf) = parse_doc("- a\n- b\n\nparagraph\n");
+    assert_eq!(els.len(), 2);
+    assert_eq!(unordered(&els[0]).len(), 2);
+    assert_eq!(item_text(&unordered(&els[0])[1], &buf), "b");
+    assert!(matches!(els[1], MdElement::Paragraph(_)));
+}
+
+#[test]
+fn test_paragraph_then_list() {
+    let (els, buf) = parse_doc("intro text\n- one\n- two\n");
+    assert_eq!(els.len(), 2);
+    assert!(matches!(els[0], MdElement::Paragraph(_)));
+    let items = unordered(&els[1]);
+    assert_eq!(items.len(), 2);
+    assert_eq!(item_text(&items[0], &buf), "one");
+}
+
+#[test]
+fn test_ordered_then_unordered_are_separate_lists() {
+    let (els, _buf) = parse_doc("1. a\n2. b\n- c\n- d\n");
+    assert_eq!(els.len(), 2);
+    let (start, oitems) = ordered(&els[0]);
+    assert_eq!(start, 1);
+    assert_eq!(oitems.len(), 2);
+    assert_eq!(unordered(&els[1]).len(), 2);
+}
+
+#[test]
+fn test_inline_formatting_inside_items() {
+    let (els, buf) = parse_doc("- some **bold** and `code`\n");
+    let items = unordered(&els[0]);
+    let item = &items[0];
+    assert!(
+        item.content.iter().any(|i| matches!(
+            i,
+            InlineElement::Styled {
+                style: InlineStyle::Bold,
+                ..
+            }
+        )),
+        "expected a bold span, got {:?}",
+        item.content
+    );
+    assert!(
+        item.content
+            .iter()
+            .any(|i| matches!(i, InlineElement::Code(_))),
+        "expected an inline code span"
+    );
+    // sanity: the resolved text contains the words
+    let text = item_text(item, &buf);
+    assert!(text.contains("bold"));
+    assert!(text.contains("code"));
+}
+
+#[test]
+fn test_list_finalize_without_trailing_newline() {
+    // Last item has no terminating newline; finalize must still flush it.
+    let (els, buf) = parse_doc("- a\n- b");
+    assert_eq!(els.len(), 1);
+    let items = unordered(&els[0]);
+    assert_eq!(items.len(), 2);
+    assert_eq!(item_text(&items[1], &buf), "b");
+}
+
+#[test]
+fn test_single_item_no_newline() {
+    let (els, buf) = parse_doc("- [ ] only");
+    let items = unordered(&els[0]);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].checkbox, Some(false));
+    assert_eq!(item_text(&items[0], &buf), "only");
+}
+
+#[test]
+fn test_list_streaming_split_across_chunks() {
+    // Feed a checkbox list one character at a time; result must match one-shot.
+    let input = "- [ ] a\n- [x] b\n- c\n";
+    let mut parser = StreamParser::new();
+    for ch in input.chars() {
+        parser.push(&ch.to_string());
+    }
+    parser.finalize();
+    let (els, buf) = parser.into_parts();
+    assert_eq!(els.len(), 1, "got {:?}", els);
+    let items = unordered(&els[0]);
+    assert_eq!(items.len(), 3);
+    assert_eq!(items[0].checkbox, Some(false));
+    assert_eq!(item_text(&items[0], &buf), "a");
+    assert_eq!(items[1].checkbox, Some(true));
+    assert_eq!(item_text(&items[1], &buf), "b");
+    assert_eq!(items[2].checkbox, None);
+    assert_eq!(item_text(&items[2], &buf), "c");
+}
+
+#[test]
+fn test_list_streaming_chunk_boundary_mid_marker() {
+    // Chunk boundary falls right after the dash, before the space.
+    let mut parser = StreamParser::new();
+    parser.push("-");
+    parser.push(" item one\n");
+    parser.push("- item two\n");
+    parser.finalize();
+    let (els, buf) = parser.into_parts();
+    let items = unordered(&els[0]);
+    assert_eq!(items.len(), 2);
+    assert_eq!(item_text(&items[0], &buf), "item one");
+    assert_eq!(item_text(&items[1], &buf), "item two");
+}
+
+#[test]
+fn test_list_then_heading() {
+    let (els, buf) = parse_doc("- a\n- b\n# Heading\n");
+    assert_eq!(els.len(), 2);
+    assert_eq!(unordered(&els[0]).len(), 2);
+    match &els[1] {
+        MdElement::Heading { level, content } => {
+            assert_eq!(*level, 1);
+            assert_eq!(r(content, &buf), "Heading");
+        }
+        other => panic!("expected heading, got {:?}", other),
+    }
 }
