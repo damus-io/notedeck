@@ -18,6 +18,10 @@ use store::BoardAction;
 /// Width of a single kanban column.
 const COLUMN_WIDTH: f32 = 280.0;
 
+/// How long a card takes to slide from its old slot to its new one when it
+/// jumps columns (e.g. a `headway move` landing from the CLI).
+const MOVE_ANIM_SECS: f32 = 0.28;
+
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
 /// The board is backed by nostr events in the local nostrdb: [`BoardSync`] keeps
@@ -79,6 +83,27 @@ struct BoardUiState {
     new_label: String,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
+    /// Where each card was drawn last frame (screen rect + column), so a card
+    /// that has jumped to a new column since can be animated sliding in from its
+    /// previous slot rather than teleporting.
+    card_pos: HashMap<NoteId, CardPos>,
+    /// Cards mid-slide, mapped to the screen rect they're sliding *from*. The
+    /// 0→1 progress itself lives in egui's animation manager, keyed by card id
+    /// (see [`move_progress_id`]); this only remembers the origin slot.
+    moves: HashMap<NoteId, egui::Rect>,
+}
+
+/// A card's on-screen placement last frame: its screen rect and which column it
+/// sat in. Used to detect cross-column jumps (drags, detail-sheet moves, or a
+/// `headway move` arriving over the relay) and seed the slide animation.
+///
+/// The column is identified by a hash of its stable id, not its index: indices
+/// shift when columns are reordered or removed, which would otherwise read as
+/// every card in the board jumping at once.
+#[derive(Clone, Copy)]
+struct CardPos {
+    rect: egui::Rect,
+    col: egui::Id,
 }
 
 /// The board's inline text editors are mutually exclusive — you can only be
@@ -336,6 +361,13 @@ fn board_ui(
     // The card a click landed on this frame; opens the detail view below.
     let mut clicked: Option<NoteId> = None;
 
+    // Kick off (and retire) slide animations for any card that changed columns
+    // since last frame. This reads last frame's placements, so afterwards we can
+    // clear them (keeping the map's capacity) and let the card renderers refill
+    // `card_pos` with this frame's rects as they go.
+    start_move_anims(ui.ctx(), view, state);
+    state.card_pos.clear();
+
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
@@ -418,6 +450,63 @@ fn find_card(view: &BoardView, card: NoteId) -> Option<(usize, &CardView)> {
         .iter()
         .enumerate()
         .find_map(|(i, col)| col.cards.iter().find(|c| c.id == card).map(|c| (i, c)))
+}
+
+/// The egui animation-manager id holding a card's 0→1 move-slide progress.
+fn move_progress_id(card: &NoteId) -> egui::Id {
+    egui::Id::new(("headway-move", card))
+}
+
+/// Begin (and retire) card slide animations for this frame.
+///
+/// A slide starts when a card lands in a different column than it occupied last
+/// frame — a drag release, a detail-sheet move, or a `headway move` arriving
+/// over the relay all look the same here: the folded view simply reports the
+/// card in a new column. We remember the screen rect it left from; the 0→1
+/// clock lives in egui's animation manager (seeded to 0 so its first read
+/// animates instead of snapping to the target). Finished slides are dropped so
+/// the card renders normally again.
+fn start_move_anims(ctx: &egui::Context, view: &BoardView, state: &mut BoardUiState) {
+    for col in &view.columns {
+        let col_key = egui::Id::new(&col.id);
+        for card in &col.cards {
+            let Some(prev) = state.card_pos.get(&card.id) else {
+                continue;
+            };
+            if prev.col != col_key && !state.moves.contains_key(&card.id) {
+                state.moves.insert(card.id, prev.rect);
+                // Snap the clock to 0 (zero animation time forces a reset even if
+                // a prior slide left this id parked at 1.0), so the read below
+                // animates 0→1 instead of snapping straight to the target.
+                ctx.animate_value_with_time(move_progress_id(&card.id), 0.0, 0.0);
+            }
+        }
+    }
+    state.moves.retain(|id, _| {
+        ctx.animate_value_with_time(move_progress_id(id), 1.0, MOVE_ANIM_SECS) < 1.0
+    });
+}
+
+/// Paint a card sliding from `from` toward its final slot `dest`, on a
+/// foreground layer so it travels across column (and scroll-area) boundaries
+/// unclipped. This is the card's only rendering while it's in flight — the lane
+/// merely reserves the `dest` slot. `t` is the raw 0→1 progress; easing here.
+fn draw_moving_card(
+    ui: &egui::Ui,
+    theme: &ColorTheme,
+    card: &CardView,
+    from: egui::Rect,
+    dest: egui::Rect,
+    t: f32,
+) {
+    let pos = from.min + (dest.min - from.min) * egui::emath::easing::cubic_out(t);
+    egui::Area::new(egui::Id::new(("headway-move-ghost", card.id)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .show(ui.ctx(), |ui| {
+            ui.set_width(dest.width());
+            card_ui(ui, theme, card);
+        });
 }
 
 /// Render one column: header, the draggable card list (a drop zone), and the
@@ -511,6 +600,29 @@ fn cards_drop_zone(
             ui.spacing_mut().item_spacing.y = SPACING_SM;
 
             for (row_idx, card) in column.cards.iter().enumerate() {
+                // A card mid-slide is drawn once, in flight, on an unclipped
+                // foreground layer so it can cross column boundaries. Here we only
+                // reserve its destination slot (the card's size is stable across a
+                // move, so last frame's rect sizes it) — the lane lays out around
+                // the gap, and the card "lands" into it as the slide completes.
+                if let Some(from) = state.moves.get(&card.id).copied() {
+                    let (dest, _) = ui.allocate_exact_size(from.size(), egui::Sense::hover());
+                    state.card_pos.insert(
+                        card.id,
+                        CardPos {
+                            rect: dest,
+                            col: egui::Id::new(&column.id),
+                        },
+                    );
+                    let t = ui.ctx().animate_value_with_time(
+                        move_progress_id(&card.id),
+                        1.0,
+                        MOVE_ANIM_SECS,
+                    );
+                    draw_moving_card(ui, theme, card, from, dest, t);
+                    continue;
+                }
+
                 let card_id = egui::Id::new(("headway-card", card.id));
                 let response = ui
                     .dnd_drag_source(card_id, DragCard(card.id), |ui| {
@@ -566,6 +678,16 @@ fn cards_drop_zone(
                     };
                     hover_target = Some(insert_row);
                 }
+
+                // Remember where this card landed so next frame can tell if it
+                // jumped columns.
+                state.card_pos.insert(
+                    card.id,
+                    CardPos {
+                        rect: response.rect,
+                        col: egui::Id::new(&column.id),
+                    },
+                );
             }
 
             // Keep the composer beneath the cards (inside the filled zone) so the
