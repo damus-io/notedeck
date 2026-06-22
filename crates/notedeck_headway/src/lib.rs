@@ -79,6 +79,8 @@ struct BoardUiState {
     detail_title: String,
     /// Edit buffer for the selected card's description.
     detail_desc: String,
+    /// Whether the description is shown rendered or in its raw editor.
+    detail_desc_mode: DescMode,
     /// Buffer backing the "add label" field in the detail sheet.
     new_label: String,
     /// Whether the archived-cards sheet is open.
@@ -121,6 +123,19 @@ enum InlineEdit {
     RenameColumn(usize),
     /// Composing a new column.
     AddColumn,
+}
+
+/// How the detail sheet renders the open card's description. The states are
+/// mutually exclusive and the one-shot focus grab only has meaning while
+/// editing, so an enum models it more honestly than a pair of bools.
+#[derive(Default, PartialEq, Eq)]
+enum DescMode {
+    /// Rendered markdown (read-only), with an edit affordance to switch over.
+    #[default]
+    Rendered,
+    /// The raw multiline editor. `focus` requests a one-shot keyboard-focus
+    /// grab on the frame the editor opens.
+    Editing { focus: bool },
 }
 
 /// Drag-and-drop payload: the id of the card being dragged.
@@ -1086,6 +1101,13 @@ fn card_detail_ui(
         state.detail_for = Some(card_id);
         state.detail_title = card.title.clone();
         state.detail_desc = card.description.clone();
+        // A blank card opens straight into the editor; one with content shows
+        // the rendered markdown until the user asks to edit.
+        state.detail_desc_mode = if card.description.trim().is_empty() {
+            DescMode::Editing { focus: false }
+        } else {
+            DescMode::Rendered
+        };
         state.new_label.clear();
     }
 
@@ -1254,20 +1276,7 @@ fn detail_body_ui(
     }
 
     ui.add_space(SPACING_MD);
-    section_label(ui, theme, "Description");
-    ui.add_space(SPACING_XS);
-    let desc_resp = ui.add(
-        egui::TextEdit::multiline(&mut state.detail_desc)
-            .desired_rows(4)
-            .desired_width(f32::INFINITY)
-            .hint_text("Add more detail…"),
-    );
-    if desc_resp.lost_focus() && state.detail_desc != ctx.desc {
-        *action = Some(BoardAction::EditDescription {
-            card: ctx.card_id,
-            description: state.detail_desc.clone(),
-        });
-    }
+    detail_description_section_ui(ui, theme, ctx, state, action);
 
     ui.add_space(SPACING_MD);
     detail_labels_section_ui(ui, theme, ctx, state, outcome);
@@ -1292,6 +1301,71 @@ fn detail_body_ui(
             *outcome = DetailOutcome::Archive;
         }
     });
+}
+
+/// Description section: rendered markdown by default with an ✎ edit affordance,
+/// switching to a raw multiline editor on demand (or a double-click on the
+/// rendered text). Edits commit as a [`BoardAction::EditDescription`] when the
+/// editor loses focus, which also returns the section to its rendered view.
+fn detail_description_section_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+) {
+    ui.horizontal(|ui| {
+        section_label(ui, theme, "Description");
+        // Offer the edit affordance just right of the label, only while showing
+        // rendered markdown.
+        if matches!(state.detail_desc_mode, DescMode::Rendered) {
+            let edit = egui::Button::new(egui::RichText::new("✎").color(theme.text_muted))
+                .fill(egui::Color32::TRANSPARENT)
+                .frame(false);
+            if ui.add(edit).on_hover_text("Edit description").clicked() {
+                state.detail_desc_mode = DescMode::Editing { focus: true };
+            }
+        }
+    });
+    ui.add_space(SPACING_XS);
+
+    match state.detail_desc_mode {
+        DescMode::Rendered => {
+            // The whole rendered block is a double-click target into the editor.
+            let resp = ui
+                .scope(|ui| notedeck_ui::markdown::render_markdown(&state.detail_desc, ui))
+                .response
+                .interact(egui::Sense::click());
+            if resp.double_clicked() {
+                state.detail_desc_mode = DescMode::Editing { focus: true };
+            }
+        }
+        DescMode::Editing { focus } => {
+            let desc_resp = ui.add(
+                egui::TextEdit::multiline(&mut state.detail_desc)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Add more detail… (markdown supported)"),
+            );
+            if focus {
+                desc_resp.request_focus();
+                state.detail_desc_mode = DescMode::Editing { focus: false };
+            }
+            // Commit on focus loss and drop back to the rendered view, unless the
+            // description is still empty (nothing to render, so stay in the editor).
+            if desc_resp.lost_focus() {
+                if state.detail_desc != ctx.desc {
+                    *action = Some(BoardAction::EditDescription {
+                        card: ctx.card_id,
+                        description: state.detail_desc.clone(),
+                    });
+                }
+                if !state.detail_desc.trim().is_empty() {
+                    state.detail_desc_mode = DescMode::Rendered;
+                }
+            }
+        }
+    }
 }
 
 /// Labels section: removable chips plus an "add label" field.
