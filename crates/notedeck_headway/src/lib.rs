@@ -1959,13 +1959,7 @@ mod tests {
         }
 
         fn seed(&mut self) {
-            store::seed_default_board(
-                &self.ndb,
-                &self.kp.pubkey,
-                &self.secret(),
-                store::BOARD_ID,
-                &mut store::NoPublish,
-            );
+            seed_demo(&self.ndb, &self.kp);
         }
 
         /// Poll until the cached view satisfies `pred` (ingest is async). Fails
@@ -1997,6 +1991,18 @@ mod tests {
         view.columns.iter().map(|c| c.cards.len()).sum()
     }
 
+    /// Seed the populated demo board for the sync tests to fold and act on. The
+    /// production seed is card-less; the fixture lives in [`store::seed_demo_board`].
+    fn seed_demo(ndb: &Ndb, kp: &FullKeypair) {
+        store::seed_demo_board(
+            ndb,
+            &kp.pubkey,
+            &kp.secret_key.secret_bytes(),
+            store::BOARD_ID,
+            &mut store::NoPublish,
+        );
+    }
+
     /// Subscribing before seeding, then polling, materialises the whole board
     /// from events already in ndb.
     #[test]
@@ -2013,7 +2019,7 @@ mod tests {
                 .iter()
                 .map(|c| c.name.as_str())
                 .collect::<Vec<_>>(),
-            ["Backlog", "Todo", "In Progress", "Done"]
+            ["Backlog", "Todo", "In Progress", "In Review", "Done"]
         );
         assert_eq!(view.columns[0].cards.len(), 3);
     }
@@ -2131,13 +2137,7 @@ mod tests {
         // Subscribe (seeding an empty reducer) before the board exists, so the
         // seed's ingests arrive as subscription deltas rather than a re-fold.
         fold(&mut cache, &ndb);
-        store::seed_default_board(
-            &ndb,
-            &kp.pubkey,
-            &kp.secret_key.secret_bytes(),
-            store::BOARD_ID,
-            &mut store::NoPublish,
-        );
+        seed_demo(&ndb, &kp);
 
         // Poll until the board materialises (ingest is async on a writer thread).
         let deadline = Instant::now() + Duration::from_secs(5);

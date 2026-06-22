@@ -165,15 +165,10 @@ fn run_timed(url: &str, db: &str, args: &[&str], secs: u64) -> std::process::Out
     child.wait_with_output().expect("output")
 }
 
-fn total_cards(board: &Value) -> usize {
-    board["columns"]
-        .as_array()
-        .map(|cols| {
-            cols.iter()
-                .map(|c| c["cards"].as_array().map_or(0, Vec::len))
-                .sum()
-        })
-        .unwrap_or(0)
+/// Column count is how we tell the seeded board has materialised: the default
+/// board seeds its columns but no cards.
+fn total_cols(board: &Value) -> usize {
+    board["columns"].as_array().map_or(0, Vec::len)
 }
 
 #[test]
@@ -200,21 +195,18 @@ fn falls_back_to_nip01_when_relay_lacks_negentropy() {
     // A fresh cache must reconstruct the board purely through the fallback pull.
     let show_dir = tempfile::tempdir().expect("show dir");
     let db = show_dir.path().to_str().unwrap();
-    let mut cards = 0;
+    let mut cols = 0;
     for _ in 0..30 {
         let out = run_timed(&url, db, &["show", "--json"], 15);
         if let Ok(board) = serde_json::from_slice::<Value>(&out.stdout) {
-            cards = total_cards(&board);
+            cols = total_cols(&board);
         }
-        if cards == 7 {
+        if cols == 5 {
             break;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    assert_eq!(
-        cards, 7,
-        "fallback show should reconstruct the seeded board"
-    );
+    assert_eq!(cols, 5, "fallback show should reconstruct the seeded board");
 }
 
 #[test]
@@ -242,8 +234,8 @@ fn benign_replaced_rejection_does_not_abort() {
     let out = run_timed(&url, dir.path().to_str().unwrap(), &["show", "--json"], 15);
     let board: Value = serde_json::from_slice(&out.stdout).expect("board json");
     assert_eq!(
-        total_cards(&board),
-        7,
+        total_cols(&board),
+        5,
         "seed must populate the local board despite the rejections"
     );
 }

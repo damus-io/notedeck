@@ -73,6 +73,23 @@ fn show_until(url: &str, db: &str, cards: usize) -> Value {
     panic!("board never reached {cards} cards");
 }
 
+/// Poll `show --json` until the board has materialised with `cols` columns. The
+/// default board seeds no cards, so column count (not card count) is what tells
+/// us the seed has synced back.
+fn show_until_cols(url: &str, db: &str, cols: usize) -> Value {
+    for _ in 0..50 {
+        let out = headway(url, db, &["show", "--json"]);
+        if out.status.success()
+            && let Ok(board) = serde_json::from_slice::<Value>(&out.stdout)
+            && board["columns"].as_array().map_or(0, Vec::len) == cols
+        {
+            return board;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("board never reached {cols} columns");
+}
+
 #[test]
 fn seed_show_and_add_round_trip() {
     let rt = tokio::runtime::Runtime::new().expect("runtime");
@@ -100,11 +117,12 @@ fn seed_show_and_add_round_trip() {
         String::from_utf8_lossy(&seed.stderr)
     );
 
-    // The seeded board comes back through a fresh sync: 4 columns, 7 cards.
-    let board = show_until(&url, db, 7);
+    // The seeded board comes back through a fresh sync: 5 columns, no cards.
+    let board = show_until_cols(&url, db, 5);
     let cols = board["columns"].as_array().unwrap();
-    assert_eq!(cols.len(), 4);
+    assert_eq!(cols.len(), 5);
     assert_eq!(cols[0]["name"], "Backlog");
+    assert_eq!(total_cards(&board), 0);
 
     // Add a card to Todo with labels; both the card and its labels must
     // round-trip back through the relay. `-l` is repeatable and comma-splittable.
@@ -128,7 +146,7 @@ fn seed_show_and_add_round_trip() {
         String::from_utf8_lossy(&add.stderr)
     );
 
-    let board = show_until(&url, db, 8);
+    let board = show_until(&url, db, 1);
     let todo = board["columns"]
         .as_array()
         .unwrap()
@@ -176,7 +194,7 @@ fn offline_edits_flush_on_reconnect() {
     let cli_dir = tempfile::tempdir().expect("cli dir");
     let db = cli_dir.path().to_str().unwrap();
 
-    // Seed offline: 21 events land in the CLI cache, none reach the relay.
+    // Seed offline: the board event lands in the CLI cache, none reach the relay.
     let seed = headway(dead, db, &["seed"]);
     assert!(seed.status.success(), "offline seed should still succeed");
 
@@ -186,8 +204,8 @@ fn offline_edits_flush_on_reconnect() {
 
     let fresh_dir = tempfile::tempdir().expect("fresh dir");
     let fresh = fresh_dir.path().to_str().unwrap();
-    let board = show_until(&url, fresh, 7);
-    assert_eq!(board["columns"].as_array().unwrap().len(), 4);
+    let board = show_until_cols(&url, fresh, 5);
+    assert_eq!(board["columns"].as_array().unwrap().len(), 5);
 }
 
 /// Moving a card writes a new placement revision and supersedes the old one,
@@ -212,7 +230,15 @@ fn reconcile_converges_after_replacing_a_placement() {
     let db = cli_dir.path().to_str().unwrap();
 
     assert!(headway(&url, db, &["seed"]).status.success(), "seed");
-    let board = show_until(&url, db, 7);
+    show_until_cols(&url, db, 5);
+    // The default board is card-less, so add a card to have something to move.
+    assert!(
+        headway(&url, db, &["add", "A card", "--col", "backlog"])
+            .status
+            .success(),
+        "add"
+    );
+    let board = show_until(&url, db, 1);
 
     // Move a card: a fresh placement (same d-tag, newer created_at) replaces the
     // seeded one, so the relay drops the old id the cache still holds.
