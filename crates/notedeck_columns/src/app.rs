@@ -1029,6 +1029,10 @@ impl notedeck::App for Damus {
     fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
         render_damus(self, ctx, ui)
     }
+
+    fn kind_renderers(&self) -> Vec<Box<dyn notedeck::KindRenderer>> {
+        vec![Box::new(crate::note_renderer::NoteKindRenderer)]
+    }
 }
 
 pub fn get_active_columns<'a>(accounts: &Accounts, decks_cache: &'a DecksCache) -> &'a Columns {

@@ -1654,7 +1654,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
     fn render(
         &self,
         ui: &mut egui::Ui,
-        ndb: &Ndb,
+        note_context: &mut notedeck::NoteContext,
         txn: &Transaction,
         note: &nostrdb::Note,
     ) -> egui::Response {
@@ -1667,7 +1667,7 @@ impl notedeck::KindRenderer for HeadwayIssueRenderer {
         let card = self
             .cache
             .borrow_mut()
-            .reducer(ndb, txn, &author, &issue.board_id)
+            .reducer(note_context.ndb, txn, &author, &issue.board_id)
             .and_then(|reducer| event::pick_card(reducer, &author, &issue.board_id, &issue.id));
         match card {
             Some(card) => card_inline_ui(ui, &theme, &card),
@@ -1697,7 +1697,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
     fn render(
         &self,
         ui: &mut egui::Ui,
-        ndb: &Ndb,
+        note_context: &mut notedeck::NoteContext,
         txn: &Transaction,
         note: &nostrdb::Note,
     ) -> egui::Response {
@@ -1709,7 +1709,7 @@ impl notedeck::KindRenderer for HeadwayBoardRenderer {
         let view = self
             .cache
             .borrow_mut()
-            .reducer(ndb, txn, &author, &board.id)
+            .reducer(note_context.ndb, txn, &author, &board.id)
             .and_then(|reducer| event::pick_board(reducer, &author, &board.id));
         match view {
             Some(view) => board_inline_ui(ui, &theme, &view),

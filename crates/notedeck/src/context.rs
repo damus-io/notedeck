@@ -56,6 +56,30 @@ impl SoftKeyboardContext {
 }
 
 impl<'a> AppContext<'a> {
+    /// Borrow the note-rendering dependencies as a [`NoteContext`], for code
+    /// that wants to draw notes with notedeck_ui widgets (e.g. `NoteView`).
+    ///
+    /// This reborrows the relevant fields of the context, so the returned
+    /// `NoteContext` holds a mutable borrow of `self` for its lifetime — drop it
+    /// before touching other `AppContext` fields. Fields not part of
+    /// `NoteContext` (e.g. `kind_renderers`) should be copied/read out first.
+    pub fn note_context(&mut self) -> crate::NoteContext<'_> {
+        crate::NoteContext {
+            ndb: self.ndb,
+            accounts: self.accounts,
+            global_wallet: self.global_wallet,
+            img_cache: self.img_cache,
+            note_cache: self.note_cache,
+            zaps: self.zaps,
+            jobs: self.media_jobs.sender(),
+            unknown_ids: self.unknown_ids,
+            nip05_cache: self.nip05_cache,
+            clipboard: self.clipboard,
+            i18n: self.i18n,
+            sound: self.sound,
+        }
+    }
+
     pub fn select_account(&mut self, pubkey: &Pubkey) {
         let txn = Transaction::new(self.ndb).expect("txn");
         self.accounts

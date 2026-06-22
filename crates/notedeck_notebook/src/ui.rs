@@ -15,7 +15,7 @@ use std::ops::Neg;
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable nodes. Position and selection changes are written
 /// back into `notebook`.
-pub fn notebook_ui(notebook: &mut Notebook, ctx: &AppContext, ui: &mut egui::Ui) {
+pub fn notebook_ui(notebook: &mut Notebook, ctx: &mut AppContext, ui: &mut egui::Ui) {
     if !notebook.loaded {
         notebook.scene_rect = ui.available_rect_before_wrap();
         notebook.loaded = true;
@@ -429,7 +429,7 @@ pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32
 
 pub fn node_ui(
     ui: &mut egui::Ui,
-    ctx: &AppContext,
+    ctx: &mut AppContext,
     node: &Node,
     rect: Rect,
     selected: bool,
@@ -444,7 +444,7 @@ pub fn node_ui(
 
 fn text_node_ui(
     ui: &mut egui::Ui,
-    ctx: &AppContext,
+    ctx: &mut AppContext,
     node: &TextNode,
     rect: Rect,
     selected: bool,
@@ -458,7 +458,7 @@ fn text_node_ui(
 /// references. Plain text outside references is rendered as markdown, so a note
 /// reads the same as before unless it actually links to a nostr entity. Scans in
 /// place — no per-frame allocation for the common reference-free case.
-fn node_text_ui(ui: &mut egui::Ui, ctx: &AppContext, text: &str) {
+fn node_text_ui(ui: &mut egui::Ui, ctx: &mut AppContext, text: &str) {
     let mut rest = text;
     while let Some(pos) = rest.find("nostr:") {
         let after = &rest[pos + "nostr:".len()..];
@@ -487,7 +487,7 @@ fn node_text_ui(ui: &mut egui::Ui, ctx: &AppContext, text: &str) {
 /// Resolve a `nostr:` reference to a note and hand it to the registered
 /// renderer for its kind. Falls back to plain link text when the entity can't be
 /// parsed, isn't in the db yet, or has no renderer.
-fn nostr_ref_ui(ui: &mut egui::Ui, ctx: &AppContext, bech: &str) {
+fn nostr_ref_ui(ui: &mut egui::Ui, ctx: &mut AppContext, bech: &str) {
     let Ok(txn) = Transaction::new(ctx.ndb) else {
         nostr_ref_fallback_ui(ui, bech);
         return;
@@ -496,13 +496,17 @@ fn nostr_ref_ui(ui: &mut egui::Ui, ctx: &AppContext, bech: &str) {
         nostr_ref_fallback_ui(ui, bech);
         return;
     };
+    // The registry is a `&'a` reference held in AppContext; copy it out so the
+    // borrowed renderer doesn't alias the mutable borrow `note_context()` takes
+    // of ctx's other fields below.
+    let registry = ctx.kind_renderers;
     // TODO: per-kind default renderer id from settings (see "Settings UI" card).
-    match ctx.kind_renderers.default_for(note.kind(), None) {
-        Some(renderer) => {
-            renderer.render(ui, ctx.ndb, &txn, &note);
-        }
-        None => nostr_ref_fallback_ui(ui, bech),
-    }
+    let Some(renderer) = registry.default_for(note.kind(), None) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    let mut note_context = ctx.note_context();
+    renderer.render(ui, &mut note_context, &txn, &note);
 }
 
 /// Resolve a bech32 entity to a concrete note: `nevent`/`note` directly, `naddr`

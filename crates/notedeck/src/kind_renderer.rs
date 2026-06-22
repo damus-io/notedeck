@@ -16,7 +16,9 @@
 
 use std::collections::HashMap;
 
-use nostrdb::{Ndb, Note, Transaction};
+use nostrdb::{Note, Transaction};
+
+use crate::NoteContext;
 
 /// Renders a nostr entity of one or more kinds inline.
 ///
@@ -36,10 +38,15 @@ pub trait KindRenderer {
     fn kinds(&self) -> &'static [u32];
 
     /// Draw the resolved note, returning the response covering what was drawn.
+    ///
+    /// The [`NoteContext`] carries the dependencies a full renderer needs (ndb,
+    /// caches, accounts, i18n, …) so a renderer can reuse rich widgets like
+    /// notedeck_ui's `NoteView`; `note_context.ndb` is the db the note was
+    /// resolved from.
     fn render(
         &self,
         ui: &mut egui::Ui,
-        ndb: &Ndb,
+        note_context: &mut NoteContext,
         txn: &Transaction,
         note: &Note,
     ) -> egui::Response;
@@ -116,7 +123,7 @@ mod tests {
         fn render(
             &self,
             ui: &mut egui::Ui,
-            _ndb: &Ndb,
+            _note_context: &mut NoteContext,
             _txn: &Transaction,
             _note: &Note,
         ) -> egui::Response {
