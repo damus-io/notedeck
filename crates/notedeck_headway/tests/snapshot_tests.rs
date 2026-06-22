@@ -160,6 +160,49 @@ fn snapshot_headway_detail() {
     }
 }
 
+/// The inline card widget must render its content left-aligned even though the
+/// notebook lays node content out centered (egui's `Ui::put` →
+/// `centered_and_justified`). Reproduce that centered context and snapshot the
+/// card, guarding against a regression to centered content.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_inline_card() {
+    use notedeck_headway::{card_inline_ui, event::CardView};
+
+    let tmpdir = tempfile::TempDir::new().unwrap();
+    let ctx = egui::Context::default();
+    let args: Vec<String> = vec!["notedeck-test".into(), "--testrunner".into()];
+    let mut notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
+
+    let card = CardView {
+        id: enostr::NoteId::new([1u8; 32]),
+        title: "Update headway-cli to use negentropy for sync".to_string(),
+        description: String::new(),
+        labels: vec!["headway".to_string()],
+        rank: String::new(),
+        placed_at: 0,
+    };
+
+    let mut installed = false;
+    let mut harness = Harness::builder()
+        .with_size(egui::Vec2::new(420.0, 160.0))
+        .renderer(notedeck::software_renderer())
+        .build_ui(move |ui| {
+            if !installed {
+                notedeck.setup(ui.ctx());
+                ui.ctx().style_mut(|s| s.animation_time = 0.0);
+                installed = true;
+            }
+            let theme = notedeck::ColorTheme::current(ui.ctx());
+            // Mimic the notebook's centered node layout.
+            let rect = ui.available_rect_before_wrap();
+            ui.put(rect, |ui: &mut egui::Ui| card_inline_ui(ui, &theme, &card));
+        });
+
+    harness.run();
+    harness.snapshot("inline_card");
+}
+
 /// Open the first column's "⋯" overflow menu (there's one per column, so query
 /// all and take the leftmost) and run a frame so the popup is present.
 fn open_first_column_menu(harness: &mut Harness<'static, HeadwayTestState>) {

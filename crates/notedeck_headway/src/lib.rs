@@ -1462,23 +1462,27 @@ fn card_frame_ui(
         .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
         .inner_margin(egui::Margin::same(SPACING_SM as i8))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            if !labels.is_empty() {
-                ui.horizontal_wrapped(|ui| {
-                    for label in labels {
-                        label_chip(ui, theme, label);
-                    }
-                });
-                ui.add_space(SPACING_XS);
-            }
-            ui.label(egui::RichText::new(title).color(theme.text_primary));
-            if !body.is_empty() {
-                ui.add_space(2.0);
-                ui.add(
-                    egui::Label::new(egui::RichText::new(body).small().color(theme.text_muted))
-                        .truncate(),
-                );
-            }
+            // The notebook lays node content out centered (egui's `Ui::put`);
+            // force left alignment so the card reads like a card, not centered.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(ui.available_width());
+                if !labels.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for label in labels {
+                            label_chip(ui, theme, label);
+                        }
+                    });
+                    ui.add_space(SPACING_XS);
+                }
+                ui.label(egui::RichText::new(title).color(theme.text_primary));
+                if !body.is_empty() {
+                    ui.add_space(2.0);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(body).small().color(theme.text_muted))
+                            .truncate(),
+                    );
+                }
+            });
         })
         .response
 }
@@ -1512,33 +1516,36 @@ pub fn board_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, view: &BoardView) 
         .stroke(egui::Stroke::new(STROKE_THIN, theme.border_default))
         .inner_margin(egui::Margin::same(SPACING_SM as i8))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                egui::RichText::new(&view.title)
-                    .strong()
-                    .color(theme.text_primary),
-            );
-            if !view.description.is_empty() {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&view.description)
-                            .small()
-                            .color(theme.text_muted),
-                    )
-                    .truncate(),
+            // Force left alignment; the notebook lays node content out centered.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new(&view.title)
+                        .strong()
+                        .color(theme.text_primary),
                 );
-            }
-            ui.add_space(SPACING_XS);
-            ui.horizontal_wrapped(|ui| {
-                for col in &view.columns {
-                    ui.label(
-                        egui::RichText::new(&col.name)
-                            .small()
-                            .color(theme.text_secondary),
+                if !view.description.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&view.description)
+                                .small()
+                                .color(theme.text_muted),
+                        )
+                        .truncate(),
                     );
-                    count_badge(ui, theme, col.cards.len());
-                    ui.add_space(SPACING_SM);
                 }
+                ui.add_space(SPACING_XS);
+                ui.horizontal_wrapped(|ui| {
+                    for col in &view.columns {
+                        ui.label(
+                            egui::RichText::new(&col.name)
+                                .small()
+                                .color(theme.text_secondary),
+                        );
+                        count_badge(ui, theme, col.cards.len());
+                        ui.add_space(SPACING_SM);
+                    }
+                });
             });
         })
         .response
