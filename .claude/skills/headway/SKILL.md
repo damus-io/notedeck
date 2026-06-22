@@ -53,8 +53,12 @@ assume an id or that a card is where you expect.
 
 ```bash
 headway show            # human-readable: columns, card prefixes, labels
-headway show --json     # machine-readable, for parsing
+headway show --archived # also list archived cards in full (default: count only)
+headway show --json     # machine-readable, for parsing (always includes archived)
 ```
+
+By default `show` collapses archived cards to a one-line count to keep the board
+readable; pass `--archived` to list them (e.g. to find a prefix for `restore`).
 
 `show` prints each card as `<8-char-prefix>  <title>  [labels]`. Use that prefix
 (or any unique longer prefix) as the `<card>` argument.
@@ -68,7 +72,7 @@ equivalent.
 
 | Command | What it does |
 | --- | --- |
-| `show [--json]` | Print the board |
+| `show [--archived] [--json]` | Print the board (`--archived` lists archived cards) |
 | `seed` | Create the default board if none exists |
 | `add <title...> [--col <c>] [-l <labels>]` | Add a card (defaults to the first column; `-l`/`--label` tags it) |
 | `move <card> --col <c> [--row <n>]` | Move a card to a column (optional position) |
