@@ -279,6 +279,63 @@ fn drag_and_select_nodes() {
     assert_eq!(harness.state().notebook.selected(), None);
 }
 
+/// Dragging from a node's side handle onto another node creates an edge between
+/// them. The scene loads 1:1 (screen coords == canvas coords), so the handle sits
+/// at the node's right-edge midpoint.
+#[test]
+fn connect_nodes_with_edge() {
+    let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, false);
+    wait_for_label(&mut harness, "Red");
+
+    // Capture the ids of the two nodes we'll connect (clicking selects a node).
+    harness.get_by_label("Orange").simulate_click();
+    harness.run();
+    let orange = harness
+        .state()
+        .notebook
+        .selected()
+        .cloned()
+        .expect("orange selected");
+    harness.get_by_label("Red").simulate_click();
+    harness.run();
+    let red = harness
+        .state()
+        .notebook
+        .selected()
+        .cloned()
+        .expect("red selected");
+
+    let before = harness.state().notebook.canvas().get_edges().len();
+
+    // Drag from Red's right-edge handle (its rect is (40,40)-(240,130)) into the
+    // Orange node beside it (its rect is (300,40)-(500,130)).
+    let from = egui::pos2(240.0, 85.0);
+    let into = egui::pos2(400.0, 85.0);
+    press(&mut harness, from);
+    drag_to(&mut harness, egui::pos2(320.0, 85.0));
+    drag_to(&mut harness, into);
+    release(&mut harness, into);
+
+    // The edge is ingested asynchronously and folds back in; wait for it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run();
+        let canvas = harness.state().notebook.canvas();
+        let connected = canvas.get_edges().len() > before
+            && canvas.get_edges().values().any(|e| {
+                e.from_node().as_str() == red.as_str() && e.to_node().as_str() == orange.as_str()
+            });
+        if connected {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "an edge from Red to Orange never appeared"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// A click delivered as press+release within a single frame, so it registers
 /// even though the canvas keeps requesting repaints (which would otherwise
 /// stretch a held button past egui's click-time threshold across `run()`).

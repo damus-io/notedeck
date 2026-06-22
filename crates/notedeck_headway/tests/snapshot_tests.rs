@@ -2,10 +2,10 @@ use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::{Key, Queryable};
-use enostr::{FullKeypair, Keypair};
-use nostrdb::Transaction;
+use enostr::{FullKeypair, Keypair, Pubkey};
+use nostrdb::{Ndb, Transaction};
 use notedeck::{App, Notedeck};
-use notedeck_headway::Headway;
+use notedeck_headway::{Headway, store};
 
 struct HeadwayTestState {
     notedeck: Notedeck,
@@ -33,6 +33,14 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
                 .process_action(app_ctx.unknown_ids, app_ctx.ndb, &txn);
         }
         app_ctx.select_account(&pubkey);
+
+        // The production seed is card-less; seed demo cards here (before the app
+        // auto-seeds) so the snapshots and flows have content to render against.
+        seed_demo(
+            app_ctx.ndb,
+            &pubkey,
+            &state.account.secret_key.secret_bytes(),
+        );
 
         state.fonts_installed = true;
         return;
@@ -82,7 +90,13 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
 /// header's full-count summary rather than just the first column, so every test
 /// starts from a fully-materialised board instead of a half-ingested one.
 fn wait_for_board(harness: &mut Harness<'static, HeadwayTestState>) {
-    wait_for_label(harness, "7 cards · 4 columns");
+    wait_for_label(harness, "7 cards · 5 columns");
+}
+
+/// Seed the populated demo board for the snapshot/flow tests to render against.
+/// The production seed is card-less; the fixture lives in [`store::seed_demo_board`].
+fn seed_demo(ndb: &Ndb, pubkey: &Pubkey, secret: &[u8; 32]) {
+    store::seed_demo_board(ndb, pubkey, secret, store::BOARD_ID, &mut store::NoPublish);
 }
 
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
@@ -220,12 +234,12 @@ fn open_first_column_menu(harness: &mut Harness<'static, HeadwayTestState>) {
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn add_column_flow() {
-    // Wide enough that all four seeded columns plus the "+ Add column"
+    // Wide enough that all five seeded columns plus the "+ Add column"
     // affordance are on-screen, so the simulated clicks land on them.
     let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
 
-    // Precondition: the seeded board has four columns.
-    harness.get_by_label("7 cards · 4 columns");
+    // Precondition: the seeded board has five columns.
+    harness.get_by_label("7 cards · 5 columns");
 
     // Open the add-column composer.
     harness.get_by_label("+ Add column").simulate_click();
@@ -239,10 +253,10 @@ fn add_column_flow() {
     harness.run();
     harness.get_by_label("Add").simulate_click();
 
-    // A fifth column now exists (asserted via the always-visible board summary,
+    // A sixth column now exists (asserted via the always-visible board summary,
     // since the new column itself renders off-screen to the right). The ingest
     // is async, so wait for the reload.
-    wait_for_label(&mut harness, "7 cards · 5 columns");
+    wait_for_label(&mut harness, "7 cards · 6 columns");
     assert!(
         harness.query_by_label("Add").is_none(),
         "composer should close after adding a column"
@@ -313,21 +327,21 @@ fn reorder_column_flow() {
 
 /// Delete a column via its "⋯" menu. Unlike the old in-memory model, deleting a
 /// column doesn't destroy its cards: they're separate events and fall back to
-/// the first column, so the board keeps all seven cards but drops to three
+/// the first column, so the board keeps all seven cards but drops to four
 /// columns.
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn delete_column_flow() {
     let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
 
-    harness.get_by_label("7 cards · 4 columns"); // precondition
+    harness.get_by_label("7 cards · 5 columns"); // precondition
 
     open_first_column_menu(&mut harness);
     harness.get_by_label("Delete column").simulate_click();
 
     wait_for_absent(&mut harness, "Backlog");
     // Cards survive the column removal (they reflow into the first column).
-    harness.get_by_label("7 cards · 3 columns");
+    harness.get_by_label("7 cards · 4 columns");
 }
 
 /// Drive the add-card flow: open a column's composer, type a title, commit with
@@ -339,7 +353,7 @@ fn delete_column_flow() {
 fn add_card_flow() {
     let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
 
-    harness.get_by_label("7 cards · 4 columns"); // precondition
+    harness.get_by_label("7 cards · 5 columns"); // precondition
 
     // The first "+ Add card" affordance belongs to the leftmost column (Backlog).
     harness
@@ -362,7 +376,7 @@ fn add_card_flow() {
         .key_press(Key::Enter);
 
     wait_for_label(&mut harness, "Write integration tests");
-    harness.get_by_label("8 cards · 4 columns");
+    harness.get_by_label("8 cards · 5 columns");
 
     // Rapid entry: the composer is still open and focused, so a second title can
     // go straight in without clicking "+ Add card" again.
@@ -375,7 +389,7 @@ fn add_card_flow() {
         .key_press(Key::Enter);
 
     wait_for_label(&mut harness, "Ship the feature");
-    harness.get_by_label("9 cards · 4 columns");
+    harness.get_by_label("9 cards · 5 columns");
 }
 
 /// Regression: when a column's cards overflow its height you must still be able

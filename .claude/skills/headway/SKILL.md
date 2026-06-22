@@ -1,6 +1,6 @@
 ---
 name: headway
-description: Read and edit a Headway kanban board from the command line via the `headway` CLI (crates/headway_cli). Use when the user wants to view the board, add/move/edit/archive cards, or shuffle work between columns like Backlog, Todo, In Progress, and Done — e.g. "move X to done", "show the board", "add a card to todo".
+description: Read and edit a Headway kanban board from the command line via the `headway` CLI (crates/headway_cli). Use when the user wants to view the board, add/move/edit/archive cards, or shuffle work between columns like Backlog, Todo, In Progress, In Review, and Done — e.g. "move X to done", "show the board", "add a card to todo".
 ---
 
 # Headway board CLI
@@ -56,9 +56,9 @@ readable; pass `--archived` to list them (e.g. to find a prefix for `restore`).
 (or any unique longer prefix) as the `<card>` argument.
 
 Default board columns: **Backlog**, **Todo**, **In Progress** (`in-progress`),
-**Done** (`done`). A column argument matches an id or a name case-insensitively,
-so `--col "in progress"`, `--col in-progress`, and `--col "In Progress"` are
-equivalent.
+**In Review** (`in-review`), **Done** (`done`). A column argument matches an id
+or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
+`--col "In Progress"` are equivalent.
 
 ## Commands
 

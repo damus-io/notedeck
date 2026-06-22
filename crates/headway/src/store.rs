@@ -108,20 +108,46 @@ fn default_columns() -> Vec<ColumnDef> {
         ColumnDef::new("backlog", "Backlog"),
         ColumnDef::new("todo", "Todo"),
         ColumnDef::new("in-progress", "In Progress"),
+        ColumnDef::new("in-review", "In Review"),
         ColumnDef::new("done", "Done"),
     ]
 }
 
-/// The default cards, as `(column id, title, body, labels)`, in display order.
-type SeedCard = (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static [&'static str],
-);
+/// Seed a fresh default board for `author` into the local nostrdb: just the
+/// board event with its columns, no cards. Cards are added later via
+/// [`BoardAction::AddCard`].
+pub fn seed_default_board(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    publisher: &mut dyn Publisher,
+) {
+    let _ = author;
+    let columns = default_columns();
+    ingest(
+        ndb,
+        build_board(board_id, "Headway", "", &columns),
+        secret,
+        publisher,
+    );
+}
 
-fn default_cards() -> Vec<SeedCard> {
-    vec![
+/// Seed a default board *and* a fixed set of demo cards. The product seed
+/// ([`seed_default_board`]) is deliberately card-less; this is the populated
+/// board used by tests and demos. Cards land 3 / 2 / 1 / 0 / 1 across the
+/// columns, in seeded order (increasing ranks per column).
+pub fn seed_demo_board(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    publisher: &mut dyn Publisher,
+) {
+    seed_default_board(ndb, author, secret, board_id, publisher);
+
+    let addr = board_address(author, board_id);
+    let cards: [(&str, &str, &str, &[&str]); 7] = [
         (
             "backlog",
             "Define nostr event model for boards",
@@ -140,30 +166,11 @@ fn default_cards() -> Vec<SeedCard> {
             &["ux"],
         ),
         ("done", "Scaffold the Headway app crate", "", &["chore"]),
-    ]
-}
-
-/// Seed a fresh default board for `author` into the local nostrdb: one board
-/// event, plus an issue + placement per default card.
-pub fn seed_default_board(
-    ndb: &Ndb,
-    author: &Pubkey,
-    secret: &[u8; 32],
-    board_id: &str,
-    publisher: &mut dyn Publisher,
-) {
-    let addr = board_address(author, board_id);
-    let columns = default_columns();
-    ingest(
-        ndb,
-        build_board(board_id, "Headway", "", &columns),
-        secret,
-        publisher,
-    );
+    ];
 
     // Hand out increasing ranks per column so cards keep their seeded order.
     let mut last_rank: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
-    for (col_id, title, body, labels) in default_cards() {
+    for (col_id, title, body, labels) in cards {
         let Some(id) = ingest(ndb, build_issue(&addr, title, body), secret, publisher) else {
             continue;
         };
@@ -544,18 +551,35 @@ mod tests {
             .collect()
     }
 
+    /// Seed the populated demo board for the card-operation tests to act on.
+    /// Columns: Backlog, Todo, In Progress, In Review, Done; cards 3 / 2 / 1 / 0 / 1.
+    fn seed_demo(t: &TestNdb) {
+        seed_demo_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+    }
+
     #[test]
     fn seed_materialises_default_board() {
         let t = TestNdb::new();
         seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
 
-        let view = t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7);
+        // The default board is card-less: just the five columns.
+        let view = t.wait(|v| v.columns.len() == 5);
         assert_eq!(
             col_titles(&view),
-            ["Backlog", "Todo", "In Progress", "Done"]
+            ["Backlog", "Todo", "In Progress", "In Review", "Done"]
         );
+        assert!(view.columns.iter().all(|c| c.cards.is_empty()));
+    }
+
+    #[test]
+    fn seed_demo_materialises_cards() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+
+        let view = t.wait(|v| v.columns.iter().map(|c| c.cards.len()).sum::<usize>() == 7);
         assert_eq!(view.columns[0].cards.len(), 3);
-        assert_eq!(view.columns[3].cards.len(), 1);
+        // Done is the last column; the seeded "done" card lands there.
+        assert_eq!(view.columns.last().unwrap().cards.len(), 1);
         // Seeded order is preserved by increasing ranks.
         assert_eq!(
             view.columns[0].cards[0].title,
@@ -567,7 +591,7 @@ mod tests {
     #[test]
     fn add_card_appends_to_column() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        seed_demo(&t);
         let view = t.wait(|v| v.columns[1].cards.len() == 2);
 
         t.apply(
@@ -586,7 +610,7 @@ mod tests {
     #[test]
     fn add_card_with_labels_tags_the_new_card() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        seed_demo(&t);
         let view = t.wait(|v| v.columns[1].cards.len() == 2);
 
         t.apply(
@@ -623,7 +647,7 @@ mod tests {
         }
 
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        seed_demo(&t);
         let view = t.wait(|v| v.columns[1].cards.len() == 2);
 
         // AddCard ingests two events — the issue and its placement — so the
@@ -655,28 +679,30 @@ mod tests {
     #[test]
     fn move_card_changes_column() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        seed_demo(&t);
         let view = t.wait(|v| v.columns[0].cards.len() == 3);
 
+        // Move a Backlog card into Done (the last column, which seeds one card).
+        let done = view.columns.len() - 1;
         let card = view.columns[0].cards[0].id;
         t.apply(
             &view,
             BoardAction::MoveCard {
                 card,
-                to_col: 3,
-                to_row: view.columns[3].cards.len(),
+                to_col: done,
+                to_row: view.columns[done].cards.len(),
             },
         );
 
-        let view = t.wait(|v| v.columns[3].cards.len() == 2);
+        let view = t.wait(|v| v.columns[done].cards.len() == 2);
         assert_eq!(view.columns[0].cards.len(), 2);
-        assert!(view.columns[3].cards.iter().any(|c| c.id == card));
+        assert!(view.columns[done].cards.iter().any(|c| c.id == card));
     }
 
     #[test]
     fn edit_title_description_and_labels() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        seed_demo(&t);
         let view = t.wait(|v| v.columns[1].cards.len() == 2);
         // The second Todo card ("Column reordering") is seeded without labels,
         // so the SetLabels union below is exactly the two we add.
@@ -721,7 +747,7 @@ mod tests {
     #[test]
     fn delete_card_removes_it() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        seed_demo(&t);
         let view = t.wait(|v| v.columns[0].cards.len() == 3);
         let card = view.columns[0].cards[0].id;
 
@@ -734,7 +760,7 @@ mod tests {
     #[test]
     fn archive_then_restore_round_trips_to_origin() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        seed_demo(&t);
         // Pick a card out of "In Progress" (column 2), not the first column, so a
         // restore that ignored the origin would land it somewhere else.
         let view = t.wait(|v| v.columns[2].cards.len() == 1);
@@ -763,8 +789,8 @@ mod tests {
     #[test]
     fn column_ops_round_trip() {
         let t = TestNdb::new();
-        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
-        let view = t.wait(|v| v.columns.len() == 4);
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns.len() == 5);
 
         t.apply(
             &view,
@@ -772,8 +798,8 @@ mod tests {
                 name: "Review".to_string(),
             },
         );
-        let view = t.wait(|v| v.columns.len() == 5);
-        assert_eq!(view.columns[4].name, "Review");
+        let view = t.wait(|v| v.columns.len() == 6);
+        assert_eq!(view.columns[5].name, "Review");
 
         t.apply(
             &view,
