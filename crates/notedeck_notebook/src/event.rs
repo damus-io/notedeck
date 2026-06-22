@@ -643,7 +643,15 @@ pub struct NodeView {
     pub z: String,
     pub color: Option<String>,
     pub content: NodeContent,
+    /// When the node was created (its immutable creation event's timestamp).
     pub created_at: u64,
+    /// Timestamp of the winning transform (else the creation time). The store
+    /// stamps a re-placement strictly past this so an addressable transform
+    /// always supersedes the one it edits, even within the same wall-clock second.
+    pub placed_at: u64,
+    /// Timestamp of the winning content overlay (else the creation time). Same
+    /// supersede role as `placed_at`, for content edits.
+    pub edited_at: u64,
 }
 
 /// An edge as rendered, with its endpoints resolved to node ids.
@@ -654,6 +662,8 @@ pub struct EdgeView {
     pub from: NoteId,
     pub to: NoteId,
     pub ends: EdgeEnds,
+    /// Timestamp of the winning edge event, so the store can supersede it.
+    pub placed_at: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -663,6 +673,9 @@ pub struct CanvasView {
     pub title: String,
     pub members: Vec<[u8; 32]>,
     pub open: bool,
+    /// Timestamp of the winning canvas document, so the store can supersede it
+    /// when republishing title/members/mode.
+    pub created_at: u64,
     /// Surfaced nodes, ordered back-to-front by z-rank.
     pub nodes: Vec<NodeView>,
     /// Surfaced edges whose endpoints both resolve to a live surfaced node.
@@ -824,9 +837,14 @@ impl CanvasReducer {
                 let geo = transform.map(|t| t.geo).unwrap_or(node.geo);
                 let z = transform.map(|t| t.z.clone()).unwrap_or_default();
                 let color = transform.and_then(|t| t.color.clone());
-                let content = pick_latest(self.contents.get(&node.id), &allow)
+                let placed_at = transform.map(|t| t.created_at).unwrap_or(node.created_at);
+                let content_overlay = pick_latest(self.contents.get(&node.id), &allow);
+                let content = content_overlay
                     .map(|c| c.content.clone())
                     .unwrap_or_else(|| node.content.clone());
+                let edited_at = content_overlay
+                    .map(|c| c.created_at)
+                    .unwrap_or(node.created_at);
 
                 let view = NodeView {
                     id: NoteId::new(node.id),
@@ -837,6 +855,8 @@ impl CanvasReducer {
                     color,
                     content,
                     created_at: node.created_at,
+                    placed_at,
+                    edited_at,
                 };
 
                 if visible {
@@ -869,6 +889,7 @@ impl CanvasReducer {
                     from: NoteId::new(e.from),
                     to: NoteId::new(e.to),
                     ends: e.ends.clone(),
+                    placed_at: e.created_at,
                 })
                 .collect();
             edges.sort_by(|a, b| a.id.cmp(&b.id));
@@ -879,6 +900,7 @@ impl CanvasReducer {
                 title: canvas.title.clone(),
                 members: canvas.members.clone(),
                 open: canvas.open,
+                created_at: canvas.created_at,
                 nodes,
                 edges,
                 pending,

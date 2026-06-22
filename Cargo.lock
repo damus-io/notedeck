@@ -5355,6 +5355,7 @@ dependencies = [
  "notedeck_ui",
  "pollster",
  "tempfile",
+ "url",
 ]
 
 [[package]]

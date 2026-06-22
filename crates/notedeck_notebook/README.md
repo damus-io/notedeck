@@ -5,12 +5,13 @@ as a Notedeck application. A canvas — its nodes, edges, positions and text —
 stored as **nostr events** in the local nostrdb and reconstructed on the fly;
 there is no separate mutable document.
 
-> **Status: scaffold.** The event schema, reducer and ndb fold live in
-> `src/event.rs` with tests. The app (`src/lib.rs`/`src/ui.rs`) still renders a
-> local demo `.canvas`; wiring the reducer into the UI and adding the
-> `store`/action layer are follow-ups. Like headway, this is **local-only** for
-> now: events are signed and ingested into nostrdb but not yet published to
-> relays.
+> **Status: wired end-to-end.** The event schema, reducer and ndb fold live in
+> `src/event.rs`; the action/persistence layer in `src/store.rs`; a live
+> subscription-backed reducer (`CanvasSync`) and the `CanvasView → JsonCanvas`
+> bridge (`src/convert.rs`) in `src/lib.rs`. The running app renders the
+> nostr-backed canvas and turns drags/edits/creates into signed events. Like
+> headway, this is **local-only** for now: events are signed and ingested into
+> the local nostrdb but not yet published to relays.
 
 ## Overview
 
@@ -27,7 +28,7 @@ in place.
 ```
 events (nostrdb)  ──Ndb::fold──▶  CanvasReducer  ──finalize──▶  CanvasView  ──▶  UI
    ▲                                                                            │
-   └──────────────── sign + ingest ◀──────────────────────────── CanvasAction ◀┘  (future)
+   └──────────────── sign + ingest ◀──────────────────────────── CanvasAction ◀┘
 ```
 
 ### How this differs from headway
@@ -218,10 +219,11 @@ creation time.
   the same second resolve by the author-bytes tiebreak. Publishing geometry only
   on gesture-end keeps this rare; a logical-clock tag is the general fix, and
   matters more here than in headway given canvas edit rates.
-- **No `store`/action layer yet.** Headway's `store::apply` turns UI intents into
-  events; notebook needs the equivalent (`AddNode`/`MoveNode`/`EditContent`/…)
-  plus the live `CanvasSync` subscription wiring, then a `CanvasView →
-  jsoncanvas::JsonCanvas` conversion to feed the existing renderer.
+- **Provisional text content.** Text nodes carry their body as a single
+  latest-wins string (kind `31609`), so two people editing the same node's text
+  concurrently lose one edit. The node identity and the geometry/content split
+  are stable, so this is an additive upgrade later (a CRDT content kind with a
+  fallback chain), not a rewrite.
 - **No relay sync** yet (local-only), and ephemeral presence (`KIND_PRESENCE`)
   is reserved but unimplemented.
 
@@ -230,8 +232,15 @@ creation time.
 - `src/event.rs` — the pure schema: builders, parsers, the [`CanvasReducer`]
   (`finalize` / incremental `reduce_delta` / `fold_canvas` / `pick_canvas`),
   `rank_between`. No I/O.
-- `src/lib.rs` — the `Notebook` Notedeck `App` (currently a local demo canvas).
-- `src/ui.rs` — the egui canvas renderer (draggable/selectable/editable nodes).
+- `src/store.rs` — the action/persistence layer: `CanvasAction` + `apply`, which
+  sign and ingest the `event.rs` builders into nostrdb (mirrors `headway::store`,
+  with the same `Publisher`/`NoPublish` seam). Egui-free.
+- `src/lib.rs` — the `Notebook` Notedeck `App` plus `CanvasSync`, the live
+  subscription-backed reducer that folds once then feeds in only freshly-arrived
+  notes. Maps UI intents to `CanvasAction`s.
+- `src/convert.rs` — `CanvasView → jsoncanvas::JsonCanvas` for rendering.
+- `src/ui.rs` — the egui canvas renderer (draggable/selectable/editable nodes),
+  reporting committed edits back as a `UiIntent`.
 
 [`CanvasReducer`]: src/event.rs
 [`CanvasView`]: src/event.rs
