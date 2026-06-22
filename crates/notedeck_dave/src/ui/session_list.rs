@@ -28,6 +28,48 @@ pub enum SessionListAction {
     NewSessionInCwd(String, PathBuf),
 }
 
+/// The sessions Ctrl+J / Ctrl+K would cycle to, relative to the active one.
+/// `None` everywhere unless ctrl is held and there's more than one session.
+#[derive(Clone, Copy, Default)]
+struct CycleHints {
+    next: Option<SessionId>,
+    prev: Option<SessionId>,
+}
+
+impl CycleHints {
+    fn compute(
+        session_manager: &mut SessionManager,
+        collapse: &CollapseState,
+        active_id: Option<SessionId>,
+    ) -> Self {
+        let order = session_manager.visual_order(collapse);
+        // Cycling to self is meaningless with a single session.
+        if order.len() < 2 {
+            return Self::default();
+        }
+        let Some(pos) = active_id.and_then(|a| order.iter().position(|&id| id == a)) else {
+            return Self::default();
+        };
+        let len = order.len();
+        Self {
+            next: Some(order[(pos + 1) % len]),
+            prev: Some(order[if pos == 0 { len - 1 } else { pos - 1 }]),
+        }
+    }
+
+    /// The hint label ("J"/"K") to paint on `id`'s row, if it's adjacent to the
+    /// active session.
+    fn hint_for(&self, id: SessionId) -> Option<&'static str> {
+        if self.next == Some(id) {
+            Some("J")
+        } else if self.prev == Some(id) {
+            Some("K")
+        } else {
+            None
+        }
+    }
+}
+
 /// UI component for displaying the session list sidebar
 pub struct SessionListUi<'a> {
     session_manager: &'a mut SessionManager,
@@ -103,12 +145,22 @@ impl<'a> SessionListUi<'a> {
     fn sessions_list_ui(&mut self, ui: &mut egui::Ui) -> Option<SessionListAction> {
         let mut action = None;
         let active_id = self.session_manager.active_id();
+        // Sessions Ctrl+J / Ctrl+K (cycle next/previous) would jump to, used to
+        // paint a J/K hint on the rows adjacent to the active one while ctrl is
+        // held. Mirrors the wrap-around order in update::cycle_agent.
+        let cycle = if self.ctrl_held {
+            CycleHints::compute(self.session_manager, self.collapse_state, active_id)
+        } else {
+            CycleHints::default()
+        };
         let mut visual_index: usize = 0;
         let host_groups = self.session_manager.host_cwd_groups().to_vec();
 
         // Agents grouped by host → cwd (pre-computed, deterministically ordered)
         for host_group in &host_groups {
-            if let Some(a) = host_section_ui(ui, self, host_group, &mut visual_index, active_id) {
+            if let Some(a) =
+                host_section_ui(ui, self, host_group, &mut visual_index, active_id, cycle)
+            {
                 action = Some(a);
             }
         }
@@ -125,7 +177,7 @@ impl<'a> SessionListUi<'a> {
             for id in chat_ids {
                 if let Some(session) = self.session_manager.get(id) {
                     if let Some(a) =
-                        self.render_session_item(ui, session, visual_index, active_id, None)
+                        self.render_session_item(ui, session, visual_index, active_id, None, cycle)
                     {
                         action = Some(a);
                     }
@@ -144,8 +196,10 @@ impl<'a> SessionListUi<'a> {
         index: usize,
         active_id: Option<SessionId>,
         cwd_display: Option<&str>,
+        cycle: CycleHints,
     ) -> Option<SessionListAction> {
         let is_active = Some(session.id) == active_id;
+        let cycle_hint = cycle.hint_for(session.id);
         let shortcut_hint = if self.ctrl_held && index < 9 {
             Some(index + 1)
         } else {
@@ -184,6 +238,7 @@ impl<'a> SessionListUi<'a> {
                 cwd_display,
                 is_active,
                 shortcut_hint,
+                cycle_hint,
                 session.status(),
                 queue_priority,
                 session.backend_type,
@@ -196,6 +251,7 @@ impl<'a> SessionListUi<'a> {
                 display_title,
                 is_active,
                 shortcut_hint,
+                cycle_hint,
                 queue_priority,
             )
         };
@@ -334,6 +390,7 @@ impl<'a> SessionListUi<'a> {
         cwd_display: Option<&str>,
         is_active: bool,
         shortcut_hint: Option<usize>,
+        cycle_hint: Option<&str>,
         status: AgentStatus,
         queue_priority: Option<FocusPriority>,
         backend_type: BackendType,
@@ -379,6 +436,7 @@ impl<'a> SessionListUi<'a> {
                 is_active,
                 self.ctrl_held,
                 shortcut_hint,
+                cycle_hint,
                 queue_priority,
                 git_lines,
                 hints,
@@ -391,6 +449,7 @@ impl<'a> SessionListUi<'a> {
                 is_active,
                 self.ctrl_held,
                 shortcut_hint,
+                cycle_hint,
                 queue_priority,
                 hints,
             );
@@ -434,6 +493,7 @@ impl<'a> SessionListUi<'a> {
         title: &str,
         is_active: bool,
         shortcut_hint: Option<usize>,
+        cycle_hint: Option<&str>,
         queue_priority: Option<FocusPriority>,
     ) -> (egui::Response, Option<SessionListAction>) {
         let desired_size = egui::vec2(ui.available_width(), 32.0);
@@ -451,6 +511,7 @@ impl<'a> SessionListUi<'a> {
             is_active,
             self.ctrl_held,
             shortcut_hint,
+            cycle_hint,
             queue_priority,
             hints,
         );
@@ -632,6 +693,7 @@ fn render_row_right_side(
     is_active: bool,
     ctrl_held: bool,
     shortcut_hint: Option<usize>,
+    cycle_hint: Option<&str>,
     queue_priority: Option<FocusPriority>,
     hints: &[(&str, &str)],
 ) -> (f32, Option<SessionListAction>) {
@@ -644,6 +706,14 @@ fn render_row_right_side(
         let hint_center = rect.right_center() - egui::vec2(8.0 + hint_size / 2.0, 0.0);
         paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
         right_offset = 8.0 + hint_size + 6.0;
+    }
+
+    // Ctrl+J / Ctrl+K hint on the rows adjacent to the active session.
+    if let Some(cycle) = cycle_hint {
+        let hint_size = 18.0;
+        let hint_center = rect.right_center() - egui::vec2(right_offset + hint_size / 2.0, 0.0);
+        paint_keybind_hint(ui, hint_center, cycle, hint_size);
+        right_offset += hint_size + 6.0;
     }
 
     if is_active && ctrl_held {
@@ -714,6 +784,7 @@ fn render_agent_row_right_side(
     is_active: bool,
     ctrl_held: bool,
     shortcut_hint: Option<usize>,
+    cycle_hint: Option<&str>,
     queue_priority: Option<FocusPriority>,
     git_lines: Option<(usize, usize)>,
     hints: &[(&str, &str)],
@@ -727,6 +798,14 @@ fn render_agent_row_right_side(
         let hint_center = rect.right_center() - egui::vec2(8.0 + hint_size / 2.0, 0.0);
         paint_keybind_hint(ui, hint_center, &hint_text, hint_size);
         center_offset = 8.0 + hint_size + 6.0;
+    }
+
+    // Ctrl+J / Ctrl+K hint on the rows adjacent to the active session.
+    if let Some(cycle) = cycle_hint {
+        let hint_size = 18.0;
+        let hint_center = rect.right_center() - egui::vec2(center_offset + hint_size / 2.0, 0.0);
+        paint_keybind_hint(ui, hint_center, cycle, hint_size);
+        center_offset += hint_size + 6.0;
     }
 
     if is_active && ctrl_held {
@@ -856,6 +935,7 @@ fn host_section_ui(
     host_group: &crate::session::HostGroup,
     visual_index: &mut usize,
     active_id: Option<SessionId>,
+    cycle: CycleHints,
 ) -> Option<SessionListAction> {
     let mut action = None;
     let host_label = if host_group.hostname.is_empty() {
@@ -888,6 +968,7 @@ fn host_section_ui(
                 cwd_group,
                 visual_index,
                 active_id,
+                cycle,
             ) {
                 action = Some(a);
             }
@@ -916,6 +997,7 @@ fn cwd_section_ui(
     cwd_group: &crate::session::CwdGroup,
     visual_index: &mut usize,
     active_id: Option<SessionId>,
+    cycle: CycleHints,
 ) -> Option<SessionListAction> {
     let mut action = None;
 
@@ -929,6 +1011,7 @@ fn cwd_section_ui(
                 *visual_index,
                 active_id,
                 Some(cwd_group.display_cwd.as_str()),
+                cycle,
             ) {
                 action = Some(a);
             }
@@ -946,9 +1029,15 @@ fn cwd_section_ui(
             ..Default::default()
         })
         .show(ui, |ui| {
-            if let Some(a) =
-                cwd_folder_ui(ui, list_ui, hostname, cwd_group, visual_index, active_id)
-            {
+            if let Some(a) = cwd_folder_ui(
+                ui,
+                list_ui,
+                hostname,
+                cwd_group,
+                visual_index,
+                active_id,
+                cycle,
+            ) {
                 action = Some(a);
             }
         });
@@ -967,6 +1056,7 @@ fn cwd_folder_ui(
     cwd_group: &crate::session::CwdGroup,
     visual_index: &mut usize,
     active_id: Option<SessionId>,
+    cycle: CycleHints,
 ) -> Option<SessionListAction> {
     let mut action = None;
     let cwd_collapsed = list_ui
@@ -984,7 +1074,7 @@ fn cwd_folder_ui(
         for &id in &cwd_group.session_ids {
             if let Some(session) = list_ui.session_manager.get(id) {
                 if let Some(a) =
-                    list_ui.render_session_item(ui, session, *visual_index, active_id, None)
+                    list_ui.render_session_item(ui, session, *visual_index, active_id, None, cycle)
                 {
                     action = Some(a);
                 }
@@ -1219,6 +1309,7 @@ mod tests {
                     "refactor auth module",
                     Some("~/src/notedeck-wt"),
                     false,
+                    None,
                     None,
                     AgentStatus::NeedsInput,
                     priority,
