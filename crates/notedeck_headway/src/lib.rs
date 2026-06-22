@@ -729,6 +729,10 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
         .inner_margin(egui::Margin::same(SPACING_SM as i8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // Pin the internal vertical rhythm so the card is the same height
+            // wherever it's drawn — in a column lane or, mid-move, in a free
+            // floating Area — rather than inheriting the caller's item spacing.
+            ui.spacing_mut().item_spacing.y = SPACING_SM;
             if !card.labels.is_empty() {
                 ui.horizontal_wrapped(|ui| {
                     for label in &card.labels {
