@@ -6,10 +6,10 @@ mod ui;
 use crate::convert::view_to_canvas;
 use crate::event::{CanvasReducer, CanvasView};
 use crate::store::CanvasAction;
-use crate::ui::{node_rect, notebook_ui};
+use crate::ui::{node_rect, notebook_ui, side_str};
 use egui::{Pos2, Rect};
 use enostr::{NoteId, Pubkey};
-use jsoncanvas::{JsonCanvas, NodeId};
+use jsoncanvas::{JsonCanvas, NodeId, edge::Side};
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{AppContext, AppResponse};
 use std::collections::HashMap;
@@ -35,6 +35,10 @@ pub struct Notebook {
     positions: HashMap<NodeId, Pos2>,
     /// Currently selected node, if any.
     selected: Option<NodeId>,
+    /// The node an edge is currently being dragged from, if any. Persisted across
+    /// frames so its side handles stay alive (and the egui drag keeps its id)
+    /// even once the pointer leaves the source node.
+    connecting: Option<NodeId>,
     /// Inline text-editing state.
     edit: NodeEdit,
     /// Whether we've auto-seeded a canvas this session, so we don't seed twice
@@ -80,6 +84,13 @@ pub(crate) enum UiIntent {
     Create { pos: Pos2, text: String },
     /// A node was deleted (its text was blanked).
     Delete { node: NodeId },
+    /// An edge was drawn from one node's side to another node's side.
+    Connect {
+        from: NodeId,
+        from_side: Side,
+        to: NodeId,
+        to_side: Side,
+    },
 }
 
 /// Default size of a freshly-created text node, in canvas pixels.
@@ -121,7 +132,7 @@ impl Notebook {
     /// transform is a full geometry snapshot). `None` if the node id isn't a
     /// valid nostr id (so it can be filtered out).
     fn intent_to_action(&self, intent: UiIntent) -> Option<CanvasAction> {
-        use crate::event::{Geometry, NodeContent, NodeKind};
+        use crate::event::{EdgeEnds, Geometry, NodeContent, NodeKind};
         match intent {
             UiIntent::Move { node, pos } => {
                 let g = self.canvas.get_nodes().get(&node)?.node();
@@ -158,6 +169,29 @@ impl Notebook {
                     ..Default::default()
                 },
             }),
+            UiIntent::Connect {
+                from,
+                from_side,
+                to,
+                to_side,
+            } => {
+                let from_id = NoteId::from_hex(from.as_str()).ok()?;
+                let to_id = NoteId::from_hex(to.as_str()).ok()?;
+                // Edge ids are stable per ordered pair, so re-drawing the same
+                // connection updates that edge (latest-wins) rather than stacking
+                // duplicates. No ':' — the reducer's `d` parse splits on the last.
+                Some(CanvasAction::SetEdge {
+                    edge_id: format!("{}-{}", from.as_str(), to.as_str()),
+                    from: from_id,
+                    to: to_id,
+                    ends: EdgeEnds {
+                        from_side: Some(side_str(&from_side).to_string()),
+                        to_side: Some(side_str(&to_side).to_string()),
+                        to_end: Some("arrow".to_string()),
+                        ..Default::default()
+                    },
+                })
+            }
         }
     }
 
@@ -187,6 +221,7 @@ impl Default for Notebook {
             loaded: false,
             positions: HashMap::new(),
             selected: None,
+            connecting: None,
             edit: NodeEdit::Idle,
             seeded: false,
             repaint_frames: 0,
@@ -246,19 +281,20 @@ impl notedeck::App for Notebook {
         // Apply it by ingesting events into the local nostrdb. Mutations need a
         // signing key; a watch-only account simply can't edit.
         if let (Some(intent), Some(secret)) = (intent, &signer)
-            && let Some(action) = self.intent_to_action(intent) {
-                let view = self.sync.view().expect("view present");
-                store::apply(
-                    ctx.ndb,
-                    &self.canvas_id,
-                    view,
-                    &author,
-                    secret,
-                    action,
-                    &mut store::NoPublish,
-                );
-                self.wake();
-            }
+            && let Some(action) = self.intent_to_action(intent)
+        {
+            let view = self.sync.view().expect("view present");
+            store::apply(
+                ctx.ndb,
+                &self.canvas_id,
+                view,
+                &author,
+                secret,
+                action,
+                &mut store::NoPublish,
+            );
+            self.wake();
+        }
 
         self.pump_repaint(ui);
         AppResponse::default()

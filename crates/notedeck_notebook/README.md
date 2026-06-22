@@ -9,7 +9,8 @@ there is no separate mutable document.
 > `src/event.rs`; the action/persistence layer in `src/store.rs`; a live
 > subscription-backed reducer (`CanvasSync`) and the `CanvasView → JsonCanvas`
 > bridge (`src/convert.rs`) in `src/lib.rs`. The running app renders the
-> nostr-backed canvas and turns drags/edits/creates into signed events. Like
+> nostr-backed canvas and turns drags, edits, creates and node-to-node
+> connections into signed events. Like
 > headway, this is **local-only** for now: events are signed and ingested into
 > the local nostrdb but not yet published to relays.
 
@@ -239,8 +240,9 @@ creation time.
   subscription-backed reducer that folds once then feeds in only freshly-arrived
   notes. Maps UI intents to `CanvasAction`s.
 - `src/convert.rs` — `CanvasView → jsoncanvas::JsonCanvas` for rendering.
-- `src/ui.rs` — the egui canvas renderer (draggable/selectable/editable nodes),
-  reporting committed edits back as a `UiIntent`.
+- `src/ui.rs` — the egui canvas renderer (draggable/selectable/editable nodes,
+  drag-from-side-handle to connect nodes), reporting committed edits back as a
+  `UiIntent`.
 
 [`CanvasReducer`]: src/event.rs
 [`CanvasView`]: src/event.rs

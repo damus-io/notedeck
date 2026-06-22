@@ -12,10 +12,45 @@ use notedeck::AppContext;
 use std::collections::HashMap;
 use std::ops::Neg;
 
+/// An in-progress edge-drawing gesture, dragged from a node's side handle. The
+/// payload is the same for both phases — only whether the drag is still live or
+/// has just been released differs — so they share one enum.
+enum Connect {
+    /// Dragging from `node`'s `side` handle; the preview line runs to `pos`.
+    Dragging { node: NodeId, side: Side, pos: Pos2 },
+    /// The drag was released at `pos`; if it lands on another node, an edge from
+    /// `node`'s `side` to that node is created.
+    Released { node: NodeId, side: Side, pos: Pos2 },
+}
+
+/// The four node sides an edge can attach to. A fresh array each call since
+/// `Side` is neither `Copy` nor `Clone`; the values are moved out as we iterate.
+fn sides() -> [Side; 4] {
+    [Side::Top, Side::Right, Side::Bottom, Side::Left]
+}
+
+/// JSON Canvas side string for `side`, used as a stable handle id and as the
+/// `from`/`to` side when building an edge.
+pub(crate) fn side_str(side: &Side) -> &'static str {
+    match side {
+        Side::Top => "top",
+        Side::Right => "right",
+        Side::Bottom => "bottom",
+        Side::Left => "left",
+    }
+}
+
+/// Visible radius of a node's connection handle, in canvas pixels.
+const HANDLE_RADIUS: f32 = 5.0;
+/// Click/drag target size of a connection handle (larger than it looks, so it's
+/// easy to grab).
+const HANDLE_HIT: f32 = 18.0;
+
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable, editable nodes. Selection and live-drag state are
 /// written back into `notebook`; committed edits (move, text edit, create,
-/// delete) are returned as a single [`UiIntent`] for the caller to ingest.
+/// delete, connect) are returned as a single [`UiIntent`] for the caller to
+/// ingest. Dragging from a node's side handle onto another node draws an edge.
 pub fn notebook_ui(
     notebook: &mut Notebook,
     ctx: &mut AppContext,
@@ -44,6 +79,11 @@ pub fn notebook_ui(
     let mut drag_stopped: Option<NodeId> = None;
     let mut clicked: Option<NodeId> = None;
     let mut bg_clicked = false;
+    let mut hovered: Option<NodeId> = None;
+    // The connection gesture this frame, if any: a drag from a node's side handle
+    // toward the pointer, then its release (which resolves to an edge if it lands
+    // on another node).
+    let mut connect: Option<Connect> = None;
     let mut start_edit: Option<NodeId> = None;
     let mut create_at: Option<Pos2> = None;
     let mut commit_edit = false;
@@ -51,6 +91,7 @@ pub fn notebook_ui(
     let mut edit = std::mem::replace(&mut notebook.edit, NodeEdit::Idle);
     let canvas = &notebook.canvas;
     let selected = notebook.selected.as_ref();
+    let connecting = notebook.connecting.clone();
 
     egui::Scene::new().show(ui, &mut scene_rect, |ui| {
         // Background handle first (underneath the nodes) covering the visible
@@ -105,6 +146,9 @@ pub fn notebook_ui(
             }
 
             let resp = node_ui(ui, ctx, node, rect, selected == Some(id));
+            if resp.hovered() {
+                hovered = Some(id.clone());
+            }
             if resp.dragged() {
                 dragged = Some((id.clone(), rect.min + resp.drag_delta()));
             }
@@ -140,9 +184,77 @@ pub fn notebook_ui(
                 }
             }
         }
+
+        // Connection handles: small dots on the sides of the active node(s) that
+        // start an edge when dragged. Shown for the selected, hovered and
+        // currently-connecting node so they don't clutter the whole canvas — the
+        // connecting node is kept in the set so its handle survives the pointer
+        // leaving it mid-drag. The gesture is collected into `connect` and
+        // resolved (into an edge) after the closure.
+        let candidates = [selected, hovered.as_ref(), connecting.as_ref()];
+        for i in 0..candidates.len() {
+            let Some(nid) = candidates[i] else { continue };
+            // Skip nodes off-canvas or already handled (selected == hovered, etc).
+            if !rects.contains_key(nid) || candidates[..i].iter().flatten().any(|c| *c == nid) {
+                continue;
+            }
+            let rect = rects[nid];
+            for side in sides() {
+                let center = side_point(&side, rect);
+                let hit = Rect::from_center_size(center, vec2(HANDLE_HIT, HANDLE_HIT));
+                let resp = ui.interact(
+                    hit,
+                    ui.id()
+                        .with(("notebook_handle", nid.as_str(), side_str(&side))),
+                    egui::Sense::click_and_drag(),
+                );
+                connection_handle_ui(ui, center, resp.hovered() || resp.dragged());
+                let pos = resp.interact_pointer_pos();
+                if resp.drag_stopped() {
+                    connect = Some(Connect::Released {
+                        node: nid.clone(),
+                        side,
+                        pos: pos.unwrap_or(center),
+                    });
+                } else if resp.dragged()
+                    && let Some(pos) = pos
+                {
+                    connect = Some(Connect::Dragging {
+                        node: nid.clone(),
+                        side,
+                        pos,
+                    });
+                }
+            }
+        }
+
+        // Preview an in-progress connection: a line from the source handle to the
+        // pointer, and a highlight on the node it would land on.
+        if let Some(Connect::Dragging { node, side, pos }) = &connect
+            && let Some(from_rect) = rects.get(node)
+        {
+            connection_preview_ui(ui, side_point(side, *from_rect), *pos);
+            if let Some(target) = node_at(&rects, *pos, node) {
+                ui.painter().rect_stroke(
+                    rects[target],
+                    egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8),
+                    egui::Stroke::new(
+                        notedeck::tokens::STROKE_THICK * 2.0,
+                        ui.visuals().selection.stroke.color,
+                    ),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
     });
 
     notebook.scene_rect = scene_rect;
+    // Keep the connecting node's handles alive while a drag is live; clear it
+    // otherwise. The completed gesture is turned into an edge intent below.
+    notebook.connecting = match &connect {
+        Some(Connect::Dragging { node, .. }) => Some(node.clone()),
+        _ => None,
+    };
 
     if let Some((id, pos)) = dragged {
         notebook.positions.insert(id, pos);
@@ -160,6 +272,20 @@ pub fn notebook_ui(
             pos: *pos,
         })
     });
+
+    // A released connection that landed on another node becomes a new edge,
+    // anchored from the dragged side to whichever side of the target it faces.
+    if let Some(Connect::Released { node, side, pos }) = connect
+        && let Some(target) = node_at(&rects, pos, &node)
+    {
+        let to_side = nearest_side(rects[target], pos);
+        intent = Some(UiIntent::Connect {
+            from: node,
+            from_side: side,
+            to: target.clone(),
+            to_side,
+        });
+    }
 
     // Resolve the edit transition. Commit/cancel close the current editor; a
     // fresh double-click then opens the next one. A commit turns into an edit (or
@@ -319,6 +445,67 @@ fn side_tangent(side: &Side) -> egui::Vec2 {
         Side::Left => vec2(-1.0, 0.0),
         Side::Right => vec2(1.0, 0.0),
     }
+}
+
+/// The topmost node whose rect contains `pos`, other than `exclude` — the node a
+/// connection drag would attach to on release. Iteration order is arbitrary, so
+/// overlapping nodes resolve to an unspecified one; good enough for picking a
+/// drop target.
+fn node_at<'a>(
+    rects: &'a HashMap<NodeId, Rect>,
+    pos: Pos2,
+    exclude: &NodeId,
+) -> Option<&'a NodeId> {
+    rects
+        .iter()
+        .find(|(id, rect)| *id != exclude && rect.contains(pos))
+        .map(|(id, _)| id)
+}
+
+/// The side of `rect` that `pos` most faces, so an incoming edge anchors on the
+/// edge nearest the source. Compares horizontal vs. vertical offset scaled by the
+/// opposite dimension, so a wide box still prefers top/bottom when approached
+/// from above or below.
+fn nearest_side(rect: Rect, pos: Pos2) -> Side {
+    let d = pos - rect.center();
+    if d.x.abs() * rect.height() >= d.y.abs() * rect.width() {
+        if d.x >= 0.0 { Side::Right } else { Side::Left }
+    } else if d.y >= 0.0 {
+        Side::Bottom
+    } else {
+        Side::Top
+    }
+}
+
+/// Draw a node's connection handle: a small dot, accented and enlarged when
+/// active (hovered or being dragged) so it reads as grabbable.
+fn connection_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
+    let color = if active {
+        ui.visuals().selection.stroke.color
+    } else {
+        ui.visuals().widgets.inactive.fg_stroke.color
+    };
+    let radius = if active {
+        HANDLE_RADIUS + 1.5
+    } else {
+        HANDLE_RADIUS
+    };
+    let painter = ui.painter();
+    painter.circle_filled(center, radius, color);
+    painter.circle_stroke(
+        center,
+        radius,
+        Stroke::new(1.0, ui.visuals().extreme_bg_color),
+    );
+}
+
+/// Draw the in-progress connection: a line from the source handle to the pointer
+/// with a dot marking where the edge would land.
+fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
+    let color = ui.visuals().selection.stroke.color;
+    let painter = ui.painter();
+    painter.line_segment([from, to], Stroke::new(4.0, color));
+    painter.circle_filled(to, 4.0, color);
 }
 
 pub fn edge_ui(
