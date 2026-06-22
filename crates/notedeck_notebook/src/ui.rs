@@ -1,13 +1,11 @@
 use crate::{NEW_NODE_SIZE, NodeEdit, Notebook, UiIntent};
 use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
-use enostr::NoteId;
 use jsoncanvas::{
     FileNode, GroupNode, JsonCanvas, LinkNode, Node, NodeId, TextNode,
     color::{Color, PresetColor},
     edge::{Edge, Side},
     node::GenericNode,
 };
-use nostrdb::{Filter, Note, Transaction};
 use notedeck::AppContext;
 use std::collections::HashMap;
 use std::ops::Neg;
@@ -435,93 +433,11 @@ fn text_node_ui(
     })
 }
 
-/// Render a text node's body, splicing in inline widgets for any `nostr:`
-/// references. Plain text outside references is rendered as markdown, so a note
-/// reads the same as before unless it actually links to a nostr entity. Scans in
-/// place — no per-frame allocation for the common reference-free case.
+/// Render a text node's body: markdown, with any inline `nostr:` references
+/// resolved to their kind renderer (see
+/// [`notedeck_ui::markdown::render_markdown_with_refs`]).
 fn node_text_ui(ui: &mut egui::Ui, ctx: &mut AppContext, text: &str) {
-    let mut rest = text;
-    while let Some(pos) = rest.find("nostr:") {
-        let after = &rest[pos + "nostr:".len()..];
-        // The bech32 token is a run of lowercase letters/digits (hrp + data).
-        let end = after
-            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
-            .unwrap_or(after.len());
-        if end == 0 {
-            // A bare "nostr:" with no entity after it: keep it as text.
-            let upto = pos + "nostr:".len();
-            notedeck_ui::markdown::render_markdown(&rest[..upto], ui);
-            rest = &rest[upto..];
-            continue;
-        }
-        if pos > 0 {
-            notedeck_ui::markdown::render_markdown(&rest[..pos], ui);
-        }
-        nostr_ref_ui(ui, ctx, &after[..end]);
-        rest = &after[end..];
-    }
-    if !rest.is_empty() {
-        notedeck_ui::markdown::render_markdown(rest, ui);
-    }
-}
-
-/// Resolve a `nostr:` reference to a note and hand it to the registered
-/// renderer for its kind. Falls back to plain link text when the entity can't be
-/// parsed, isn't in the db yet, or has no renderer.
-fn nostr_ref_ui(ui: &mut egui::Ui, ctx: &mut AppContext, bech: &str) {
-    let Ok(txn) = Transaction::new(ctx.ndb) else {
-        nostr_ref_fallback_ui(ui, bech);
-        return;
-    };
-    let Some(note) = resolve_nostr_ref(ctx.ndb, &txn, bech) else {
-        nostr_ref_fallback_ui(ui, bech);
-        return;
-    };
-    // The registry is a `&'a` reference held in AppContext; copy it out so the
-    // borrowed renderer doesn't alias the mutable borrow `note_context()` takes
-    // of ctx's other fields below.
-    let registry = ctx.kind_renderers;
-    // TODO: per-kind default renderer id from settings (see "Settings UI" card).
-    let Some(renderer) = registry.default_for(note.kind(), None) else {
-        nostr_ref_fallback_ui(ui, bech);
-        return;
-    };
-    let mut note_context = ctx.note_context();
-    renderer.render(ui, &mut note_context, &txn, &note);
-}
-
-/// Resolve a bech32 entity to a concrete note: `nevent`/`note` directly, `naddr`
-/// to the latest replaceable event for its coordinate.
-fn resolve_nostr_ref<'a>(ndb: &nostrdb::Ndb, txn: &'a Transaction, bech: &str) -> Option<Note<'a>> {
-    if bech.starts_with("nevent1") {
-        let id = NoteId::from_nevent_bech(bech)?;
-        ndb.get_note_by_id(txn, id.bytes()).ok()
-    } else if bech.starts_with("note1") {
-        let id = NoteId::from_bech(bech)?;
-        ndb.get_note_by_id(txn, id.bytes()).ok()
-    } else if bech.starts_with("naddr1") {
-        use nostr::nips::nip19::FromBech32;
-        let coord = nostr::nips::nip01::Coordinate::from_bech32(bech).ok()?;
-        let author = coord.public_key.to_bytes();
-        let filter = Filter::new()
-            .authors([&author])
-            .kinds([coord.kind.as_u16() as u64])
-            .tags([coord.identifier.as_str()], 'd')
-            .limit(1)
-            .build();
-        ndb.query(txn, &[filter], 1)
-            .ok()?
-            .into_iter()
-            .next()
-            .map(|r| r.note)
-    } else {
-        None
-    }
-}
-
-/// Plain, unobtrusive representation of a `nostr:` reference we couldn't render.
-fn nostr_ref_fallback_ui(ui: &mut egui::Ui, bech: &str) {
-    ui.weak(format!("nostr:{bech}"));
+    notedeck_ui::markdown::render_markdown_with_refs(ui, ctx, text);
 }
 
 fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) -> egui::Response {

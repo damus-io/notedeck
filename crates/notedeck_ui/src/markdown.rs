@@ -9,6 +9,8 @@ use md_stream::{
     parse_inline, CodeBlock, InlineElement, InlineStyle, ListItem, MdElement, Partial, PartialKind,
     Span, StreamParser,
 };
+use nostrdb::Transaction;
+use notedeck::AppContext;
 
 /// Theme for markdown rendering, derived from egui visuals.
 pub struct MdTheme {
@@ -50,6 +52,68 @@ pub fn render_markdown(text: &str, ui: &mut Ui) {
     parser.finalize();
     let (elements, source) = parser.into_parts();
     render_assistant_message(&elements, None, &source, ui);
+}
+
+/// Render markdown `text`, splicing in inline widgets for any `nostr:`
+/// references. Plain spans outside references go through [`render_markdown`], so
+/// a body reads the same as before unless it actually links to a nostr entity;
+/// each reference is resolved with [`notedeck::resolve_ref`] and handed to the
+/// registered [`notedeck::KindRenderer`] for its kind. Scans in place — no
+/// per-frame allocation for the common reference-free case.
+pub fn render_markdown_with_refs(ui: &mut Ui, ctx: &mut AppContext, text: &str) {
+    let mut rest = text;
+    while let Some(pos) = rest.find("nostr:") {
+        let after = &rest[pos + "nostr:".len()..];
+        // The bech32 token is a run of lowercase letters/digits (hrp + data).
+        let end = after
+            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
+            .unwrap_or(after.len());
+        if end == 0 {
+            // A bare "nostr:" with no entity after it: keep it as text.
+            let upto = pos + "nostr:".len();
+            render_markdown(&rest[..upto], ui);
+            rest = &rest[upto..];
+            continue;
+        }
+        if pos > 0 {
+            render_markdown(&rest[..pos], ui);
+        }
+        nostr_ref_ui(ui, ctx, &after[..end]);
+        rest = &after[end..];
+    }
+    if !rest.is_empty() {
+        render_markdown(rest, ui);
+    }
+}
+
+/// Resolve a `nostr:` reference to a note and hand it to the registered renderer
+/// for its kind. Falls back to plain link text when the entity can't be parsed,
+/// isn't in the db yet, or has no renderer.
+fn nostr_ref_ui(ui: &mut Ui, ctx: &mut AppContext, bech: &str) {
+    let Ok(txn) = Transaction::new(ctx.ndb) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    let Some(note) = notedeck::resolve_ref(ctx.ndb, &txn, bech) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    // The registry is a `&'a` reference held in AppContext; copy it out so the
+    // borrowed renderer doesn't alias the mutable borrow `note_context()` takes
+    // of ctx's other fields below.
+    let registry = ctx.kind_renderers;
+    // TODO: per-kind default renderer id from settings (see "Settings UI" card).
+    let Some(renderer) = registry.default_for(note.kind(), None) else {
+        nostr_ref_fallback_ui(ui, bech);
+        return;
+    };
+    let mut note_context = ctx.note_context();
+    renderer.render(ui, &mut note_context, &txn, &note);
+}
+
+/// Plain, unobtrusive representation of a `nostr:` reference we couldn't render.
+fn nostr_ref_fallback_ui(ui: &mut Ui, bech: &str) {
+    ui.weak(format!("nostr:{bech}"));
 }
 
 /// Render all parsed markdown elements plus any partial state.
