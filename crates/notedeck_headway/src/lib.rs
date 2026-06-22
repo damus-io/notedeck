@@ -77,10 +77,12 @@ struct BoardUiState {
     detail_for: Option<NoteId>,
     /// Edit buffer for the selected card's title.
     detail_title: String,
+    /// Whether the title is shown rendered or in its raw editor.
+    detail_title_mode: EditMode,
     /// Edit buffer for the selected card's description.
     detail_desc: String,
     /// Whether the description is shown rendered or in its raw editor.
-    detail_desc_mode: DescMode,
+    detail_desc_mode: EditMode,
     /// Buffer backing the "add label" field in the detail sheet.
     new_label: String,
     /// Whether the archived-cards sheet is open.
@@ -125,17 +127,29 @@ enum InlineEdit {
     AddColumn,
 }
 
-/// How the detail sheet renders the open card's description. The states are
-/// mutually exclusive and the one-shot focus grab only has meaning while
-/// editing, so an enum models it more honestly than a pair of bools.
+/// How the detail sheet shows an editable field (title or description): the
+/// finished, read-only render or its raw text editor. The states are mutually
+/// exclusive and the one-shot focus grab only has meaning while editing, so an
+/// enum models it more honestly than a pair of bools.
 #[derive(Default, PartialEq, Eq)]
-enum DescMode {
-    /// Rendered markdown (read-only), with an edit affordance to switch over.
+enum EditMode {
+    /// The read-only render — a heading for the title, markdown for the
+    /// description — with an affordance to switch into the editor.
     #[default]
     Rendered,
-    /// The raw multiline editor. `focus` requests a one-shot keyboard-focus
-    /// grab on the frame the editor opens.
+    /// The raw text editor. `focus` requests a one-shot keyboard-focus grab on
+    /// the frame the editor opens.
     Editing { focus: bool },
+}
+
+/// Pick the opening mode for an editable field: blank fields drop straight into
+/// the editor (nothing to render), populated ones show their render first.
+fn seed_edit_mode(text: &str) -> EditMode {
+    if text.trim().is_empty() {
+        EditMode::Editing { focus: false }
+    } else {
+        EditMode::Rendered
+    }
 }
 
 /// Drag-and-drop payload: the id of the card being dragged.
@@ -1101,13 +1115,10 @@ fn card_detail_ui(
         state.detail_for = Some(card_id);
         state.detail_title = card.title.clone();
         state.detail_desc = card.description.clone();
-        // A blank card opens straight into the editor; one with content shows
-        // the rendered markdown until the user asks to edit.
-        state.detail_desc_mode = if card.description.trim().is_empty() {
-            DescMode::Editing { focus: false }
-        } else {
-            DescMode::Rendered
-        };
+        // A blank field opens straight into the editor; one with content shows
+        // its render (heading / markdown) until the user asks to edit.
+        state.detail_title_mode = seed_edit_mode(&card.title);
+        state.detail_desc_mode = seed_edit_mode(&card.description);
         state.new_label.clear();
     }
 
@@ -1259,21 +1270,7 @@ fn detail_body_ui(
     action: &mut Option<BoardAction>,
     outcome: &mut DetailOutcome,
 ) {
-    let title_resp = ui.add(
-        egui::TextEdit::singleline(&mut state.detail_title)
-            .font(egui::TextStyle::Heading)
-            .desired_width(f32::INFINITY)
-            .hint_text("Title"),
-    );
-    if title_resp.lost_focus() {
-        let title = state.detail_title.trim().to_string();
-        if !title.is_empty() && title != ctx.title {
-            *action = Some(BoardAction::EditTitle {
-                card: ctx.card_id,
-                title,
-            });
-        }
-    }
+    detail_title_section_ui(ui, ctx, state, action);
 
     ui.add_space(SPACING_MD);
     detail_description_section_ui(ui, theme, ctx, state, action);
@@ -1303,6 +1300,59 @@ fn detail_body_ui(
     });
 }
 
+/// Title section: rendered as a heading by default, switching to a single-line
+/// editor when clicked. The edit commits as a [`BoardAction::EditTitle`] on
+/// focus loss and returns to the rendered view. Titles are plain text — no
+/// markdown — and an empty edit is rejected so a card always keeps a title.
+fn detail_title_section_ui(
+    ui: &mut egui::Ui,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    action: &mut Option<BoardAction>,
+) {
+    match state.detail_title_mode {
+        EditMode::Rendered => {
+            // The heading itself is the click target into the editor.
+            let resp = ui
+                .add(
+                    egui::Label::new(egui::RichText::new(&state.detail_title).heading())
+                        .sense(egui::Sense::click()),
+                )
+                .on_hover_text("Click to edit");
+            if resp.clicked() {
+                state.detail_title_mode = EditMode::Editing { focus: true };
+            }
+        }
+        EditMode::Editing { focus } => {
+            let title_resp = ui.add(
+                egui::TextEdit::singleline(&mut state.detail_title)
+                    .font(egui::TextStyle::Heading)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Title"),
+            );
+            if focus {
+                title_resp.request_focus();
+                state.detail_title_mode = EditMode::Editing { focus: false };
+            }
+            // Commit on focus loss and drop back to the rendered heading, unless
+            // the title is now empty — keep editing so a blank title can't stick.
+            if title_resp.lost_focus() {
+                let title = state.detail_title.trim().to_string();
+                if title.is_empty() {
+                    return;
+                }
+                if title != ctx.title {
+                    *action = Some(BoardAction::EditTitle {
+                        card: ctx.card_id,
+                        title,
+                    });
+                }
+                state.detail_title_mode = EditMode::Rendered;
+            }
+        }
+    }
+}
+
 /// Description section: rendered markdown by default with an ✎ edit affordance,
 /// switching to a raw multiline editor on demand (or a double-click on the
 /// rendered text). Edits commit as a [`BoardAction::EditDescription`] when the
@@ -1318,29 +1368,29 @@ fn detail_description_section_ui(
         section_label(ui, theme, "Description");
         // Offer the edit affordance just right of the label, only while showing
         // rendered markdown.
-        if matches!(state.detail_desc_mode, DescMode::Rendered) {
+        if matches!(state.detail_desc_mode, EditMode::Rendered) {
             let edit = egui::Button::new(egui::RichText::new("✎").color(theme.text_muted))
                 .fill(egui::Color32::TRANSPARENT)
                 .frame(false);
             if ui.add(edit).on_hover_text("Edit description").clicked() {
-                state.detail_desc_mode = DescMode::Editing { focus: true };
+                state.detail_desc_mode = EditMode::Editing { focus: true };
             }
         }
     });
     ui.add_space(SPACING_XS);
 
     match state.detail_desc_mode {
-        DescMode::Rendered => {
+        EditMode::Rendered => {
             // The whole rendered block is a double-click target into the editor.
             let resp = ui
                 .scope(|ui| notedeck_ui::markdown::render_markdown(&state.detail_desc, ui))
                 .response
                 .interact(egui::Sense::click());
             if resp.double_clicked() {
-                state.detail_desc_mode = DescMode::Editing { focus: true };
+                state.detail_desc_mode = EditMode::Editing { focus: true };
             }
         }
-        DescMode::Editing { focus } => {
+        EditMode::Editing { focus } => {
             let desc_resp = ui.add(
                 egui::TextEdit::multiline(&mut state.detail_desc)
                     .desired_rows(4)
@@ -1349,7 +1399,7 @@ fn detail_description_section_ui(
             );
             if focus {
                 desc_resp.request_focus();
-                state.detail_desc_mode = DescMode::Editing { focus: false };
+                state.detail_desc_mode = EditMode::Editing { focus: false };
             }
             // Commit on focus loss and drop back to the rendered view, unless the
             // description is still empty (nothing to render, so stay in the editor).
@@ -1361,7 +1411,7 @@ fn detail_description_section_ui(
                     });
                 }
                 if !state.detail_desc.trim().is_empty() {
-                    state.detail_desc_mode = DescMode::Rendered;
+                    state.detail_desc_mode = EditMode::Rendered;
                 }
             }
         }
