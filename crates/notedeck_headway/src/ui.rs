@@ -145,9 +145,8 @@ pub fn board_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
-            // Board header: title plus a muted summary of its contents.
-            ui.heading(&view.title);
-            ui.add_space(SPACING_XS);
+            // Board header: a muted summary of its contents. The board title is
+            // redundant with the app's own chrome, so it isn't repeated here.
             let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
             let summary = egui::RichText::new(format!(
                 "{total} card{} · {} columns",
