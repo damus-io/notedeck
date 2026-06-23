@@ -888,7 +888,12 @@ fn card_detail_ui(
     // Cap the body so a long card stays on-screen and scrolls instead.
     let max_body_height = screen.height() - 6.0 * pad;
 
-    let mut outcome = if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+    // Consume Escape so closing the sheet doesn't also fall through to Chrome's
+    // Escape handler, which would toggle the side menu.
+    let mut outcome = if ui
+        .ctx()
+        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+    {
         DetailOutcome::Close
     } else {
         DetailOutcome::None
@@ -1306,7 +1311,11 @@ fn archived_sheet_ui(
     };
     let max_body_height = screen.height() - 6.0 * pad;
 
-    let mut close = ui.ctx().input(|i| i.key_pressed(egui::Key::Escape));
+    // Consume Escape so closing the sheet doesn't also fall through to Chrome's
+    // Escape handler, which would toggle the side menu.
+    let mut close = ui
+        .ctx()
+        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     if detail_scrim_ui(ui, screen) {
         close = true;
     }
