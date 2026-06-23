@@ -43,6 +43,9 @@ const HANDLE_RADIUS: f32 = 5.0;
 /// Click/drag target size of a connection handle (larger than it looks, so it's
 /// easy to grab).
 const HANDLE_HIT: f32 = 18.0;
+/// How close (canvas pixels) the pointer must be to an edge's curve to count as
+/// hovering it — the threshold that reveals the edge's midpoint delete handle.
+const EDGE_HOVER_DIST: f32 = 8.0;
 
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable, editable nodes. Selection and live-drag state are
@@ -580,20 +583,39 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     let stroke = egui::Stroke::new(4.0, color);
     let bezier = CubicBezierShape::from_points_stroke([p0, c1, c2, p3], false, color, stroke);
 
-    // The curve midpoint, captured before the shape is moved into the painter.
+    // The curve midpoint and flattened polyline, captured before the shape is
+    // moved into the painter (used for the midpoint handle and edge-hover test).
     let mid = bezier.sample(0.5);
+    let polyline = bezier.flatten(None);
     ui.painter().add(Shape::CubicBezier(bezier));
     arrow_ui(ui, to_side, to_anchor, color);
 
-    // Midpoint delete handle: a subtle dot that turns into a red ✕ on hover and
-    // removes the edge when clicked.
+    // The edge is "hovered" when the pointer is close to the curve itself, not
+    // just inside its (often large) bounding box. A hover-only interaction over
+    // that box yields the pointer position; nodes drawn on top occlude it, so
+    // hovering a node never counts as hovering the edge beneath it.
+    let bounds = Rect::from_points(&polyline).expand(EDGE_HOVER_DIST);
+    let hover = ui.interact(
+        bounds,
+        ui.id().with(("notebook_edge", edge.id().as_str())),
+        egui::Sense::hover(),
+    );
+    let over_edge = hover
+        .hover_pos()
+        .is_some_and(|p| dist_to_polyline(&polyline, p) <= EDGE_HOVER_DIST);
+
+    // Midpoint delete handle: only shown while the edge is hovered. It reads as a
+    // subtle dot, turning into a red ✕ when the pointer is over the handle
+    // itself, and removes the edge when clicked.
     let hit = Rect::from_center_size(mid, vec2(HANDLE_HIT, HANDLE_HIT));
     let resp = ui.interact(
         hit,
         ui.id().with(("notebook_edge_del", edge.id().as_str())),
         egui::Sense::click(),
     );
-    edge_delete_handle_ui(ui, mid, resp.hovered());
+    if over_edge || resp.hovered() {
+        edge_delete_handle_ui(ui, mid, resp.hovered());
+    }
     if resp.clicked() {
         return Some(UiIntent::DisconnectEdge {
             edge_id: edge.id().to_string(),
@@ -603,6 +625,26 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     }
 
     None
+}
+
+/// Shortest distance from `p` to a polyline (a flattened curve).
+fn dist_to_polyline(points: &[Pos2], p: Pos2) -> f32 {
+    points
+        .windows(2)
+        .map(|w| dist_to_segment(p, w[0], w[1]))
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// Shortest distance from `p` to the line segment `a`–`b`.
+fn dist_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let len_sq = ab.length_sq();
+    let t = if len_sq <= f32::EPSILON {
+        0.0
+    } else {
+        ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0)
+    };
+    (p - (a + ab * t)).length()
 }
 
 /// Draw an edge's midpoint delete handle: a faint dot at rest, a filled red
