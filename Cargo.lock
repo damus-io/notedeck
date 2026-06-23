@@ -2173,17 +2173,17 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 [[package]]
 name = "ecolor"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "bytemuck",
- "emath 0.31.1 (git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2)",
+ "emath 0.31.1 (git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a)",
  "serde",
 ]
 
 [[package]]
 name = "eframe"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2219,13 +2219,13 @@ dependencies = [
 [[package]]
 name = "egui"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "accesskit",
  "ahash",
  "backtrace",
  "bitflags 2.11.0",
- "emath 0.31.1 (git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2)",
+ "emath 0.31.1 (git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a)",
  "epaint",
  "log",
  "nohash-hasher",
@@ -2237,7 +2237,7 @@ dependencies = [
 [[package]]
 name = "egui-wgpu"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2256,7 +2256,7 @@ dependencies = [
 [[package]]
 name = "egui-winit"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "accesskit_winit",
  "ahash",
@@ -2275,7 +2275,7 @@ dependencies = [
 [[package]]
 name = "egui_extras"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "ahash",
  "egui",
@@ -2292,7 +2292,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "ahash",
  "bytemuck",
@@ -2309,7 +2309,7 @@ dependencies = [
 [[package]]
 name = "egui_kittest"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "dify",
  "eframe",
@@ -2388,7 +2388,7 @@ checksum = "9e4cadcff7a5353ba72b7fea76bf2122b5ebdbc68e8155aa56dfdea90083fe1b"
 [[package]]
 name = "emath"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "bytemuck",
  "serde",
@@ -2549,13 +2549,13 @@ dependencies = [
 [[package]]
 name = "epaint"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 dependencies = [
  "ab_glyph",
  "ahash",
  "bytemuck",
  "ecolor",
- "emath 0.31.1 (git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2)",
+ "emath 0.31.1 (git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a)",
  "epaint_default_fonts",
  "log",
  "nohash-hasher",
@@ -2567,7 +2567,7 @@ dependencies = [
 [[package]]
 name = "epaint_default_fonts"
 version = "0.31.1"
-source = "git+https://github.com/damus-io/egui?rev=82f91cb212f3beb421f9c16b5a577fa777129ee2#82f91cb212f3beb421f9c16b5a577fa777129ee2"
+source = "git+https://github.com/damus-io/egui?rev=406a3f39b881a967d594c80084463294b0a74c2a#406a3f39b881a967d594c80084463294b0a74c2a"
 
 [[package]]
 name = "equator"

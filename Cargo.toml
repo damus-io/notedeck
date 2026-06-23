@@ -162,13 +162,13 @@ strip = true        # Strip symbols from binary*
 #egui_extras = { path = "/home/jb55/dev/github/emilk/egui/crates/egui_extras" }
 #epaint = { path = "/home/jb55/dev/github/emilk/egui/crates/epaint" }
 
-egui = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-eframe = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-egui-winit = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-egui_extras = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-epaint = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
-egui_kittest = { git = "https://github.com/damus-io/egui", rev = "82f91cb212f3beb421f9c16b5a577fa777129ee2" }
+egui = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+eframe = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+egui-winit = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+egui-wgpu = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+egui_extras = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+epaint = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
+egui_kittest = { git = "https://github.com/damus-io/egui", rev = "406a3f39b881a967d594c80084463294b0a74c2a" }
 puffin = { git = "https://github.com/jb55/puffin", package = "puffin", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 puffin_egui = { git = "https://github.com/jb55/puffin", package = "puffin_egui", rev = "c6a6242adaf90b6292c0f462d2acd34d96d224d2" }
 winit = { git = "https://github.com/damus-io/winit", rev = "a07ea4c4d76cdc5306da8e8aabb05cab1a7d8e4d" }
