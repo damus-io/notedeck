@@ -91,6 +91,10 @@ pub fn notebook_ui(
     let mut create_at: Option<Pos2> = None;
     let mut commit_edit = false;
     let mut cancel_edit = false;
+    // Actual rendered height per node this frame; a node's content can overflow
+    // its declared height, so we remember the real box height for next frame's
+    // edge/handle anchoring (see `Notebook::rendered_heights`).
+    let mut rendered_heights: HashMap<NodeId, f32> = HashMap::new();
     let mut edit = std::mem::replace(&mut notebook.edit, NodeEdit::Idle);
     let canvas = &notebook.canvas;
     let selected = notebook.selected.as_ref();
@@ -155,6 +159,9 @@ pub fn notebook_ui(
                 response: resp,
                 inner: toggled_text,
             } = node_ui(ui, ctx, node, rect, selected == Some(id));
+            // `resp.rect` is the real drawn box (content may overflow `rect`);
+            // remember its height so edges/handles anchor to the visible edge.
+            rendered_heights.insert(id.clone(), resp.rect.height());
             if let Some(text) = toggled_text {
                 checkbox_edit = Some((id.clone(), text));
             }
@@ -261,6 +268,7 @@ pub fn notebook_ui(
     });
 
     notebook.scene_rect = scene_rect;
+    notebook.rendered_heights = rendered_heights;
     // Keep the connecting node's handles alive while a drag is live; clear it
     // otherwise. The completed gesture is turned into an edge intent below.
     notebook.connecting = match &connect {
@@ -770,7 +778,7 @@ fn node_box_ui<R>(
     );
 
     let mut out = None;
-    ui.put(rect, |ui: &mut egui::Ui| {
+    let frame_resp = ui.put(rect, |ui: &mut egui::Ui| {
         egui::Frame::default()
             .fill(fill)
             .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
@@ -787,7 +795,11 @@ fn node_box_ui<R>(
             .response
     });
 
-    egui::InnerResponse::new(out.expect("frame body always runs"), resp)
+    // Content can overflow the declared rect (markdown, embedded notes), so the
+    // visible box is whatever the frame actually drew. Union it into the returned
+    // response so callers see the real rendered rect — used to remember each
+    // node's true height for next frame's edge/handle anchoring.
+    egui::InnerResponse::new(out.expect("frame body always runs"), resp.union(frame_resp))
 }
 
 #[cfg(test)]

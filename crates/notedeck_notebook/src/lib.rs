@@ -33,6 +33,12 @@ pub struct Notebook {
     /// Per-node position overrides applied during a live drag, in canvas coords.
     /// Cleared when a fresh fold lands (which then carries the committed move).
     positions: HashMap<NodeId, Pos2>,
+    /// Per-node actual rendered height, measured last frame. A node's content
+    /// (markdown, embedded note widgets) can overflow its declared height, so the
+    /// visible box is taller than the canvas geometry. Edges and connection
+    /// handles anchor to this measured height instead, so they land on the real
+    /// box edge rather than floating inside it.
+    rendered_heights: HashMap<NodeId, f32>,
     /// Currently selected node, if any.
     selected: Option<NodeId>,
     /// The node an edge is currently being dragged from, if any. Persisted across
@@ -107,13 +113,19 @@ impl Notebook {
         Notebook::default()
     }
 
-    /// The node's current rect, accounting for any live-drag override.
+    /// The node's current rect, accounting for any live-drag override and the
+    /// actual rendered height measured last frame (content can overflow the
+    /// declared height, so the visible box — what edges should anchor to — is
+    /// taller than the canvas geometry).
     pub(crate) fn node_rect(&self, id: &NodeId, node: &jsoncanvas::Node) -> Rect {
         let default = node_rect(node.node());
-        match self.positions.get(id) {
-            Some(pos) => Rect::from_min_size(*pos, default.size()),
-            None => default,
-        }
+        let min = self.positions.get(id).copied().unwrap_or(default.min);
+        let height = self
+            .rendered_heights
+            .get(id)
+            .copied()
+            .unwrap_or(default.height());
+        Rect::from_min_size(min, egui::vec2(default.width(), height))
     }
 
     /// The node's current top-left position (after any live-drag override).
@@ -231,6 +243,7 @@ impl Default for Notebook {
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
             loaded: false,
             positions: HashMap::new(),
+            rendered_heights: HashMap::new(),
             selected: None,
             connecting: None,
             edit: NodeEdit::Idle,
