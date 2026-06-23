@@ -51,9 +51,10 @@ you actually see — never assume an id or that a card is where you expect.
 headway show            # human-readable: columns, titles, labels, word-ids
 headway show --archived # also list archived cards in full (default: count only)
 headway show --json     # machine-readable, for parsing (always includes archived)
-headway show <card>...  # print only the given cards (word-id or hex), not the
-                        # whole board; with --json each card gains a `column`
-                        # field for the column it sits in
+headway show <card>...  # print the given cards (word-id or hex) in full
+                        # `git show`-style detail, not the whole board; with
+                        # --json each card gains a `column` field for the column
+                        # it sits in
 ```
 
 By default `show` collapses archived cards to a one-line count to keep the board

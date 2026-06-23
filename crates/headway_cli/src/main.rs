@@ -49,8 +49,8 @@ async fn main() -> ExitCode {
 /// against the board once it's folded.
 enum Command {
     Show {
-        /// Optional card selectors. When non-empty, `show` prints only these
-        /// cards rather than the whole board.
+        /// Optional card selectors. When non-empty, `show` prints these cards
+        /// in full `git show`-style detail rather than the whole board.
         cards: Vec<String>,
     },
     Seed,
@@ -595,17 +595,39 @@ fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> Result<()> {
             serde_json::to_string_pretty(&out).unwrap_or_else(|_| "null".into())
         );
     } else {
-        for (card, col) in &cards {
-            println!(
-                "  {}  {}{}  {}",
-                col,
-                card.title,
-                labels_suffix(&card.labels),
-                card_ref(view, &card.id),
-            );
+        for (i, (card, col)) in cards.iter().enumerate() {
+            if i > 0 {
+                println!();
+            }
+            print_card_detail(view, card, col);
         }
     }
     Ok(())
+}
+
+/// Print a single card in `git show` style: a header block of metadata, then the
+/// title and description body indented underneath. Used when `show` is given
+/// explicit card selectors, where the full card is more useful than the
+/// one-line board summary.
+fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
+    println!("card    {}", card_ref(view, &card.id));
+    println!("id      {}", card.id.hex());
+    println!("column  {col}");
+    if !card.labels.is_empty() {
+        println!("labels  {}", card.labels.join(", "));
+    }
+
+    println!("\n    {}", card.title);
+    if !card.description.is_empty() {
+        println!();
+        for line in card.description.lines() {
+            if line.is_empty() {
+                println!();
+            } else {
+                println!("    {line}");
+            }
+        }
+    }
 }
 
 /// Find a card by id anywhere on the board, returning it alongside the name of
@@ -902,8 +924,8 @@ USAGE:
     headway [OPTIONS] <COMMAND>
 
 COMMANDS:
-    show [cards...]            Print the board, or just the given cards
-                               (--archived to list archived, --json for
+    show [cards...]            Print the board, or the given cards in full
+                               detail (--archived to list archived, --json for
                                machine output)
     seed                       Seed the default board if none exists
     add <title...>             Add a card (--col <c> column, -l <labels> to tag)
