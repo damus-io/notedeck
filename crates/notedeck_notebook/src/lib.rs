@@ -33,6 +33,13 @@ pub struct Notebook {
     /// Per-node position overrides applied during a live drag, in canvas coords.
     /// Cleared when a fresh fold lands (which then carries the committed move).
     positions: HashMap<NodeId, Pos2>,
+    /// This frame's eased top-left per node, in canvas coords — egui interpolates
+    /// toward each node's committed position, so a node that jumped (a drag
+    /// release, or a `notebook move` over the relay) slides instead of teleporting.
+    /// Read by [`Notebook::node_rect`] so nodes, edges and handles follow together.
+    /// Rebuilt every frame from egui's animation manager (the real state lives
+    /// there, keyed by [`move_anim_ids`]).
+    anim_pos: HashMap<NodeId, Pos2>,
     /// Per-node actual rendered height, measured last frame. A node's content
     /// (markdown, embedded note widgets) can overflow its declared height, so the
     /// visible box is taller than the canvas geometry. Edges and connection
@@ -108,6 +115,20 @@ pub(crate) enum UiIntent {
 /// Default size of a freshly-created text node, in canvas pixels.
 pub(crate) const NEW_NODE_SIZE: egui::Vec2 = egui::vec2(250.0, 120.0);
 
+/// How long a node's slide-to-new-position animation runs, in seconds. Matches
+/// headway's card-move feel.
+const MOVE_ANIM_SECS: f32 = 0.28;
+
+/// The egui animation-manager ids holding a node's animated x and y. egui keeps
+/// the previous value per id and eases toward a new target on its own, so feeding
+/// the committed position each frame is all the slide needs.
+fn move_anim_ids(id: &NodeId) -> (egui::Id, egui::Id) {
+    (
+        egui::Id::new(("notebook-move-x", id)),
+        egui::Id::new(("notebook-move-y", id)),
+    )
+}
+
 impl Notebook {
     pub fn new() -> Self {
         Notebook::default()
@@ -119,7 +140,14 @@ impl Notebook {
     /// taller than the canvas geometry).
     pub(crate) fn node_rect(&self, id: &NodeId, node: &jsoncanvas::Node) -> Rect {
         let default = node_rect(node.node());
-        let min = self.positions.get(id).copied().unwrap_or(default.min);
+        // Precedence: a live drag (the user's hand) wins; else a move animation
+        // in flight; else the committed geometry.
+        let min = self
+            .positions
+            .get(id)
+            .or_else(|| self.anim_pos.get(id))
+            .copied()
+            .unwrap_or(default.min);
         let height = self
             .rendered_heights
             .get(id)
@@ -224,6 +252,36 @@ impl Notebook {
         self.repaint_frames = 8;
     }
 
+    /// Rebuild `anim_pos` for this frame by easing each node toward its committed
+    /// position via egui's animation manager. egui remembers the previous value
+    /// per id and interpolates whenever the target changes, so a node that jumped
+    /// slides on its own — and self-schedules the repaints to do so.
+    ///
+    /// A node under the user's hand is pinned (zero animation time) to the drag
+    /// position instead, so egui's stored value tracks the hand and a release
+    /// doesn't snap back to the pre-drag spot before settling.
+    fn update_anim_positions(&mut self, ctx: &egui::Context) {
+        self.anim_pos.clear();
+        let committed: Vec<(NodeId, Pos2)> = self
+            .canvas
+            .get_nodes()
+            .iter()
+            .map(|(id, node)| (id.clone(), node_rect(node.node()).min))
+            .collect();
+
+        for (id, target) in committed {
+            let (x_id, y_id) = move_anim_ids(&id);
+            if let Some(dragged) = self.positions.get(&id).copied() {
+                ctx.animate_value_with_time(x_id, dragged.x, 0.0);
+                ctx.animate_value_with_time(y_id, dragged.y, 0.0);
+                continue; // drawn via the live-drag override
+            }
+            let x = ctx.animate_value_with_time(x_id, target.x, MOVE_ANIM_SECS);
+            let y = ctx.animate_value_with_time(y_id, target.y, MOVE_ANIM_SECS);
+            self.anim_pos.insert(id, Pos2::new(x, y));
+        }
+    }
+
     /// Burn down the repaint countdown, requesting a delayed repaint each step.
     fn pump_repaint(&mut self, ui: &egui::Ui) {
         if self.repaint_frames > 0 {
@@ -243,6 +301,7 @@ impl Default for Notebook {
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
             loaded: false,
             positions: HashMap::new(),
+            anim_pos: HashMap::new(),
             rendered_heights: HashMap::new(),
             selected: None,
             connecting: None,
@@ -297,6 +356,10 @@ impl notedeck::App for Notebook {
             self.pump_repaint(ui);
             return AppResponse::default();
         }
+
+        // Ease each node toward its committed position for this frame (egui drives
+        // the slide and its repaints) before drawing.
+        self.update_anim_positions(ui.ctx());
 
         // Render against the cached canvas, collecting the edit the user made
         // this frame (at most one — like headway's board action).
