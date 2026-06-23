@@ -506,6 +506,7 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
             // wherever it's drawn — in a column lane or, mid-move, in a free
             // floating Area — rather than inheriting the caller's item spacing.
             ui.spacing_mut().item_spacing.y = SPACING_SM;
+
             if !card.labels.is_empty() {
                 ui.horizontal_wrapped(|ui| {
                     for label in &card.labels {
@@ -514,7 +515,20 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
                 });
                 ui.add_space(SPACING_XS);
             }
-            ui.label(egui::RichText::new(&card.title).color(theme.text_primary));
+            // Title, with the word-id appended muted and small so a card's
+            // reference is legible at a glance. A bare `#word-id` — the `#` marks
+            // it as a reference, GitHub-style; the `<board>#` prefix is dropped
+            // since it's identical on every card, and the detail sheet shows the
+            // full `board#word-id` for copy-paste (see [`headway::wordid`]).
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = SPACING_XS;
+                ui.label(egui::RichText::new(&card.title).color(theme.text_primary));
+                ui.label(
+                    egui::RichText::new(format!("#{}", headway::wordid::encode(card.id.bytes())))
+                        .small()
+                        .color(theme.text_muted.gamma_multiply(0.6)),
+                );
+            });
 
             // A one-line preview hints that the card has more detail behind it.
             if !card.description.is_empty() {
@@ -868,7 +882,7 @@ fn card_detail_ui(
 
     let ctx = DetailCtx {
         card_id,
-        card_ref: format!("{}:{}", view.id, headway::wordid::encode(card_id.bytes())),
+        card_ref: format!("{}#{}", view.id, headway::wordid::encode(card_id.bytes())),
         current_col,
         title: card.title.clone(),
         desc: card.description.clone(),

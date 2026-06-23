@@ -38,25 +38,42 @@ If a command fails because you're not logged in, ask the user to run
 
 ## The golden rule: `show` before you edit
 
-Cards are addressed by a **short id prefix** (or full 64-char hex id), and
-columns by **id or case-insensitive name**. Always run `show` first to read the
-current prefixes and column names, then act on what you actually see — never
-assume an id or that a card is where you expect.
+Cards are addressed by their **event id**, and columns by **id or
+case-insensitive name**. When scripting the CLI, pass the full 64-char hex `id`
+from `show --json` — it's canonical and never ambiguous. The human-readable
+`show` instead displays a muted **word-id** like `headway#maple-river-canyon` (a
+friendly rendering of that same event id, for quoting in commits/chat); it also
+resolves as a `<card>` argument, but prefer the hex id for automated edits.
+Always run `show` first to read the current ids and column names, then act on what
+you actually see — never assume an id or that a card is where you expect.
 
 ```bash
-headway show            # human-readable: columns, card prefixes, labels
+headway show            # human-readable: columns, titles, labels, word-ids
 headway show --archived # also list archived cards in full (default: count only)
 headway show --json     # machine-readable, for parsing (always includes archived)
-headway show <card>...  # print only the given cards (id or prefix), not the
+headway show <card>...  # print only the given cards (word-id or hex), not the
                         # whole board; with --json each card gains a `column`
                         # field for the column it sits in
 ```
 
 By default `show` collapses archived cards to a one-line count to keep the board
-readable; pass `--archived` to list them (e.g. to find a prefix for `restore`).
+readable; pass `--archived` to list them (e.g. to find an id for `restore`).
 
-`show` prints each card as `<8-char-prefix>  <title>  [labels]`. Use that prefix
-(or any unique longer prefix) as the `<card>` argument.
+`show` prints each card as `<title>  [labels]  <board>#<word-id>`, with the
+word-id muted at the end of the line.
+
+**Which form to use:** when talking to a human about a card (chat, a commit
+message, a PR), refer to it by its **word-id** (`headway#maple-river-canyon`) —
+it's sayable and they'll recognise it. When *you* edit the board (move, label,
+archive, …), pass the canonical **hex id** from `show --json` instead, so an
+automated edit can never hit the wrong card.
+
+All of these resolve as a `<card>` argument, to the same card every time:
+
+- a full 64-char hex event id, or any unique hex prefix — preferred for editing
+- `headway#maple-river-canyon` — the full word-id (works unquoted in a shell)
+- `#maple-river-canyon` — bare; quote it in a shell so `#` isn't read as a comment
+- `maple-river-canyon` — the bare words, no sigil
 
 Default board columns: **Backlog**, **Todo**, **In Progress** (`in-progress`),
 **In Review** (`in-review`), **Done** (`done`). A column argument matches an id
@@ -96,16 +113,16 @@ Other flags: `--board <id>` (non-default board), `--db <path>` (cache dir),
 Move a card from In Progress to Done:
 
 ```bash
-headway show                         # find the card's prefix, confirm columns
-headway move 1a2b3c4d --col done     # move it (a card or column may match by name)
+headway show --json                  # match the title, grab its hex `id`
+headway move 1a2b3c4d… --col done    # move by hex id (a column may match by name)
 headway show                         # verify it landed in Done
 ```
 
-To address a card by title, read `show --json` and match the title to its id,
-then pass a unique prefix of that id. Resolution errors are explicit: an
-ambiguous prefix says "ambiguous card prefix", an unknown one "no card matching",
-and a bad column lists the valid column names — re-read `show` and retry with a
-corrected argument.
+To address a card by title, read `show --json` and match the title to its hex
+`id`, then pass that id. Resolution errors are explicit: an ambiguous hex prefix
+says "ambiguous card prefix", an unknown reference "no card matching", and a bad
+column lists the valid column names — re-read `show` and retry with a corrected
+argument.
 
 ## Notes
 
