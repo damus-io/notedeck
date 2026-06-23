@@ -869,6 +869,7 @@ fn card_detail_ui(
 
     let ctx = DetailCtx {
         card_id,
+        card_ref: format!("{}-{}", view.id, headway::wordid::encode(card_id.bytes())),
         current_col,
         title: card.title.clone(),
         desc: card.description.clone(),
@@ -928,6 +929,9 @@ fn card_detail_ui(
 /// `BoardView` so the sheet body doesn't borrow it while we also mutate `state`.
 struct DetailCtx {
     card_id: NoteId,
+    /// The card's human-friendly reference, e.g. `headway-maple-river-canyon`:
+    /// the board slug plus the word-encoded event id (see [`headway::wordid`]).
+    card_ref: String,
     current_col: usize,
     title: String,
     desc: String,
@@ -987,8 +991,8 @@ fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
         .inner_margin(egui::Margin::same(pad as i8))
 }
 
-/// Sheet header: a "Card" label, the current-status pill, and a close button
-/// (the sheet has no draggable window chrome to dismiss it).
+/// Sheet header: the card's copyable word-id reference, the current-status pill,
+/// and a close button (the sheet has no draggable window chrome to dismiss it).
 fn detail_header_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -996,7 +1000,17 @@ fn detail_header_ui(
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Card").color(theme.text_muted));
+        // The card's word-id reference, click-to-copy — the GUI mirror of what
+        // the CLI prints, and a stable handle to paste into commits/chat.
+        let card_ref = ui
+            .add(
+                egui::Label::new(egui::RichText::new(&ctx.card_ref).color(theme.text_muted))
+                    .sense(egui::Sense::click()),
+            )
+            .on_hover_text("Click to copy");
+        if card_ref.clicked() {
+            ui.ctx().copy_text(ctx.card_ref.clone());
+        }
         status_pill(ui, theme, &ctx.columns[ctx.current_col]);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
