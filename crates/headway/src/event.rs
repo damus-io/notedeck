@@ -42,6 +42,9 @@ pub const KIND_COVER_NOTE: u32 = 1624;
 /// Headway card placement: addressable, `d` = `<board-id>:<issue-id>`, records
 /// the card's column and fractional rank.
 pub const KIND_PLACEMENT: u32 = 30620;
+/// NIP-22 generic comment == a comment on a card. gitworkshop/ngit comment on
+/// NIP-34 issues the same way (kind 1111, *not* kind-1 replies).
+pub const KIND_COMMENT: u32 = 1111;
 
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
@@ -233,6 +236,54 @@ pub fn build_cover_note<'a>(issue: &NoteId, author: &Pubkey, body: &'a str) -> N
         .tag_str(&KIND_ISSUE.to_string())
 }
 
+/// Build a NIP-22 comment (kind 1111) on `issue` (authored by `issue_author`).
+///
+/// The thread **root** (uppercase `E`/`K`/`P`) is always the issue, carried on
+/// every comment — including replies — so the reducer can attach a comment to its
+/// card directly without walking the reply chain. The **parent** (lowercase
+/// `e`/`k`/`p`) is the issue itself for a top-level comment, or `reply_to`
+/// (another kind-1111 comment, with its author) for a threaded reply. This
+/// matches how gitworkshop/ngit comment on NIP-34 issues.
+pub fn build_comment<'a>(
+    issue: &NoteId,
+    issue_author: &Pubkey,
+    reply_to: Option<(&NoteId, &Pubkey)>,
+    body: &'a str,
+) -> NoteBuilder<'a> {
+    // Root scope: the issue. The `E` event tag carries the issue author in its
+    // 4th element (relay hint left empty in slot 3), per NIP-22.
+    let b = base(KIND_COMMENT, body)
+        .start_tag()
+        .tag_str("E")
+        .tag_id(issue.bytes())
+        .tag_str("")
+        .tag_id(issue_author.bytes())
+        .start_tag()
+        .tag_str("K")
+        .tag_str(&KIND_ISSUE.to_string())
+        .start_tag()
+        .tag_str("P")
+        .tag_id(issue_author.bytes());
+
+    // Parent: the comment being replied to, or the issue itself for a top-level
+    // comment. `k` is what distinguishes the two (1111 vs 1621).
+    let (parent_id, parent_author, parent_kind) = match reply_to {
+        Some((cid, cauthor)) => (cid, cauthor, KIND_COMMENT),
+        None => (issue, issue_author, KIND_ISSUE),
+    };
+    b.start_tag()
+        .tag_str("e")
+        .tag_id(parent_id.bytes())
+        .tag_str("")
+        .tag_id(parent_author.bytes())
+        .start_tag()
+        .tag_str("k")
+        .tag_str(&parent_kind.to_string())
+        .start_tag()
+        .tag_str("p")
+        .tag_id(parent_author.bytes())
+}
+
 // ---------------------------------------------------------------------------
 // Parsed events
 // ---------------------------------------------------------------------------
@@ -298,6 +349,19 @@ pub struct CoverNote {
     pub created_at: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommentEvent {
+    pub id: [u8; 32],
+    pub author: [u8; 32],
+    /// The issue (kind 1621) this comment threads under — the NIP-22 root `E`.
+    pub issue_id: [u8; 32],
+    /// The parent *comment* when this is a threaded reply (lowercase `e` with
+    /// `k` == 1111); `None` for a top-level comment, whose parent is the issue.
+    pub parent_id: Option<[u8; 32]>,
+    pub body: String,
+    pub created_at: u64,
+}
+
 /// A parsed headway event of any of the recognised kinds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HeadwayEvent {
@@ -307,6 +371,7 @@ pub enum HeadwayEvent {
     Subject(SubjectEdit),
     Labels(LabelSet),
     Cover(CoverNote),
+    Comment(CommentEvent),
 }
 
 /// Parse a note into a [`HeadwayEvent`], or `None` if it isn't a recognised /
@@ -318,6 +383,7 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_PLACEMENT => parse_placement(note).map(HeadwayEvent::Placement),
         KIND_LABEL => parse_label(note),
         KIND_COVER_NOTE => parse_cover(note).map(HeadwayEvent::Cover),
+        KIND_COMMENT => parse_comment(note).map(HeadwayEvent::Comment),
         _ => None,
     }
 }
@@ -477,6 +543,41 @@ fn parse_cover(note: &Note) -> Option<CoverNote> {
     })
 }
 
+/// Parse a NIP-22 comment (kind 1111). The root issue is the uppercase `E`; the
+/// parent is the lowercase `e`, and the lowercase `k` tells us whether that
+/// parent is another comment (a threaded reply) or the issue (a top-level
+/// comment). See [`build_comment`].
+fn parse_comment(note: &Note) -> Option<CommentEvent> {
+    let mut issue_id = None;
+    let mut parent_e = None;
+    let mut parent_kind = None;
+
+    for tag in note.tags() {
+        match tag.get_str(0) {
+            Some("E") => issue_id = tag.get_id(1).copied(),
+            Some("e") => parent_e = tag.get_id(1).copied(),
+            Some("k") => parent_kind = tag.get_str(1).map(|s| s.to_owned()),
+            _ => {}
+        }
+    }
+
+    // A reply names another comment as its parent (`k` == 1111); a top-level
+    // comment's parent is the issue itself, so it carries no parent comment.
+    let parent_id = match (parent_kind.as_deref(), parent_e) {
+        (Some(k), Some(e)) if k == KIND_COMMENT.to_string() => Some(e),
+        _ => None,
+    };
+
+    Some(CommentEvent {
+        id: *note.id(),
+        author: *note.pubkey(),
+        issue_id: issue_id?,
+        parent_id,
+        body: note.content().to_owned(),
+        created_at: note.created_at(),
+    })
+}
+
 /// Parse a `30619:<author-hex>:<board-id>` address into `(author, board_id)`.
 fn parse_board_address(addr: &str) -> Option<([u8; 32], String)> {
     let mut parts = addr.splitn(3, ':');
@@ -494,10 +595,26 @@ fn parse_board_address(addr: &str) -> Option<([u8; 32], String)> {
 // Reducer: events -> view model
 // ---------------------------------------------------------------------------
 
+/// A comment on a card, resolved off its issue. Comments are append-only (no
+/// latest-wins overlay), so this is simply the parsed event in render form.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommentView {
+    pub id: NoteId,
+    pub author: [u8; 32],
+    /// The parent comment for a threaded reply; `None` for a top-level comment.
+    /// Stored for forward-compatibility — comments currently render flat.
+    pub parent: Option<NoteId>,
+    pub body: String,
+    pub created_at: u64,
+}
+
 /// A card as rendered: a stable id plus its resolved fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CardView {
     pub id: NoteId,
+    /// The issue author. Needed to address comments at the card (NIP-22 root
+    /// `P`) and to attribute the card itself.
+    pub author: [u8; 32],
     pub title: String,
     pub description: String,
     pub labels: Vec<String>,
@@ -507,6 +624,8 @@ pub struct CardView {
     /// re-placement (move/delete/archive) must stamp a strictly-greater
     /// timestamp so it wins latest-wins even within the same wall-clock second.
     pub placed_at: u64,
+    /// Comments on the card, oldest first (sorted by `created_at`, then id).
+    pub comments: Vec<CommentView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -567,10 +686,23 @@ pub fn board_json(view: &BoardView) -> serde_json::Value {
 pub fn card_json(card: &CardView) -> serde_json::Value {
     serde_json::json!({
         "id": card.id.hex(),
+        "author": Pubkey::new(card.author).hex(),
         "title": card.title,
         "description": card.description,
         "labels": card.labels,
         "rank": card.rank,
+        "comments": card.comments.iter().map(comment_json).collect::<Vec<_>>(),
+    })
+}
+
+/// Render a single comment as JSON. See [`card_json`].
+pub fn comment_json(comment: &CommentView) -> serde_json::Value {
+    serde_json::json!({
+        "id": comment.id.hex(),
+        "author": Pubkey::new(comment.author).hex(),
+        "parent": comment.parent.map(|p| p.hex()),
+        "body": comment.body,
+        "created_at": comment.created_at,
     })
 }
 
@@ -595,6 +727,10 @@ pub struct BoardReducer {
     /// the card (snapshot semantics), so the newest authorised one wins — this
     /// is what makes label *removal* expressible: republish the set without it.
     labels: HashMap<[u8; 32], LabelSet>,
+    /// Comments by comment id. Append-only — every comment is kept (unlike the
+    /// latest-wins overlays above) and grouped onto its issue at finalize. Keying
+    /// by comment id dedupes the duplicates a relay may hand us.
+    comments: HashMap<[u8; 32], CommentEvent>,
 }
 
 impl BoardReducer {
@@ -649,6 +785,11 @@ impl BoardReducer {
                 {
                     self.labels.insert(l.issue_id, l);
                 }
+            }
+            HeadwayEvent::Comment(c) => {
+                // Append-only and immutable: keep the first sighting; later
+                // duplicates of the same id are no-ops.
+                self.comments.entry(c.id).or_insert(c);
             }
         }
     }
@@ -708,13 +849,34 @@ impl BoardReducer {
 
                 let rank = placement.map(|p| p.rank.clone()).unwrap_or_default();
                 let placed_at = placement.map(|p| p.created_at).unwrap_or(0);
+
+                // Comments thread under the issue (the NIP-22 root). Append-only,
+                // shown oldest first; the id breaks same-second ties.
+                let mut comments: Vec<CommentView> = self
+                    .comments
+                    .values()
+                    .filter(|c| c.issue_id == issue.id)
+                    .map(|c| CommentView {
+                        id: NoteId::new(c.id),
+                        author: c.author,
+                        parent: c.parent_id.map(NoteId::new),
+                        body: c.body.clone(),
+                        created_at: c.created_at,
+                    })
+                    .collect();
+                comments.sort_by(|a, b| {
+                    (a.created_at, a.id.bytes()).cmp(&(b.created_at, b.id.bytes()))
+                });
+
                 let card = CardView {
                     id: NoteId::new(issue.id),
+                    author: issue.author,
                     title,
                     description,
                     labels,
                     rank,
                     placed_at,
+                    comments,
                 };
 
                 match placement.map(|p| p.col.as_str()) {
@@ -801,12 +963,13 @@ fn newer(a_at: u64, a_who: &[u8; 32], b_at: u64, b_who: &[u8; 32]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Every kind headway cares about, for querying / subscribing.
-pub const HEADWAY_KINDS: [u32; 5] = [
+pub const HEADWAY_KINDS: [u32; 6] = [
     KIND_BOARD,
     KIND_ISSUE,
     KIND_PLACEMENT,
     KIND_LABEL,
     KIND_COVER_NOTE,
+    KIND_COMMENT,
 ];
 
 /// A filter for every headway event authored by `author`.
@@ -1165,6 +1328,129 @@ mod tests {
         let views = reduce(&events);
         // "bug" is gone; only "ux" remains (not a union of both).
         assert_eq!(views[0].columns[0].cards[0].labels, vec!["ux".to_string()]);
+    }
+
+    #[test]
+    fn comment_roundtrips_top_level_and_reply() {
+        let owner = FullKeypair::generate();
+        let issue = note_id(&owner, build_issue("30619:x:b1", "s", "b"));
+
+        // Top-level comment: parent is the issue, so no parent comment.
+        let HeadwayEvent::Comment(top) =
+            roundtrip(build_comment(&issue, &owner.pubkey, None, "first!"), &owner)
+        else {
+            panic!("comment");
+        };
+        assert_eq!(top.issue_id, *issue.bytes());
+        assert_eq!(top.body, "first!");
+        assert_eq!(top.parent_id, None);
+
+        // Reply: parent is another comment (kind 1111), recorded as parent_id.
+        let parent = NoteId::new(top.id);
+        let HeadwayEvent::Comment(reply) = roundtrip(
+            build_comment(
+                &issue,
+                &owner.pubkey,
+                Some((&parent, &owner.pubkey)),
+                "agreed",
+            ),
+            &owner,
+        ) else {
+            panic!("comment");
+        };
+        // Still rooted on the issue so the reducer can attach it directly…
+        assert_eq!(reply.issue_id, *issue.bytes());
+        // …but its parent is the comment it replies to.
+        assert_eq!(reply.parent_id, Some(top.id));
+    }
+
+    /// Comments fold onto their card oldest-first, deduped by id, and a reply
+    /// keeps its parent link.
+    #[test]
+    fn reduce_attaches_comments_to_cards() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let i1 = note_id(&owner, build_issue(&addr, "Card", ""));
+
+        // Two comments and a reply; stamp increasing created_at so order is fixed.
+        let comment_id = |kp: &FullKeypair, b: NoteBuilder| {
+            NoteId::new(*b.sign(&kp.secret_key.secret_bytes()).build().unwrap().id())
+        };
+        let c1 = comment_id(&owner, build_comment(&i1, &owner.pubkey, None, "one"));
+
+        let stamp = |ev: HeadwayEvent, at: u64| match ev {
+            HeadwayEvent::Comment(mut c) => {
+                c.created_at = at;
+                HeadwayEvent::Comment(c)
+            }
+            other => other,
+        };
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Card", ""), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            stamp(
+                parse_owned(build_comment(&i1, &owner.pubkey, None, "one"), &owner),
+                10,
+            ),
+            stamp(
+                parse_owned(build_comment(&i1, &owner.pubkey, None, "two"), &owner),
+                20,
+            ),
+            stamp(
+                parse_owned(
+                    build_comment(&i1, &owner.pubkey, Some((&c1, &owner.pubkey)), "re: one"),
+                    &owner,
+                ),
+                30,
+            ),
+        ];
+
+        let views = reduce(&events);
+        let card = &views[0].columns[0].cards[0];
+        assert_eq!(card.comments.len(), 3);
+        // Oldest first.
+        assert_eq!(card.comments[0].body, "one");
+        assert_eq!(card.comments[1].body, "two");
+        assert_eq!(card.comments[2].body, "re: one");
+        // The reply points back at the first comment; top-level ones don't.
+        assert_eq!(card.comments[0].parent, None);
+        assert_eq!(card.comments[2].parent, Some(c1));
+    }
+
+    /// A relay may hand us the same comment twice; the reducer keeps one.
+    #[test]
+    fn reduce_dedupes_duplicate_comments() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let i1 = note_id(&owner, build_issue(&addr, "Card", ""));
+        let comment = parse_owned(build_comment(&i1, &owner.pubkey, None, "dup"), &owner);
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Card", ""), &owner),
+            parse_owned(build_placement("b1", &addr, &i1, "todo", "m"), &owner),
+            comment.clone(),
+            comment,
+        ];
+
+        let views = reduce(&events);
+        assert_eq!(views[0].columns[0].cards[0].comments.len(), 1);
     }
 
     #[test]

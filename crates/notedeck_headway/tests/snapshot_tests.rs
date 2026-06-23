@@ -190,11 +190,13 @@ fn snapshot_inline_card() {
 
     let card = CardView {
         id: enostr::NoteId::new([1u8; 32]),
+        author: [0u8; 32],
         title: "Update headway-cli to use negentropy for sync".to_string(),
         description: String::new(),
         labels: vec!["headway".to_string()],
         rank: String::new(),
         placed_at: 0,
+        comments: vec![],
     };
 
     let mut installed = false;
