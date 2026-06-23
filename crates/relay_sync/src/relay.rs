@@ -1,11 +1,12 @@
 //! Minimal async NIP-01 + NIP-77 client for a running notedeck's embedded relay.
 //!
-//! Mirrors [`headway::store`]'s `Publisher` seam, plus a reconciliation step:
+//! Shared by the headway and notebook CLIs (and any other tool that keeps its own
+//! nostrdb cache and reconciles it against the app's relay):
 //! - [`Relay::reconcile`] runs a NIP-77 negentropy session as the initiator to
 //!   learn the set difference both ways — which events the relay has that we
-//!   don't, and which we have that it doesn't — without transferring the board.
+//!   don't, and which we have that it doesn't — without transferring the data.
 //! - [`Relay::sync_into`] `REQ`s events (by id, after reconcile) and processes
-//!   each stored one into a local nostrdb, so the CLI can fold the board locally.
+//!   each stored one into a local nostrdb, so the caller can fold locally.
 //! - [`Relay::publish`] forwards the `["EVENT", {...}]` frames produced by an
 //!   edit (or surfaced by reconcile) back to the relay, so the app sees them.
 
@@ -20,8 +21,9 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use crate::Result;
 
-/// The subscription id used for the one-shot board sync and reconciliation.
-const SUB: &str = "headway";
+/// The subscription id used for the one-shot sync and reconciliation. Arbitrary —
+/// the relay only needs it to be consistent across the session's frames.
+const SUB: &str = "sync";
 
 /// The set difference a [`Relay::reconcile`] uncovers, as raw event ids.
 pub struct Diff {
@@ -58,7 +60,7 @@ impl Relay {
         filter_json: &str,
         storage: NegentropyStorageVector,
     ) -> Result<Diff> {
-        // frame_size_limit 0 = unlimited; the board is small and this is
+        // frame_size_limit 0 = unlimited; the data is small and this is
         // localhost, so we don't bound per-message size.
         let mut neg = Negentropy::owned(storage, 0)?;
         let initial = neg.initiate()?;
@@ -175,11 +177,11 @@ impl Relay {
     /// relay genuinely rejects one.
     ///
     /// A `duplicate`/`replaced` rejection is **not** an error: it means the relay
-    /// already holds the event (or, for an addressable event like a board or
-    /// placement, a newer version with the same `d`-tag). Either way our copy —
-    /// or something better — is already there, so the push has nothing to do.
-    /// This is the common case when reconcile flushes a cached placement whose
-    /// newer replacement made the relay drop the old id we still hold.
+    /// already holds the event (or, for an addressable event, a newer version
+    /// with the same `d`-tag). Either way our copy — or something better — is
+    /// already there, so the push has nothing to do. This is the common case when
+    /// reconcile flushes a cached event whose newer replacement made the relay
+    /// drop the old id we still hold.
     pub async fn publish(&mut self, frames: &[String]) -> Result<()> {
         for frame in frames {
             self.ws.send(Message::Text(frame.clone())).await?;

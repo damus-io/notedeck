@@ -991,6 +991,60 @@ pub fn load_canvas(
     pick_canvas(&fold_canvas(ndb, txn, author)?, author, canvas_id)
 }
 
+/// Whether `kind` is one of the notebook's addressable (latest-wins, keyed per
+/// `(kind, d-tag)`) kinds. Everything but the immutable node-creation event is
+/// addressable. Used by the CLI sync to push only the winning revision of each
+/// addressable element rather than every stale one (see [`relay_sync::frames_where`]).
+pub fn is_addressable(kind: u32) -> bool {
+    matches!(
+        kind,
+        KIND_CANVAS | KIND_TRANSFORM | KIND_CONTENT | KIND_EDGE
+    )
+}
+
+/// Render a whole canvas as JSON — the machine-readable form of the CLI's `show`.
+pub fn canvas_json(view: &CanvasView) -> serde_json::Value {
+    serde_json::json!({
+        "id": view.id,
+        "title": view.title,
+        "author": Pubkey::new(view.author).hex(),
+        "open": view.open,
+        "members": view.members.iter().map(|m| Pubkey::new(*m).hex()).collect::<Vec<_>>(),
+        "nodes": view.nodes.iter().map(node_json).collect::<Vec<_>>(),
+        "edges": view.edges.iter().map(edge_json).collect::<Vec<_>>(),
+        "pending": view.pending.iter().map(node_json).collect::<Vec<_>>(),
+    })
+}
+
+/// Render a single node as JSON. See [`canvas_json`].
+pub fn node_json(node: &NodeView) -> serde_json::Value {
+    serde_json::json!({
+        "id": node.id.hex(),
+        "kind": node.kind.as_str(),
+        "x": node.geo.x,
+        "y": node.geo.y,
+        "w": node.geo.w,
+        "h": node.geo.h,
+        "z": node.z,
+        "color": node.color,
+        "text": node.content.text,
+    })
+}
+
+/// Render a single edge as JSON. See [`canvas_json`].
+pub fn edge_json(edge: &EdgeView) -> serde_json::Value {
+    serde_json::json!({
+        "id": edge.id,
+        "from": edge.from.hex(),
+        "to": edge.to.hex(),
+        "from_side": edge.ends.from_side,
+        "to_side": edge.ends.to_side,
+        "to_end": edge.ends.to_end,
+        "color": edge.ends.color,
+        "label": edge.ends.label,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Fractional ranking (z-order). Mirrors `headway::event::rank_between`.
 // ---------------------------------------------------------------------------

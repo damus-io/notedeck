@@ -10,6 +10,8 @@ members = [
     "crates/notedeck_notebook",
     "crates/headway",
     "crates/headway_cli",
+    "crates/relay_sync",
+    "crates/notebook_cli",
     "crates/notedeck_headway",
     "crates/nostrdb_relay",
     "crates/notedeck_nostrverse",
@@ -86,6 +88,7 @@ notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }
 notedeck_notebook = { path = "crates/notedeck_notebook" }
 headway = { path = "crates/headway" }
+relay_sync = { path = "crates/relay_sync" }
 notedeck_headway = { path = "crates/notedeck_headway" }
 nostrdb_relay = { path = "crates/nostrdb_relay" }
 notedeck_nostrverse = { path = "crates/notedeck_nostrverse" }
@@ -108,6 +111,7 @@ strum = "0.26"
 strum_macros = "0.26"
 thiserror = "2.0.7"
 tokio = { version = "1.16", features = ["macros", "rt-multi-thread", "fs"] }
+tokio-tungstenite = "0.24"
 tracing = { version = "0.1.40", features = ["log"] }
 tracing-appender = "0.2.3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

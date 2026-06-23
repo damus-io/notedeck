@@ -1,40 +1,28 @@
 //! `headway` — a CLI for reading and mutating a Headway board against a running
 //! notedeck's embedded relay.
 //!
-//! The CLI keeps its **own** nostrdb as a cache. Each run it reconciles that
-//! cache against the relay with NIP-77 negentropy — pulling the events the relay
-//! has that it lacks and pushing the ones it holds that the relay lacks — then
-//! folds the board locally with the pure [`headway`] reducer. Edits forward the
-//! events they produce back to the relay so the running app sees the change.
+//! The cache/sync/relay plumbing — keeping the CLI's own nostrdb, reconciling it
+//! against the app's relay with NIP-77 negentropy, and the stored signing key —
+//! lives in the shared [`relay_sync`] crate (see [`notebook_cli`] for the other
+//! consumer). This file is just the board's command surface: parsing, resolving
+//! card/column arguments against the folded board, and rendering.
 
-mod relay;
-
-use std::collections::{HashMap, HashSet};
 use std::env;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
 use enostr::{NoteId, Pubkey};
-use negentropy::{Id, NegentropyStorageVector};
-use nostrdb::{Config, Ndb, Transaction};
+use nostrdb::{Ndb, Transaction};
 use serde_json::json;
 
 use headway::event::{self, BoardView, CardView, CommentView};
 use headway::store::{self, BoardAction, Publisher};
 use headway::wordid;
 
-use relay::Relay;
+use relay_sync::Result;
 
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-/// Default URL of notedeck's embedded relay (see `--relay-bind`, default
-/// `127.0.0.1:6677`).
-const DEFAULT_RELAY: &str = "ws://127.0.0.1:6677";
-
-/// How many event ids to request per `REQ` when pulling reconciled events down.
-/// The relay caps a single `REQ`'s stored replay, so we fetch in chunks under
-/// that cap.
-const ID_FETCH_CHUNK: usize = 300;
+/// The CLI's cache/key directory under the platform data dir (e.g.
+/// `~/.local/share/headway-cli` on Linux).
+const APP: &str = "headway-cli";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -109,8 +97,8 @@ async fn run() -> Result<()> {
     // `login`/`logout` manage the stored key and touch neither the cache nor a
     // relay, so handle them before any of that machinery spins up.
     match &cli.command {
-        Command::Login { nsec } => return login(nsec),
-        Command::Logout => return logout(),
+        Command::Login { nsec } => return relay_sync::login(nsec, APP),
+        Command::Logout => return relay_sync::logout(APP),
         _ => {}
     }
 
@@ -122,74 +110,22 @@ async fn run() -> Result<()> {
         (None, None) => return Err("need --nsec to sign, or --author to read a board".into()),
     };
 
-    let ndb = open_ndb(cli.db.as_deref())?;
+    let ndb = relay_sync::open_ndb(cli.db.as_deref(), APP)?;
 
-    // The relay is best-effort: it's how we sync fresh events in and fan edits
-    // back out to the running app, but the CLI keeps its own nostrdb cache and
-    // folds the board from that. So if nothing is listening we carry on offline
-    // against the cache rather than aborting — `show` still reads, `seed`/edits
-    // still ingest locally (they just don't reach the app until a relay is up).
-    let mut relay = match Relay::connect(&cli.relay).await {
-        Ok(relay) => Some(relay),
-        // The app being closed is the common case, not an error worth warning
-        // about — fall back to the local cache quietly.
-        Err(_) => None,
-    };
-
-    // When a relay is reachable, reconcile both ways so the local cache and the
-    // app converge regardless of which side an edit happened on. NIP-77
-    // negentropy gives us the set difference in O(difference) — without
-    // transferring the board — and from it:
-    //
-    //   pull  — `REQ` the ids the relay has that we lack, and ingest them, so we
-    //           fold from the relay's latest state.
-    //   push  — forward the events we hold that the relay lacks. That's how edits
-    //           made while offline reach the app on the next connected run;
-    //           without this they'd stay stranded in the cache.
-    if let Some(relay) = &mut relay {
-        let filter = json!({ "kinds": event::HEADWAY_KINDS, "authors": [author.hex()] });
-        match relay
-            .reconcile(&filter.to_string(), local_set(&ndb, &author)?)
-            .await
-        {
-            Ok(diff) => {
-                // Pull missing events by id. The relay caps a single `REQ`'s
-                // stored replay, so fetch in chunks rather than one oversized
-                // filter.
-                for chunk in diff.need.chunks(ID_FETCH_CHUNK) {
-                    let ids: Vec<String> = chunk.iter().map(hex::encode).collect();
-                    let received = relay
-                        .sync_into(&ndb, &json!({ "ids": ids }).to_string())
-                        .await?;
-                    await_ingest(&ndb, &received).await;
-                }
-
-                // Push events the relay is missing (e.g. edits made offline).
-                // Best-effort: a rejected flush (or a dropped connection mid-push)
-                // mustn't abort the command — `show` should still print.
-                let have: HashSet<[u8; 32]> = diff.have.iter().copied().collect();
-                let pending = frames_where(&ndb, &author, |id| have.contains(id));
-                if !pending.is_empty() {
-                    match relay.publish(&pending).await {
-                        Ok(()) => {
-                            eprintln!("flushed {} local event(s) to the relay", pending.len())
-                        }
-                        Err(e) => eprintln!("warning: couldn't flush local events: {e}"),
-                    }
-                }
-            }
-            // Sync is best-effort. A relay that doesn't speak NIP-77 (an older
-            // notedeck, or a plain NIP-01 relay) can't reconcile — fall back to a
-            // full NIP-01 sync rather than failing or, worse, hanging. If even
-            // that fails, warn and carry on against the cache.
-            Err(e) => {
-                eprintln!("warning: negentropy reconcile unavailable: {e}");
-                if let Err(e) = fallback_sync(relay, &ndb, &author, &filter).await {
-                    eprintln!("warning: fallback sync failed: {e}");
-                }
-            }
-        }
-    }
+    // Reconcile the local cache against the relay both ways so the cache and the
+    // app converge regardless of which side an edit happened on. Best-effort: an
+    // unreachable relay leaves us working offline against the cache.
+    let filter = event::headway_filter(&author);
+    let is_addressable = |kind: u32| kind == event::KIND_BOARD || kind == event::KIND_PLACEMENT;
+    let mut relay = relay_sync::connect_and_sync(
+        &cli.relay,
+        &ndb,
+        &author,
+        &event::HEADWAY_KINDS,
+        &filter,
+        &is_addressable,
+    )
+    .await?;
 
     let board = cli.board;
     let as_json = cli.json;
@@ -216,10 +152,10 @@ async fn run() -> Result<()> {
             let mut sink = Collect::default();
             store::seed_default_board(&ndb, &author, &secret, &board, &mut sink);
             let n = sink.0.len();
-            publish(&mut relay, sink).await?;
+            relay_sync::publish(&mut relay, &sink.0).await?;
             println!(
                 "seeded board '{board}' ({n} events){}",
-                offline_note(&relay)
+                relay_sync::offline_note(&relay)
             );
         }
 
@@ -235,8 +171,8 @@ async fn run() -> Result<()> {
                 return Err("action produced no events (unknown card or column?)".into());
             }
             let n = sink.0.len();
-            publish(&mut relay, sink).await?;
-            println!("ok ({n} events){}", offline_note(&relay));
+            relay_sync::publish(&mut relay, &sink.0).await?;
+            println!("ok ({n} events){}", relay_sync::offline_note(&relay));
         }
     }
 
@@ -305,161 +241,12 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
 }
 
 // ---------------------------------------------------------------------------
-// nostrdb plumbing
+// board loading
 // ---------------------------------------------------------------------------
-
-/// Open (creating if needed) the CLI's own nostrdb cache.
-fn open_ndb(db: Option<&str>) -> Result<Ndb> {
-    let path = match db {
-        Some(p) => std::path::PathBuf::from(p),
-        None => dirs::data_dir()
-            .ok_or("no data dir; pass --db <path>")?
-            .join("headway-cli"),
-    };
-    std::fs::create_dir_all(&path)?;
-    let path = path.to_str().ok_or("db path is not valid utf-8")?;
-    Ok(Ndb::new(path, &Config::new())?)
-}
 
 fn load_board(ndb: &Ndb, author: &Pubkey, board_id: &str) -> Option<BoardView> {
     let txn = Transaction::new(ndb).ok()?;
     event::load_board(ndb, &txn, author, board_id)
-}
-
-/// nostrdb ingests on background threads, so a freshly-synced event isn't
-/// queryable immediately. Poll until every received id is present (ids already
-/// in the cache resolve at once; new ones once the ingester commits them), or a
-/// short deadline elapses.
-async fn await_ingest(ndb: &Ndb, ids: &[[u8; 32]]) {
-    if ids.is_empty() {
-        return;
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while !all_present(ndb, ids) && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-fn all_present(ndb: &Ndb, ids: &[[u8; 32]]) -> bool {
-    let Ok(txn) = Transaction::new(ndb) else {
-        return false;
-    };
-    ids.iter().all(|id| ndb.get_note_by_id(&txn, id).is_ok())
-}
-
-/// The sealed negentropy set of `author`'s cached headway events, keyed by
-/// `(created_at, id)`. This is the local side handed to [`Relay::reconcile`].
-fn local_set(ndb: &Ndb, author: &Pubkey) -> Result<NegentropyStorageVector> {
-    let txn = Transaction::new(ndb)?;
-    let mut storage = NegentropyStorageVector::new();
-    ndb.fold(
-        &txn,
-        &[event::headway_filter(author)],
-        &mut storage,
-        |acc, note| {
-            // insert only fails on a bad id length, which can't happen for a stored
-            // note; ignore the Result to keep the fold infallible.
-            let _ = acc.insert(note.created_at(), Id::from_byte_array(*note.id()));
-            acc
-        },
-    )?;
-    storage.seal()?;
-    Ok(storage)
-}
-
-/// The `["EVENT", {...}]` frames for the cached headway events of `author` whose
-/// id satisfies `keep` — the events to push so the relay (and app) catch up.
-/// `keep` selects which side of a reconcile to forward (the ids we hold that the
-/// relay lacks).
-///
-/// Addressable events (board/placement) are deduplicated to their latest
-/// revision per `(kind, d-tag)` right in the query; immutable events (issues,
-/// labels, covers) pass through untouched. The local cache is append-only and
-/// keeps every old revision, but a relay holds only the latest and rejects the
-/// rest as "replaced" — pushing stale revisions is pointless and would keep the
-/// reconcile from ever converging (the dropped id can never land, so it
-/// re-flushes every run). The winner follows NIP-33 resolution: newest
-/// `created_at`, ties broken by the lexically lowest id, matching what the relay
-/// and app keep.
-fn frames_where(ndb: &Ndb, author: &Pubkey, keep: impl Fn(&[u8; 32]) -> bool) -> Vec<String> {
-    let Ok(txn) = Transaction::new(ndb) else {
-        return Vec::new();
-    };
-
-    // Threaded accumulator: the winning revision per addressable coordinate, plus
-    // every immutable event in arrival order.
-    type Latest = HashMap<(u32, String), (u64, [u8; 32], String)>;
-    let (latest, plain) = ndb
-        .fold(
-            &txn,
-            &[event::headway_filter(author)],
-            (Latest::new(), Vec::<([u8; 32], String)>::new()),
-            |(mut latest, mut plain), note| {
-                let id = *note.id();
-                let Ok(msg) = enostr::ClientMessage::event(&note) else {
-                    return (latest, plain);
-                };
-                let Ok(frame) = msg.to_json() else {
-                    return (latest, plain);
-                };
-
-                let kind = note.kind();
-                if (kind == event::KIND_BOARD || kind == event::KIND_PLACEMENT)
-                    && let Some(d) = d_tag(&note)
-                {
-                    let at = note.created_at();
-                    let win = latest
-                        .get(&(kind, d.clone()))
-                        .is_none_or(|(t, i, _)| at > *t || (at == *t && id < *i));
-                    if win {
-                        latest.insert((kind, d), (at, id, frame));
-                    }
-                } else {
-                    plain.push((id, frame));
-                }
-                (latest, plain)
-            },
-        )
-        .unwrap_or_default();
-
-    latest
-        .into_values()
-        .map(|(_, id, frame)| (id, frame))
-        .chain(plain)
-        .filter(|(id, _)| keep(id))
-        .map(|(_, frame)| frame)
-        .collect()
-}
-
-/// The value of a note's `d` tag, if any.
-fn d_tag(note: &nostrdb::Note) -> Option<String> {
-    note.tags().iter().find_map(|tag| {
-        (tag.get_str(0) == Some("d"))
-            .then(|| tag.get_str(1).map(str::to_owned))
-            .flatten()
-    })
-}
-
-/// Degraded sync for relays that don't speak NIP-77: `REQ` the whole board in,
-/// ingest it, then push any local event the relay didn't return. O(board) on the
-/// wire instead of O(difference), but it keeps the CLI working against plain
-/// NIP-01 relays (or a notedeck whose relay predates negentropy).
-async fn fallback_sync(
-    relay: &mut Relay,
-    ndb: &Ndb,
-    author: &Pubkey,
-    filter: &serde_json::Value,
-) -> Result<()> {
-    let received = relay.sync_into(ndb, &filter.to_string()).await?;
-    await_ingest(ndb, &received).await;
-
-    let on_relay: HashSet<[u8; 32]> = received.into_iter().collect();
-    let pending = frames_where(ndb, author, |id| !on_relay.contains(id));
-    if !pending.is_empty() {
-        relay.publish(&pending).await?;
-        eprintln!("flushed {} local event(s) to the relay", pending.len());
-    }
-    Ok(())
 }
 
 /// Collects the `["EVENT", {...}]` frames an edit produces so they can be
@@ -470,26 +257,6 @@ struct Collect(Vec<String>);
 impl Publisher for Collect {
     fn publish(&mut self, frame: &str) {
         self.0.push(frame.to_string());
-    }
-}
-
-/// Forward an edit's collected frames to the relay if one is connected. With no
-/// relay the events are already in the local cache; they simply won't reach the
-/// running app until it's reachable, so this is a no-op.
-async fn publish(relay: &mut Option<Relay>, sink: Collect) -> Result<()> {
-    if let Some(relay) = relay {
-        relay.publish(&sink.0).await?;
-    }
-    Ok(())
-}
-
-/// A trailing note for command output, flagging when a change landed only in the
-/// local cache because no relay was reachable.
-fn offline_note(relay: &Option<Relay>) -> &'static str {
-    if relay.is_some() {
-        ""
-    } else {
-        " — offline, not forwarded to the app"
     }
 }
 
@@ -693,11 +460,11 @@ fn print_comment(c: &CommentView) {
     let mut header = format!(
         "    {}  {}  {}",
         short_author(&c.author),
-        dim(&rel_time(c.created_at)),
-        dim(&format!("#{}", wordid::encode(c.id.bytes()))),
+        relay_sync::dim(&rel_time(c.created_at)),
+        relay_sync::dim(&format!("#{}", wordid::encode(c.id.bytes()))),
     );
     if let Some(parent) = &c.parent {
-        header.push_str(&dim(&format!(
+        header.push_str(&relay_sync::dim(&format!(
             "  ↳ reply to #{}",
             wordid::encode(parent.bytes())
         )));
@@ -762,24 +529,7 @@ fn labels_suffix(labels: &[String]) -> String {
 /// rendering of the event id — see [`headway::wordid`]. Rendered muted so the
 /// title stays the eye's anchor.
 fn card_ref(view: &BoardView, id: &NoteId) -> String {
-    dim(&format!("{}#{}", view.id, wordid::encode(id.bytes())))
-}
-
-/// Mute `s` with an ANSI color, but only when stdout is a terminal — so ids
-/// read as muted beside titles interactively, while a piped or redirected
-/// listing stays plain text for scripts to parse.
-///
-/// Uses the "bright black" foreground (SGR 90), not the dim attribute (SGR 2):
-/// dim is widely unimplemented — urxvt, among others, ignores it and renders
-/// the id at full strength — whereas the bright-black color is part of the
-/// standard 16-color palette every terminal honors.
-fn dim(s: &str) -> String {
-    use std::io::IsTerminal;
-    if std::io::stdout().is_terminal() {
-        format!("\x1b[90m{s}\x1b[0m")
-    } else {
-        s.to_string()
-    }
+    relay_sync::dim(&format!("{}#{}", view.id, wordid::encode(id.bytes())))
 }
 
 // ---------------------------------------------------------------------------
@@ -803,10 +553,12 @@ impl Cli {
     fn parse(args: impl Iterator<Item = String>) -> Result<Option<Self>> {
         // Precedence: `--nsec` (set below) overrides the `HEADWAY_NSEC` env var,
         // which overrides the key stored by `login`.
-        let mut nsec = env::var("HEADWAY_NSEC").ok().or_else(stored_nsec);
+        let mut nsec = env::var("HEADWAY_NSEC")
+            .ok()
+            .or_else(|| relay_sync::stored_nsec(APP));
         let mut relay = env::var("HEADWAY_RELAY")
             .ok()
-            .unwrap_or_else(|| DEFAULT_RELAY.to_string());
+            .unwrap_or_else(|| relay_sync::DEFAULT_RELAY.to_string());
         let mut db = None;
         let mut board = store::BOARD_ID.to_string();
         let mut author = None;
@@ -871,7 +623,7 @@ impl Cli {
         // keep `login` from replacing a stale or malformed stored key.
         let secret = match (&command, nsec) {
             (Command::Login { .. } | Command::Logout, _) => None,
-            (_, Some(nsec)) => Some(parse_nsec(&nsec)?),
+            (_, Some(nsec)) => Some(relay_sync::parse_nsec(&nsec)?),
             (_, None) => None,
         };
 
@@ -956,77 +708,6 @@ fn joined(rest: &[String], idx: usize, cmd: &str) -> Result<String> {
     Ok(parts.join(" "))
 }
 
-// ---------------------------------------------------------------------------
-// stored signing key
-// ---------------------------------------------------------------------------
-
-/// Where the signing key lives when stored via `login`: a single `nsec...` line
-/// in `<data-dir>/headway-cli/nsec` (e.g. `~/.local/share/headway-cli/nsec` on
-/// Linux), alongside the cache. It lets a key be set once so later runs — and the
-/// agents driving them — never have to pass `--nsec` or export `HEADWAY_NSEC`.
-fn nsec_config_path() -> Result<std::path::PathBuf> {
-    Ok(dirs::data_dir()
-        .ok_or("no data dir; set HEADWAY_NSEC or pass --nsec")?
-        .join("headway-cli")
-        .join("nsec"))
-}
-
-/// Read the stored signing key, if any. Missing file, unreadable file, or an
-/// empty one all read as "no stored key" — the caller falls back to the env var
-/// or `--nsec`.
-fn stored_nsec() -> Option<String> {
-    let contents = std::fs::read_to_string(nsec_config_path().ok()?).ok()?;
-    let trimmed = contents.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
-}
-
-/// Validate `nsec` and store it for later runs. We derive the pubkey first so a
-/// malformed key is rejected before it's written, and lock the file to the owner
-/// since it holds a secret.
-fn login(nsec: &str) -> Result<()> {
-    let (_, pubkey) = parse_nsec(nsec)?;
-    let path = nsec_config_path()?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, format!("{nsec}\n"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    println!(
-        "stored signing key for {} in {}",
-        pubkey.hex(),
-        path.display()
-    );
-    Ok(())
-}
-
-/// Forget the stored signing key. Removing a key that isn't there is not an error.
-fn logout() -> Result<()> {
-    let path = nsec_config_path()?;
-    match std::fs::remove_file(&path) {
-        Ok(()) => println!("removed stored signing key at {}", path.display()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("no stored signing key"),
-        Err(e) => return Err(e.into()),
-    }
-    Ok(())
-}
-
-/// Decode an `nsec...` into raw secret bytes and its derived pubkey.
-fn parse_nsec(nsec: &str) -> Result<([u8; 32], Pubkey)> {
-    let (hrp, data) = bech32::decode(nsec).map_err(|_| "invalid nsec (not bech32)")?;
-    if hrp.as_str() != "nsec" {
-        return Err(format!("expected an nsec, got '{}' key", hrp.as_str()).into());
-    }
-    let secret: [u8; 32] = data
-        .try_into()
-        .map_err(|_| "nsec did not decode to 32 bytes")?;
-    let keypair = enostr::Keypair::from_secret(enostr::SecretKey::from_slice(&secret)?);
-    Ok((secret, keypair.pubkey))
-}
-
 fn print_usage() {
     eprintln!(
         "\
@@ -1070,6 +751,7 @@ OPTIONS:
     --json            Machine-readable output (show)
     --archived        List archived cards in full (show)
     -h, --help        Print this help",
+        DEFAULT_RELAY = relay_sync::DEFAULT_RELAY,
         board = store::BOARD_ID,
     );
 }
