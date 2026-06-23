@@ -2,6 +2,7 @@ pub mod convert;
 pub mod event;
 pub mod store;
 mod ui;
+pub mod wordid;
 
 use crate::convert::view_to_canvas;
 use crate::event::{CanvasReducer, CanvasView};

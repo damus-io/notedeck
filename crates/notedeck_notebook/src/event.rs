@@ -1020,6 +1020,7 @@ pub fn canvas_json(view: &CanvasView) -> serde_json::Value {
 pub fn node_json(node: &NodeView) -> serde_json::Value {
     serde_json::json!({
         "id": node.id.hex(),
+        "word_id": crate::wordid::encode(node.id.bytes()),
         "kind": node.kind.as_str(),
         "x": node.geo.x,
         "y": node.geo.y,

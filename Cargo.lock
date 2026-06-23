@@ -5358,6 +5358,7 @@ dependencies = [
 name = "notedeck_notebook"
 version = "0.10.0-beta.4"
 dependencies = [
+ "bip39",
  "egui",
  "egui_kittest",
  "enostr",

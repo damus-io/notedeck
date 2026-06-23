@@ -19,6 +19,7 @@ use notedeck_notebook::event::{
     self, CanvasView, EdgeView, Geometry, NodeContent, NodeKind, NodeView,
 };
 use notedeck_notebook::store::{self, CanvasAction, Publisher};
+use notedeck_notebook::wordid;
 
 use relay_sync::Result;
 
@@ -316,18 +317,32 @@ fn all_nodes(view: &CanvasView) -> impl Iterator<Item = &NodeView> {
     view.nodes.iter().chain(view.pending.iter())
 }
 
-/// Resolve a node argument: a full 64-char hex id, or a unique hex prefix matched
-/// against every node on the canvas (pending ones included).
+/// Resolve a node argument: a full 64-char hex id, a word-id, or a unique hex
+/// prefix matched against every node on the canvas (pending ones included).
 fn resolve_node(view: &CanvasView, sel: &str) -> Result<NoteId> {
     find_node(view, sel).map(|n| n.id)
 }
 
+/// Resolve a node selector, accepting (in order): a full 64-char hex id; a
+/// word-id like `notebook@maple-river-canyon` (the `<canvas>@` prefix is
+/// optional, and a bare leading `@` is fine too); or a unique hex prefix.
 fn find_node<'a>(view: &'a CanvasView, sel: &str) -> Result<&'a NodeView> {
     if let Ok(id) = NoteId::from_hex(sel) {
         return all_nodes(view)
             .find(|n| n.id == id)
             .ok_or_else(|| format!("no node matching '{sel}'").into());
     }
+
+    // Word-id: drop an optional `<canvas>@` prefix (or a bare leading `@`), then
+    // match by re-encoding each node — exactly how a git short hash is resolved.
+    let words = sel
+        .strip_prefix(&format!("{}@", view.id.to_lowercase()))
+        .or_else(|| sel.strip_prefix('@'))
+        .unwrap_or(sel);
+    if let Some(n) = all_nodes(view).find(|n| wordid::encode(n.id.bytes()) == words) {
+        return Ok(n);
+    }
+
     let sel = sel.to_lowercase();
     let mut hits = all_nodes(view).filter(|n| n.id.hex().starts_with(&sel));
     match (hits.next(), hits.next()) {
@@ -354,9 +369,11 @@ fn resolve_edge<'a>(view: &'a CanvasView, sel: &str) -> Result<&'a EdgeView> {
 // output
 // ---------------------------------------------------------------------------
 
-/// A node's short id for display/addressing: the first 8 hex chars, muted.
-fn node_ref(id: &NoteId) -> String {
-    relay_sync::dim(&id.hex()[..8])
+/// A node's human-friendly reference for display/addressing: the canvas id, an
+/// `@`, then the node's word-id, e.g. `notebook@maple-river-canyon`, muted. This
+/// is what a human quotes; it resolves back via [`find_node`].
+fn word_ref(canvas: &str, id: &NoteId) -> String {
+    relay_sync::dim(&format!("{canvas}@{}", wordid::encode(id.bytes())))
 }
 
 /// The first line of a node's text, trimmed and truncated, for one-line listings.
@@ -386,15 +403,15 @@ fn print_canvas(view: &CanvasView, as_json: bool) {
 
     println!("\nNodes ({})", view.nodes.len());
     for n in &view.nodes {
-        print_node_line(n);
+        print_node_line(&view.id, n);
     }
     if !view.edges.is_empty() {
         println!("\nEdges ({})", view.edges.len());
         for e in &view.edges {
             println!(
                 "  {} → {}  {}",
-                &e.from.hex()[..8],
-                &e.to.hex()[..8],
+                word_ref(&view.id, &e.from),
+                word_ref(&view.id, &e.to),
                 relay_sync::dim(&e.id),
             );
         }
@@ -405,21 +422,21 @@ fn print_canvas(view: &CanvasView, as_json: bool) {
             view.pending.len()
         );
         for n in &view.pending {
-            print_node_line(n);
+            print_node_line(&view.id, n);
         }
     }
 }
 
-fn print_node_line(n: &NodeView) {
+fn print_node_line(canvas: &str, n: &NodeView) {
     let geo = relay_sync::dim(&format!(
         "({},{} {}×{})",
         n.geo.x, n.geo.y, n.geo.w, n.geo.h
     ));
     println!(
         "  {}  {}  {}",
-        node_ref(&n.id),
         one_line(&n.content.text),
-        geo
+        geo,
+        word_ref(canvas, &n.id),
     );
 }
 
@@ -440,7 +457,7 @@ fn print_nodes(view: &CanvasView, sels: &[String], as_json: bool) -> Result<()> 
         );
     } else {
         for n in &nodes {
-            print_node_line(n);
+            print_node_line(&view.id, n);
         }
     }
     Ok(())
@@ -649,7 +666,8 @@ COMMANDS:
     login <nsec>              Store a signing key for later runs
     logout                    Forget the stored signing key
 
-    <node> is a node id or a unique short prefix (see `show`).
+    <node> is a node id, a word-id like notebook@maple-river-canyon, or a
+    unique short prefix (see `show`).
 
 OPTIONS:
     --nsec <nsec>     Signing key for this run. Normally unnecessary — run
