@@ -96,6 +96,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `title <card> <title...>` | Edit a card's title |
 | `desc <card> <text...>` | Edit a card's description |
 | `label <card> [labels...]` | Set labels (no labels clears them) |
+| `comment <card> <text...> [--reply-to <c>]` | Comment on a card (NIP-22); `--reply-to` threads under another comment |
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
 | `restore <card>` | Restore an archived card |

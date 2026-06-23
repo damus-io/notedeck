@@ -19,7 +19,7 @@ use negentropy::{Id, NegentropyStorageVector};
 use nostrdb::{Config, Ndb, Transaction};
 use serde_json::json;
 
-use headway::event::{self, BoardView, CardView};
+use headway::event::{self, BoardView, CardView, CommentView};
 use headway::store::{self, BoardAction, Publisher};
 use headway::wordid;
 
@@ -75,6 +75,12 @@ enum Command {
     Label {
         card: String,
         labels: Vec<String>,
+    },
+    Comment {
+        card: String,
+        body: String,
+        /// A comment on the same card to thread this reply under.
+        reply_to: Option<String>,
     },
     Delete {
         card: String,
@@ -267,6 +273,22 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
             card: resolve_card(view, &card)?,
             labels,
         },
+        Command::Comment {
+            card,
+            body,
+            reply_to,
+        } => {
+            let card = resolve_card(view, &card)?;
+            let reply_to = reply_to
+                .as_deref()
+                .map(|sel| resolve_comment(view, &card, sel))
+                .transpose()?;
+            BoardAction::AddComment {
+                card,
+                body,
+                reply_to,
+            }
+        }
         Command::Delete { card } => BoardAction::DeleteCard {
             card: resolve_card(view, &card)?,
         },
@@ -521,6 +543,35 @@ fn all_cards(view: &BoardView) -> impl Iterator<Item = &CardView> {
         .chain(view.archived.iter().map(|a| &a.card))
 }
 
+/// Resolve a `--reply-to` selector against the comments on `card`, accepting a
+/// full hex id, a unique hex prefix, or a comment word-id — the same forms
+/// [`resolve_card`] accepts, but scoped to one card's thread.
+fn resolve_comment(view: &BoardView, card: &NoteId, sel: &str) -> Result<NoteId> {
+    let comments = all_cards(view)
+        .find(|c| c.id == *card)
+        .map(|c| c.comments.as_slice())
+        .unwrap_or(&[]);
+
+    if let Ok(id) = NoteId::from_hex(sel) {
+        return Ok(id);
+    }
+    let sel = sel.to_lowercase();
+    let words = sel.strip_prefix('#').unwrap_or(&sel);
+    if let Some(c) = comments
+        .iter()
+        .find(|c| wordid::encode(c.id.bytes()) == words)
+    {
+        return Ok(c.id);
+    }
+
+    let mut hits = comments.iter().filter(|c| c.id.hex().starts_with(&sel));
+    match (hits.next(), hits.next()) {
+        (Some(c), None) => Ok(c.id),
+        (Some(_), Some(_)) => Err(format!("ambiguous comment prefix '{sel}'").into()),
+        _ => Err(format!("no comment matching '{sel}' on this card").into()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // output
 // ---------------------------------------------------------------------------
@@ -626,6 +677,61 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
             }
         }
     }
+
+    if !card.comments.is_empty() {
+        println!("\ncomments ({})", card.comments.len());
+        for c in &card.comments {
+            print_comment(c);
+        }
+    }
+}
+
+/// Print a single comment in the card-detail thread: an author/time header (with
+/// the comment's own word-id so it can be `--reply-to`'d), then its body indented
+/// beneath. Replies are flagged inline but still rendered flat for now.
+fn print_comment(c: &CommentView) {
+    let mut header = format!(
+        "    {}  {}  {}",
+        short_author(&c.author),
+        dim(&rel_time(c.created_at)),
+        dim(&format!("#{}", wordid::encode(c.id.bytes()))),
+    );
+    if let Some(parent) = &c.parent {
+        header.push_str(&dim(&format!(
+            "  ↳ reply to #{}",
+            wordid::encode(parent.bytes())
+        )));
+    }
+    println!("\n{header}");
+    for line in c.body.lines() {
+        if line.is_empty() {
+            println!();
+        } else {
+            println!("        {line}");
+        }
+    }
+}
+
+/// A short, recognisable stand-in for a comment author: the first 12 hex chars of
+/// their pubkey. The CLI has no profile data, so this is just a stable handle.
+fn short_author(author: &[u8; 32]) -> String {
+    Pubkey::new(*author).hex().chars().take(12).collect()
+}
+
+/// A coarse "x ago" rendering of a unix timestamp for the comment thread.
+fn rel_time(created_at: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let secs = now.saturating_sub(created_at);
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{}m ago", secs / 60),
+        3600..=86399 => format!("{}h ago", secs / 3600),
+        86400..=604_799 => format!("{}d ago", secs / 86400),
+        _ => format!("{}w ago", secs / 604_800),
+    }
 }
 
 /// Find a card by id anywhere on the board, returning it alongside the name of
@@ -708,6 +814,7 @@ impl Cli {
         let mut archived = false;
         let mut col = None;
         let mut row = None;
+        let mut reply_to = None;
         let mut labels: Vec<String> = Vec::new();
         let mut positionals: Vec<String> = Vec::new();
 
@@ -726,6 +833,7 @@ impl Cli {
                 "--board" => board = value("--board")?,
                 "--author" => author = Some(Pubkey::parse(&value("--author")?)?),
                 "--col" => col = Some(value("--col")?),
+                "--reply-to" => reply_to = Some(value("--reply-to")?),
                 "-l" | "--label" | "--labels" => {
                     // Repeatable, and each value may be a comma-separated list,
                     // so `-l a,b --label c` and `-l a -l b -l c` are equivalent.
@@ -756,7 +864,7 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
-        let command = parse_command(name, rest, col, row, labels)?;
+        let command = parse_command(name, rest, col, row, reply_to, labels)?;
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured — that would
@@ -785,6 +893,7 @@ fn parse_command(
     rest: &[String],
     col: Option<String>,
     row: Option<usize>,
+    reply_to: Option<String>,
     labels: Vec<String>,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
@@ -814,6 +923,11 @@ fn parse_command(
         "label" => Command::Label {
             card: card()?,
             labels: rest.get(1..).unwrap_or_default().to_vec(),
+        },
+        "comment" => Command::Comment {
+            card: card()?,
+            body: joined(rest, 1, name)?,
+            reply_to,
         },
         "delete" => Command::Delete { card: card()? },
         "archive" => Command::Archive { card: card()? },
@@ -931,6 +1045,8 @@ COMMANDS:
     title <card> <title...>    Edit a card's title
     desc <card> <text...>      Edit a card's description
     label <card> [labels...]   Set a card's labels (empty clears)
+    comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
+                               another comment)
     delete <card>              Remove a card (reversible tombstone)
     archive <card>             Archive a card off the board
     restore <card>             Restore an archived card
@@ -950,6 +1066,7 @@ OPTIONS:
     --db <path>       nostrdb cache dir [default: <data-dir>/headway-cli]
     -l, --label <l>   Label(s) for `add` (repeatable; comma-separated allowed)
     --col <c>         Column for `add`/`move` (id or name)
+    --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
     --json            Machine-readable output (show)
     --archived        List archived cards in full (show)
     -h, --help        Print this help",
