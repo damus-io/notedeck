@@ -39,13 +39,20 @@ pub(crate) fn side_str(side: &Side) -> &'static str {
 }
 
 /// Visible radius of a node's connection handle, in canvas pixels.
-const HANDLE_RADIUS: f32 = 5.0;
+const HANDLE_RADIUS: f32 = 3.5;
 /// Click/drag target size of a connection handle (larger than it looks, so it's
 /// easy to grab).
 const HANDLE_HIT: f32 = 18.0;
 /// How close (canvas pixels) the pointer must be to an edge's curve to count as
 /// hovering it — the threshold that reveals the edge's midpoint delete handle.
 const EDGE_HOVER_DIST: f32 = 8.0;
+/// Stroke width of an edge's curve, in canvas pixels.
+const EDGE_STROKE: f32 = 2.0;
+/// Length of an edge's arrowhead, tip to base. Shared so the curve can end flush
+/// against the arrow's base rather than poking through its tip.
+const ARROW_LEN: f32 = 11.0;
+/// Width of an edge's arrowhead base.
+const ARROW_WIDTH: f32 = 9.0;
 
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable, editable nodes. Selection and live-drag state are
@@ -516,15 +523,13 @@ fn nearest_side(rect: Rect, pos: Pos2) -> Side {
 /// Draw a node's connection handle: a small dot, accented and enlarged when
 /// active (hovered or being dragged) so it reads as grabbable.
 fn connection_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
-    let color = if active {
-        ui.visuals().selection.stroke.color
+    // The accent colour at full strength when grabbable, dimmed at rest, so the
+    // handles read as part of the selection rather than stray grey dots.
+    let accent = ui.visuals().selection.stroke.color;
+    let (color, radius) = if active {
+        (accent, HANDLE_RADIUS + 1.5)
     } else {
-        ui.visuals().widgets.inactive.fg_stroke.color
-    };
-    let radius = if active {
-        HANDLE_RADIUS + 1.5
-    } else {
-        HANDLE_RADIUS
+        (accent.gamma_multiply(0.6), HANDLE_RADIUS)
     };
     let painter = ui.painter();
     painter.circle_filled(center, radius, color);
@@ -540,8 +545,8 @@ fn connection_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
 fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
     let color = ui.visuals().selection.stroke.color;
     let painter = ui.painter();
-    painter.line_segment([from, to], Stroke::new(4.0, color));
-    painter.circle_filled(to, 4.0, color);
+    painter.line_segment([from, to], Stroke::new(EDGE_STROKE, color));
+    painter.circle_filled(to, 3.5, color);
 }
 
 /// Render one edge as a bezier with an arrow, plus a small midpoint handle that
@@ -559,8 +564,11 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     // anchor b
     let to_anchor = side_point(to_side, to_rect);
 
-    // to-point is slightly offset to accomidate arrow
-    let p3 = to_anchor + side_tangent(to_side) * 2.0;
+    // End the curve flush against the arrow's base (a hair inside it, so no gap
+    // shows) instead of at the box edge. The arrow's tip still touches the box at
+    // `to_anchor`, ARROW_LEN further in, so the line meets the arrow cleanly
+    // rather than poking out through its tip.
+    let p3 = to_anchor + side_tangent(to_side) * (ARROW_LEN - 0.5);
 
     // bend debug
     //let bend = debug_slider(ui, ui.id().with("bend"), p3, 0.25, 0.0..=1.0);
@@ -580,7 +588,7 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
         .color()
         .map(canvas_color)
         .unwrap_or_else(|| ui.visuals().noninteractive().bg_stroke.color);
-    let stroke = egui::Stroke::new(4.0, color);
+    let stroke = egui::Stroke::new(EDGE_STROKE, color);
     let bezier = CubicBezierShape::from_points_stroke([p0, c1, c2, p3], false, color, stroke);
 
     // The curve midpoint and flattened polyline, captured before the shape is
@@ -671,9 +679,9 @@ fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
 /// * `point` – the exact spot on that edge the arrow’s tip should touch
 /// * `fill`  – colour to fill the arrow with (usually your popup’s background)
 pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32) {
-    let len: f32 = 12.0; // distance from tip to base
-    let width: f32 = 16.0; // length of the base
-    let stroke: f32 = 1.0; // length of the base
+    let len: f32 = ARROW_LEN; // distance from tip to base
+    let width: f32 = ARROW_WIDTH; // length of the base
+    let stroke: f32 = 1.0; // outline thickness
 
     let verts = match side {
         Side::Top => [
