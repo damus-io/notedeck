@@ -82,6 +82,8 @@ pub fn notebook_ui(
     // toward the pointer, then its release (which resolves to an edge if it lands
     // on another node).
     let mut connect: Option<Connect> = None;
+    // An edge whose delete handle was clicked this frame, removed after the closure.
+    let mut disconnect: Option<UiIntent> = None;
     let mut start_edit: Option<NodeId> = None;
     let mut create_at: Option<Pos2> = None;
     let mut commit_edit = false;
@@ -104,8 +106,11 @@ pub fn notebook_ui(
         }
 
         // Edges next, then nodes on top so node drag handles win interaction.
+        // Clicking an edge's midpoint delete handle removes it.
         for (_edge_id, edge) in canvas.get_edges().iter() {
-            edge_ui(ui, &rects, edge);
+            if let Some(removed) = edge_ui(ui, &rects, edge) {
+                disconnect = Some(removed);
+            }
         }
 
         // The id of the node being edited (existing-node editor), if any.
@@ -270,6 +275,12 @@ pub fn notebook_ui(
             pos: *pos,
         })
     });
+
+    // A clicked edge delete handle removes that edge. Takes precedence over a
+    // move (the two gestures can't realistically coincide).
+    if disconnect.is_some() {
+        intent = disconnect;
+    }
 
     // A released connection that landed on another node becomes a new edge,
     // anchored from the dragged side to whichever side of the target it faces.
@@ -506,11 +517,10 @@ fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
     painter.circle_filled(to, 4.0, color);
 }
 
-pub fn edge_ui(
-    ui: &mut egui::Ui,
-    rects: &HashMap<NodeId, Rect>,
-    edge: &Edge,
-) -> Option<egui::Response> {
+/// Render one edge as a bezier with an arrow, plus a small midpoint handle that
+/// deletes the edge when clicked. Returns a [`UiIntent::DisconnectEdge`] on the
+/// frame the handle is clicked.
+pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) -> Option<UiIntent> {
     let from_rect = *rects.get(edge.from_node())?;
     let to_rect = *rects.get(edge.to_node())?;
     let to_side = edge.to_side()?;
@@ -546,10 +556,46 @@ pub fn edge_ui(
     let stroke = egui::Stroke::new(4.0, color);
     let bezier = CubicBezierShape::from_points_stroke([p0, c1, c2, p3], false, color, stroke);
 
+    // The curve midpoint, captured before the shape is moved into the painter.
+    let mid = bezier.sample(0.5);
     ui.painter().add(Shape::CubicBezier(bezier));
     arrow_ui(ui, to_side, to_anchor, color);
 
+    // Midpoint delete handle: a subtle dot that turns into a red ✕ on hover and
+    // removes the edge when clicked.
+    let hit = Rect::from_center_size(mid, vec2(HANDLE_HIT, HANDLE_HIT));
+    let resp = ui.interact(
+        hit,
+        ui.id().with(("notebook_edge_del", edge.id().as_str())),
+        egui::Sense::click(),
+    );
+    edge_delete_handle_ui(ui, mid, resp.hovered());
+    if resp.clicked() {
+        return Some(UiIntent::DisconnectEdge {
+            edge_id: edge.id().to_string(),
+            from: edge.from_node().clone(),
+            to: edge.to_node().clone(),
+        });
+    }
+
     None
+}
+
+/// Draw an edge's midpoint delete handle: a faint dot at rest, a filled red
+/// circle with a white ✕ when hovered (signalling a click removes the edge).
+fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
+    let painter = ui.painter();
+    if active {
+        let radius = 8.0;
+        painter.circle_filled(center, radius, Color32::from_rgb(0xE0, 0x31, 0x31));
+        let d = radius * 0.45;
+        let cross = Stroke::new(2.0, Color32::WHITE);
+        painter.line_segment([center + vec2(-d, -d), center + vec2(d, d)], cross);
+        painter.line_segment([center + vec2(-d, d), center + vec2(d, -d)], cross);
+    } else {
+        painter.circle_filled(center, 3.0, ui.visuals().widgets.inactive.fg_stroke.color);
+        painter.circle_stroke(center, 3.0, Stroke::new(1.0, ui.visuals().extreme_bg_color));
+    }
 }
 
 /// Paint a tiny triangular “arrow”.
