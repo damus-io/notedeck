@@ -11,8 +11,10 @@ command reference; the board flows
   work exists, move it to In Progress: `headway move <card> --col in-progress`.
   If none exists, add one: `headway add "<title>" --col in-progress`.
 - **Task breakdown**: Use one card per unit of work; `desc`/`label` for detail.
-- **After implementing**: Move the card to In Review so the change can be tested:
-  `headway move <card> --col in-review`. Leave it there until verified.
+- **When done with the work**: Always commit your changes (see Committing
+  below) and move the card to In Review so the change can be tested:
+  `headway move <card> --col in-review`. Don't leave finished work uncommitted
+  or sitting in In Progress. Leave the card in In Review until verified.
 - **On completion**: Once the change is verified, move the card to Done:
   `headway move <card> --col done`.
 - Cards are addressed by a short id prefix (from `show`); always `show` before
