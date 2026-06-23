@@ -639,13 +639,18 @@ fn card_ref(view: &BoardView, id: &NoteId) -> String {
     dim(&format!("{}#{}", view.id, wordid::encode(id.bytes())))
 }
 
-/// Wrap `s` in the ANSI "dim" SGR, but only when stdout is a terminal — so ids
+/// Mute `s` with an ANSI color, but only when stdout is a terminal — so ids
 /// read as muted beside titles interactively, while a piped or redirected
 /// listing stays plain text for scripts to parse.
+///
+/// Uses the "bright black" foreground (SGR 90), not the dim attribute (SGR 2):
+/// dim is widely unimplemented — urxvt, among others, ignores it and renders
+/// the id at full strength — whereas the bright-black color is part of the
+/// standard 16-color palette every terminal honors.
 fn dim(s: &str) -> String {
     use std::io::IsTerminal;
     if std::io::stdout().is_terminal() {
-        format!("\x1b[2m{s}\x1b[0m")
+        format!("\x1b[90m{s}\x1b[0m")
     } else {
         s.to_string()
     }
