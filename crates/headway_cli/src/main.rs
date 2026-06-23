@@ -125,11 +125,9 @@ async fn run() -> Result<()> {
     // still ingest locally (they just don't reach the app until a relay is up).
     let mut relay = match Relay::connect(&cli.relay).await {
         Ok(relay) => Some(relay),
-        Err(e) => {
-            eprintln!("warning: {e}");
-            eprintln!("working offline against the local cache (--relay to point elsewhere)");
-            None
-        }
+        // The app being closed is the common case, not an error worth warning
+        // about — fall back to the local cache quietly.
+        Err(_) => None,
     };
 
     // When a relay is reachable, reconcile both ways so the local cache and the
