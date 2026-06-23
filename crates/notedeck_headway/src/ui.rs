@@ -15,7 +15,7 @@ use notedeck::tokens::{
     STROKE_MEDIUM, STROKE_THIN,
 };
 
-use crate::event::{self, ArchivedCard, BoardView, CardView, ColumnView};
+use crate::event::{self, ArchivedCard, BoardView, CardView, ColumnView, CommentView};
 use crate::store::BoardAction;
 
 /// Width of a single kanban column.
@@ -24,6 +24,13 @@ const COLUMN_WIDTH: f32 = 280.0;
 /// Max width the full-pane card detail body is constrained to, so a card reads
 /// comfortably instead of stretching across a wide window.
 const DETAIL_CONTENT_WIDTH: f32 = 760.0;
+
+/// Width of the comment thread's right rail in the two-column detail layout.
+const DETAIL_COMMENTS_WIDTH: f32 = 380.0;
+
+/// Pane width at or above which the detail view splits into two columns (body
+/// left, comment thread right); below it the thread stacks under the body.
+const DETAIL_TWO_COL_MIN: f32 = 1024.0;
 
 /// How long a card takes to slide from its old slot to its new one when it
 /// jumps columns (e.g. a `headway move` landing from the CLI).
@@ -56,6 +63,8 @@ pub struct BoardUiState {
     detail_desc_mode: EditMode,
     /// Buffer backing the "add label" field in the detail sheet.
     new_label: String,
+    /// Buffer backing the "write a comment" composer in the detail pane.
+    comment_draft: String,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
     /// Where each card was drawn last frame (screen rect + column), so a card
@@ -895,6 +904,7 @@ fn card_detail_pane_ui(
         state.detail_title_mode = seed_edit_mode(&card.title);
         state.detail_desc_mode = seed_edit_mode(&card.description);
         state.new_label.clear();
+        state.comment_draft.clear();
     }
 
     let ctx = DetailCtx {
@@ -906,6 +916,7 @@ fn card_detail_pane_ui(
         labels: card.labels.clone(),
         // Owned copy so the body can render the status pill and column chips.
         columns: view.columns.iter().map(|c| c.name.clone()).collect(),
+        comments: card.comments.clone(),
     };
 
     // Escape backs out to the board. Consume it so it doesn't also fall through
@@ -927,16 +938,52 @@ fn card_detail_pane_ui(
             ui.separator();
             ui.add_space(SPACING_MD);
 
-            // Constrain the body to a comfortable reading width instead of
-            // stretching it across a wide window. Shrink to content height (only
-            // the width is pinned) so the trailing actions sit right under the
-            // body rather than floating in the centre of an over-tall scroll area.
-            let content_width = ui.available_width().min(DETAIL_CONTENT_WIDTH);
+            // On a wide pane the card body and its comment thread sit side by
+            // side; on a narrow one the thread stacks beneath the body. Shrink to
+            // content height (only the width is pinned) so the trailing actions
+            // sit right under the body rather than floating in the centre of an
+            // over-tall scroll area.
+            let avail = ui.available_width();
+            let two_col = avail >= DETAIL_TWO_COL_MIN;
             egui::ScrollArea::vertical()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    ui.set_max_width(content_width);
-                    detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                    if two_col {
+                        // Cap the combined width so body+thread don't sprawl, then
+                        // split: comments take a fixed right rail, the body the rest
+                        // (floored so it never collapses).
+                        let total =
+                            avail.min(DETAIL_CONTENT_WIDTH + SPACING_LG + DETAIL_COMMENTS_WIDTH);
+                        let body_w = (total - DETAIL_COMMENTS_WIDTH - SPACING_LG).max(360.0);
+                        ui.set_max_width(total);
+                        ui.horizontal_top(|ui| {
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(body_w, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(body_w);
+                                    detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                                },
+                            );
+                            ui.add_space(SPACING_LG);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(DETAIL_COMMENTS_WIDTH, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    ui.set_width(DETAIL_COMMENTS_WIDTH);
+                                    detail_comments_ui(ui, theme, &ctx, state, &mut outcome);
+                                },
+                            );
+                        });
+                    } else {
+                        let content_width = avail.min(DETAIL_CONTENT_WIDTH);
+                        ui.set_max_width(content_width);
+                        detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                        ui.add_space(SPACING_MD);
+                        ui.separator();
+                        ui.add_space(SPACING_MD);
+                        detail_comments_ui(ui, theme, &ctx, state, &mut outcome);
+                    }
                 });
         });
 
@@ -984,6 +1031,9 @@ struct DetailCtx {
     desc: String,
     labels: Vec<String>,
     columns: Vec<String>,
+    /// The card's comment thread, oldest first. Rendered flat (replies aren't
+    /// indented yet) but each carries its `parent` for forward-compatibility.
+    comments: Vec<CommentView>,
 }
 
 /// The single user intent collected while rendering the detail sheet, resolved
@@ -1004,6 +1054,8 @@ enum DetailOutcome {
     AddLabel,
     /// Remove this label from the card's set.
     RemoveLabel(String),
+    /// Post the contents of the comment composer as a new top-level comment.
+    AddComment,
 }
 
 /// The dimmed full-screen backdrop behind the sheet. Returns true if it was
@@ -1281,6 +1333,124 @@ fn detail_status_section_ui(
     });
 }
 
+/// The comment thread for the open card: a section heading with a count, the
+/// flat list of comments (oldest first), and a composer to add one. Replies
+/// aren't indented yet (`store now, render flat`) but each comment still shows
+/// who it threads under. Posting is collected into `outcome`.
+fn detail_comments_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    outcome: &mut DetailOutcome,
+) {
+    ui.horizontal(|ui| {
+        section_label(ui, theme, "Comments");
+        if !ctx.comments.is_empty() {
+            count_badge(ui, theme, ctx.comments.len());
+        }
+    });
+    ui.add_space(SPACING_SM);
+
+    if ctx.comments.is_empty() {
+        ui.label(
+            egui::RichText::new("No comments yet.")
+                .small()
+                .color(theme.text_muted),
+        );
+    } else {
+        for comment in &ctx.comments {
+            comment_row_ui(ui, theme, comment);
+        }
+    }
+
+    ui.add_space(SPACING_MD);
+    detail_comment_composer_ui(ui, theme, state, outcome);
+}
+
+/// A single comment: an attribution line (short author, relative time, word-id,
+/// and a "↳ reply to" marker for threaded replies) above its markdown body.
+fn comment_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, comment: &CommentView) {
+    egui::Frame::new()
+        .fill(theme.surface_secondary)
+        .corner_radius(egui::CornerRadius::same(RADIUS_MD as u8))
+        .inner_margin(egui::Margin::same(SPACING_SM as i8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = SPACING_SM;
+                ui.label(
+                    egui::RichText::new(headway::fmt::short_author(&comment.author))
+                        .small()
+                        .strong()
+                        .color(theme.text_secondary),
+                );
+                ui.label(
+                    egui::RichText::new(headway::fmt::rel_time(comment.created_at))
+                        .small()
+                        .color(theme.text_muted),
+                );
+                ui.label(
+                    egui::RichText::new(format!(
+                        "#{}",
+                        headway::wordid::encode(comment.id.bytes())
+                    ))
+                    .small()
+                    .color(theme.text_muted.gamma_multiply(0.6)),
+                );
+                if let Some(parent) = &comment.parent {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "↳ reply to #{}",
+                            headway::wordid::encode(parent.bytes())
+                        ))
+                        .small()
+                        .color(theme.text_muted),
+                    );
+                }
+            });
+            ui.add_space(SPACING_XS);
+            notedeck_ui::markdown::render_markdown(&comment.body, ui);
+        });
+    ui.add_space(SPACING_SM);
+}
+
+/// The "write a comment" composer at the foot of the thread: a multiline field
+/// plus a Comment button. Posts on the button or ⌘/Ctrl+Enter (a multiline field
+/// keeps plain Enter for newlines). Empty drafts are ignored.
+fn detail_comment_composer_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    state: &mut BoardUiState,
+    outcome: &mut DetailOutcome,
+) {
+    let resp = ui.add(
+        egui::TextEdit::multiline(&mut state.comment_draft)
+            .desired_rows(3)
+            .desired_width(f32::INFINITY)
+            .hint_text("Write a comment… (markdown supported)"),
+    );
+    let submit =
+        resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command);
+    ui.add_space(SPACING_XS);
+    ui.horizontal(|ui| {
+        let post = ui
+            .add_enabled(
+                !state.comment_draft.trim().is_empty(),
+                egui::Button::new("Comment"),
+            )
+            .clicked();
+        if post || submit {
+            *outcome = DetailOutcome::AddComment;
+        }
+        ui.label(
+            egui::RichText::new("⌘↵ to post")
+                .small()
+                .color(theme.text_muted),
+        );
+    });
+}
+
 /// Resolve the collected [`DetailOutcome`] into a single [`BoardAction`].
 fn resolve_detail_outcome(
     state: &mut BoardUiState,
@@ -1338,6 +1508,19 @@ fn resolve_detail_outcome(
                 });
             }
             state.new_label.clear();
+        }
+        DetailOutcome::AddComment => {
+            let body = state.comment_draft.trim().to_string();
+            if !body.is_empty() {
+                *action = Some(BoardAction::AddComment {
+                    card: ctx.card_id,
+                    body,
+                    // Flat composer posts top-level comments; threaded replies
+                    // aren't wired into the GUI yet (the model carries `parent`).
+                    reply_to: None,
+                });
+            }
+            state.comment_draft.clear();
         }
     }
 }

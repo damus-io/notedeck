@@ -692,8 +692,8 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
 fn print_comment(c: &CommentView) {
     let mut header = format!(
         "    {}  {}  {}",
-        short_author(&c.author),
-        dim(&rel_time(c.created_at)),
+        headway::fmt::short_author(&c.author),
+        dim(&headway::fmt::rel_time(c.created_at)),
         dim(&format!("#{}", wordid::encode(c.id.bytes()))),
     );
     if let Some(parent) = &c.parent {
@@ -709,28 +709,6 @@ fn print_comment(c: &CommentView) {
         } else {
             println!("        {line}");
         }
-    }
-}
-
-/// A short, recognisable stand-in for a comment author: the first 12 hex chars of
-/// their pubkey. The CLI has no profile data, so this is just a stable handle.
-fn short_author(author: &[u8; 32]) -> String {
-    Pubkey::new(*author).hex().chars().take(12).collect()
-}
-
-/// A coarse "x ago" rendering of a unix timestamp for the comment thread.
-fn rel_time(created_at: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let secs = now.saturating_sub(created_at);
-    match secs {
-        0..=59 => "just now".to_string(),
-        60..=3599 => format!("{}m ago", secs / 60),
-        3600..=86399 => format!("{}h ago", secs / 3600),
-        86400..=604_799 => format!("{}d ago", secs / 86400),
-        _ => format!("{}w ago", secs / 604_800),
     }
 }
 

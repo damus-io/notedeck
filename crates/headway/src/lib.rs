@@ -11,5 +11,6 @@
 //!   [`store::apply`], which turns a [`store::BoardAction`] into events.
 
 pub mod event;
+pub mod fmt;
 pub mod store;
 pub mod wordid;
