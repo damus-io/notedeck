@@ -44,12 +44,6 @@ const HANDLE_RADIUS: f32 = 5.0;
 /// easy to grab).
 const HANDLE_HIT: f32 = 18.0;
 
-/// Length of an edge's arrowhead, from tip to base, in canvas pixels. Shared so
-/// the curve can end flush against the arrow's base.
-const ARROW_LEN: f32 = 10.0;
-/// Width of an edge's arrowhead base.
-const ARROW_WIDTH: f32 = 9.0;
-
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable, editable nodes. Selection and live-drag state are
 /// written back into `notebook`; committed edits (move, text edit, create,
@@ -545,13 +539,8 @@ fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
 pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) -> Option<UiIntent> {
     let from_rect = *rects.get(edge.from_node())?;
     let to_rect = *rects.get(edge.to_node())?;
-
-    // Anchor each end on the side that currently faces the other node, rather
-    // than the side stored at creation time. Nodes move after an edge is drawn,
-    // so the stored sides quickly go stale and the edge ends up leaving/entering
-    // the wrong face; recomputing here keeps anchors facing each other.
-    let from_side = &nearest_side(from_rect, to_rect.center());
-    let to_side = &nearest_side(to_rect, from_rect.center());
+    let to_side = edge.to_side()?;
+    let from_side = edge.from_side()?;
 
     // anchor from-side
     let p0 = side_point(from_side, from_rect);
@@ -559,10 +548,8 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     // anchor b
     let to_anchor = side_point(to_side, to_rect);
 
-    // End the curve at the arrow's base (a hair inside it) instead of the box
-    // edge, so the stroke meets the arrowhead flush rather than poking out
-    // through its tip. The arrow itself still touches the box at `to_anchor`.
-    let p3 = to_anchor - side_tangent(to_side) * (ARROW_LEN - 1.0);
+    // to-point is slightly offset to accomidate arrow
+    let p3 = to_anchor + side_tangent(to_side) * 2.0;
 
     // bend debug
     //let bend = debug_slider(ui, ui.id().with("bend"), p3, 0.25, 0.0..=1.0);
@@ -582,7 +569,7 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
         .color()
         .map(canvas_color)
         .unwrap_or_else(|| ui.visuals().noninteractive().bg_stroke.color);
-    let stroke = egui::Stroke::new(2.0, color);
+    let stroke = egui::Stroke::new(4.0, color);
     let bezier = CubicBezierShape::from_points_stroke([p0, c1, c2, p3], false, color, stroke);
 
     // The curve midpoint, captured before the shape is moved into the painter.
@@ -634,9 +621,9 @@ fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
 /// * `point` – the exact spot on that edge the arrow’s tip should touch
 /// * `fill`  – colour to fill the arrow with (usually your popup’s background)
 pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32) {
-    let len: f32 = ARROW_LEN; // distance from tip to base
-    let width: f32 = ARROW_WIDTH; // length of the base
-    let stroke: f32 = 1.0; // outline thickness
+    let len: f32 = 12.0; // distance from tip to base
+    let width: f32 = 16.0; // length of the base
+    let stroke: f32 = 1.0; // length of the base
 
     let verts = match side {
         Side::Top => [
