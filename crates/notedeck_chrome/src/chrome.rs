@@ -376,6 +376,11 @@ impl Chrome {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F11)) {
             self.toggle();
         }
+
+        // Ctrl+W (Cmd+W on macOS) closes the active app's tab.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W)) {
+            self.close_active_app();
+        }
     }
 
     /// Fallback keybindings — only fire if no app consumed the key.
@@ -493,6 +498,30 @@ impl Chrome {
         self.active = app;
         if let Some(opened) = self.opened.get_mut(app as usize) {
             *opened = true;
+        }
+    }
+
+    /// Close the active app's tab and switch to the nearest opened app.
+    /// No-op if it's the only opened app — at least one app must stay open.
+    /// Used by Ctrl+W.
+    fn close_active_app(&mut self) {
+        let n = self.opened.len();
+        if n == 0 {
+            return;
+        }
+        // at least one app must remain open
+        if self.opened.iter().filter(|o| **o).count() <= 1 {
+            return;
+        }
+        let active = self.active.clamp(0, n as i32 - 1) as usize;
+        self.opened[active] = false;
+        // switch to the nearest opened app after `active`, wrapping
+        for offset in 1..=n {
+            let idx = (active + offset) % n;
+            if self.opened[idx] {
+                self.set_active(idx as i32);
+                return;
+            }
         }
     }
 
