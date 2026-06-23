@@ -83,6 +83,9 @@ pub fn notebook_ui(
     // on another node).
     let mut connect: Option<Connect> = None;
     let mut start_edit: Option<NodeId> = None;
+    // A text node whose task-list checkbox was toggled this frame, with the
+    // node's text already rewritten; committed as an `EditText` after the scene.
+    let mut checkbox_edit: Option<(NodeId, String)> = None;
     let mut create_at: Option<Pos2> = None;
     let mut commit_edit = false;
     let mut cancel_edit = false;
@@ -143,7 +146,13 @@ pub fn notebook_ui(
                 continue;
             }
 
-            let resp = node_ui(ui, ctx, node, rect, selected == Some(id));
+            let egui::InnerResponse {
+                response: resp,
+                inner: toggled_text,
+            } = node_ui(ui, ctx, node, rect, selected == Some(id));
+            if let Some(text) = toggled_text {
+                checkbox_edit = Some((id.clone(), text));
+            }
             if resp.hovered() {
                 hovered = Some(id.clone());
             }
@@ -314,6 +323,13 @@ pub fn notebook_ui(
             NodeEdit::Idle => {}
         }
         edit = NodeEdit::Idle;
+    }
+
+    // A task-list checkbox clicked in a rendered text node persists its flipped
+    // text like any other edit. It can't coincide with a drag move or an inline
+    // editor commit (those need the body or the open editor, not the checkbox).
+    if let Some((node, text)) = checkbox_edit {
+        intent = Some(UiIntent::EditText { node, text });
     }
 
     if let Some(id) = start_edit {
@@ -593,18 +609,28 @@ pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32
     ));
 }
 
+/// Render `node` at `rect`, returning its whole-node drag/select handle as the
+/// [`egui::InnerResponse::response`]. The `inner` is `None` for most node kinds;
+/// for a text node whose GFM task-list checkbox was clicked this frame it carries
+/// the node text with that box flipped, for the caller to persist.
 pub fn node_ui(
     ui: &mut egui::Ui,
     ctx: &mut AppContext,
     node: &Node,
     rect: Rect,
     selected: bool,
-) -> egui::Response {
+) -> egui::InnerResponse<Option<String>> {
     match node {
         Node::Text(text_node) => text_node_ui(ui, ctx, text_node, rect, selected),
-        Node::File(file_node) => file_node_ui(ui, file_node, rect, selected),
-        Node::Link(link_node) => link_node_ui(ui, link_node, rect, selected),
-        Node::Group(group_node) => group_node_ui(ui, group_node, rect, selected),
+        Node::File(file_node) => {
+            egui::InnerResponse::new(None, file_node_ui(ui, file_node, rect, selected))
+        }
+        Node::Link(link_node) => {
+            egui::InnerResponse::new(None, link_node_ui(ui, link_node, rect, selected))
+        }
+        Node::Group(group_node) => {
+            egui::InnerResponse::new(None, group_node_ui(ui, group_node, rect, selected))
+        }
     }
 }
 
@@ -614,29 +640,34 @@ fn text_node_ui(
     node: &TextNode,
     rect: Rect,
     selected: bool,
-) -> egui::Response {
+) -> egui::InnerResponse<Option<String>> {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
-        node_text_ui(ui, ctx, node.text());
+        node_text_ui(ui, ctx, node.text())
     })
 }
 
 /// Render a text node's body: markdown, with any inline `nostr:` references
-/// resolved to their kind renderer (see
-/// [`notedeck_ui::markdown::render_markdown_with_refs`]).
-fn node_text_ui(ui: &mut egui::Ui, ctx: &mut AppContext, text: &str) {
-    notedeck_ui::markdown::render_markdown_with_refs(ui, ctx, text);
+/// resolved to their kind renderer and GFM task-list checkboxes made clickable
+/// (see [`notedeck_ui::markdown::render_markdown_with_refs_editable`]). Returns
+/// the node's text with the checkbox flipped if one was toggled this frame.
+fn node_text_ui(ui: &mut egui::Ui, ctx: &mut AppContext, text: &str) -> Option<String> {
+    let mut source = text.to_string();
+    notedeck_ui::markdown::render_markdown_with_refs_editable(ui, ctx, &mut source)
+        .then_some(source)
 }
 
 fn file_node_ui(ui: &mut egui::Ui, node: &FileNode, rect: Rect, selected: bool) -> egui::Response {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
         ui.label("file node");
     })
+    .response
 }
 
 fn link_node_ui(ui: &mut egui::Ui, node: &LinkNode, rect: Rect, selected: bool) -> egui::Response {
     node_box_ui(ui, node.node(), rect, selected, |ui| {
         ui.label("link node");
     })
+    .response
 }
 
 fn group_node_ui(
@@ -648,20 +679,25 @@ fn group_node_ui(
     node_box_ui(ui, node.node(), rect, selected, |ui| {
         ui.label("group node");
     })
+    .response
 }
 
-/// Render a node's frame and contents at `rect`, returning a click-and-drag
-/// response covering the whole node so the caller can move/select it. The
-/// background handle is registered before the content, so non-interactive
-/// content widgets (labels) fall through to it and dragging the body moves the
-/// node.
-fn node_box_ui(
+/// Render a node's frame and contents at `rect`. The [`egui::InnerResponse`]'s
+/// `response` is a click-and-drag handle covering the whole node (so the caller
+/// can move/select it) and its `inner` is whatever the `contents` closure
+/// produced.
+///
+/// The drag/select handle is registered *before* the content so that any
+/// interactive content — e.g. a task-list checkbox — sits on top and wins
+/// clicks, while non-interactive content (labels, which only sense hover) lets
+/// clicks fall through to the handle so dragging the body still moves the node.
+fn node_box_ui<R>(
     ui: &mut egui::Ui,
     node: &GenericNode,
     rect: Rect,
     selected: bool,
-    contents: impl FnOnce(&mut egui::Ui),
-) -> egui::Response {
+    contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<R> {
     // Colored nodes get an accent border and a faint accent-tinted fill; plain
     // nodes fall back to the neutral theme colors. Selected nodes get a
     // brighter, thicker border.
@@ -680,6 +716,14 @@ fn node_box_ui(
         (notedeck::tokens::STROKE_THICK, accent)
     };
 
+    // Handle first (underneath); see the doc comment for why ordering matters.
+    let resp = ui.interact(
+        rect,
+        ui.id().with(("notebook_node", node.id.as_str())),
+        egui::Sense::click_and_drag(),
+    );
+
+    let mut out = None;
     ui.put(rect, |ui: &mut egui::Ui| {
         egui::Frame::default()
             .fill(fill)
@@ -690,19 +734,59 @@ fn node_box_ui(
                 let inner = ui.available_rect_before_wrap();
                 ui.allocate_at_least(ui.available_size(), egui::Sense::hover());
                 ui.put(inner, |ui: &mut egui::Ui| {
-                    contents(ui);
+                    out = Some(contents(ui));
                     ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover())
                 });
             })
             .response
     });
 
-    // Drag/select handle covering the whole node, registered last so it's the
-    // topmost interactive widget — the content above is non-interactive and
-    // would otherwise swallow nothing, but a top-level handle is unambiguous.
-    ui.interact(
-        rect,
-        ui.id().with(("notebook_node", node.id.as_str())),
-        egui::Sense::click_and_drag(),
-    )
+    egui::InnerResponse::new(out.expect("frame body always runs"), resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::accesskit::Role;
+    use egui_kittest::{Harness, kittest::Queryable};
+    use jsoncanvas::TextNode;
+    use std::cell::RefCell;
+
+    /// A node's body lays a full-rect `click_and_drag` handle over its contents
+    /// (so dragging the body moves the node). A task-list checkbox rendered in
+    /// that body must still receive a real pointer click rather than have the
+    /// handle swallow it — the bug behind "checkboxes aren't clickable in the
+    /// notebook". [`node_box_ui`] registers the handle *under* the content to
+    /// guarantee this; with the old ordering (handle last/on top) the source
+    /// below would stay `- [ ]`.
+    ///
+    /// `simulate_click()` is essential: it sends a geometric pointer press at the
+    /// box, exercising egui's hit-testing. `.click()` (an accesskit action aimed
+    /// straight at the node) would bypass the z-order entirely and pass even when
+    /// the real app is broken.
+    #[test]
+    fn task_checkbox_in_text_node_toggles_despite_drag_handle() {
+        let node = TextNode::new("node1".parse().unwrap(), 0, 0, 220, 90, None, String::new());
+        let source = RefCell::new(String::from("- [ ] task\n"));
+
+        let mut harness = Harness::new_ui(|ui| {
+            let rect = Rect::from_min_size(ui.max_rect().min, vec2(220.0, 90.0));
+            let mut s = source.borrow_mut();
+            // Mirrors node_text_ui's editable render, minus the nostr-ref pass
+            // (which would need an AppContext); the z-order under test is the same.
+            node_box_ui(ui, node.node(), rect, false, |ui| {
+                notedeck_ui::markdown::render_markdown_editable(&mut s, ui)
+            });
+        });
+        harness.run();
+
+        harness.get_by_role(Role::CheckBox).simulate_click();
+        harness.run();
+
+        assert_eq!(
+            *source.borrow(),
+            "- [x] task\n",
+            "the node drag handle swallowed the checkbox click"
+        );
+    }
 }

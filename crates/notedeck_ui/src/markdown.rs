@@ -62,22 +62,36 @@ pub fn render_markdown(text: &str, ui: &mut Ui) {
 /// nothing was toggled this frame. Both state chars (` ` and `x`) are one ASCII
 /// byte, so a toggle never shifts later spans — multiple boxes coexist safely.
 pub fn render_markdown_editable(source: &mut String, ui: &mut Ui) -> bool {
+    let toggled = collect_checkbox_toggles(source, ui);
+    apply_checkbox_toggles(source, &toggled)
+}
+
+/// Render `text` with interactive checkboxes and return the byte offsets of any
+/// boxes toggled this frame. Offsets index a fresh parse of `text`, which for a
+/// single push is byte-identical to `text` (so they index `text` too). Shared by
+/// the plain ([`render_markdown_editable`]) and ref-aware
+/// ([`render_markdown_with_refs_editable`]) editable renderers.
+fn collect_checkbox_toggles(text: &str, ui: &mut Ui) -> Vec<usize> {
     let mut parser = StreamParser::new();
-    parser.push(source);
+    parser.push(text);
     parser.finalize();
     let (elements, buffer) = parser.into_parts();
 
     let mut edits = CheckboxEdits::default();
     render_md_elements(&elements, None, &buffer, Some(&mut edits), ui);
+    edits.toggled
+}
 
-    if edits.toggled.is_empty() {
+/// Flip the single state byte (` ` <-> `x`) under each toggled checkbox in
+/// `source`, returning whether anything changed. Each offset must index the ` `
+/// or `x` of a `[ ]`/`[x]` marker in `source`; both states are one ASCII byte,
+/// so a flip never shifts later offsets and multiple toggles compose safely.
+fn apply_checkbox_toggles(source: &mut String, toggled: &[usize]) -> bool {
+    if toggled.is_empty() {
         return false;
     }
-
-    // Flip the single state byte under each toggled checkbox. Offsets index the
-    // freshly-parsed `buffer`, which (single push) is byte-identical to `source`.
-    let mut bytes = buffer.into_bytes();
-    for off in edits.toggled {
+    let mut bytes = std::mem::take(source).into_bytes();
+    for &off in toggled {
         if let Some(b) = bytes.get_mut(off) {
             *b = if *b == b' ' { b'x' } else { b' ' };
         }
@@ -125,6 +139,71 @@ pub fn render_markdown_with_refs(ui: &mut Ui, ctx: &mut AppContext, text: &str) 
     if !rest.is_empty() {
         render_markdown(rest, ui);
     }
+}
+
+/// Like [`render_markdown_with_refs`], but the GFM task-list checkboxes are
+/// **interactive**: clicking one flips its state byte in `source` (`[ ]` <->
+/// `[x]`) in place and returns `true` so the caller can persist the edit.
+///
+/// `source` is split around `nostr:` references exactly as in the read-only
+/// renderer; each plain segment renders editable boxes, and a toggle inside a
+/// segment is mapped back through the consumed reference text to its absolute
+/// offset in `source` before the state byte is flipped.
+pub fn render_markdown_with_refs_editable(
+    ui: &mut Ui,
+    ctx: &mut AppContext,
+    source: &mut String,
+) -> bool {
+    let toggled =
+        collect_checkbox_toggles_with_refs(source, ui, |ui, bech| nostr_ref_ui(ui, ctx, bech));
+    apply_checkbox_toggles(source, &toggled)
+}
+
+/// Walk `text` like [`render_markdown_with_refs`] — rendering each `nostr:`
+/// reference via `render_ref` and each plain segment with interactive checkboxes
+/// — and return every toggled checkbox's byte offset **mapped into `text`**.
+///
+/// `base` tracks the absolute offset of the unscanned tail `rest`, so a toggle
+/// at offset `off` within a segment lands at `base + off` in `text` even when
+/// references of varying length precede it.
+fn collect_checkbox_toggles_with_refs(
+    text: &str,
+    ui: &mut Ui,
+    mut render_ref: impl FnMut(&mut Ui, &str),
+) -> Vec<usize> {
+    let mut toggled = Vec::new();
+    let mut rest = text;
+    let mut base = 0usize;
+    let collect = |seg: &str, base: usize, ui: &mut Ui, toggled: &mut Vec<usize>| {
+        for off in collect_checkbox_toggles(seg, ui) {
+            toggled.push(base + off);
+        }
+    };
+    while let Some(pos) = rest.find("nostr:") {
+        let after = &rest[pos + "nostr:".len()..];
+        let end = after
+            .find(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
+            .unwrap_or(after.len());
+        if end == 0 {
+            // Bare "nostr:" with no entity: render it as text, like the read-only path.
+            let upto = pos + "nostr:".len();
+            collect(&rest[..upto], base, ui, &mut toggled);
+            base += upto;
+            rest = &rest[upto..];
+            continue;
+        }
+        if pos > 0 {
+            collect(&rest[..pos], base, ui, &mut toggled);
+        }
+        render_ref(ui, &after[..end]);
+        let consumed = pos + "nostr:".len() + end;
+        base += consumed;
+        rest = &after[end..];
+    }
+    if !rest.is_empty() {
+        collect(rest, base, ui, &mut toggled);
+    }
+    toggled
 }
 
 /// Resolve a `nostr:` reference to a note and hand it to the registered renderer
@@ -816,6 +895,18 @@ mod tests {
     use egui_kittest::{kittest::Queryable, Harness};
     use md_stream::{InlineElement, Span};
 
+    /// Editable ref-aware render without an `AppContext`: exercises the exact
+    /// segment-splitting and offset-mapping of [`render_markdown_with_refs_editable`],
+    /// rendering each reference as a plain label instead of its kind widget (which
+    /// would need a db). The consumed byte counts are identical, so the toggled
+    /// offsets land in the same place.
+    fn test_render_with_refs_editable(source: &mut String, ui: &mut Ui) -> bool {
+        let toggled = collect_checkbox_toggles_with_refs(source, ui, |ui, bech| {
+            ui.label(bech);
+        });
+        apply_checkbox_toggles(source, &toggled)
+    }
+
     /// Helper: collect (token, text) pairs
     fn tokens<'a>(code: &'a str, lang: &str) -> Vec<(SandToken, &'a str)> {
         tokenize_code(code, lang)
@@ -1196,5 +1287,46 @@ mod tests {
         });
         harness.run();
         assert_eq!(*source.borrow(), "- [ ] a\n- [x] b\n");
+    }
+
+    #[test]
+    fn test_editable_with_refs_toggles_checkbox() {
+        use egui::accesskit::Role;
+        use std::cell::RefCell;
+
+        // The ref-aware editable renderer must still toggle a checkbox that sits
+        // in a plain (ref-free) segment of the source.
+        let source = RefCell::new(String::from("- [ ] task\n"));
+        let mut harness = Harness::new_ui(|ui| {
+            let mut s = source.borrow_mut();
+            test_render_with_refs_editable(&mut s, ui);
+        });
+        harness.run();
+        harness.get_by_role(Role::CheckBox).click();
+        harness.run();
+        assert_eq!(*source.borrow(), "- [x] task\n");
+    }
+
+    #[test]
+    fn test_editable_with_refs_maps_offset_past_a_ref() {
+        use egui::accesskit::Role;
+        use std::cell::RefCell;
+
+        // A `nostr:` reference precedes the checkbox, so the toggled byte offset
+        // must be mapped back through the consumed ref text — otherwise the wrong
+        // byte (or none) flips. The bech32 here is a throwaway token.
+        let src = "see nostr:npub1xxx\n\n- [ ] after a ref\n";
+        let source = RefCell::new(String::from(src));
+        let mut harness = Harness::new_ui(|ui| {
+            let mut s = source.borrow_mut();
+            test_render_with_refs_editable(&mut s, ui);
+        });
+        harness.run();
+        harness.get_by_role(Role::CheckBox).click();
+        harness.run();
+        assert_eq!(
+            *source.borrow(),
+            "see nostr:npub1xxx\n\n- [x] after a ref\n"
+        );
     }
 }
