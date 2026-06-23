@@ -1125,17 +1125,17 @@ fn detail_title_section_ui(
 /// directly under the title — the GUI mirror of what the CLI prints, and a
 /// stable handle to paste into commits/chat (see [`headway::wordid`]).
 fn detail_card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, ctx: &DetailCtx) {
-    let resp = ui
-        .add(
-            egui::Label::new(
-                egui::RichText::new(&ctx.card_ref)
-                    .color(theme.text_muted)
-                    .small(),
-            )
-            .sense(egui::Sense::click()),
-        )
-        .on_hover_text("Click to copy");
-    if resp.clicked() {
+    // A frameless button, not a Label: in this egui version labels are selectable
+    // by default, so a click starts a text selection and "copy" is only reachable
+    // through the built-in right-click menu. A button gives a true one-click copy.
+    let btn = egui::Button::new(
+        egui::RichText::new(&ctx.card_ref)
+            .color(theme.text_muted)
+            .small(),
+    )
+    .frame(false)
+    .fill(egui::Color32::TRANSPARENT);
+    if ui.add(btn).on_hover_text("Click to copy").clicked() {
         ui.ctx().copy_text(ctx.card_ref.clone());
     }
 }
