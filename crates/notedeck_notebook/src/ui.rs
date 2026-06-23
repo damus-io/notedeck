@@ -260,7 +260,12 @@ pub fn notebook_ui(
                         .with(("notebook_handle", nid.as_str(), side_str(&side))),
                     egui::Sense::click_and_drag(),
                 );
-                connection_handle_ui(ui, center, resp.hovered() || resp.dragged());
+                let state = if resp.hovered() || resp.dragged() {
+                    HandleState::Active
+                } else {
+                    HandleState::Idle
+                };
+                connection_handle_ui(ui, center, state);
                 // Hold the node in the candidate set for as long as its handle is
                 // pressed — egui only reports `dragged()` once the pointer crosses
                 // the drag threshold, by which point it has usually left the node,
@@ -294,15 +299,20 @@ pub fn notebook_ui(
         {
             connection_preview_ui(ui, side_point(side, *from_rect), *pos);
             if let Some(target) = node_at(&rects, *pos, node) {
+                let target_rect = rects[target];
                 ui.painter().rect_stroke(
-                    rects[target],
+                    target_rect,
                     egui::CornerRadius::same(notedeck::tokens::RADIUS_LG as u8),
                     egui::Stroke::new(
                         notedeck::tokens::STROKE_THICK * 2.0,
-                        ui.visuals().selection.stroke.color,
+                        ui.visuals().strong_text_color(),
                     ),
                     egui::StrokeKind::Inside,
                 );
+                // Enlarge the anchor the edge would attach to, so it's clear
+                // which side the connection lands on before releasing.
+                let to_side = nearest_side(target_rect, *pos);
+                connection_handle_ui(ui, side_point(&to_side, target_rect), HandleState::Target);
             }
         }
     });
@@ -552,16 +562,25 @@ fn nearest_side(rect: Rect, pos: Pos2) -> Side {
     }
 }
 
-/// Draw a node's connection handle: a small dot, accented and enlarged when
-/// active (hovered or being dragged) so it reads as grabbable.
-fn connection_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
-    // The accent colour at full strength when grabbable, dimmed at rest, so the
-    // handles read as part of the selection rather than stray grey dots.
-    let accent = ui.visuals().selection.stroke.color;
-    let (color, radius) = if active {
-        (accent, HANDLE_RADIUS + 1.5)
-    } else {
-        (accent.gamma_multiply(0.6), HANDLE_RADIUS)
+/// Visual state of a connection handle, driving its colour and size.
+enum HandleState {
+    /// At rest: a muted dot hinting the side is connectable.
+    Idle,
+    /// Hovered or being dragged from: brighter and a touch larger.
+    Active,
+    /// The anchor an in-progress connection would land on: largest and
+    /// brightest, an affordance for where the edge is about to attach.
+    Target,
+}
+
+/// Draw a node's connection handle: a small dot that brightens and grows as it
+/// becomes grabbable or the drop target. Neutral-toned (the text palette) rather
+/// than the selection accent, which read as stray purple dots on the canvas.
+fn connection_handle_ui(ui: &egui::Ui, center: Pos2, state: HandleState) {
+    let (color, radius) = match state {
+        HandleState::Idle => (ui.visuals().weak_text_color(), HANDLE_RADIUS),
+        HandleState::Active => (ui.visuals().strong_text_color(), HANDLE_RADIUS + 1.5),
+        HandleState::Target => (ui.visuals().strong_text_color(), HANDLE_RADIUS + 3.0),
     };
     let painter = ui.painter();
     painter.circle_filled(center, radius, color);
@@ -575,7 +594,7 @@ fn connection_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
 /// Draw the in-progress connection: a line from the source handle to the pointer
 /// with a dot marking where the edge would land.
 fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
-    let color = ui.visuals().selection.stroke.color;
+    let color = ui.visuals().weak_text_color();
     let painter = ui.painter();
     painter.line_segment([from, to], Stroke::new(EDGE_STROKE, color));
     painter.circle_filled(to, 3.5, color);
