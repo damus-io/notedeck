@@ -47,6 +47,9 @@ assume an id or that a card is where you expect.
 headway show            # human-readable: columns, card prefixes, labels
 headway show --archived # also list archived cards in full (default: count only)
 headway show --json     # machine-readable, for parsing (always includes archived)
+headway show <card>...  # print only the given cards (id or prefix), not the
+                        # whole board; with --json each card gains a `column`
+                        # field for the column it sits in
 ```
 
 By default `show` collapses archived cards to a one-line count to keep the board
@@ -64,7 +67,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 
 | Command | What it does |
 | --- | --- |
-| `show [--archived] [--json]` | Print the board (`--archived` lists archived cards) |
+| `show [cards...] [--archived] [--json]` | Print the board, or only the given cards (`--archived` lists archived cards) |
 | `seed` | Create the default board if none exists |
 | `add <title...> [--col <c>] [-l <labels>]` | Add a card (defaults to the first column; `-l`/`--label` tags it) |
 | `move <card> --col <c> [--row <n>]` | Move a card to a column (optional position) |

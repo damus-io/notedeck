@@ -47,7 +47,11 @@ async fn main() -> ExitCode {
 /// A parsed command. Card arguments are still raw strings here; they're resolved
 /// against the board once it's folded.
 enum Command {
-    Show,
+    Show {
+        /// Optional card selectors. When non-empty, `show` prints only these
+        /// cards rather than the whole board.
+        cards: Vec<String>,
+    },
     Seed,
     Add {
         title: String,
@@ -188,8 +192,9 @@ async fn run() -> Result<()> {
     let secret = cli.secret.map(|(s, _)| s);
 
     match cli.command {
-        Command::Show => match load_board(&ndb, &author, &board) {
-            Some(view) => print_board(&view, as_json, show_archived),
+        Command::Show { cards } => match load_board(&ndb, &author, &board) {
+            Some(view) if cards.is_empty() => print_board(&view, as_json, show_archived),
+            Some(view) => print_cards(&view, &cards, as_json)?,
             None if as_json => println!("null"),
             None => println!(
                 "no board '{}' for {} — run `headway seed`",
@@ -272,7 +277,7 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Restore { card } => BoardAction::RestoreCard {
             card: resolve_card(view, &card)?,
         },
-        Command::Show | Command::Seed | Command::Login { .. } | Command::Logout => {
+        Command::Show { .. } | Command::Seed | Command::Login { .. } | Command::Logout => {
             unreachable!("handled before build_action")
         }
     })
@@ -547,6 +552,61 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
     }
 }
 
+/// Print only the cards named by `sels` (each a card id or unique short prefix).
+/// In JSON mode this is an array of card objects, each with the `column` it
+/// currently sits in; otherwise one card per line.
+fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> Result<()> {
+    // Resolve every selector first so a bad id fails the whole command rather
+    // than printing a partial result.
+    let cards: Vec<(&CardView, String)> = sels
+        .iter()
+        .map(|sel| {
+            let id = resolve_card(view, sel)?;
+            find_card(view, &id).ok_or_else(|| format!("no card matching '{sel}'").into())
+        })
+        .collect::<Result<_>>()?;
+
+    if as_json {
+        let out: Vec<_> = cards
+            .iter()
+            .map(|(card, col)| {
+                let mut j = event::card_json(card);
+                j["column"] = json!(col);
+                j
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&out).unwrap_or_else(|_| "null".into())
+        );
+    } else {
+        for (card, col) in &cards {
+            println!(
+                "  {}  {}  {}{}",
+                short(&card.id),
+                col,
+                card.title,
+                labels_suffix(&card.labels)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Find a card by id anywhere on the board, returning it alongside the name of
+/// the column it sits in (or `"archived"`).
+fn find_card<'a>(view: &'a BoardView, id: &NoteId) -> Option<(&'a CardView, String)> {
+    for col in &view.columns {
+        if let Some(card) = col.cards.iter().find(|c| c.id == *id) {
+            return Some((card, col.name.clone()));
+        }
+    }
+    view.archived
+        .iter()
+        .find(|a| a.card.id == *id)
+        .map(|a| (&a.card, "archived".to_string()))
+}
+
 fn labels_suffix(labels: &[String]) -> String {
     if labels.is_empty() {
         String::new()
@@ -672,7 +732,9 @@ fn parse_command(
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
     Ok(match name {
-        "show" => Command::Show,
+        "show" => Command::Show {
+            cards: rest.to_vec(),
+        },
         "seed" => Command::Seed,
         "add" => Command::Add {
             title: joined(rest, 0, name)?,
@@ -803,8 +865,9 @@ USAGE:
     headway [OPTIONS] <COMMAND>
 
 COMMANDS:
-    show                       Print the board (--archived to list archived,
-                               --json for machine output)
+    show [cards...]            Print the board, or just the given cards
+                               (--archived to list archived, --json for
+                               machine output)
     seed                       Seed the default board if none exists
     add <title...>             Add a card (--col <c> column, -l <labels> to tag)
     move <card> --col <c>      Move a card to a column (--row to position)
