@@ -126,9 +126,9 @@ def group_by_section(entries):
     groups = {s: [] for s in sections}
     for e in entries:
         groups[e.section].append(e)
-    # Sort entries within each section by crate name
+    # Sort entries within each section by crate label, then content
     for s in sections:
-        groups[s].sort(key=lambda e: e.crates[0] if e.crates else "")
+        groups[s].sort(key=lambda e: (", ".join(e.crates), e.content))
     # Remove empty sections
     for s in sections:
         if len(groups[s]) == 0:
