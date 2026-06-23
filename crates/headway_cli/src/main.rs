@@ -543,10 +543,10 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
         println!("\n{} ({})", col.name, col.cards.len());
         for c in &col.cards {
             println!(
-                "  {}  {}{}",
-                card_ref(view, &c.id),
+                "  {}{}  {}",
                 c.title,
-                labels_suffix(&c.labels)
+                labels_suffix(&c.labels),
+                card_ref(view, &c.id),
             );
         }
     }
@@ -554,7 +554,7 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
         if show_archived {
             println!("\nArchived ({})", view.archived.len());
             for a in &view.archived {
-                println!("  {}  {}", card_ref(view, &a.card.id), a.card.title);
+                println!("  {}  {}", a.card.title, card_ref(view, &a.card.id));
             }
         } else {
             println!(
@@ -595,11 +595,11 @@ fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> Result<()> {
     } else {
         for (card, col) in &cards {
             println!(
-                "  {}  {}  {}{}",
-                card_ref(view, &card.id),
+                "  {}  {}{}  {}",
                 col,
                 card.title,
-                labels_suffix(&card.labels)
+                labels_suffix(&card.labels),
+                card_ref(view, &card.id),
             );
         }
     }
@@ -631,9 +631,21 @@ fn labels_suffix(labels: &[String]) -> String {
 /// A card's human-friendly reference: the board slug plus three words, e.g.
 /// `headway:maple-river-canyon`. The `:` keeps the boundary unambiguous even
 /// when the slug itself contains `-`. Just a rendering of the event id — see
-/// [`headway::wordid`].
+/// [`headway::wordid`]. Rendered muted so the title stays the eye's anchor.
 fn card_ref(view: &BoardView, id: &NoteId) -> String {
-    format!("{}:{}", view.id, wordid::encode(id.bytes()))
+    dim(&format!("{}:{}", view.id, wordid::encode(id.bytes())))
+}
+
+/// Wrap `s` in the ANSI "dim" SGR, but only when stdout is a terminal — so ids
+/// read as muted beside titles interactively, while a piped or redirected
+/// listing stays plain text for scripts to parse.
+fn dim(s: &str) -> String {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() {
+        format!("\x1b[2m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
