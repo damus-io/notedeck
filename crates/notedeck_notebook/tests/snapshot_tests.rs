@@ -336,6 +336,37 @@ fn connect_nodes_with_edge() {
     }
 }
 
+/// Clicking an edge's midpoint delete handle removes the edge. The colored demo
+/// seeds edge "e1" from Red (40,40)-(240,130) down to Green (40,200)-(240,290),
+/// anchored bottom→top, so the curve — and its midpoint handle — sits around
+/// x≈140, between the two nodes.
+#[test]
+fn delete_edge_via_handle() {
+    let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, false);
+    wait_for_label(&mut harness, "Red");
+
+    // The demo seeds two edges; e1 connects Red -> Green.
+    let edge_count =
+        |h: &Harness<'static, NotebookTestState>| h.state().notebook.canvas().get_edges().len();
+    assert!(edge_count(&harness) >= 1, "the demo seeds edges");
+    let before = edge_count(&harness);
+
+    // Red's bottom is y=130, Green's top is y=200, both centered at x=140, so the
+    // edge's midpoint handle lands near (140, 165).
+    click_at(&mut harness, egui::pos2(140.0, 165.0));
+
+    // The delete is ingested asynchronously and folds back in; wait for it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run();
+        if edge_count(&harness) < before {
+            break;
+        }
+        assert!(Instant::now() < deadline, "edge was never deleted");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 /// A click delivered as press+release within a single frame, so it registers
 /// even though the canvas keeps requesting repaints (which would otherwise
 /// stretch a held button past egui's click-time threshold across `run()`).

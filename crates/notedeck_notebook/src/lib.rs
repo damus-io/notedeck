@@ -91,6 +91,12 @@ pub(crate) enum UiIntent {
         to: NodeId,
         to_side: Side,
     },
+    /// An existing edge was removed (its midpoint delete handle was clicked).
+    DisconnectEdge {
+        edge_id: String,
+        from: NodeId,
+        to: NodeId,
+    },
 }
 
 /// Default size of a freshly-created text node, in canvas pixels.
@@ -192,6 +198,11 @@ impl Notebook {
                     },
                 })
             }
+            UiIntent::DisconnectEdge { edge_id, from, to } => Some(CanvasAction::DeleteEdge {
+                edge_id,
+                from: NoteId::from_hex(from.as_str()).ok()?,
+                to: NoteId::from_hex(to.as_str()).ok()?,
+            }),
         }
     }
 

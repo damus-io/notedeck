@@ -44,6 +44,12 @@ const HANDLE_RADIUS: f32 = 5.0;
 /// easy to grab).
 const HANDLE_HIT: f32 = 18.0;
 
+/// Length of an edge's arrowhead, from tip to base, in canvas pixels. Shared so
+/// the curve can end flush against the arrow's base.
+const ARROW_LEN: f32 = 10.0;
+/// Width of an edge's arrowhead base.
+const ARROW_WIDTH: f32 = 9.0;
+
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable, editable nodes. Selection and live-drag state are
 /// written back into `notebook`; committed edits (move, text edit, create,
@@ -82,6 +88,8 @@ pub fn notebook_ui(
     // toward the pointer, then its release (which resolves to an edge if it lands
     // on another node).
     let mut connect: Option<Connect> = None;
+    // An edge whose delete handle was clicked this frame, removed after the closure.
+    let mut disconnect: Option<UiIntent> = None;
     let mut start_edit: Option<NodeId> = None;
     // A text node whose task-list checkbox was toggled this frame, with the
     // node's text already rewritten; committed as an `EditText` after the scene.
@@ -107,8 +115,11 @@ pub fn notebook_ui(
         }
 
         // Edges next, then nodes on top so node drag handles win interaction.
+        // Clicking an edge's midpoint delete handle removes it.
         for (_edge_id, edge) in canvas.get_edges().iter() {
-            edge_ui(ui, &rects, edge);
+            if let Some(removed) = edge_ui(ui, &rects, edge) {
+                disconnect = Some(removed);
+            }
         }
 
         // The id of the node being edited (existing-node editor), if any.
@@ -279,6 +290,12 @@ pub fn notebook_ui(
             pos: *pos,
         })
     });
+
+    // A clicked edge delete handle removes that edge. Takes precedence over a
+    // move (the two gestures can't realistically coincide).
+    if disconnect.is_some() {
+        intent = disconnect;
+    }
 
     // A released connection that landed on another node becomes a new edge,
     // anchored from the dragged side to whichever side of the target it faces.
@@ -522,15 +539,19 @@ fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
     painter.circle_filled(to, 4.0, color);
 }
 
-pub fn edge_ui(
-    ui: &mut egui::Ui,
-    rects: &HashMap<NodeId, Rect>,
-    edge: &Edge,
-) -> Option<egui::Response> {
+/// Render one edge as a bezier with an arrow, plus a small midpoint handle that
+/// deletes the edge when clicked. Returns a [`UiIntent::DisconnectEdge`] on the
+/// frame the handle is clicked.
+pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) -> Option<UiIntent> {
     let from_rect = *rects.get(edge.from_node())?;
     let to_rect = *rects.get(edge.to_node())?;
-    let to_side = edge.to_side()?;
-    let from_side = edge.from_side()?;
+
+    // Anchor each end on the side that currently faces the other node, rather
+    // than the side stored at creation time. Nodes move after an edge is drawn,
+    // so the stored sides quickly go stale and the edge ends up leaving/entering
+    // the wrong face; recomputing here keeps anchors facing each other.
+    let from_side = &nearest_side(from_rect, to_rect.center());
+    let to_side = &nearest_side(to_rect, from_rect.center());
 
     // anchor from-side
     let p0 = side_point(from_side, from_rect);
@@ -538,8 +559,10 @@ pub fn edge_ui(
     // anchor b
     let to_anchor = side_point(to_side, to_rect);
 
-    // to-point is slightly offset to accomidate arrow
-    let p3 = to_anchor + side_tangent(to_side) * 2.0;
+    // End the curve at the arrow's base (a hair inside it) instead of the box
+    // edge, so the stroke meets the arrowhead flush rather than poking out
+    // through its tip. The arrow itself still touches the box at `to_anchor`.
+    let p3 = to_anchor - side_tangent(to_side) * (ARROW_LEN - 1.0);
 
     // bend debug
     //let bend = debug_slider(ui, ui.id().with("bend"), p3, 0.25, 0.0..=1.0);
@@ -559,13 +582,49 @@ pub fn edge_ui(
         .color()
         .map(canvas_color)
         .unwrap_or_else(|| ui.visuals().noninteractive().bg_stroke.color);
-    let stroke = egui::Stroke::new(4.0, color);
+    let stroke = egui::Stroke::new(2.0, color);
     let bezier = CubicBezierShape::from_points_stroke([p0, c1, c2, p3], false, color, stroke);
 
+    // The curve midpoint, captured before the shape is moved into the painter.
+    let mid = bezier.sample(0.5);
     ui.painter().add(Shape::CubicBezier(bezier));
     arrow_ui(ui, to_side, to_anchor, color);
 
+    // Midpoint delete handle: a subtle dot that turns into a red ✕ on hover and
+    // removes the edge when clicked.
+    let hit = Rect::from_center_size(mid, vec2(HANDLE_HIT, HANDLE_HIT));
+    let resp = ui.interact(
+        hit,
+        ui.id().with(("notebook_edge_del", edge.id().as_str())),
+        egui::Sense::click(),
+    );
+    edge_delete_handle_ui(ui, mid, resp.hovered());
+    if resp.clicked() {
+        return Some(UiIntent::DisconnectEdge {
+            edge_id: edge.id().to_string(),
+            from: edge.from_node().clone(),
+            to: edge.to_node().clone(),
+        });
+    }
+
     None
+}
+
+/// Draw an edge's midpoint delete handle: a faint dot at rest, a filled red
+/// circle with a white ✕ when hovered (signalling a click removes the edge).
+fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
+    let painter = ui.painter();
+    if active {
+        let radius = 8.0;
+        painter.circle_filled(center, radius, Color32::from_rgb(0xE0, 0x31, 0x31));
+        let d = radius * 0.45;
+        let cross = Stroke::new(2.0, Color32::WHITE);
+        painter.line_segment([center + vec2(-d, -d), center + vec2(d, d)], cross);
+        painter.line_segment([center + vec2(-d, d), center + vec2(d, -d)], cross);
+    } else {
+        painter.circle_filled(center, 3.0, ui.visuals().widgets.inactive.fg_stroke.color);
+        painter.circle_stroke(center, 3.0, Stroke::new(1.0, ui.visuals().extreme_bg_color));
+    }
 }
 
 /// Paint a tiny triangular “arrow”.
@@ -575,9 +634,9 @@ pub fn edge_ui(
 /// * `point` – the exact spot on that edge the arrow’s tip should touch
 /// * `fill`  – colour to fill the arrow with (usually your popup’s background)
 pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32) {
-    let len: f32 = 12.0; // distance from tip to base
-    let width: f32 = 16.0; // length of the base
-    let stroke: f32 = 1.0; // length of the base
+    let len: f32 = ARROW_LEN; // distance from tip to base
+    let width: f32 = ARROW_WIDTH; // length of the base
+    let stroke: f32 = 1.0; // outline thickness
 
     let verts = match side {
         Side::Top => [
