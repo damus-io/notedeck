@@ -235,8 +235,10 @@ fn open_first_column_menu(harness: &mut Harness<'static, HeadwayTestState>) {
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn add_column_flow() {
     // Wide enough that all five seeded columns plus the "+ Add column"
-    // affordance are on-screen, so the simulated clicks land on them.
-    let mut harness = headway_harness(egui::Vec2::new(1600.0, 800.0));
+    // affordance are on-screen, so the simulated clicks land on them. Five
+    // 280px columns plus the add-column frame and gaps overflow 1600px, which
+    // would clip the affordance off the scroll area and make the click miss.
+    let mut harness = headway_harness(egui::Vec2::new(2000.0, 800.0));
 
     // Precondition: the seeded board has five columns.
     harness.get_by_label("7 cards · 5 columns");

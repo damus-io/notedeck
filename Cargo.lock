@@ -3433,6 +3433,7 @@ dependencies = [
 name = "headway"
 version = "0.10.0-beta.4"
 dependencies = [
+ "bip39",
  "enostr",
  "nostrdb",
  "serde_json",
