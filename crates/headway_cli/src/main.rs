@@ -488,7 +488,7 @@ fn resolve_col(view: &BoardView, sel: &str) -> Result<usize> {
 }
 
 /// Resolve a card argument, accepting (in order): a full 64-char hex id; a word
-/// id like `headway-maple-river-canyon` (the `<board>-` prefix is optional, so
+/// id like `headway:maple-river-canyon` (the `<board>:` prefix is optional, so
 /// `maple-river-canyon` works too); or a unique hex prefix. Word ids and hex
 /// prefixes are matched against every card on the board, archived ones included.
 fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId> {
@@ -497,10 +497,10 @@ fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId> {
     }
     let sel = sel.to_lowercase();
 
-    // Word id: drop an optional `<board>-` prefix, then match by re-encoding
+    // Word id: drop an optional `<board>:` prefix, then match by re-encoding
     // each card — exactly how a git short hash is resolved.
     let words = sel
-        .strip_prefix(&format!("{}-", view.id.to_lowercase()))
+        .strip_prefix(&format!("{}:", view.id.to_lowercase()))
         .unwrap_or(&sel);
     if let Some(c) = all_cards(view).find(|c| wordid::encode(c.id.bytes()) == words) {
         return Ok(c.id);
@@ -629,10 +629,11 @@ fn labels_suffix(labels: &[String]) -> String {
 }
 
 /// A card's human-friendly reference: the board slug plus three words, e.g.
-/// `headway-maple-river-canyon`. Just a rendering of the event id — see
+/// `headway:maple-river-canyon`. The `:` keeps the boundary unambiguous even
+/// when the slug itself contains `-`. Just a rendering of the event id — see
 /// [`headway::wordid`].
 fn card_ref(view: &BoardView, id: &NoteId) -> String {
-    format!("{}-{}", view.id, wordid::encode(id.bytes()))
+    format!("{}:{}", view.id, wordid::encode(id.bytes()))
 }
 
 // ---------------------------------------------------------------------------

@@ -869,7 +869,7 @@ fn card_detail_ui(
 
     let ctx = DetailCtx {
         card_id,
-        card_ref: format!("{}-{}", view.id, headway::wordid::encode(card_id.bytes())),
+        card_ref: format!("{}:{}", view.id, headway::wordid::encode(card_id.bytes())),
         current_col,
         title: card.title.clone(),
         desc: card.description.clone(),
@@ -929,7 +929,7 @@ fn card_detail_ui(
 /// `BoardView` so the sheet body doesn't borrow it while we also mutate `state`.
 struct DetailCtx {
     card_id: NoteId,
-    /// The card's human-friendly reference, e.g. `headway-maple-river-canyon`:
+    /// The card's human-friendly reference, e.g. `headway:maple-river-canyon`:
     /// the board slug plus the word-encoded event id (see [`headway::wordid`]).
     card_ref: String,
     current_col: usize,
