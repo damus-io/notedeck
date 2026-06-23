@@ -90,11 +90,16 @@ pub fn notebook_ui(
     let mut drag_stopped: Option<NodeId> = None;
     let mut clicked: Option<NodeId> = None;
     let mut bg_clicked = false;
-    let mut hovered: Option<NodeId> = None;
     // The connection gesture this frame, if any: a drag from a node's side handle
     // toward the pointer, then its release (which resolves to an edge if it lands
     // on another node).
     let mut connect: Option<Connect> = None;
+    // The node whose handle currently has the pointer button held on it, even
+    // before the drag threshold is crossed. Keeps that node a handle candidate
+    // from the moment of press (not just once `connect` becomes `Dragging`), so
+    // the gesture survives the pointer leaving the node before egui promotes the
+    // press to a drag.
+    let mut pressing_handle: Option<NodeId> = None;
     // An edge whose delete handle was clicked this frame, removed after the closure.
     let mut disconnect: Option<UiIntent> = None;
     let mut start_edit: Option<NodeId> = None;
@@ -178,9 +183,6 @@ pub fn notebook_ui(
             if let Some(text) = toggled_text {
                 checkbox_edit = Some((id.clone(), text));
             }
-            if resp.hovered() {
-                hovered = Some(id.clone());
-            }
             if resp.dragged() {
                 dragged = Some((id.clone(), rect.min + resp.drag_delta()));
             }
@@ -218,15 +220,33 @@ pub fn notebook_ui(
         }
 
         // Connection handles: small dots on the sides of the active node(s) that
-        // start an edge when dragged. Shown for the selected, hovered and
-        // currently-connecting node so they don't clutter the whole canvas — the
-        // connecting node is kept in the set so its handle survives the pointer
-        // leaving it mid-drag. The gesture is collected into `connect` and
-        // resolved (into an edge) after the closure.
-        let candidates = [selected, hovered.as_ref(), connecting.as_ref()];
+        // start an edge when dragged. Shown for the selected node, the node under
+        // the pointer (including the handle band just outside its edges), and the
+        // node currently being connected from, so they don't clutter the whole
+        // canvas. The gesture is collected into `connect` and resolved (into an
+        // edge) after the closure.
+        //
+        // "Under the pointer" is a geometric test, not egui hover: hover is
+        // suppressed while a pointer button is held, yet a connection drag begins
+        // with exactly such a press — on a handle that sits on the node's border,
+        // just off the body. Project the pointer into scene space and test it
+        // against each node's rect grown by the handle reach, so the handle stays
+        // a live target through the press that starts the drag.
+        let ptr = ui.ctx().pointer_latest_pos().map(|p| {
+            ui.ctx()
+                .layer_transform_from_global(ui.layer_id())
+                .map_or(p, |t| t * p)
+        });
+        let handle_target = ptr.and_then(|p| {
+            rects
+                .iter()
+                .find(|(_, r)| r.expand(HANDLE_HIT / 2.0).contains(p))
+                .map(|(id, _)| id.clone())
+        });
+        let candidates = [selected, handle_target.as_ref(), connecting.as_ref()];
         for i in 0..candidates.len() {
             let Some(nid) = candidates[i] else { continue };
-            // Skip nodes off-canvas or already handled (selected == hovered, etc).
+            // Skip nodes off-canvas or already handled (selected == handle_target, etc).
             if !rects.contains_key(nid) || candidates[..i].iter().flatten().any(|c| *c == nid) {
                 continue;
             }
@@ -241,6 +261,13 @@ pub fn notebook_ui(
                     egui::Sense::click_and_drag(),
                 );
                 connection_handle_ui(ui, center, resp.hovered() || resp.dragged());
+                // Hold the node in the candidate set for as long as its handle is
+                // pressed — egui only reports `dragged()` once the pointer crosses
+                // the drag threshold, by which point it has usually left the node,
+                // so without this the gesture would be dropped before it starts.
+                if resp.is_pointer_button_down_on() {
+                    pressing_handle = Some(nid.clone());
+                }
                 let pos = resp.interact_pointer_pos();
                 if resp.drag_stopped() {
                     connect = Some(Connect::Released {
@@ -282,11 +309,13 @@ pub fn notebook_ui(
 
     notebook.scene_rect = scene_rect;
     notebook.rendered_heights = rendered_heights;
-    // Keep the connecting node's handles alive while a drag is live; clear it
-    // otherwise. The completed gesture is turned into an edge intent below.
+    // Keep the connecting node's handles alive while a drag is live, or while its
+    // handle is merely held (pre-threshold), so the gesture isn't dropped before
+    // egui promotes it to a drag. Cleared once the button is released. The
+    // completed gesture is turned into an edge intent below.
     notebook.connecting = match &connect {
         Some(Connect::Dragging { node, .. }) => Some(node.clone()),
-        _ => None,
+        _ => pressing_handle,
     };
 
     if let Some((id, pos)) = dragged {
