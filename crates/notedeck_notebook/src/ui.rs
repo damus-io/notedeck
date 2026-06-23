@@ -53,6 +53,9 @@ const EDGE_STROKE: f32 = 2.0;
 const ARROW_LEN: f32 = 11.0;
 /// Width of an edge's arrowhead base.
 const ARROW_WIDTH: f32 = 9.0;
+/// How hard an edge's curve bows out from its anchors — the tangent handles are
+/// pulled this fraction of the anchor-to-anchor distance. ¼-ish feels "Obsidian".
+const EDGE_BEND: f32 = 0.28;
 
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable, editable nodes. Selection and live-drag state are
@@ -549,6 +552,41 @@ fn connection_preview_ui(ui: &egui::Ui, from: Pos2, to: Pos2) {
     painter.circle_filled(to, 3.5, color);
 }
 
+/// The cubic-bezier control points of an edge plus where its arrowhead tip
+/// touches the target node. Pulled out of [`edge_ui`] so the geometry — in
+/// particular that the curve ends on the arrow's base centre, aligned with the
+/// arrow axis — can be unit-tested without a live frame.
+struct EdgeCurve {
+    /// Bezier control points: start, two tangent handles, end.
+    points: [Pos2; 4],
+    /// Where the arrowhead's tip sits, on the target node's side.
+    to_anchor: Pos2,
+}
+
+/// Compute an edge's curve from the two node rects and the sides it anchors to.
+///
+/// The curve ends on the arrow's *base centre* (a hair inside it so no seam
+/// shows), not at the box edge: the arrow's tip touches the box at `to_anchor`
+/// and its base sits [`ARROW_LEN`] out along the side's outward normal, so ending
+/// the curve there makes the line flow straight into the arrow instead of poking
+/// out through its tip. The end tangent runs along that same axis for the same
+/// reason.
+fn edge_curve(from_rect: Rect, from_side: &Side, to_rect: Rect, to_side: &Side) -> EdgeCurve {
+    let p0 = side_point(from_side, from_rect);
+    let to_anchor = side_point(to_side, to_rect);
+    let p3 = to_anchor + side_tangent(to_side) * (ARROW_LEN - 0.5);
+
+    // How far to pull the tangent handles out from each anchor.
+    let d = (p3 - p0).length() * EDGE_BEND;
+    let c1 = p0 + side_tangent(from_side) * d;
+    let c2 = p3 - side_tangent(to_side).neg() * d;
+
+    EdgeCurve {
+        points: [p0, c1, c2, p3],
+        to_anchor,
+    }
+}
+
 /// Render one edge as a bezier with an arrow, plus a small midpoint handle that
 /// deletes the edge when clicked. Returns a [`UiIntent::DisconnectEdge`] on the
 /// frame the handle is clicked.
@@ -558,43 +596,22 @@ pub fn edge_ui(ui: &mut egui::Ui, rects: &HashMap<NodeId, Rect>, edge: &Edge) ->
     let to_side = edge.to_side()?;
     let from_side = edge.from_side()?;
 
-    // anchor from-side
-    let p0 = side_point(from_side, from_rect);
-
-    // anchor b
-    let to_anchor = side_point(to_side, to_rect);
-
-    // End the curve flush against the arrow's base (a hair inside it, so no gap
-    // shows) instead of at the box edge. The arrow's tip still touches the box at
-    // `to_anchor`, ARROW_LEN further in, so the line meets the arrow cleanly
-    // rather than poking out through its tip.
-    let p3 = to_anchor + side_tangent(to_side) * (ARROW_LEN - 0.5);
-
-    // bend debug
-    //let bend = debug_slider(ui, ui.id().with("bend"), p3, 0.25, 0.0..=1.0);
-    let bend = 0.28;
-
-    // How far to pull the tangents.
-    // ¼ of the distance between anchors feels very “Obsidian”.
-    let d = (p3 - p0).length() * bend;
-
-    // c1 = anchor A + (outward tangent) * d
-    let c1 = p0 + side_tangent(from_side) * d;
-
-    // c2 = anchor B + (inward tangent)  * d
-    let c2 = p3 - side_tangent(to_side).neg() * d;
+    let EdgeCurve { points, to_anchor } = edge_curve(from_rect, from_side, to_rect, to_side);
 
     let color = edge
         .color()
         .map(canvas_color)
         .unwrap_or_else(|| ui.visuals().noninteractive().bg_stroke.color);
     let stroke = egui::Stroke::new(EDGE_STROKE, color);
-    let bezier = CubicBezierShape::from_points_stroke([p0, c1, c2, p3], false, color, stroke);
+    let bezier = CubicBezierShape::from_points_stroke(points, false, color, stroke);
 
     // The curve midpoint and flattened polyline, captured before the shape is
     // moved into the painter (used for the midpoint handle and edge-hover test).
     let mid = bezier.sample(0.5);
-    let polyline = bezier.flatten(None);
+    // Explicit tolerance: the default derives from the curve's horizontal span,
+    // which is zero for a vertical edge and trips a "tolerance must be positive"
+    // assert. Half a pixel is plenty fine for a hover-distance polyline.
+    let polyline = bezier.flatten(Some(0.5));
     ui.painter().add(Shape::CubicBezier(bezier));
     arrow_ui(ui, to_side, to_anchor, color);
 
@@ -679,38 +696,43 @@ fn edge_delete_handle_ui(ui: &egui::Ui, center: Pos2, active: bool) {
 /// * `point` – the exact spot on that edge the arrow’s tip should touch
 /// * `fill`  – colour to fill the arrow with (usually your popup’s background)
 pub fn arrow_ui(ui: &mut egui::Ui, side: &Side, point: Pos2, fill: egui::Color32) {
-    let len: f32 = ARROW_LEN; // distance from tip to base
-    let width: f32 = ARROW_WIDTH; // length of the base
-    let stroke: f32 = 1.0; // outline thickness
-
-    let verts = match side {
-        Side::Top => [
-            point,                                           // tip
-            Pos2::new(point.x - width * 0.5, point.y - len), // base‑left (above)
-            Pos2::new(point.x + width * 0.5, point.y - len), // base‑right (above)
-        ],
-        Side::Bottom => [
-            point,
-            Pos2::new(point.x + width * 0.5, point.y + len), // below
-            Pos2::new(point.x - width * 0.5, point.y + len),
-        ],
-        Side::Left => [
-            point,
-            Pos2::new(point.x - len, point.y + width * 0.5), // left
-            Pos2::new(point.x - len, point.y - width * 0.5),
-        ],
-        Side::Right => [
-            point,
-            Pos2::new(point.x + len, point.y - width * 0.5), // right
-            Pos2::new(point.x + len, point.y + width * 0.5),
-        ],
-    };
-
+    let verts = arrow_verts(side, point);
     ui.painter().add(egui::Shape::convex_polygon(
         verts.to_vec(),
         fill,
-        Stroke::new(stroke, fill), // add a stroke here if you want an outline
+        Stroke::new(1.0, fill), // outline; matches the fill so it reads as solid
     ));
+}
+
+/// The three vertices of an edge's arrowhead: `verts[0]` is the tip (at `point`,
+/// on the node's side), `verts[1]`/`verts[2]` are the base corners — [`ARROW_LEN`]
+/// out from the tip along the side's outward normal and [`ARROW_WIDTH`] apart.
+/// Their midpoint is the base centre, where the edge's curve should terminate.
+fn arrow_verts(side: &Side, point: Pos2) -> [Pos2; 3] {
+    let len = ARROW_LEN; // distance from tip to base
+    let half = ARROW_WIDTH * 0.5; // half the base width
+    match side {
+        Side::Top => [
+            point,                                    // tip
+            Pos2::new(point.x - half, point.y - len), // base‑left (above)
+            Pos2::new(point.x + half, point.y - len), // base‑right (above)
+        ],
+        Side::Bottom => [
+            point,
+            Pos2::new(point.x + half, point.y + len), // below
+            Pos2::new(point.x - half, point.y + len),
+        ],
+        Side::Left => [
+            point,
+            Pos2::new(point.x - len, point.y + half), // left
+            Pos2::new(point.x - len, point.y - half),
+        ],
+        Side::Right => [
+            point,
+            Pos2::new(point.x + len, point.y - half), // right
+            Pos2::new(point.x + len, point.y + half),
+        ],
+    }
 }
 
 /// Render `node` at `rect`, returning its whole-node drag/select handle as the
@@ -896,5 +918,106 @@ mod tests {
             "- [x] task\n",
             "the node drag handle swallowed the checkbox click"
         );
+    }
+
+    /// The arrowhead bug that "looked broken": the curve's end didn't meet the
+    /// centre of the arrow's base, so the line poked out past the tip and the
+    /// head sat crooked on the line. Guard the geometry the renderer actually
+    /// uses — [`edge_curve`] (the line) and [`arrow_verts`] (the triangle) — for
+    /// every side an arrow can attach to: the line must terminate on the base
+    /// centre and approach it straight along the arrow's axis.
+    #[test]
+    fn arrowhead_base_centre_lines_up_with_curve() {
+        // Source box fixed; target box placed so the arrow side genuinely faces
+        // it, mirroring how edges are actually drawn.
+        let from_rect = Rect::from_min_size(Pos2::new(0.0, 0.0), vec2(120.0, 80.0));
+        let cases = [
+            (Side::Right, Pos2::new(400.0, 20.0)),
+            (Side::Left, Pos2::new(-400.0, 20.0)),
+            (Side::Bottom, Pos2::new(20.0, 400.0)),
+            (Side::Top, Pos2::new(20.0, -400.0)),
+        ];
+
+        for (to_side, to_min) in cases {
+            let to_rect = Rect::from_min_size(to_min, vec2(120.0, 80.0));
+            let curve = edge_curve(from_rect, &Side::Right, to_rect, &to_side);
+            let verts = arrow_verts(&to_side, curve.to_anchor);
+
+            let base_centre = verts[1] + (verts[2] - verts[1]) * 0.5;
+            let line_end = curve.points[3];
+
+            // The line ends on the base centre (within the half-pixel inset that
+            // hides the seam) — not short of it and not poking through the tip.
+            let gap = (base_centre - line_end).length();
+            assert!(
+                gap <= 0.75,
+                "{to_side:?}: line end {line_end:?} not on arrow base centre \
+                 {base_centre:?} (gap {gap})"
+            );
+
+            // The line flows straight into the arrow: its incoming direction at
+            // the end runs along the arrow's axis (base centre -> tip), so the
+            // head reads as a continuation of the line rather than crooked.
+            let tip = verts[0];
+            let axis = (tip - base_centre).normalized();
+            let end_dir = (line_end - curve.points[2]).normalized();
+            let dot = axis.dot(end_dir);
+            assert!(
+                dot > 0.99,
+                "{to_side:?}: arrow axis {axis:?} not aligned with curve end \
+                 direction {end_dir:?} (dot {dot})"
+            );
+        }
+    }
+
+    /// Render a real edge (its actual bezier line plus arrowhead) through
+    /// [`edge_ui`] in a live frame, exercising the full paint/interaction path the
+    /// geometry test stops short of. Each case places the target on the facing
+    /// side; the vertical cases (same x-centre) are deliberate — a vertical edge
+    /// has zero horizontal span, which trips the curve-flattening tolerance unless
+    /// it's set explicitly. A clean run with no click means the edge draws without
+    /// panicking and reports no spurious disconnect.
+    #[test]
+    fn edge_ui_renders_line_and_arrow() {
+        // (from_side, to_side, target offset from the source). Bottom/Top share
+        // the source's x-centre, so those edges are exactly vertical.
+        let cases = [
+            (Side::Right, Side::Left, vec2(400.0, 0.0)),
+            (Side::Left, Side::Right, vec2(-400.0, 0.0)),
+            (Side::Bottom, Side::Top, vec2(0.0, 400.0)),
+            (Side::Top, Side::Bottom, vec2(0.0, -400.0)),
+        ];
+
+        for (from_side, to_side, offset) in cases {
+            let edge = Edge::new(
+                "edge1".parse().unwrap(),
+                "a".parse().unwrap(),
+                Some(from_side),
+                None,
+                "b".parse().unwrap(),
+                Some(to_side),
+                None,
+                None,
+                None,
+            );
+
+            let mut rects = HashMap::new();
+            rects.insert(
+                "a".parse().unwrap(),
+                Rect::from_min_size(Pos2::new(0.0, 0.0), vec2(120.0, 80.0)),
+            );
+            rects.insert(
+                "b".parse().unwrap(),
+                Rect::from_min_size(Pos2::new(0.0, 0.0) + offset, vec2(120.0, 80.0)),
+            );
+
+            let mut harness = Harness::new_ui(|ui| {
+                assert!(
+                    edge_ui(ui, &rects, &edge).is_none(),
+                    "edge reported a disconnect without its handle being clicked"
+                );
+            });
+            harness.run();
+        }
     }
 }
