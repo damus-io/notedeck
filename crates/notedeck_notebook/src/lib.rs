@@ -47,6 +47,10 @@ pub struct Notebook {
     connecting: Option<NodeId>,
     /// Inline text-editing state.
     edit: NodeEdit,
+    /// A node awaiting delete confirmation. Set by the Delete key (with a node
+    /// selected) or the node's context menu; while it's `Some`, a confirmation
+    /// modal is shown and the actual delete fires only once confirmed.
+    confirm_delete: Option<NodeId>,
     /// Whether we've auto-seeded a canvas this session, so we don't seed twice
     /// while the first seed is still materialising.
     seeded: bool,
@@ -247,6 +251,7 @@ impl Default for Notebook {
             selected: None,
             connecting: None,
             edit: NodeEdit::Idle,
+            confirm_delete: None,
             seeded: false,
             repaint_frames: 0,
         }

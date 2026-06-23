@@ -103,6 +103,9 @@ pub fn notebook_ui(
     // An edge whose delete handle was clicked this frame, removed after the closure.
     let mut disconnect: Option<UiIntent> = None;
     let mut start_edit: Option<NodeId> = None;
+    // A node whose context-menu "Delete" was clicked this frame; promoted to the
+    // pending-confirmation state after the scene closure.
+    let mut request_delete: Option<NodeId> = None;
     // A text node whose task-list checkbox was toggled this frame, with the
     // node's text already rewritten; committed as an `EditText` after the scene.
     let mut checkbox_edit: Option<(NodeId, String)> = None;
@@ -197,6 +200,14 @@ pub fn notebook_ui(
             if resp.double_clicked() && matches!(node, Node::Text(_)) {
                 start_edit = Some(id.clone());
             }
+            // Right-click (or long-press on touch) opens a context menu whose
+            // Delete entry asks to remove the node, behind a confirmation prompt.
+            notedeck_ui::context_menu::context_menu(&resp, |ui| {
+                if ui.button("Delete").clicked() {
+                    request_delete = Some(id.clone());
+                    ui.close_menu();
+                }
+            });
         }
 
         // A brand-new node being composed renders its editor at its position; it
@@ -419,7 +430,78 @@ pub fn notebook_ui(
     }
     notebook.edit = edit;
 
+    // Delete-confirmation flow. A delete is requested either from a node's
+    // context menu or by pressing Delete/Backspace with a node selected (and no
+    // inline editor open, which would consume the key itself). The request only
+    // arms a confirmation modal; the node is removed once the user confirms.
+    if request_delete.is_some() {
+        notebook.confirm_delete = request_delete;
+    } else if notebook.confirm_delete.is_none()
+        && matches!(notebook.edit, NodeEdit::Idle)
+        && let Some(selected) = notebook.selected.clone()
+        && ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+    {
+        notebook.confirm_delete = Some(selected);
+    }
+
+    if let Some(node) = notebook.confirm_delete.clone() {
+        match delete_confirm_ui(ui) {
+            DeleteConfirm::Confirmed => {
+                notebook.confirm_delete = None;
+                notebook.selected = None;
+                intent = Some(UiIntent::Delete { node });
+            }
+            DeleteConfirm::Cancelled => {
+                notebook.confirm_delete = None;
+            }
+            DeleteConfirm::Pending => {}
+        }
+    }
+
     intent
+}
+
+/// Outcome of the delete-confirmation modal for the current frame.
+enum DeleteConfirm {
+    /// Still open; the user hasn't chosen yet.
+    Pending,
+    /// The user confirmed the deletion.
+    Confirmed,
+    /// The user dismissed the prompt (Cancel button, backdrop click, or Esc).
+    Cancelled,
+}
+
+/// Show a centered confirmation modal for deleting a node, returning the user's
+/// choice this frame. Clicking the backdrop or pressing Esc counts as cancelling.
+fn delete_confirm_ui(ui: &egui::Ui) -> DeleteConfirm {
+    let modal = egui::Modal::new(egui::Id::new("notebook_delete_confirm")).show(ui.ctx(), |ui| {
+        ui.set_max_width(300.0);
+        ui.heading("Delete note?");
+        ui.add_space(notedeck::tokens::SPACING_SM);
+        ui.label("This removes the note from your canvas.");
+        ui.add_space(notedeck::tokens::SPACING_LG);
+        ui.horizontal(|ui| {
+            let delete = egui::Button::new(
+                egui::RichText::new("Delete").color(Color32::from_rgb(0xE0, 0x31, 0x31)),
+            );
+            if ui.add(delete).clicked() {
+                return DeleteConfirm::Confirmed;
+            }
+            if ui.button("Cancel").clicked() {
+                return DeleteConfirm::Cancelled;
+            }
+            DeleteConfirm::Pending
+        })
+        .inner
+    });
+
+    // The buttons take precedence; a backdrop/Esc dismissal otherwise cancels.
+    match modal.inner {
+        DeleteConfirm::Confirmed => DeleteConfirm::Confirmed,
+        DeleteConfirm::Cancelled => DeleteConfirm::Cancelled,
+        DeleteConfirm::Pending if modal.should_close() => DeleteConfirm::Cancelled,
+        DeleteConfirm::Pending => DeleteConfirm::Pending,
+    }
 }
 
 /// Render the inline editor for a text node: a multiline field filling the
