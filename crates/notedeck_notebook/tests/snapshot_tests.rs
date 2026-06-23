@@ -238,9 +238,13 @@ fn drag_and_select_nodes() {
     // Nothing selected to start.
     assert_eq!(harness.state().notebook.selected(), None);
 
-    // Click the "Red" heading to select its node; capture the node's id.
-    harness.get_by_label("Red").simulate_click();
-    harness.run();
+    // Click the "Red" node to select it; capture the node's id. Use `click_at`
+    // (single-frame press+release) rather than `simulate_click`: the canvas
+    // requests repaints after each ingest, which stretches a multi-frame click
+    // past egui's click-time threshold so it never registers. Red's rect is
+    // (40,40)-(240,130); click its lower body, clear of the heading text (which,
+    // being selectable, would otherwise intercept the click).
+    click_at(&mut harness, egui::pos2(140.0, 115.0));
     let id = harness
         .state()
         .notebook
@@ -254,8 +258,9 @@ fn drag_and_select_nodes() {
         Some(egui::pos2(40.0, 40.0))
     );
 
-    // Drag the node by (+150, +80).
-    let start = egui::pos2(80.0, 70.0);
+    // Drag the node by (+150, +80). Grab the bare lower body (clear of the
+    // heading text, which would intercept the press) so the drag moves the node.
+    let start = egui::pos2(140.0, 115.0);
     press(&mut harness, start);
     drag_to(&mut harness, start + egui::vec2(150.0, 80.0));
     release(&mut harness, start + egui::vec2(150.0, 80.0));
@@ -265,10 +270,10 @@ fn drag_and_select_nodes() {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         harness.run();
-        if let Some(p) = harness.state().notebook.node_position(&id) {
-            if (p - target).length() < 2.0 {
-                break;
-            }
+        if let Some(p) = harness.state().notebook.node_position(&id)
+            && (p - target).length() < 2.0
+        {
+            break;
         }
         assert!(Instant::now() < deadline, "n1 never moved to ~{target:?}");
         std::thread::sleep(Duration::from_millis(25));
@@ -287,17 +292,22 @@ fn connect_nodes_with_edge() {
     let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, false);
     wait_for_label(&mut harness, "Red");
 
-    // Capture the ids of the two nodes we'll connect (clicking selects a node).
-    harness.get_by_label("Orange").simulate_click();
-    harness.run();
+    // Capture the ids of the two nodes we'll connect (clicking a node selects
+    // it). Use `click_at` (single-frame press+release) rather than
+    // `simulate_click`: the canvas requests repaints after each ingest, which
+    // stretches a multi-frame click past egui's click-time threshold so it never
+    // registers. Click the lower part of each node, clear of its heading text —
+    // selectable markdown text intercepts the pointer, so only the bare body
+    // falls through to the node's drag/select handle. Orange's rect is
+    // (300,40)-(500,130) and Red's is (40,40)-(240,130).
+    click_at(&mut harness, egui::pos2(400.0, 115.0));
     let orange = harness
         .state()
         .notebook
         .selected()
         .cloned()
         .expect("orange selected");
-    harness.get_by_label("Red").simulate_click();
-    harness.run();
+    click_at(&mut harness, egui::pos2(140.0, 115.0));
     let red = harness
         .state()
         .notebook
@@ -331,6 +341,70 @@ fn connect_nodes_with_edge() {
         assert!(
             Instant::now() < deadline,
             "an edge from Red to Orange never appeared"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Regression: an edge can be drawn from a node you only *hover*, without first
+/// clicking to select it. The handle's hit box straddles the node border, so the
+/// pointer is already off the body as the drag begins; the gesture must survive
+/// the press → drag-threshold gap (where egui hasn't yet reported a drag and the
+/// node is no longer hovered) instead of being dropped.
+#[test]
+fn connect_from_hovered_node() {
+    let mut harness = build_harness(egui::Vec2::new(820.0, 500.0), true, false);
+    wait_for_label(&mut harness, "Red");
+
+    // Find Red and Orange by position, without selecting anything.
+    let node_id_at = |h: &Harness<'static, NotebookTestState>, pos: egui::Pos2| {
+        let nb = &h.state().notebook;
+        nb.canvas()
+            .get_nodes()
+            .iter()
+            .find(|(id, _)| nb.node_position(id) == Some(pos))
+            .map(|(id, _)| id.clone())
+            .expect("a node at the given position")
+    };
+    let red = node_id_at(&harness, egui::pos2(40.0, 40.0));
+    let orange = node_id_at(&harness, egui::pos2(300.0, 40.0));
+    let before = harness.state().notebook.canvas().get_edges().len();
+
+    // Hover Red's body, confirm hovering alone doesn't select it, then drag from
+    // its right-edge handle at (240,85) into Orange — all without a prior click.
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::PointerMoved(egui::pos2(140.0, 115.0)));
+    harness.run();
+    assert_eq!(
+        harness.state().notebook.selected(),
+        None,
+        "hovering a node must not select it"
+    );
+
+    let from = egui::pos2(240.0, 85.0);
+    let into = egui::pos2(400.0, 85.0);
+    press(&mut harness, from);
+    drag_to(&mut harness, egui::pos2(320.0, 85.0));
+    drag_to(&mut harness, into);
+    release(&mut harness, into);
+
+    // The edge is ingested asynchronously and folds back in; wait for it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        harness.run();
+        let canvas = harness.state().notebook.canvas();
+        let connected = canvas.get_edges().len() > before
+            && canvas.get_edges().values().any(|e| {
+                e.from_node().as_str() == red.as_str() && e.to_node().as_str() == orange.as_str()
+            });
+        if connected {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "an edge from a hovered (unselected) Red to Orange never appeared"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
