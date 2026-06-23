@@ -14,8 +14,8 @@ use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, board_address, build_archive_placement,
-    build_board, build_cover_note, build_issue, build_labels, build_placement, build_subject_edit,
-    rank_between,
+    build_board, build_comment, build_cover_note, build_issue, build_labels, build_placement,
+    build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -45,6 +45,13 @@ pub enum BoardAction {
     EditDescription { card: NoteId, description: String },
     /// Set a card's labels (additive union with any existing labels).
     SetLabels { card: NoteId, labels: Vec<String> },
+    /// Post a NIP-22 comment on `card`. `reply_to`, when set, is another comment
+    /// on the same card that this one threads under.
+    AddComment {
+        card: NoteId,
+        body: String,
+        reply_to: Option<NoteId>,
+    },
     /// Remove a card from the board (tombstone placement).
     DeleteCard { card: NoteId },
     /// Archive a card: take it off the board but keep it recoverable, recording
@@ -253,6 +260,40 @@ pub fn apply(
         BoardAction::SetLabels { card, labels } => {
             ingest(ndb, build_labels(&card, &labels), secret, publisher);
         }
+        BoardAction::AddComment {
+            card,
+            body,
+            reply_to,
+        } => {
+            // The comment is rooted on the issue, so we need the issue author
+            // (the card's author) for the NIP-22 root `P`. Unknown card -> no-op.
+            let Some(c) = find_card_any(view, card) else {
+                return;
+            };
+            let issue_author = Pubkey::new(c.author);
+
+            // A reply additionally names the parent comment's author. If the
+            // parent isn't on the card we know about, drop the reply rather than
+            // mis-attribute it.
+            let parent_author;
+            let reply = match &reply_to {
+                Some(parent) => {
+                    let Some(pc) = c.comments.iter().find(|c| c.id == *parent) else {
+                        return;
+                    };
+                    parent_author = Pubkey::new(pc.author);
+                    Some((parent, &parent_author))
+                }
+                None => None,
+            };
+
+            ingest(
+                ndb,
+                build_comment(&card, &issue_author, reply, &body),
+                secret,
+                publisher,
+            );
+        }
         BoardAction::DeleteCard { card } => {
             // build_placement needs a rank; reuse the card's current one (or a
             // midpoint) — the column is the tombstone sentinel either way.
@@ -394,6 +435,12 @@ fn find_card(view: &BoardView, card: NoteId) -> Option<&CardView> {
         .iter()
         .flat_map(|c| c.cards.iter())
         .find(|c| c.id == card)
+}
+
+/// Find a card by id across the live columns *and* the archived set — commenting
+/// on an archived card is still valid, so it needs the wider search.
+fn find_card_any(view: &BoardView, card: NoteId) -> Option<&CardView> {
+    find_card(view, card).or_else(|| view.archived.iter().map(|a| &a.card).find(|c| c.id == card))
 }
 
 /// Find a card and the id of the column it currently sits in.
@@ -742,6 +789,64 @@ mod tests {
         assert_eq!(edited.title, "Renamed");
         assert_eq!(edited.description, "the details");
         assert_eq!(edited.labels, vec!["bug".to_string(), "ux".to_string()]);
+    }
+
+    #[test]
+    fn add_comment_and_reply_fold_onto_the_card() {
+        let t = TestNdb::new();
+        seed_demo(&t);
+        let view = t.wait(|v| v.columns[1].cards.len() == 2);
+        let card = view.columns[1].cards[0].id;
+
+        // Top-level comment.
+        t.apply(
+            &view,
+            BoardAction::AddComment {
+                card,
+                body: "first comment".to_string(),
+                reply_to: None,
+            },
+        );
+        let view = t.wait(|v| {
+            v.columns[1]
+                .cards
+                .iter()
+                .any(|c| c.id == card && c.comments.len() == 1)
+        });
+        let parent = view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.id == card)
+            .unwrap()
+            .comments[0]
+            .id;
+
+        // A reply threaded under that comment.
+        t.apply(
+            &view,
+            BoardAction::AddComment {
+                card,
+                body: "a reply".to_string(),
+                reply_to: Some(parent),
+            },
+        );
+        let view = t.wait(|v| {
+            v.columns[1]
+                .cards
+                .iter()
+                .any(|c| c.id == card && c.comments.len() == 2)
+        });
+
+        let comments = &view.columns[1]
+            .cards
+            .iter()
+            .find(|c| c.id == card)
+            .unwrap()
+            .comments;
+        assert_eq!(comments[0].body, "first comment");
+        assert_eq!(comments[0].parent, None);
+        assert_eq!(comments[1].body, "a reply");
+        assert_eq!(comments[1].parent, Some(parent));
     }
 
     #[test]
