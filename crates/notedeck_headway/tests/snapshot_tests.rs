@@ -149,7 +149,8 @@ fn snapshot_headway() {
 }
 
 /// Open a card's detail view and snapshot it on both a wide and a narrow
-/// viewport to exercise the responsive modal/sheet behaviour.
+/// viewport to exercise the full-pane detail screen (which replaces the board
+/// while a card is open).
 #[test]
 #[ignore] // requires lavapipe — run via scripts/snapshot-test
 fn snapshot_headway_detail() {

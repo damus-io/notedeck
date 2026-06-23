@@ -21,6 +21,10 @@ use crate::store::BoardAction;
 /// Width of a single kanban column.
 const COLUMN_WIDTH: f32 = 280.0;
 
+/// Max width the full-pane card detail body is constrained to, so a card reads
+/// comfortably instead of stretching across a wide window.
+const DETAIL_CONTENT_WIDTH: f32 = 760.0;
+
 /// How long a card takes to slide from its old slot to its new one when it
 /// jumps columns (e.g. a `headway move` landing from the CLI).
 const MOVE_ANIM_SECS: f32 = 0.28;
@@ -131,8 +135,24 @@ pub fn board_ui(
     view: &BoardView,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
+    // A selected card takes over the whole view as a full-pane detail screen,
+    // replacing the board grid until dismissed (back / ✕ / Escape). A selection
+    // pointing at a card that no longer exists is dropped so we fall back to the
+    // board rather than render an empty pane.
+    if state
+        .selected
+        .is_some_and(|id| find_card(view, id).is_some())
+    {
+        let mut action: Option<BoardAction> = None;
+        card_detail_pane_ui(ui, theme, view, state, &mut action);
+        return action;
+    }
+    if state.selected.take().is_some() {
+        state.detail_for = None;
+    }
+
     let mut action: Option<BoardAction> = None;
-    // The card a click landed on this frame; opens the detail view below.
+    // The card a click landed on this frame; opens the detail view next frame.
     let mut clicked: Option<NoteId> = None;
 
     // Kick off (and retire) slide animations for any card that changed columns
@@ -194,10 +214,7 @@ pub fn board_ui(
         state.selected = Some(card_id);
     }
 
-    // Detail view floats above the board; emits edit actions like the rest.
-    card_detail_ui(ui, theme, view, state, &mut action);
-
-    // Archived-cards sheet floats above the board too.
+    // Archived-cards sheet floats above the board.
     archived_sheet_ui(ui, theme, view, state, &mut action);
 
     action
@@ -841,25 +858,25 @@ fn add_column_ui(
         });
 }
 
-/// The card detail editor, shown as a responsive modal sheet while a card is
-/// selected: a near-full-width sheet on narrow (mobile) viewports, a centered
-/// card on wider ones. Edits are emitted as [`BoardAction`]s (title/description
-/// commit on focus loss); closing clears the selection. Rendered as overlay
-/// layers (scrim + sheet) rather than a draggable window so it feels native on
-/// touch.
-fn card_detail_ui(
+/// The card detail screen, rendered full-pane in place of the board while a card
+/// is selected. A top bar (back to board, current-status pill, ✕) sits above a
+/// scrollable body holding the title, description, labels, status and card
+/// actions. Edits are emitted as [`BoardAction`]s (title/description commit on
+/// focus loss); dismissing (back / ✕ / Escape) clears the selection. Unlike the
+/// old floating sheet this gives a card room to breathe — and room for the
+/// comment thread that lives alongside it.
+fn card_detail_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     view: &BoardView,
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
 ) {
+    // board_ui only calls us when the selection resolves; re-resolve here to get
+    // the card and its column, dropping a now-stale selection defensively.
     let Some(card_id) = state.selected else {
         return;
     };
-
-    // The selected card may have been removed elsewhere; drop a dangling
-    // selection rather than rendering an empty sheet.
     let Some((current_col, card)) = find_card(view, card_id) else {
         state.selected = None;
         state.detail_for = None;
@@ -891,19 +908,8 @@ fn card_detail_ui(
         columns: view.columns.iter().map(|c| c.name.clone()).collect(),
     };
 
-    let screen = ui.ctx().screen_rect();
-    let pad = SPACING_LG;
-    // Narrow viewports get a near-full-width sheet; wider ones a centered modal.
-    let sheet_width = if notedeck::ui::is_narrow(ui.ctx()) {
-        screen.width() - 2.0 * pad
-    } else {
-        460.0
-    };
-    // Cap the body so a long card stays on-screen and scrolls instead.
-    let max_body_height = screen.height() - 6.0 * pad;
-
-    // Consume Escape so closing the sheet doesn't also fall through to Chrome's
-    // Escape handler, which would toggle the side menu.
+    // Escape backs out to the board. Consume it so it doesn't also fall through
+    // to Chrome's Escape handler, which would toggle the side menu.
     let mut outcome = if ui
         .ctx()
         .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
@@ -913,29 +919,57 @@ fn card_detail_ui(
         DetailOutcome::None
     };
 
-    // Dimmed scrim behind the sheet; a tap outside closes the detail.
-    if detail_scrim_ui(ui, screen) {
-        outcome = DetailOutcome::Close;
-    }
+    egui::Frame::new()
+        .inner_margin(egui::Margin::same(SPACING_LG as i8))
+        .show(ui, |ui| {
+            detail_pane_topbar_ui(ui, theme, &ctx, &mut outcome);
+            ui.add_space(SPACING_SM);
+            ui.separator();
+            ui.add_space(SPACING_MD);
 
-    egui::Area::new(egui::Id::new(("headway-detail", card_id)))
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ui.ctx(), |ui| {
-            detail_sheet_frame(theme, pad).show(ui, |ui| {
-                ui.set_width(sheet_width);
-                detail_header_ui(ui, theme, &ctx, &mut outcome);
-                ui.add_space(SPACING_SM);
-                egui::ScrollArea::vertical()
-                    .max_height(max_body_height)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
-                    });
-            });
+            // Constrain the body to a comfortable reading width instead of
+            // stretching it across a wide window. Shrink to content height (only
+            // the width is pinned) so the trailing actions sit right under the
+            // body rather than floating in the centre of an over-tall scroll area.
+            let content_width = ui.available_width().min(DETAIL_CONTENT_WIDTH);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.set_max_width(content_width);
+                    detail_body_ui(ui, theme, &ctx, state, action, &mut outcome);
+                });
         });
 
     resolve_detail_outcome(state, action, view, &ctx, outcome);
+}
+
+/// The full-pane detail top bar: a back-to-board button, the card's current
+/// status pill, and a trailing ✕ that also dismisses. All three resolve to
+/// [`DetailOutcome::Close`].
+fn detail_pane_topbar_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    outcome: &mut DetailOutcome,
+) {
+    ui.horizontal(|ui| {
+        let back = egui::Button::new(egui::RichText::new("← Board").color(theme.text_secondary))
+            .fill(egui::Color32::TRANSPARENT)
+            .frame(false);
+        if ui.add(back).clicked() {
+            *outcome = DetailOutcome::Close;
+        }
+        ui.add_space(SPACING_SM);
+        status_pill(ui, theme, &ctx.columns[ctx.current_col]);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
+                .fill(egui::Color32::TRANSPARENT)
+                .frame(false);
+            if ui.add(x).clicked() {
+                *outcome = DetailOutcome::Close;
+            }
+        });
+    });
 }
 
 /// The card data the detail sheet needs, copied out of the (immutable)
@@ -960,7 +994,7 @@ struct DetailCtx {
 enum DetailOutcome {
     #[default]
     None,
-    /// Dismiss the sheet (✕, a tap on the scrim, or Escape).
+    /// Dismiss the detail pane (back, ✕, or Escape).
     Close,
     Delete,
     Archive,
@@ -1004,28 +1038,6 @@ fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
         .inner_margin(egui::Margin::same(pad as i8))
 }
 
-/// Sheet header: the current-status pill and a close button (the sheet has no
-/// draggable window chrome to dismiss it). The card's word-id reference lives
-/// under the title instead, so the title is the first thing the eye lands on.
-fn detail_header_ui(
-    ui: &mut egui::Ui,
-    theme: &ColorTheme,
-    ctx: &DetailCtx,
-    outcome: &mut DetailOutcome,
-) {
-    ui.horizontal(|ui| {
-        status_pill(ui, theme, &ctx.columns[ctx.current_col]);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
-                .fill(egui::Color32::TRANSPARENT)
-                .frame(false);
-            if ui.add(x).clicked() {
-                *outcome = DetailOutcome::Close;
-            }
-        });
-    });
-}
-
 /// The scrollable sheet body: title, description, labels, status and delete.
 /// Title/description commit directly on focus loss; the rest is collected into
 /// `outcome` and resolved by the caller.
@@ -1055,15 +1067,20 @@ fn detail_body_ui(
     ui.add_space(SPACING_MD);
     ui.separator();
     ui.add_space(SPACING_SM);
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // A plain horizontal row (not a right-to-left, full-height layout): in the
+    // full-pane view the body lays out in the whole viewport, and a centre-aligned
+    // layout would float these actions in the middle of the empty space below the
+    // card. Left-aligned directly under the separator keeps them anchored to the
+    // content.
+    ui.horizontal(|ui| {
+        if ui.button("Archive").clicked() {
+            *outcome = DetailOutcome::Archive;
+        }
         if ui
             .button(egui::RichText::new("Delete card").color(theme.destructive))
             .clicked()
         {
             *outcome = DetailOutcome::Delete;
-        }
-        if ui.button("Archive").clicked() {
-            *outcome = DetailOutcome::Archive;
         }
     });
 }
