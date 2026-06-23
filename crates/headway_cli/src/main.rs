@@ -21,6 +21,7 @@ use serde_json::json;
 
 use headway::event::{self, BoardView, CardView};
 use headway::store::{self, BoardAction, Publisher};
+use headway::wordid;
 
 use relay::Relay;
 
@@ -486,13 +487,25 @@ fn resolve_col(view: &BoardView, sel: &str) -> Result<usize> {
         })
 }
 
-/// Resolve a card argument: a full 64-char hex id, or a unique short prefix of
-/// one (matched against every card on the board, including archived ones).
+/// Resolve a card argument, accepting (in order): a full 64-char hex id; a word
+/// id like `headway-maple-river-canyon` (the `<board>-` prefix is optional, so
+/// `maple-river-canyon` works too); or a unique hex prefix. Word ids and hex
+/// prefixes are matched against every card on the board, archived ones included.
 fn resolve_card(view: &BoardView, sel: &str) -> Result<NoteId> {
     if let Ok(id) = NoteId::from_hex(sel) {
         return Ok(id);
     }
     let sel = sel.to_lowercase();
+
+    // Word id: drop an optional `<board>-` prefix, then match by re-encoding
+    // each card — exactly how a git short hash is resolved.
+    let words = sel
+        .strip_prefix(&format!("{}-", view.id.to_lowercase()))
+        .unwrap_or(&sel);
+    if let Some(c) = all_cards(view).find(|c| wordid::encode(c.id.bytes()) == words) {
+        return Ok(c.id);
+    }
+
     let mut hits = all_cards(view).filter(|c| c.id.hex().starts_with(&sel));
     match (hits.next(), hits.next()) {
         (Some(c), None) => Ok(c.id),
@@ -531,7 +544,7 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
         for c in &col.cards {
             println!(
                 "  {}  {}{}",
-                short(&c.id),
+                card_ref(view, &c.id),
                 c.title,
                 labels_suffix(&c.labels)
             );
@@ -541,7 +554,7 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
         if show_archived {
             println!("\nArchived ({})", view.archived.len());
             for a in &view.archived {
-                println!("  {}  {}", short(&a.card.id), a.card.title);
+                println!("  {}  {}", card_ref(view, &a.card.id), a.card.title);
             }
         } else {
             println!(
@@ -583,7 +596,7 @@ fn print_cards(view: &BoardView, sels: &[String], as_json: bool) -> Result<()> {
         for (card, col) in &cards {
             println!(
                 "  {}  {}  {}{}",
-                short(&card.id),
+                card_ref(view, &card.id),
                 col,
                 card.title,
                 labels_suffix(&card.labels)
@@ -615,8 +628,11 @@ fn labels_suffix(labels: &[String]) -> String {
     }
 }
 
-fn short(id: &NoteId) -> String {
-    id.hex().chars().take(8).collect()
+/// A card's human-friendly reference: the board slug plus three words, e.g.
+/// `headway-maple-river-canyon`. Just a rendering of the event id — see
+/// [`headway::wordid`].
+fn card_ref(view: &BoardView, id: &NoteId) -> String {
+    format!("{}-{}", view.id, wordid::encode(id.bytes()))
 }
 
 // ---------------------------------------------------------------------------
