@@ -990,8 +990,9 @@ fn detail_sheet_frame(theme: &ColorTheme, pad: f32) -> egui::Frame {
         .inner_margin(egui::Margin::same(pad as i8))
 }
 
-/// Sheet header: the card's copyable word-id reference, the current-status pill,
-/// and a close button (the sheet has no draggable window chrome to dismiss it).
+/// Sheet header: the current-status pill and a close button (the sheet has no
+/// draggable window chrome to dismiss it). The card's word-id reference lives
+/// under the title instead, so the title is the first thing the eye lands on.
 fn detail_header_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
@@ -999,17 +1000,6 @@ fn detail_header_ui(
     outcome: &mut DetailOutcome,
 ) {
     ui.horizontal(|ui| {
-        // The card's word-id reference, click-to-copy — the GUI mirror of what
-        // the CLI prints, and a stable handle to paste into commits/chat.
-        let card_ref = ui
-            .add(
-                egui::Label::new(egui::RichText::new(&ctx.card_ref).color(theme.text_muted))
-                    .sense(egui::Sense::click()),
-            )
-            .on_hover_text("Click to copy");
-        if card_ref.clicked() {
-            ui.ctx().copy_text(ctx.card_ref.clone());
-        }
         status_pill(ui, theme, &ctx.columns[ctx.current_col]);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let x = egui::Button::new(egui::RichText::new("✕").color(theme.text_muted))
@@ -1034,6 +1024,7 @@ fn detail_body_ui(
     outcome: &mut DetailOutcome,
 ) {
     detail_title_section_ui(ui, ctx, state, action);
+    detail_card_ref_ui(ui, theme, ctx);
 
     ui.add_space(SPACING_MD);
     detail_description_section_ui(ui, theme, ctx, state, action);
@@ -1113,6 +1104,25 @@ fn detail_title_section_ui(
                 state.detail_title_mode = EditMode::Rendered;
             }
         }
+    }
+}
+
+/// The card's word-id reference, rendered as a muted, click-to-copy caption
+/// directly under the title — the GUI mirror of what the CLI prints, and a
+/// stable handle to paste into commits/chat (see [`headway::wordid`]).
+fn detail_card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, ctx: &DetailCtx) {
+    let resp = ui
+        .add(
+            egui::Label::new(
+                egui::RichText::new(&ctx.card_ref)
+                    .color(theme.text_muted)
+                    .small(),
+            )
+            .sense(egui::Sense::click()),
+        )
+        .on_hover_text("Click to copy");
+    if resp.clicked() {
+        ui.ctx().copy_text(ctx.card_ref.clone());
     }
 }
 
