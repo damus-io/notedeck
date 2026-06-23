@@ -80,7 +80,7 @@ required-features = ["auto-update"]
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net", "sync", "time"] }
 nostr-relay-builder = "0.37"
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 
 [dependencies.egui_kittest]

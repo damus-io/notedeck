@@ -19,6 +19,6 @@ notedeck = { workspace = true }
 nostr-relay-builder = "0.37"
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net", "io-util", "time", "sync"] }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
