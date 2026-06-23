@@ -39,8 +39,12 @@ If a command fails because you're not logged in, ask the user to run
 ## The golden rule: `show` before you edit
 
 Cards are addressed by their **event id**, and columns by **id or
-case-insensitive name**. When scripting the CLI, pass the full 64-char hex `id`
-from `show --json` — it's canonical and never ambiguous. The human-readable
+case-insensitive name**. When scripting the CLI, pass a hex `id` from
+`show --json`. Any unique prefix resolves, so the full 64-char id is overkill —
+a **16-char (8-byte) prefix** is plenty for a board with a handful of cards, and
+even an 8-char prefix is usually unambiguous. Use a short prefix for automated
+edits; just lengthen it (or fall back to the full id) if you ever hit an
+"ambiguous card prefix" error. The human-readable
 `show` instead displays a muted **word-id** like `headway#maple-river-canyon` (a
 friendly rendering of that same event id, for quoting in commits/chat); it also
 resolves as a `<card>` argument, but prefer the hex id for automated edits.
@@ -71,7 +75,7 @@ automated edit can never hit the wrong card.
 
 All of these resolve as a `<card>` argument, to the same card every time:
 
-- a full 64-char hex event id, or any unique hex prefix — preferred for editing
+- a hex event id, full or any unique prefix (a 16-char prefix is plenty) — preferred for editing
 - `headway#maple-river-canyon` — the full word-id (works unquoted in a shell)
 - `#maple-river-canyon` — bare; quote it in a shell so `#` isn't read as a comment
 - `maple-river-canyon` — the bare words, no sigil
