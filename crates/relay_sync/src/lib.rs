@@ -123,14 +123,20 @@ pub async fn connect_and_sync(
     filter: &Filter,
     is_addressable: &dyn Fn(u32) -> bool,
 ) -> Result<Option<Relay>> {
-    let mut relay = match Relay::connect(relay_url).await {
-        Ok(relay) => relay,
+    let relay = match Relay::connect(relay_url).await {
         // The app being closed is the common case, not an error worth warning
         // about — fall back to the local cache quietly.
-        Err(_) => return Ok(None),
+        Ok(mut relay) => {
+            reconcile_sync(&mut relay, ndb, author, kinds, filter, is_addressable).await?;
+            Some(relay)
+        },
+        Err(e) => {
+            eprintln!("warning: {e}");
+            eprintln!("working offline against the local cache (--relay to point elsewhere)");
+            None
+        }
     };
-    reconcile_sync(&mut relay, ndb, author, kinds, filter, is_addressable).await?;
-    Ok(Some(relay))
+    Ok(relay)
 }
 
 /// nostrdb ingests on background threads, so a freshly-synced event isn't
