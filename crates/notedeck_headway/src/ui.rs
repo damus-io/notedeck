@@ -141,6 +141,7 @@ struct DragCard(NoteId);
 pub fn board_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    note_context: &mut notedeck::NoteContext,
     view: &BoardView,
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
@@ -153,7 +154,7 @@ pub fn board_ui(
         .is_some_and(|id| find_card(view, id).is_some())
     {
         let mut action: Option<BoardAction> = None;
-        card_detail_pane_ui(ui, theme, view, state, &mut action);
+        card_detail_pane_ui(ui, theme, note_context, view, state, &mut action);
         return action;
     }
     if state.selected.take().is_some() {
@@ -877,6 +878,7 @@ fn add_column_ui(
 fn card_detail_pane_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    note_context: &mut notedeck::NoteContext,
     view: &BoardView,
     state: &mut BoardUiState,
     action: &mut Option<BoardAction>,
@@ -971,7 +973,14 @@ fn card_detail_pane_ui(
                                 egui::Layout::top_down(egui::Align::Min),
                                 |ui| {
                                     ui.set_width(DETAIL_COMMENTS_WIDTH);
-                                    detail_comments_ui(ui, theme, &ctx, state, &mut outcome);
+                                    detail_comments_ui(
+                                        ui,
+                                        theme,
+                                        note_context,
+                                        &ctx,
+                                        state,
+                                        &mut outcome,
+                                    );
                                 },
                             );
                         });
@@ -982,7 +991,7 @@ fn card_detail_pane_ui(
                         ui.add_space(SPACING_MD);
                         ui.separator();
                         ui.add_space(SPACING_MD);
-                        detail_comments_ui(ui, theme, &ctx, state, &mut outcome);
+                        detail_comments_ui(ui, theme, note_context, &ctx, state, &mut outcome);
                     }
                 });
         });
@@ -1340,6 +1349,7 @@ fn detail_status_section_ui(
 fn detail_comments_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    note_context: &mut notedeck::NoteContext,
     ctx: &DetailCtx,
     state: &mut BoardUiState,
     outcome: &mut DetailOutcome,
@@ -1359,8 +1369,12 @@ fn detail_comments_ui(
                 .color(theme.text_muted),
         );
     } else {
+        // One read txn for the whole thread; each kind-1111 comment is drawn with
+        // the shared notedeck_ui note renderer so headway comments carry the same
+        // pfp/name/time chrome they'd get anywhere else in notedeck.
+        let txn = nostrdb::Transaction::new(note_context.ndb).ok();
         for comment in &ctx.comments {
-            comment_row_ui(ui, theme, comment);
+            comment_note_ui(ui, theme, note_context, txn.as_ref(), comment);
         }
     }
 
@@ -1368,8 +1382,53 @@ fn detail_comments_ui(
     detail_comment_composer_ui(ui, theme, state, outcome);
 }
 
+/// Render one comment with the shared notedeck_ui note renderer, loading the
+/// kind-1111 event from the local db by id. A threaded reply gets a small
+/// "↳ reply to" caption above the note (the thread still renders flat). Falls
+/// back to the self-contained [`comment_row_ui`] if the note isn't in the db.
+fn comment_note_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    note_context: &mut notedeck::NoteContext,
+    txn: Option<&nostrdb::Transaction>,
+    comment: &CommentView,
+) {
+    let note = txn.and_then(|txn| {
+        note_context
+            .ndb
+            .get_note_by_id(txn, comment.id.bytes())
+            .ok()
+    });
+    let Some(note) = note else {
+        comment_row_ui(ui, theme, comment);
+        return;
+    };
+
+    // The renderer shows author/time/body; the reply target is the one thing it
+    // can't convey while the thread is flat, so surface it as a caption.
+    if let Some(parent) = &comment.parent {
+        ui.label(
+            egui::RichText::new(format!(
+                "↳ reply to #{}",
+                headway::wordid::encode(parent.bytes())
+            ))
+            .small()
+            .color(theme.text_muted),
+        );
+    }
+
+    // No actionbar/options menu: there's no relay publishing or note-nav wired up
+    // here, so the reply/zap/repost affordances would be dead. A small framed pfp
+    // keeps each comment compact in the thread rail.
+    let flags = notedeck_ui::NoteOptions::SelectableText
+        | notedeck_ui::NoteOptions::SmallPfp
+        | notedeck_ui::NoteOptions::Framed;
+    notedeck_ui::NoteView::new(note_context, &note, flags).show(ui);
+}
+
 /// A single comment: an attribution line (short author, relative time, word-id,
-/// and a "↳ reply to" marker for threaded replies) above its markdown body.
+/// and a "↳ reply to" marker for threaded replies) above its markdown body. The
+/// fallback for [`comment_note_ui`] when the kind-1111 event isn't in the db.
 fn comment_row_ui(ui: &mut egui::Ui, theme: &ColorTheme, comment: &CommentView) {
     egui::Frame::new()
         .fill(theme.surface_secondary)

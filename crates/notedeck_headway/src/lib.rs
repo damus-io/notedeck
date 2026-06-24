@@ -245,12 +245,19 @@ impl App for Headway {
         }
 
         // Render against the cached view; `sync` and `state` are disjoint fields.
-        let action = board_ui(
-            ui,
-            &theme,
-            self.sync.view().expect("view present"),
-            &mut self.state,
-        );
+        // The detail pane draws comments with notedeck_ui's note renderer, so it
+        // needs a `NoteContext` borrowed off `ctx` — dropped before we touch `ctx`
+        // again to ingest the action below.
+        let action = {
+            let mut note_context = ctx.note_context();
+            board_ui(
+                ui,
+                &theme,
+                &mut note_context,
+                self.sync.view().expect("view present"),
+                &mut self.state,
+            )
+        };
 
         // Apply the collected action by ingesting events locally. Mutations need
         // a signing key; a watch-only account simply can't edit.
