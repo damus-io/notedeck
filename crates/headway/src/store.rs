@@ -287,9 +287,16 @@ pub fn apply(
                 None => None,
             };
 
+            // Comments fold in `created_at` order (id as tiebreaker). Nostr
+            // timestamps are whole seconds, so two comments posted in the same
+            // second would tie and the id tiebreaker would order them at random —
+            // a reply could sort ahead of the comment it answers. Stamp strictly
+            // past the newest comment already on the card so order stays causal
+            // (mirrors [`next_after`]).
+            let latest = c.comments.iter().map(|c| c.created_at).max().unwrap_or(0);
             ingest(
                 ndb,
-                build_comment(&card, &issue_author, reply, &body),
+                build_comment(&card, &issue_author, reply, &body).created_at(next_after(latest)),
                 secret,
                 publisher,
             );

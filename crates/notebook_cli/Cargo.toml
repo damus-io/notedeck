@@ -1,14 +1,14 @@
 [package]
-name = "headway_cli"
+name = "notebook_cli"
 edition = "2024"
 version.workspace = true
 
 [[bin]]
-name = "headway"
+name = "notebook"
 path = "src/main.rs"
 
 [dependencies]
-headway = { workspace = true }
+notedeck_notebook = { workspace = true }
 relay_sync = { workspace = true }
 enostr = { workspace = true }
 nostrdb = { workspace = true }
@@ -17,8 +17,6 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
 nostrdb_relay = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
-tokio-tungstenite = { workspace = true }
-futures-util = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 tempfile = { workspace = true }
 bech32 = { workspace = true }

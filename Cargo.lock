@@ -3445,14 +3445,12 @@ name = "headway_cli"
 version = "0.10.0-beta.4"
 dependencies = [
  "bech32",
- "dirs",
  "enostr",
  "futures-util",
  "headway",
- "hex",
- "negentropy 0.5.0",
  "nostrdb",
  "nostrdb_relay",
+ "relay_sync",
  "serde_json",
  "tempfile",
  "tokio",
@@ -5003,6 +5001,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "notebook_cli"
+version = "0.10.0-beta.4"
+dependencies = [
+ "bech32",
+ "enostr",
+ "nostrdb",
+ "nostrdb_relay",
+ "notedeck_notebook",
+ "relay_sync",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "notedeck"
 version = "0.10.0-beta.4"
 dependencies = [
@@ -5345,6 +5358,7 @@ dependencies = [
 name = "notedeck_notebook"
 version = "0.10.0-beta.4"
 dependencies = [
+ "bip39",
  "egui",
  "egui_kittest",
  "enostr",
@@ -5355,6 +5369,7 @@ dependencies = [
  "notedeck",
  "notedeck_ui",
  "pollster",
+ "serde_json",
  "tempfile",
  "url",
 ]
@@ -6984,6 +6999,22 @@ dependencies = [
  "libc",
  "mach2 0.4.3",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "relay_sync"
+version = "0.10.0-beta.4"
+dependencies = [
+ "bech32",
+ "dirs",
+ "enostr",
+ "futures-util",
+ "hex",
+ "negentropy 0.5.0",
+ "nostrdb",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
 ]
 
 [[package]]
