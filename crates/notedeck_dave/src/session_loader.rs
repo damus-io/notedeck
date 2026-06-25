@@ -1,8 +1,8 @@
 //! Load a previous session's conversation from nostr events in ndb.
 //!
 //! Queries for kind-1988 events with a matching `d` tag (session ID),
-//! orders them by created_at, and converts them into `Message` variants
-//! for populating the chat UI.
+//! orders them by their monotonic `seq` tag, and converts them into
+//! `Message` variants for populating the chat UI.
 
 use crate::messages::{AssistantMessage, ExecutedTool, PermissionRequest};
 use crate::session::PermissionTracker;
@@ -90,7 +90,7 @@ pub struct LoadedSession {
 /// Load conversation messages from ndb for a given session ID.
 ///
 /// This queries for kind-1988 events with a `d` tag matching the session ID,
-/// sorts them chronologically, and converts relevant roles into Messages.
+/// sorts them by `seq`, and converts relevant roles into Messages.
 pub fn load_session_messages(ndb: &Ndb, txn: &Transaction, session_id: &str) -> LoadedSession {
     load_session_messages_with_author(ndb, txn, session_id, None)
 }
@@ -139,13 +139,22 @@ fn load_session_messages_with_author(
         .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
         .collect();
 
-    // Sort by created_at first, then by seq tag as tiebreaker for events
-    // within the same second (seq is per-session, not globally ordered)
+    // Sort by `seq` first, falling back to `created_at` as a tiebreaker.
+    //
+    // This query is scoped to a single session (`d` tag), and within one
+    // session `seq` is a unique, monotonic counter assigned in event order —
+    // it is the authoritative ordering (see `session_reconstructor`, which
+    // rebuilds JSONL purely by `seq`). `created_at` is only second-resolution
+    // and mixes backfilled JSONL timestamps with live `now_secs()` values, so
+    // sorting by it first scrambles events when many arrive in the same second
+    // (e.g. a synced backlog), which would float late events like a pending
+    // permission request to the wrong position. Only fall back to `created_at`
+    // for events missing a `seq` tag.
     notes.sort_by_key(|note| {
         let seq = get_tag_value(note, "seq")
             .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        (note.created_at(), seq)
+            .unwrap_or(u32::MAX);
+        (seq, note.created_at())
     });
 
     let event_count = notes.len() as u32;
@@ -546,5 +555,111 @@ pub(crate) fn truncate(s: &str, max_chars: usize) -> String {
     } else {
         let truncated: String = s.chars().take(max_chars).collect();
         format!("{}...", truncated)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session_events::{build_events, build_permission_request_event, ThreadingState};
+    use crate::session_jsonl::JsonlLine;
+    use nostrdb::{Config, IngestMetadata, Ndb};
+    use tempfile::TempDir;
+
+    fn test_config() -> Config {
+        if cfg!(target_os = "windows") {
+            Config::new().set_mapsize(32 * 1024 * 1024)
+        } else {
+            Config::new()
+        }
+    }
+
+    fn test_secret_key() -> [u8; 32] {
+        let mut key = [0u8; 32];
+        key[0] = 1; // non-zero so signing works
+        key
+    }
+
+    /// A pending permission request must stay at the end of the conversation
+    /// even when its `created_at` is *earlier* than surrounding events.
+    ///
+    /// This reproduces the remote-sync bug: conversation events carry their
+    /// original JSONL timestamps while a live permission request is stamped
+    /// with `now_secs()`. When a backlog syncs with future-dated (or simply
+    /// out-of-second) timestamps, sorting by `created_at` first floated the
+    /// "needs input" permission request to the top. Sorting by `seq` keeps it
+    /// in its true position regardless of timestamp skew.
+    #[tokio::test]
+    async fn permission_request_orders_by_seq_not_created_at() {
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id = "seq-ordering-test";
+
+        // Conversation events are far-future dated so their created_at exceeds
+        // the permission request's now_secs() stamp.
+        let user_line = JsonlLine::parse(&format!(
+            r#"{{"type":"user","uuid":"u1","parentUuid":null,"sessionId":"{session_id}","timestamp":"2099-02-09T20:00:01Z","cwd":"/tmp","version":"2.0.64","message":{{"role":"user","content":"run a command"}}}}"#,
+        ))
+        .unwrap();
+        let user_events = build_events(&user_line, &mut threading, &sk).unwrap();
+
+        let assistant_line = JsonlLine::parse(&format!(
+            r#"{{"type":"assistant","uuid":"u2","parentUuid":"u1","sessionId":"{session_id}","timestamp":"2099-02-09T20:00:02Z","cwd":"/tmp","version":"2.0.64","message":{{"role":"assistant","model":"claude-opus-4-5-20251101","content":[{{"type":"text","text":"sure, running it"}}]}}}}"#,
+        ))
+        .unwrap();
+        let assistant_events = build_events(&assistant_line, &mut threading, &sk).unwrap();
+
+        // Live permission request, stamped with now_secs() (much earlier than 2099).
+        let perm_id = uuid::Uuid::new_v4();
+        let tool_input = serde_json::json!({"command": "rm -rf /tmp/test"});
+        let perm_event = build_permission_request_event(
+            &perm_id,
+            "Bash",
+            &tool_input,
+            session_id,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        // Ingest in reverse to mimic out-of-order relay delivery.
+        let mut all_events: Vec<_> = Vec::new();
+        all_events.extend(
+            user_events
+                .iter()
+                .filter(|e| e.kind == AI_CONVERSATION_KIND),
+        );
+        all_events.extend(
+            assistant_events
+                .iter()
+                .filter(|e| e.kind == AI_CONVERSATION_KIND),
+        );
+        all_events.push(&perm_event);
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = Filter::new().kinds([AI_CONVERSATION_KIND as u64]).build();
+
+        for event in all_events.iter().rev() {
+            let sub_id = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub_id, 1).await.unwrap();
+        }
+
+        let txn = Transaction::new(&ndb).unwrap();
+        let loaded = load_session_messages(&ndb, &txn, session_id);
+
+        assert_eq!(loaded.messages.len(), 3);
+        assert!(
+            matches!(loaded.messages[0], Message::User(_)),
+            "first message should be the user prompt, got {:?}",
+            loaded.messages[0]
+        );
+        assert!(
+            matches!(loaded.messages.last(), Some(Message::PermissionRequest(_))),
+            "permission request must sort last (by seq), not float to the top: {:?}",
+            loaded.messages
+        );
     }
 }
