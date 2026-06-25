@@ -43,6 +43,13 @@ const HANDLE_RADIUS: f32 = 3.5;
 /// Click/drag target size of a connection handle (larger than it looks, so it's
 /// easy to grab).
 const HANDLE_HIT: f32 = 18.0;
+/// Width of the grab strip along a node's left/right edge that resizes it, in
+/// canvas pixels. A thin band so it sits on the border without eating drags on
+/// the node body (which move the node).
+const RESIZE_GRAB: f32 = 8.0;
+/// Smallest width a node can be edge-resized to, in canvas pixels, so it never
+/// collapses to an ungrabbable sliver.
+const MIN_NODE_WIDTH: f32 = 80.0;
 /// How close (canvas pixels) the pointer must be to an edge's curve to count as
 /// hovering it — the threshold that reveals the edge's midpoint delete handle.
 const EDGE_HOVER_DIST: f32 = 8.0;
@@ -112,6 +119,11 @@ pub fn notebook_ui(
     let mut create_at: Option<Pos2> = None;
     let mut commit_edit = false;
     let mut cancel_edit = false;
+    // A live edge-resize this frame: the node and its new top-left + width (in
+    // canvas coords), applied as an override below so the box resizes under the
+    // pointer. The release is committed as a geometry update.
+    let mut resize_to: Option<(NodeId, Pos2, f32)> = None;
+    let mut resize_stopped: Option<NodeId> = None;
     // Actual rendered height per node this frame; a node's content can overflow
     // its declared height, so we remember the real box height for next frame's
     // edge/handle anchoring (see `Notebook::rendered_heights`).
@@ -236,6 +248,58 @@ pub fn notebook_ui(
             }
         }
 
+        // Width-resize affordance: thin grab strips on the selected node's left
+        // and right edges. Height is content-driven (see `Notebook::node_rect`),
+        // so width is the only adjustable axis — narrowing reflows the content and
+        // the height follows. Registered after the node bodies (so an edge drag
+        // resizes instead of moving) and before the connection handles (so the
+        // side-midpoint connection dots still win the very center of each edge).
+        if let Some(sel) = selected
+            && editing_id.as_ref() != Some(sel)
+            && let Some(rect) = rects.get(sel).copied()
+        {
+            for right_edge in [false, true] {
+                let edge_x = if right_edge {
+                    rect.right()
+                } else {
+                    rect.left()
+                };
+                let grab = Rect::from_min_max(
+                    egui::pos2(edge_x - RESIZE_GRAB / 2.0, rect.top()),
+                    egui::pos2(edge_x + RESIZE_GRAB / 2.0, rect.bottom()),
+                );
+                let resp = ui.interact(
+                    grab,
+                    ui.id().with(("notebook_resize", sel.as_str(), right_edge)),
+                    egui::Sense::drag(),
+                );
+                if resp.hovered() || resp.dragged() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                    ui.painter().vline(
+                        edge_x,
+                        rect.y_range(),
+                        egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
+                    );
+                }
+                if resp.dragged() {
+                    let dx = resp.drag_delta().x;
+                    // Right edge: top-left stays, width follows the pointer. Left
+                    // edge: the right edge stays put, so x shifts and width changes
+                    // inversely. Clamp to a minimum so the box can't collapse.
+                    let (min, width) = if right_edge {
+                        (rect.min, (rect.width() + dx).max(MIN_NODE_WIDTH))
+                    } else {
+                        let new_left = (rect.left() + dx).min(rect.right() - MIN_NODE_WIDTH);
+                        (egui::pos2(new_left, rect.top()), rect.right() - new_left)
+                    };
+                    resize_to = Some((sel.clone(), min, width));
+                }
+                if resp.drag_stopped() {
+                    resize_stopped = Some(sel.clone());
+                }
+            }
+        }
+
         // Connection handles: small dots on the sides of the active node(s) that
         // start an edge when dragged. Shown for the selected node, the node under
         // the pointer (including the handle band just outside its edges), and the
@@ -348,6 +412,12 @@ pub fn notebook_ui(
     if let Some((id, pos)) = dragged {
         notebook.positions.insert(id, pos);
     }
+    // Apply a live edge-resize: the width override reflows the box and, for a
+    // left-edge drag, the position override shifts its top-left under the pointer.
+    if let Some((id, min, width)) = resize_to {
+        notebook.widths.insert(id.clone(), width);
+        notebook.positions.insert(id, min);
+    }
     if let Some(id) = clicked {
         notebook.selected = Some(id);
     } else if bg_clicked {
@@ -361,6 +431,19 @@ pub fn notebook_ui(
             pos: *pos,
         })
     });
+
+    // A finished edge-resize commits the node's new width (and shifted top-left,
+    // for a left-edge drag) as a geometry update. Its own gesture, so it can't
+    // coincide with a move.
+    if let Some(id) = resize_stopped
+        && let (Some(&width), Some(pos)) = (notebook.widths.get(&id), notebook.node_position(&id))
+    {
+        intent = Some(UiIntent::Resize {
+            node: id,
+            pos,
+            width,
+        });
+    }
 
     // A clicked edge delete handle removes that edge. Takes precedence over a
     // move (the two gestures can't realistically coincide).

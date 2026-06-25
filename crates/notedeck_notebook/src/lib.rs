@@ -34,6 +34,11 @@ pub struct Notebook {
     /// Per-node position overrides applied during a live drag, in canvas coords.
     /// Cleared when a fresh fold lands (which then carries the committed move).
     positions: HashMap<NodeId, Pos2>,
+    /// Per-node width overrides applied during a live edge-resize, in canvas
+    /// pixels. Width is the only resizable axis (height is content-driven, see
+    /// [`Notebook::node_rect`]); narrowing reflows the node's content. Cleared
+    /// when a fresh fold lands (which then carries the committed size).
+    widths: HashMap<NodeId, f32>,
     /// This frame's eased top-left per node, in canvas coords — egui interpolates
     /// toward each node's committed position, so a node that jumped (a drag
     /// release, or a `notebook move` over the relay) slides instead of teleporting.
@@ -96,6 +101,10 @@ pub(crate) enum NodeEdit {
 pub(crate) enum UiIntent {
     /// A node was dragged to `pos` (its new top-left, in canvas coords).
     Move { node: NodeId, pos: Pos2 },
+    /// A node was edge-resized: `pos` is its (possibly shifted, for a left-edge
+    /// drag) top-left and `width` its new width, in canvas coords. Height is
+    /// content-driven and left untouched.
+    Resize { node: NodeId, pos: Pos2, width: f32 },
     /// An existing text node's text was edited.
     EditText { node: NodeId, text: String },
     /// A new text node was composed at `pos`.
@@ -158,7 +167,10 @@ impl Notebook {
             .get(id)
             .copied()
             .unwrap_or(default.height());
-        Rect::from_min_size(min, egui::vec2(default.width(), height))
+        // A live edge-resize overrides the committed width; height stays
+        // content-driven so the reflowed content sets it.
+        let width = self.widths.get(id).copied().unwrap_or(default.width());
+        Rect::from_min_size(min, egui::vec2(width, height))
     }
 
     /// The node's current top-left position (after any live-drag override).
@@ -193,6 +205,18 @@ impl Notebook {
                         x: pos.x as i64,
                         y: pos.y as i64,
                         w: g.width,
+                        h: g.height,
+                    },
+                })
+            }
+            UiIntent::Resize { node, pos, width } => {
+                let g = self.canvas.get_nodes().get(&node)?.node();
+                Some(CanvasAction::SetGeometry {
+                    node: NoteId::from_hex(node.as_str()).ok()?,
+                    geo: Geometry {
+                        x: pos.x as i64,
+                        y: pos.y as i64,
+                        w: width as u64,
                         h: g.height,
                     },
                 })
@@ -306,6 +330,7 @@ impl Default for Notebook {
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
             loaded: false,
             positions: HashMap::new(),
+            widths: HashMap::new(),
             anim_pos: HashMap::new(),
             rendered_heights: HashMap::new(),
             selected: None,
@@ -336,6 +361,7 @@ impl notedeck::App for Notebook {
                 self.canvas = view_to_canvas(view);
             }
             self.positions.clear();
+            self.widths.clear();
             self.wake();
         }
 
