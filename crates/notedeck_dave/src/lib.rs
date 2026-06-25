@@ -2437,6 +2437,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     ) -> (Vec<(SessionId, String)>, Vec<session_events::BuiltEvent>) {
         let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
         let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
+        let mut reorder_ids: Vec<SessionId> = Vec::new();
         let Some(account) = self.pns_local_state.as_ref().map(|state| state.account) else {
             return (remote_user_messages, events_to_publish);
         };
@@ -2477,7 +2478,45 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
                 process_conversation_notes(notes, session, session_id, is_remote, secret_key, ndb);
             remote_user_messages.extend(result.remote_user_messages);
             events_to_publish.extend(result.events_to_publish);
+            if result.needs_reorder {
+                reorder_ids.push(session_id);
+            }
         }
+
+        // Out-of-order relay delivery was detected for these remote sessions:
+        // rebuild each chat from ndb in `seq` order. Done after the poll loop
+        // so each rebuild uses a fresh transaction (no nested txns).
+        for session_id in reorder_ids {
+            let Ok(txn) = Transaction::new(ndb) else {
+                continue;
+            };
+            let Some(session) = self.session_manager.get_mut(session_id) else {
+                continue;
+            };
+            let Some(claude_sid) = session
+                .agentic
+                .as_ref()
+                .map(|a| a.event_session_id().to_string())
+            else {
+                continue;
+            };
+            let loaded =
+                session_loader::load_session_messages_for_author(ndb, &txn, &account, &claude_sid);
+            session.chat = loaded.messages;
+            if let Some(agentic) = &mut session.agentic {
+                agentic.seen_note_ids.extend(loaded.note_ids);
+                agentic.permissions.merge_loaded(
+                    loaded.permissions.responded,
+                    loaded.permissions.request_note_ids,
+                );
+            }
+            tracing::debug!(
+                "rebuilt remote session {} chat in seq order ({} messages)",
+                session_id,
+                session.chat.len(),
+            );
+        }
+
         (remote_user_messages, events_to_publish)
     }
 
@@ -4159,13 +4198,23 @@ pub(crate) struct ProcessedNotes {
     pub remote_user_messages: Vec<(SessionId, String)>,
     /// Events that should be published to relays.
     pub events_to_publish: Vec<session_events::BuiltEvent>,
+    /// True if an out-of-order (lower `seq`) conversation note was appended,
+    /// so the caller should rebuild this remote session's chat from ndb in
+    /// `seq` order. Only set for remote sessions.
+    pub needs_reorder: bool,
 }
 
 /// Process a batch of kind-1988 notes for a single session.
 ///
-/// Sorts by `(created_at, seq)`, deduplicates via `seen_note_ids`, and
-/// appends messages to `session.chat`. Returns any remote user messages
-/// (for local sessions) and events to publish.
+/// Sorts the batch by `seq`, deduplicates via `seen_note_ids`, and appends
+/// messages to `session.chat`. Returns any remote user messages (for local
+/// sessions) and events to publish.
+///
+/// Appending only preserves order within this batch; events arriving in a
+/// later poll are appended after earlier ones. To recover from out-of-order
+/// relay delivery across polls, this tracks the highest conversation `seq`
+/// appended and sets `needs_reorder` when a lower-`seq` note arrives, so the
+/// caller rebuilds the remote session's chat from ndb in `seq` order.
 pub(crate) fn process_conversation_notes<'a>(
     mut notes: Vec<nostrdb::Note<'a>>,
     session: &mut session::ChatSession,
@@ -4176,6 +4225,7 @@ pub(crate) fn process_conversation_notes<'a>(
 ) -> ProcessedNotes {
     let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
+    let mut needs_reorder = false;
 
     // Sort this batch by `seq` (the per-session monotonic counter), falling
     // back to `created_at` only for events with no `seq` tag. Live events are
@@ -4220,6 +4270,30 @@ pub(crate) fn process_conversation_notes<'a>(
         let Some(agentic) = &mut session.agentic else {
             continue;
         };
+
+        // Track conversation ordering. Live events are appended in arrival
+        // order, so a displayable note whose `seq` is below the highest seen
+        // means relay delivery was out of order; flag a rebuild from ndb in
+        // `seq` order. Only newly-seen notes reach here (deduped above).
+        let displayable = matches!(
+            role,
+            Some("user")
+                | Some("assistant")
+                | Some("tool_call")
+                | Some("tool_result")
+                | Some("permission_request")
+                | Some("compaction_complete")
+        );
+        if displayable {
+            if let Some(seq) =
+                session_events::get_tag_value(note, "seq").and_then(|s| s.parse::<u32>().ok())
+            {
+                if matches!(agentic.max_seen_seq, Some(prev) if seq < prev) {
+                    needs_reorder = true;
+                }
+                agentic.max_seen_seq = Some(agentic.max_seen_seq.map_or(seq, |p| p.max(seq)));
+            }
+        }
 
         match role {
             Some("user") => {
@@ -4332,6 +4406,7 @@ pub(crate) fn process_conversation_notes<'a>(
     ProcessedNotes {
         remote_user_messages,
         events_to_publish,
+        needs_reorder,
     }
 }
 
@@ -4867,7 +4942,7 @@ mod tests {
     }
 
     /// Integration test: events ingested out of order into ndb are sorted
-    /// by `(created_at, seq)` and produce correctly ordered chat messages.
+    /// by `seq` and produce correctly ordered chat messages.
     /// This exercises the actual `process_conversation_notes` code path
     /// used by `poll_remote_conversation_events`.
     #[tokio::test]
@@ -5000,6 +5075,134 @@ mod tests {
             session.chat.len(),
             3,
             "dedup should prevent duplicate messages"
+        );
+    }
+
+    /// A conversation note arriving in a later poll batch with a lower `seq`
+    /// than already-appended notes (out-of-order relay delivery across polls)
+    /// must set `needs_reorder` so the caller rebuilds the chat from ndb in
+    /// seq order. In-order delivery must not.
+    #[tokio::test]
+    async fn process_conversation_notes_flags_cross_batch_out_of_order() {
+        fn notes_with_seq<'a>(
+            ndb: &'a Ndb,
+            txn: &'a Transaction,
+            filter: &nostrdb::Filter,
+            seq: u32,
+        ) -> Vec<nostrdb::Note<'a>> {
+            let results = ndb.query(txn, std::slice::from_ref(filter), 128).unwrap();
+            results
+                .iter()
+                .filter_map(|qr| ndb.get_note_by_key(txn, qr.note_key).ok())
+                .filter(|n| {
+                    session_events::get_tag_value(n, "seq").and_then(|s| s.parse::<u32>().ok())
+                        == Some(seq)
+                })
+                .collect()
+        }
+
+        let sk = test_secret_key();
+        let mut threading = ThreadingState::new();
+        let session_id_str = "cross-batch-test";
+
+        // Two live events: seq 0 then seq 1.
+        let first = build_live_event(
+            "first",
+            "assistant",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+        let second = build_live_event(
+            "second",
+            "assistant",
+            session_id_str,
+            None,
+            None,
+            None,
+            &mut threading,
+            &sk,
+        )
+        .unwrap();
+
+        let tmp_dir = TempDir::new().unwrap();
+        let ndb = Ndb::new(tmp_dir.path().to_str().unwrap(), &test_config()).unwrap();
+        let filter = nostrdb::Filter::new()
+            .kinds([session_events::AI_CONVERSATION_KIND as u64])
+            .build();
+        for event in [&first, &second] {
+            let sub = ndb.subscribe(std::slice::from_ref(&filter)).unwrap();
+            ndb.process_event_with(&event.to_event_json(), IngestMetadata::new().client(true))
+                .expect("ingest failed");
+            let _ = ndb.wait_for_notes(sub, 1).await.unwrap();
+        }
+
+        let new_remote_session = || {
+            let mut s = session::ChatSession::new(
+                1,
+                PathBuf::from("/tmp"),
+                AiMode::Agentic,
+                BackendType::Claude,
+            );
+            s.source = SessionSource::Remote;
+            s
+        };
+
+        let txn = Transaction::new(&ndb).unwrap();
+
+        // In order (seq 0 then seq 1): never flags reorder.
+        let mut in_order = new_remote_session();
+        assert!(
+            !process_conversation_notes(
+                notes_with_seq(&ndb, &txn, &filter, 0),
+                &mut in_order,
+                1,
+                true,
+                Some(&sk),
+                &ndb,
+            )
+            .needs_reorder
+        );
+        assert!(
+            !process_conversation_notes(
+                notes_with_seq(&ndb, &txn, &filter, 1),
+                &mut in_order,
+                1,
+                true,
+                Some(&sk),
+                &ndb,
+            )
+            .needs_reorder
+        );
+
+        // Out of order (seq 1 then seq 0): the later, lower-seq batch flags it.
+        let mut out_of_order = new_remote_session();
+        assert!(
+            !process_conversation_notes(
+                notes_with_seq(&ndb, &txn, &filter, 1),
+                &mut out_of_order,
+                1,
+                true,
+                Some(&sk),
+                &ndb,
+            )
+            .needs_reorder
+        );
+        assert!(
+            process_conversation_notes(
+                notes_with_seq(&ndb, &txn, &filter, 0),
+                &mut out_of_order,
+                1,
+                true,
+                Some(&sk),
+                &ndb,
+            )
+            .needs_reorder,
+            "a lower-seq note arriving in a later batch must flag a rebuild"
         );
     }
 

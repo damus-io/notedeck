@@ -292,6 +292,11 @@ pub struct AgenticSessionData {
     /// Prevents duplicate messages when events are loaded during restore
     /// and then appear again via the subscription.
     pub seen_note_ids: HashSet<[u8; 32]>,
+    /// Highest conversation `seq` appended via live polling. Live events are
+    /// appended in arrival order, so when a note arrives with a lower `seq`
+    /// than this (out-of-order relay delivery), the chat is rebuilt from ndb
+    /// in `seq` order. `None` until the first conversation note is seen.
+    pub max_seen_seq: Option<u32>,
     /// Accumulated usage metrics across queries in this session.
     pub usage: crate::messages::UsageInfo,
     /// Runtime allowlist for auto-accepting permissions this session.
@@ -334,6 +339,7 @@ impl AgenticSessionData {
             remote_status_ts: 0,
             live_conversation_sub: None,
             seen_note_ids: HashSet::new(),
+            max_seen_seq: None,
             usage: Default::default(),
             runtime_allows: HashSet::new(),
             event_id: uuid::Uuid::new_v4().to_string(),
