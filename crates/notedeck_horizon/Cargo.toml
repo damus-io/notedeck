@@ -1,0 +1,11 @@
+[package]
+name = "notedeck_horizon"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+egui = { workspace = true }
+chrono = { workspace = true }
+notedeck = { workspace = true }
+notedeck_ui = { workspace = true }
+tracing = { workspace = true }

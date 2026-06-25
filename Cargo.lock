@@ -5113,6 +5113,7 @@ dependencies = [
  "notedeck_dashboard",
  "notedeck_dave",
  "notedeck_headway",
+ "notedeck_horizon",
  "notedeck_messages",
  "notedeck_nostrverse",
  "notedeck_notebook",
@@ -5298,6 +5299,17 @@ dependencies = [
  "notedeck_testing",
  "notedeck_ui",
  "tempfile",
+]
+
+[[package]]
+name = "notedeck_horizon"
+version = "0.10.0-beta.4"
+dependencies = [
+ "chrono",
+ "egui",
+ "notedeck",
+ "notedeck_ui",
+ "tracing",
 ]
 
 [[package]]

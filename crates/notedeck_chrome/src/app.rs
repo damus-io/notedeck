@@ -14,6 +14,9 @@ use notedeck_messages::MessagesApp;
 #[cfg(feature = "dashboard")]
 use notedeck_dashboard::Dashboard;
 
+#[cfg(feature = "horizon")]
+use notedeck_horizon::Horizon;
+
 #[cfg(feature = "notebook")]
 use notedeck_notebook::Notebook;
 
@@ -44,6 +47,9 @@ pub enum NotedeckApp {
     #[cfg(feature = "dashboard")]
     Dashboard(Box<Dashboard>),
 
+    #[cfg(feature = "horizon")]
+    Horizon(Box<Horizon>),
+
     #[cfg(feature = "nostrverse")]
     Nostrverse(Box<NostrverseApp>),
     Other(String, Box<dyn notedeck::App>),
@@ -71,6 +77,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "dashboard")]
             NotedeckApp::Dashboard(db) => db.update(ctx, egui_ctx),
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.update(ctx, egui_ctx),
 
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.update(ctx, egui_ctx),
@@ -101,6 +110,9 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "dashboard")]
             NotedeckApp::Dashboard(db) => db.render(ctx, ui),
 
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.render(ctx, ui),
+
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.render(ctx, ui),
 
@@ -129,6 +141,9 @@ impl notedeck::App for NotedeckApp {
             #[cfg(feature = "dashboard")]
             NotedeckApp::Dashboard(db) => db.kind_renderers(),
 
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.kind_renderers(),
+
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.kind_renderers(),
 
@@ -156,6 +171,9 @@ impl notedeck::App for NotedeckApp {
 
             #[cfg(feature = "dashboard")]
             NotedeckApp::Dashboard(db) => db.tab_notifications(ctx),
+
+            #[cfg(feature = "horizon")]
+            NotedeckApp::Horizon(horizon) => horizon.tab_notifications(ctx),
 
             #[cfg(feature = "nostrverse")]
             NotedeckApp::Nostrverse(nostrverse) => nostrverse.tab_notifications(ctx),
