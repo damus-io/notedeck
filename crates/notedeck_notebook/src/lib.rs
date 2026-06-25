@@ -48,6 +48,26 @@ impl store::Publisher for PrivateRelayPublisher<'_, '_> {
     }
 }
 
+/// A node's in-progress geometry override during a live drag or resize. Each
+/// axis is independently optional: a plain body drag sets only [`pos`]; a resize
+/// sets whichever of [`pos`]/[`width`]/[`height`] its handle controls. Held in
+/// [`Notebook::live`] and cleared on the next fold, which carries the committed
+/// geometry.
+///
+/// [`pos`]: LiveGeometry::pos
+/// [`width`]: LiveGeometry::width
+/// [`height`]: LiveGeometry::height
+#[derive(Default, Clone, Copy)]
+pub(crate) struct LiveGeometry {
+    /// Top-left override (a live drag, or the shifted anchor of a left/top resize).
+    pub pos: Option<Pos2>,
+    /// Exact width override; narrowing reflows the node's content.
+    pub width: Option<f32>,
+    /// Minimum-height (grow-only) override: the box never renders shorter than its
+    /// content, so this floor only takes effect when it exceeds the content height.
+    pub height: Option<f32>,
+}
+
 /// An Obsidian-style infinite canvas, backed by nostr events in the local
 /// nostrdb. [`CanvasSync`] keeps a long-lived reducer over the account's events
 /// and the [`CanvasView`] folded from them, folding only freshly-arrived notes
@@ -64,14 +84,10 @@ pub struct Notebook {
     canvas: JsonCanvas,
     scene_rect: Rect,
     loaded: bool,
-    /// Per-node position overrides applied during a live drag, in canvas coords.
-    /// Cleared when a fresh fold lands (which then carries the committed move).
-    positions: HashMap<NodeId, Pos2>,
-    /// Per-node width overrides applied during a live edge-resize, in canvas
-    /// pixels. Width is the only resizable axis (height is content-driven, see
-    /// [`Notebook::node_rect`]); narrowing reflows the node's content. Cleared
-    /// when a fresh fold lands (which then carries the committed size).
-    widths: HashMap<NodeId, f32>,
+    /// Per-node live geometry overrides applied during an in-progress drag or
+    /// resize, in canvas coords/pixels. Cleared when a fresh fold lands (which
+    /// then carries the committed geometry). See [`LiveGeometry`].
+    live: HashMap<NodeId, LiveGeometry>,
     /// This frame's eased top-left per node, in canvas coords — egui interpolates
     /// toward each node's committed position, so a node that jumped (a drag
     /// release, or a `notebook move` over the relay) slides instead of teleporting.
@@ -134,10 +150,15 @@ pub(crate) enum NodeEdit {
 pub(crate) enum UiIntent {
     /// A node was dragged to `pos` (its new top-left, in canvas coords).
     Move { node: NodeId, pos: Pos2 },
-    /// A node was edge-resized: `pos` is its (possibly shifted, for a left-edge
-    /// drag) top-left and `width` its new width, in canvas coords. Height is
-    /// content-driven and left untouched.
-    Resize { node: NodeId, pos: Pos2, width: f32 },
+    /// A node was resized: `pos` is its (possibly shifted, for a left/top-edge
+    /// drag) top-left and `width`/`height` its new size, in canvas coords. Height
+    /// is a grow-only minimum (see [`Notebook::node_rect`]).
+    Resize {
+        node: NodeId,
+        pos: Pos2,
+        width: f32,
+        height: f32,
+    },
     /// An existing text node's text was edited.
     EditText { node: NodeId, text: String },
     /// A new text node was composed at `pos`.
@@ -159,8 +180,16 @@ pub(crate) enum UiIntent {
     },
 }
 
-/// Default size of a freshly-created text node, in canvas pixels.
+/// Size of the compose editor box shown while typing a freshly-created node, in
+/// canvas pixels — deliberately roomy so there's space to type.
 pub(crate) const NEW_NODE_SIZE: egui::Vec2 = egui::vec2(250.0, 120.0);
+
+/// Committed height of a freshly-created node, in canvas pixels. A tight floor
+/// so the box hugs its content (which drives the box taller as needed; height is
+/// a grow-only minimum, see [`Notebook::node_rect`]). Kept below the roomier
+/// [`NEW_NODE_SIZE`] compose box so a new node settles onto its content, not the
+/// editor's typing height.
+const NEW_NODE_HEIGHT: f32 = 40.0;
 
 /// How long a node's slide-to-new-position animation runs, in seconds. Matches
 /// headway's card-move feel.
@@ -181,29 +210,42 @@ impl Notebook {
         Notebook::default()
     }
 
-    /// The node's current rect, accounting for any live-drag override and the
-    /// actual rendered height measured last frame (content can overflow the
+    /// The node's current rect, accounting for any live drag/resize override and
+    /// the actual rendered height measured last frame (content can overflow the
     /// declared height, so the visible box — what edges should anchor to — is
     /// taller than the canvas geometry).
     pub(crate) fn node_rect(&self, id: &NodeId, node: &jsoncanvas::Node) -> Rect {
         let default = node_rect(node.node());
-        // Precedence: a live drag (the user's hand) wins; else a move animation
-        // in flight; else the committed geometry.
-        let min = self
-            .positions
-            .get(id)
-            .or_else(|| self.anim_pos.get(id))
-            .copied()
+        let live = self.live.get(id).copied().unwrap_or_default();
+        // Position precedence: a live drag/resize (the user's hand) wins; else a
+        // move animation in flight; else the committed geometry.
+        let min = live
+            .pos
+            .or_else(|| self.anim_pos.get(id).copied())
             .unwrap_or(default.min);
+        // Width is exact (the live override, else committed).
+        let width = live.width.unwrap_or(default.width());
+        // Height is grow-only: the committed/overridden height is a *minimum*, so
+        // the box never renders shorter than its measured content. The floor only
+        // shows when it exceeds the content height.
+        let floor = live.height.unwrap_or(default.height());
         let height = self
             .rendered_heights
             .get(id)
-            .copied()
-            .unwrap_or(default.height());
-        // A live edge-resize overrides the committed width; height stays
-        // content-driven so the reflowed content sets it.
-        let width = self.widths.get(id).copied().unwrap_or(default.width());
+            .map_or(floor, |content| content.max(floor));
         Rect::from_min_size(min, egui::vec2(width, height))
+    }
+
+    /// The width/height a resize should commit: the live override for whichever
+    /// axis the user dragged, else the committed value — so an unchanged axis is a
+    /// no-op write that can't clobber, e.g., a height floor on a width-only drag.
+    fn resize_size(&self, id: &NodeId) -> Option<(f32, f32)> {
+        let node = self.canvas.get_nodes().get(id)?.node();
+        let live = self.live.get(id).copied().unwrap_or_default();
+        Some((
+            live.width.unwrap_or(node.width as f32),
+            live.height.unwrap_or(node.height as f32),
+        ))
     }
 
     /// The node's current top-left position (after any live-drag override).
@@ -242,18 +284,20 @@ impl Notebook {
                     },
                 })
             }
-            UiIntent::Resize { node, pos, width } => {
-                let g = self.canvas.get_nodes().get(&node)?.node();
-                Some(CanvasAction::SetGeometry {
-                    node: NoteId::from_hex(node.as_str()).ok()?,
-                    geo: Geometry {
-                        x: pos.x as i64,
-                        y: pos.y as i64,
-                        w: width as u64,
-                        h: g.height,
-                    },
-                })
-            }
+            UiIntent::Resize {
+                node,
+                pos,
+                width,
+                height,
+            } => Some(CanvasAction::SetGeometry {
+                node: NoteId::from_hex(node.as_str()).ok()?,
+                geo: Geometry {
+                    x: pos.x as i64,
+                    y: pos.y as i64,
+                    w: width as u64,
+                    h: height as u64,
+                },
+            }),
             UiIntent::EditText { node, text } => Some(CanvasAction::EditContent {
                 node: NoteId::from_hex(node.as_str()).ok()?,
                 content: NodeContent {
@@ -270,7 +314,7 @@ impl Notebook {
                     x: pos.x as i64,
                     y: pos.y as i64,
                     w: NEW_NODE_SIZE.x as u64,
-                    h: NEW_NODE_SIZE.y as u64,
+                    h: NEW_NODE_HEIGHT as u64,
                 },
                 content: NodeContent {
                     text,
@@ -333,7 +377,7 @@ impl Notebook {
 
         for (id, target) in committed {
             let (x_id, y_id) = move_anim_ids(&id);
-            if let Some(dragged) = self.positions.get(&id).copied() {
+            if let Some(dragged) = self.live.get(&id).and_then(|l| l.pos) {
                 ctx.animate_value_with_time(x_id, dragged.x, 0.0);
                 ctx.animate_value_with_time(y_id, dragged.y, 0.0);
                 continue; // drawn via the live-drag override
@@ -362,8 +406,7 @@ impl Default for Notebook {
             canvas: JsonCanvas::default(),
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
             loaded: false,
-            positions: HashMap::new(),
-            widths: HashMap::new(),
+            live: HashMap::new(),
             anim_pos: HashMap::new(),
             rendered_heights: HashMap::new(),
             selected: None,
@@ -393,8 +436,7 @@ impl notedeck::App for Notebook {
             if let Some(view) = self.sync.view() {
                 self.canvas = view_to_canvas(view);
             }
-            self.positions.clear();
-            self.widths.clear();
+            self.live.clear();
             self.wake();
         }
 
