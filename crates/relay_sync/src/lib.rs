@@ -129,7 +129,7 @@ pub async fn connect_and_sync(
         Ok(mut relay) => {
             reconcile_sync(&mut relay, ndb, author, kinds, filter, is_addressable).await?;
             Some(relay)
-        },
+        }
         Err(e) => {
             eprintln!("warning: {e}");
             eprintln!("working offline against the local cache (--relay to point elsewhere)");
