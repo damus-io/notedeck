@@ -165,6 +165,12 @@ pub fn notebook_ui(
                 let resp =
                     text_edit_node_ui(ui, node.node().color.as_ref(), rect, buffer, *request_focus);
                 *request_focus = false;
+                // Anchor edges/handles to the editor's real box, not the declared
+                // height — the raw text being edited can be a different size than
+                // the rendered markdown it replaced. Without this the node falls
+                // back to its canvas geometry and the anchors float (see
+                // `Notebook::rendered_heights`).
+                rendered_heights.insert(id.clone(), resp.rect.height());
                 if resp.lost_focus() {
                     // Esc abandons the edit; any other blur commits it.
                     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -522,7 +528,7 @@ fn text_edit_node_ui(
     let fill = blend(base_fill, accent, 0.12);
 
     let mut text_resp = None;
-    ui.put(rect, |ui: &mut egui::Ui| {
+    let frame_resp = ui.put(rect, |ui: &mut egui::Ui| {
         egui::Frame::default()
             .fill(fill)
             .inner_margin(egui::Margin::same(notedeck::tokens::SPACING_LG as i8))
@@ -543,7 +549,11 @@ fn text_edit_node_ui(
             })
             .response
     });
-    text_resp.expect("frame body always runs")
+    // The editor box can grow past `rect` when the raw text is taller than the
+    // declared height (just as rendered markdown can). Union the frame's drawn
+    // rect into the returned response so the caller can anchor edges/handles to
+    // the editor's real height, keeping `text_resp`'s id for focus semantics.
+    text_resp.expect("frame body always runs").union(frame_resp)
 }
 
 /// The text of a text node, or empty if it isn't one / doesn't exist.
