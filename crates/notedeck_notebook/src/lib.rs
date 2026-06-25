@@ -12,13 +12,18 @@ use egui::{Pos2, Rect};
 use enostr::{NoteId, Pubkey, RelayId};
 use jsoncanvas::{JsonCanvas, NodeId, edge::Side};
 use nostrdb::{Ndb, Subscription, Transaction};
-use notedeck::{AppContext, AppResponse, ExplicitPublishApi};
+use notedeck::{
+    AppContext, AppResponse, ExplicitPublishApi, PrivateRelaySync, fan_out_event_frame,
+};
 use std::collections::HashMap;
 
 /// A [`store::Publisher`] that fans every locally-ingested canvas event out to
 /// the account's "private" relays (NIP-65 4th-entry marker) so the canvas syncs
 /// across the user's own devices. With no private relay marked the relay set is
 /// empty and this behaves exactly like [`store::NoPublish`] (local-only).
+///
+/// This is only the *outbound* half; the inbound catch-up + realtime pull is a
+/// scoped subscription kept by [`PrivateRelaySync`] (see [`Notebook::private_sync`]).
 ///
 /// We publish plaintext canvas events, so they can only safely reach a private
 /// (AUTH/wireguard) relay. TODO: PNS-encrypt these events (as dave does for its
@@ -31,20 +36,7 @@ struct PrivateRelayPublisher<'o, 'a> {
 
 impl store::Publisher for PrivateRelayPublisher<'_, '_> {
     fn publish(&mut self, event_frame: &str) {
-        if self.relays.is_empty() {
-            return;
-        }
-        // `ingest` hands us a ["EVENT", {…}] frame; `publish_event_json` wants
-        // the bare event object, which the outbox re-frames per relay.
-        match serde_json::from_str::<serde_json::Value>(event_frame)
-            .ok()
-            .and_then(|frame| frame.get(1).cloned())
-        {
-            Some(event) => self
-                .api
-                .publish_event_json(event.to_string(), self.relays.clone()),
-            None => {} // malformed frame; local ingest already happened
-        }
+        fan_out_event_frame(&mut self.api, event_frame, &self.relays);
     }
 }
 
@@ -79,6 +71,10 @@ pub struct Notebook {
     canvas_id: String,
     /// Subscription-backed cache of the reduced canvas (egui-free).
     sync: CanvasSync,
+    /// Inbound cross-device sync: declares a live + full-history subscription to
+    /// the account's private relays each frame, and resolves the outbound
+    /// publish targets.
+    private_sync: PrivateRelaySync,
     /// The folded canvas converted to `jsoncanvas` for rendering. Rebuilt
     /// whenever the sync reports a change.
     canvas: JsonCanvas,
@@ -403,6 +399,7 @@ impl Default for Notebook {
         Notebook {
             canvas_id: store::CANVAS_ID.to_string(),
             sync: CanvasSync::default(),
+            private_sync: PrivateRelaySync::new("notebook"),
             canvas: JsonCanvas::default(),
             scene_rect: Rect::from_min_max(Pos2::ZERO, Pos2::ZERO),
             loaded: false,
@@ -429,6 +426,13 @@ impl notedeck::App for Notebook {
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
 
+        // Declare the inbound cross-device subscription (catch-up + realtime)
+        // against the account's private relays, and resolve the same set as our
+        // outbound publish targets. Empty => local-only.
+        let private_relays = self
+            .private_sync
+            .update(ctx, event::notebook_filter(&author));
+
         // Keep a live subscription and re-fold only when something changed. On a
         // fresh fold, rebuild the renderable canvas and drop now-stale drag
         // overrides (the new fold carries the committed positions).
@@ -445,10 +449,9 @@ impl notedeck::App for Notebook {
             match &signer {
                 Some(secret) => {
                     if !self.seeded {
-                        let relays = ctx.accounts.selected_account_private_relays();
                         let mut publisher = PrivateRelayPublisher {
                             api: ctx.remote.publisher_explicit(),
-                            relays,
+                            relays: private_relays.clone(),
                         };
                         store::seed_canvas(
                             ctx.ndb,
@@ -483,10 +486,9 @@ impl notedeck::App for Notebook {
             && let Some(action) = self.intent_to_action(intent)
         {
             let view = self.sync.view().expect("view present");
-            let relays = ctx.accounts.selected_account_private_relays();
             let mut publisher = PrivateRelayPublisher {
                 api: ctx.remote.publisher_explicit(),
-                relays,
+                relays: private_relays,
             };
             store::apply(
                 ctx.ndb,

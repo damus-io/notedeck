@@ -4,7 +4,10 @@ use std::rc::Rc;
 
 use enostr::{Pubkey, RelayId};
 use nostrdb::{Ndb, Subscription, Transaction};
-use notedeck::{App, AppContext, AppResponse, ColorTheme, ExplicitPublishApi};
+use notedeck::{
+    App, AppContext, AppResponse, ColorTheme, ExplicitPublishApi, PrivateRelaySync,
+    fan_out_event_frame,
+};
 
 pub use headway::{event, store};
 
@@ -20,6 +23,9 @@ use event::{BoardReducer, BoardView};
 /// across the user's own devices. With no private relay marked the relay set is
 /// empty and this behaves exactly like [`store::NoPublish`] (local-only).
 ///
+/// This is only the *outbound* half; the inbound catch-up + realtime pull is a
+/// scoped subscription kept by [`PrivateRelaySync`] (see [`Headway::sync`]).
+///
 /// We publish plaintext board events, so they can only safely reach a private
 /// (AUTH/wireguard) relay. TODO: PNS-encrypt these events (as dave does for its
 /// session state via `wrap_pns`) and then we could also fan them out to the
@@ -31,20 +37,7 @@ struct PrivateRelayPublisher<'o, 'a> {
 
 impl store::Publisher for PrivateRelayPublisher<'_, '_> {
     fn publish(&mut self, event_frame: &str) {
-        if self.relays.is_empty() {
-            return;
-        }
-        // `ingest` hands us a ["EVENT", {…}] frame; `publish_event_json` wants
-        // the bare event object, which the outbox re-frames per relay.
-        match serde_json::from_str::<serde_json::Value>(event_frame)
-            .ok()
-            .and_then(|frame| frame.get(1).cloned())
-        {
-            Some(event) => self
-                .api
-                .publish_event_json(event.to_string(), self.relays.clone()),
-            None => {} // malformed frame; local ingest already happened
-        }
+        fan_out_event_frame(&mut self.api, event_frame, &self.relays);
     }
 }
 
@@ -54,8 +47,9 @@ impl store::Publisher for PrivateRelayPublisher<'_, '_> {
 /// a long-lived reducer over the account's events and the [`BoardView`] folded
 /// from them, folding only freshly-arrived notes in as an ndb subscription
 /// reports them — not re-walking the history every frame. Every edit is turned
-/// into a signed event that is ingested locally (see [`store`]). There is
-/// deliberately no relay publishing yet.
+/// into a signed event that is ingested locally (see [`store`]) and fanned out
+/// to the account's private relays, which also feed remote edits back in via
+/// [`PrivateRelaySync`].
 pub struct Headway {
     /// Which board this instance manages (single board for now).
     board_id: String,
@@ -64,6 +58,10 @@ pub struct Headway {
     /// Subscription-backed cache of the reduced board (egui-free, so it's
     /// unit-testable against a bare `Ndb`).
     sync: BoardSync,
+    /// Inbound cross-device sync: declares a live + full-history subscription to
+    /// the account's private relays each frame, and resolves the outbound
+    /// publish targets.
+    private_sync: PrivateRelaySync,
     /// Whether we've already auto-seeded a board this session, so we don't try
     /// to seed twice while the first seed is still materialising.
     seeded: bool,
@@ -78,6 +76,7 @@ impl Default for Headway {
             board_id: store::BOARD_ID.to_string(),
             state: BoardUiState::default(),
             sync: BoardSync::default(),
+            private_sync: PrivateRelaySync::new("headway"),
             seeded: false,
             repaint_frames: 0,
         }
@@ -243,6 +242,13 @@ impl App for Headway {
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
 
+        // Declare the inbound cross-device subscription (catch-up + realtime)
+        // against the account's private relays, and resolve the same set as our
+        // outbound publish targets. Empty => local-only.
+        let private_relays = self
+            .private_sync
+            .update(ctx, event::headway_filter(&author));
+
         // Keep a live subscription to this account's events and re-fold the
         // cached board only when something changed (first load, account switch,
         // or our own async ingests landing); keep waking while it streams in.
@@ -255,10 +261,9 @@ impl App for Headway {
             match &signer {
                 Some(secret) => {
                     if !self.seeded {
-                        let relays = ctx.accounts.selected_account_private_relays();
                         let mut publisher = PrivateRelayPublisher {
                             api: ctx.remote.publisher_explicit(),
-                            relays,
+                            relays: private_relays.clone(),
                         };
                         store::seed_default_board(
                             ctx.ndb,
@@ -301,10 +306,9 @@ impl App for Headway {
         // a signing key; a watch-only account simply can't edit.
         if let (Some(action), Some(secret)) = (action, &signer) {
             let view = self.sync.view().expect("view present");
-            let relays = ctx.accounts.selected_account_private_relays();
             let mut publisher = PrivateRelayPublisher {
                 api: ctx.remote.publisher_explicit(),
-                relays,
+                relays: private_relays,
             };
             store::apply(
                 ctx.ndb,
