@@ -364,10 +364,20 @@ mod tests {
         fn new() -> Self {
             let tmp = TempDir::new().expect("tmp dir");
             let ui_ctx = Context::default();
+            // Force a relay onto the account so opening a thread can install a
+            // *live* remote sub. `--testrunner` hands a fresh account an empty
+            // bootstrap set, but forced relays (`--relay`) still apply, so this
+            // gives the outbox a relay to subscribe on without dialing the real
+            // network.
             let notedeck = Notedeck::init(
                 &ui_ctx,
                 tmp.path(),
-                &["notedeck".to_owned(), "--testrunner".to_owned()],
+                &[
+                    "notedeck".to_owned(),
+                    "--testrunner".to_owned(),
+                    "--relay".to_owned(),
+                    "ws://127.0.0.1:9".to_owned(),
+                ],
             );
 
             Self {
