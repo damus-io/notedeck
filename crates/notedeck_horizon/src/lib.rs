@@ -1,12 +1,11 @@
 //! Horizon — a timeblocking nostr calendar app for Notedeck.
 //!
-//! The plan is to model time blocks as NIP-52 time-based calendar events
-//! (kind `31923`) stored in nostrdb, and render them on a day/week timeline.
-//! For now this is a scaffold: it draws an empty timeline grid with a "now"
-//! indicator so the app shows up in the chrome and we have a surface to build
-//! the block UI on top of.
+//! Time blocks are modelled as NIP-52 calendar events stored in nostrdb —
+//! time-based (kind `31923`) and date-based / all-day (kind `31922`) — and
+//! rendered on a day/week timeline with a live "now" indicator.
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
+use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{AppContext, AppResponse};
 
 use block::Block;
@@ -25,8 +24,10 @@ pub struct Horizon {
     view: View,
     /// The date the timeline is focused on.
     focus: DateTime<Local>,
-    /// Time blocks to render. Seeded with demo data until NIP-52 reads land.
+    /// Time blocks materialized from NIP-52 calendar events.
     blocks: Vec<Block>,
+    /// nostrdb subscription for live calendar-event updates.
+    sub: Option<Subscription>,
 }
 
 impl Default for Horizon {
@@ -34,15 +35,32 @@ impl Default for Horizon {
         Self {
             view: View::Day,
             focus: Local::now(),
-            blocks: block::demo(Local::now()),
+            blocks: Vec::new(),
+            sub: None,
         }
     }
 }
 
 impl notedeck::App for Horizon {
-    fn update(&mut self, _ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
-        // TODO: subscribe to NIP-52 calendar events (kinds 31922-31925) and
-        // materialize them into blocks for the focused range.
+    fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+        // Subscribe once, then backfill the calendar events already in the db —
+        // a subscription only reports notes indexed *after* it's created.
+        if self.sub.is_none() {
+            match ctx.ndb.subscribe(&block::calendar_filters()) {
+                Ok(sub) => {
+                    self.sub = Some(sub);
+                    self.reload(ctx.ndb);
+                }
+                Err(err) => tracing::error!("horizon: failed to subscribe: {err}"),
+            }
+        }
+
+        // Re-read whenever new calendar notes have been indexed.
+        if let Some(sub) = self.sub
+            && !ctx.ndb.poll_for_notes(sub, 256).is_empty()
+        {
+            self.reload(ctx.ndb);
+        }
     }
 
     fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
@@ -52,6 +70,26 @@ impl notedeck::App for Horizon {
 }
 
 impl Horizon {
+    /// Re-read all calendar events from nostrdb into [`Self::blocks`].
+    fn reload(&mut self, ndb: &Ndb) {
+        let txn = match Transaction::new(ndb) {
+            Ok(txn) => txn,
+            Err(err) => {
+                tracing::error!("horizon: txn failed: {err}");
+                return;
+            }
+        };
+
+        let filters = block::calendar_filters();
+        let results = ndb.query(&txn, &filters, 5000).unwrap_or_default();
+
+        self.blocks = results
+            .iter()
+            .filter_map(|r| ndb.get_note_by_key(&txn, r.note_key).ok())
+            .filter_map(|note| block::from_note(&note))
+            .collect();
+    }
+
     fn show(&mut self, ui: &mut egui::Ui) {
         self.header(ui);
         ui.separator();

@@ -1,11 +1,17 @@
 //! Time blocks and the overlap layout used to place them side-by-side.
 //!
-//! A [`Block`] is a span of time with a title and color. Eventually these come
-//! from NIP-52 time-based calendar events (kind `31923`); for now [`demo`]
-//! seeds a sample day so we have something to render.
+//! A [`Block`] is a span of time with a title and color. Blocks are
+//! materialized from NIP-52 calendar events stored in nostrdb — time-based
+//! (kind `31923`) and date-based / all-day (kind `31922`).
 
-use chrono::{DateTime, Local, TimeZone};
+use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
 use egui::Color32;
+use nostrdb::{Filter, Note};
+
+/// NIP-52 date-based (all-day) calendar event.
+pub(crate) const KIND_DATE_BASED: u64 = 31922;
+/// NIP-52 time-based calendar event — the core timeblocking primitive.
+pub(crate) const KIND_TIME_BASED: u64 = 31923;
 
 /// A single time block on the timeline.
 #[derive(Clone, Debug)]
@@ -99,37 +105,83 @@ pub(crate) fn layout(blocks: &[&Block]) -> Vec<Lane> {
     (0..n).map(|i| (column[i], columns[i])).collect()
 }
 
-// Tailwind-ish 500 palette; white title text reads on all of these.
-const SKY: Color32 = Color32::from_rgb(0x0E, 0xA5, 0xE9);
-const VIOLET: Color32 = Color32::from_rgb(0x8B, 0x5C, 0xF6);
-const EMERALD: Color32 = Color32::from_rgb(0x10, 0xB9, 0x81);
-const AMBER: Color32 = Color32::from_rgb(0xF5, 0x9E, 0x0B);
-const ROSE: Color32 = Color32::from_rgb(0xF4, 0x3F, 0x5E);
-const INDIGO: Color32 = Color32::from_rgb(0x63, 0x66, 0xF1);
+/// nostrdb filters matching every NIP-52 calendar event we render.
+pub(crate) fn calendar_filters() -> Vec<Filter> {
+    vec![
+        Filter::new()
+            .kinds([KIND_DATE_BASED, KIND_TIME_BASED])
+            .build(),
+    ]
+}
 
-/// Sample blocks for the day containing `now`, including a couple of
-/// intentional overlaps to exercise the lane layout.
-///
-/// TODO: replace with NIP-52 calendar reads (see the "read NIP-52 calendar
-/// events from nostrdb" card).
-pub(crate) fn demo(now: DateTime<Local>) -> Vec<Block> {
-    let day = now.date_naive();
-    let at = |h: u32, m: u32| {
-        Local
-            .from_local_datetime(&day.and_hms_opt(h, m, 0).unwrap())
-            .single()
-            .unwrap()
+/// Build a [`Block`] from a NIP-52 calendar note, or `None` if it isn't a
+/// calendar event we can place on the timeline (missing/unparseable `start`).
+pub(crate) fn from_note(note: &Note) -> Option<Block> {
+    let title = tag_value(note, "title")
+        .or_else(|| tag_value(note, "name"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("(untitled)")
+        .to_owned();
+
+    let (start, end) = match note.kind() as u64 {
+        KIND_TIME_BASED => {
+            let start = parse_unix(tag_value(note, "start")?)?;
+            let end = tag_value(note, "end")
+                .and_then(parse_unix)
+                .filter(|e| *e > start)
+                .unwrap_or_else(|| start + Duration::hours(1));
+            (start, end)
+        }
+        KIND_DATE_BASED => {
+            let start = parse_date(tag_value(note, "start")?)?;
+            // NIP-52 `end` on a date-based event is exclusive; a missing one
+            // means a single all-day event.
+            let end = tag_value(note, "end")
+                .and_then(parse_date)
+                .filter(|e| *e > start)
+                .unwrap_or_else(|| start + Duration::days(1));
+            (start, end)
+        }
+        _ => return None,
     };
 
-    vec![
-        Block::new("Morning routine", at(7, 0), at(8, 30), AMBER),
-        Block::new("Deep work", at(9, 0), at(12, 0), SKY),
-        Block::new("Standup", at(9, 30), at(10, 0), ROSE),
-        Block::new("Lunch", at(12, 0), at(13, 0), EMERALD),
-        Block::new("Design review", at(13, 0), at(14, 30), VIOLET),
-        Block::new("Emails", at(13, 30), at(14, 0), ROSE),
-        Block::new("Gym", at(18, 0), at(19, 0), INDIGO),
-    ]
+    Some(Block::new(&title, start, end, color_for(note.id())))
+}
+
+/// First single-letter-or-named tag value, e.g. `tag_value(note, "start")`.
+fn tag_value<'a>(note: &'a Note<'a>, name: &str) -> Option<&'a str> {
+    note.tags().iter().find_map(|tag| {
+        (tag.count() >= 2 && tag.get_str(0) == Some(name)).then(|| tag.get_str(1))?
+    })
+}
+
+/// Parse a NIP-52 unix-timestamp string (`start`/`end` on a time-based event).
+fn parse_unix(s: &str) -> Option<DateTime<Local>> {
+    let secs: i64 = s.parse().ok()?;
+    Some(Utc.timestamp_opt(secs, 0).single()?.with_timezone(&Local))
+}
+
+/// Parse a NIP-52 `YYYY-MM-DD` date string into local midnight.
+fn parse_date(s: &str) -> Option<DateTime<Local>> {
+    let date = NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()?;
+    Local
+        .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
+        .single()
+}
+
+// Tailwind-ish 500 palette; white title text reads on all of these. A block's
+// color is picked from its event id so the same event stays the same color.
+const PALETTE: [Color32; 6] = [
+    Color32::from_rgb(0x0E, 0xA5, 0xE9), // sky
+    Color32::from_rgb(0x8B, 0x5C, 0xF6), // violet
+    Color32::from_rgb(0x10, 0xB9, 0x81), // emerald
+    Color32::from_rgb(0xF5, 0x9E, 0x0B), // amber
+    Color32::from_rgb(0xF4, 0x3F, 0x5E), // rose
+    Color32::from_rgb(0x63, 0x66, 0xF1), // indigo
+];
+
+fn color_for(id: &[u8; 32]) -> Color32 {
+    PALETTE[id[0] as usize % PALETTE.len()]
 }
 
 #[cfg(test)]
@@ -138,7 +190,7 @@ mod tests {
 
     fn blk(h0: u32, m0: u32, h1: u32, m1: u32) -> Block {
         let at = |h, m| Local.with_ymd_and_hms(2026, 6, 25, h, m, 0).unwrap();
-        Block::new("x", at(h0, m0), at(h1, m1), SKY)
+        Block::new("x", at(h0, m0), at(h1, m1), PALETTE[0])
     }
 
     fn lanes(blocks: &[Block]) -> Vec<Lane> {

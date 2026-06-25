@@ -14,8 +14,10 @@ events stored in nostrdb:
 
 ## Status
 
-Scaffold. Today it renders an empty day/week timeline grid with a live "now"
-indicator and date navigation. Reading and writing NIP-52 blocks is next.
+Reads NIP-52 calendar events (kinds `31922`/`31923`) from nostrdb and renders
+them as time blocks on a day/week timeline, with overlap lanes, a live "now"
+indicator, and date navigation. Authoring blocks by click-dragging the grid is
+next.
 
 ## Running
 
