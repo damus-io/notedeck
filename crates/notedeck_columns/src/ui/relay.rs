@@ -203,56 +203,57 @@ impl<'r, 'a> RelayView<'r, 'a> {
         ui.add_space(8.0);
         ui.vertical_centered_justified(|ui| {
             relay_frame(ui).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        Frame::new()
-                            // This frame is needed to add margin because the label will be added to the outer frame first and centered vertically before the connection status is added so the vertical centering isn't accurate.
-                            // TODO: remove this hack and actually center the url & status at the same time
-                            .inner_margin(Margin::symmetric(0, 4))
-                            .show(ui, |ui| {
-                                egui::ScrollArea::horizontal()
-                                    .id_salt(id_salt)
-                                    .max_width(
-                                        ui.max_rect().width()
-                                            - get_right_side_width(relay_row.status),
-                                    ) // TODO: refactor to dynamically check the size of the 'right to left' portion and set the max width to be the screen width minus padding minus 'right to left' width
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            RichText::new(&relay_row.relay_url)
-                                                .text_style(
-                                                    NotedeckTextStyle::Monospace.text_style(),
-                                                )
-                                                .color(
-                                                    ui.style()
-                                                        .visuals
-                                                        .noninteractive()
-                                                        .fg_stroke
-                                                        .color,
-                                                ),
-                                        );
-                                    });
-                            });
-                    });
+                ui.vertical(|ui| {
+                    // First line: the relay url gets a full-width line of its own,
+                    // scrolling horizontally if it's too long to fit.
+                    egui::ScrollArea::horizontal()
+                        .id_salt(id_salt)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(&relay_row.relay_url)
+                                    .text_style(NotedeckTextStyle::Monospace.text_style())
+                                    .color(ui.style().visuals.noninteractive().fg_stroke.color),
+                            );
+                        });
 
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if allow_delete && ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
-                            action = Some(RelayAction::Remove(relay_row.relay_url.clone()));
-                        }
+                    ui.add_space(6.0);
 
-                        // Only advertised relays can be marked private.
-                        if allow_delete {
-                            let mut is_private = relay_row.is_private;
-                            let private_label =
-                                tr!(self.i18n, "private", "Toggle to mark a relay as private");
-                            if ui.checkbox(&mut is_private, private_label).changed() {
-                                action = Some(RelayAction::SetPrivate(
-                                    relay_row.relay_url.clone(),
-                                    is_private,
-                                ));
-                            }
-                        }
-
+                    // Second line: connection status on the left, with the private
+                    // toggle and delete button grouped on the right.
+                    ui.horizontal(|ui| {
                         show_connection_status(ui, self.i18n, relay_row.status);
+
+                        // Only advertised relays can be deleted or marked private.
+                        if allow_delete {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
+                                    action =
+                                        Some(RelayAction::Remove(relay_row.relay_url.clone()));
+                                }
+
+                                ui.add_space(8.0);
+
+                                let mut is_private = relay_row.is_private;
+                                let private_label = tr!(
+                                    self.i18n,
+                                    "Private",
+                                    "Toggle to mark a relay as private"
+                                );
+                                let resp = ui.checkbox(&mut is_private, private_label);
+                                if resp.changed() {
+                                    action = Some(RelayAction::SetPrivate(
+                                        relay_row.relay_url.clone(),
+                                        is_private,
+                                    ));
+                                }
+                                resp.on_hover_text(tr!(
+                                    self.i18n,
+                                    "Sync your private dave, headway and notebook data to this relay across devices",
+                                    "Tooltip explaining what marking a relay private does"
+                                ));
+                            });
+                        }
                     });
                 });
             });
@@ -340,14 +341,6 @@ fn add_relay_button2<'a>(i18n: &'a mut Localization, is_enabled: bool) -> impl e
         let add_text = tr!(i18n, "Add", "Button label to add a relay");
         let button_widget = styled_button(add_text.as_str(), notedeck_ui::colors::PINK);
         ui.add_enabled(is_enabled, button_widget)
-    }
-}
-
-fn get_right_side_width(status: RelayStatus) -> f32 {
-    match status {
-        RelayStatus::Connected => 150.0,
-        RelayStatus::Connecting => 160.0,
-        RelayStatus::Disconnected => 175.0,
     }
 }
 
