@@ -4177,14 +4177,18 @@ pub(crate) fn process_conversation_notes<'a>(
     let mut remote_user_messages: Vec<(SessionId, String)> = Vec::new();
     let mut events_to_publish: Vec<session_events::BuiltEvent> = Vec::new();
 
-    // Sort by (created_at, seq) to process in order.
-    // The seq tag is a per-session tiebreaker for events within the
-    // same second (e.g. tool_call before permission_request).
+    // Sort this batch by `seq` (the per-session monotonic counter), falling
+    // back to `created_at` only for events with no `seq` tag. Live events are
+    // all stamped with the same second-resolution `created_at` within a turn,
+    // so `seq` is the authoritative order — see `session_loader`. NOTE: this
+    // only orders within a single poll batch; events that arrive in a later
+    // batch are still appended after earlier ones (see process_conversation_notes
+    // docs), so out-of-order delivery across polls can still misorder the chat.
     notes.sort_by_key(|n| {
         let seq = session_events::get_tag_value(n, "seq")
             .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        (n.created_at(), seq)
+            .unwrap_or(u32::MAX);
+        (seq, n.created_at())
     });
 
     for note in &notes {
