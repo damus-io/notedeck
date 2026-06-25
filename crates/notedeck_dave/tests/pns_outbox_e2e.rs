@@ -11,10 +11,13 @@ use enostr::FullKeypair;
 use nostr::{Event, JsonUtil, Kind};
 use nostr_relay_builder::prelude::{MemoryDatabase, NostrEventsDatabase};
 use nostrdb::{Filter, FilterBuilder, NoteBuilder, Transaction};
-use notedeck::{App, AppContext, AppResponse, DataPathType};
+use notedeck::{App, AppContext, AppResponse, DataPathType, RelayAction};
 use notedeck_dave::{session_events, session_loader, AiProvider, Dave, DaveSettings};
 use notedeck_testing::{
-    fixtures::{add_account_to_device, nostr_pubkey, select_account_on_device},
+    fixtures::{
+        add_account_to_device, nostr_pubkey, process_relay_action_on_device,
+        select_account_on_device,
+    },
     init_tracing,
     ndb::{wait_for_two_local_query_counts, LocalQuery},
     negentropy_relay::{
@@ -29,22 +32,29 @@ use tempfile::TempDir;
 const PNS_LIVE_LIMIT: usize = 500;
 struct ControllableDave {
     dave: Dave,
-    settings: DaveSettings,
     command_rx: Receiver<ControllableDaveCommand>,
 }
 
 enum ControllableDaveCommand {
-    SetPnsRelay(String),
     AddUserMessage {
         session_id: notedeck_dave::session::SessionId,
         text: String,
     },
 }
 
-fn agentic_dave_settings(pns_relay_url: String) -> DaveSettings {
-    let mut settings = DaveSettings::with_provider(AiProvider::Codex);
-    settings.pns_relay = Some(pns_relay_url);
-    settings
+fn agentic_dave_settings() -> DaveSettings {
+    DaveSettings::with_provider(AiProvider::Codex)
+}
+
+/// Mark a relay "private" on the selected account's NIP-65 list so Dave adopts
+/// it as its PNS sync relay.
+fn set_private_relay(device: &mut DeviceHarness, relay_url: &str) {
+    process_relay_action_on_device(device, RelayAction::SetPrivate(relay_url.to_owned(), true));
+}
+
+/// Clear the "private" marker from a relay, returning Dave to local-only.
+fn clear_private_relay(device: &mut DeviceHarness, relay_url: &str) {
+    process_relay_action_on_device(device, RelayAction::SetPrivate(relay_url.to_owned(), false));
 }
 
 fn write_dave_settings(path: &notedeck::DataPath, settings: &DaveSettings) {
@@ -59,10 +69,6 @@ impl ControllableDave {
     fn apply_pending_commands(&mut self, ctx: &AppContext<'_>) {
         while let Ok(command) = self.command_rx.try_recv() {
             match command {
-                ControllableDaveCommand::SetPnsRelay(pns_relay) => {
-                    self.settings.pns_relay = Some(pns_relay);
-                    self.dave.apply_settings(self.settings.clone());
-                }
                 ControllableDaveCommand::AddUserMessage { session_id, text } => {
                     let _ =
                         self.dave
@@ -84,11 +90,11 @@ impl App for ControllableDave {
         self.dave.render(ctx, ui)
     }
 }
-fn dave_app_factory(pns_relay_url: String) -> AppFactory {
+fn dave_app_factory() -> AppFactory {
     Box::new(move |notedeck, egui_ctx| {
         let app_ctx = notedeck.app_context(egui_ctx);
         app_ctx.settings.complete_welcome();
-        let settings = agentic_dave_settings(pns_relay_url.clone());
+        let settings = agentic_dave_settings();
         write_dave_settings(app_ctx.path, &settings);
         let ndb = app_ctx.ndb.clone();
         let dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
@@ -97,11 +103,11 @@ fn dave_app_factory(pns_relay_url: String) -> AppFactory {
         notedeck.set_app(dave);
     })
 }
-fn dave_agentic_app_factory(pns_relay_url: String) -> AppFactory {
+fn dave_agentic_app_factory() -> AppFactory {
     Box::new(move |notedeck, egui_ctx| {
         let app_ctx = notedeck.app_context(egui_ctx);
         app_ctx.settings.complete_welcome();
-        let settings = agentic_dave_settings(pns_relay_url.clone());
+        let settings = agentic_dave_settings();
         write_dave_settings(app_ctx.path, &settings);
 
         let ndb = app_ctx.ndb.clone();
@@ -111,25 +117,19 @@ fn dave_agentic_app_factory(pns_relay_url: String) -> AppFactory {
         notedeck.set_app(dave);
     })
 }
-fn controllable_dave_app_factory(
-    pns_relay_url: String,
-) -> (AppFactory, Sender<ControllableDaveCommand>) {
+fn controllable_dave_app_factory() -> (AppFactory, Sender<ControllableDaveCommand>) {
     let (command_tx, command_rx) = mpsc::channel();
     let app_factory = Box::new(
         move |notedeck: &mut notedeck::Notedeck, egui_ctx: &egui::Context| {
             let app_ctx = notedeck.app_context(egui_ctx);
             app_ctx.settings.complete_welcome();
-            let settings = agentic_dave_settings(pns_relay_url.clone());
+            let settings = agentic_dave_settings();
             write_dave_settings(app_ctx.path, &settings);
             let ndb = app_ctx.ndb.clone();
             let dave = Dave::new(None, ndb, egui_ctx.clone(), app_ctx.path);
             drop(app_ctx);
 
-            notedeck.set_app(ControllableDave {
-                dave,
-                settings,
-                command_rx,
-            });
+            notedeck.set_app(ControllableDave { dave, command_rx });
         },
     );
 
@@ -263,18 +263,14 @@ fn build_dave_device(
     )
 }
 fn build_pns_device(relay: &NegentropyRelay, account: &FullKeypair) -> DeviceHarness {
-    build_dave_device(
-        &[relay.url()],
-        account,
-        dave_app_factory(relay.url().to_owned()),
-    )
+    let mut device = build_dave_device(&[relay.url()], account, dave_app_factory());
+    set_private_relay(&mut device, relay.url());
+    device
 }
 fn build_agentic_pns_device(relay: &NegentropyRelay, account: &FullKeypair) -> DeviceHarness {
-    build_dave_device(
-        &[relay.url()],
-        account,
-        dave_agentic_app_factory(relay.url().to_owned()),
-    )
+    let mut device = build_dave_device(&[relay.url()], account, dave_agentic_app_factory());
+    set_private_relay(&mut device, relay.url());
+    device
 }
 fn session_state_query() -> LocalQuery {
     LocalQuery::new(
@@ -516,11 +512,8 @@ async fn dave_pns_uses_configured_relay_outside_account_relays_e2e() {
     seed_pns_session_states_with_prefix(&configured_db, &account, "configured-session", 1).await;
     seed_pns_session_states_with_prefix(&account_relay_db, &account, "account-session", 1).await;
 
-    let mut device = build_dave_device(
-        &[account_relay.url()],
-        &account,
-        dave_app_factory(configured_relay.url().to_owned()),
-    );
+    let mut device = build_dave_device(&[account_relay.url()], &account, dave_app_factory());
+    set_private_relay(&mut device, configured_relay.url());
 
     wait_for_pns_import_and_open(
         &mut device,
@@ -634,6 +627,8 @@ async fn dave_pns_retargets_when_selected_account_changes_e2e() {
 
     add_account_to_device(&mut device, &second_account);
     select_account_on_device(&mut device, &second_account);
+    // The private marker is per-account: mark it for the second account too.
+    set_private_relay(&mut device, relay.url());
 
     author_session_state_query(&second_account).wait_for_count(
         &mut device,
@@ -780,6 +775,8 @@ async fn dave_pns_account_switch_cancels_old_active_session_e2e() {
 
     add_account_to_device(&mut device, &second_account);
     select_account_on_device(&mut device, &second_account);
+    // The private marker is per-account: mark it for the second account too.
+    set_private_relay(&mut device, relay.url());
 
     wait_for_neg_close(
         &mut device,
@@ -796,17 +793,15 @@ async fn dave_pns_account_switch_cancels_old_active_session_e2e() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn dave_pns_invalid_relay_url_does_not_use_account_relays_e2e() {
+async fn dave_pns_no_private_relay_does_not_use_account_relays_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
     let account_relay = setup_seeded_relay(&account, 1).await;
 
-    let mut device = build_dave_device(
-        &[account_relay.url()],
-        &account,
-        dave_app_factory("not a relay url".to_string()),
-    );
+    // No relay is marked "private", so Dave stays local-only and must not
+    // subscribe to the account's regular relays for PNS state.
+    let mut device = build_dave_device(&[account_relay.url()], &account, dave_app_factory());
 
     step_device_for(&mut device, Duration::from_millis(300));
 
@@ -857,8 +852,8 @@ async fn dave_pns_retargets_when_configured_relay_changes_e2e() {
     let (second_relay_db, second_relay) = setup_relay().await;
     seed_pns_session_states_with_prefix(&second_relay_db, &account, "retargeted-session", 1).await;
 
-    let (app_factory, pns_relay_tx) = controllable_dave_app_factory(first_relay.url().to_owned());
-    let mut device = build_dave_device(&[first_relay.url()], &account, app_factory);
+    let mut device = build_dave_device(&[first_relay.url()], &account, dave_app_factory());
+    set_private_relay(&mut device, first_relay.url());
 
     let first_session_id = wait_for_pns_neg_open_session_id(
         &mut device,
@@ -867,11 +862,9 @@ async fn dave_pns_retargets_when_configured_relay_changes_e2e() {
         "initial configured relay PNS NEG-OPEN",
     );
 
-    pns_relay_tx
-        .send(ControllableDaveCommand::SetPnsRelay(
-            second_relay.url().to_owned(),
-        ))
-        .expect("send PNS relay retarget");
+    // Retarget the private relay from first_relay to second_relay.
+    clear_private_relay(&mut device, first_relay.url());
+    set_private_relay(&mut device, second_relay.url());
 
     wait_for_neg_close(
         &mut device,
@@ -889,39 +882,37 @@ async fn dave_pns_retargets_when_configured_relay_changes_e2e() {
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn dave_pns_clears_configured_relay_when_retargeted_to_invalid_url_e2e() {
+async fn dave_pns_clears_configured_relay_when_private_marker_removed_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
     let (_, relay) = setup_relay_with_mode(NegentropyRelayMode::SilentOnOpen).await;
 
-    let (app_factory, pns_relay_tx) = controllable_dave_app_factory(relay.url().to_owned());
-    let mut device = build_dave_device(&[relay.url()], &account, app_factory);
+    let mut device = build_dave_device(&[relay.url()], &account, dave_app_factory());
+    set_private_relay(&mut device, relay.url());
 
     let session_id = wait_for_pns_neg_open_session_id(
         &mut device,
         &relay,
         &account,
-        "initial configured relay PNS NEG-OPEN before invalid retarget",
+        "initial configured relay PNS NEG-OPEN before clearing private marker",
     );
 
-    pns_relay_tx
-        .send(ControllableDaveCommand::SetPnsRelay(
-            "not-a-websocket-relay".to_owned(),
-        ))
-        .expect("send invalid PNS relay retarget");
+    // Removing the private marker returns Dave to local-only, cancelling the
+    // PNS subscription.
+    clear_private_relay(&mut device, relay.url());
 
     wait_for_neg_close(
         &mut device,
         &relay,
         &session_id,
-        "configured relay PNS cancellation after invalid retarget",
+        "configured relay PNS cancellation after clearing private marker",
     );
     relay.assert_neg_open_count_stable(
         &mut device,
         1,
         20,
-        "invalid PNS relay should not leave retryable scoped work",
+        "cleared private relay should not leave retryable scoped work",
         pns_filter_matcher(&account),
     );
 }
@@ -1029,21 +1020,23 @@ async fn dave_pns_two_live_devices_keep_account_state_isolated_e2e() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn dave_pns_invalid_relay_url_does_not_publish_to_account_relays_e2e() {
+async fn dave_pns_no_private_relay_does_not_publish_to_account_relays_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
     let (_, account_relay) = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
-    let (app_factory, command_tx) = controllable_dave_app_factory("not a relay url".to_string());
+    // No private relay marked: Dave is local-only and must not publish PNS
+    // events out to the account's regular relays.
+    let (app_factory, command_tx) = controllable_dave_app_factory();
     let mut device = build_dave_device(&[account_relay.url()], &account, app_factory);
 
     let session_id = send_spawn_agent_request(&mut device, &cwd);
     command_tx
         .send(ControllableDaveCommand::AddUserMessage {
             session_id,
-            text: "queued while PNS relay is invalid".to_owned(),
+            text: "queued while no private relay is set".to_owned(),
         })
         .expect("queue outbound PNS event");
     step_device_for(&mut device, Duration::from_millis(200));
@@ -1053,7 +1046,7 @@ async fn dave_pns_invalid_relay_url_does_not_publish_to_account_relays_e2e() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
-async fn dave_pns_invalid_relay_url_retains_outbound_events_until_retarget_e2e() {
+async fn dave_pns_no_private_relay_retains_outbound_events_until_marked_e2e() {
     init_tracing();
 
     let account = FullKeypair::generate();
@@ -1061,14 +1054,14 @@ async fn dave_pns_invalid_relay_url_retains_outbound_events_until_retarget_e2e()
     let (_, relay) = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
-    let (app_factory, pns_relay_tx) = controllable_dave_app_factory("not a relay url".to_string());
+    let (app_factory, pns_relay_tx) = controllable_dave_app_factory();
     let mut device = build_dave_device(&[relay.url()], &account, app_factory);
 
     let session_id = send_spawn_agent_request(&mut device, &cwd);
     pns_relay_tx
         .send(ControllableDaveCommand::AddUserMessage {
             session_id,
-            text: "queued while PNS relay is invalid".to_owned(),
+            text: "queued while no private relay is set".to_owned(),
         })
         .expect("queue outbound PNS event");
     step_device_for(&mut device, Duration::from_millis(200));
@@ -1081,14 +1074,13 @@ async fn dave_pns_invalid_relay_url_retains_outbound_events_until_retarget_e2e()
 
     select_account_on_device(&mut device, &account);
 
-    pns_relay_tx
-        .send(ControllableDaveCommand::SetPnsRelay(relay.url().to_owned()))
-        .expect("send valid PNS relay retarget");
+    // Mark the relay private: Dave now syncs the retained backlog to it.
+    set_private_relay(&mut device, relay.url());
 
     wait_for_event_publish(
         &mut device,
         &relay,
-        "Dave outbound PNS event publish after invalid relay retarget",
+        "Dave outbound PNS event publish after marking relay private",
     );
 }
 #[cfg(unix)]
@@ -1102,11 +1094,9 @@ async fn dave_pns_outbound_publish_uses_configured_relay_only_e2e() {
     let (_, account_relay) = setup_relay().await;
 
     let cwd = std::env::current_dir().expect("current dir");
-    let mut device = build_dave_device(
-        &[account_relay.url()],
-        &account,
-        dave_agentic_app_factory(configured_relay.url().to_owned()),
-    );
+    let mut device =
+        build_dave_device(&[account_relay.url()], &account, dave_agentic_app_factory());
+    set_private_relay(&mut device, configured_relay.url());
 
     send_spawn_agent_request(&mut device, &cwd);
     wait_for_event_publish(
@@ -1116,6 +1106,13 @@ async fn dave_pns_outbound_publish_uses_configured_relay_only_e2e() {
     );
     step_device_for(&mut device, Duration::from_millis(200));
 
-    assert!(captured_event_count(&configured_relay) > 0);
-    assert_eq!(captured_event_count(&account_relay), 0);
+    // Marking the relay private publishes a kind-10002 relay list to the
+    // account's write relay (account_relay), so assert specifically on the PNS
+    // session-state events: they must reach the configured relay only.
+    let pns_needle = format!("\"kind\":{}", enostr::pns::PNS_KIND);
+    assert!(configured_relay.count_captured_events_containing(&pns_needle) > 0);
+    assert_eq!(
+        account_relay.count_captured_events_containing(&pns_needle),
+        0
+    );
 }

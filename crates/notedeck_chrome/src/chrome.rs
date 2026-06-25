@@ -35,6 +35,9 @@ use notedeck_messages::MessagesApp;
 #[cfg(feature = "dashboard")]
 use notedeck_dashboard::Dashboard;
 
+#[cfg(feature = "horizon")]
+use notedeck_horizon::Horizon;
+
 #[cfg(feature = "clndash")]
 use notedeck_ui::expanding_button;
 
@@ -243,6 +246,9 @@ impl Chrome {
 
         #[cfg(feature = "dashboard")]
         chrome.add_app(NotedeckApp::Dashboard(Box::new(Dashboard::default())));
+
+        #[cfg(feature = "horizon")]
+        chrome.add_app(NotedeckApp::Horizon(Box::new(Horizon::default())));
 
         #[cfg(feature = "notebook")]
         chrome.add_app(NotedeckApp::Notebook(Box::default()));
@@ -661,6 +667,20 @@ impl Chrome {
                     egui::Key::Tab,
                 );
                 next = i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab);
+
+                // macOS swallows Ctrl+Tab via AppKit's keyboard-interface
+                // control before it reaches us, so also accept the native
+                // Cmd+Shift+[ / Cmd+Shift+] tab-cycling shortcuts there. The
+                // MAC_CMD modifier only matches when the Cmd key is set, which
+                // only happens on macOS, so this is inert on other platforms.
+                prev |= i.consume_key(
+                    egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT,
+                    egui::Key::OpenBracket,
+                );
+                next |= i.consume_key(
+                    egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT,
+                    egui::Key::CloseBracket,
+                );
             });
             if prev {
                 self.cycle_app(false);
@@ -1111,6 +1131,9 @@ fn app_label(loc: &mut Localization, app: &NotedeckApp) -> String {
         #[cfg(feature = "dashboard")]
         NotedeckApp::Dashboard(_) => tr!(loc, "Dashboard", "Button to go to the dashboard app"),
 
+        #[cfg(feature = "horizon")]
+        NotedeckApp::Horizon(_) => tr!(loc, "Horizon", "Button to go to the Horizon app"),
+
         #[cfg(feature = "notebook")]
         NotedeckApp::Notebook(_) => tr!(loc, "Notebook", "Button to go to the Notebook app"),
 
@@ -1143,6 +1166,11 @@ fn tab_app_icon(ui: &mut egui::Ui, app: &mut NotedeckApp, size: f32) {
         #[cfg(feature = "dashboard")]
         NotedeckApp::Dashboard(_) => {
             notedeck_ui::icons::dashboard_icon(ui, size);
+        }
+
+        #[cfg(feature = "horizon")]
+        NotedeckApp::Horizon(_) => {
+            notedeck_ui::icons::horizon_icon(ui, size);
         }
 
         #[cfg(feature = "messages")]
@@ -1753,6 +1781,11 @@ fn topdown_sidebar(
                                     #[cfg(feature = "dashboard")]
                                     NotedeckApp::Dashboard(_columns_app) => {
                                         notedeck_ui::icons::dashboard_icon(ui, 24.0);
+                                    }
+
+                                    #[cfg(feature = "horizon")]
+                                    NotedeckApp::Horizon(_horizon) => {
+                                        notedeck_ui::icons::horizon_icon(ui, 24.0);
                                     }
 
                                     #[cfg(feature = "messages")]

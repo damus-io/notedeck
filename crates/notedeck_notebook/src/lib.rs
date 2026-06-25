@@ -9,11 +9,44 @@ use crate::event::{CanvasReducer, CanvasView};
 use crate::store::CanvasAction;
 use crate::ui::{node_rect, notebook_ui, side_str};
 use egui::{Pos2, Rect};
-use enostr::{NoteId, Pubkey};
+use enostr::{NoteId, Pubkey, RelayId};
 use jsoncanvas::{JsonCanvas, NodeId, edge::Side};
 use nostrdb::{Ndb, Subscription, Transaction};
-use notedeck::{AppContext, AppResponse};
+use notedeck::{AppContext, AppResponse, ExplicitPublishApi};
 use std::collections::HashMap;
+
+/// A [`store::Publisher`] that fans every locally-ingested canvas event out to
+/// the account's "private" relays (NIP-65 4th-entry marker) so the canvas syncs
+/// across the user's own devices. With no private relay marked the relay set is
+/// empty and this behaves exactly like [`store::NoPublish`] (local-only).
+///
+/// We publish plaintext canvas events, so they can only safely reach a private
+/// (AUTH/wireguard) relay. TODO: PNS-encrypt these events (as dave does for its
+/// session state via `wrap_pns`) and then we could also fan them out to the
+/// user's *public* write relays without leaking canvas contents.
+struct PrivateRelayPublisher<'o, 'a> {
+    api: ExplicitPublishApi<'o, 'a>,
+    relays: Vec<RelayId>,
+}
+
+impl store::Publisher for PrivateRelayPublisher<'_, '_> {
+    fn publish(&mut self, event_frame: &str) {
+        if self.relays.is_empty() {
+            return;
+        }
+        // `ingest` hands us a ["EVENT", {…}] frame; `publish_event_json` wants
+        // the bare event object, which the outbox re-frames per relay.
+        match serde_json::from_str::<serde_json::Value>(event_frame)
+            .ok()
+            .and_then(|frame| frame.get(1).cloned())
+        {
+            Some(event) => self
+                .api
+                .publish_event_json(event.to_string(), self.relays.clone()),
+            None => {} // malformed frame; local ingest already happened
+        }
+    }
+}
 
 /// An Obsidian-style infinite canvas, backed by nostr events in the local
 /// nostrdb. [`CanvasSync`] keeps a long-lived reducer over the account's events
@@ -370,13 +403,18 @@ impl notedeck::App for Notebook {
             match &signer {
                 Some(secret) => {
                     if !self.seeded {
+                        let relays = ctx.accounts.selected_account_private_relays();
+                        let mut publisher = PrivateRelayPublisher {
+                            api: ctx.remote.publisher_explicit(),
+                            relays,
+                        };
                         store::seed_canvas(
                             ctx.ndb,
                             &author,
                             secret,
                             &self.canvas_id,
                             "Notebook",
-                            &mut store::NoPublish,
+                            &mut publisher,
                         );
                         self.seeded = true;
                         self.wake();
@@ -403,6 +441,11 @@ impl notedeck::App for Notebook {
             && let Some(action) = self.intent_to_action(intent)
         {
             let view = self.sync.view().expect("view present");
+            let relays = ctx.accounts.selected_account_private_relays();
+            let mut publisher = PrivateRelayPublisher {
+                api: ctx.remote.publisher_explicit(),
+                relays,
+            };
             store::apply(
                 ctx.ndb,
                 &self.canvas_id,
@@ -410,7 +453,7 @@ impl notedeck::App for Notebook {
                 &author,
                 secret,
                 action,
-                &mut store::NoPublish,
+                &mut publisher,
             );
             self.wake();
         }

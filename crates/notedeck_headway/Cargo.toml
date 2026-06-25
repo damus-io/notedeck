@@ -11,6 +11,7 @@ egui = { workspace = true }
 nostrdb = { workspace = true }
 enostr = { workspace = true }
 nostr = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }

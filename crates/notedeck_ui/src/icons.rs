@@ -456,6 +456,44 @@ fn draw_headway(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, s
     painter.line_segment([a_end, a_end + vec2(0.0, head)], stroke);
 }
 
+/// Painter-drawn horizon icon: a rising sun over a horizon line — sunrise
+/// orange disc with a soft highlight and two receding ground lines.
+fn draw_horizon(painter: &egui::Painter, center: Pos2, s: f32, color: Color32, stroke_width: f32) {
+    let sun_hi = Color32::from_rgb(0xFD, 0xBA, 0x74); // orange-300
+    let sun_lo = Color32::from_rgb(0xF9, 0x73, 0x16); // orange-500
+
+    let sun_center = pos2(center.x, center.y - s * 0.06);
+    let r = s * 0.24;
+    painter.circle_filled(sun_center, r, sun_lo);
+    painter.circle_filled(sun_center - vec2(0.0, r * 0.32), r * 0.6, sun_hi);
+
+    // Three short rays fanning up from the sun.
+    let ray = Stroke::new(stroke_width, sun_lo);
+    for &dx in &[-0.34_f32, 0.0, 0.34] {
+        let dir = vec2(dx, -1.0).normalized();
+        let from = sun_center + dir * (r * 1.25);
+        let to = sun_center + dir * (r * 1.7);
+        painter.line_segment([from, to], ray);
+    }
+
+    // Horizon lines, drawn in the theme color so they read on any background.
+    let horizon_y = center.y + s * 0.26;
+    painter.line_segment(
+        [
+            pos2(center.x - s * 0.42, horizon_y),
+            pos2(center.x + s * 0.42, horizon_y),
+        ],
+        Stroke::new(stroke_width * 1.3, color),
+    );
+    painter.line_segment(
+        [
+            pos2(center.x - s * 0.26, horizon_y + s * 0.13),
+            pos2(center.x + s * 0.26, horizon_y + s * 0.13),
+        ],
+        Stroke::new(stroke_width, color.gamma_multiply(0.5)),
+    );
+}
+
 /// Painter-drawn dashboard icon: an asymmetric grid of gradient widget panels.
 fn draw_dashboard(
     painter: &egui::Painter,
@@ -559,6 +597,11 @@ pub fn notebook_icon(ui: &mut egui::Ui, size: f32) {
 /// Fixed-size Headway app icon (sidebar drawer and chrome tab strip).
 pub fn headway_icon(ui: &mut egui::Ui, size: f32) {
     draw_app_icon(ui, size, draw_headway);
+}
+
+/// Fixed-size Horizon app icon (sidebar drawer and chrome tab strip).
+pub fn horizon_icon(ui: &mut egui::Ui, size: f32) {
+    draw_app_icon(ui, size, draw_horizon);
 }
 
 fn paint_unseen_indicator(ui: &mut egui::Ui, rect: egui::Rect, radius: f32) {

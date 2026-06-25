@@ -69,8 +69,6 @@ pub use ui::{
 };
 pub use vec3::Vec3;
 
-/// Default relay URL used for PNS event publishing and subscription.
-const DEFAULT_PNS_RELAY: &str = "ws://relay.jb55.com/";
 /// Dave PNS history window retained from the previous negentropy sync path.
 const PNS_HISTORY_WINDOW_SECS: u64 = 7 * 86400;
 
@@ -358,8 +356,10 @@ pub struct Dave {
     pending_summaries: Vec<enostr::NoteId>,
     /// Local machine hostname, included in session state events.
     hostname: String,
-    /// PNS relay URL (configurable via DAVE_RELAY env or settings UI).
-    pns_relay_url: String,
+    /// PNS sync relay. Sourced from the selected account's first "private"
+    /// NIP-65 relay each frame. `None` means local-only (no cross-device sync);
+    /// dave still ingests its events into nostrdb either way.
+    pns_relay_url: Option<String>,
     /// Last selected account/relay/PNS-author tuple declared through scoped subscriptions.
     pns_remote_sub_state: Option<PnsRemoteSubState>,
     /// Last selected account used to populate Dave's local PNS-backed state.
@@ -675,12 +675,10 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             tools.insert(tool.name().to_string(), tool);
         }
 
-        let pns_relay_url = normalize_relay_url(
-            model_config
-                .pns_relay
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string()),
-        );
+        // The PNS sync relay is derived from the selected account's "private"
+        // NIP-65 relay each frame (see `update`). None means local-only: dave
+        // still ingests its events into nostrdb, just without cross-device sync.
+        let pns_relay_url = None;
 
         let directory_picker = DirectoryPicker::new();
 
@@ -767,21 +765,9 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Apply new settings and persist to disk.
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
-        let previous_pns_relay_url = self.pns_relay_url.clone();
         self.model_config = ModelConfig::from_settings(&settings);
-        self.pns_relay_url = normalize_relay_url(
-            settings
-                .pns_relay
-                .clone()
-                .unwrap_or_else(|| DEFAULT_PNS_RELAY.to_string()),
-        );
-        if previous_pns_relay_url != self.pns_relay_url {
-            tracing::info!(
-                previous_relay = %previous_pns_relay_url,
-                next_relay = %self.pns_relay_url,
-                "Dave PNS relay changed"
-            );
-        }
+        // pns_relay_url is sourced from the account's private NIP-65 relay in
+        // `update`, not from settings.
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
@@ -3435,6 +3421,30 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         self.pending_message_load = None;
     }
 
+    /// Point the PNS sync relay at the selected account's first "private"
+    /// NIP-65 relay. `None` (no private relay marked) keeps dave local-only.
+    ///
+    /// Multiple private relays are out of scope here: dave uses the first.
+    fn refresh_pns_relay_url(&mut self, ctx: &mut AppContext<'_>) {
+        let next = ctx
+            .accounts
+            .selected_account_private_relays()
+            .into_iter()
+            .find_map(|relay| match relay {
+                RelayId::Websocket(url) => Some(normalize_relay_url(url.to_string())),
+                _ => None,
+            });
+
+        if self.pns_relay_url != next {
+            tracing::info!(
+                previous_relay = ?self.pns_relay_url,
+                next_relay = ?next,
+                "Dave PNS relay changed"
+            );
+            self.pns_relay_url = next;
+        }
+    }
+
     /// Declare the selected account's PNS discovery subscription through RemoteApi.
     fn ensure_pns_remote_subscription(&mut self, ctx: &mut AppContext<'_>) {
         let account = *ctx.accounts.selected_account_pubkey();
@@ -3443,10 +3453,15 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
             self.clear_pns_remote_subscription(ctx);
             return;
         };
+        // No private relay marked -> local-only, no remote PNS subscription.
+        let Some(relay_url) = self.pns_relay_url.clone() else {
+            self.clear_pns_remote_subscription(ctx);
+            return;
+        };
         let pns_author = pns_remote_sub_author(&secret_key);
         let next_state = PnsRemoteSubState {
             account,
-            relay_url: self.pns_relay_url.clone(),
+            relay_url: relay_url.clone(),
             pns_author,
         };
         if self.pns_remote_sub_state.as_ref() == Some(&next_state) {
@@ -3454,7 +3469,7 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
         }
 
         let Ok((identity, config)) =
-            pns_remote_sub_config(&self.pns_relay_url, pns_author, notedeck::unix_time_secs())
+            pns_remote_sub_config(&relay_url, pns_author, notedeck::unix_time_secs())
         else {
             self.clear_pns_remote_subscription(ctx);
             return;
@@ -3676,6 +3691,7 @@ impl Drop for Dave {
 
 impl notedeck::App for Dave {
     fn update(&mut self, ctx: &mut AppContext<'_>, egui_ctx: &egui::Context) {
+        self.refresh_pns_relay_url(ctx);
         self.ensure_pns_local_state(ctx);
         self.ensure_pns_remote_subscription(ctx);
 
@@ -3762,28 +3778,36 @@ impl notedeck::App for Dave {
         self.publish_pending_mode_commands(ctx);
 
         self.pending_relay_events.extend(events_to_publish);
+        // Only publish to a remote relay when one is marked "private" (and its
+        // PNS subscription is live). With no private relay dave is local-only:
+        // these events are already ingested into nostrdb at build time, and we
+        // retain the remote-publish queue so a later-configured private relay
+        // can sync the backlog.
         if !self.pending_relay_events.is_empty() && self.pns_remote_sub_state.is_some() {
-            if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
-                match NormRelayUrl::new(&self.pns_relay_url) {
-                    Ok(relay) => {
-                        let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
-                        let pns_relay = RelayId::Websocket(relay);
-                        let mut publisher = ctx.remote.publisher_explicit();
-                        for event in std::mem::take(&mut self.pending_relay_events) {
-                            match session_events::wrap_pns(&event.note_json, &pns_keys) {
-                                Ok(pns_json) => {
-                                    publisher.publish_event_json(pns_json, vec![pns_relay.clone()]);
+            if let Some(pns_relay_url) = self.pns_relay_url.clone() {
+                if let Some(sk) = ctx.accounts.get_selected_account().keypair().secret_key {
+                    match NormRelayUrl::new(&pns_relay_url) {
+                        Ok(relay) => {
+                            let pns_keys = enostr::pns::derive_pns_keys(&sk.secret_bytes());
+                            let pns_relay = RelayId::Websocket(relay);
+                            let mut publisher = ctx.remote.publisher_explicit();
+                            for event in std::mem::take(&mut self.pending_relay_events) {
+                                match session_events::wrap_pns(&event.note_json, &pns_keys) {
+                                    Ok(pns_json) => {
+                                        publisher
+                                            .publish_event_json(pns_json, vec![pns_relay.clone()]);
+                                    }
+                                    Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
                                 }
-                                Err(e) => tracing::warn!("failed to PNS-wrap event: {}", e),
                             }
                         }
+                        Err(e) => {
+                            tracing::warn!("failed to parse PNS relay {}: {:?}", pns_relay_url, e);
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!("failed to parse PNS relay {}: {:?}", self.pns_relay_url, e);
-                    }
+                } else {
+                    tracing::warn!("no secret key for publishing pending Dave PNS events");
                 }
-            } else {
-                tracing::warn!("no secret key for publishing pending Dave PNS events");
             }
         }
 

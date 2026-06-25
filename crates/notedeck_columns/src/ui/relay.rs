@@ -21,6 +21,7 @@ pub struct RelayView<'r, 'a> {
 struct RelayRow {
     relay_url: String,
     status: RelayStatus,
+    is_private: bool,
 }
 
 impl RelayView<'_, '_> {
@@ -46,10 +47,7 @@ impl RelayView<'_, '_> {
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .auto_shrink([false; 2])
                     .show(ui, |ui| {
-                        let mut action = None;
-                        if let Some(relay_to_remove) = self.show_relays(ui) {
-                            action = Some(RelayAction::Remove(relay_to_remove));
-                        }
+                        let mut action = self.show_relays(ui);
                         ui.add_space(8.0);
                         if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
                             action = Some(RelayAction::Add(relay_to_add));
@@ -88,7 +86,7 @@ impl<'r, 'a> RelayView<'r, 'a> {
 
     /// Show the selected account's advertised relays and
     /// any other currently-connected outbox relays.
-    fn show_relays(&mut self, ui: &mut Ui) -> Option<String> {
+    fn show_relays(&mut self, ui: &mut Ui) -> Option<RelayAction> {
         let relay_infos = self.relay_inspect.relay_infos();
         let status_by_url: HashMap<String, RelayStatus> = relay_infos
             .iter()
@@ -113,6 +111,7 @@ impl<'r, 'a> RelayView<'r, 'a> {
             advertised.push(RelayRow {
                 relay_url: url,
                 status,
+                is_private: relay.is_private,
             });
         }
 
@@ -125,10 +124,11 @@ impl<'r, 'a> RelayView<'r, 'a> {
             outbox_other.push(RelayRow {
                 relay_url: url,
                 status: relay_info.status,
+                is_private: false,
             });
         }
 
-        let mut relay_to_remove = None;
+        let mut action = None;
         let advertised_label = tr!(
             self.i18n,
             "Advertised",
@@ -140,10 +140,10 @@ impl<'r, 'a> RelayView<'r, 'a> {
             "Section header for non-advertised connected relays"
         );
 
-        relay_to_remove = relay_to_remove.or_else(|| {
+        action = action.or_else(|| {
             self.show_relay_section(ui, &advertised_label, &advertised, true, "relay-advertised")
         });
-        relay_to_remove = relay_to_remove.or_else(|| {
+        action = action.or_else(|| {
             self.show_relay_section(
                 ui,
                 &outbox_other_label,
@@ -153,7 +153,7 @@ impl<'r, 'a> RelayView<'r, 'a> {
             )
         });
 
-        relay_to_remove
+        action
     }
 
     fn show_relay_section(
@@ -163,8 +163,8 @@ impl<'r, 'a> RelayView<'r, 'a> {
         rows: &[RelayRow],
         allow_delete: bool,
         id_prefix: &'static str,
-    ) -> Option<String> {
-        let mut relay_to_remove = None;
+    ) -> Option<RelayAction> {
+        let mut action = None;
 
         ui.add_space(8.0);
         ui.label(
@@ -184,11 +184,11 @@ impl<'r, 'a> RelayView<'r, 'a> {
         }
 
         for (index, relay_row) in rows.iter().enumerate() {
-            relay_to_remove = relay_to_remove
+            action = action
                 .or_else(|| self.show_relay_row(ui, relay_row, allow_delete, (id_prefix, index)));
         }
 
-        relay_to_remove
+        action
     }
 
     fn show_relay_row(
@@ -197,8 +197,8 @@ impl<'r, 'a> RelayView<'r, 'a> {
         relay_row: &RelayRow,
         allow_delete: bool,
         id_salt: impl std::hash::Hash,
-    ) -> Option<String> {
-        let mut relay_to_remove = None;
+    ) -> Option<RelayAction> {
+        let mut action = None;
 
         ui.add_space(8.0);
         ui.vertical_centered_justified(|ui| {
@@ -236,7 +236,20 @@ impl<'r, 'a> RelayView<'r, 'a> {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if allow_delete && ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
-                            relay_to_remove = Some(relay_row.relay_url.clone());
+                            action = Some(RelayAction::Remove(relay_row.relay_url.clone()));
+                        }
+
+                        // Only advertised relays can be marked private.
+                        if allow_delete {
+                            let mut is_private = relay_row.is_private;
+                            let private_label =
+                                tr!(self.i18n, "private", "Toggle to mark a relay as private");
+                            if ui.checkbox(&mut is_private, private_label).changed() {
+                                action = Some(RelayAction::SetPrivate(
+                                    relay_row.relay_url.clone(),
+                                    is_private,
+                                ));
+                            }
                         }
 
                         show_connection_status(ui, self.i18n, relay_row.status);
@@ -245,7 +258,7 @@ impl<'r, 'a> RelayView<'r, 'a> {
             });
         });
 
-        relay_to_remove
+        action
     }
 
     const RELAY_PREFILL: &'static str = "wss://";

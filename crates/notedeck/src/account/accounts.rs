@@ -413,6 +413,20 @@ impl Accounts {
         )
     }
 
+    /// Return the selected account's relays marked "private" (NIP-65 4th-entry
+    /// marker) as `RelayId`s. Used by dave/headway/notebook to sync private
+    /// state across the user's own devices.
+    pub fn selected_account_private_relays(&self) -> Vec<RelayId> {
+        let relay = &self.get_selected_account_data().relay;
+        relay
+            .advertised
+            .iter()
+            .chain(relay.local.iter())
+            .filter(|spec| spec.is_private)
+            .map(|spec| RelayId::Websocket(spec.url.clone()))
+            .collect()
+    }
+
     fn retarget_selected_account_read_relays(&mut self, remote: &mut RemoteApi<'_>) {
         remote.retarget_selected_account_read_relays(self);
     }

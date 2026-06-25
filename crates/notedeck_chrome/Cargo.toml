@@ -24,6 +24,7 @@ notedeck_headway = { workspace = true, optional = true }
 notedeck_nostrverse = { workspace = true, optional = true }
 notedeck_clndash = { workspace = true, optional = true }
 notedeck_dashboard = { workspace = true, optional = true }
+notedeck_horizon = { workspace = true, optional = true }
 notedeck_wasm = { workspace = true, optional = true }
 notedeck = { workspace = true, features = ["sound"] }
 nostrdb = { workspace = true }
@@ -69,6 +70,7 @@ headway = ["notedeck_headway"]
 nostrverse = ["notedeck_nostrverse"]
 clndash = ["notedeck_clndash"]
 dashboard = ["notedeck_dashboard"]
+horizon = ["notedeck_horizon"]
 wasm = ["notedeck_wasm"]
 
 [target.'cfg(target_os = "android")'.dependencies]
