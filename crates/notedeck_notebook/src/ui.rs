@@ -64,6 +64,74 @@ const ARROW_WIDTH: f32 = 9.0;
 /// pulled this fraction of the anchor-to-anchor distance. ¼-ish feels "Obsidian".
 const EDGE_BEND: f32 = 0.28;
 
+/// The single pointer gesture a frame's [`egui::Scene`] closure resolves to.
+/// One pointer does one thing per frame, so these are mutually exclusive and
+/// collapse into a single value rather than a pile of parallel `Option`s. (The
+/// node body's drag/select handle sits *under* interactive content like a
+/// checkbox — see [`node_box_ui`] — so e.g. a checkbox toggle and a body click
+/// can't both fire.) Outcomes that genuinely co-occur with a gesture — an editor
+/// losing focus, a handle held pre-drag, per-node height measurement — live
+/// beside this in [`FrameOutcome`], not in here.
+enum Gesture {
+    /// A node dragged to a new top-left (canvas coords).
+    Drag(NodeId, Pos2),
+    /// A node's drag ended — commits the move.
+    DragStopped(NodeId),
+    /// A node clicked (selects it).
+    Click(NodeId),
+    /// Empty canvas clicked (clears the selection).
+    BgClick,
+    /// Empty canvas double-clicked here (drops a fresh node to compose).
+    CreateAt(Pos2),
+    /// A node double-clicked to edit its text.
+    StartEdit(NodeId),
+    /// A task-list checkbox toggled in a rendered text node, with rewritten text.
+    CheckboxEdit(NodeId, String),
+    /// A node edge-resized: new top-left + width (canvas coords).
+    Resize(NodeId, Pos2, f32),
+    /// A node's edge-resize ended — commits the new geometry.
+    ResizeStopped(NodeId),
+    /// An in-progress or just-released edge-connection gesture.
+    Connect(Connect),
+    /// An edge's midpoint delete handle was clicked (its removal intent).
+    Disconnect(UiIntent),
+    /// A node's context-menu "Delete" was chosen (arms the confirm modal).
+    RequestDelete(NodeId),
+}
+
+/// Whether an inline editor that lost focus this frame should keep its buffer or
+/// drop it.
+enum EditEnd {
+    /// A plain blur — persist the buffer (or delete the node if blanked).
+    Commit,
+    /// Esc — discard the edit.
+    Cancel,
+}
+
+/// Outcomes collected during one frame's [`egui::Scene`] closure, applied after
+/// it returns. The closure needs `&mut scene_rect` and borrows the canvas
+/// immutably, so it can't touch `Notebook` mutably; it stashes what it observes
+/// here and the caller drains it once the borrows release. The pointer gesture
+/// folds into one [`Gesture`]; the rest are independent channels that can fire in
+/// the same frame as the gesture.
+#[derive(Default)]
+struct FrameOutcome {
+    /// The pointer gesture this frame, if any.
+    gesture: Option<Gesture>,
+    /// An open inline editor that lost focus this frame. Cross-cutting: any press
+    /// elsewhere blurs the editor in the same frame as the new gesture, so it
+    /// can't fold into [`Gesture`].
+    edit_end: Option<EditEnd>,
+    /// The node whose connection handle has the pointer held on it, even before
+    /// the drag threshold is crossed — keeps the gesture alive pre-drag, and
+    /// coexists with a [`Gesture::Connect`] drag in the same frame.
+    pressing_handle: Option<NodeId>,
+    /// Each node's actual rendered height this frame; content can overflow the
+    /// declared height, so this feeds next frame's edge/handle anchoring (see
+    /// [`Notebook::rendered_heights`]). Always collected, for every node.
+    rendered_heights: HashMap<NodeId, f32>,
+}
+
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
 /// with draggable, selectable, editable nodes. Selection and live-drag state are
 /// written back into `notebook`; committed edits (move, text edit, create,
@@ -93,41 +161,7 @@ pub fn notebook_ui(
     // The edit state is moved out so the editor can mutate its buffer in place.
     let mut scene_rect = notebook.scene_rect;
     let view = notebook.scene_rect;
-    let mut dragged: Option<(NodeId, Pos2)> = None;
-    let mut drag_stopped: Option<NodeId> = None;
-    let mut clicked: Option<NodeId> = None;
-    let mut bg_clicked = false;
-    // The connection gesture this frame, if any: a drag from a node's side handle
-    // toward the pointer, then its release (which resolves to an edge if it lands
-    // on another node).
-    let mut connect: Option<Connect> = None;
-    // The node whose handle currently has the pointer button held on it, even
-    // before the drag threshold is crossed. Keeps that node a handle candidate
-    // from the moment of press (not just once `connect` becomes `Dragging`), so
-    // the gesture survives the pointer leaving the node before egui promotes the
-    // press to a drag.
-    let mut pressing_handle: Option<NodeId> = None;
-    // An edge whose delete handle was clicked this frame, removed after the closure.
-    let mut disconnect: Option<UiIntent> = None;
-    let mut start_edit: Option<NodeId> = None;
-    // A node whose context-menu "Delete" was clicked this frame; promoted to the
-    // pending-confirmation state after the scene closure.
-    let mut request_delete: Option<NodeId> = None;
-    // A text node whose task-list checkbox was toggled this frame, with the
-    // node's text already rewritten; committed as an `EditText` after the scene.
-    let mut checkbox_edit: Option<(NodeId, String)> = None;
-    let mut create_at: Option<Pos2> = None;
-    let mut commit_edit = false;
-    let mut cancel_edit = false;
-    // A live edge-resize this frame: the node and its new top-left + width (in
-    // canvas coords), applied as an override below so the box resizes under the
-    // pointer. The release is committed as a geometry update.
-    let mut resize_to: Option<(NodeId, Pos2, f32)> = None;
-    let mut resize_stopped: Option<NodeId> = None;
-    // Actual rendered height per node this frame; a node's content can overflow
-    // its declared height, so we remember the real box height for next frame's
-    // edge/handle anchoring (see `Notebook::rendered_heights`).
-    let mut rendered_heights: HashMap<NodeId, f32> = HashMap::new();
+    let mut out = FrameOutcome::default();
     let mut edit = std::mem::replace(&mut notebook.edit, NodeEdit::Idle);
     let canvas = &notebook.canvas;
     let selected = notebook.selected.as_ref();
@@ -138,18 +172,20 @@ pub fn notebook_ui(
         // region, so a click on empty canvas clears the selection.
         let bg = ui.interact(view, ui.id().with("notebook_bg"), egui::Sense::click());
         if bg.clicked() {
-            bg_clicked = true;
+            out.gesture = Some(Gesture::BgClick);
         }
         // Double-clicking empty canvas drops a fresh text node there to edit.
-        if bg.double_clicked() {
-            create_at = bg.interact_pointer_pos();
+        if bg.double_clicked()
+            && let Some(pos) = bg.interact_pointer_pos()
+        {
+            out.gesture = Some(Gesture::CreateAt(pos));
         }
 
         // Edges next, then nodes on top so node drag handles win interaction.
         // Clicking an edge's midpoint delete handle removes it.
         for (_edge_id, edge) in canvas.get_edges().iter() {
             if let Some(removed) = edge_ui(ui, &rects, edge) {
-                disconnect = Some(removed);
+                out.gesture = Some(Gesture::Disconnect(removed));
             }
         }
 
@@ -182,14 +218,14 @@ pub fn notebook_ui(
                 // the rendered markdown it replaced. Without this the node falls
                 // back to its canvas geometry and the anchors float (see
                 // `Notebook::rendered_heights`).
-                rendered_heights.insert(id.clone(), resp.rect.height());
+                out.rendered_heights.insert(id.clone(), resp.rect.height());
                 if resp.lost_focus() {
                     // Esc abandons the edit; any other blur commits it.
-                    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        cancel_edit = true;
+                    out.edit_end = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        EditEnd::Cancel
                     } else {
-                        commit_edit = true;
-                    }
+                        EditEnd::Commit
+                    });
                 }
                 continue;
             }
@@ -200,29 +236,32 @@ pub fn notebook_ui(
             } = node_ui(ui, ctx, node, rect, selected == Some(id));
             // `resp.rect` is the real drawn box (content may overflow `rect`);
             // remember its height so edges/handles anchor to the visible edge.
-            rendered_heights.insert(id.clone(), resp.rect.height());
+            out.rendered_heights.insert(id.clone(), resp.rect.height());
+            // A node's body senses click and drag; a checkbox in its content sits
+            // on top and wins clicks (see `node_box_ui`), so at most one of these
+            // fires per frame — hence a single `out.gesture`.
             if let Some(text) = toggled_text {
-                checkbox_edit = Some((id.clone(), text));
+                out.gesture = Some(Gesture::CheckboxEdit(id.clone(), text));
             }
             if resp.dragged() {
-                dragged = Some((id.clone(), rect.min + resp.drag_delta()));
+                out.gesture = Some(Gesture::Drag(id.clone(), rect.min + resp.drag_delta()));
             }
             // On release, commit the move (its final position is the override
             // recorded by the last drag frame, read after the closure).
             if resp.drag_stopped() {
-                drag_stopped = Some(id.clone());
+                out.gesture = Some(Gesture::DragStopped(id.clone()));
             }
             if resp.clicked() {
-                clicked = Some(id.clone());
+                out.gesture = Some(Gesture::Click(id.clone()));
             }
             if resp.double_clicked() && matches!(node, Node::Text(_)) {
-                start_edit = Some(id.clone());
+                out.gesture = Some(Gesture::StartEdit(id.clone()));
             }
             // Right-click (or long-press on touch) opens a context menu whose
             // Delete entry asks to remove the node, behind a confirmation prompt.
             notedeck_ui::context_menu::context_menu(&resp, |ui| {
                 if ui.button("Delete").clicked() {
-                    request_delete = Some(id.clone());
+                    out.gesture = Some(Gesture::RequestDelete(id.clone()));
                     ui.close_menu();
                 }
             });
@@ -240,11 +279,11 @@ pub fn notebook_ui(
             let resp = text_edit_node_ui(ui, None, rect, buffer, *request_focus);
             *request_focus = false;
             if resp.lost_focus() {
-                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    cancel_edit = true;
+                out.edit_end = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    EditEnd::Cancel
                 } else {
-                    commit_edit = true;
-                }
+                    EditEnd::Commit
+                });
             }
         }
 
@@ -292,10 +331,10 @@ pub fn notebook_ui(
                         let new_left = (rect.left() + dx).min(rect.right() - MIN_NODE_WIDTH);
                         (egui::pos2(new_left, rect.top()), rect.right() - new_left)
                     };
-                    resize_to = Some((sel.clone(), min, width));
+                    out.gesture = Some(Gesture::Resize(sel.clone(), min, width));
                 }
                 if resp.drag_stopped() {
-                    resize_stopped = Some(sel.clone());
+                    out.gesture = Some(Gesture::ResizeStopped(sel.clone()));
                 }
             }
         }
@@ -352,30 +391,30 @@ pub fn notebook_ui(
                 // the drag threshold, by which point it has usually left the node,
                 // so without this the gesture would be dropped before it starts.
                 if resp.is_pointer_button_down_on() {
-                    pressing_handle = Some(nid.clone());
+                    out.pressing_handle = Some(nid.clone());
                 }
                 let pos = resp.interact_pointer_pos();
                 if resp.drag_stopped() {
-                    connect = Some(Connect::Released {
+                    out.gesture = Some(Gesture::Connect(Connect::Released {
                         node: nid.clone(),
                         side,
                         pos: pos.unwrap_or(center),
-                    });
+                    }));
                 } else if resp.dragged()
                     && let Some(pos) = pos
                 {
-                    connect = Some(Connect::Dragging {
+                    out.gesture = Some(Gesture::Connect(Connect::Dragging {
                         node: nid.clone(),
                         side,
                         pos,
-                    });
+                    }));
                 }
             }
         }
 
         // Preview an in-progress connection: a line from the source handle to the
         // pointer, and a highlight on the node it would land on.
-        if let Some(Connect::Dragging { node, side, pos }) = &connect
+        if let Some(Gesture::Connect(Connect::Dragging { node, side, pos })) = &out.gesture
             && let Some(from_rect) = rects.get(node)
         {
             connection_preview_ui(ui, side_point(side, *from_rect), *pos);
@@ -399,108 +438,121 @@ pub fn notebook_ui(
     });
 
     notebook.scene_rect = scene_rect;
-    notebook.rendered_heights = rendered_heights;
+    notebook.rendered_heights = std::mem::take(&mut out.rendered_heights);
     // Keep the connecting node's handles alive while a drag is live, or while its
     // handle is merely held (pre-threshold), so the gesture isn't dropped before
-    // egui promotes it to a drag. Cleared once the button is released. The
-    // completed gesture is turned into an edge intent below.
-    notebook.connecting = match &connect {
-        Some(Connect::Dragging { node, .. }) => Some(node.clone()),
-        _ => pressing_handle,
+    // egui promotes it to a drag. Cleared once the button is released.
+    let dragging = match &out.gesture {
+        Some(Gesture::Connect(Connect::Dragging { node, .. })) => Some(node.clone()),
+        _ => None,
     };
+    notebook.connecting = dragging.or_else(|| out.pressing_handle.take());
 
-    if let Some((id, pos)) = dragged {
-        notebook.positions.insert(id, pos);
-    }
-    // Apply a live edge-resize: the width override reflows the box and, for a
-    // left-edge drag, the position override shifts its top-left under the pointer.
-    if let Some((id, min, width)) = resize_to {
-        notebook.widths.insert(id.clone(), width);
-        notebook.positions.insert(id, min);
-    }
-    if let Some(id) = clicked {
-        notebook.selected = Some(id);
-    } else if bg_clicked {
-        notebook.selected = None;
-    }
-
-    // A finished drag commits a move to the node's last recorded override.
-    let mut intent = drag_stopped.and_then(|id| {
-        notebook.positions.get(&id).map(|pos| UiIntent::Move {
-            node: id,
-            pos: *pos,
-        })
-    });
-
-    // A finished edge-resize commits the node's new width (and shifted top-left,
-    // for a left-edge drag) as a geometry update. Its own gesture, so it can't
-    // coincide with a move.
-    if let Some(id) = resize_stopped
-        && let (Some(&width), Some(pos)) = (notebook.widths.get(&id), notebook.node_position(&id))
-    {
-        intent = Some(UiIntent::Resize {
-            node: id,
-            pos,
-            width,
-        });
-    }
-
-    // A clicked edge delete handle removes that edge. Takes precedence over a
-    // move (the two gestures can't realistically coincide).
-    if disconnect.is_some() {
-        intent = disconnect;
-    }
-
-    // A released connection that landed on another node becomes a new edge,
-    // anchored from the dragged side to whichever side of the target it faces.
-    if let Some(Connect::Released { node, side, pos }) = connect
-        && let Some(target) = node_at(&rects, pos, &node)
-    {
-        let to_side = nearest_side(rects[target], pos);
-        intent = Some(UiIntent::Connect {
-            from: node,
-            from_side: side,
-            to: target.clone(),
-            to_side,
-        });
-    }
-
-    // Resolve the edit transition. Commit/cancel close the current editor; a
-    // fresh double-click then opens the next one. A commit turns into an edit (or
-    // a delete if blanked) for an existing node, or a create for a new one;
-    // blank creates and Esc are discarded so stray double-clicks leave no trace.
-    if cancel_edit {
-        edit = NodeEdit::Idle;
-    } else if commit_edit {
-        match &edit {
-            NodeEdit::Editing { node, buffer, .. } => {
-                intent = Some(if buffer.trim().is_empty() {
-                    UiIntent::Delete { node: node.clone() }
-                } else {
-                    UiIntent::EditText {
-                        node: node.clone(),
-                        text: buffer.clone(),
-                    }
+    // Drain the frame's pointer gesture. Selection and live-drag/resize overrides
+    // apply straight to `notebook`; the gestures that commit a change set
+    // `intent`. Edit-state transitions and the checkbox edit are deferred to the
+    // locals below so they run *after* the editor-commit logic (preserving the
+    // original ordering: a commit closes the old editor before a double-click
+    // opens the next, and a checkbox toggled mid-edit wins over that commit).
+    let mut start_edit: Option<NodeId> = None;
+    let mut create_at: Option<Pos2> = None;
+    let mut request_delete: Option<NodeId> = None;
+    let mut checkbox_intent: Option<UiIntent> = None;
+    let mut intent: Option<UiIntent> = None;
+    match out.gesture {
+        None | Some(Gesture::Connect(Connect::Dragging { .. })) => {}
+        Some(Gesture::Click(id)) => notebook.selected = Some(id),
+        Some(Gesture::BgClick) => notebook.selected = None,
+        Some(Gesture::Drag(id, pos)) => {
+            notebook.positions.insert(id, pos);
+        }
+        // A finished drag commits a move to the node's last recorded override.
+        Some(Gesture::DragStopped(id)) => {
+            intent = notebook.positions.get(&id).map(|pos| UiIntent::Move {
+                node: id,
+                pos: *pos,
+            });
+        }
+        // The width override reflows the box; for a left-edge drag the position
+        // override also shifts its top-left under the pointer.
+        Some(Gesture::Resize(id, min, width)) => {
+            notebook.widths.insert(id.clone(), width);
+            notebook.positions.insert(id, min);
+        }
+        // A finished edge-resize commits the new width (and shifted top-left).
+        Some(Gesture::ResizeStopped(id)) => {
+            if let (Some(width), Some(pos)) = (
+                notebook.widths.get(&id).copied(),
+                notebook.node_position(&id),
+            ) {
+                intent = Some(UiIntent::Resize {
+                    node: id,
+                    pos,
+                    width,
                 });
             }
-            NodeEdit::Creating { pos, buffer, .. } => {
-                if !buffer.trim().is_empty() {
-                    intent = Some(UiIntent::Create {
-                        pos: *pos,
-                        text: buffer.clone(),
+        }
+        Some(Gesture::Disconnect(removed)) => intent = Some(removed),
+        // A released connection that landed on another node becomes a new edge,
+        // anchored from the dragged side to whichever side of the target it faces.
+        Some(Gesture::Connect(Connect::Released { node, side, pos })) => {
+            if let Some(target) = node_at(&rects, pos, &node) {
+                let to_side = nearest_side(rects[target], pos);
+                intent = Some(UiIntent::Connect {
+                    from: node,
+                    from_side: side,
+                    to: target.clone(),
+                    to_side,
+                });
+            }
+        }
+        Some(Gesture::CheckboxEdit(node, text)) => {
+            checkbox_intent = Some(UiIntent::EditText { node, text })
+        }
+        Some(Gesture::StartEdit(id)) => start_edit = Some(id),
+        Some(Gesture::CreateAt(pos)) => create_at = Some(pos),
+        Some(Gesture::RequestDelete(id)) => request_delete = Some(id),
+    }
+
+    // Resolve the edit transition. Commit/cancel close the current editor; the
+    // deferred `start_edit` below then opens the next one. A commit turns into an
+    // edit (or a delete if blanked) for an existing node, or a create for a new
+    // one; blank creates and Esc are discarded so stray double-clicks leave no
+    // trace.
+    match out.edit_end {
+        Some(EditEnd::Cancel) => edit = NodeEdit::Idle,
+        Some(EditEnd::Commit) => {
+            match &edit {
+                NodeEdit::Editing { node, buffer, .. } => {
+                    intent = Some(if buffer.trim().is_empty() {
+                        UiIntent::Delete { node: node.clone() }
+                    } else {
+                        UiIntent::EditText {
+                            node: node.clone(),
+                            text: buffer.clone(),
+                        }
                     });
                 }
+                NodeEdit::Creating { pos, buffer, .. } => {
+                    if !buffer.trim().is_empty() {
+                        intent = Some(UiIntent::Create {
+                            pos: *pos,
+                            text: buffer.clone(),
+                        });
+                    }
+                }
+                NodeEdit::Idle => {}
             }
-            NodeEdit::Idle => {}
+            edit = NodeEdit::Idle;
         }
-        edit = NodeEdit::Idle;
+        None => {}
     }
 
     // A task-list checkbox clicked in a rendered text node persists its flipped
-    // text like any other edit. It can't coincide with a drag move or an inline
-    // editor commit (those need the body or the open editor, not the checkbox).
-    if let Some((node, text)) = checkbox_edit {
-        intent = Some(UiIntent::EditText { node, text });
+    // text like any other edit, taking precedence over an editor commit it may
+    // have coincided with (clicking the checkbox blurs an editor on another node).
+    if let Some(checkbox) = checkbox_intent {
+        intent = Some(checkbox);
     }
 
     if let Some(id) = start_edit {
