@@ -1,4 +1,4 @@
-use crate::{NEW_NODE_SIZE, NodeEdit, Notebook, UiIntent};
+use crate::{LiveGeometry, NEW_NODE_SIZE, NodeEdit, Notebook, UiIntent};
 use egui::{Color32, Pos2, Rect, Shape, Stroke, epaint::CubicBezierShape, vec2};
 use jsoncanvas::{
     FileNode, GroupNode, JsonCanvas, LinkNode, Node, NodeId, TextNode,
@@ -47,9 +47,13 @@ const HANDLE_HIT: f32 = 18.0;
 /// canvas pixels. A thin band so it sits on the border without eating drags on
 /// the node body (which move the node).
 const RESIZE_GRAB: f32 = 8.0;
-/// Smallest width a node can be edge-resized to, in canvas pixels, so it never
+/// Smallest width a node can be resized to, in canvas pixels, so it never
 /// collapses to an ungrabbable sliver.
 const MIN_NODE_WIDTH: f32 = 80.0;
+/// Smallest height a node can be resized to, in canvas pixels. Height is a
+/// grow-only minimum, so this only bites when dragging a box shorter than its
+/// content floor would already allow.
+const MIN_NODE_HEIGHT: f32 = 40.0;
 /// How close (canvas pixels) the pointer must be to an edge's curve to count as
 /// hovering it — the threshold that reveals the edge's midpoint delete handle.
 const EDGE_HOVER_DIST: f32 = 8.0;
@@ -87,9 +91,10 @@ enum Gesture {
     StartEdit(NodeId),
     /// A task-list checkbox toggled in a rendered text node, with rewritten text.
     CheckboxEdit(NodeId, String),
-    /// A node edge-resized: new top-left + width (canvas coords).
-    Resize(NodeId, Pos2, f32),
-    /// A node's edge-resize ended — commits the new geometry.
+    /// A node resized via a handle — the live geometry override for the axes the
+    /// dragged handle controls (canvas coords).
+    Resize(NodeId, LiveGeometry),
+    /// A node's resize ended — commits the new geometry.
     ResizeStopped(NodeId),
     /// An in-progress or just-released edge-connection gesture.
     Connect(Connect),
@@ -130,6 +135,82 @@ struct FrameOutcome {
     /// declared height, so this feeds next frame's edge/handle anchoring (see
     /// [`Notebook::rendered_heights`]). Always collected, for every node.
     rendered_heights: HashMap<NodeId, f32>,
+}
+
+/// The eight resize handles around a selected node, each an `(x, y)` edge
+/// selector in `{-1, 0, 1}`: −1 the left/top edge, 1 the right/bottom edge, 0 the
+/// axis this handle leaves alone. The four corners drive both axes, the four edges
+/// one. `(0, 0)` — no edge — is deliberately absent.
+const RESIZE_HANDLES: [(i8, i8); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
+
+/// The grab rect for resize handle `(hx, hy)` on `rect`. Corner handles are small
+/// squares centered on the corner; edge handles are thin strips along the edge,
+/// inset by `RESIZE_GRAB / 2` at each end so they meet — but don't overlap — the
+/// adjacent corner squares (which then win the corners).
+fn resize_grab_rect(rect: Rect, hx: i8, hy: i8) -> Rect {
+    let h = RESIZE_GRAB / 2.0;
+    let (x0, x1) = match hx {
+        -1 => (rect.left() - h, rect.left() + h),
+        1 => (rect.right() - h, rect.right() + h),
+        _ => (rect.left() + h, rect.right() - h),
+    };
+    let (y0, y1) = match hy {
+        -1 => (rect.top() - h, rect.top() + h),
+        1 => (rect.bottom() - h, rect.bottom() + h),
+        _ => (rect.top() + h, rect.bottom() - h),
+    };
+    Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+}
+
+/// The pointer cursor for resize handle `(hx, hy)`: axis-aligned for edges,
+/// diagonal for corners (top-left/bottom-right share one diagonal, the other two
+/// the other).
+fn resize_cursor(hx: i8, hy: i8) -> egui::CursorIcon {
+    match (hx, hy) {
+        (0, _) => egui::CursorIcon::ResizeVertical,
+        (_, 0) => egui::CursorIcon::ResizeHorizontal,
+        (a, b) if a == b => egui::CursorIcon::ResizeNwSe,
+        _ => egui::CursorIcon::ResizeNeSw,
+    }
+}
+
+/// Apply pointer `delta` to `rect` for handle `(hx, hy)`, yielding the live
+/// override for just the axes it controls. A left/top edge shifts the top-left and
+/// changes the size inversely; a right/bottom edge holds the top-left and grows
+/// the size. Sizes clamp to the node minimums. `pos` is always set so the box
+/// stays pinned under the pointer (no animation) for the duration of the drag.
+fn resize_drag(rect: Rect, hx: i8, hy: i8, delta: egui::Vec2) -> LiveGeometry {
+    let mut min = rect.min;
+    let mut geo = LiveGeometry::default();
+    match hx {
+        -1 => {
+            let left = (rect.left() + delta.x).min(rect.right() - MIN_NODE_WIDTH);
+            min.x = left;
+            geo.width = Some(rect.right() - left);
+        }
+        1 => geo.width = Some((rect.width() + delta.x).max(MIN_NODE_WIDTH)),
+        _ => {}
+    }
+    match hy {
+        -1 => {
+            let top = (rect.top() + delta.y).min(rect.bottom() - MIN_NODE_HEIGHT);
+            min.y = top;
+            geo.height = Some(rect.bottom() - top);
+        }
+        1 => geo.height = Some((rect.height() + delta.y).max(MIN_NODE_HEIGHT)),
+        _ => {}
+    }
+    geo.pos = Some(min);
+    geo
 }
 
 /// Render the notebook canvas: a pannable/zoomable scene of nodes and edges,
@@ -287,51 +368,37 @@ pub fn notebook_ui(
             }
         }
 
-        // Width-resize affordance: thin grab strips on the selected node's left
-        // and right edges. Height is content-driven (see `Notebook::node_rect`),
-        // so width is the only adjustable axis — narrowing reflows the content and
-        // the height follows. Registered after the node bodies (so an edge drag
-        // resizes instead of moving) and before the connection handles (so the
-        // side-midpoint connection dots still win the very center of each edge).
+        // Resize affordance: grab handles on the selected node's edges and
+        // corners. Edge handles resize one axis, corner handles both. Width is
+        // exact (narrowing reflows the content); height is a grow-only minimum
+        // (see `Notebook::node_rect`). Registered after the node bodies (so a
+        // handle drag resizes instead of moving) and before the connection handles
+        // (so the side-midpoint connection dots still win the center of each edge).
         if let Some(sel) = selected
             && editing_id.as_ref() != Some(sel)
             && let Some(rect) = rects.get(sel).copied()
         {
-            for right_edge in [false, true] {
-                let edge_x = if right_edge {
-                    rect.right()
-                } else {
-                    rect.left()
-                };
-                let grab = Rect::from_min_max(
-                    egui::pos2(edge_x - RESIZE_GRAB / 2.0, rect.top()),
-                    egui::pos2(edge_x + RESIZE_GRAB / 2.0, rect.bottom()),
-                );
+            for (hx, hy) in RESIZE_HANDLES {
                 let resp = ui.interact(
-                    grab,
-                    ui.id().with(("notebook_resize", sel.as_str(), right_edge)),
+                    resize_grab_rect(rect, hx, hy),
+                    ui.id().with(("notebook_resize", sel.as_str(), hx, hy)),
                     egui::Sense::drag(),
                 );
                 if resp.hovered() || resp.dragged() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                    ui.painter().vline(
-                        edge_x,
-                        rect.y_range(),
-                        egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
-                    );
+                    ui.ctx().set_cursor_icon(resize_cursor(hx, hy));
+                    let stroke = egui::Stroke::new(2.0, ui.visuals().selection.stroke.color);
+                    if hx != 0 {
+                        let x = if hx < 0 { rect.left() } else { rect.right() };
+                        ui.painter().vline(x, rect.y_range(), stroke);
+                    }
+                    if hy != 0 {
+                        let y = if hy < 0 { rect.top() } else { rect.bottom() };
+                        ui.painter().hline(rect.x_range(), y, stroke);
+                    }
                 }
                 if resp.dragged() {
-                    let dx = resp.drag_delta().x;
-                    // Right edge: top-left stays, width follows the pointer. Left
-                    // edge: the right edge stays put, so x shifts and width changes
-                    // inversely. Clamp to a minimum so the box can't collapse.
-                    let (min, width) = if right_edge {
-                        (rect.min, (rect.width() + dx).max(MIN_NODE_WIDTH))
-                    } else {
-                        let new_left = (rect.left() + dx).min(rect.right() - MIN_NODE_WIDTH);
-                        (egui::pos2(new_left, rect.top()), rect.right() - new_left)
-                    };
-                    out.gesture = Some(Gesture::Resize(sel.clone(), min, width));
+                    let geo = resize_drag(rect, hx, hy, resp.drag_delta());
+                    out.gesture = Some(Gesture::Resize(sel.clone(), geo));
                 }
                 if resp.drag_stopped() {
                     out.gesture = Some(Gesture::ResizeStopped(sel.clone()));
@@ -464,31 +531,42 @@ pub fn notebook_ui(
         Some(Gesture::Click(id)) => notebook.selected = Some(id),
         Some(Gesture::BgClick) => notebook.selected = None,
         Some(Gesture::Drag(id, pos)) => {
-            notebook.positions.insert(id, pos);
+            notebook.live.entry(id).or_default().pos = Some(pos);
         }
         // A finished drag commits a move to the node's last recorded override.
         Some(Gesture::DragStopped(id)) => {
-            intent = notebook.positions.get(&id).map(|pos| UiIntent::Move {
-                node: id,
-                pos: *pos,
-            });
+            intent = notebook
+                .live
+                .get(&id)
+                .and_then(|l| l.pos)
+                .map(|pos| UiIntent::Move { node: id, pos });
         }
-        // The width override reflows the box; for a left-edge drag the position
-        // override also shifts its top-left under the pointer.
-        Some(Gesture::Resize(id, min, width)) => {
-            notebook.widths.insert(id.clone(), width);
-            notebook.positions.insert(id, min);
+        // Merge the handle's per-axis override into the node's live geometry; it
+        // reflows the box (and shifts the top-left for a left/top-edge drag).
+        Some(Gesture::Resize(id, geo)) => {
+            let live = notebook.live.entry(id).or_default();
+            if let Some(pos) = geo.pos {
+                live.pos = Some(pos);
+            }
+            if let Some(width) = geo.width {
+                live.width = Some(width);
+            }
+            if let Some(height) = geo.height {
+                live.height = Some(height);
+            }
         }
-        // A finished edge-resize commits the new width (and shifted top-left).
+        // A finished resize commits the new geometry. An axis the handle didn't
+        // touch falls back to the committed value (see `Notebook::resize_size`), so
+        // e.g. a width-only drag can't clobber a height floor.
         Some(Gesture::ResizeStopped(id)) => {
-            if let (Some(width), Some(pos)) = (
-                notebook.widths.get(&id).copied(),
-                notebook.node_position(&id),
-            ) {
+            if let (Some((width, height)), Some(pos)) =
+                (notebook.resize_size(&id), notebook.node_position(&id))
+            {
                 intent = Some(UiIntent::Resize {
                     node: id,
                     pos,
                     width,
+                    height,
                 });
             }
         }

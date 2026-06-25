@@ -673,13 +673,17 @@ impl Chrome {
                 // Cmd+Shift+[ / Cmd+Shift+] tab-cycling shortcuts there. The
                 // MAC_CMD modifier only matches when the Cmd key is set, which
                 // only happens on macOS, so this is inert on other platforms.
+                //
+                // Because Shift is held, the logical key egui reports is the
+                // shifted glyph: `{` (OpenCurlyBracket) and `}`
+                // (CloseCurlyBracket), not the bare `[` / `]`.
                 prev |= i.consume_key(
                     egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT,
-                    egui::Key::OpenBracket,
+                    egui::Key::OpenCurlyBracket,
                 );
                 next |= i.consume_key(
                     egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT,
-                    egui::Key::CloseBracket,
+                    egui::Key::CloseCurlyBracket,
                 );
             });
             if prev {

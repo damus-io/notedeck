@@ -67,6 +67,10 @@ pub struct BoardUiState {
     comment_draft: String,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
+    /// Free-text board filter. Empty means no filtering. Plain words match a
+    /// card's title/description/labels (all must match, case-insensitive); a
+    /// `label:foo` token narrows to cards carrying a label containing `foo`.
+    filter: String,
     /// Where each card was drawn last frame (screen rect + column), so a card
     /// that has jumped to a new column since can be animated sliding in from its
     /// previous slot rather than teleporting.
@@ -145,6 +149,66 @@ fn seed_edit_mode(text: &str) -> EditMode {
 #[derive(Clone)]
 struct DragCard(NoteId);
 
+/// A parsed board filter. Linear-inspired: whitespace splits the query into
+/// AND-ed terms, a `label:` prefix scopes a term to labels, and everything else
+/// is free text matched against a card's title, description and labels. All
+/// matching is case-insensitive substring; an empty filter matches everything.
+#[derive(Default)]
+struct CardFilter {
+    /// Free-text terms (lowercased); each must appear somewhere in the card.
+    text: Vec<String>,
+    /// `label:` terms (lowercased); each must match one of the card's labels.
+    labels: Vec<String>,
+}
+
+impl CardFilter {
+    fn parse(query: &str) -> Self {
+        let mut filter = CardFilter::default();
+        for term in query.split_whitespace() {
+            // Accept `label:` and `l:` as the label-scoping prefix.
+            let label = term
+                .strip_prefix("label:")
+                .or_else(|| term.strip_prefix("l:"));
+            match label {
+                Some(value) if !value.is_empty() => filter.labels.push(value.to_lowercase()),
+                // A bare `label:` with no value isn't a constraint; ignore it.
+                Some(_) => {}
+                None => filter.text.push(term.to_lowercase()),
+            }
+        }
+        filter
+    }
+
+    /// Whether any constraint is set. An inactive filter shows the whole board.
+    fn is_active(&self) -> bool {
+        !self.text.is_empty() || !self.labels.is_empty()
+    }
+
+    /// Does `card` satisfy every term? Label terms must each match some label;
+    /// text terms must each appear in the card's combined searchable text.
+    fn matches(&self, card: &CardView) -> bool {
+        let label_ok = self.labels.iter().all(|needle| {
+            card.labels
+                .iter()
+                .any(|l| l.to_lowercase().contains(needle))
+        });
+        if !label_ok {
+            return false;
+        }
+        if self.text.is_empty() {
+            return true;
+        }
+        let mut haystack = card.title.to_lowercase();
+        haystack.push('\n');
+        haystack.push_str(&card.description.to_lowercase());
+        for l in &card.labels {
+            haystack.push('\n');
+            haystack.push_str(&l.to_lowercase());
+        }
+        self.text.iter().all(|needle| haystack.contains(needle))
+    }
+}
+
 /// Render the board (header, columns, the add-column affordance and the floating
 /// card detail sheet) and return the edit the user made this frame, if any.
 pub fn board_ui(
@@ -184,22 +248,37 @@ pub fn board_ui(
     egui::Frame::new()
         .inner_margin(egui::Margin::same(SPACING_LG as i8))
         .show(ui, |ui| {
+            // Parsed once per frame from the persisted query; reflects the prior
+            // frame's keystroke, which is imperceptible in an immediate-mode UI.
+            let filter = CardFilter::parse(&state.filter);
+
             // Board header: a muted summary of its contents. The board title is
             // redundant with the app's own chrome, so it isn't repeated here.
             let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
-            let summary = egui::RichText::new(format!(
-                "{total} card{} · {} columns",
-                if total == 1 { "" } else { "s" },
-                view.columns.len()
-            ))
-            .color(theme.text_muted);
-            // Keep the header untouched when nothing is archived; only grow a row
-            // (with the entry point to the archived sheet) when there's something.
-            if view.archived.is_empty() {
-                ui.label(summary);
+            let summary_text = if filter.is_active() {
+                let matched = view
+                    .columns
+                    .iter()
+                    .flat_map(|c| &c.cards)
+                    .filter(|c| filter.matches(c))
+                    .count();
+                format!(
+                    "{matched} of {total} cards · {} columns",
+                    view.columns.len()
+                )
             } else {
-                ui.horizontal(|ui| {
-                    ui.label(summary);
+                format!(
+                    "{total} card{} · {} columns",
+                    if total == 1 { "" } else { "s" },
+                    view.columns.len()
+                )
+            };
+            let summary = egui::RichText::new(summary_text).color(theme.text_muted);
+            ui.horizontal(|ui| {
+                ui.label(summary);
+                // The archived entry point only appears when there's something
+                // behind it, so the header stays quiet on a fresh board.
+                if !view.archived.is_empty() {
                     ui.add_space(SPACING_SM);
                     let label =
                         egui::RichText::new(format!("View archived ({})", view.archived.len()))
@@ -210,8 +289,24 @@ pub fn board_ui(
                     {
                         state.showing_archived = true;
                     }
+                }
+                // Filter field, right-aligned. Packs from the right so the clear
+                // affordance trails the input.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !state.filter.is_empty()
+                        && ui
+                            .add(egui::Button::new("✕").frame(false))
+                            .on_hover_text("Clear filter")
+                            .clicked()
+                    {
+                        state.filter.clear();
+                    }
+                    let field = egui::TextEdit::singleline(&mut state.filter)
+                        .desired_width(220.0)
+                        .hint_text("Filter… e.g. label:bug perf");
+                    ui.add(field);
                 });
-            }
+            });
             ui.add_space(SPACING_SM);
             ui.separator();
             ui.add_space(SPACING_MD);
@@ -222,7 +317,16 @@ pub fn board_ui(
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = SPACING_MD;
                         for col_idx in 0..view.columns.len() {
-                            column_ui(ui, theme, view, state, col_idx, &mut action, &mut clicked);
+                            column_ui(
+                                ui,
+                                theme,
+                                view,
+                                state,
+                                &filter,
+                                col_idx,
+                                &mut action,
+                                &mut clicked,
+                            );
                         }
                         add_column_ui(ui, theme, state, &mut action);
                     });
@@ -327,11 +431,13 @@ fn draw_moving_card(
 
 /// Render one column: header, the draggable card list (a drop zone), and the
 /// add-card composer.
+#[allow(clippy::too_many_arguments)]
 fn column_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     view: &BoardView,
     state: &mut BoardUiState,
+    filter: &CardFilter,
     col_idx: usize,
     action: &mut Option<BoardAction>,
     clicked: &mut Option<NoteId>,
@@ -365,7 +471,14 @@ fn column_ui(
                         column_rename_field(ui, state, col_idx, action);
                     } else {
                         ui.label(egui::RichText::new(&column.name).strong());
-                        count_badge(ui, theme, column.cards.len());
+                        // When filtering, the badge reflects how many of this
+                        // column's cards match rather than the column's total.
+                        let count = if filter.is_active() {
+                            column.cards.iter().filter(|c| filter.matches(c)).count()
+                        } else {
+                            column.cards.len()
+                        };
+                        count_badge(ui, theme, count);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             column_menu(ui, theme, state, view, col_idx, action)
                         });
@@ -377,18 +490,20 @@ fn column_ui(
                     .id_salt(("headway-col", col_idx))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        cards_drop_zone(ui, theme, column, state, col_idx, action, clicked);
+                        cards_drop_zone(ui, theme, column, state, filter, col_idx, action, clicked);
                     });
             });
         });
 }
 
 /// The drop zone wrapping a column's cards, with live insertion-line feedback.
+#[allow(clippy::too_many_arguments)]
 fn cards_drop_zone(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     column: &ColumnView,
     state: &mut BoardUiState,
+    filter: &CardFilter,
     col_idx: usize,
     action: &mut Option<BoardAction>,
     clicked: &mut Option<NoteId>,
@@ -416,6 +531,13 @@ fn cards_drop_zone(
             ui.spacing_mut().item_spacing.y = SPACING_SM;
 
             for (row_idx, card) in column.cards.iter().enumerate() {
+                // Filtered-out cards are simply not drawn. `row_idx` stays the
+                // card's true position in the column, so drag-reorder targeting
+                // against the remaining visible cards still lands correctly.
+                if filter.is_active() && !filter.matches(card) {
+                    continue;
+                }
+
                 // A card mid-slide is drawn once, in flight, on an unclipped
                 // foreground layer so it can cross column boundaries. Here we only
                 // reserve its destination slot (the card's size is stable across a
@@ -611,7 +733,14 @@ fn label_chip(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) {
         .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
         .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(label).small().color(theme.text_primary));
+            // Extend (don't wrap) so the chip reports its full natural width.
+            // Otherwise, when the wrapping row runs out of horizontal space, the
+            // text inside the last chip wraps character-by-character (vertical
+            // `p/e/r/f`) instead of the whole chip moving to the next row.
+            ui.add(
+                egui::Label::new(egui::RichText::new(label).small().color(theme.text_primary))
+                    .extend(),
+            );
         });
 }
 
@@ -625,7 +754,10 @@ fn removable_label_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) -
         .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(label).small().color(theme.text_primary));
+                ui.add(
+                    egui::Label::new(egui::RichText::new(label).small().color(theme.text_primary))
+                        .extend(),
+                );
                 if ui
                     .add(egui::Button::new(egui::RichText::new("✕").small()).frame(false))
                     .on_hover_text(format!("Remove {label}"))
@@ -1874,4 +2006,68 @@ pub fn board_inline_ui(ui: &mut egui::Ui, theme: &ColorTheme, view: &BoardView) 
             });
         })
         .response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn card(title: &str, description: &str, labels: &[&str]) -> CardView {
+        CardView {
+            id: NoteId::new([0u8; 32]),
+            author: [0u8; 32],
+            title: title.to_string(),
+            description: description.to_string(),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            rank: String::new(),
+            placed_at: 0,
+            comments: vec![],
+        }
+    }
+
+    #[test]
+    fn empty_filter_is_inactive_and_matches_all() {
+        let f = CardFilter::parse("   ");
+        assert!(!f.is_active());
+        assert!(f.matches(&card("anything", "", &[])));
+    }
+
+    #[test]
+    fn text_terms_match_title_description_and_labels() {
+        let c = card("Fix the bar", "wobbles on resize", &["ui"]);
+        assert!(CardFilter::parse("bar").matches(&c));
+        assert!(CardFilter::parse("WOBBLES").matches(&c)); // case-insensitive
+        assert!(CardFilter::parse("ui").matches(&c)); // also searches labels
+        assert!(!CardFilter::parse("missing").matches(&c));
+    }
+
+    #[test]
+    fn multiple_text_terms_are_anded() {
+        let c = card("Fix the bar", "wobbles on resize", &[]);
+        assert!(CardFilter::parse("fix wobbles").matches(&c));
+        assert!(!CardFilter::parse("fix nope").matches(&c));
+    }
+
+    #[test]
+    fn label_token_scopes_to_labels_only() {
+        let c = card("perf work", "", &["bug", "headway"]);
+        assert!(CardFilter::parse("label:bug").matches(&c));
+        assert!(CardFilter::parse("l:head").matches(&c)); // short prefix, substring
+        // `perf` is in the title but not a label, so a label: term rejects it.
+        assert!(!CardFilter::parse("label:perf").matches(&c));
+    }
+
+    #[test]
+    fn label_and_text_terms_combine() {
+        let c = card("perf work", "", &["bug"]);
+        assert!(CardFilter::parse("label:bug perf").matches(&c));
+        assert!(!CardFilter::parse("label:bug missing").matches(&c));
+    }
+
+    #[test]
+    fn bare_label_prefix_is_not_a_constraint() {
+        let f = CardFilter::parse("label:");
+        assert!(!f.is_active());
+        assert!(f.matches(&card("whatever", "", &[])));
+    }
 }
