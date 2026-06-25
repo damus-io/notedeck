@@ -6,7 +6,7 @@
 //! plus the transient per-board UI state it threads through; none of it touches
 //! the nostrdb subscription/fold machinery.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use enostr::NoteId;
 use notedeck::ColorTheme;
@@ -75,6 +75,15 @@ pub struct BoardUiState {
     /// 0→1 progress itself lives in egui's animation manager, keyed by card id
     /// (see [`move_progress_id`]); this only remembers the origin slot.
     moves: HashMap<NoteId, egui::Rect>,
+    /// Cards whose next cross-column landing should *not* slide, because the user
+    /// just dragged them there by hand — the pointer already carried the card
+    /// across, so a slide is redundant. Only relay/CLI moves (which the user
+    /// didn't physically perform) animate. A *set*, not a single id, because the
+    /// flag must outlive the async ingest between the drop and the folded view
+    /// reporting the new column: a second drag can be dropped before the first
+    /// move lands, leaving two cards awaiting their move at once. Each entry is
+    /// consumed when its move is observed (see [`start_move_anims`]).
+    suppress_anim: HashSet<NoteId>,
 }
 
 /// A card's on-screen placement last frame: its screen rect and which column it
@@ -274,6 +283,13 @@ fn start_move_anims(ctx: &egui::Context, view: &BoardView, state: &mut BoardUiSt
                 continue;
             };
             if prev.col != col_key && !state.moves.contains_key(&card.id) {
+                // A manual drag already carried the card across columns, so land
+                // it in place rather than sliding it again. Consume the flag here
+                // (not on a timer) so it survives the async ingest latency until
+                // the move is actually observed.
+                if state.suppress_anim.remove(&card.id) {
+                    continue;
+                }
                 state.moves.insert(card.id, prev.rect);
                 // Snap the clock to 0 (zero animation time forces a reset even if
                 // a prior slide left this id parked at 1.0), so the read below
@@ -512,6 +528,12 @@ fn cards_drop_zone(
     // A release in this zone: use the hovered insertion row, else append to end.
     if let Some(payload) = zone.dnd_release_payload::<DragCard>() {
         let row = hover_target.unwrap_or(column.cards.len());
+        // A cross-column drag shouldn't slide afterwards — the pointer already
+        // moved the card. (A same-column reorder never changes column, so it
+        // never animates; don't flag it, to avoid a stale entry lingering.)
+        if !column.cards.iter().any(|c| c.id == payload.0) {
+            state.suppress_anim.insert(payload.0);
+        }
         *action = Some(BoardAction::MoveCard {
             card: payload.0,
             to_col: col_idx,
