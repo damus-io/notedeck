@@ -1,5 +1,6 @@
 //! Painter-drawn timeline grids for the day and week views.
 
+use crate::block::Block;
 use chrono::{DateTime, Local};
 use egui::{Align2, Color32, FontId, Stroke, pos2, vec2};
 
@@ -19,7 +20,7 @@ fn grid_stroke(ui: &egui::Ui) -> Stroke {
 }
 
 /// Draw a single day's 24-hour timeline.
-pub(crate) fn day(ui: &mut egui::Ui, focus: DateTime<Local>) {
+pub(crate) fn day(ui: &mut egui::Ui, focus: DateTime<Local>, blocks: &[Block]) {
     let now = Local::now();
     let is_today = focus.date_naive() == now.date_naive();
 
@@ -53,6 +54,20 @@ pub(crate) fn day(ui: &mut egui::Ui, focus: DateTime<Local>) {
         stroke,
     );
 
+    // Time blocks for this day.
+    let day_blocks: Vec<&Block> = blocks
+        .iter()
+        .filter(|b| b.start.date_naive() == focus.date_naive())
+        .collect();
+    draw_blocks(
+        &painter,
+        grid_left,
+        rect.right(),
+        rect.top(),
+        height,
+        &day_blocks,
+    );
+
     // "Now" indicator.
     if is_today {
         now_line(&painter, grid_left, rect.right(), rect.top(), height, now);
@@ -60,7 +75,7 @@ pub(crate) fn day(ui: &mut egui::Ui, focus: DateTime<Local>) {
 }
 
 /// Draw a 7-day week timeline with a shared hour grid.
-pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>) {
+pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>, blocks: &[Block]) {
     let now = Local::now();
     let monday = crate::start_of_week(focus);
 
@@ -111,11 +126,76 @@ pub(crate) fn week(ui: &mut egui::Ui, focus: DateTime<Local>) {
         painter.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], stroke);
     }
 
+    // Time blocks, laid out within each day's column.
+    for d in 0..7 {
+        let day = monday + chrono::Duration::days(d);
+        let x0 = grid_left + d as f32 * col_w;
+        let day_blocks: Vec<&Block> = blocks
+            .iter()
+            .filter(|b| b.start.date_naive() == day.date_naive())
+            .collect();
+        draw_blocks(
+            &painter,
+            x0,
+            x0 + col_w,
+            grid_top,
+            HOUR_H * 24.0,
+            &day_blocks,
+        );
+    }
+
     // "Now" indicator, confined to today's column if it's in this week.
     let days_in = (now.date_naive() - monday.date_naive()).num_days();
     if (0..7).contains(&days_in) {
         let x0 = grid_left + days_in as f32 * col_w;
         now_line(&painter, x0, x0 + col_w, grid_top, HOUR_H * 24.0, now);
+    }
+}
+
+/// Lay out and draw `blocks` within the column `[left, right]`, mapping each
+/// block's start/end time to a vertical offset in `[top, top + height]`.
+/// Overlapping blocks are split into side-by-side lanes.
+fn draw_blocks(
+    painter: &egui::Painter,
+    left: f32,
+    right: f32,
+    top: f32,
+    height: f32,
+    blocks: &[&Block],
+) {
+    if blocks.is_empty() {
+        return;
+    }
+
+    let lanes = crate::block::layout(blocks);
+    let avail = right - left;
+
+    for (b, (col, cols)) in blocks.iter().zip(lanes) {
+        let y0 = top + crate::day_fraction(b.start) * height;
+        // Keep a minimum height so very short blocks stay legible.
+        let y1 = (top + crate::day_fraction(b.end) * height).max(y0 + 16.0);
+
+        let lane_w = avail / cols as f32;
+        let x0 = left + col as f32 * lane_w;
+        let rect =
+            egui::Rect::from_min_max(pos2(x0 + 1.0, y0 + 1.0), pos2(x0 + lane_w - 1.0, y1 - 1.0));
+
+        painter.rect_filled(rect, 4.0, b.color);
+        painter.rect_stroke(
+            rect,
+            4.0,
+            Stroke::new(1.0, b.color.gamma_multiply(0.55)),
+            egui::StrokeKind::Inside,
+        );
+
+        // Title, clipped to the block so it never spills into neighbors.
+        painter.with_clip_rect(rect).text(
+            rect.min + vec2(7.0, 3.0),
+            Align2::LEFT_TOP,
+            b.title.as_str(),
+            FontId::proportional(11.0),
+            Color32::WHITE,
+        );
     }
 }
 

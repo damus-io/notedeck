@@ -9,6 +9,9 @@
 use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 use notedeck::{AppContext, AppResponse};
 
+use block::Block;
+
+mod block;
 mod timeline;
 
 /// Which span of time the timeline shows.
@@ -22,6 +25,8 @@ pub struct Horizon {
     view: View,
     /// The date the timeline is focused on.
     focus: DateTime<Local>,
+    /// Time blocks to render. Seeded with demo data until NIP-52 reads land.
+    blocks: Vec<Block>,
 }
 
 impl Default for Horizon {
@@ -29,6 +34,7 @@ impl Default for Horizon {
         Self {
             view: View::Day,
             focus: Local::now(),
+            blocks: block::demo(Local::now()),
         }
     }
 }
@@ -53,8 +59,8 @@ impl Horizon {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| match self.view {
-                View::Day => timeline::day(ui, self.focus),
-                View::Week => timeline::week(ui, self.focus),
+                View::Day => timeline::day(ui, self.focus, &self.blocks),
+                View::Week => timeline::week(ui, self.focus, &self.blocks),
             });
     }
 
