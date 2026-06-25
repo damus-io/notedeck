@@ -611,7 +611,14 @@ fn label_chip(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) {
         .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
         .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(label).small().color(theme.text_primary));
+            // Extend (don't wrap) so the chip reports its full natural width.
+            // Otherwise, when the wrapping row runs out of horizontal space, the
+            // text inside the last chip wraps character-by-character (vertical
+            // `p/e/r/f`) instead of the whole chip moving to the next row.
+            ui.add(
+                egui::Label::new(egui::RichText::new(label).small().color(theme.text_primary))
+                    .extend(),
+            );
         });
 }
 
@@ -625,7 +632,10 @@ fn removable_label_chip_ui(ui: &mut egui::Ui, theme: &ColorTheme, label: &str) -
         .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(label).small().color(theme.text_primary));
+                ui.add(
+                    egui::Label::new(egui::RichText::new(label).small().color(theme.text_primary))
+                        .extend(),
+                );
                 if ui
                     .add(egui::Button::new(egui::RichText::new("✕").small()).frame(false))
                     .on_hover_text(format!("Remove {label}"))
