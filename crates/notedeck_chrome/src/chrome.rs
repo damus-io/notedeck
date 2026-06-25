@@ -1267,7 +1267,26 @@ fn tab_notification_badge(ui: &mut egui::Ui, notifs: TabNotifications) {
 /// Chrome-browser-style tab strip across the top of the chrome frame. Shows one
 /// tab per *opened* app (`Chrome::opened`); clicking a tab switches the active
 /// app. New apps are opened from the left sidebar.
+/// Horizontal space (logical points) to reserve at the left of the tab strip so
+/// it isn't obscured by the macOS traffic-light window controls. These are only
+/// drawn when we hide the native titlebar (the default, fullsize-content-view
+/// mode); with `--title` the native titlebar owns the controls and no reserve is
+/// needed. Returns 0 on other platforms, when the titlebar is shown, or in
+/// fullscreen (where the controls are hidden).
+fn macos_traffic_light_inset(ctx: &AppContext, ui: &egui::Ui) -> f32 {
+    if cfg!(target_os = "macos")
+        && !ctx.args.options.contains(NotedeckOptions::ShowTitle)
+        && ui.input(|i| i.viewport().fullscreen) != Some(true)
+    {
+        72.0
+    } else {
+        0.0
+    }
+}
+
 fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui) {
+    let inset = macos_traffic_light_inset(ctx, ui);
+
     // disjoint field borrows so the tab closure can read opened flags while
     // mutably rendering app icons (e.g. Dave's avatar)
     let opened = &chrome.opened;
@@ -1291,26 +1310,41 @@ fn chrome_app_tabs(chrome: &mut Chrome, ctx: &mut AppContext, ui: &mut egui::Ui)
     let tabs_id = ui.id().with("tabs");
     ui.ctx().data_mut(|d| d.insert_temp(tabs_id, sel as i32));
 
-    let tab_res = egui_tabs::Tabs::new(n_tabs as i32)
-        .selected(sel as i32)
-        .hover_bg(egui_tabs::TabColor::none())
-        .selected_fg(egui_tabs::TabColor::none())
-        .selected_bg(egui_tabs::TabColor::none())
-        .height(30.0)
-        .layout(Layout::centered_and_justified(egui::Direction::TopDown))
-        .show(ui, |ui, state| {
-            let Some(app_idx) = nth_opened(opened, state.index() as usize) else {
-                return;
-            };
+    let mut render_tabs = |ui: &mut egui::Ui| {
+        egui_tabs::Tabs::new(n_tabs as i32)
+            .selected(sel as i32)
+            .hover_bg(egui_tabs::TabColor::none())
+            .selected_fg(egui_tabs::TabColor::none())
+            .selected_bg(egui_tabs::TabColor::none())
+            .height(30.0)
+            .layout(Layout::centered_and_justified(egui::Direction::TopDown))
+            .show(ui, |ui, state| {
+                let Some(app_idx) = nth_opened(opened, state.index() as usize) else {
+                    return;
+                };
 
-            let notifications = apps[app_idx].tab_notifications(ctx);
-            ChromeTab {
-                app: &mut apps[app_idx],
-                selected: state.is_selected(),
-                notifications,
-            }
-            .show(ctx.i18n, ui);
-        });
+                let notifications = apps[app_idx].tab_notifications(ctx);
+                ChromeTab {
+                    app: &mut apps[app_idx],
+                    selected: state.is_selected(),
+                    notifications,
+                }
+                .show(ctx.i18n, ui);
+            })
+    };
+
+    // On macOS with the native titlebar hidden, indent the tab strip so the
+    // traffic-light window controls don't sit on top of the first tab.
+    let tab_res = if inset > 0.0 {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            ui.add_space(inset);
+            render_tabs(ui)
+        })
+        .inner
+    } else {
+        render_tabs(ui)
+    };
 
     tab_strip_fade(ui);
 
