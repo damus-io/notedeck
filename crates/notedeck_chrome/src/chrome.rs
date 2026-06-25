@@ -661,6 +661,20 @@ impl Chrome {
                     egui::Key::Tab,
                 );
                 next = i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab);
+
+                // macOS swallows Ctrl+Tab via AppKit's keyboard-interface
+                // control before it reaches us, so also accept the native
+                // Cmd+Shift+[ / Cmd+Shift+] tab-cycling shortcuts there. The
+                // MAC_CMD modifier only matches when the Cmd key is set, which
+                // only happens on macOS, so this is inert on other platforms.
+                prev |= i.consume_key(
+                    egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT,
+                    egui::Key::OpenBracket,
+                );
+                next |= i.consume_key(
+                    egui::Modifiers::MAC_CMD | egui::Modifiers::SHIFT,
+                    egui::Key::CloseBracket,
+                );
             });
             if prev {
                 self.cycle_app(false);
