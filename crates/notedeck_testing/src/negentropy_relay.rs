@@ -119,6 +119,18 @@ impl NegentropyRelay {
         self.probe.count_prefix(prefix)
     }
 
+    /// Count captured `["EVENT",…]` frames whose JSON contains `needle`
+    /// (e.g. `"kind":1080`), to distinguish event kinds in assertions —
+    /// useful when relay-list management events share the relay with the
+    /// events under test.
+    pub fn count_captured_events_containing(&self, needle: &str) -> usize {
+        self.probe
+            .captured_text()
+            .into_iter()
+            .filter(|text| text.starts_with("[\"EVENT\",") && text.contains(needle))
+            .count()
+    }
+
     /// Returns whether the relay captured this exact client text frame.
     pub fn has_captured_text(&self, expected: &str) -> bool {
         self.probe

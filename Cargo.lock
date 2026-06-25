@@ -5297,6 +5297,7 @@ dependencies = [
  "notedeck",
  "notedeck_testing",
  "notedeck_ui",
+ "serde_json",
  "tempfile",
 ]
 

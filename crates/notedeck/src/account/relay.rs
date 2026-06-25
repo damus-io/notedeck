@@ -55,38 +55,7 @@ impl AccountRelayData {
         let mut relays = Vec::new();
         for nk in nks.iter() {
             if let Ok(note) = ndb.get_note_by_key(txn, *nk) {
-                for tag in note.tags() {
-                    match tag.get(0).and_then(|t| t.variant().str()) {
-                        Some("r") => {
-                            if let Some(url) = tag.get(1).and_then(|f| f.variant().str()) {
-                                let has_read_marker = tag
-                                    .get(2)
-                                    .is_some_and(|m| m.variant().str() == Some("read"));
-                                let has_write_marker = tag
-                                    .get(2)
-                                    .is_some_and(|m| m.variant().str() == Some("write"));
-
-                                let Ok(norm_url) = NormRelayUrl::new(url) else {
-                                    continue;
-                                };
-                                relays.push(RelaySpec::new(
-                                    norm_url,
-                                    has_read_marker,
-                                    has_write_marker,
-                                ));
-                            }
-                        }
-                        Some("alt") => {
-                            // ignore for now
-                        }
-                        Some(x) => {
-                            error!("harvest_nip65_relays: unexpected tag type: {}", x);
-                        }
-                        None => {
-                            error!("harvest_nip65_relays: invalid tag");
-                        }
-                    }
-                }
+                parse_nip65_relays_note(&note, &mut relays);
             }
         }
         relays
@@ -115,6 +84,47 @@ impl AccountRelayData {
     }
 }
 
+/// Parses the `r` tags of a single kind-10002 NIP-65 note into [`RelaySpec`]s,
+/// appending them to `relays`.
+pub(crate) fn parse_nip65_relays_note(note: &Note, relays: &mut Vec<RelaySpec>) {
+    for tag in note.tags() {
+        match tag.get(0).and_then(|t| t.variant().str()) {
+            Some("r") => {
+                if let Some(url) = tag.get(1).and_then(|f| f.variant().str()) {
+                    let has_read_marker = tag
+                        .get(2)
+                        .is_some_and(|m| m.variant().str() == Some("read"));
+                    let has_write_marker = tag
+                        .get(2)
+                        .is_some_and(|m| m.variant().str() == Some("write"));
+                    // private marker lives at index 3 so it never collides
+                    // with the read/write marker at index 2
+                    let is_private = tag
+                        .get(3)
+                        .is_some_and(|m| m.variant().str() == Some("private"));
+
+                    let Ok(norm_url) = NormRelayUrl::new(url) else {
+                        continue;
+                    };
+                    relays.push(
+                        RelaySpec::new(norm_url, has_read_marker, has_write_marker)
+                            .with_private(is_private),
+                    );
+                }
+            }
+            Some("alt") => {
+                // ignore for now
+            }
+            Some(x) => {
+                error!("harvest_nip65_relays: unexpected tag type: {}", x);
+            }
+            None => {
+                error!("harvest_nip65_relays: invalid tag");
+            }
+        }
+    }
+}
+
 /// Builds a kind-10002 NIP-65 relay-list note for the provided advertised relays.
 pub fn construct_nip65_relays_note<'a>(
     relay_specs: impl IntoIterator<Item = &'a RelaySpec>,
@@ -125,10 +135,19 @@ pub fn construct_nip65_relays_note<'a>(
             .start_tag()
             .tag_str("r")
             .tag_str(&relay_spec.url.to_string());
+        // Emit the read/write marker (index 2) then the private marker (index 3)
+        // so `private` always lands at the 4th tag entry, never colliding with
+        // read/write. A no-marker private relay gets an empty placeholder at
+        // index 2 to keep `private` at index 3.
         if relay_spec.has_read_marker {
             builder = builder.tag_str("read");
         } else if relay_spec.has_write_marker {
             builder = builder.tag_str("write");
+        } else if relay_spec.is_private {
+            builder = builder.tag_str("");
+        }
+        if relay_spec.is_private {
+            builder = builder.tag_str("private");
         }
     }
     builder
@@ -228,6 +247,8 @@ pub fn calculate_relays(
 pub enum RelayAction {
     Add(String),
     Remove(String),
+    /// Mark/unmark an advertised relay as a private sync relay.
+    SetPrivate(String, bool),
 }
 
 impl RelayAction {
@@ -235,6 +256,7 @@ impl RelayAction {
         match self {
             RelayAction::Add(url) => url,
             RelayAction::Remove(url) => url,
+            RelayAction::SetPrivate(url, _) => url,
         }
     }
 }
@@ -254,6 +276,9 @@ pub(super) fn modify_advertised_relays(
     match action {
         RelayAction::Add(_) => info!("add advertised relay \"{relay_url_str}\""),
         RelayAction::Remove(_) => info!("remove advertised relay \"{relay_url_str}\""),
+        RelayAction::SetPrivate(_, yes) => {
+            info!("set advertised relay \"{relay_url_str}\" private={yes}")
+        }
     }
 
     // let selected = self.cache.selected_mut();
@@ -270,6 +295,16 @@ pub(super) fn modify_advertised_relays(
         }
         RelayAction::Remove(_) => {
             advertised.remove(&RelaySpec::new(relay_url, false, false));
+        }
+        RelayAction::SetPrivate(_, yes) => {
+            // Preserve the existing read/write markers; only flip the private
+            // flag. RelaySpec equality is url-only, so `replace` swaps the
+            // stored spec in place.
+            let existing = advertised
+                .get(&RelaySpec::new(relay_url.clone(), false, false))
+                .cloned()
+                .unwrap_or_else(|| RelaySpec::new(relay_url, false, false));
+            advertised.replace(existing.with_private(yes));
         }
     }
 
@@ -297,7 +332,7 @@ pub fn write_relays(relay_defaults: &RelayDefaults, data: &AccountRelayData) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::construct_nip65_relays_note;
+    use super::{construct_nip65_relays_note, parse_nip65_relays_note};
     use crate::RelaySpec;
     use enostr::{FullKeypair, NormRelayUrl};
 
@@ -343,5 +378,138 @@ mod tests {
                 && tag.get_str(1) == Some("wss://relay-both.example.com/")
                 && tag.get(2).is_none()
         }));
+    }
+
+    /// A private relay with no read/write marker emits an empty placeholder at
+    /// index 2 so `"private"` always lands at index 3.
+    #[test]
+    fn construct_nip65_relays_note_emits_private_marker_at_index_3() {
+        let owner = FullKeypair::generate();
+        let relays = vec![
+            RelaySpec::new(
+                NormRelayUrl::new("wss://private-both.example.com").expect("relay"),
+                false,
+                false,
+            )
+            .with_private(true),
+            RelaySpec::new(
+                NormRelayUrl::new("wss://private-read.example.com").expect("relay"),
+                true,
+                false,
+            )
+            .with_private(true),
+        ];
+
+        let note = construct_nip65_relays_note(&relays)
+            .sign(&owner.secret_key.secret_bytes())
+            .build()
+            .expect("relay list note");
+
+        // no marker + private -> ["r", url, "", "private"]
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("r")
+                && tag.get_str(1) == Some("wss://private-both.example.com/")
+                && tag.get_str(2) == Some("")
+                && tag.get_str(3) == Some("private")
+        }));
+        // read marker + private -> ["r", url, "read", "private"]
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("r")
+                && tag.get_str(1) == Some("wss://private-read.example.com/")
+                && tag.get_str(2) == Some("read")
+                && tag.get_str(3) == Some("private")
+        }));
+    }
+
+    /// Non-private relays serialize to exactly the same tags as before the
+    /// private marker existed (no trailing empty/placeholder entries).
+    #[test]
+    fn construct_nip65_relays_note_non_private_unchanged() {
+        let owner = FullKeypair::generate();
+        let relays = vec![
+            RelaySpec::new(
+                NormRelayUrl::new("wss://relay-read.example.com").expect("relay"),
+                true,
+                false,
+            ),
+            RelaySpec::new(
+                NormRelayUrl::new("wss://relay-both.example.com").expect("relay"),
+                false,
+                false,
+            ),
+        ];
+
+        let note = construct_nip65_relays_note(&relays)
+            .sign(&owner.secret_key.secret_bytes())
+            .build()
+            .expect("relay list note");
+
+        // read relay: marker at index 2, nothing at index 3
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("r")
+                && tag.get_str(1) == Some("wss://relay-read.example.com/")
+                && tag.get_str(2) == Some("read")
+                && tag.get(3).is_none()
+        }));
+        // both relay: nothing past the url
+        assert!(note.tags().into_iter().any(|tag| {
+            tag.get_str(0) == Some("r")
+                && tag.get_str(1) == Some("wss://relay-both.example.com/")
+                && tag.get(2).is_none()
+        }));
+    }
+
+    /// Serialize -> parse round-trips the private flag while preserving the
+    /// read/write markers.
+    #[test]
+    fn private_marker_round_trips() {
+        let owner = FullKeypair::generate();
+        let original = vec![
+            RelaySpec::new(
+                NormRelayUrl::new("wss://private-both.example.com").expect("relay"),
+                false,
+                false,
+            )
+            .with_private(true),
+            RelaySpec::new(
+                NormRelayUrl::new("wss://private-write.example.com").expect("relay"),
+                false,
+                true,
+            )
+            .with_private(true),
+            RelaySpec::new(
+                NormRelayUrl::new("wss://public-read.example.com").expect("relay"),
+                true,
+                false,
+            ),
+        ];
+
+        let note = construct_nip65_relays_note(&original)
+            .sign(&owner.secret_key.secret_bytes())
+            .build()
+            .expect("relay list note");
+
+        let mut parsed = Vec::new();
+        parse_nip65_relays_note(&note, &mut parsed);
+
+        let find = |url: &str| {
+            parsed
+                .iter()
+                .find(|r| r.url.to_string() == url)
+                .unwrap_or_else(|| panic!("missing {url}"))
+        };
+
+        let both = find("wss://private-both.example.com/");
+        assert!(both.is_private);
+        assert!(!both.has_read_marker);
+        assert!(!both.has_write_marker);
+
+        let write = find("wss://private-write.example.com/");
+        assert!(write.is_private);
+        assert!(write.has_write_marker);
+
+        let read = find("wss://public-read.example.com/");
+        assert!(!read.is_private);
+        assert!(read.has_read_marker);
     }
 }

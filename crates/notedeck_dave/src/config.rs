@@ -157,7 +157,6 @@ pub struct DaveSettings {
     pub model: String,
     pub endpoint: Option<String>,
     pub api_key: Option<String>,
-    pub pns_relay: Option<String>,
 }
 
 impl Default for DaveSettings {
@@ -167,7 +166,6 @@ impl Default for DaveSettings {
             model: AiProvider::default().default_model().to_string(),
             endpoint: None,
             api_key: None,
-            pns_relay: None,
         }
     }
 }
@@ -180,7 +178,6 @@ impl DaveSettings {
             model: provider.default_model().to_string(),
             endpoint: provider.default_endpoint().map(|s| s.to_string()),
             api_key: None,
-            pns_relay: None,
         }
     }
 
@@ -205,7 +202,6 @@ impl DaveSettings {
                 .map(|s| s.to_string())
                 .or_else(|| provider.default_endpoint().map(|s| s.to_string())),
             api_key,
-            pns_relay: config.pns_relay.clone(),
         }
     }
 }
@@ -218,7 +214,6 @@ pub struct ModelConfig {
     model: String,
     api_key: Option<String>,
     pub anthropic_api_key: Option<String>,
-    pub pns_relay: Option<String>,
 }
 
 // short-term trial key for testing
@@ -300,7 +295,6 @@ impl Default for ModelConfig {
             model,
             api_key,
             anthropic_api_key,
-            pns_relay: std::env::var("DAVE_RELAY").ok(),
         }
     }
 }
@@ -333,7 +327,6 @@ impl ModelConfig {
             model: "hhao/qwen2.5-coder-tools:latest".to_string(),
             api_key: None,
             anthropic_api_key: None,
-            pns_relay: None,
         }
     }
 
@@ -368,7 +361,6 @@ impl ModelConfig {
             model: settings.model.clone(),
             api_key,
             anthropic_api_key,
-            pns_relay: settings.pns_relay.clone(),
         }
     }
 
@@ -381,7 +373,6 @@ impl ModelConfig {
             model: "gpt-4.1-mini".to_string(),
             api_key: Some(DAVE_TRIAL.to_string()),
             anthropic_api_key: None,
-            pns_relay: None,
         }
     }
 

@@ -2,9 +2,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use enostr::Pubkey;
+use enostr::{Pubkey, RelayId};
 use nostrdb::{Ndb, Subscription, Transaction};
-use notedeck::{App, AppContext, AppResponse, ColorTheme};
+use notedeck::{App, AppContext, AppResponse, ColorTheme, ExplicitPublishApi};
 
 pub use headway::{event, store};
 
@@ -14,6 +14,39 @@ pub use ui::{BoardUiState, board_inline_ui, card_inline_ui, issue_inline_ui};
 use ui::{board_ui, empty_state};
 
 use event::{BoardReducer, BoardView};
+
+/// A [`store::Publisher`] that fans every locally-ingested board event out to
+/// the account's "private" relays (NIP-65 4th-entry marker) so the board syncs
+/// across the user's own devices. With no private relay marked the relay set is
+/// empty and this behaves exactly like [`store::NoPublish`] (local-only).
+///
+/// We publish plaintext board events, so they can only safely reach a private
+/// (AUTH/wireguard) relay. TODO: PNS-encrypt these events (as dave does for its
+/// session state via `wrap_pns`) and then we could also fan them out to the
+/// user's *public* write relays without leaking board contents.
+struct PrivateRelayPublisher<'o, 'a> {
+    api: ExplicitPublishApi<'o, 'a>,
+    relays: Vec<RelayId>,
+}
+
+impl store::Publisher for PrivateRelayPublisher<'_, '_> {
+    fn publish(&mut self, event_frame: &str) {
+        if self.relays.is_empty() {
+            return;
+        }
+        // `ingest` hands us a ["EVENT", {…}] frame; `publish_event_json` wants
+        // the bare event object, which the outbox re-frames per relay.
+        match serde_json::from_str::<serde_json::Value>(event_frame)
+            .ok()
+            .and_then(|frame| frame.get(1).cloned())
+        {
+            Some(event) => self
+                .api
+                .publish_event_json(event.to_string(), self.relays.clone()),
+            None => {} // malformed frame; local ingest already happened
+        }
+    }
+}
 
 /// A Linear/Trello-style issue & todo tracker app for notedeck.
 ///
@@ -222,12 +255,17 @@ impl App for Headway {
             match &signer {
                 Some(secret) => {
                     if !self.seeded {
+                        let relays = ctx.accounts.selected_account_private_relays();
+                        let mut publisher = PrivateRelayPublisher {
+                            api: ctx.remote.publisher_explicit(),
+                            relays,
+                        };
                         store::seed_default_board(
                             ctx.ndb,
                             &author,
                             secret,
                             &self.board_id,
-                            &mut store::NoPublish,
+                            &mut publisher,
                         );
                         self.seeded = true;
                         self.wake();
@@ -263,6 +301,11 @@ impl App for Headway {
         // a signing key; a watch-only account simply can't edit.
         if let (Some(action), Some(secret)) = (action, &signer) {
             let view = self.sync.view().expect("view present");
+            let relays = ctx.accounts.selected_account_private_relays();
+            let mut publisher = PrivateRelayPublisher {
+                api: ctx.remote.publisher_explicit(),
+                relays,
+            };
             store::apply(
                 ctx.ndb,
                 &self.board_id,
@@ -270,7 +313,7 @@ impl App for Headway {
                 &author,
                 secret,
                 action,
-                &mut store::NoPublish,
+                &mut publisher,
             );
             self.wake();
         }
