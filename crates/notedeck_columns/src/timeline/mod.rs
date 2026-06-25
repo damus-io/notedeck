@@ -1027,6 +1027,7 @@ mod remote_tests {
             let accounts = Accounts::new(
                 None,
                 forced_relays,
+                Vec::new(),
                 FALLBACK_PUBKEY(),
                 &mut ndb,
                 &txn,
