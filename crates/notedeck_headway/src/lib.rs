@@ -5,16 +5,16 @@ use std::rc::Rc;
 use enostr::{Pubkey, RelayId};
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{
-    App, AppContext, AppResponse, ColorTheme, ExplicitPublishApi, PrivateRelaySync,
-    fan_out_event_frame,
+    App, AppContext, AppResponse, ColorTheme, DataPath, DataPathType, ExplicitPublishApi,
+    PrivateRelaySync, fan_out_event_frame,
 };
 
 pub use headway::{event, store};
 
 mod ui;
 
+use ui::{BoardNav, board_ui, empty_state};
 pub use ui::{BoardUiState, board_inline_ui, card_inline_ui, issue_inline_ui};
-use ui::{board_ui, empty_state};
 
 use event::{BoardReducer, BoardView};
 
@@ -51,8 +51,12 @@ impl store::Publisher for PrivateRelayPublisher<'_, '_> {
 /// to the account's private relays, which also feed remote edits back in via
 /// [`PrivateRelaySync`].
 pub struct Headway {
-    /// Which board this instance manages (single board for now).
+    /// The active board's slug. Switched via the header switcher and restored
+    /// per-account from disk; defaults to [`store::BOARD_ID`].
     board_id: String,
+    /// The account `board_id` was loaded for, so switching accounts reloads that
+    /// account's own saved board selection.
+    board_account: Option<Pubkey>,
     /// Transient, per-board UI state.
     state: BoardUiState,
     /// Subscription-backed cache of the reduced board (egui-free, so it's
@@ -74,6 +78,7 @@ impl Default for Headway {
     fn default() -> Self {
         Self {
             board_id: store::BOARD_ID.to_string(),
+            board_account: None,
             state: BoardUiState::default(),
             sync: BoardSync::default(),
             private_sync: PrivateRelaySync::new("headway"),
@@ -104,6 +109,13 @@ impl Headway {
     }
 }
 
+/// One entry in the board switcher: a board's stable `id` (slug) and its display
+/// `title`. Folded from the account's events by [`BoardSync::boards`].
+pub struct BoardSummary {
+    pub id: String,
+    pub title: String,
+}
+
 /// Subscription-backed, *online* reducer for one account's board.
 ///
 /// Holds a live nostrdb subscription to the account's headway events **and a
@@ -122,6 +134,9 @@ impl Headway {
 struct BoardSync {
     /// The last reduced board. `None` means "no such board" (or not loaded yet).
     view: Option<BoardView>,
+    /// Which `board_id` the cached `view` was folded for, so a switch to another
+    /// board re-picks from the existing reducer even when no new notes arrived.
+    view_board: Option<String>,
     /// The accumulator, kept alive across polls so new notes fold in
     /// incrementally. `None` until the first full fold (and again after an
     /// account switch), which is the signal to re-fold from scratch.
@@ -162,20 +177,43 @@ impl BoardSync {
             return true;
         }
 
-        // Nothing new since the last poll: the cached view stands, no re-fold.
-        if keys.is_empty() {
+        // Nothing new *and* still on the same board: the cached view stands, no
+        // re-fold. A board switch (`board_id` changed) forces a re-pick below even
+        // with no new notes, since the target board is already in the reducer.
+        let board_changed = self.view_board.as_deref() != Some(board_id);
+        if keys.is_empty() && !board_changed {
             return false;
         }
 
         // Incremental: fold only the freshly-arrived notes into the live reducer
         // and re-finalize (O(cards)). Commutative/idempotent, so this matches a
-        // full re-fold without walking the whole history.
+        // full re-fold without walking the whole history. With no new notes (a
+        // bare board switch) the delta is a no-op and we just re-pick.
         if let Ok(txn) = Transaction::new(ndb) {
             let reducer = self.reducer.as_mut().expect("reducer present");
             event::reduce_delta(reducer, ndb, &txn, &keys);
             self.view = event::pick_board(reducer, author, board_id);
+            self.view_board = Some(board_id.to_owned());
         }
         true
+    }
+
+    /// Every board folded for the current account, sorted by slug — what the
+    /// switcher lists. Empty until the first fold.
+    fn boards(&self) -> Vec<BoardSummary> {
+        let Some(reducer) = &self.reducer else {
+            return Vec::new();
+        };
+        let mut boards: Vec<BoardSummary> = reducer
+            .finalize()
+            .into_iter()
+            .map(|v| BoardSummary {
+                id: v.id,
+                title: v.title,
+            })
+            .collect();
+        boards.sort_by(|a, b| a.id.cmp(&b.id));
+        boards
     }
 
     /// The cached board, if one has been folded.
@@ -192,6 +230,7 @@ impl BoardSync {
         self.view = reducer
             .as_ref()
             .and_then(|r| event::pick_board(r, author, board_id));
+        self.view_board = Some(board_id.to_owned());
         self.reducer = reducer;
         #[cfg(test)]
         {
@@ -214,6 +253,7 @@ impl BoardSync {
         self.sub_author = Some(*author);
         // New account (or first run): drop the cache so the next poll re-folds.
         self.view = None;
+        self.view_board = None;
         self.reducer = None;
     }
 }
@@ -241,6 +281,16 @@ impl App for Headway {
             .accounts
             .selected_filled()
             .map(|f| f.secret_key.secret_bytes());
+
+        // On first render and after an account switch, restore that account's
+        // last-selected board from disk (falling back to the default). Re-arm the
+        // auto-seed so a fresh account still gets its default board seeded.
+        if self.board_account != Some(author) {
+            self.board_id =
+                load_board_pref(ctx.path, &author).unwrap_or_else(|| store::BOARD_ID.to_string());
+            self.board_account = Some(author);
+            self.seeded = false;
+        }
 
         // Declare the inbound cross-device subscription (catch-up + realtime)
         // against the account's private relays, and resolve the same set as our
@@ -291,6 +341,7 @@ impl App for Headway {
         // The detail pane draws comments with notedeck_ui's note renderer, so it
         // needs a `NoteContext` borrowed off `ctx` — dropped before we touch `ctx`
         // again to ingest the action below.
+        let boards = self.sync.boards();
         let action = {
             let mut note_context = ctx.note_context();
             board_ui(
@@ -298,9 +349,35 @@ impl App for Headway {
                 &theme,
                 &mut note_context,
                 self.sync.view().expect("view present"),
+                &boards,
                 &mut self.state,
             )
         };
+
+        // A switcher request (raised in the UI state): switch the active board or
+        // seed a new one. Both persist the selection so it survives a restart.
+        if let Some(nav) = self.state.take_nav() {
+            match nav {
+                BoardNav::Switch(board_id) => {
+                    self.board_id = board_id;
+                    save_board_pref(ctx.path, &author, &self.board_id);
+                    self.wake();
+                }
+                BoardNav::Create(title) => {
+                    if let Some(secret) = &signer {
+                        let slug = store::board_slug(&title, |s| boards.iter().any(|b| b.id == s));
+                        let mut publisher = PrivateRelayPublisher {
+                            api: ctx.remote.publisher_explicit(),
+                            relays: private_relays.clone(),
+                        };
+                        store::seed_board(ctx.ndb, &author, secret, &slug, &title, &mut publisher);
+                        self.board_id = slug;
+                        save_board_pref(ctx.path, &author, &self.board_id);
+                        self.wake();
+                    }
+                }
+            }
+        }
 
         // Apply the collected action by ingesting events locally. Mutations need
         // a signing key; a watch-only account simply can't edit.
@@ -324,6 +401,41 @@ impl App for Headway {
 
         self.pump_repaint(ui);
         AppResponse::default()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-account board selection, persisted across restarts
+// ---------------------------------------------------------------------------
+
+/// The file holding each account's last-selected board: a JSON map of pubkey-hex
+/// → board slug, under the app's settings dir. One file for all accounts so a
+/// single read/write keeps every account's choice.
+fn board_pref_path(path: &DataPath) -> std::path::PathBuf {
+    path.path(DataPathType::Setting).join("headway-boards.json")
+}
+
+/// The board slug `author` last selected, if one was saved.
+fn load_board_pref(path: &DataPath, author: &Pubkey) -> Option<String> {
+    let data = std::fs::read_to_string(board_pref_path(path)).ok()?;
+    let map: HashMap<String, String> = serde_json::from_str(&data).ok()?;
+    map.get(&author.hex()).cloned()
+}
+
+/// Persist `author`'s selected board, merging into the existing map so other
+/// accounts' choices are preserved. Best-effort: a write failure is non-fatal.
+fn save_board_pref(path: &DataPath, author: &Pubkey, board_id: &str) {
+    let file = board_pref_path(path);
+    let mut map: HashMap<String, String> = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or_default();
+    map.insert(author.hex(), board_id.to_string());
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(&map) {
+        let _ = std::fs::write(&file, json);
     }
 }
 
@@ -536,8 +648,13 @@ mod tests {
         /// One poll cycle against this account's board. Returns whether the
         /// board was re-folded this call.
         fn poll(&mut self) -> bool {
-            self.sync
-                .poll(&mut self.ndb, &self.kp.pubkey, store::BOARD_ID)
+            self.poll_board(store::BOARD_ID)
+        }
+
+        /// One poll cycle against a specific board id — used to exercise switching
+        /// the active board within a single account/reducer.
+        fn poll_board(&mut self, board_id: &str) -> bool {
+            self.sync.poll(&mut self.ndb, &self.kp.pubkey, board_id)
         }
 
         fn seed(&mut self) {
@@ -637,6 +754,52 @@ mod tests {
         t.wait(|v| v.columns[1].cards.len() == 3);
         let view = t.sync.view().expect("board loaded");
         assert_eq!(view.columns[1].cards.last().unwrap().title, "Fresh card");
+    }
+
+    /// Two boards under one account are both discoverable, and switching the
+    /// active board re-picks from the existing reducer — no full re-fold, since
+    /// the target board's events are already folded in.
+    #[test]
+    fn switching_board_repicks_without_refold() {
+        let mut t = TestSync::new();
+        // Subscribe first so the seeds' ingests arrive as subscription deltas.
+        t.poll();
+        t.seed();
+        store::seed_board(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            "work",
+            "Work",
+            &mut store::NoPublish,
+        );
+
+        // Materialise on the default board, then quiesce so the 'work' events are
+        // folded in too.
+        t.wait(|v| total_cards(v) == 7);
+        t.drain();
+        let folds = t.sync.full_reloads;
+
+        // Both boards are discoverable from the one reducer.
+        let boards = t.sync.boards();
+        assert!(
+            boards
+                .iter()
+                .any(|b| b.id == store::BOARD_ID && b.title == "Headway")
+        );
+        assert!(boards.iter().any(|b| b.id == "work" && b.title == "Work"));
+
+        // Switching to 'work' re-picks the cached reducer — different board, no
+        // full re-fold.
+        assert!(t.poll_board("work"));
+        let view = t.sync.view().expect("work board");
+        assert_eq!(view.id, "work");
+        assert_eq!(view.title, "Work");
+        assert_eq!(total_cards(view), 0, "fresh board has no cards");
+        assert_eq!(
+            t.sync.full_reloads, folds,
+            "a board switch must not trigger a full re-fold"
+        );
     }
 
     /// Once quiescent, polling with nothing new must NOT re-fold — this is the

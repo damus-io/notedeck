@@ -122,7 +122,7 @@ fn default_columns() -> Vec<ColumnDef> {
 
 /// Seed a fresh default board for `author` into the local nostrdb: just the
 /// board event with its columns, no cards. Cards are added later via
-/// [`BoardAction::AddCard`].
+/// [`BoardAction::AddCard`]. Titled "Headway"; use [`seed_board`] to name it.
 pub fn seed_default_board(
     ndb: &Ndb,
     author: &Pubkey,
@@ -130,11 +130,55 @@ pub fn seed_default_board(
     board_id: &str,
     publisher: &mut dyn Publisher,
 ) {
+    seed_board(ndb, author, secret, board_id, "Headway", publisher);
+}
+
+/// Derive a board slug (its stable `d`-tag id) from a human `title`, avoiding any
+/// slug the `taken` predicate rejects. Lowercase ASCII alphanumerics are kept;
+/// every other run collapses to a single `-`. Empty/all-punctuation input falls
+/// back to `board`, and a clash gets a `-2`, `-3`, … suffix. Shared so any
+/// surface that turns a typed name into a board (e.g. the GUI's "New board") gets
+/// the same rule; the CLI takes a slug verbatim and doesn't need it.
+pub fn board_slug(title: &str, taken: impl Fn(&str) -> bool) -> String {
+    let mut base = String::new();
+    let mut prev_dash = false;
+    for ch in title.chars() {
+        if ch.is_ascii_alphanumeric() {
+            base.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !base.is_empty() && !prev_dash {
+            base.push('-');
+            prev_dash = true;
+        }
+    }
+    let base = base.trim_end_matches('-');
+    let base = if base.is_empty() { "board" } else { base };
+
+    if !taken(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|slug| !taken(slug))
+        .expect("an unused slug exists")
+}
+
+/// Seed a fresh board with a display `title` (the `board_id` is its stable slug).
+/// Like [`seed_default_board`] but lets a caller create a *named* board — e.g. a
+/// separate "Work" board alongside the default one, all under one identity.
+pub fn seed_board(
+    ndb: &Ndb,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    board_id: &str,
+    title: &str,
+    publisher: &mut dyn Publisher,
+) {
     let _ = author;
     let columns = default_columns();
     ingest(
         ndb,
-        build_board(board_id, "Headway", "", &columns),
+        build_board(board_id, title, "", &columns),
         secret,
         publisher,
     );
@@ -929,5 +973,33 @@ mod tests {
         let view = t.wait(|v| !v.columns.iter().any(|c| c.name == "Inbox"));
         // The removed column's cards aren't lost; they fall back to column 0.
         assert!(view.columns.iter().map(|c| c.cards.len()).sum::<usize>() >= 7);
+    }
+
+    #[test]
+    fn board_slug_normalizes_titles() {
+        let free = |_: &str| false;
+        assert_eq!(board_slug("Work", free), "work");
+        assert_eq!(board_slug("My Work Board", free), "my-work-board");
+        assert_eq!(board_slug("  Spaced  Out  ", free), "spaced-out");
+        assert_eq!(board_slug("C++ & Rust!", free), "c-rust");
+        assert_eq!(board_slug("2024 Goals", free), "2024-goals");
+    }
+
+    #[test]
+    fn board_slug_falls_back_when_empty() {
+        let free = |_: &str| false;
+        assert_eq!(board_slug("", free), "board");
+        assert_eq!(board_slug("   ", free), "board");
+        assert_eq!(board_slug("!@#$", free), "board");
+    }
+
+    #[test]
+    fn board_slug_disambiguates_collisions() {
+        // "work" and "work-2" are taken; the next free slug is "work-3".
+        let taken = |s: &str| matches!(s, "work" | "work-2");
+        assert_eq!(board_slug("Work", taken), "work-3");
+        // The fallback also disambiguates.
+        let taken_board = |s: &str| s == "board";
+        assert_eq!(board_slug("", taken_board), "board-2");
     }
 }

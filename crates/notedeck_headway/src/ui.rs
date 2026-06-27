@@ -15,6 +15,7 @@ use notedeck::tokens::{
     STROKE_MEDIUM, STROKE_THIN,
 };
 
+use crate::BoardSummary;
 use crate::event::{self, ArchivedCard, BoardView, CardView, ColumnView, CommentView};
 use crate::store::BoardAction;
 
@@ -67,6 +68,10 @@ pub struct BoardUiState {
     comment_draft: String,
     /// Whether the archived-cards sheet is open.
     showing_archived: bool,
+    /// A board-switcher request raised this frame (switch or create). The app
+    /// reads and clears it to act on it; the new-board *composer* is just another
+    /// [`InlineEdit`], sharing `edit_text`.
+    nav: Option<BoardNav>,
     /// Free-text board filter. Empty means no filtering. Plain words match a
     /// card's title/description/labels (all must match, case-insensitive); a
     /// `label:foo` token narrows to cards carrying a label containing `foo`.
@@ -90,6 +95,14 @@ pub struct BoardUiState {
     suppress_anim: HashSet<NoteId>,
 }
 
+impl BoardUiState {
+    /// Take this frame's board-switcher request (switch or create), if any, for
+    /// the app to act on. Clears it so it fires once.
+    pub fn take_nav(&mut self) -> Option<BoardNav> {
+        self.nav.take()
+    }
+}
+
 /// A card's on-screen placement last frame: its screen rect and which column it
 /// sat in. Used to detect cross-column jumps (drags, detail-sheet moves, or a
 /// `headway move` arriving over the relay) and seed the slide animation.
@@ -104,9 +117,9 @@ struct CardPos {
 }
 
 /// The board's inline text editors are mutually exclusive — you can only be
-/// composing a card, renaming a column, or adding a column at any one moment —
-/// so they share [`BoardUiState::edit_text`] and [`BoardUiState::focus_edit`]
-/// and this enum tracks which (if any) is live.
+/// composing a card, renaming a column, adding a column, or naming a new board at
+/// any one moment — so they share [`BoardUiState::edit_text`] and
+/// [`BoardUiState::focus_edit`] and this enum tracks which (if any) is live.
 #[derive(Default, PartialEq, Eq)]
 enum InlineEdit {
     /// No inline editor open.
@@ -118,6 +131,18 @@ enum InlineEdit {
     RenameColumn(usize),
     /// Composing a new column.
     AddColumn,
+    /// Naming a new board in the switcher.
+    NewBoard,
+}
+
+/// A request from the board switcher, raised in [`BoardUiState::nav`] for the app
+/// to act on. Switching and creating are mutually exclusive, so one enum models
+/// the frame's intent rather than a clutch of `Option`s.
+pub enum BoardNav {
+    /// Switch the active board to this slug.
+    Switch(String),
+    /// Create (seed) a new board with this display title, then switch to it.
+    Create(String),
 }
 
 /// How the detail sheet shows an editable field (title or description): the
@@ -216,6 +241,7 @@ pub fn board_ui(
     theme: &ColorTheme,
     note_context: &mut notedeck::NoteContext,
     view: &BoardView,
+    boards: &[BoardSummary],
     state: &mut BoardUiState,
 ) -> Option<BoardAction> {
     // A selected card takes over the whole view as a full-pane detail screen,
@@ -252,8 +278,12 @@ pub fn board_ui(
             // frame's keystroke, which is imperceptible in an immediate-mode UI.
             let filter = CardFilter::parse(&state.filter);
 
-            // Board header: a muted summary of its contents. The board title is
-            // redundant with the app's own chrome, so it isn't repeated here.
+            // Board switcher: the active board's title as a dropdown listing the
+            // account's other boards, plus a "+ New board" composer.
+            board_switcher(ui, theme, view, boards, state);
+            ui.add_space(SPACING_SM);
+
+            // Board header: a muted summary of its contents.
             let total: usize = view.columns.iter().map(|c| c.cards.len()).sum();
             let summary_text = if filter.is_active() {
                 let matched = view
@@ -783,6 +813,75 @@ fn count_badge(ui: &mut egui::Ui, theme: &ColorTheme, n: usize) {
                     .color(theme.text_muted),
             );
         });
+}
+
+/// The board switcher in the header: the active board's title as a dropdown that
+/// lists the account's boards (current one marked), with a "+ New board" entry
+/// that opens an inline name composer. Requests are raised in [`BoardUiState::nav`]
+/// for the app to act on; this function never mutates the board itself.
+fn board_switcher(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    view: &BoardView,
+    boards: &[BoardSummary],
+    state: &mut BoardUiState,
+) {
+    // Naming a new board takes over the switcher with a single-line composer.
+    if state.edit == InlineEdit::NewBoard {
+        ui.horizontal(|ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut state.edit_text)
+                    .desired_width(220.0)
+                    .hint_text("New board name…"),
+            );
+            if state.focus_edit {
+                resp.request_focus();
+                state.focus_edit = false;
+            }
+            let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
+            let create = ui.button("Create").clicked();
+
+            if escape {
+                state.edit_text.clear();
+                state.edit = InlineEdit::None;
+            } else if submit || create {
+                let title = state.edit_text.trim().to_string();
+                state.edit_text.clear();
+                state.edit = InlineEdit::None;
+                if !title.is_empty() {
+                    state.nav = Some(BoardNav::Create(title));
+                }
+            }
+        });
+        return;
+    }
+
+    let label = egui::RichText::new(format!("{}  ⏷", view.title))
+        .size(18.0)
+        .strong()
+        .color(theme.text_primary);
+    ui.menu_button(label, |ui| {
+        for board in boards {
+            let current = board.id == view.id;
+            if ui.selectable_label(current, &board.title).clicked() {
+                if !current {
+                    state.nav = Some(BoardNav::Switch(board.id.clone()));
+                }
+                ui.close_menu();
+            }
+        }
+        ui.separator();
+        if ui
+            .add(egui::Button::new("+ New board").frame(false))
+            .clicked()
+        {
+            state.edit = InlineEdit::NewBoard;
+            state.edit_text.clear();
+            state.focus_edit = true;
+            ui.close_menu();
+        }
+    });
 }
 
 /// The inline "add a card" affordance for a column.
