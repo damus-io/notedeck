@@ -5308,9 +5308,12 @@ version = "0.10.0-beta.4"
 dependencies = [
  "chrono",
  "egui",
+ "egui_kittest",
+ "enostr",
  "nostrdb",
  "notedeck",
  "notedeck_ui",
+ "tempfile",
  "tracing",
 ]
 

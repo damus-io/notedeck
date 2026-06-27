@@ -31,3 +31,8 @@ keystore.properties
 *.keystore
 # scratch dir for local nostrdb instances, e.g. --dbpath tmp/headway2
 /tmp
+
+# egui_kittest snapshot scratch artifacts (only the .png baseline is committed)
+**/snapshots/*.diff.png
+**/snapshots/*.new.png
+**/snapshots/*.old.png

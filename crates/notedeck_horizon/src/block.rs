@@ -20,15 +20,35 @@ pub struct Block {
     pub start: DateTime<Local>,
     pub end: DateTime<Local>,
     pub color: Color32,
+    /// True for date-based (kind 31922) events shown in the all-day row.
+    pub all_day: bool,
 }
 
 impl Block {
-    fn new(title: &str, start: DateTime<Local>, end: DateTime<Local>, color: Color32) -> Self {
+    fn new(
+        title: &str,
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+        color: Color32,
+        all_day: bool,
+    ) -> Self {
         Self {
             title: title.to_owned(),
             start,
             end,
             color,
+            all_day,
+        }
+    }
+
+    /// Whether this block covers any part of the given local calendar date.
+    pub fn covers(&self, date: chrono::NaiveDate) -> bool {
+        let d = date;
+        if self.all_day {
+            // `end` is exclusive for date-based events.
+            self.start.date_naive() <= d && d < self.end.date_naive()
+        } else {
+            self.start.date_naive() == d
         }
     }
 }
@@ -123,14 +143,14 @@ pub(crate) fn from_note(note: &Note) -> Option<Block> {
         .unwrap_or("(untitled)")
         .to_owned();
 
-    let (start, end) = match note.kind() as u64 {
+    let (start, end, all_day) = match note.kind() as u64 {
         KIND_TIME_BASED => {
             let start = parse_unix(tag_value(note, "start")?)?;
             let end = tag_value(note, "end")
                 .and_then(parse_unix)
                 .filter(|e| *e > start)
                 .unwrap_or_else(|| start + Duration::hours(1));
-            (start, end)
+            (start, end, false)
         }
         KIND_DATE_BASED => {
             let start = parse_date(tag_value(note, "start")?)?;
@@ -140,12 +160,18 @@ pub(crate) fn from_note(note: &Note) -> Option<Block> {
                 .and_then(parse_date)
                 .filter(|e| *e > start)
                 .unwrap_or_else(|| start + Duration::days(1));
-            (start, end)
+            (start, end, true)
         }
         _ => return None,
     };
 
-    Some(Block::new(&title, start, end, color_for(note.id())))
+    Some(Block::new(
+        &title,
+        start,
+        end,
+        color_for(note.id()),
+        all_day,
+    ))
 }
 
 /// First single-letter-or-named tag value, e.g. `tag_value(note, "start")`.
@@ -190,7 +216,7 @@ mod tests {
 
     fn blk(h0: u32, m0: u32, h1: u32, m1: u32) -> Block {
         let at = |h, m| Local.with_ymd_and_hms(2026, 6, 25, h, m, 0).unwrap();
-        Block::new("x", at(h0, m0), at(h1, m1), PALETTE[0])
+        Block::new("x", at(h0, m0), at(h1, m1), PALETTE[0], false)
     }
 
     fn lanes(blocks: &[Block]) -> Vec<Lane> {
