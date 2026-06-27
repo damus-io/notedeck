@@ -17,7 +17,7 @@
 //! relay marked the relay set is empty and both directions are no-ops, so the
 //! app stays purely local.
 
-use enostr::{NormRelayUrl, RelayId};
+use enostr::{NormRelayUrl, Pubkey, RelayId};
 use hashbrown::HashSet;
 use nostrdb::Filter;
 
@@ -59,9 +59,11 @@ pub struct PrivateRelaySync {
     owner: SubOwnerKey,
     /// Logical sub key under that owner.
     key: SubKey,
-    /// Last resolved private relay set, so we only re-declare (and log) on a
-    /// change rather than every frame.
-    last: Option<Vec<NormRelayUrl>>,
+    /// Last resolved (selected account, private relay set), so we only
+    /// re-declare (and log) on a change rather than every frame. The account is
+    /// part of the key so switching accounts still re-declares even if the two
+    /// accounts happen to share a private relay set.
+    last: Option<(Pubkey, Vec<NormRelayUrl>)>,
 }
 
 impl PrivateRelaySync {
@@ -90,7 +92,20 @@ impl PrivateRelaySync {
             })
             .collect();
 
-        self.log_on_change(ctx, &urls);
+        // Nothing to do unless the account or its private relay set changed.
+        // set_sub/drop_owner each re-resolve the account's read relays (a hot,
+        // log-emitting path), so calling them every frame spams the logs and
+        // wastes work — dedup before touching the outbox at all.
+        let pubkey = *ctx.accounts.selected_account_pubkey();
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|(pk, last)| *pk == pubkey && last.as_slice() == urls.as_slice())
+        {
+            return relays;
+        }
+        self.log_change(ctx, &urls);
+        self.last = Some((pubkey, urls.clone()));
 
         let mut scoped = ctx.remote.scoped_subs(ctx.accounts);
         if urls.is_empty() {
@@ -108,15 +123,10 @@ impl PrivateRelaySync {
         relays
     }
 
-    /// Log the private relay set (and the live connection status of each) the
-    /// first time we see it and whenever it changes — the diagnostic for "is the
-    /// private set even resolving?" — without spamming a line every frame.
-    fn log_on_change(&mut self, ctx: &AppContext, urls: &[NormRelayUrl]) {
-        if self.last.as_deref() == Some(urls) {
-            return;
-        }
-        self.last = Some(urls.to_vec());
-
+    /// Log the private relay set (and the live connection status of each) — the
+    /// diagnostic for "is the private set even resolving?". The caller only
+    /// invokes this on an actual change, so this never spams a line every frame.
+    fn log_change(&self, ctx: &AppContext, urls: &[NormRelayUrl]) {
         if urls.is_empty() {
             tracing::info!(
                 app = self.app,
