@@ -3926,14 +3926,20 @@ impl notedeck::App for Dave {
 
         // Run auto-steal when pending.  Transitions back to Idle once
         // the steal logic executes (even if no switch was needed).
-        // Stays Pending while the user is typing so it retries next frame.
+        // Stays Pending while the user is typing or holding modifier keys
+        // so it retries next frame.
         if self.auto_steal == focus_queue::AutoStealState::Pending {
             let user_is_typing = self
                 .session_manager
                 .get_active()
                 .is_some_and(|s| !s.input.is_empty());
 
-            if !user_is_typing {
+            // Suppress while modifier keys are held so a chord like
+            // ctrl-shift-k (reset session) can't be hijacked by a
+            // last-second auto-switch onto the wrong session.
+            let holding_modifiers = egui_ctx.input(|i| i.modifiers.any());
+
+            if !user_is_typing && !holding_modifiers {
                 let stole_focus = update::process_auto_steal_focus(
                     &mut self.session_manager,
                     &mut self.focus_queue,
