@@ -12,10 +12,6 @@ pub struct RelaySpec {
     pub url: NormRelayUrl,
     pub has_read_marker: bool,
     pub has_write_marker: bool,
-    /// Hint to *our own* apps (dave, headway, notebook) that this relay is a
-    /// private sync relay (AUTH/wireguard). Encoded as the 4th entry of the
-    /// NIP-65 `r` tag so it never collides with the read/write marker.
-    pub is_private: bool,
 }
 
 impl RelaySpec {
@@ -29,14 +25,7 @@ impl RelaySpec {
             url,
             has_read_marker,
             has_write_marker,
-            is_private: false,
         }
-    }
-
-    /// Set the private flag (consuming builder).
-    pub fn with_private(mut self, yes: bool) -> Self {
-        self.is_private = yes;
-        self
     }
 
     // The "marker" fields are a little counter-intuitive ... from NIP-65:
@@ -70,9 +59,6 @@ impl fmt::Debug for RelaySpec {
         }
         if self.has_write_marker {
             write!(f, " [w]")?;
-        }
-        if self.is_private {
-            write!(f, " [p]")?;
         }
         Ok(())
     }

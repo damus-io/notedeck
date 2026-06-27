@@ -14,6 +14,7 @@ use super::widgets::styled_button;
 pub struct RelayView<'r, 'a> {
     relay_inspect: RelayInspectApi<'r, 'a>,
     advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
+    private_relays: &'a std::collections::BTreeSet<NormRelayUrl>,
     id_string_map: &'a mut HashMap<Id, String>,
     i18n: &'a mut Localization,
 }
@@ -21,7 +22,28 @@ pub struct RelayView<'r, 'a> {
 struct RelayRow {
     relay_url: String,
     status: RelayStatus,
-    is_private: bool,
+}
+
+/// Which relay list a row belongs to, controlling whether/how it can be removed.
+#[derive(Clone, Copy, PartialEq)]
+enum RelaySection {
+    /// Advertised NIP-65 relays (kind 10002); deletable via [`RelayAction::Remove`].
+    Advertised,
+    /// Connected-but-not-advertised relays; not editable.
+    Other,
+    /// kind-10013 NIP-37 private-sync relays; deletable via [`RelayAction::RemovePrivate`].
+    Private,
+}
+
+impl RelaySection {
+    /// The remove action for a row in this section, if it can be removed.
+    fn remove_action(self, url: String) -> Option<RelayAction> {
+        match self {
+            RelaySection::Advertised => Some(RelayAction::Remove(url)),
+            RelaySection::Private => Some(RelayAction::RemovePrivate(url)),
+            RelaySection::Other => None,
+        }
+    }
 }
 
 impl RelayView<'_, '_> {
@@ -50,7 +72,7 @@ impl RelayView<'_, '_> {
                         let mut action = self.show_relays(ui);
                         ui.add_space(8.0);
                         if let Some(relay_to_add) = self.show_add_relay_ui(ui) {
-                            action = Some(RelayAction::Add(relay_to_add));
+                            action = action.or(Some(RelayAction::Add(relay_to_add)));
                         }
                         action
                     })
@@ -69,12 +91,14 @@ impl<'r, 'a> RelayView<'r, 'a> {
     pub fn new(
         relay_inspect: RelayInspectApi<'r, 'a>,
         advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
+        private_relays: &'a std::collections::BTreeSet<NormRelayUrl>,
         id_string_map: &'a mut HashMap<Id, String>,
         i18n: &'a mut Localization,
     ) -> Self {
         RelayView {
             relay_inspect,
             advertised_relays,
+            private_relays,
             id_string_map,
             i18n,
         }
@@ -99,19 +123,30 @@ impl<'r, 'a> RelayView<'r, 'a> {
             .map(|relay| relay.url.to_string())
             .collect();
 
-        let mut advertised = Vec::new();
+        let status_for = |url: &str| {
+            status_by_url
+                .get(url)
+                .copied()
+                .unwrap_or(RelayStatus::Disconnected)
+        };
 
+        let mut advertised = Vec::new();
         for relay in self.advertised_relays {
             let url = relay.url.to_string();
-            let status = status_by_url
-                .get(&url)
-                .copied()
-                .unwrap_or(RelayStatus::Disconnected);
-
+            let status = status_for(&url);
             advertised.push(RelayRow {
                 relay_url: url,
                 status,
-                is_private: relay.is_private,
+            });
+        }
+
+        let mut private = Vec::new();
+        for url in self.private_relays {
+            let url = url.to_string();
+            let status = status_for(&url);
+            private.push(RelayRow {
+                relay_url: url,
+                status,
             });
         }
 
@@ -124,7 +159,6 @@ impl<'r, 'a> RelayView<'r, 'a> {
             outbox_other.push(RelayRow {
                 relay_url: url,
                 status: relay_info.status,
-                is_private: false,
             });
         }
 
@@ -134,6 +168,11 @@ impl<'r, 'a> RelayView<'r, 'a> {
             "Advertised",
             "Section header for advertised relays"
         );
+        let private_label = tr!(
+            self.i18n,
+            "Private sync",
+            "Section header for private sync relays"
+        );
         let outbox_other_label = tr!(
             self.i18n,
             "Other",
@@ -141,14 +180,38 @@ impl<'r, 'a> RelayView<'r, 'a> {
         );
 
         action = action.or_else(|| {
-            self.show_relay_section(ui, &advertised_label, &advertised, true, "relay-advertised")
+            self.show_relay_section(
+                ui,
+                &advertised_label,
+                &advertised,
+                RelaySection::Advertised,
+                "relay-advertised",
+            )
+        });
+        action = action.or_else(|| {
+            self.show_relay_section(
+                ui,
+                &private_label,
+                &private,
+                RelaySection::Private,
+                "relay-private",
+            )
+        });
+        let add_private_label = tr!(
+            self.i18n,
+            "Add private relay",
+            "Button label to add a private sync relay"
+        );
+        action = action.or_else(|| {
+            self.show_add_relay_entry_ui(ui, "add-private-relay)", add_private_label)
+                .map(RelayAction::AddPrivate)
         });
         action = action.or_else(|| {
             self.show_relay_section(
                 ui,
                 &outbox_other_label,
                 &outbox_other,
-                false,
+                RelaySection::Other,
                 "relay-outbox-other",
             )
         });
@@ -161,7 +224,7 @@ impl<'r, 'a> RelayView<'r, 'a> {
         ui: &mut Ui,
         title: &str,
         rows: &[RelayRow],
-        allow_delete: bool,
+        section: RelaySection,
         id_prefix: &'static str,
     ) -> Option<RelayAction> {
         let mut action = None;
@@ -184,8 +247,8 @@ impl<'r, 'a> RelayView<'r, 'a> {
         }
 
         for (index, relay_row) in rows.iter().enumerate() {
-            action = action
-                .or_else(|| self.show_relay_row(ui, relay_row, allow_delete, (id_prefix, index)));
+            action =
+                action.or_else(|| self.show_relay_row(ui, relay_row, section, (id_prefix, index)));
         }
 
         action
@@ -195,7 +258,7 @@ impl<'r, 'a> RelayView<'r, 'a> {
         &mut self,
         ui: &mut Ui,
         relay_row: &RelayRow,
-        allow_delete: bool,
+        section: RelaySection,
         id_salt: impl std::hash::Hash,
     ) -> Option<RelayAction> {
         let mut action = None;
@@ -219,39 +282,16 @@ impl<'r, 'a> RelayView<'r, 'a> {
 
                     ui.add_space(6.0);
 
-                    // Second line: connection status on the left, with the private
-                    // toggle and delete button grouped on the right.
+                    // Second line: connection status on the left, with the delete
+                    // button on the right for editable sections.
                     ui.horizontal(|ui| {
                         show_connection_status(ui, self.i18n, relay_row.status);
 
-                        // Only advertised relays can be deleted or marked private.
-                        if allow_delete {
+                        if section != RelaySection::Other {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
-                                    action =
-                                        Some(RelayAction::Remove(relay_row.relay_url.clone()));
+                                    action = section.remove_action(relay_row.relay_url.clone());
                                 }
-
-                                ui.add_space(8.0);
-
-                                let mut is_private = relay_row.is_private;
-                                let private_label = tr!(
-                                    self.i18n,
-                                    "Private",
-                                    "Toggle to mark a relay as private"
-                                );
-                                let resp = ui.checkbox(&mut is_private, private_label);
-                                if resp.changed() {
-                                    action = Some(RelayAction::SetPrivate(
-                                        relay_row.relay_url.clone(),
-                                        is_private,
-                                    ));
-                                }
-                                resp.on_hover_text(tr!(
-                                    self.i18n,
-                                    "Sync your private dave, headway and notebook data to this relay across devices",
-                                    "Tooltip explaining what marking a relay private does"
-                                ));
                             });
                         }
                     });
@@ -265,11 +305,24 @@ impl<'r, 'a> RelayView<'r, 'a> {
     const RELAY_PREFILL: &'static str = "wss://";
 
     fn show_add_relay_ui(&mut self, ui: &mut Ui) -> Option<String> {
-        let id = ui.id().with("add-relay)");
+        let label = tr!(self.i18n, "Add relay", "Button label to add a relay");
+        self.show_add_relay_entry_ui(ui, "add-relay)", label)
+    }
+
+    /// Collapsed "add relay" button that expands into a relay-url entry. `id_key`
+    /// namespaces the entry's transient text buffer so multiple add fields (e.g.
+    /// advertised vs. private) don't share state.
+    fn show_add_relay_entry_ui(
+        &mut self,
+        ui: &mut Ui,
+        id_key: &str,
+        button_label: String,
+    ) -> Option<String> {
+        let id = ui.id().with(id_key);
         match self.id_string_map.get(&id) {
             None => {
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                    let relay_button = add_relay_button(self.i18n);
+                    let relay_button = add_relay_button(button_label);
                     if ui.add(relay_button).clicked() {
                         debug!("add relay clicked");
                         self.id_string_map
@@ -325,10 +378,10 @@ impl<'r, 'a> RelayView<'r, 'a> {
     }
 }
 
-fn add_relay_button(i18n: &mut Localization) -> Button<'static> {
+fn add_relay_button(label: String) -> Button<'static> {
     Button::image_and_text(
         app_images::add_relay_image().fit_to_exact_size(Vec2::new(48.0, 48.0)),
-        RichText::new(tr!(i18n, "Add relay", "Button label to add a relay"))
+        RichText::new(label)
             .size(16.0)
             // TODO: this color should not be hard coded. Find some way to add it to the visuals
             .color(PINK),

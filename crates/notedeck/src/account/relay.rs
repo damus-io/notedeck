@@ -9,8 +9,14 @@ use tracing::{debug, error, info};
 #[derive(Clone)]
 pub(crate) struct AccountRelayData {
     pub filter: Filter,
+    /// Filter for the account's kind-10013 NIP-37 private relay list.
+    pub private_filter: Filter,
     pub local: BTreeSet<RelaySpec>, // used locally but not advertised
     pub advertised: BTreeSet<RelaySpec>, // advertised via NIP-65
+    /// Private-sync relays from the decrypted kind-10013 list (NIP-37). Used by
+    /// dave/headway/notebook to sync private state across the user's own
+    /// devices. Empty for read-only accounts (can't decrypt the list).
+    pub private: BTreeSet<NormRelayUrl>,
 }
 
 impl AccountRelayData {
@@ -22,14 +28,23 @@ impl AccountRelayData {
             .limit(1)
             .build();
 
+        // ... and one for the kind-10013 private relay list (NIP-37).
+        let private_filter = Filter::new()
+            .authors([pubkey])
+            .kinds([PRIVATE_RELAY_LIST_KIND as u64])
+            .limit(1)
+            .build();
+
         AccountRelayData {
             filter,
+            private_filter,
             local: BTreeSet::new(),
             advertised: BTreeSet::new(),
+            private: BTreeSet::new(),
         }
     }
 
-    pub fn query(&mut self, ndb: &Ndb, txn: &Transaction) {
+    pub fn query(&mut self, ndb: &Ndb, txn: &Transaction, keypair: &Keypair) {
         // Query the ndb immediately to see if the user list is already there
         let lim = self
             .filter
@@ -44,7 +59,46 @@ impl AccountRelayData {
         let relays = Self::harvest_nip65_relays(ndb, txn, &nks);
         debug!("initial relays {:?}", relays);
 
-        self.advertised = relays.into_iter().collect()
+        self.advertised = relays.into_iter().collect();
+        self.private = self.query_private_relays(ndb, txn, keypair);
+    }
+
+    /// Query the ndb for the account's current kind-10013 private relay list and
+    /// return the decrypted relay set.
+    fn query_private_relays(
+        &self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        keypair: &Keypair,
+    ) -> BTreeSet<NormRelayUrl> {
+        let nks = ndb
+            .query(txn, std::slice::from_ref(&self.private_filter), 1)
+            .expect("query private relays results")
+            .iter()
+            .map(|qr| qr.note_key)
+            .collect::<Vec<NoteKey>>();
+        Self::harvest_private_relays(ndb, txn, &nks, keypair)
+            .into_iter()
+            .collect()
+    }
+
+    pub(crate) fn harvest_private_relays(
+        ndb: &Ndb,
+        txn: &Transaction,
+        nks: &[NoteKey],
+        keypair: &Keypair,
+    ) -> Vec<NormRelayUrl> {
+        let mut relays = Vec::new();
+        for nk in nks.iter() {
+            if let Ok(note) = ndb.get_note_by_key(txn, *nk) {
+                parse_private_relay_list_note(&note, keypair, &mut relays);
+            }
+        }
+        relays
+    }
+
+    pub fn new_private_relay_list_note(&'_ self, keypair: &Keypair) -> Option<Note<'_>> {
+        construct_private_relay_list_note(self.private.iter(), keypair)
     }
 
     pub(crate) fn harvest_nip65_relays(
@@ -94,6 +148,32 @@ impl AccountRelayData {
 
         true
     }
+
+    /// Poll the kind-10013 private relay subscription, re-decrypting the list
+    /// when a new note lands. Needs the account `keypair` to decrypt.
+    #[profiling::function]
+    pub fn poll_private_for_updates(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        sub: Subscription,
+        keypair: &Keypair,
+    ) {
+        let nks = ndb.poll_for_notes(sub, 1);
+        if nks.is_empty() {
+            return;
+        }
+
+        let private: BTreeSet<NormRelayUrl> =
+            AccountRelayData::harvest_private_relays(ndb, txn, &nks, keypair)
+                .into_iter()
+                .collect();
+
+        if private != self.private {
+            debug!("updated private relays {:?}", private);
+            self.private = private;
+        }
+    }
 }
 
 /// Parses the `r` tags of a single kind-10002 NIP-65 note into [`RelaySpec`]s,
@@ -109,19 +189,11 @@ pub(crate) fn parse_nip65_relays_note(note: &Note, relays: &mut Vec<RelaySpec>) 
                     let has_write_marker = tag
                         .get(2)
                         .is_some_and(|m| m.variant().str() == Some("write"));
-                    // private marker lives at index 3 so it never collides
-                    // with the read/write marker at index 2
-                    let is_private = tag
-                        .get(3)
-                        .is_some_and(|m| m.variant().str() == Some("private"));
 
                     let Ok(norm_url) = NormRelayUrl::new(url) else {
                         continue;
                     };
-                    relays.push(
-                        RelaySpec::new(norm_url, has_read_marker, has_write_marker)
-                            .with_private(is_private),
-                    );
+                    relays.push(RelaySpec::new(norm_url, has_read_marker, has_write_marker));
                 }
             }
             Some("alt") => {
@@ -147,22 +219,91 @@ pub fn construct_nip65_relays_note<'a>(
             .start_tag()
             .tag_str("r")
             .tag_str(&relay_spec.url.to_string());
-        // Emit the read/write marker (index 2) then the private marker (index 3)
-        // so `private` always lands at the 4th tag entry, never colliding with
-        // read/write. A no-marker private relay gets an empty placeholder at
-        // index 2 to keep `private` at index 3.
         if relay_spec.has_read_marker {
             builder = builder.tag_str("read");
         } else if relay_spec.has_write_marker {
             builder = builder.tag_str("write");
-        } else if relay_spec.is_private {
-            builder = builder.tag_str("");
-        }
-        if relay_spec.is_private {
-            builder = builder.tag_str("private");
         }
     }
     builder
+}
+
+/// NIP-37 "Relay List for Private Content" (kind `10013`).
+///
+/// The user's private-sync relays are *not* published as a public NIP-65
+/// marker — they live in a dedicated kind-10013 event whose `.content` is the
+/// NIP-44 self-encrypted (encrypted to the author's own pubkey) JSON array of
+/// `["relay", url]` private tags. This keeps the private set off the public
+/// relay list, is only decryptable by the author, and is the same event
+/// Amethyst uses, so the private relay set round-trips across clients.
+pub const PRIVATE_RELAY_LIST_KIND: u32 = 10013;
+
+/// NIP-44 self-encrypt `plaintext` to the keypair's own pubkey. Returns `None`
+/// for a read-only (pubkey-only) account — it has no secret key to encrypt with.
+fn nip44_self_encrypt(keypair: &Keypair, plaintext: &str) -> Option<String> {
+    let secret_key = keypair.secret_key.as_ref()?;
+    let public_key = nostr::PublicKey::from_slice(keypair.pubkey.bytes()).ok()?;
+    nostr::nips::nip44::encrypt(
+        secret_key,
+        &public_key,
+        plaintext,
+        nostr::nips::nip44::Version::default(),
+    )
+    .ok()
+}
+
+/// NIP-44 self-decrypt `payload` that was encrypted to the keypair's own pubkey.
+/// Returns `None` for a read-only account or on any decode/decrypt failure.
+fn nip44_self_decrypt(keypair: &Keypair, payload: &str) -> Option<String> {
+    let secret_key = keypair.secret_key.as_ref()?;
+    let public_key = nostr::PublicKey::from_slice(keypair.pubkey.bytes()).ok()?;
+    nostr::nips::nip44::decrypt(secret_key, &public_key, payload).ok()
+}
+
+/// Parse a single kind-10013 note's encrypted `.content` into private relay
+/// URLs, appending to `relays`. Needs the account `keypair` to decrypt; a
+/// read-only account or a note we can't decrypt yields nothing.
+pub(crate) fn parse_private_relay_list_note(
+    note: &Note,
+    keypair: &Keypair,
+    relays: &mut Vec<NormRelayUrl>,
+) {
+    let Some(plaintext) = nip44_self_decrypt(keypair, note.content()) else {
+        return;
+    };
+    // Private tags are a JSON array of tags, e.g. [["relay","wss://..."], ...].
+    let Ok(tags) = serde_json::from_str::<Vec<Vec<String>>>(&plaintext) else {
+        error!("private relay list: malformed decrypted content");
+        return;
+    };
+    for tag in tags {
+        if tag.first().map(String::as_str) == Some("relay") {
+            if let Some(url) = tag.get(1).and_then(|u| NormRelayUrl::new(u).ok()) {
+                relays.push(url);
+            }
+        }
+    }
+}
+
+/// Build a kind-10013 NIP-37 private-relay-list note for `relays`, NIP-44
+/// self-encrypting the relay set into `.content`. Returns `None` for a
+/// read-only account (no secret key to encrypt/sign with).
+pub fn construct_private_relay_list_note<'a>(
+    relays: impl IntoIterator<Item = &'a NormRelayUrl>,
+    keypair: &Keypair,
+) -> Option<Note<'a>> {
+    let secret_key = keypair.secret_key.as_ref()?;
+    let tags: Vec<Vec<String>> = relays
+        .into_iter()
+        .map(|url| vec!["relay".to_string(), url.to_string()])
+        .collect();
+    let plaintext = serde_json::to_string(&tags).ok()?;
+    let content = nip44_self_encrypt(keypair, &plaintext)?;
+    NoteBuilder::new()
+        .kind(PRIVATE_RELAY_LIST_KIND)
+        .content(&content)
+        .sign(&secret_key.to_secret_bytes())
+        .build()
 }
 
 pub(crate) struct RelayDefaults {
@@ -259,8 +400,10 @@ pub fn calculate_relays(
 pub enum RelayAction {
     Add(String),
     Remove(String),
-    /// Mark/unmark an advertised relay as a private sync relay.
-    SetPrivate(String, bool),
+    /// Add a relay to the kind-10013 NIP-37 private sync relay list.
+    AddPrivate(String),
+    /// Remove a relay from the kind-10013 NIP-37 private sync relay list.
+    RemovePrivate(String),
 }
 
 impl RelayAction {
@@ -268,8 +411,18 @@ impl RelayAction {
         match self {
             RelayAction::Add(url) => url,
             RelayAction::Remove(url) => url,
-            RelayAction::SetPrivate(url, _) => url,
+            RelayAction::AddPrivate(url) => url,
+            RelayAction::RemovePrivate(url) => url,
         }
+    }
+
+    /// Whether this action mutates the kind-10013 private relay list rather than
+    /// the public NIP-65 (kind-10002) advertised list.
+    fn is_private(&self) -> bool {
+        matches!(
+            self,
+            RelayAction::AddPrivate(_) | RelayAction::RemovePrivate(_)
+        )
     }
 }
 
@@ -284,13 +437,16 @@ pub(super) fn modify_advertised_relays(
         return;
     };
 
+    if action.is_private() {
+        modify_private_relays(kp, action, relay_url, remote, relay_defaults, account_data);
+        return;
+    }
+
     let relay_url_str = relay_url.to_string();
     match action {
         RelayAction::Add(_) => info!("add advertised relay \"{relay_url_str}\""),
         RelayAction::Remove(_) => info!("remove advertised relay \"{relay_url_str}\""),
-        RelayAction::SetPrivate(_, yes) => {
-            info!("set advertised relay \"{relay_url_str}\" private={yes}")
-        }
+        RelayAction::AddPrivate(_) | RelayAction::RemovePrivate(_) => unreachable!(),
     }
 
     // let selected = self.cache.selected_mut();
@@ -308,16 +464,7 @@ pub(super) fn modify_advertised_relays(
         RelayAction::Remove(_) => {
             advertised.remove(&RelaySpec::new(relay_url, false, false));
         }
-        RelayAction::SetPrivate(_, yes) => {
-            // Preserve the existing read/write markers; only flip the private
-            // flag. RelaySpec equality is url-only, so `replace` swaps the
-            // stored spec in place.
-            let existing = advertised
-                .get(&RelaySpec::new(relay_url.clone(), false, false))
-                .cloned()
-                .unwrap_or_else(|| RelaySpec::new(relay_url, false, false));
-            advertised.replace(existing.with_private(yes));
-        }
+        RelayAction::AddPrivate(_) | RelayAction::RemovePrivate(_) => unreachable!(),
     }
 
     // If we have the secret key publish the NIP-65 relay list
@@ -329,6 +476,52 @@ pub(super) fn modify_advertised_relays(
         let mut publisher = remote.publisher_explicit();
         publisher.publish_note(&note, write_relays(relay_defaults, &account_data.relay));
     }
+}
+
+/// Apply an `AddPrivate`/`RemovePrivate` action: mutate the in-memory private
+/// relay set and republish the kind-10013 NIP-37 list to the account's NIP-65
+/// write relays (and the private relays themselves, so the new set lands on the
+/// very relays it names). A read-only account can't encrypt/sign the list, so
+/// the change stays local.
+fn modify_private_relays(
+    kp: &Keypair,
+    action: RelayAction,
+    relay_url: NormRelayUrl,
+    remote: &mut RemoteApi<'_>,
+    relay_defaults: &RelayDefaults,
+    account_data: &mut AccountData,
+) {
+    let relay_url_str = relay_url.to_string();
+    let private = &mut account_data.relay.private;
+    match action {
+        RelayAction::AddPrivate(_) => {
+            info!("add private relay \"{relay_url_str}\"");
+            private.insert(relay_url);
+        }
+        RelayAction::RemovePrivate(_) => {
+            info!("remove private relay \"{relay_url_str}\"");
+            private.remove(&relay_url);
+        }
+        RelayAction::Add(_) | RelayAction::Remove(_) => unreachable!(),
+    }
+
+    // Encrypt + sign the kind-10013 list. None for a read-only account.
+    let Some(note) = account_data.relay.new_private_relay_list_note(kp) else {
+        return;
+    };
+
+    // NIP-37: publish to the author's NIP-65 write relays. Also target the
+    // private relays directly so the list is recoverable from them too.
+    let mut targets = write_relays(relay_defaults, &account_data.relay);
+    for url in &account_data.relay.private {
+        let id = RelayId::Websocket(url.clone());
+        if !targets.contains(&id) {
+            targets.push(id);
+        }
+    }
+
+    let mut publisher = remote.publisher_explicit();
+    publisher.publish_note(&note, targets);
 }
 
 pub fn write_relays(relay_defaults: &RelayDefaults, data: &AccountRelayData) -> Vec<RelayId> {
@@ -344,9 +537,12 @@ pub fn write_relays(relay_defaults: &RelayDefaults, data: &AccountRelayData) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::{construct_nip65_relays_note, parse_nip65_relays_note};
+    use super::{
+        construct_nip65_relays_note, construct_private_relay_list_note,
+        parse_private_relay_list_note, PRIVATE_RELAY_LIST_KIND,
+    };
     use crate::RelaySpec;
-    use enostr::{FullKeypair, NormRelayUrl};
+    use enostr::{FullKeypair, Keypair, NormRelayUrl};
 
     #[test]
     fn construct_nip65_relays_note_emits_expected_tags() {
@@ -392,51 +588,80 @@ mod tests {
         }));
     }
 
-    /// A private relay with no read/write marker emits an empty placeholder at
-    /// index 2 so `"private"` always lands at index 3.
+    /// A kind-10013 private relay list is a 10013 event whose `.content` is
+    /// NIP-44 encrypted (not plaintext) and carries no public relay tags.
     #[test]
-    fn construct_nip65_relays_note_emits_private_marker_at_index_3() {
-        let owner = FullKeypair::generate();
-        let relays = vec![
-            RelaySpec::new(
-                NormRelayUrl::new("wss://private-both.example.com").expect("relay"),
-                false,
-                false,
-            )
-            .with_private(true),
-            RelaySpec::new(
-                NormRelayUrl::new("wss://private-read.example.com").expect("relay"),
-                true,
-                false,
-            )
-            .with_private(true),
+    fn construct_private_relay_list_note_is_encrypted_10013() {
+        let owner = FullKeypair::generate().to_keypair();
+        let relays = [
+            NormRelayUrl::new("wss://private-a.example.com").expect("relay"),
+            NormRelayUrl::new("wss://private-b.example.com").expect("relay"),
         ];
 
-        let note = construct_nip65_relays_note(&relays)
-            .sign(&owner.secret_key.secret_bytes())
-            .build()
-            .expect("relay list note");
+        let note = construct_private_relay_list_note(relays.iter(), &owner)
+            .expect("private relay list note");
 
-        // no marker + private -> ["r", url, "", "private"]
-        assert!(note.tags().into_iter().any(|tag| {
-            tag.get_str(0) == Some("r")
-                && tag.get_str(1) == Some("wss://private-both.example.com/")
-                && tag.get_str(2) == Some("")
-                && tag.get_str(3) == Some("private")
-        }));
-        // read marker + private -> ["r", url, "read", "private"]
-        assert!(note.tags().into_iter().any(|tag| {
-            tag.get_str(0) == Some("r")
-                && tag.get_str(1) == Some("wss://private-read.example.com/")
-                && tag.get_str(2) == Some("read")
-                && tag.get_str(3) == Some("private")
-        }));
+        assert_eq!(note.kind(), PRIVATE_RELAY_LIST_KIND);
+        // The relay set must not leak into the public content or tags.
+        assert!(!note.content().contains("private-a.example.com"));
+        assert_eq!(note.tags().into_iter().count(), 0);
     }
 
-    /// Non-private relays serialize to exactly the same tags as before the
-    /// private marker existed (no trailing empty/placeholder entries).
+    /// Encrypt -> decrypt round-trips the private relay set for the author.
     #[test]
-    fn construct_nip65_relays_note_non_private_unchanged() {
+    fn private_relay_list_round_trips() {
+        let owner = FullKeypair::generate().to_keypair();
+        let relays = [
+            NormRelayUrl::new("wss://private-a.example.com").expect("relay"),
+            NormRelayUrl::new("wss://private-b.example.com").expect("relay"),
+        ];
+
+        let note = construct_private_relay_list_note(relays.iter(), &owner)
+            .expect("private relay list note");
+
+        let mut parsed = Vec::new();
+        parse_private_relay_list_note(&note, &owner, &mut parsed);
+        parsed.sort_by_key(|u| u.to_string());
+
+        assert_eq!(parsed.as_slice(), &relays[..]);
+    }
+
+    /// A different account can't decrypt the author's private relay list.
+    #[test]
+    fn private_relay_list_not_readable_by_others() {
+        let owner = FullKeypair::generate().to_keypair();
+        let other = FullKeypair::generate().to_keypair();
+        let relays = [NormRelayUrl::new("wss://private-a.example.com").expect("relay")];
+
+        let note = construct_private_relay_list_note(relays.iter(), &owner)
+            .expect("private relay list note");
+
+        let mut parsed = Vec::new();
+        parse_private_relay_list_note(&note, &other, &mut parsed);
+        assert!(parsed.is_empty());
+    }
+
+    /// A read-only (pubkey-only) account has no secret key, so it can neither
+    /// construct nor decrypt a private relay list.
+    #[test]
+    fn private_relay_list_read_only_account_is_noop() {
+        let owner = FullKeypair::generate().to_keypair();
+        let relays = [NormRelayUrl::new("wss://private-a.example.com").expect("relay")];
+        let note = construct_private_relay_list_note(relays.iter(), &owner)
+            .expect("private relay list note");
+
+        let read_only = Keypair::only_pubkey(owner.pubkey);
+        assert!(construct_private_relay_list_note(relays.iter(), &read_only).is_none());
+
+        let mut parsed = Vec::new();
+        parse_private_relay_list_note(&note, &read_only, &mut parsed);
+        assert!(parsed.is_empty());
+    }
+
+    /// NIP-65 relays serialize to just the `r` tag plus an optional read/write
+    /// marker — no trailing entries.
+    #[test]
+    fn construct_nip65_relays_note_no_trailing_entries() {
         let owner = FullKeypair::generate();
         let relays = vec![
             RelaySpec::new(
@@ -456,7 +681,7 @@ mod tests {
             .build()
             .expect("relay list note");
 
-        // read relay: marker at index 2, nothing at index 3
+        // read relay: marker at index 2, nothing after
         assert!(note.tags().into_iter().any(|tag| {
             tag.get_str(0) == Some("r")
                 && tag.get_str(1) == Some("wss://relay-read.example.com/")
@@ -469,59 +694,5 @@ mod tests {
                 && tag.get_str(1) == Some("wss://relay-both.example.com/")
                 && tag.get(2).is_none()
         }));
-    }
-
-    /// Serialize -> parse round-trips the private flag while preserving the
-    /// read/write markers.
-    #[test]
-    fn private_marker_round_trips() {
-        let owner = FullKeypair::generate();
-        let original = vec![
-            RelaySpec::new(
-                NormRelayUrl::new("wss://private-both.example.com").expect("relay"),
-                false,
-                false,
-            )
-            .with_private(true),
-            RelaySpec::new(
-                NormRelayUrl::new("wss://private-write.example.com").expect("relay"),
-                false,
-                true,
-            )
-            .with_private(true),
-            RelaySpec::new(
-                NormRelayUrl::new("wss://public-read.example.com").expect("relay"),
-                true,
-                false,
-            ),
-        ];
-
-        let note = construct_nip65_relays_note(&original)
-            .sign(&owner.secret_key.secret_bytes())
-            .build()
-            .expect("relay list note");
-
-        let mut parsed = Vec::new();
-        parse_nip65_relays_note(&note, &mut parsed);
-
-        let find = |url: &str| {
-            parsed
-                .iter()
-                .find(|r| r.url.to_string() == url)
-                .unwrap_or_else(|| panic!("missing {url}"))
-        };
-
-        let both = find("wss://private-both.example.com/");
-        assert!(both.is_private);
-        assert!(!both.has_read_marker);
-        assert!(!both.has_write_marker);
-
-        let write = find("wss://private-write.example.com/");
-        assert!(write.is_private);
-        assert!(write.has_write_marker);
-
-        let read = find("wss://public-read.example.com/");
-        assert!(!read.is_private);
-        assert!(read.has_read_marker);
     }
 }

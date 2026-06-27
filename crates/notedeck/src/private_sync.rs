@@ -2,8 +2,9 @@
 //!
 //! These apps back their document in the local nostrdb and surface it through a
 //! local nostrdb subscription. To sync that document across the user's own
-//! devices we need two directions over the account's "private" NIP-65 relays
-//! (the 4th-entry marker, see [`crate::RelaySpec::is_private`]):
+//! devices we need two directions over the account's private-sync relays — the
+//! kind-10013 NIP-37 "Relay List for Private Content" (an encrypted relay list,
+//! see [`crate::construct_private_relay_list_note`]):
 //!
 //! - **outbound** — fan each locally-ingested event out to the private relays so
 //!   an edit on this device reaches the others ([`fan_out_event_frame`]);

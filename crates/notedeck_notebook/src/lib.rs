@@ -18,9 +18,9 @@ use notedeck::{
 use std::collections::HashMap;
 
 /// A [`store::Publisher`] that fans every locally-ingested canvas event out to
-/// the account's "private" relays (NIP-65 4th-entry marker) so the canvas syncs
-/// across the user's own devices. With no private relay marked the relay set is
-/// empty and this behaves exactly like [`store::NoPublish`] (local-only).
+/// the account's private-sync relays (kind-10013 NIP-37 list) so the canvas syncs
+/// across the user's own devices. With no private relay configured the relay set
+/// is empty and this behaves exactly like [`store::NoPublish`] (local-only).
 ///
 /// This is only the *outbound* half; the inbound catch-up + realtime pull is a
 /// scoped subscription kept by [`PrivateRelaySync`] (see [`Notebook::private_sync`]).

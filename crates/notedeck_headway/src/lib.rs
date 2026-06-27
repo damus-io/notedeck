@@ -19,9 +19,9 @@ pub use ui::{BoardUiState, board_inline_ui, card_inline_ui, issue_inline_ui};
 use event::{BoardReducer, BoardView};
 
 /// A [`store::Publisher`] that fans every locally-ingested board event out to
-/// the account's "private" relays (NIP-65 4th-entry marker) so the board syncs
-/// across the user's own devices. With no private relay marked the relay set is
-/// empty and this behaves exactly like [`store::NoPublish`] (local-only).
+/// the account's private-sync relays (kind-10013 NIP-37 list) so the board syncs
+/// across the user's own devices. With no private relay configured the relay set
+/// is empty and this behaves exactly like [`store::NoPublish`] (local-only).
 ///
 /// This is only the *outbound* half; the inbound catch-up + realtime pull is a
 /// scoped subscription kept by [`PrivateRelaySync`] (see [`Headway::sync`]).

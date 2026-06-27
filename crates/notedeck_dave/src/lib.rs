@@ -766,8 +766,8 @@ You are an AI agent for the nostr protocol called Dave, created by Damus. nostr 
     /// Note: Provider changes require app restart to take effect.
     pub fn apply_settings(&mut self, settings: DaveSettings) {
         self.model_config = ModelConfig::from_settings(&settings);
-        // pns_relay_url is sourced from the account's private NIP-65 relay in
-        // `update`, not from settings.
+        // pns_relay_url is sourced from the account's kind-10013 NIP-37 private
+        // relay list in `update`, not from settings.
         self.settings_serializer.try_save(settings.clone());
         self.settings = settings;
     }
@@ -3817,8 +3817,9 @@ impl notedeck::App for Dave {
         self.publish_pending_mode_commands(ctx);
 
         self.pending_relay_events.extend(events_to_publish);
-        // Only publish to a remote relay when one is marked "private" (and its
-        // PNS subscription is live). With no private relay dave is local-only:
+        // Only publish to a remote relay when one is configured in the private
+        // relay list (and its PNS subscription is live). With no private relay
+        // dave is local-only:
         // these events are already ingested into nostrdb at build time, and we
         // retain the remote-publish queue so a later-configured private relay
         // can sync the backlog.

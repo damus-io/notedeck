@@ -46,15 +46,15 @@ fn agentic_dave_settings() -> DaveSettings {
     DaveSettings::with_provider(AiProvider::Codex)
 }
 
-/// Mark a relay "private" on the selected account's NIP-65 list so Dave adopts
-/// it as its PNS sync relay.
+/// Add a relay to the selected account's kind-10013 NIP-37 private relay list
+/// so Dave adopts it as its PNS sync relay.
 fn set_private_relay(device: &mut DeviceHarness, relay_url: &str) {
-    process_relay_action_on_device(device, RelayAction::SetPrivate(relay_url.to_owned(), true));
+    process_relay_action_on_device(device, RelayAction::AddPrivate(relay_url.to_owned()));
 }
 
-/// Clear the "private" marker from a relay, returning Dave to local-only.
+/// Remove a relay from the private relay list, returning Dave to local-only.
 fn clear_private_relay(device: &mut DeviceHarness, relay_url: &str) {
-    process_relay_action_on_device(device, RelayAction::SetPrivate(relay_url.to_owned(), false));
+    process_relay_action_on_device(device, RelayAction::RemovePrivate(relay_url.to_owned()));
 }
 
 fn write_dave_settings(path: &notedeck::DataPath, settings: &DaveSettings) {
