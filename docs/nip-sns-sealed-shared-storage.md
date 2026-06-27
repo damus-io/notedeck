@@ -1,15 +1,15 @@
 # NIP-SNS
 
-## Sealed Shared Storage
+## Shared Note Storage
 
 `draft` `optional`
 
-> **Working name.** "Sealed Shared Storage" (SNS) is provisional — it's the
+> **Working name.** "Shared Note Storage" (SNS) is provisional — it's the
 > shared, sealed sibling of [NIP-PNS](./nip-pns.md). Rename freely.
 
 ## Abstract
 
-Sealed Shared Storage (SNS) is a private, multi-writer channel on nostr. It sits
+Shared Note Storage (SNS) is a private, multi-writer channel on nostr. It sits
 **between [NIP-PNS][pns] (Private Note Storage) and [NIP-59][nip59] (Gift Wrap)**:
 
 - like **PNS**, events are published under a single key *derived from one shared
