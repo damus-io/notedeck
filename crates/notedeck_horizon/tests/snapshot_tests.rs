@@ -227,6 +227,11 @@ fn horizon_harness(size: egui::Vec2) -> Harness<'static, HorizonTestState> {
     harness
 }
 
+// No baseline image is committed yet: the golden must be generated on the
+// canonical lavapipe renderer (Linux) so it's reproducible in CI. Generate it
+// with `scripts/snapshot-test --update` on Linux, then commit the resulting
+// `tests/snapshots/horizon_day.png`. Until then this test has nothing to
+// compare against and will write a `.new.png` rather than pass.
 #[test]
 #[ignore] // requires a GPU/lavapipe renderer — run via scripts/snapshot-test
 fn snapshot_horizon_day() {
