@@ -323,15 +323,42 @@ pub fn dim(s: &str) -> String {
 // stored signing key
 // ---------------------------------------------------------------------------
 
-/// Where the signing key lives when stored via `login`: a single `nsec...` line
-/// in `<data-dir>/<app>/nsec` (e.g. `~/.local/share/headway-cli/nsec` on Linux),
-/// alongside the cache. It lets a key be set once so later runs — and the agents
-/// driving them — never have to pass `--nsec` or export the env var.
-pub fn nsec_config_path(app: &str) -> Result<std::path::PathBuf> {
+/// Path to a small piece of persisted CLI state named `name`, under
+/// `<data-dir>/<app>/` (e.g. `~/.local/share/headway-cli/` on Linux) alongside
+/// the cache. Used for the stored signing key (`nsec`) and other set-once bits of
+/// state like the current board, so later runs — and the agents driving them —
+/// don't have to repeat a flag or env var.
+pub fn config_path(app: &str, name: &str) -> Result<std::path::PathBuf> {
     Ok(dirs::data_dir()
-        .ok_or("no data dir; set the nsec env var or pass --nsec")?
+        .ok_or("no data dir; set the value via env var or flag instead")?
         .join(app)
-        .join("nsec"))
+        .join(name))
+}
+
+/// Read a stored config value (`name`) for `app`, trimmed. A missing, unreadable,
+/// or empty file all read as `None` so the caller can fall back to a flag, env
+/// var, or default.
+pub fn read_config(app: &str, name: &str) -> Option<String> {
+    let contents = std::fs::read_to_string(config_path(app, name).ok()?).ok()?;
+    let trimmed = contents.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Persist a config value (`name`) for `app`, creating the directory if needed.
+pub fn write_config(app: &str, name: &str, value: &str) -> Result<()> {
+    let path = config_path(app, name)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, format!("{value}\n"))?;
+    Ok(())
+}
+
+/// Where the signing key lives when stored via `login`: a single `nsec...` line
+/// in `<data-dir>/<app>/nsec`. It lets a key be set once so later runs never have
+/// to pass `--nsec` or export the env var.
+pub fn nsec_config_path(app: &str) -> Result<std::path::PathBuf> {
+    config_path(app, "nsec")
 }
 
 /// Read the stored signing key for `app`, if any. Missing file, unreadable file,

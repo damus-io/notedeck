@@ -36,6 +36,26 @@ connected run.
 If a command fails because you're not logged in, ask the user to run
 `headway login`. Don't handle the key yourself.
 
+## Multiple boards
+
+A board is identified by a slug scoped to your key, so one identity can hold
+several boards (e.g. a personal `headway` board and a `work` board). The current
+board is **persisted** like the signing key — set it once and every later command
+uses it:
+
+```bash
+headway board            # list boards in the cache; the current one is marked *
+headway board work       # switch the current board to 'work' (persisted)
+headway seed             # seed 'work' if it didn't exist yet
+headway board headway    # switch back to the default board
+```
+
+Board selection precedence, highest first: the `--board <id>` flag (one run
+only) → `$HEADWAY_BOARD` → the board stored by `headway board <id>` → the default
+`headway`. So `--board <id> <command>` targets another board for a single command
+without changing the persisted selection. The current board lives in
+`<data-dir>/headway-cli/board`.
+
 ## The golden rule: `show` before you edit
 
 Cards are addressed by their **event id**, and columns by **id or
@@ -100,6 +120,7 @@ or a name case-insensitively, so `--col "in progress"`, `--col in-progress`, and
 | `delete <card>` | Remove a card (reversible tombstone) |
 | `archive <card>` | Archive a card off the board |
 | `restore <card>` | Restore an archived card |
+| `board [id]` | Switch the current board to `id`, or (no arg) list boards and mark the current one |
 | `login <nsec>` | Store a signing key so later runs just work |
 | `logout` | Forget the stored signing key |
 
@@ -111,7 +132,8 @@ repeatable and each value may be comma-separated, so `-l a,b --label c` and
 headway add "Fix the relay reconnect" --col todo -l bug,p1
 ```
 
-Other flags: `--board <id>` (non-default board), `--db <path>` (cache dir),
+Other flags: `--board <id>` (target another board for one run; see Multiple
+boards), `--db <path>` (cache dir),
 `--author <pk>` (read someone else's board), `-h`/`--help`.
 
 ## Typical workflow

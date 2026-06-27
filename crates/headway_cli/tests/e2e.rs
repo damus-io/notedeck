@@ -268,3 +268,81 @@ fn reconcile_converges_after_replacing_a_placement() {
         "a settled board must not re-flush superseded events"
     );
 }
+
+/// Poll `--board <board> show --json` until that board has `cards` cards.
+fn show_board_until(url: &str, db: &str, board: &str, cards: usize) -> Value {
+    for _ in 0..50 {
+        let out = headway(url, db, &["--board", board, "show", "--json"]);
+        if out.status.success()
+            && let Ok(b) = serde_json::from_slice::<Value>(&out.stdout)
+            && b.is_object()
+            && total_cards(&b) == cards
+        {
+            return b;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    panic!("board {board} never reached {cards} cards");
+}
+
+/// Two boards under one identity stay independent: a card added to `work` doesn't
+/// leak onto the default board, and `board` lists both.
+#[test]
+fn multiple_boards_are_independent() {
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+
+    let app_dir = tempfile::tempdir().expect("app dir");
+    let app_ndb = Ndb::new(
+        app_dir.path().to_str().unwrap(),
+        &Config::new().set_ingester_threads(1),
+    )
+    .expect("app ndb");
+    let _guard = rt.enter();
+    let relay = nostrdb_relay::spawn(app_ndb, "127.0.0.1:0".parse().unwrap()).expect("relay");
+    let url = relay.url();
+
+    let cli_dir = tempfile::tempdir().expect("cli dir");
+    let db = cli_dir.path().to_str().unwrap();
+
+    // Seed the default board and a separate `work` board on the same key.
+    assert!(
+        headway(&url, db, &["seed"]).status.success(),
+        "seed default"
+    );
+    assert!(
+        headway(&url, db, &["--board", "work", "seed"])
+            .status
+            .success(),
+        "seed work"
+    );
+
+    // Add a card only to `work`.
+    let add = headway(
+        &url,
+        db,
+        &["--board", "work", "add", "Ship it", "--col", "Todo"],
+    );
+    assert!(
+        add.status.success(),
+        "add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    // The card lands on `work`...
+    let work = show_board_until(&url, db, "work", 1);
+    assert_eq!(total_cards(&work), 1);
+
+    // ...and the default board stays empty.
+    let def = headway(&url, db, &["show", "--json"]);
+    let def: Value = serde_json::from_slice(&def.stdout).expect("default board json");
+    assert_eq!(total_cards(&def), 0, "card leaked onto default board");
+
+    // `board` (no arg) lists both boards from the cache.
+    let list = headway(&url, db, &["board"]);
+    let out = String::from_utf8_lossy(&list.stdout);
+    assert!(out.contains("work"), "board list missing 'work': {out}");
+    assert!(
+        out.contains("headway"),
+        "board list missing 'headway': {out}"
+    );
+}

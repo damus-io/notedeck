@@ -79,6 +79,11 @@ enum Command {
     Restore {
         card: String,
     },
+    /// With an `id`, switch the persisted current board; without one, list the
+    /// boards in the cache and mark the current selection.
+    Board {
+        id: Option<String>,
+    },
     Login {
         nsec: String,
     },
@@ -159,6 +164,24 @@ async fn run() -> Result<()> {
             );
         }
 
+        Command::Board { id } => match id {
+            // Switch: persist the new current board, then report whether it
+            // already exists so the next step (seed vs. use) is obvious.
+            Some(id) => {
+                relay_sync::write_config(APP, "board", &id)?;
+                match load_board(&ndb, &author, &id) {
+                    Some(view) => {
+                        println!("switched to board '{id}' ({} cards)", card_count(&view))
+                    }
+                    None => {
+                        println!("switched to board '{id}' — doesn't exist yet, run `headway seed`")
+                    }
+                }
+            }
+            // List: every board in the cache, the current selection marked.
+            None => print_boards(&list_boards(&ndb, &author), &board),
+        },
+
         edit => {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
             let view = load_board(&ndb, &author, &board)
@@ -234,7 +257,11 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Restore { card } => BoardAction::RestoreCard {
             card: resolve_card(view, &card)?,
         },
-        Command::Show { .. } | Command::Seed | Command::Login { .. } | Command::Logout => {
+        Command::Show { .. }
+        | Command::Seed
+        | Command::Board { .. }
+        | Command::Login { .. }
+        | Command::Logout => {
             unreachable!("handled before build_action")
         }
     })
@@ -247,6 +274,45 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
 fn load_board(ndb: &Ndb, author: &Pubkey, board_id: &str) -> Option<BoardView> {
     let txn = Transaction::new(ndb).ok()?;
     event::load_board(ndb, &txn, author, board_id)
+}
+
+/// All of `author`'s boards in the cache, sorted by id for a stable listing.
+fn list_boards(ndb: &Ndb, author: &Pubkey) -> Vec<BoardView> {
+    let Ok(txn) = Transaction::new(ndb) else {
+        return Vec::new();
+    };
+    let mut boards = event::fold_board(ndb, &txn, author)
+        .map(|r| r.finalize())
+        .unwrap_or_default();
+    boards.sort_by(|a, b| a.id.cmp(&b.id));
+    boards
+}
+
+/// Live (non-archived) card count across a board's columns.
+fn card_count(view: &BoardView) -> usize {
+    view.columns.iter().map(|c| c.cards.len()).sum()
+}
+
+/// Render the board list, marking `current` with a `*` and dimming each id's
+/// title/card-count. Falls back to a hint when the cache holds no boards.
+fn print_boards(boards: &[BoardView], current: &str) {
+    if boards.is_empty() {
+        println!(
+            "no boards yet — current selection is '{current}'. Run `headway seed` to create it."
+        );
+        return;
+    }
+    for view in boards {
+        let mark = if view.id == current { "*" } else { " " };
+        let detail = relay_sync::dim(&format!("{} · {} cards", view.title, card_count(view)));
+        println!("{mark} {}  {detail}", view.id);
+    }
+    if !boards.iter().any(|v| v.id == current) {
+        println!(
+            "* {current}  {}",
+            relay_sync::dim("(not created yet — run `headway seed`)")
+        );
+    }
 }
 
 /// Collects the `["EVENT", {...}]` frames an edit produces so they can be
@@ -538,7 +604,13 @@ impl Cli {
             .ok()
             .unwrap_or_else(|| relay_sync::DEFAULT_RELAY.to_string());
         let mut db = None;
-        let mut board = store::BOARD_ID.to_string();
+        // Same precedence shape as the key/relay: `--board` (set below) overrides
+        // `$HEADWAY_BOARD`, which overrides the board stored by `headway board
+        // <id>`, which overrides the default board.
+        let mut board = env::var("HEADWAY_BOARD")
+            .ok()
+            .or_else(|| relay_sync::read_config(APP, "board"))
+            .unwrap_or_else(|| store::BOARD_ID.to_string());
         let mut author = None;
         let mut json = false;
         let mut archived = false;
@@ -662,6 +734,9 @@ fn parse_command(
         "delete" => Command::Delete { card: card()? },
         "archive" => Command::Archive { card: card()? },
         "restore" => Command::Restore { card: card()? },
+        "board" => Command::Board {
+            id: rest.first().cloned(),
+        },
         "login" => Command::Login {
             nsec: arg(rest, 0, name)?,
         },
@@ -709,6 +784,8 @@ COMMANDS:
     delete <card>              Remove a card (reversible tombstone)
     archive <card>             Archive a card off the board
     restore <card>             Restore an archived card
+    board [id]                 Switch the current board to <id>, or list boards
+                               and mark the current one
     login <nsec>               Store a signing key for later runs
     logout                     Forget the stored signing key
 
@@ -721,7 +798,9 @@ OPTIONS:
                       if set, takes precedence over the stored key.)
     --author <pk>     Board author to read (defaults to the signer)
     --relay <url>     Relay URL (or $HEADWAY_RELAY) [default: {DEFAULT_RELAY}]
-    --board <id>      Board id [default: {board}]
+    --board <id>      Board for this run (or $HEADWAY_BOARD). Normally
+                      unnecessary — `headway board <id>` sets it persistently.
+                      [default: {board}]
     --db <path>       nostrdb cache dir [default: <data-dir>/headway-cli]
     -l, --label <l>   Label(s) for `add` (repeatable; comma-separated allowed)
     --col <c>         Column for `add`/`move` (id or name)
