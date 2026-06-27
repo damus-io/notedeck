@@ -331,7 +331,13 @@ pub fn board_ui(
                     {
                         state.filter.clear();
                     }
+                    // Pin a stable id: the ✕ button is only laid out when the
+                    // filter is non-empty, and in this right_to_left layout it
+                    // sits ahead of the field. Without a fixed id, typing the
+                    // first character inserts that button and shifts egui's
+                    // auto-generated id for the field, so it loses focus.
                     let field = egui::TextEdit::singleline(&mut state.filter)
+                        .id(egui::Id::new("headway-filter-field"))
                         .desired_width(220.0)
                         .hint_text("Filter… e.g. label:bug perf");
                     ui.add(field);
