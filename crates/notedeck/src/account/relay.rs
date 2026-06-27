@@ -76,9 +76,21 @@ impl AccountRelayData {
             return false;
         }
 
-        let relays = AccountRelayData::harvest_nip65_relays(ndb, txn, &nks);
-        debug!("updated relays {:?}", relays);
-        self.advertised = relays.into_iter().collect();
+        let advertised: BTreeSet<RelaySpec> =
+            AccountRelayData::harvest_nip65_relays(ndb, txn, &nks)
+                .into_iter()
+                .collect();
+
+        // A 10002 note landed, but it may carry the same relay set we already
+        // have. Only report a change (and trigger a read-relay retarget) when
+        // the advertised set actually differs, so callers don't re-resolve
+        // relays for a no-op update.
+        if advertised == self.advertised {
+            return false;
+        }
+
+        debug!("updated relays {:?}", advertised);
+        self.advertised = advertised;
 
         true
     }

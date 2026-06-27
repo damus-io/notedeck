@@ -337,13 +337,13 @@ impl Accounts {
 
     #[profiling::function]
     pub fn update(&mut self, ndb: &mut Ndb, remote: &mut RemoteApi<'_>) {
-        // IMPORTANT - This function is called in the UI update loop,
-        // make sure it is fast when idle
-        let old_read_relays = self
-            .scoped_remote_initialized
-            .then(|| self.selected_account_read_relays());
-
-        let relay_updated = self
+        // IMPORTANT - This function is called in the UI update loop, so it must
+        // be fast (and quiet) when idle. poll_for_updates is allocation-free on
+        // idle frames and only reports a change when the selected account's
+        // advertised relay set actually changed, so we resolve read relays (a
+        // non-trivial, log-emitting path via calculate_relays) only on a real
+        // change rather than every frame.
+        let relays_changed = self
             .cache
             .selected_mut()
             .data
@@ -358,15 +358,9 @@ impl Accounts {
             return;
         }
 
-        if !relay_updated {
-            return;
+        if relays_changed {
+            self.retarget_selected_account_read_relays(remote);
         }
-
-        if old_read_relays.is_some_and(|old| old == self.selected_account_read_relays()) {
-            return;
-        }
-
-        self.retarget_selected_account_read_relays(remote);
     }
 
     pub fn get_full<'a>(&'a self, pubkey: &Pubkey) -> Option<FilledKeypair<'a>> {
