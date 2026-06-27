@@ -30,11 +30,14 @@ fn hour_label(h: u32) -> String {
 /// Draw the whole center pane for the day view: big date header, the all-day
 /// row, then the scrollable hour grid. Returns the block index that was clicked
 /// this frame, if any.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn center_day(
     ui: &mut egui::Ui,
     focus: DateTime<Local>,
     blocks: &[Block],
     selected: Option<usize>,
+    cursor: DateTime<Local>,
+    scroll_to_cursor: bool,
 ) -> Option<usize> {
     let mut clicked = None;
     let date = focus.date_naive();
@@ -106,6 +109,39 @@ pub(crate) fn center_day(
                 selected,
             ) {
                 clicked = Some(i);
+            }
+
+            // Keyboard selection cursor: a translucent block at the cursor
+            // time, drawn only when no event is selected (a selected event
+            // highlights itself instead). Mirrors viscal's `draw_selection`.
+            if cursor.date_naive() == date {
+                let y0 = rect.top() + crate::day_fraction(cursor) * height;
+                let cur_end = cursor + chrono::Duration::minutes(crate::SELECTION_MINUTES);
+                let y1 = (rect.top() + crate::day_fraction(cur_end) * height)
+                    .max(y0 + 14.0)
+                    .min(rect.bottom());
+                let sel = egui::Rect::from_min_max(pos2(grid_left, y0), pos2(grid_right, y1));
+
+                if selected.is_none() {
+                    painter.rect_filled(sel, 4.0, theme::cursor_fill());
+                    painter.rect_stroke(
+                        sel,
+                        4.0,
+                        Stroke::new(1.0, theme::cursor_stroke()),
+                        StrokeKind::Inside,
+                    );
+                    painter.text(
+                        pos2(grid_left - 10.0, y0),
+                        Align2::RIGHT_TOP,
+                        cursor.format("%-I:%M %p").to_string(),
+                        FontId::proportional(11.0),
+                        theme::TEXT,
+                    );
+                }
+
+                if scroll_to_cursor {
+                    ui.scroll_to_rect(sel, Some(egui::Align::Center));
+                }
             }
 
             // "Now" indicator with the time on both edges.

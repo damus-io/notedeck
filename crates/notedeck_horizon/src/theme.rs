@@ -31,6 +31,15 @@ pub const NOW: Color32 = Color32::from_rgb(0xFF, 0x45, 0x3A);
 pub const SELECTED_FILL: Color32 = Color32::from_rgb(0xD8, 0xEC, 0xF8);
 pub const SELECTED_TEXT: Color32 = Color32::from_rgb(0x14, 0x2A, 0x38);
 
+/// Translucent fill + outline for the keyboard "selection" cursor block drawn
+/// on the day grid when no event is selected (viscal's selection rectangle).
+pub fn cursor_fill() -> Color32 {
+    Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x24)
+}
+pub fn cursor_stroke() -> Color32 {
+    Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x99)
+}
+
 /// Translucent fill for an event block painted over the dark timeline.
 pub fn block_fill(color: Color32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 0x44)

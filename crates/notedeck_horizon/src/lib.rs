@@ -5,7 +5,7 @@
 //! rendered in a three-pane calendar: a mini-month + agenda sidebar, a styled
 //! day/week timeline, and an inspector for the selected event.
 
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
 use egui::{RichText, Stroke};
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{AppContext, AppResponse};
@@ -49,6 +49,10 @@ impl View {
     }
 }
 
+/// Minutes spanned by the keyboard selection cursor and one navigation step
+/// (viscal's `timeblock_size`). Resizing it is a later card.
+const SELECTION_MINUTES: i64 = 30;
+
 pub struct Horizon {
     view: View,
     /// The date the timeline is focused on.
@@ -57,6 +61,13 @@ pub struct Horizon {
     cal_month: NaiveDate,
     /// Index into [`Self::blocks`] of the inspected event, if any.
     selected: Option<usize>,
+    /// Keyboard "current time" cursor (viscal's `current`). When nothing is
+    /// selected, the selection block sits at `[cursor, cursor + SELECTION)`.
+    cursor: DateTime<Local>,
+    /// Pending vim-style repeat count for the next navigation command.
+    repeat: u32,
+    /// Set for one frame after a keyboard move, to scroll the cursor into view.
+    scroll_to_cursor: bool,
     /// Current search query (not yet wired to filtering).
     search: String,
     /// Time blocks materialized from NIP-52 calendar events.
@@ -73,6 +84,9 @@ impl Default for Horizon {
             focus: now,
             cal_month: sidebar::month_of(now),
             selected: None,
+            cursor: snap_to_step(now),
+            repeat: 1,
+            scroll_to_cursor: false,
             search: String::new(),
             blocks: Vec::new(),
             sub: None,
@@ -135,6 +149,10 @@ impl Horizon {
     fn show(&mut self, ui: &mut egui::Ui) {
         apply_theme(ui);
 
+        // Keyboard navigation drives the day view's cursor/selection; flag a
+        // scroll-into-view for this frame if anything moved.
+        self.scroll_to_cursor = self.view == View::Day && self.handle_keys(ui);
+
         egui::TopBottomPanel::top("horizon_toolbar")
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 8)))
             .show_inside(ui, |ui| self.toolbar(ui));
@@ -165,8 +183,17 @@ impl Horizon {
     fn center(&mut self, ui: &mut egui::Ui) {
         match self.view {
             View::Day => {
-                if let Some(i) = timeline::center_day(ui, self.focus, &self.blocks, self.selected) {
+                if let Some(i) = timeline::center_day(
+                    ui,
+                    self.focus,
+                    &self.blocks,
+                    self.selected,
+                    self.cursor,
+                    self.scroll_to_cursor,
+                ) {
+                    // A mouse click selects a block and snaps the cursor to it.
                     self.selected = Some(i);
+                    self.cursor = self.blocks[i].start;
                 }
             }
             View::Week => {
@@ -241,15 +268,22 @@ impl Horizon {
         if let Some(date) = action.focus {
             self.focus = at_local_midnight(date).unwrap_or(self.focus);
             self.cal_month = date.with_day(1).unwrap_or(self.cal_month);
+            // Re-home the cursor on the newly focused day and drop any
+            // now-off-day selection; a clicked agenda row re-selects below.
+            self.cursor = with_date(self.cursor, date);
+            self.selected = None;
         }
         if let Some(i) = action.selected {
             self.selected = Some(i);
+            self.cursor = self.blocks[i].start;
         }
     }
 
     fn go_today(&mut self) {
         self.focus = Local::now();
         self.cal_month = sidebar::month_of(self.focus);
+        self.cursor = with_date(self.cursor, self.focus.date_naive());
+        self.selected = None;
     }
 
     /// Move the focused range forward/backward by one unit of the current view.
@@ -258,8 +292,117 @@ impl Horizon {
             View::Week => units * 7,
             _ => units,
         };
-        self.focus += chrono::Duration::days(days);
+        self.focus += Duration::days(days);
         self.cal_month = sidebar::month_of(self.focus);
+        self.cursor = with_date(self.cursor, self.focus.date_naive());
+        self.selected = None;
+    }
+
+    /// Vim-style keyboard navigation for the day view. Returns `true` if the
+    /// cursor or selection moved this frame (so the caller can scroll it into
+    /// view). No-op while a text field (e.g. search) holds keyboard focus.
+    fn handle_keys(&mut self, ui: &egui::Ui) -> bool {
+        use egui::Key;
+
+        if ui.memory(|m| m.focused().is_some()) {
+            return false;
+        }
+
+        let (set_repeat, down, up, to_now) = ui.input(|i| {
+            // Digit keys 2–9 set a repeat count for the next command, matching
+            // viscal (1 is the implicit default).
+            let mut set_repeat = None;
+            for (key, n) in [
+                (Key::Num2, 2),
+                (Key::Num3, 3),
+                (Key::Num4, 4),
+                (Key::Num5, 5),
+                (Key::Num6, 6),
+                (Key::Num7, 7),
+                (Key::Num8, 8),
+                (Key::Num9, 9),
+            ] {
+                if i.key_pressed(key) {
+                    set_repeat = Some(n);
+                }
+            }
+            (
+                set_repeat,
+                i.key_pressed(Key::J) || i.key_pressed(Key::ArrowDown),
+                i.key_pressed(Key::K) || i.key_pressed(Key::ArrowUp),
+                i.key_pressed(Key::T),
+            )
+        });
+
+        if let Some(n) = set_repeat {
+            self.repeat = n;
+        }
+
+        let mut moved = false;
+        if down {
+            for _ in 0..self.repeat {
+                self.move_cursor(1);
+            }
+            self.repeat = 1;
+            moved = true;
+        }
+        if up {
+            for _ in 0..self.repeat {
+                self.move_cursor(-1);
+            }
+            self.repeat = 1;
+            moved = true;
+        }
+        if to_now {
+            self.cursor_now();
+            self.repeat = 1;
+            moved = true;
+        }
+        moved
+    }
+
+    /// Move the cursor one step in `rel` (±1), snapping onto an overlapping
+    /// timed event if the new selection window hits one — viscal's
+    /// `move_relative` (viscal.c:1050).
+    fn move_cursor(&mut self, rel: i64) {
+        let step = Duration::minutes(SELECTION_MINUTES);
+
+        // Base the move on the selected event's edges, else the bare cursor.
+        self.cursor = match self.selected.and_then(|i| self.blocks.get(i)) {
+            Some(b) if !b.all_day => {
+                if rel > 0 {
+                    b.end
+                } else {
+                    b.start - step
+                }
+            }
+            _ => self.cursor + step * rel as i32,
+        };
+
+        // Snap onto the first timed event overlapping the new window.
+        match self.block_overlapping(self.cursor, self.cursor + step) {
+            Some(i) => {
+                self.cursor = self.blocks[i].start;
+                self.selected = Some(i);
+            }
+            None => self.selected = None,
+        }
+    }
+
+    /// Jump the cursor (and focus) to "now", deselecting any event.
+    fn cursor_now(&mut self) {
+        let now = Local::now();
+        self.focus = now;
+        self.cal_month = sidebar::month_of(now);
+        self.cursor = snap_to_step(now);
+        self.selected = None;
+    }
+
+    /// First timed (non-all-day) block whose span overlaps `[start, end)`.
+    fn block_overlapping(&self, start: DateTime<Local>, end: DateTime<Local>) -> Option<usize> {
+        self.blocks
+            .iter()
+            .position(|b| !b.all_day && b.start < end && start < b.end)
     }
 }
 
@@ -312,6 +455,23 @@ fn at_local_midnight(date: NaiveDate) -> Option<DateTime<Local>> {
     Local
         .from_local_datetime(&date.and_hms_opt(0, 0, 0)?)
         .single()
+}
+
+/// Round a timestamp to the nearest 5-minute boundary (viscal's
+/// `SMALLEST_TIMEBLOCK`), used to land the cursor on a tidy minute.
+fn snap_to_step(dt: DateTime<Local>) -> DateTime<Local> {
+    const STEP: i64 = 5 * 60;
+    let snapped = (dt.timestamp() + STEP / 2).div_euclid(STEP) * STEP;
+    Local.timestamp_opt(snapped, 0).single().unwrap_or(dt)
+}
+
+/// Move `dt` onto `date`, keeping its local time-of-day (used to re-home the
+/// cursor when the focused day changes).
+fn with_date(dt: DateTime<Local>, date: NaiveDate) -> DateTime<Local> {
+    Local
+        .from_local_datetime(&date.and_time(dt.time()))
+        .single()
+        .unwrap_or(dt)
 }
 
 /// Fraction (0.0..1.0) of the way through the day that `dt`'s local time is.
