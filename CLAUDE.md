@@ -12,7 +12,12 @@ command reference; the board flows
   If none exists, add one: `headway add "<title>" --col in-progress`.
 - **Task breakdown**: Use one card per unit of work; `desc`/`label` for detail.
 - **When done with the work**: Always commit your changes (see Committing
-  below) and move the card to In Review so the change can be tested:
+  below), then comment on the card with the commit hash so future iterations can
+  see what's already been done: `headway comment <card> "committed <hash>: ..."`.
+  This comment is read in the context of code review and follow-up work, so use
+  it to note anything specific that should be tested or interesting things worth
+  flagging beyond the commit message that would help someone reviewing the
+  implementation. Then move the card to In Review so the change can be tested:
   `headway move <card> --col in-review`. Don't leave finished work uncommitted
   or sitting in In Progress. Leave the card in In Review until verified.
 - **On completion**: Once the change is verified, move the card to Done:
