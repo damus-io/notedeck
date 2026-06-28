@@ -7,10 +7,14 @@ edition = "2021"
 
 [features]
 default = ["tokio-websocket"]
-tokio-websocket = ["ewebsock/tokio"]
+# ewebsock/tls only enables TLS for ewebsock's blocking tungstenite backend.
+# The tokio backend connects via tokio-tungstenite, which needs its own TLS
+# feature, otherwise wss:// fails with "TLS support not compiled in".
+tokio-websocket = ["ewebsock/tokio", "tokio-tungstenite/rustls-tls-webpki-roots"]
 
 [dependencies]
 ewebsock = { version = "0.8.0", features = ["tls"] }
+tokio-tungstenite = { workspace = true, optional = true }
 serde_derive = { workspace = true }
 serde = { workspace = true, features = ["derive"] } # You only need this if you want app persistence
 serde_json = { workspace = true }
