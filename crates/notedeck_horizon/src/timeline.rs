@@ -27,18 +27,36 @@ fn hour_label(h: u32) -> String {
     }
 }
 
+/// Everything the day view needs to render a single day: the focused date, the
+/// materialized blocks, the current selection/cursor, the zoom level, and the
+/// per-frame keyboard scroll signals.
+pub(crate) struct DayView<'a> {
+    pub focus: DateTime<Local>,
+    pub blocks: &'a [Block],
+    pub selected: Option<usize>,
+    pub cursor: DateTime<Local>,
+    /// Pixels per hour (zoom level).
+    pub hour_height: f32,
+    /// If set, scroll the cursor block to this edge of the viewport this frame.
+    pub scroll_to_cursor: Option<egui::Align>,
+    /// Vertical points to nudge the scroll by this frame (Ctrl-d/Ctrl-u).
+    pub scroll_delta: f32,
+}
+
 /// Draw the whole center pane for the day view: big date header, the all-day
 /// row, then the scrollable hour grid. Returns the block index that was clicked
 /// this frame, if any.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn center_day(
-    ui: &mut egui::Ui,
-    focus: DateTime<Local>,
-    blocks: &[Block],
-    selected: Option<usize>,
-    cursor: DateTime<Local>,
-    scroll_to_cursor: bool,
-) -> Option<usize> {
+pub(crate) fn center_day(ui: &mut egui::Ui, dv: &DayView) -> Option<usize> {
+    let DayView {
+        focus,
+        blocks,
+        selected,
+        cursor,
+        hour_height,
+        scroll_to_cursor,
+        scroll_delta,
+    } = *dv;
+
     let mut clicked = None;
     let date = focus.date_naive();
 
@@ -59,8 +77,13 @@ pub(crate) fn center_day(
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            // Ctrl-d/Ctrl-u scroll the grid without moving the cursor.
+            if scroll_delta != 0.0 {
+                ui.scroll_with_delta(vec2(0.0, -scroll_delta));
+            }
+
             let width = ui.available_width();
-            let height = HOUR_H * 24.0;
+            let height = hour_height * 24.0;
             let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
             let painter = ui.painter_at(rect);
 
@@ -69,7 +92,7 @@ pub(crate) fn center_day(
 
             // Hour rows + labels on both edges.
             for h in 0..=24 {
-                let y = rect.top() + h as f32 * HOUR_H;
+                let y = rect.top() + h as f32 * hour_height;
                 painter.line_segment([pos2(grid_left, y), pos2(grid_right, y)], grid_stroke());
                 if h < 24 {
                     let label = hour_label(h);
@@ -139,8 +162,8 @@ pub(crate) fn center_day(
                     );
                 }
 
-                if scroll_to_cursor {
-                    ui.scroll_to_rect(sel, Some(egui::Align::Center));
+                if let Some(align) = scroll_to_cursor {
+                    ui.scroll_to_rect(sel, Some(align));
                 }
             }
 

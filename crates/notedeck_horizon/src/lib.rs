@@ -6,7 +6,7 @@
 //! day/week timeline, and an inspector for the selected event.
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
-use egui::{RichText, Stroke};
+use egui::{Align, RichText, Stroke};
 use nostrdb::{Ndb, Subscription, Transaction};
 use notedeck::{AppContext, AppResponse};
 
@@ -53,6 +53,13 @@ impl View {
 /// (viscal's `timeblock_size`). Resizing it is a later card.
 const SELECTION_MINUTES: i64 = 30;
 
+/// Default / min / max pixels per hour for the day grid (viscal's `zoom`).
+const HOUR_HEIGHT_DEFAULT: f32 = 56.0;
+const HOUR_HEIGHT_MIN: f32 = 22.0;
+const HOUR_HEIGHT_MAX: f32 = 220.0;
+/// Multiplicative step for one `zi`/`zo` zoom command (viscal's `zoom_amt`).
+const ZOOM_STEP: f32 = 1.15;
+
 pub struct Horizon {
     view: View,
     /// The date the timeline is focused on.
@@ -66,8 +73,16 @@ pub struct Horizon {
     cursor: DateTime<Local>,
     /// Pending vim-style repeat count for the next navigation command.
     repeat: u32,
-    /// Set for one frame after a keyboard move, to scroll the cursor into view.
-    scroll_to_cursor: bool,
+    /// Pending first key of a two-key chord (viscal's `cal->chord`): one of
+    /// `z`/`g`/`a`, waiting for the second key to complete the command.
+    chord: Option<egui::Key>,
+    /// Pixels per hour on the day grid; changed by the `zi`/`zo` zoom chords.
+    hour_height: f32,
+    /// Set for one frame after a keyboard move to scroll the cursor to this
+    /// edge of the viewport (`zz` centers, `zt` tops, `zb` bottoms).
+    scroll_to_cursor: Option<Align>,
+    /// Vertical points to nudge the day scroll by this frame (Ctrl-d/Ctrl-u).
+    scroll_delta: f32,
     /// Current search query (not yet wired to filtering).
     search: String,
     /// Time blocks materialized from NIP-52 calendar events.
@@ -86,7 +101,10 @@ impl Default for Horizon {
             selected: None,
             cursor: snap_to_step(now),
             repeat: 1,
-            scroll_to_cursor: false,
+            chord: None,
+            hour_height: HOUR_HEIGHT_DEFAULT,
+            scroll_to_cursor: None,
+            scroll_delta: 0.0,
             search: String::new(),
             blocks: Vec::new(),
             sub: None,
@@ -149,9 +167,13 @@ impl Horizon {
     fn show(&mut self, ui: &mut egui::Ui) {
         apply_theme(ui);
 
-        // Keyboard navigation drives the day view's cursor/selection; flag a
-        // scroll-into-view for this frame if anything moved.
-        self.scroll_to_cursor = self.view == View::Day && self.handle_keys(ui);
+        // Keyboard navigation drives the day view's cursor/selection. Reset the
+        // per-frame scroll signals, then let `handle_keys` raise them again.
+        self.scroll_to_cursor = None;
+        self.scroll_delta = 0.0;
+        if self.view == View::Day {
+            self.handle_keys(ui);
+        }
 
         egui::TopBottomPanel::top("horizon_toolbar")
             .frame(panel_frame().inner_margin(egui::Margin::symmetric(12, 8)))
@@ -183,14 +205,19 @@ impl Horizon {
     fn center(&mut self, ui: &mut egui::Ui) {
         match self.view {
             View::Day => {
-                if let Some(i) = timeline::center_day(
+                let clicked = timeline::center_day(
                     ui,
-                    self.focus,
-                    &self.blocks,
-                    self.selected,
-                    self.cursor,
-                    self.scroll_to_cursor,
-                ) {
+                    &timeline::DayView {
+                        focus: self.focus,
+                        blocks: &self.blocks,
+                        selected: self.selected,
+                        cursor: self.cursor,
+                        hour_height: self.hour_height,
+                        scroll_to_cursor: self.scroll_to_cursor,
+                        scroll_delta: self.scroll_delta,
+                    },
+                );
+                if let Some(i) = clicked {
                     // A mouse click selects a block and snaps the cursor to it.
                     self.selected = Some(i);
                     self.cursor = self.blocks[i].start;
@@ -250,6 +277,14 @@ impl Horizon {
                 }
             }
 
+            // Pending keyboard command (repeat count + chord prefix), à la
+            // vim's showcmd.
+            let pending = self.pending_cmd();
+            if !pending.is_empty() {
+                ui.add_space(12.0);
+                ui.label(RichText::new(pending).monospace().color(theme::ACCENT_BLUE));
+            }
+
             // Search at the far right.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add(
@@ -298,67 +333,189 @@ impl Horizon {
         self.selected = None;
     }
 
-    /// Vim-style keyboard navigation for the day view. Returns `true` if the
-    /// cursor or selection moved this frame (so the caller can scroll it into
-    /// view). No-op while a text field (e.g. search) holds keyboard focus.
-    fn handle_keys(&mut self, ui: &egui::Ui) -> bool {
+    /// Vim-style keyboard navigation for the day view: single-key motions
+    /// (`j`/`k`/`t`, repeat digits) plus two-key chords (`zz`/`zt`/`zb` view
+    /// positioning, `zi`/`zo` zoom, `gj`/`gk` event hopping, `ah` align to the
+    /// hour) and Ctrl-d/Ctrl-u scrolling. No-op while a text field (e.g. the
+    /// search box) holds keyboard focus. Mirrors viscal's `on_keypress`.
+    fn handle_keys(&mut self, ui: &egui::Ui) {
         use egui::Key;
 
         if ui.memory(|m| m.focused().is_some()) {
-            return false;
+            self.chord = None;
+            return;
         }
 
-        let (set_repeat, down, up, to_now) = ui.input(|i| {
-            // Digit keys 2–9 set a repeat count for the next command, matching
-            // viscal (1 is the implicit default).
-            let mut set_repeat = None;
-            for (key, n) in [
-                (Key::Num2, 2),
-                (Key::Num3, 3),
-                (Key::Num4, 4),
-                (Key::Num5, 5),
-                (Key::Num6, 6),
-                (Key::Num7, 7),
-                (Key::Num8, 8),
-                (Key::Num9, 9),
-            ] {
-                if i.key_pressed(key) {
-                    set_repeat = Some(n);
-                }
-            }
-            (
-                set_repeat,
-                i.key_pressed(Key::J) || i.key_pressed(Key::ArrowDown),
-                i.key_pressed(Key::K) || i.key_pressed(Key::ArrowUp),
-                i.key_pressed(Key::T),
-            )
+        // Collect this frame's key presses (with modifiers) in order, plus any
+        // ctrl-scroll / pinch zoom gesture.
+        let (presses, zoom_delta) = ui.input(|i| {
+            let presses: Vec<(Key, egui::Modifiers)> = i
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => Some((*key, *modifiers)),
+                    _ => None,
+                })
+                .collect();
+            (presses, i.zoom_delta())
         });
 
-        if let Some(n) = set_repeat {
-            self.repeat = n;
+        // Ctrl-scroll / trackpad pinch zooms the grid (viscal's `on_scroll`).
+        if zoom_delta != 1.0 {
+            self.set_hour_height(self.hour_height * zoom_delta);
         }
 
-        let mut moved = false;
-        if down {
-            for _ in 0..self.repeat {
-                self.move_cursor(1);
+        for (key, mods) in presses {
+            // A pending chord consumes the next key; an unmatched second key
+            // falls through to normal handling (as in viscal). `take()` always
+            // clears the pending chord, even when the pair doesn't match.
+            if let Some(first) = self.chord.take()
+                && self.run_chord(first, key)
+            {
+                self.repeat = 1;
+                continue;
             }
-            self.repeat = 1;
-            moved = true;
-        }
-        if up {
-            for _ in 0..self.repeat {
-                self.move_cursor(-1);
+
+            // Digit 2–9 sets the repeat count for the next command.
+            if let Some(n) = digit_value(key) {
+                self.repeat = n;
+                continue;
             }
-            self.repeat = 1;
-            moved = true;
+
+            // Ctrl-d / Ctrl-u scroll the grid by an hour without moving the
+            // cursor (viscal's Ctrl-d/Ctrl-u).
+            if mods.ctrl {
+                match key {
+                    Key::D => self.scroll_delta += self.hour_height,
+                    Key::U => self.scroll_delta -= self.hour_height,
+                    _ => {}
+                }
+                continue;
+            }
+
+            match key {
+                Key::J | Key::ArrowDown => self.repeat_move(1),
+                Key::K | Key::ArrowUp => self.repeat_move(-1),
+                Key::T => {
+                    self.cursor_now();
+                    self.scroll_to_cursor = Some(Align::Center);
+                    self.repeat = 1;
+                }
+                // Chord prefixes wait for a second key.
+                Key::Z | Key::G | Key::A => self.chord = Some(key),
+                _ => {}
+            }
         }
-        if to_now {
-            self.cursor_now();
-            self.repeat = 1;
-            moved = true;
+    }
+
+    /// Run `move_cursor` `repeat` times then center the cursor, resetting the
+    /// repeat count.
+    fn repeat_move(&mut self, rel: i64) {
+        for _ in 0..self.repeat.max(1) {
+            self.move_cursor(rel);
         }
-        moved
+        self.repeat = 1;
+        self.scroll_to_cursor = Some(Align::Center);
+    }
+
+    /// Complete a two-key chord. Returns `false` if `(first, second)` isn't a
+    /// known chord, so the caller can handle `second` as a fresh key.
+    fn run_chord(&mut self, first: egui::Key, second: egui::Key) -> bool {
+        use egui::Key::*;
+        let n = self.repeat.max(1) as i32;
+        match (first, second) {
+            (Z, Z) => self.scroll_to_cursor = Some(Align::Center),
+            (Z, T) => self.scroll_to_cursor = Some(Align::Min),
+            (Z, B) => self.scroll_to_cursor = Some(Align::Max),
+            (Z, I) => self.zoom(n),
+            (Z, O) => self.zoom(-n),
+            (G, J) => self.select_event(1, n),
+            (G, K) => self.select_event(-1, n),
+            (A, H) => self.align_hour(),
+            // `dd` (delete) is a write op handled by the create/edit/delete card.
+            _ => return false,
+        }
+        true
+    }
+
+    /// Zoom the grid in (`steps > 0`) or out, keeping the cursor centered.
+    fn zoom(&mut self, steps: i32) {
+        self.set_hour_height(self.hour_height * ZOOM_STEP.powi(steps));
+        self.scroll_to_cursor = Some(Align::Center);
+    }
+
+    fn set_hour_height(&mut self, h: f32) {
+        self.hour_height = h.clamp(HOUR_HEIGHT_MIN, HOUR_HEIGHT_MAX);
+    }
+
+    /// Hop the selection to the `rel`th next/previous event (viscal's
+    /// `select_dir`), following it onto another day if needed.
+    fn select_event(&mut self, rel: i64, repeat: i32) {
+        if self.blocks.is_empty() {
+            return;
+        }
+        for _ in 0..repeat.max(1) {
+            let next = match self.selected {
+                Some(i) => (i as i64 + rel).clamp(0, self.blocks.len() as i64 - 1) as usize,
+                None => match self.closest_event(rel) {
+                    Some(i) => i,
+                    None => return,
+                },
+            };
+            self.selected = Some(next);
+            self.cursor = self.blocks[next].start;
+        }
+        // Follow the selection onto its day and bring it into view.
+        self.focus = with_date(self.focus, self.cursor.date_naive());
+        self.cal_month = sidebar::month_of(self.focus);
+        self.scroll_to_cursor = Some(Align::Center);
+    }
+
+    /// Index of the nearest event in direction `rel` relative to the cursor
+    /// (viscal's `find_closest_event`).
+    fn closest_event(&self, rel: i64) -> Option<usize> {
+        if rel > 0 {
+            self.blocks.iter().position(|b| b.start > self.cursor)
+        } else {
+            self.blocks.iter().rposition(|b| b.start < self.cursor)
+        }
+    }
+
+    /// The pending vim-style command shown in the toolbar (repeat count and/or
+    /// chord prefix), empty when nothing is pending.
+    fn pending_cmd(&self) -> String {
+        use egui::Key;
+        let mut s = String::new();
+        if self.repeat != 1 {
+            s.push_str(&self.repeat.to_string());
+        }
+        s.push_str(match self.chord {
+            Some(Key::Z) => "z",
+            Some(Key::G) => "g",
+            Some(Key::A) => "a",
+            _ => "",
+        });
+        s
+    }
+
+    /// Snap the cursor to the nearest hour, deselecting (viscal's `align_hour`).
+    fn align_hour(&mut self) {
+        let minute = self.cursor.minute();
+        let floored = self.cursor
+            - Duration::minutes(minute as i64)
+            - Duration::seconds(self.cursor.second() as i64);
+        self.cursor = if minute >= 30 {
+            floored + Duration::hours(1)
+        } else {
+            floored
+        };
+        self.selected = None;
+        self.scroll_to_cursor = Some(Align::Center);
     }
 
     /// Move the cursor one step in `rel` (±1), snapping onto an overlapping
@@ -403,6 +560,23 @@ impl Horizon {
         self.blocks
             .iter()
             .position(|b| !b.all_day && b.start < end && start < b.end)
+    }
+}
+
+/// Map a digit key 2–9 to its repeat-count value (1 is the implicit default,
+/// so it's excluded), matching viscal's repeat handling.
+fn digit_value(key: egui::Key) -> Option<u32> {
+    use egui::Key;
+    match key {
+        Key::Num2 => Some(2),
+        Key::Num3 => Some(3),
+        Key::Num4 => Some(4),
+        Key::Num5 => Some(5),
+        Key::Num6 => Some(6),
+        Key::Num7 => Some(7),
+        Key::Num8 => Some(8),
+        Key::Num9 => Some(9),
+        _ => None,
     }
 }
 
