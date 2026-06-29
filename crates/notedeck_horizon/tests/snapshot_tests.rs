@@ -227,15 +227,30 @@ fn horizon_harness(size: egui::Vec2) -> Harness<'static, HorizonTestState> {
     harness
 }
 
-// No baseline image is committed yet: the golden must be generated on the
-// canonical lavapipe renderer (Linux) so it's reproducible in CI. Generate it
-// with `scripts/snapshot-test --update` on Linux, then commit the resulting
-// `tests/snapshots/horizon_day.png`. Until then this test has nothing to
-// compare against and will write a `.new.png` rather than pass.
+/// Viewports to snapshot the day view at, from a phone in portrait up to a
+/// desktop. The three-pane layout is fixed-width (a ~300px sidebar + ~320px
+/// inspector), so the narrow sizes exercise how it degrades when the timeline
+/// is squeezed — see the `horizon: responsive layout` follow-up.
+const SIZES: &[(&str, f32, f32)] = &[
+    ("horizon_phone_portrait", 390.0, 844.0),
+    ("horizon_phone_landscape", 844.0, 390.0),
+    ("horizon_tablet", 768.0, 1024.0),
+    ("horizon_desktop", 1400.0, 900.0),
+];
+
+// No baseline images are committed yet: the goldens must be generated on the
+// canonical lavapipe renderer (Linux) so they're reproducible in CI. Generate
+// them with `scripts/snapshot-test --update` on Linux, then commit the
+// resulting `tests/snapshots/horizon_*.png`. Until then this test has nothing
+// to compare against and will write `.new.png` files rather than pass.
 #[test]
 #[ignore] // requires a GPU/lavapipe renderer — run via scripts/snapshot-test
 fn snapshot_horizon_day() {
     let mut harness = horizon_harness(egui::Vec2::new(1400.0, 900.0));
-    harness.run_steps(4);
-    harness.snapshot("horizon_day");
+
+    for &(name, w, h) in SIZES {
+        harness.set_size(egui::Vec2::new(w, h));
+        harness.run_steps(4);
+        harness.snapshot(name);
+    }
 }
