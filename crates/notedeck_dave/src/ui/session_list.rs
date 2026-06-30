@@ -486,6 +486,7 @@ impl<'a> SessionListUi<'a> {
     }
 
     /// Render a chat session row (no status bar, no cwd).
+    #[allow(clippy::too_many_arguments)]
     fn chat_row_ui(
         &self,
         ui: &mut egui::Ui,

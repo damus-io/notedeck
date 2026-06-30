@@ -9,5 +9,10 @@ enostr = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
 
+# Apple EventKit lives only on macOS; every other target uses NullSource and
+# never pulls this in.
+[target.'cfg(target_os = "macos")'.dependencies]
+eventkit-rs = "0.5"
+
 [dev-dependencies]
 tempfile = { workspace = true }

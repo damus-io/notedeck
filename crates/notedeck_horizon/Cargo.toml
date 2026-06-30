@@ -10,6 +10,7 @@ nostrdb = { workspace = true }
 notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
 enostr = { workspace = true }
+nostr_calsync = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

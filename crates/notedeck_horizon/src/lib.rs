@@ -99,6 +99,13 @@ pub struct Horizon {
     /// Private relays resolved by [`Self::private_sync`] this frame, reused as
     /// the outbound publish targets for events we create. Empty => local-only.
     publish_relays: Vec<RelayId>,
+    /// Background worker mirroring the platform calendar (e.g. macOS EventKit)
+    /// into nostrdb. `None` until started; stays `None` on platforms without a
+    /// native calendar source. Dropping it stops the worker.
+    calsync: Option<nostr_calsync::SyncHandle>,
+    /// Whether we've already tried to start [`Self::calsync`], so we attempt it
+    /// at most once per run rather than every frame.
+    calsync_started: bool,
 }
 
 impl Default for Horizon {
@@ -121,6 +128,8 @@ impl Default for Horizon {
             pending_select: None,
             private_sync: PrivateRelaySync::new("horizon"),
             publish_relays: Vec::new(),
+            calsync: None,
+            calsync_started: false,
         }
     }
 }
@@ -131,6 +140,12 @@ impl notedeck::App for Horizon {
         // private relays, and remember the resolved set as our publish targets.
         let author = *ctx.accounts.selected_account_pubkey();
         self.publish_relays = self.private_sync.update(ctx, calendar_sync_filter(&author));
+
+        // Start mirroring the platform calendar into nostrdb once we have an
+        // account to sign the imported events with. The worker writes the same
+        // NIP-52 notes Horizon already reads, so they flow back in through the
+        // subscription below.
+        self.start_calsync(ctx);
 
         // Subscribe once, then backfill the calendar events already in the db —
         // a subscription only reports notes indexed *after* it's created.
@@ -159,6 +174,38 @@ impl notedeck::App for Horizon {
 }
 
 impl Horizon {
+    /// Start the calendar-mirror worker, at most once, as soon as a signing key
+    /// is available. Imported events are attributed to the selected account.
+    fn start_calsync(&mut self, ctx: &mut AppContext<'_>) {
+        if self.calsync_started {
+            return;
+        }
+
+        // Need a secret key to sign the imported notes; wait until one's around.
+        let Some(keys) = ctx.accounts.selected_filled() else {
+            return;
+        };
+        let secret = keys.secret_key.secret_bytes();
+
+        // Only one attempt: a real source prompts for calendar access, and on
+        // platforms without one there's nothing to start.
+        self.calsync_started = true;
+
+        // Opt-in for now. Requesting calendar access needs an Info.plist usage
+        // string, which only the bundled `.app` carries — an unbundled
+        // `cargo run` would be killed by macOS TCC the moment it asks. Gate on an
+        // env var until calendar access is exposed as a proper setting.
+        if std::env::var_os("NOTEDECK_CALSYNC").is_none() {
+            return;
+        }
+
+        self.calsync = nostr_calsync::spawn_default(
+            ctx.ndb.clone(),
+            secret,
+            nostr_calsync::SyncConfig::default(),
+        );
+    }
+
     /// Re-read all calendar events from nostrdb into [`Self::blocks`].
     fn reload(&mut self, ndb: &Ndb) {
         let txn = match Transaction::new(ndb) {

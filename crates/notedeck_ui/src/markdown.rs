@@ -746,7 +746,7 @@ fn render_list_item(
             // Render nested list if present
             if let Some(nested) = &item.nested {
                 ui.indent("nested", |ui| {
-                    render_element(nested, theme, buffer, edits.as_deref_mut(), ui);
+                    render_element(nested, theme, buffer, edits, ui);
                 });
             }
         });
