@@ -429,6 +429,71 @@ pub fn apply(
     }
 }
 
+/// A board to operate on across a cross-board action: its `id` (slug) paired with
+/// its current folded `view`. Bundled so [`link_card`]/[`move_card_between_boards`]
+/// take one argument per board rather than an id/view pair each.
+#[derive(Clone, Copy)]
+pub struct BoardRef<'a> {
+    pub id: &'a str,
+    pub view: &'a BoardView,
+}
+
+/// Place `card` onto the `target` board's first column, at the end. This is a
+/// *link*: membership is placement-driven, so the card keeps any other boards it
+/// is already on, and the same issue (with all its overlays — title, labels,
+/// comments) now shows on `target` too. Returns the placement's note id.
+///
+/// Re-linking simply re-ranks (latest wins).
+pub fn link_card(
+    ndb: &Ndb,
+    target: BoardRef,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    card: NoteId,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let addr = board_address(author, target.id);
+    let col = target.view.columns.first()?;
+    let rank = rank_for_insert(&col.cards, Some(card), col.cards.len());
+    let after = find_card(target.view, card).map_or(0, |c| c.placed_at);
+    ingest(
+        ndb,
+        build_placement(target.id, &addr, &card, &col.id, &rank).created_at(next_after(after)),
+        secret,
+        publisher,
+    )
+}
+
+/// Move `card` from the `source` board to the `target` board: link it onto
+/// `target`, then tombstone its placement on `source`. The issue id and all its
+/// overlays are preserved — it's the same card, just re-homed. Returns the new
+/// placement's note id.
+pub fn move_card_between_boards(
+    ndb: &Ndb,
+    source: BoardRef,
+    target: BoardRef,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    card: NoteId,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let placed = link_card(ndb, target, author, secret, card, publisher)?;
+    // Placement-driven membership: a tombstone on the source removes it from
+    // `source` only, leaving the freshly-linked placement on `target`.
+    let src_addr = board_address(author, source.id);
+    let c = find_card(source.view, card);
+    let rank = non_empty_rank(c.map_or("", |c| c.rank.as_str()));
+    let after = c.map_or(0, |c| c.placed_at);
+    ingest(
+        ndb,
+        build_placement(source.id, &src_addr, &card, COL_DELETED, &rank)
+            .created_at(next_after(after)),
+        secret,
+        publisher,
+    );
+    Some(placed)
+}
+
 /// Republish the board event with a new column list, preserving title/description.
 ///
 /// The board is an addressable event, so a republish supersedes the prior one by
@@ -1001,5 +1066,107 @@ mod tests {
         // The fallback also disambiguates.
         let taken_board = |s: &str| s == "board";
         assert_eq!(board_slug("", taken_board), "board-2");
+    }
+
+    /// Load an arbitrary board (the [`TestNdb`] helpers are pinned to `BOARD_ID`).
+    fn poll_board(t: &TestNdb, board_id: &str, pred: impl Fn(&BoardView) -> bool) -> BoardView {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let txn = Transaction::new(&t.ndb).unwrap();
+            if let Some(view) = load_board(&t.ndb, &txn, &t.kp.pubkey, board_id)
+                && pred(&view)
+            {
+                return view;
+            }
+            drop(txn);
+            assert!(
+                Instant::now() < deadline,
+                "board '{board_id}' predicate never held"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Seed two boards, add a card to one, and add a card we can relocate.
+    fn two_boards_with_a_card(t: &TestNdb) -> NoteId {
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "src", &mut NoPublish);
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "dst", &mut NoPublish);
+        poll_board(t, "src", |v| v.columns.len() == 5);
+        poll_board(t, "dst", |v| v.columns.len() == 5);
+
+        let src = poll_board(t, "src", |v| v.columns.len() == 5);
+        super::apply(
+            &t.ndb,
+            "src",
+            &src,
+            &t.kp.pubkey,
+            &t.secret(),
+            BoardAction::AddCard {
+                col: 0,
+                title: "Roamer".to_string(),
+                labels: vec!["wandering".to_string()],
+            },
+            &mut NoPublish,
+        );
+        poll_board(t, "src", |v| v.columns[0].cards.len() == 1).columns[0].cards[0].id
+    }
+
+    #[test]
+    fn link_card_places_on_both_boards() {
+        let t = TestNdb::new();
+        let card = two_boards_with_a_card(&t);
+
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        link_card(
+            &t.ndb,
+            BoardRef {
+                id: "dst",
+                view: &dst,
+            },
+            &t.kp.pubkey,
+            &t.secret(),
+            card,
+            &mut NoPublish,
+        );
+
+        // Same card on both boards, with its labels intact (it's shared, not copied).
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
+        assert_eq!(src.columns[0].cards[0].id, card);
+        assert_eq!(dst.columns[0].cards[0].id, card);
+        assert_eq!(
+            dst.columns[0].cards[0].labels,
+            vec!["wandering".to_string()]
+        );
+    }
+
+    #[test]
+    fn move_card_between_boards_relocates_it() {
+        let t = TestNdb::new();
+        let card = two_boards_with_a_card(&t);
+
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        move_card_between_boards(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+            },
+            &t.kp.pubkey,
+            &t.secret(),
+            card,
+            &mut NoPublish,
+        );
+
+        // Leaves src, lands on dst — same id, same overlays.
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
+        poll_board(&t, "src", |v| v.columns[0].cards.is_empty());
+        assert_eq!(dst.columns[0].cards[0].id, card);
+        assert_eq!(dst.columns[0].cards[0].title, "Roamer");
     }
 }

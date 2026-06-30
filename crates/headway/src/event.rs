@@ -24,7 +24,7 @@
 //! This module is pure: it builds and parses notes and reduces a set of them
 //! into a [`BoardView`]. Relay/ndb plumbing lives in the app layer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use enostr::{NoteId, Pubkey};
 use nostrdb::{Filter, Ndb, Note, NoteBuildOptions, NoteBuilder, NoteKey, Transaction};
@@ -315,6 +315,12 @@ pub struct IssueEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlacementEvent {
     pub author: [u8; 32],
+    /// The board this placement targets, as `(author, board_id)` from the `a`
+    /// tag. Membership is placement-driven: a card shows on whichever board(s)
+    /// it has a live placement for, so the same issue can be placed on several
+    /// boards at once (each with its own column and rank).
+    pub board_author: [u8; 32],
+    pub board_id: String,
     pub issue_id: [u8; 32],
     pub col: String,
     pub rank: String,
@@ -464,6 +470,7 @@ fn parse_issue(note: &Note) -> Option<IssueEvent> {
 
 fn parse_placement(note: &Note) -> Option<PlacementEvent> {
     let mut issue_id = None;
+    let mut board = None;
     let mut col = None;
     let mut rank = None;
     let mut from = None;
@@ -471,6 +478,7 @@ fn parse_placement(note: &Note) -> Option<PlacementEvent> {
     for tag in note.tags() {
         match tag.get_str(0) {
             Some("e") => issue_id = tag.get_id(1).copied(),
+            Some("a") => board = tag.get_str(1).and_then(parse_board_address),
             Some("col") => col = tag.get_str(1).map(|s| s.to_owned()),
             Some("rank") => rank = tag.get_str(1).map(|s| s.to_owned()),
             Some("from") => from = tag.get_str(1).map(|s| s.to_owned()),
@@ -478,8 +486,12 @@ fn parse_placement(note: &Note) -> Option<PlacementEvent> {
         }
     }
 
+    let (board_author, board_id) = board?;
+
     Some(PlacementEvent {
         author: *note.pubkey(),
+        board_author,
+        board_id,
         issue_id: issue_id?,
         col: col?,
         rank: rank?,
@@ -714,13 +726,26 @@ pub fn comment_json(comment: &CommentView) -> serde_json::Value {
 /// history. Both are sound because the fold is commutative and idempotent: each
 /// overlay is a latest-authorised-wins map keyed by id, so an event's effect
 /// doesn't depend on when (or how often) it's seen.
+/// Identifies a card's placement on a specific board. The same issue placed on
+/// two boards has two distinct keys (and two independent column/rank slots).
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct PlacementKey {
+    board_author: [u8; 32],
+    board_id: String,
+    issue_id: [u8; 32],
+}
+
 #[derive(Default)]
 pub struct BoardReducer {
     /// Latest board event per (author, board_id).
     boards: HashMap<(Vec<u8>, String), BoardEvent>,
     /// Issues by id (immutable, but a relay may hand us duplicates).
     issues: HashMap<[u8; 32], IssueEvent>,
-    placements: HashMap<[u8; 32], PlacementEvent>,
+    /// Placements keyed by board + card — one per `(board, card)`. A card can be
+    /// placed on several boards at once, so the key includes the board, not just
+    /// the issue. Latest-authorised-wins within each key (a re-`move` on the same
+    /// board supersedes the previous slot).
+    placements: HashMap<PlacementKey, PlacementEvent>,
     subjects: HashMap<[u8; 32], SubjectEdit>,
     covers: HashMap<[u8; 32], CoverNote>,
     /// Latest label set per issue. Each label event is the *complete* set for
@@ -751,12 +776,17 @@ impl BoardReducer {
                 self.issues.insert(i.id, i);
             }
             HeadwayEvent::Placement(p) => {
+                let key = PlacementKey {
+                    board_author: p.board_author,
+                    board_id: p.board_id.clone(),
+                    issue_id: p.issue_id,
+                };
                 if self
                     .placements
-                    .get(&p.issue_id)
+                    .get(&key)
                     .is_none_or(|cur| newer(p.created_at, &p.author, cur.created_at, &cur.author))
                 {
-                    self.placements.insert(p.issue_id, p);
+                    self.placements.insert(key, p);
                 }
             }
             HeadwayEvent::Subject(s) => {
@@ -794,12 +824,88 @@ impl BoardReducer {
         }
     }
 
+    /// Resolve a card's effective content (title, description, labels, comments)
+    /// from the issue and its overlay events, given the `rank`/`placed_at` of the
+    /// placement it's being shown under. `board_author` is the authority alongside
+    /// the card author for amend events. Board-agnostic: the same issue placed on
+    /// two boards yields the same content, only the rank/slot differ.
+    fn card_view(
+        &self,
+        issue: &IssueEvent,
+        board_author: &[u8; 32],
+        rank: String,
+        placed_at: u64,
+    ) -> CardView {
+        // Authority: the card author or the board author may amend the card.
+        let authorised = |who: &[u8; 32]| who == &issue.author || who == board_author;
+
+        let title = self
+            .subjects
+            .get(&issue.id)
+            .filter(|s| authorised(&s.author))
+            .map(|s| s.subject.clone())
+            .unwrap_or_else(|| issue.subject.clone());
+
+        let description = self
+            .covers
+            .get(&issue.id)
+            .filter(|c| authorised(&c.author))
+            .map(|c| c.body.clone())
+            .unwrap_or_else(|| issue.body.clone());
+
+        // Labels resolve latest-authorised-wins: the newest authorised label
+        // event is the card's complete set, overriding the issue's inline labels.
+        // (Removal = republish the set without the label.)
+        let mut labels = self
+            .labels
+            .get(&issue.id)
+            .filter(|s| authorised(&s.author))
+            .map(|s| s.labels.clone())
+            .unwrap_or_else(|| issue.inline_labels.clone());
+        labels.sort();
+        labels.dedup();
+
+        // Comments thread under the issue (the NIP-22 root). Append-only, shown
+        // oldest first; the id breaks same-second ties.
+        let mut comments: Vec<CommentView> = self
+            .comments
+            .values()
+            .filter(|c| c.issue_id == issue.id)
+            .map(|c| CommentView {
+                id: NoteId::new(c.id),
+                author: c.author,
+                parent: c.parent_id.map(NoteId::new),
+                body: c.body.clone(),
+                created_at: c.created_at,
+            })
+            .collect();
+        comments.sort_by(|a, b| (a.created_at, a.id.bytes()).cmp(&(b.created_at, b.id.bytes())));
+
+        CardView {
+            id: NoteId::new(issue.id),
+            author: issue.author,
+            title,
+            description,
+            labels,
+            rank,
+            placed_at,
+            comments,
+        }
+    }
+
     /// Assemble the accumulated events into board views.
     /// Resolve the accumulated events into the boards they describe. Takes
     /// `&self` so a cached reducer can be re-finalized after a delta without
     /// being consumed.
     pub fn finalize(&self) -> Vec<BoardView> {
         let mut views: Vec<BoardView> = Vec::new();
+
+        // Issues with a live placement on *some* board. An issue with none is a
+        // placement-less orphan (e.g. its placement event never reached us) and
+        // is shown via its origin board's `a` tag below; one that was explicitly
+        // moved/deleted has a placement and so is governed purely by placements.
+        let placed_anywhere: HashSet<[u8; 32]> =
+            self.placements.keys().map(|k| k.issue_id).collect();
 
         for ((author, board_id), board) in &self.boards {
             // Group this board's cards by resolved column id.
@@ -808,91 +914,55 @@ impl BoardReducer {
             let mut archived: Vec<ArchivedCard> = Vec::new();
             let col_ids: Vec<&str> = board.columns.iter().map(|c| c.id.as_str()).collect();
 
-            for issue in self.issues.values() {
-                if &issue.board_author.to_vec() != author || &issue.board_id != board_id {
+            // Placement-driven membership: each live placement targeting this
+            // board puts its issue on the board, in the placement's column.
+            for (key, placement) in &self.placements {
+                if key.board_author.as_slice() != author.as_slice() || &key.board_id != board_id {
+                    continue;
+                }
+                let Some(issue) = self.issues.get(&key.issue_id) else {
+                    continue;
+                };
+                // Only the card author or the board author may place a card.
+                if placement.author != issue.author && placement.author != board.author {
                     continue;
                 }
 
-                // Authority: the card author or the board author may amend the card.
-                let authorised = |who: &[u8; 32]| who == &issue.author || who == &board.author;
+                let card = self.card_view(
+                    issue,
+                    &board.author,
+                    placement.rank.clone(),
+                    placement.created_at,
+                );
 
-                let title = self
-                    .subjects
-                    .get(&issue.id)
-                    .filter(|s| authorised(&s.author))
-                    .map(|s| s.subject.clone())
-                    .unwrap_or_else(|| issue.subject.clone());
-
-                let description = self
-                    .covers
-                    .get(&issue.id)
-                    .filter(|c| authorised(&c.author))
-                    .map(|c| c.body.clone())
-                    .unwrap_or_else(|| issue.body.clone());
-
-                // Labels resolve latest-authorised-wins: the newest authorised
-                // label event is the card's complete set, overriding the issue's
-                // inline labels. (Removal = republish the set without the label.)
-                let mut labels = self
-                    .labels
-                    .get(&issue.id)
-                    .filter(|s| authorised(&s.author))
-                    .map(|s| s.labels.clone())
-                    .unwrap_or_else(|| issue.inline_labels.clone());
-                labels.sort();
-                labels.dedup();
-
-                let placement = self
-                    .placements
-                    .get(&issue.id)
-                    .filter(|p| authorised(&p.author));
-
-                let rank = placement.map(|p| p.rank.clone()).unwrap_or_default();
-                let placed_at = placement.map(|p| p.created_at).unwrap_or(0);
-
-                // Comments thread under the issue (the NIP-22 root). Append-only,
-                // shown oldest first; the id breaks same-second ties.
-                let mut comments: Vec<CommentView> = self
-                    .comments
-                    .values()
-                    .filter(|c| c.issue_id == issue.id)
-                    .map(|c| CommentView {
-                        id: NoteId::new(c.id),
-                        author: c.author,
-                        parent: c.parent_id.map(NoteId::new),
-                        body: c.body.clone(),
-                        created_at: c.created_at,
-                    })
-                    .collect();
-                comments.sort_by(|a, b| {
-                    (a.created_at, a.id.bytes()).cmp(&(b.created_at, b.id.bytes()))
-                });
-
-                let card = CardView {
-                    id: NoteId::new(issue.id),
-                    author: issue.author,
-                    title,
-                    description,
-                    labels,
-                    rank,
-                    placed_at,
-                    comments,
-                };
-
-                match placement.map(|p| p.col.as_str()) {
+                match placement.col.as_str() {
                     // A tombstone placement removes the card from the board.
-                    Some(COL_DELETED) => continue,
+                    COL_DELETED => continue,
                     // Archived: kept off the columns but recoverable, with its
                     // origin column so a restore lands it back where it was.
-                    Some(COL_ARCHIVED) => archived.push(ArchivedCard {
+                    COL_ARCHIVED => archived.push(ArchivedCard {
                         card,
-                        from: placement.and_then(|p| p.from.clone()),
+                        from: placement.from.clone(),
                     }),
-                    Some(col) if col_ids.contains(&col) => {
+                    col if col_ids.contains(&col) => {
                         by_col.entry(col.to_string()).or_default().push(card);
                     }
                     _ => fallback.push((issue.created_at, card)),
                 }
+            }
+
+            // Orphan fallback: issues anchored to this board by their `a` tag but
+            // with no placement on any board (a lost placement event). Show them
+            // so a card never vanishes just because its placement didn't arrive.
+            for issue in self.issues.values() {
+                if issue.board_author.as_slice() != author.as_slice()
+                    || &issue.board_id != board_id
+                    || placed_anywhere.contains(&issue.id)
+                {
+                    continue;
+                }
+                let card = self.card_view(issue, &board.author, String::new(), 0);
+                fallback.push((issue.created_at, card));
             }
 
             let mut columns: Vec<ColumnView> = board
@@ -1491,6 +1561,54 @@ mod tests {
         let cards = &views[0].columns[0].cards;
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0].title, "Keep");
+    }
+
+    /// Membership is placement-driven: one issue placed on two boards appears on
+    /// both, and removing the placement from one board leaves it on the other
+    /// (the same card, not a copy).
+    #[test]
+    fn reduce_places_one_card_on_multiple_boards() {
+        let owner = FullKeypair::generate();
+        let addr1 = board_address(&owner.pubkey, "b1");
+        let addr2 = board_address(&owner.pubkey, "b2");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        // Anchored to b1, but placed on both b1 and b2 (the second is a "link").
+        let card = note_id(&owner, build_issue(&addr1, "Shared", ""));
+        let mut events = vec![
+            parse_owned(build_board("b1", "One", "", &cols), &owner),
+            parse_owned(build_board("b2", "Two", "", &cols), &owner),
+            parse_owned(build_issue(&addr1, "Shared", ""), &owner),
+            parse_owned(build_placement("b1", &addr1, &card, "todo", "m"), &owner),
+            parse_owned(build_placement("b2", &addr2, &card, "todo", "m"), &owner),
+        ];
+
+        // Views sort by board id: [b1, b2]. The card shows on both.
+        let views = reduce(&events);
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].columns[0].cards.len(), 1, "on b1");
+        assert_eq!(views[1].columns[0].cards.len(), 1, "on b2");
+        assert_eq!(views[1].columns[0].cards[0].title, "Shared");
+
+        // Remove it from b1 (a tombstone placement on b1 only). b2 keeps it.
+        let mut tombstone = match parse_owned(
+            build_placement("b1", &addr1, &card, COL_DELETED, "m"),
+            &owner,
+        ) {
+            HeadwayEvent::Placement(p) => p,
+            _ => unreachable!(),
+        };
+        tombstone.created_at += 1;
+        events.push(HeadwayEvent::Placement(tombstone));
+
+        let views = reduce(&events);
+        assert!(views[0].columns[0].cards.is_empty(), "removed from b1");
+        assert_eq!(views[1].columns[0].cards.len(), 1, "still on b2");
     }
 
     #[test]

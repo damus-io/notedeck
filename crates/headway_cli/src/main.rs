@@ -79,6 +79,18 @@ enum Command {
     Restore {
         card: String,
     },
+    /// Place a card from the current board onto another board too, keeping it on
+    /// both (placement-driven membership — it's the same card, not a copy).
+    Link {
+        card: String,
+        to_board: String,
+    },
+    /// Move a card from the current board to another board: link it there and
+    /// remove it from the current one.
+    MoveBoard {
+        card: String,
+        to_board: String,
+    },
     /// With an `id`, switch the persisted current board; without one, list the
     /// boards in the cache and mark the current selection.
     Board {
@@ -182,6 +194,64 @@ async fn run() -> Result<()> {
             None => print_boards(&list_boards(&ndb, &author), &board),
         },
 
+        // Cross-board: place/move a card from the current board onto another.
+        // These touch two boards, so they sidestep the single-board `apply` path.
+        Command::Link { card, to_board } => {
+            let secret = secret.ok_or("this command needs --nsec to sign")?;
+            let source = load_board(&ndb, &author, &board)
+                .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
+            let target = load_board(&ndb, &author, &to_board).ok_or_else(|| {
+                format!("no target board '{to_board}' — switch to it and `headway seed` first")
+            })?;
+            let card_id = resolve_card(&source, &card)?;
+
+            let mut sink = Collect::default();
+            let target = store::BoardRef {
+                id: &to_board,
+                view: &target,
+            };
+            store::link_card(&ndb, target, &author, &secret, card_id, &mut sink);
+            let n = sink.0.len();
+            relay_sync::publish(&mut relay, &sink.0).await?;
+            println!(
+                "linked to '{to_board}' ({n} events){}",
+                relay_sync::offline_note(&relay)
+            );
+        }
+
+        Command::MoveBoard { card, to_board } => {
+            let secret = secret.ok_or("this command needs --nsec to sign")?;
+            let source = load_board(&ndb, &author, &board)
+                .ok_or_else(|| format!("no board '{board}' — run `headway seed`"))?;
+            let target = load_board(&ndb, &author, &to_board).ok_or_else(|| {
+                format!("no target board '{to_board}' — switch to it and `headway seed` first")
+            })?;
+            let card_id = resolve_card(&source, &card)?;
+
+            let mut sink = Collect::default();
+            store::move_card_between_boards(
+                &ndb,
+                store::BoardRef {
+                    id: &board,
+                    view: &source,
+                },
+                store::BoardRef {
+                    id: &to_board,
+                    view: &target,
+                },
+                &author,
+                &secret,
+                card_id,
+                &mut sink,
+            );
+            let n = sink.0.len();
+            relay_sync::publish(&mut relay, &sink.0).await?;
+            println!(
+                "moved to '{to_board}' ({n} events){}",
+                relay_sync::offline_note(&relay)
+            );
+        }
+
         edit => {
             let secret = secret.ok_or("this command needs --nsec to sign")?;
             let view = load_board(&ndb, &author, &board)
@@ -259,6 +329,8 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         },
         Command::Show { .. }
         | Command::Seed
+        | Command::Link { .. }
+        | Command::MoveBoard { .. }
         | Command::Board { .. }
         | Command::Login { .. }
         | Command::Logout => {
@@ -616,6 +688,7 @@ impl Cli {
         let mut archived = false;
         let mut col = None;
         let mut row = None;
+        let mut to = None;
         let mut reply_to = None;
         let mut labels: Vec<String> = Vec::new();
         let mut positionals: Vec<String> = Vec::new();
@@ -635,6 +708,7 @@ impl Cli {
                 "--board" => board = value("--board")?,
                 "--author" => author = Some(Pubkey::parse(&value("--author")?)?),
                 "--col" => col = Some(value("--col")?),
+                "--to" => to = Some(value("--to")?),
                 "--reply-to" => reply_to = Some(value("--reply-to")?),
                 "-l" | "--label" | "--labels" => {
                     // Repeatable, and each value may be a comma-separated list,
@@ -666,7 +740,7 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
-        let command = parse_command(name, rest, col, row, reply_to, labels)?;
+        let command = parse_command(name, rest, col, row, to, reply_to, labels)?;
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured — that would
@@ -695,6 +769,7 @@ fn parse_command(
     rest: &[String],
     col: Option<String>,
     row: Option<usize>,
+    to: Option<String>,
     reply_to: Option<String>,
     labels: Vec<String>,
 ) -> Result<Command> {
@@ -734,6 +809,14 @@ fn parse_command(
         "delete" => Command::Delete { card: card()? },
         "archive" => Command::Archive { card: card()? },
         "restore" => Command::Restore { card: card()? },
+        "link" => Command::Link {
+            card: card()?,
+            to_board: to.ok_or("link needs --to <board>")?,
+        },
+        "move-board" => Command::MoveBoard {
+            card: card()?,
+            to_board: to.ok_or("move-board needs --to <board>")?,
+        },
         "board" => Command::Board {
             id: rest.first().cloned(),
         },
@@ -784,6 +867,8 @@ COMMANDS:
     delete <card>              Remove a card (reversible tombstone)
     archive <card>             Archive a card off the board
     restore <card>             Restore an archived card
+    link <card> --to <board>   Also place a card on another board (keep both)
+    move-board <card> --to <b> Move a card from this board to another board
     board [id]                 Switch the current board to <id>, or list boards
                                and mark the current one
     login <nsec>               Store a signing key for later runs
@@ -804,6 +889,7 @@ OPTIONS:
     --db <path>       nostrdb cache dir [default: <data-dir>/headway-cli]
     -l, --label <l>   Label(s) for `add` (repeatable; comma-separated allowed)
     --col <c>         Column for `add`/`move` (id or name)
+    --to <board>      Target board for `link`/`move-board`
     --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
     --json            Machine-readable output (show)
     --archived        List archived cards in full (show)
