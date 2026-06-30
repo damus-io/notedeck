@@ -1,0 +1,13 @@
+[package]
+name = "nostr_calsync"
+edition = "2024"
+version.workspace = true
+
+[dependencies]
+nostrdb = { workspace = true }
+enostr = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

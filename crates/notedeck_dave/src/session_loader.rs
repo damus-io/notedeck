@@ -11,69 +11,14 @@ use crate::session_events::{
 };
 use crate::tools::ToolResponse;
 use crate::Message;
-use nostrdb::{Filter, Ndb, NoteKey, Transaction};
+use nostrdb::{Filter, Ndb, Transaction};
 use std::collections::{HashMap, HashSet};
 
-/// Query replaceable events via `ndb.fold`, deduplicating by `d` tag.
-///
-/// nostrdb doesn't deduplicate replaceable events internally, so multiple
-/// revisions of the same (kind, pubkey, d-tag) tuple may exist. This
-/// folds over all matching notes and keeps only the one with the highest
-/// `created_at` for each unique `d` tag value.
-///
-/// Returns a Vec of `NoteKey`s for the winning notes (one per unique d-tag).
-pub fn query_replaceable(ndb: &Ndb, txn: &Transaction, filters: &[Filter]) -> Vec<NoteKey> {
-    query_replaceable_filtered(ndb, txn, filters, |_| true)
-}
-
-/// Like `query_replaceable`, but with a predicate to filter notes.
-///
-/// The predicate is called on the latest revision of each d-tag group.
-/// If it returns false, that d-tag is removed from results (even if an
-/// older revision would have passed).
-pub fn query_replaceable_filtered(
-    ndb: &Ndb,
-    txn: &Transaction,
-    filters: &[Filter],
-    predicate: impl Fn(&nostrdb::Note) -> bool,
-) -> Vec<NoteKey> {
-    // Fold: for each d-tag value, track the latest created_at and optionally
-    // a NoteKey (only if the latest revision passes the predicate).
-    // Notes may arrive in any order from ndb.fold, so we always track the
-    // highest timestamp and only keep a key when that revision is valid.
-    let best = ndb.fold(
-        txn,
-        filters,
-        std::collections::HashMap::<String, (u64, Option<NoteKey>)>::new(),
-        |mut acc, note| {
-            let Some(d_tag) = get_tag_value(&note, "d") else {
-                return acc;
-            };
-
-            let created_at = note.created_at();
-
-            if let Some((existing_ts, _)) = acc.get(d_tag) {
-                if created_at <= *existing_ts {
-                    return acc;
-                }
-            }
-
-            let key = if predicate(&note) {
-                Some(note.key().expect("note key"))
-            } else {
-                None
-            };
-
-            acc.insert(d_tag.to_string(), (created_at, key));
-            acc
-        },
-    );
-
-    match best {
-        Ok(map) => map.into_values().filter_map(|(_, key)| key).collect(),
-        Err(_) => vec![],
-    }
-}
+// `query_replaceable` / `query_replaceable_filtered` now live in `enostr`, so
+// every consumer (calendar sync, Horizon, Dave sessions) resolves replaceable
+// events the same way. Re-exported here for the call sites below and any users
+// of this module. (Eventual home is nostrdb itself.)
+pub use enostr::{query_replaceable, query_replaceable_filtered};
 
 /// Result of loading session messages, including threading info for live events.
 pub struct LoadedSession {

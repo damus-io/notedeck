@@ -7,6 +7,7 @@ pub mod pns;
 mod profile;
 mod pubkey;
 mod relay;
+mod replaceable;
 
 pub use client::{ClientMessage, EventClientMessage};
 pub use error::Error;
@@ -27,6 +28,7 @@ pub use relay::{
     RelayStatus, RelayType, RelayUrlPkgs, SubPass, SubPassGuardian, SubPassRevocation,
     WebsocketConn,
 };
+pub use replaceable::{query_replaceable, query_replaceable_filtered};
 
 pub type Result<T> = std::result::Result<T, error::Error>;
 

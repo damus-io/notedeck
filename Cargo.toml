@@ -19,6 +19,7 @@ members = [
     "crates/notedeck_clndash",
     "crates/notedeck_dashboard",
     "crates/notedeck_horizon",
+    "crates/nostr_calsync",
     "crates/md-stream",
     "crates/tokenator",
     "crates/enostr",
@@ -85,6 +86,7 @@ notedeck_chrome = { path = "crates/notedeck_chrome" }
 notedeck_clndash = { path = "crates/notedeck_clndash" }
 notedeck_dashboard = { path = "crates/notedeck_dashboard" }
 notedeck_horizon = { path = "crates/notedeck_horizon" }
+nostr_calsync = { path = "crates/nostr_calsync" }
 notedeck_columns = { path = "crates/notedeck_columns" }
 notedeck_dave = { path = "crates/notedeck_dave" }
 notedeck_messages = { path = "crates/notedeck_messages" }

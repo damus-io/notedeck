@@ -4970,6 +4970,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr_calsync"
+version = "0.10.0-beta.4"
+dependencies = [
+ "chrono",
+ "enostr",
+ "nostrdb",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "nostrdb"
 version = "0.10.0"
 source = "git+https://github.com/kernelkind/nostrdb-rs?rev=aca2f66e3579dee0c9245e4c66100dd12cd940d6#aca2f66e3579dee0c9245e4c66100dd12cd940d6"
