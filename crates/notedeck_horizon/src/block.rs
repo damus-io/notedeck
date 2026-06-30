@@ -16,6 +16,9 @@ pub(crate) const KIND_TIME_BASED: u64 = 31923;
 /// A single time block on the timeline.
 #[derive(Clone, Debug)]
 pub struct Block {
+    /// The NIP-52 event id, used to re-find this block across a reload (e.g. to
+    /// keep a just-created event selected) and by the edit/move/delete cards.
+    pub id: [u8; 32],
     pub title: String,
     pub start: DateTime<Local>,
     pub end: DateTime<Local>,
@@ -26,6 +29,7 @@ pub struct Block {
 
 impl Block {
     fn new(
+        id: [u8; 32],
         title: &str,
         start: DateTime<Local>,
         end: DateTime<Local>,
@@ -33,12 +37,25 @@ impl Block {
         all_day: bool,
     ) -> Self {
         Self {
+            id,
             title: title.to_owned(),
             start,
             end,
             color,
             all_day,
         }
+    }
+
+    /// A freshly-created time-based block, colored from its event `id` exactly
+    /// as [`from_note`] would once the event round-trips through nostrdb — so an
+    /// optimistic insert and the later reload paint the same block.
+    pub(crate) fn timed(
+        id: [u8; 32],
+        title: &str,
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+    ) -> Self {
+        Self::new(id, title, start, end, color_for(&id), false)
     }
 
     /// Whether this block covers any part of the given local calendar date.
@@ -166,6 +183,7 @@ pub(crate) fn from_note(note: &Note) -> Option<Block> {
     };
 
     Some(Block::new(
+        *note.id(),
         &title,
         start,
         end,
@@ -216,7 +234,7 @@ mod tests {
 
     fn blk(h0: u32, m0: u32, h1: u32, m1: u32) -> Block {
         let at = |h, m| Local.with_ymd_and_hms(2026, 6, 25, h, m, 0).unwrap();
-        Block::new("x", at(h0, m0), at(h1, m1), PALETTE[0], false)
+        Block::new([0; 32], "x", at(h0, m0), at(h1, m1), PALETTE[0], false)
     }
 
     fn lanes(blocks: &[Block]) -> Vec<Lane> {

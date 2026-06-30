@@ -7,8 +7,9 @@
 
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
 use egui::{Align, RichText, Stroke};
-use nostrdb::{Ndb, Subscription, Transaction};
-use notedeck::{AppContext, AppResponse};
+use enostr::{Pubkey, RelayId};
+use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
+use notedeck::{AppContext, AppResponse, PrivateRelaySync, fan_out_event_frame};
 
 use block::Block;
 
@@ -89,6 +90,15 @@ pub struct Horizon {
     blocks: Vec<Block>,
     /// nostrdb subscription for live calendar-event updates.
     sub: Option<Subscription>,
+    /// Event id of a just-created block to re-select after the next reload,
+    /// once the async ingest round-trips it back out of nostrdb.
+    pending_select: Option<[u8; 32]>,
+    /// Cross-device sync of the account's own calendar events over its private
+    /// relays (inbound subscription); resolves [`Self::publish_relays`].
+    private_sync: PrivateRelaySync,
+    /// Private relays resolved by [`Self::private_sync`] this frame, reused as
+    /// the outbound publish targets for events we create. Empty => local-only.
+    publish_relays: Vec<RelayId>,
 }
 
 impl Default for Horizon {
@@ -108,12 +118,20 @@ impl Default for Horizon {
             search: String::new(),
             blocks: Vec::new(),
             sub: None,
+            pending_select: None,
+            private_sync: PrivateRelaySync::new("horizon"),
+            publish_relays: Vec::new(),
         }
     }
 }
 
 impl notedeck::App for Horizon {
     fn update(&mut self, ctx: &mut AppContext<'_>, _egui_ctx: &egui::Context) {
+        // Sync this account's own calendar events across its devices over the
+        // private relays, and remember the resolved set as our publish targets.
+        let author = *ctx.accounts.selected_account_pubkey();
+        self.publish_relays = self.private_sync.update(ctx, calendar_sync_filter(&author));
+
         // Subscribe once, then backfill the calendar events already in the db —
         // a subscription only reports notes indexed *after* it's created.
         if self.sub.is_none() {
@@ -134,8 +152,8 @@ impl notedeck::App for Horizon {
         }
     }
 
-    fn render(&mut self, _ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
-        self.show(ui);
+    fn render(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) -> AppResponse {
+        self.show(ctx, ui);
         AppResponse::none()
     }
 }
@@ -160,11 +178,15 @@ impl Horizon {
             .filter_map(|note| block::from_note(&note))
             .collect();
         self.blocks.sort_by_key(|b| b.start);
-        // A reload can invalidate the old index, so clear the selection.
-        self.selected = None;
+        // A reload can invalidate the old index. Re-find a just-created event by
+        // its id to keep it selected; otherwise clear the now-stale selection.
+        self.selected = self
+            .pending_select
+            .take()
+            .and_then(|id| self.blocks.iter().position(|b| b.id == id));
     }
 
-    fn show(&mut self, ui: &mut egui::Ui) {
+    fn show(&mut self, ctx: &mut AppContext<'_>, ui: &mut egui::Ui) {
         apply_theme(ui);
 
         // Keyboard navigation drives the day view's cursor/selection. Reset the
@@ -172,7 +194,7 @@ impl Horizon {
         self.scroll_to_cursor = None;
         self.scroll_delta = 0.0;
         if self.view == View::Day {
-            self.handle_keys(ui);
+            self.handle_keys(ctx, ui);
         }
 
         egui::TopBottomPanel::top("horizon_toolbar")
@@ -338,7 +360,7 @@ impl Horizon {
     /// positioning, `zi`/`zo` zoom, `gj`/`gk` event hopping, `ah` align to the
     /// hour) and Ctrl-d/Ctrl-u scrolling. No-op while a text field (e.g. the
     /// search box) holds keyboard focus. Mirrors viscal's `on_keypress`.
-    fn handle_keys(&mut self, ui: &egui::Ui) {
+    fn handle_keys(&mut self, ctx: &mut AppContext<'_>, ui: &egui::Ui) {
         use egui::Key;
 
         if ui.memory(|m| m.focused().is_some()) {
@@ -406,6 +428,10 @@ impl Horizon {
                     self.scroll_to_cursor = Some(Align::Center);
                     self.repeat = 1;
                 }
+                // `i` inserts a block at the cursor; `o` opens one below the
+                // selection (viscal's insert / open_below).
+                Key::I => self.insert_at_cursor(ctx),
+                Key::O => self.open_below(ctx),
                 // Chord prefixes wait for a second key.
                 Key::Z | Key::G | Key::A => self.chord = Some(key),
                 _ => {}
@@ -555,12 +581,124 @@ impl Horizon {
         self.selected = None;
     }
 
+    /// `i` — insert a new timed block at the cursor (viscal's `insert_event`).
+    fn insert_at_cursor(&mut self, ctx: &mut AppContext<'_>) {
+        let start = self.cursor;
+        self.create_event(ctx, start, start + Duration::minutes(SELECTION_MINUTES));
+    }
+
+    /// `o` — open a new block immediately below the selection, or at the cursor
+    /// when nothing is selected (viscal's `open_below`; cascading the neighbours
+    /// out of the way is the push-move card).
+    fn open_below(&mut self, ctx: &mut AppContext<'_>) {
+        let start = match self.selected.and_then(|i| self.blocks.get(i)) {
+            Some(b) if !b.all_day => b.end,
+            _ => self.cursor,
+        };
+        self.create_event(ctx, start, start + Duration::minutes(SELECTION_MINUTES));
+    }
+
+    /// Build, ingest and publish a kind-31923 time-based event over
+    /// `[start, end)`, then optimistically place it on the timeline and select
+    /// it so it's ready to edit. No-op (with a log) for a watch-only account.
+    fn create_event(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+    ) {
+        self.repeat = 1;
+
+        // Mutations need a signing key; a watch-only account simply can't write.
+        let Some(secret) = ctx
+            .accounts
+            .selected_filled()
+            .map(|f| f.secret_key.secret_bytes())
+        else {
+            tracing::warn!("horizon: can't create an event with a watch-only account");
+            return;
+        };
+
+        let title = "New event";
+        let d = unique_d_tag(start);
+        let builder = NoteBuilder::new()
+            .content("")
+            .kind(block::KIND_TIME_BASED as u32)
+            .start_tag()
+            .tag_str("d")
+            .tag_str(&d)
+            .start_tag()
+            .tag_str("title")
+            .tag_str(title)
+            .start_tag()
+            .tag_str("start")
+            .tag_str(&start.timestamp().to_string())
+            .start_tag()
+            .tag_str("end")
+            .tag_str(&end.timestamp().to_string());
+
+        let Some(note) = builder.sign(&secret).build() else {
+            tracing::error!("horizon: failed to build calendar note");
+            return;
+        };
+        let id = *note.id();
+
+        // Ingest into the local nostrdb, then fan the same frame out to the
+        // account's private relays so the event syncs to its other devices.
+        let json = match enostr::ClientMessage::event(&note).and_then(|m| m.to_json()) {
+            Ok(json) => json,
+            Err(err) => {
+                tracing::error!("horizon: failed to frame calendar note: {err}");
+                return;
+            }
+        };
+        if let Err(err) = ctx
+            .ndb
+            .process_event_with(&json, IngestMetadata::new().client(true))
+        {
+            tracing::error!("horizon: failed to ingest calendar note: {err}");
+            return;
+        }
+        fan_out_event_frame(
+            &mut ctx.remote.publisher_explicit(),
+            &json,
+            &self.publish_relays,
+        );
+
+        // Show it immediately rather than waiting for the async ingest to round
+        // back through the subscription; `pending_select` keeps it selected once
+        // the reload replaces this optimistic copy with the stored one.
+        self.blocks.push(Block::timed(id, title, start, end));
+        self.blocks.sort_by_key(|b| b.start);
+        self.cursor = start;
+        self.selected = self.blocks.iter().position(|b| b.id == id);
+        self.pending_select = Some(id);
+        self.scroll_to_cursor = Some(Align::Center);
+    }
+
     /// First timed (non-all-day) block whose span overlaps `[start, end)`.
     fn block_overlapping(&self, start: DateTime<Local>, end: DateTime<Local>) -> Option<usize> {
         self.blocks
             .iter()
             .position(|b| !b.all_day && b.start < end && start < b.end)
     }
+}
+
+/// The inbound private-sync filter: this account's own NIP-52 calendar events.
+fn calendar_sync_filter(author: &Pubkey) -> Filter {
+    Filter::new()
+        .authors([author.bytes()])
+        .kinds([block::KIND_DATE_BASED, block::KIND_TIME_BASED])
+        .limit(5000)
+        .build()
+}
+
+/// A stable, unique `d`-tag (NIP-52 UID) for a newly created event. The block's
+/// start time plus a nanosecond stamp keeps two same-second inserts distinct
+/// without pulling in a random-id dependency.
+fn unique_d_tag(start: DateTime<Local>) -> String {
+    let nanos = Local::now().timestamp_nanos_opt().unwrap_or(0);
+    format!("horizon-{}-{:x}", start.timestamp(), nanos)
 }
 
 /// Map a digit key 2–9 to its repeat-count value (1 is the implicit default,

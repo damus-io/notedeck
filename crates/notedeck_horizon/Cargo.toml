@@ -9,10 +9,10 @@ chrono = { workspace = true }
 nostrdb = { workspace = true }
 notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
+enostr = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["snapshot", "wgpu"] }
 notedeck = { workspace = true, features = ["snapshot-testing"] }
-enostr = { workspace = true }
 tempfile = { workspace = true }
