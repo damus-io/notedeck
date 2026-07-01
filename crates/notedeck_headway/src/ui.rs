@@ -72,6 +72,9 @@ pub struct BoardUiState {
     /// reads and clears it to act on it; the new-board *composer* is just another
     /// [`InlineEdit`], sharing `edit_text`.
     nav: Option<BoardNav>,
+    /// A cross-board card request raised this frame from a card's context menu
+    /// (move to / link onto another board). The app reads and clears it to act.
+    card_move: Option<CardBoardMove>,
     /// Free-text board filter. Empty means no filtering. Plain words match a
     /// card's title/description/labels (all must match, case-insensitive); a
     /// `label:foo` token narrows to cards carrying a label containing `foo`.
@@ -100,6 +103,12 @@ impl BoardUiState {
     /// the app to act on. Clears it so it fires once.
     pub fn take_nav(&mut self) -> Option<BoardNav> {
         self.nav.take()
+    }
+
+    /// Take this frame's cross-board card request (move or link), if any, for the
+    /// app to act on. Clears it so it fires once.
+    pub fn take_card_move(&mut self) -> Option<CardBoardMove> {
+        self.card_move.take()
     }
 }
 
@@ -143,6 +152,25 @@ pub enum BoardNav {
     Switch(String),
     /// Create (seed) a new board with this display title, then switch to it.
     Create(String),
+}
+
+/// Whether a cross-board card request relocates the card or shares it.
+#[derive(Clone, Copy)]
+pub enum CardBoardOp {
+    /// Relocate the card to the target board (remove it from the current one).
+    Move,
+    /// Also place the card on the target board, keeping it on the current one —
+    /// membership is placement-driven, so the same issue lives on both.
+    Link,
+}
+
+/// A cross-board card request raised from a card's context menu, in
+/// [`BoardUiState::card_move`] for the app to act on. The `card` moves to (or is
+/// linked onto) the board with slug `to_board`.
+pub struct CardBoardMove {
+    pub card: NoteId,
+    pub to_board: String,
+    pub op: CardBoardOp,
 }
 
 /// How the detail sheet shows an editable field (title or description): the
@@ -357,6 +385,7 @@ pub fn board_ui(
                                 ui,
                                 theme,
                                 view,
+                                boards,
                                 state,
                                 &filter,
                                 col_idx,
@@ -472,6 +501,7 @@ fn column_ui(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
     view: &BoardView,
+    boards: &[BoardSummary],
     state: &mut BoardUiState,
     filter: &CardFilter,
     col_idx: usize,
@@ -526,7 +556,10 @@ fn column_ui(
                     .id_salt(("headway-col", col_idx))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        cards_drop_zone(ui, theme, column, state, filter, col_idx, action, clicked);
+                        cards_drop_zone(
+                            ui, theme, &view.id, boards, column, state, filter, col_idx, action,
+                            clicked,
+                        );
                     });
             });
         });
@@ -537,6 +570,8 @@ fn column_ui(
 fn cards_drop_zone(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
+    source_board: &str,
+    boards: &[BoardSummary],
     column: &ColumnView,
     state: &mut BoardUiState,
     filter: &CardFilter,
@@ -621,6 +656,30 @@ fn cards_drop_zone(
                         }
                         ui.close_menu();
                     }
+                    // Cross-board: relocate (move) or share (link) the card onto
+                    // another of the account's boards. Membership is
+                    // placement-driven, so a link keeps the current board too.
+                    if boards.iter().any(|b| b.id != source_board) {
+                        ui.separator();
+                        card_board_submenu(
+                            ui,
+                            "Move to board",
+                            card.id,
+                            source_board,
+                            boards,
+                            state,
+                            CardBoardOp::Move,
+                        );
+                        card_board_submenu(
+                            ui,
+                            "Link to board",
+                            card.id,
+                            source_board,
+                            boards,
+                            state,
+                            CardBoardOp::Link,
+                        );
+                    }
                 });
 
                 // Hover affordance: cards are clickable, so highlight the border and
@@ -698,6 +757,32 @@ fn cards_drop_zone(
             to_row: row,
         });
     }
+}
+
+/// A card context-menu submenu (`Move to board` / `Link to board`) listing every
+/// board except the current `source_board`. Picking one raises a
+/// [`CardBoardMove`] on `state` for the app to act on.
+fn card_board_submenu(
+    ui: &mut egui::Ui,
+    label: &str,
+    card: NoteId,
+    source_board: &str,
+    boards: &[BoardSummary],
+    state: &mut BoardUiState,
+    op: CardBoardOp,
+) {
+    ui.menu_button(label, |ui| {
+        for board in boards.iter().filter(|b| b.id != source_board) {
+            if ui.button(&board.title).clicked() {
+                state.card_move = Some(CardBoardMove {
+                    card,
+                    to_board: board.id.clone(),
+                    op,
+                });
+                ui.close_menu();
+            }
+        }
+    });
 }
 
 /// Render a single card as a styled, draggable surface.

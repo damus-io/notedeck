@@ -13,7 +13,7 @@ pub use headway::{event, store};
 
 mod ui;
 
-use ui::{BoardNav, board_ui, empty_state};
+use ui::{BoardNav, CardBoardOp, board_ui, empty_state};
 pub use ui::{BoardUiState, board_inline_ui, card_inline_ui, issue_inline_ui};
 
 use event::{BoardReducer, BoardView};
@@ -221,6 +221,14 @@ impl BoardSync {
         self.view.as_ref()
     }
 
+    /// Fold an *arbitrary* board out of the live reducer (not just the cached
+    /// current one) — used to resolve the target of a cross-board card move,
+    /// whose view the current cache doesn't hold. Returns `None` before the first
+    /// fold or when no such board exists.
+    fn board_view(&self, author: &Pubkey, board_id: &str) -> Option<BoardView> {
+        event::pick_board(self.reducer.as_ref()?, author, board_id)
+    }
+
     /// Re-fold the whole event history into a fresh reducer (seeding or after an
     /// account switch) and pick out our board.
     fn reload(&mut self, ndb: &Ndb, author: &Pubkey, board_id: &str) {
@@ -377,6 +385,53 @@ impl App for Headway {
                     }
                 }
             }
+        }
+
+        // A cross-board card request (move or link, raised from a card's context
+        // menu): resolve the target board's view out of the same reducer and
+        // link/relocate the card. Needs a signing key, and silently no-ops if the
+        // target board can't be folded (e.g. it was just deleted).
+        if let (Some(mv), Some(secret)) = (self.state.take_card_move(), &signer)
+            && let Some(target_view) = self.sync.board_view(&author, &mv.to_board)
+        {
+            let source_view = self.sync.view().expect("view present");
+            let source = store::BoardRef {
+                id: &self.board_id,
+                view: source_view,
+            };
+            let target = store::BoardRef {
+                id: &mv.to_board,
+                view: &target_view,
+            };
+            let mut publisher = PrivateRelayPublisher {
+                api: ctx.remote.publisher_explicit(),
+                relays: private_relays.clone(),
+            };
+            match mv.op {
+                CardBoardOp::Move => {
+                    store::move_card_between_boards(
+                        ctx.ndb,
+                        source,
+                        target,
+                        &author,
+                        secret,
+                        mv.card,
+                        &mut publisher,
+                    );
+                }
+                CardBoardOp::Link => {
+                    store::link_card(
+                        ctx.ndb,
+                        source,
+                        target,
+                        &author,
+                        secret,
+                        mv.card,
+                        &mut publisher,
+                    );
+                }
+            }
+            self.wake();
         }
 
         // Apply the collected action by ingesting events locally. Mutations need
