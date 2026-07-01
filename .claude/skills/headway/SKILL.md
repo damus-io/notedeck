@@ -56,6 +56,22 @@ only) → `$HEADWAY_BOARD` → the board stored by `headway board <id>` → the 
 without changing the persisted selection. The current board lives in
 `<data-dir>/headway-cli/board`.
 
+> **The persisted board is shared mutable state — scope your edits with
+> `--board`.** Because the current board is stored on disk, *another session, a
+> different terminal, or an earlier you* can switch it between your commands. A
+> command then silently targets whatever board is current, and an edit aimed at a
+> card on a different board just fails with **"no card matching"** (cards are
+> scoped per board). Two habits avoid this:
+>
+> - When you know which board the work belongs to, pass `--board <id>` on every
+>   command (read *and* edit) rather than relying on the persisted selection —
+>   e.g. `headway --board headway show` / `headway --board headway move … --col done`.
+>   This is stateless and can't be raced.
+> - If you do rely on the persisted board, run `headway board` (no arg) first to
+>   confirm the `*`-marked current board is the one you mean, and treat a sudden
+>   "no card matching" on an id you just read as a sign the board switched —
+>   re-check with `headway board` before retrying.
+
 ## The golden rule: `show` before you edit
 
 Cards are addressed by their **event id**, and columns by **id or
