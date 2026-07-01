@@ -11,6 +11,7 @@ notedeck = { workspace = true }
 notedeck_ui = { workspace = true }
 enostr = { workspace = true }
 nostr_calsync = { workspace = true }
+hex = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

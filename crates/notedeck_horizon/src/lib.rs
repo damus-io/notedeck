@@ -5,10 +5,12 @@
 //! rendered in a three-pane calendar: a mini-month + agenda sidebar, a styled
 //! day/week timeline, and an inspector for the selected event.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Timelike};
 use egui::{Align, RichText, Stroke};
 use enostr::{Pubkey, RelayId};
-use nostrdb::{Filter, IngestMetadata, Ndb, NoteBuilder, Subscription, Transaction};
+use nostrdb::{Filter, IngestMetadata, Ndb, Note, NoteBuilder, Subscription, Transaction};
 use notedeck::{AppContext, AppResponse, PrivateRelaySync, fan_out_event_frame};
 
 use block::Block;
@@ -54,6 +56,11 @@ impl View {
 /// (viscal's `timeblock_size`). Resizing it is a later card.
 const SELECTION_MINUTES: i64 = 30;
 
+/// The finest grain a block moves or resizes by, per `repeat` (viscal's
+/// `SMALLEST_TIMEBLOCK`). Coarser than [`SELECTION_MINUTES`] navigation on
+/// purpose: nudging an event should feel precise.
+const MOVE_MINUTES: i64 = 5;
+
 /// Default / min / max pixels per hour for the day grid (viscal's `zoom`).
 const HOUR_HEIGHT_DEFAULT: f32 = 56.0;
 const HOUR_HEIGHT_MIN: f32 = 22.0;
@@ -93,6 +100,10 @@ pub struct Horizon {
     /// Event id of a just-created block to re-select after the next reload,
     /// once the async ingest round-trips it back out of nostrdb.
     pending_select: Option<[u8; 32]>,
+    /// Event ids we've published a NIP-09 deletion for this session. nostrdb
+    /// doesn't yet drop deleted notes, so we filter them out of every [`reload`]
+    /// ourselves to keep an `x`/`dd` delete from resurrecting on the next poll.
+    deleted: HashSet<[u8; 32]>,
     /// Cross-device sync of the account's own calendar events over its private
     /// relays (inbound subscription); resolves [`Self::publish_relays`].
     private_sync: PrivateRelaySync,
@@ -126,6 +137,7 @@ impl Default for Horizon {
             blocks: Vec::new(),
             sub: None,
             pending_select: None,
+            deleted: HashSet::new(),
             private_sync: PrivateRelaySync::new("horizon"),
             publish_relays: Vec::new(),
             calsync: None,
@@ -223,6 +235,7 @@ impl Horizon {
             .iter()
             .filter_map(|r| ndb.get_note_by_key(&txn, r.note_key).ok())
             .filter_map(|note| block::from_note(&note))
+            .filter(|b| !self.deleted.contains(&b.id))
             .collect();
         self.blocks.sort_by_key(|b| b.start);
         // A reload can invalidate the old index. Re-find a just-created event by
@@ -444,7 +457,7 @@ impl Horizon {
             // falls through to normal handling (as in viscal). `take()` always
             // clears the pending chord, even when the pair doesn't match.
             if let Some(first) = self.chord.take()
-                && self.run_chord(first, key)
+                && self.run_chord(ctx, first, key)
             {
                 self.repeat = 1;
                 continue;
@@ -468,19 +481,30 @@ impl Horizon {
             }
 
             match key {
+                // Shift-J/K move the *selected event* by `repeat` steps; plain
+                // j/k (and the arrows) move the cursor (viscal's J/K vs j/k).
+                Key::J if mods.shift => self.move_selected(ctx, 1),
+                Key::K if mods.shift => self.move_selected(ctx, -1),
                 Key::J | Key::ArrowDown => self.repeat_move(1),
                 Key::K | Key::ArrowUp => self.repeat_move(-1),
+                // `t` jumps the view to now; `T` moves the selected event to now.
+                Key::T if mods.shift => self.move_selected_to_now(ctx),
                 Key::T => {
                     self.cursor_now();
                     self.scroll_to_cursor = Some(Align::Center);
                     self.repeat = 1;
                 }
+                // `v` grows the selected event's end; `V` shrinks it.
+                Key::V if mods.shift => self.resize_selected(ctx, -1),
+                Key::V => self.resize_selected(ctx, 1),
+                // `x` deletes the selected event.
+                Key::X => self.delete_selected(ctx),
                 // `i` inserts a block at the cursor; `o` opens one below the
                 // selection (viscal's insert / open_below).
                 Key::I => self.insert_at_cursor(ctx),
                 Key::O => self.open_below(ctx),
-                // Chord prefixes wait for a second key.
-                Key::Z | Key::G | Key::A => self.chord = Some(key),
+                // Chord prefixes wait for a second key (`dd` deletes + pulls up).
+                Key::Z | Key::G | Key::A | Key::D => self.chord = Some(key),
                 _ => {}
             }
         }
@@ -498,7 +522,7 @@ impl Horizon {
 
     /// Complete a two-key chord. Returns `false` if `(first, second)` isn't a
     /// known chord, so the caller can handle `second` as a fresh key.
-    fn run_chord(&mut self, first: egui::Key, second: egui::Key) -> bool {
+    fn run_chord(&mut self, ctx: &mut AppContext<'_>, first: egui::Key, second: egui::Key) -> bool {
         use egui::Key::*;
         let n = self.repeat.max(1) as i32;
         match (first, second) {
@@ -510,7 +534,8 @@ impl Horizon {
             (G, J) => self.select_event(1, n),
             (G, K) => self.select_event(-1, n),
             (A, H) => self.align_hour(),
-            // `dd` (delete) is a write op handled by the create/edit/delete card.
+            // `dd` deletes the selected event and pulls the day's later events up.
+            (D, D) => self.delete_timeblock(ctx),
             _ => return false,
         }
         true
@@ -571,6 +596,7 @@ impl Horizon {
             Some(Key::Z) => "z",
             Some(Key::G) => "g",
             Some(Key::A) => "a",
+            Some(Key::D) => "d",
             _ => "",
         });
         s
@@ -657,11 +683,7 @@ impl Horizon {
         self.repeat = 1;
 
         // Mutations need a signing key; a watch-only account simply can't write.
-        let Some(secret) = ctx
-            .accounts
-            .selected_filled()
-            .map(|f| f.secret_key.secret_bytes())
-        else {
+        let Some(secret) = account_secret(ctx) else {
             tracing::warn!("horizon: can't create an event with a watch-only account");
             return;
         };
@@ -690,15 +712,27 @@ impl Horizon {
         };
         let id = *note.id();
 
-        // Ingest into the local nostrdb, then fan the same frame out to the
-        // account's private relays so the event syncs to its other devices.
-        let json = match enostr::ClientMessage::event(&note).and_then(|m| m.to_json()) {
-            Ok(json) => json,
-            Err(err) => {
-                tracing::error!("horizon: failed to frame calendar note: {err}");
-                return;
-            }
+        // Ingest locally and fan out to the account's private relays.
+        let Some(json) = frame_note(&note) else {
+            return;
         };
+        self.publish_json(ctx, json);
+
+        // Show it immediately rather than waiting for the async ingest to round
+        // back through the subscription; `pending_select` keeps it selected once
+        // the reload replaces this optimistic copy with the stored one.
+        self.blocks.push(Block::timed(id, &d, title, start, end));
+        self.blocks.sort_by_key(|b| b.start);
+        self.cursor = start;
+        self.selected = self.blocks.iter().position(|b| b.id == id);
+        self.pending_select = Some(id);
+        self.scroll_to_cursor = Some(Align::Center);
+    }
+
+    /// Ingest a pre-framed `["EVENT", …]` json into the local nostrdb, then fan
+    /// the same frame out to the account's private relays so it syncs across the
+    /// account's devices. Shared by every create/edit/delete write path.
+    fn publish_json(&mut self, ctx: &mut AppContext<'_>, json: String) {
         if let Err(err) = ctx
             .ndb
             .process_event_with(&json, IngestMetadata::new().client(true))
@@ -711,16 +745,231 @@ impl Horizon {
             &json,
             &self.publish_relays,
         );
+    }
 
-        // Show it immediately rather than waiting for the async ingest to round
-        // back through the subscription; `pending_select` keeps it selected once
-        // the reload replaces this optimistic copy with the stored one.
-        self.blocks.push(Block::timed(id, title, start, end));
+    /// `J`/`K` — shift the selected timed event by `rel` × `repeat` × 5 min,
+    /// following it onto another day if it crosses midnight.
+    fn move_selected(&mut self, ctx: &mut AppContext<'_>, rel: i64) {
+        let repeat = self.repeat.max(1) as i64;
+        self.repeat = 1;
+        let Some(i) = self.selected.filter(|&i| !self.blocks[i].all_day) else {
+            return;
+        };
+        let delta = Duration::minutes(MOVE_MINUTES * repeat * rel);
+        let (start, end) = (self.blocks[i].start + delta, self.blocks[i].end + delta);
+        self.focus = with_date(self.focus, start.date_naive());
+        self.cal_month = sidebar::month_of(self.focus);
+        self.republish_times(ctx, i, start, end);
+    }
+
+    /// `v`/`V` — grow (`sign > 0`) or shrink the selected event's end by
+    /// `repeat` × 5 min, never below a single 5-minute block.
+    fn resize_selected(&mut self, ctx: &mut AppContext<'_>, sign: i64) {
+        let repeat = self.repeat.max(1) as i64;
+        self.repeat = 1;
+        let Some(i) = self.selected.filter(|&i| !self.blocks[i].all_day) else {
+            return;
+        };
+        let start = self.blocks[i].start;
+        let end = self.blocks[i].end + Duration::minutes(MOVE_MINUTES * repeat * sign);
+        // Keep at least one 5-minute block so the event never inverts.
+        if end < start + Duration::minutes(MOVE_MINUTES) {
+            return;
+        }
+        self.republish_times(ctx, i, start, end);
+    }
+
+    /// `T` — move the selected event to now (start snapped to 5 min), keeping
+    /// its duration (viscal's `move_event_now`).
+    fn move_selected_to_now(&mut self, ctx: &mut AppContext<'_>) {
+        self.repeat = 1;
+        let Some(i) = self.selected.filter(|&i| !self.blocks[i].all_day) else {
+            return;
+        };
+        let start = snap_to_step(Local::now());
+        let end = start + (self.blocks[i].end - self.blocks[i].start);
+        self.focus = start;
+        self.cal_month = sidebar::month_of(start);
+        self.republish_times(ctx, i, start, end);
+    }
+
+    /// Re-publish block `i` as a fresh kind-31923 addressable replacement over
+    /// `[start, end)`, preserving its `d` tag, title, content and any other tags
+    /// (location, hashtags…) so only the times change. Then optimistically
+    /// update the block in place and keep it selected across the reload.
+    fn republish_times(
+        &mut self,
+        ctx: &mut AppContext<'_>,
+        i: usize,
+        start: DateTime<Local>,
+        end: DateTime<Local>,
+    ) {
+        let Some(secret) = account_secret(ctx) else {
+            tracing::warn!("horizon: can't edit an event with a watch-only account");
+            return;
+        };
+
+        // Build and frame the replacement while the txn (and the borrowed
+        // original note) are alive, handing back only owned data.
+        let framed = {
+            let txn = match Transaction::new(ctx.ndb) {
+                Ok(txn) => txn,
+                Err(err) => {
+                    tracing::error!("horizon: txn failed: {err}");
+                    return;
+                }
+            };
+            let Ok(orig) = ctx.ndb.get_note_by_id(&txn, &self.blocks[i].id) else {
+                tracing::error!("horizon: original note is gone; skipping edit");
+                return;
+            };
+
+            // Copy every tag except start/end, then re-add those with new values
+            // so the replacement carries exactly one fresh start and end.
+            let mut builder = NoteBuilder::new()
+                .content(orig.content())
+                .kind(block::KIND_TIME_BASED as u32);
+            for tag in orig.tags() {
+                if matches!(tag.get_str(0), Some("start") | Some("end")) {
+                    continue;
+                }
+                builder = builder.start_tag();
+                for idx in 0..tag.count() {
+                    if let Some(s) = tag.get_str(idx) {
+                        builder = builder.tag_str(s);
+                    }
+                }
+            }
+            builder = builder
+                .start_tag()
+                .tag_str("start")
+                .tag_str(&start.timestamp().to_string())
+                .start_tag()
+                .tag_str("end")
+                .tag_str(&end.timestamp().to_string());
+
+            let Some(note) = builder.sign(&secret).build() else {
+                tracing::error!("horizon: failed to build edited note");
+                return;
+            };
+            frame_note(&note).map(|json| (*note.id(), json))
+        };
+        let Some((new_id, json)) = framed else {
+            return;
+        };
+
+        self.publish_json(ctx, json);
+
+        // Point the block at its new version and keep it selected once the
+        // async reload replaces this optimistic copy with the stored one.
+        let block = &mut self.blocks[i];
+        block.id = new_id;
+        block.start = start;
+        block.end = end;
         self.blocks.sort_by_key(|b| b.start);
         self.cursor = start;
-        self.selected = self.blocks.iter().position(|b| b.id == id);
-        self.pending_select = Some(id);
+        self.selected = self.blocks.iter().position(|b| b.id == new_id);
+        self.pending_select = Some(new_id);
         self.scroll_to_cursor = Some(Align::Center);
+    }
+
+    /// `x` — delete the selected event, then re-home the selection on whatever
+    /// now sits under the cursor.
+    fn delete_selected(&mut self, ctx: &mut AppContext<'_>) {
+        self.repeat = 1;
+        let Some(i) = self.selected else {
+            return;
+        };
+        self.delete_block(ctx, i);
+        self.reselect_at_cursor();
+    }
+
+    /// `dd` — delete the selected event and pull the same day's later events up
+    /// by the deleted event's duration to close the gap (viscal's
+    /// `delete_timeblock`).
+    fn delete_timeblock(&mut self, ctx: &mut AppContext<'_>) {
+        self.repeat = 1;
+        let Some(i) = self.selected else {
+            return;
+        };
+        let gone = self.blocks[i].clone();
+        let span = gone.end - gone.start;
+
+        // Snapshot the later same-day timed events *before* deleting, since the
+        // delete and each pull-up re-index and re-sort `blocks`.
+        let day = gone.start.date_naive();
+        let later: Vec<[u8; 32]> = self
+            .blocks
+            .iter()
+            .filter(|b| {
+                b.id != gone.id && !b.all_day && b.start.date_naive() == day && b.start >= gone.end
+            })
+            .map(|b| b.id)
+            .collect();
+
+        self.delete_block(ctx, i);
+        for id in later {
+            if let Some(j) = self.blocks.iter().position(|b| b.id == id) {
+                let (s, e) = (self.blocks[j].start - span, self.blocks[j].end - span);
+                self.republish_times(ctx, j, s, e);
+            }
+        }
+
+        // The pull-ups moved the cursor/selection around; settle it back on the
+        // slot the deleted event vacated.
+        self.cursor = gone.start;
+        self.reselect_at_cursor();
+        self.scroll_to_cursor = Some(Align::Center);
+    }
+
+    /// Publish a NIP-09 deletion for block `i`, drop it from the timeline, and
+    /// remember its id so [`reload`] won't resurrect it (nostrdb keeps deleted
+    /// notes). Leaves the selection for the caller to fix up.
+    fn delete_block(&mut self, ctx: &mut AppContext<'_>, i: usize) {
+        let Some(secret) = account_secret(ctx) else {
+            tracing::warn!("horizon: can't delete an event with a watch-only account");
+            return;
+        };
+        let block = self.blocks[i].clone();
+        let author = *ctx.accounts.selected_account_pubkey();
+
+        // NIP-09: reference the event id (`e`) and, since it's addressable, its
+        // `kind:pubkey:d` address (`a`) plus the deleted kind (`k`).
+        let addr = format!("{}:{}:{}", block::KIND_TIME_BASED, author.hex(), block.uid);
+        let builder = NoteBuilder::new()
+            .content("")
+            .kind(5)
+            .start_tag()
+            .tag_str("e")
+            .tag_str(&hex::encode(block.id))
+            .start_tag()
+            .tag_str("a")
+            .tag_str(&addr)
+            .start_tag()
+            .tag_str("k")
+            .tag_str(&block::KIND_TIME_BASED.to_string());
+
+        let Some(note) = builder.sign(&secret).build() else {
+            tracing::error!("horizon: failed to build deletion note");
+            return;
+        };
+        let Some(json) = frame_note(&note) else {
+            return;
+        };
+        self.publish_json(ctx, json);
+
+        self.deleted.insert(block.id);
+        self.blocks.remove(i);
+    }
+
+    /// Re-home the selection on whatever timed event overlaps the cursor window,
+    /// clearing it when the cursor sits on empty grid. Also pins `pending_select`
+    /// so the choice survives the reload our own delete/edit write triggers —
+    /// [`reload`] otherwise resets the selection from `pending_select` alone.
+    fn reselect_at_cursor(&mut self) {
+        let end = self.cursor + Duration::minutes(SELECTION_MINUTES);
+        self.selected = self.block_overlapping(self.cursor, end);
+        self.pending_select = self.selected.map(|i| self.blocks[i].id);
     }
 
     /// First timed (non-all-day) block whose span overlaps `[start, end)`.
@@ -738,6 +987,26 @@ fn calendar_sync_filter(author: &Pubkey) -> Filter {
         .kinds([block::KIND_DATE_BASED, block::KIND_TIME_BASED])
         .limit(5000)
         .build()
+}
+
+/// The selected account's signing key, or `None` for a watch-only account
+/// (which can't create, edit or delete events).
+fn account_secret(ctx: &AppContext<'_>) -> Option<[u8; 32]> {
+    ctx.accounts
+        .selected_filled()
+        .map(|f| f.secret_key.secret_bytes())
+}
+
+/// Serialize a signed note into a `["EVENT", …]` client frame for ingestion and
+/// relay publish, logging and returning `None` on the (unexpected) failure.
+fn frame_note(note: &Note) -> Option<String> {
+    match enostr::ClientMessage::event(note).and_then(|m| m.to_json()) {
+        Ok(json) => Some(json),
+        Err(err) => {
+            tracing::error!("horizon: failed to frame note: {err}");
+            None
+        }
+    }
 }
 
 /// A stable, unique `d`-tag (NIP-52 UID) for a newly created event. The block's

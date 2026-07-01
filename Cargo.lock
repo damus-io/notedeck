@@ -5489,6 +5489,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "enostr",
+ "hex",
  "nostr_calsync",
  "nostrdb",
  "notedeck",

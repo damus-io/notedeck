@@ -16,9 +16,14 @@ pub(crate) const KIND_TIME_BASED: u64 = 31923;
 /// A single time block on the timeline.
 #[derive(Clone, Debug)]
 pub struct Block {
-    /// The NIP-52 event id, used to re-find this block across a reload (e.g. to
-    /// keep a just-created event selected) and by the edit/move/delete cards.
+    /// The NIP-52 event id of the block's current version. This changes every
+    /// time the event is re-published (move/resize/edit mint a fresh addressable
+    /// replacement), so identity that must survive an edit keys on [`Self::uid`].
     pub id: [u8; 32],
+    /// The NIP-52 `d` tag (addressable UID): the stable identity of the event
+    /// across re-publishes. Needed to build the replacement / deletion events
+    /// and to keep a block's color fixed while it's moved or resized.
+    pub uid: String,
     pub title: String,
     pub start: DateTime<Local>,
     pub end: DateTime<Local>,
@@ -30,6 +35,7 @@ pub struct Block {
 impl Block {
     fn new(
         id: [u8; 32],
+        uid: String,
         title: &str,
         start: DateTime<Local>,
         end: DateTime<Local>,
@@ -38,6 +44,7 @@ impl Block {
     ) -> Self {
         Self {
             id,
+            uid,
             title: title.to_owned(),
             start,
             end,
@@ -46,16 +53,17 @@ impl Block {
         }
     }
 
-    /// A freshly-created time-based block, colored from its event `id` exactly
-    /// as [`from_note`] would once the event round-trips through nostrdb — so an
-    /// optimistic insert and the later reload paint the same block.
+    /// A freshly-created time-based block, colored from its `d` tag exactly as
+    /// [`from_note`] would once the event round-trips through nostrdb — so an
+    /// optimistic insert, a later edit, and the reload all paint the same block.
     pub(crate) fn timed(
         id: [u8; 32],
+        uid: &str,
         title: &str,
         start: DateTime<Local>,
         end: DateTime<Local>,
     ) -> Self {
-        Self::new(id, title, start, end, color_for(&id), false)
+        Self::new(id, uid.to_owned(), title, start, end, color_for(uid), false)
     }
 
     /// Whether this block covers any part of the given local calendar date.
@@ -154,6 +162,7 @@ pub(crate) fn calendar_filters() -> Vec<Filter> {
 /// Build a [`Block`] from a NIP-52 calendar note, or `None` if it isn't a
 /// calendar event we can place on the timeline (missing/unparseable `start`).
 pub(crate) fn from_note(note: &Note) -> Option<Block> {
+    let uid = tag_value(note, "d").unwrap_or_default().to_owned();
     let title = tag_value(note, "title")
         .or_else(|| tag_value(note, "name"))
         .filter(|s| !s.is_empty())
@@ -182,12 +191,14 @@ pub(crate) fn from_note(note: &Note) -> Option<Block> {
         _ => return None,
     };
 
+    let color = color_for(&uid);
     Some(Block::new(
         *note.id(),
+        uid,
         &title,
         start,
         end,
-        color_for(note.id()),
+        color,
         all_day,
     ))
 }
@@ -224,8 +235,11 @@ const PALETTE: [Color32; 6] = [
     Color32::from_rgb(0x63, 0x66, 0xF1), // indigo
 ];
 
-fn color_for(id: &[u8; 32]) -> Color32 {
-    PALETTE[id[0] as usize % PALETTE.len()]
+/// Pick a stable palette color from the event's `d` tag, so a block keeps its
+/// color as it's moved, resized or edited (each of which mints a new event id).
+fn color_for(uid: &str) -> Color32 {
+    let hash = uid.bytes().fold(0u16, |acc, b| acc.wrapping_add(b as u16));
+    PALETTE[hash as usize % PALETTE.len()]
 }
 
 #[cfg(test)]
@@ -234,7 +248,15 @@ mod tests {
 
     fn blk(h0: u32, m0: u32, h1: u32, m1: u32) -> Block {
         let at = |h, m| Local.with_ymd_and_hms(2026, 6, 25, h, m, 0).unwrap();
-        Block::new([0; 32], "x", at(h0, m0), at(h1, m1), PALETTE[0], false)
+        Block::new(
+            [0; 32],
+            String::new(),
+            "x",
+            at(h0, m0),
+            at(h1, m1),
+            PALETTE[0],
+            false,
+        )
     }
 
     fn lanes(blocks: &[Block]) -> Vec<Lane> {
