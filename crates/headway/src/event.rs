@@ -674,8 +674,9 @@ pub struct BoardView {
 }
 
 /// Render `view` as a stable, machine-readable JSON value: a curated schema for
-/// external tooling (e.g. the CLI's `--json`) with hex ids, independent of the
-/// internal view types.
+/// external tooling (e.g. the CLI's `--json`) with hex ids plus the `words`
+/// word-id used to address cards/comments, independent of the internal view
+/// types.
 pub fn board_json(view: &BoardView) -> serde_json::Value {
     serde_json::json!({
         "id": view.id,
@@ -698,6 +699,7 @@ pub fn board_json(view: &BoardView) -> serde_json::Value {
 pub fn card_json(card: &CardView) -> serde_json::Value {
     serde_json::json!({
         "id": card.id.hex(),
+        "words": crate::wordid::encode(card.id.bytes()),
         "author": Pubkey::new(card.author).hex(),
         "title": card.title,
         "description": card.description,
@@ -711,6 +713,7 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
 pub fn comment_json(comment: &CommentView) -> serde_json::Value {
     serde_json::json!({
         "id": comment.id.hex(),
+        "words": crate::wordid::encode(comment.id.bytes()),
         "author": Pubkey::new(comment.author).hex(),
         "parent": comment.parent.map(|p| p.hex()),
         "body": comment.body,
