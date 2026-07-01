@@ -9,16 +9,33 @@ use super::{
 
 static SELECTED_PUBKEY_FILE_NAME: &str = "selected_pubkey";
 
-/// An OS agnostic key storage implementation backed by the operating system's secure store.
+/// Account key storage.
+///
+/// By default secrets are written to the account file on disk alongside the
+/// rest of the account (`keyring` is `None`). Opt into the operating system's
+/// secure store (keychain) via [`AccountStorage::with_keystore`], in which case
+/// secrets are kept out of the on-disk account files.
 #[derive(Debug, Clone)]
 pub struct AccountStorage {
     accounts_directory: Directory,
     selected_key_directory: Directory,
-    keyring: KeyringStore,
+    keyring: Option<KeyringStore>,
 }
 
 impl AccountStorage {
+    /// File-based storage: the full keypair (including any secret) is persisted
+    /// to the accounts directory. This is the default.
     pub fn new(accounts_directory: Directory, selected_key_directory: Directory) -> Self {
+        Self {
+            accounts_directory,
+            selected_key_directory,
+            keyring: None,
+        }
+    }
+
+    /// Storage backed by the OS secure store (keychain). Secrets are stored in
+    /// the keyring and stripped from the on-disk account files.
+    pub fn with_keystore(accounts_directory: Directory, selected_key_directory: Directory) -> Self {
         Self::with_keyring(
             accounts_directory,
             selected_key_directory,
@@ -34,7 +51,7 @@ impl AccountStorage {
         Self {
             accounts_directory,
             selected_key_directory,
-            keyring,
+            keyring: Some(keyring),
         }
     }
 
@@ -46,20 +63,30 @@ impl AccountStorage {
     }
 
     fn persist_account(&self, account: &UserAccountSerializable) -> Result<()> {
+        let Some(keyring) = &self.keyring else {
+            // File-based storage: persist the full keypair (including any
+            // secret) directly to disk.
+            return self.write_account_file(account);
+        };
+
         if let Some(secret) = account.key.secret_key.as_ref() {
-            self.keyring.store_secret(&account.key.pubkey, secret)?;
+            keyring.store_secret(&account.key.pubkey, secret)?;
             self.write_account_without_secret(account)?;
         } else {
             // if the account is npub only, make sure the db doesn't somehow have the nsec
-            self.keyring.remove_secret(&account.key.pubkey)?;
+            keyring.remove_secret(&account.key.pubkey)?;
         }
 
         Ok(())
     }
 
     fn write_account_without_secret(&self, account: &UserAccountSerializable) -> Result<()> {
+        self.write_account_file(&sanitized_account(account))
+    }
+
+    fn write_account_file(&self, account: &UserAccountSerializable) -> Result<()> {
         let mut writer = TokenWriter::new("\t");
-        sanitized_account(account).serialize_tokens(&mut writer);
+        account.serialize_tokens(&mut writer);
 
         write_file(
             &self.accounts_directory.file_path,
@@ -84,7 +111,9 @@ impl AccountStorageWriter {
 
     pub fn remove_key(&self, key: &Keypair) -> Result<()> {
         delete_file(&self.storage.accounts_directory.file_path, key.pubkey.hex())?;
-        self.storage.keyring.remove_secret(&key.pubkey)?;
+        if let Some(keyring) = &self.storage.keyring {
+            keyring.remove_secret(&key.pubkey)?;
+        }
         Ok(())
     }
 
@@ -134,14 +163,16 @@ impl AccountStorageReader {
                     None
                 }
             })
-            // sanitize our storage of secrets & inject the secret from `keyring` into `UserAccountSerializable`
+            // when a keyring is in use, sanitize our storage of secrets & inject
+            // the secret from `keyring` into `UserAccountSerializable`. Without a
+            // keyring the secret already lives on disk, so we use it as-is.
             .map(|mut account| -> Result<UserAccountSerializable> {
+                let Some(keyring) = &self.storage.keyring else {
+                    return Ok(account);
+                };
+
                 if let Some(secret) = &account.key.secret_key {
-                    match self
-                        .storage
-                        .keyring
-                        .store_secret(&account.key.pubkey, secret)
-                    {
+                    match keyring.store_secret(&account.key.pubkey, secret) {
                         Ok(_) => {
                             if let Err(e) = self.storage.write_account_without_secret(&account) {
                                 tracing::error!(
@@ -152,9 +183,7 @@ impl AccountStorageReader {
                         }
                         Err(e) => tracing::error!("failed to store secret in OS secure store: {e}"),
                     }
-                } else if let Ok(Some(secret)) =
-                    self.storage.keyring.get_secret(&account.key.pubkey)
-                {
+                } else if let Ok(Some(secret)) = keyring.get_secret(&account.key.pubkey) {
                     account.key.secret_key = Some(secret);
                 }
                 Ok(account)
@@ -221,6 +250,14 @@ mod tests {
                 KeyringStore::in_memory(),
             ))
         }
+
+        /// File-backed storage (no keyring), the default configuration.
+        fn mock_file() -> Result<Self> {
+            Ok(Self::new(
+                Directory::new(CREATE_TMP_DIR()?),
+                Directory::new(CREATE_TMP_DIR()?),
+            ))
+        }
     }
 
     #[test]
@@ -284,11 +321,59 @@ mod tests {
             reader
                 .storage
                 .keyring
+                .as_ref()
+                .expect("keyring")
                 .get_secret(&kp.pubkey)
                 .expect("keyring read")
                 .is_none(),
             "secret key should be removed from keyring"
         );
+    }
+
+    #[test]
+    fn test_file_backed_persists_secret_on_disk() {
+        let kp = enostr::FullKeypair::generate().to_keypair();
+        let (reader, writer) = AccountStorage::mock_file().unwrap().rw();
+
+        writer
+            .write_account(&UserAccountSerializable::new(kp.clone()))
+            .expect("write account");
+
+        let files = reader
+            .storage
+            .accounts_directory
+            .get_files()
+            .expect("files");
+        let stored = files
+            .get(&kp.pubkey.hex())
+            .expect("account file should exist");
+
+        // The secret is persisted (as an encrypted ncryptsec), not stripped
+        // like it is in keyring mode. The raw hex must never hit disk.
+        let secret_hex = kp.secret_key.as_ref().expect("secret key").to_secret_hex();
+        assert!(
+            stored.contains("eseckey"),
+            "secret key should be persisted to disk when no keyring is used"
+        );
+        assert!(
+            !stored.contains(&secret_hex),
+            "secret key must be encrypted at rest, not stored as plaintext hex"
+        );
+
+        // ...and it round-trips back out.
+        let accounts = reader.get_accounts().expect("accounts");
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(
+            accounts[0]
+                .key
+                .secret_key
+                .as_ref()
+                .map(|s| s.to_secret_hex()),
+            Some(secret_hex)
+        );
+
+        assert!(writer.remove_key(&kp).is_ok());
+        assert_num_storage(&reader.get_accounts(), 0);
     }
 
     fn assert_num_storage(keys_response: &Result<Vec<UserAccountSerializable>>, n: usize) {

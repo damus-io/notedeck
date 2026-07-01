@@ -83,7 +83,6 @@ impl Args {
                 res.options.set(NotedeckOptions::Debug, true);
             } else if arg == "--testrunner" {
                 res.options.set(NotedeckOptions::Tests, true);
-                res.options.set(NotedeckOptions::UseKeystore, false);
             } else if arg == "--pub" || arg == "--npub" {
                 i += 1;
                 let pubstr = if let Some(next_arg) = args.get(i) {
@@ -154,8 +153,8 @@ impl Args {
                     continue;
                 };
                 res.local_relay = Some(addr.clone());
-            } else if arg == "--no-keystore" {
-                res.options.set(NotedeckOptions::UseKeystore, false);
+            } else if arg == "--use-keystore" {
+                res.options.set(NotedeckOptions::UseKeystore, true);
             } else if arg == "--all-apps-active" {
                 res.options.set(NotedeckOptions::AllAppsActive, true);
             } else if arg == "--title" {
@@ -219,13 +218,22 @@ mod tests {
         }
     }
 
-    /// Verifies `--no-keystore` disables OS-backed secure storage.
+    /// The OS keychain is off by default; secrets go to file-based storage.
     #[test]
-    fn parse_no_keystore_disables_keystore() {
-        let (args, unrecognized) = Args::parse(&["--no-keystore".to_owned()]);
+    fn parse_keystore_off_by_default() {
+        let (args, unrecognized) = Args::parse(&[]);
 
         assert!(unrecognized.is_empty());
         assert!(!args.options.contains(NotedeckOptions::UseKeystore));
+    }
+
+    /// Verifies `--use-keystore` opts into OS-backed secure storage.
+    #[test]
+    fn parse_use_keystore_enables_keystore() {
+        let (args, unrecognized) = Args::parse(&["--use-keystore".to_owned()]);
+
+        assert!(unrecognized.is_empty());
+        assert!(args.options.contains(NotedeckOptions::UseKeystore));
     }
 
     /// Verifies the test runner path never touches the host keyring.

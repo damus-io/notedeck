@@ -14,7 +14,8 @@ bitflags! {
         /// Are we running as tests?
         const Tests = 1 << 3;
 
-        /// Use keystore?
+        /// Use the OS secure store (keychain) for secrets instead of the
+        /// default plaintext file-based storage. Opt-in via `--use-keystore`.
         const UseKeystore = 1 << 4;
 
         /// Simulate is_compiled_as_mobile ?
@@ -30,6 +31,6 @@ bitflags! {
 
 impl Default for NotedeckOptions {
     fn default() -> Self {
-        NotedeckOptions::UseKeystore
+        NotedeckOptions::empty()
     }
 }

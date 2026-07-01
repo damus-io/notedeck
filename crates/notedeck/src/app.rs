@@ -306,15 +306,21 @@ impl Notedeck {
                 move |_| ctx.request_repaint()
             });
 
-        let keystore = if parsed_args.options.contains(NotedeckOptions::UseKeystore) {
-            let keys_path = path.path(DataPathType::Keys);
-            let selected_key_path = path.path(DataPathType::SelectedKey);
-            Some(AccountStorage::new(
-                Directory::new(keys_path),
-                Directory::new(selected_key_path),
-            ))
-        } else {
+        let keystore = if parsed_args.options.contains(NotedeckOptions::Tests) {
+            // tests never persist secrets
             None
+        } else {
+            let accounts = Directory::new(path.path(DataPathType::Keys));
+            let selected = Directory::new(path.path(DataPathType::SelectedKey));
+            Some(
+                if parsed_args.options.contains(NotedeckOptions::UseKeystore) {
+                    // opt-in: OS secure store (keychain)
+                    AccountStorage::with_keystore(accounts, selected)
+                } else {
+                    // default: file-based storage (secret kept in the account file)
+                    AccountStorage::new(accounts, selected)
+                },
+            )
         };
 
         let mut unknown_ids = UnknownIds::default();

@@ -200,7 +200,6 @@ mod tests {
         let args: Vec<String> = [
             "notedeck-test",
             "--testrunner",
-            "--no-keystore",
             "--pub",
             npub,
             "-c",
@@ -249,7 +248,6 @@ mod tests {
         let args: Vec<String> = [
             "notedeck-test",
             "--testrunner",
-            "--no-keystore",
             "--unknown-arg", // <-- UNKNOWN
             "--pub",
             npub,

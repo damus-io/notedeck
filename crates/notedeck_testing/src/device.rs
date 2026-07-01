@@ -145,11 +145,7 @@ fn build_device_with_data_dir(
     key_mode: DeviceKeyMode,
     app_factory: AppFactory,
 ) -> DeviceHarness {
-    let mut args = vec![
-        "notedeck-test".to_owned(),
-        "--testrunner".to_owned(),
-        "--no-keystore".to_owned(),
-    ];
+    let mut args = vec!["notedeck-test".to_owned(), "--testrunner".to_owned()];
     match key_mode {
         DeviceKeyMode::Full => {
             args.push("--nsec".to_owned());
