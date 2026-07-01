@@ -438,22 +438,22 @@ pub struct BoardRef<'a> {
     pub view: &'a BoardView,
 }
 
-/// Place `card` onto the `target` board's first column, at the end. This is a
-/// *link*: membership is placement-driven, so the card keeps any other boards it
-/// is already on, and the same issue (with all its overlays — title, labels,
-/// comments) now shows on `target` too. Returns the placement's note id.
-///
-/// Re-linking simply re-ranks (latest wins).
-pub fn link_card(
+/// Place `card` onto `target`, in the column whose id matches `prefer_col` when
+/// the board has one, else the target's first column, at the end. Returns the
+/// placement's note id.
+fn place_card(
     ndb: &Ndb,
     target: BoardRef,
+    prefer_col: Option<&str>,
     author: &Pubkey,
     secret: &[u8; 32],
     card: NoteId,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
     let addr = board_address(author, target.id);
-    let col = target.view.columns.first()?;
+    let col = prefer_col
+        .and_then(|id| target.view.columns.iter().find(|c| c.id == id))
+        .or_else(|| target.view.columns.first())?;
     let rank = rank_for_insert(&col.cards, Some(card), col.cards.len());
     let after = find_card(target.view, card).map_or(0, |c| c.placed_at);
     ingest(
@@ -464,10 +464,31 @@ pub fn link_card(
     )
 }
 
+/// Link `card` from `source` onto `target`, preserving its column. This is a
+/// *link*: membership is placement-driven, so the card keeps any other boards it
+/// is already on, and the same issue (with all its overlays — title, labels,
+/// comments) now shows on `target` too. It lands in the target column whose id
+/// matches the card's column on `source`, falling back to the target's first
+/// column when that column doesn't exist there. Returns the placement's note id.
+///
+/// Re-linking simply re-ranks (latest wins).
+pub fn link_card(
+    ndb: &Ndb,
+    source: BoardRef,
+    target: BoardRef,
+    author: &Pubkey,
+    secret: &[u8; 32],
+    card: NoteId,
+    publisher: &mut dyn Publisher,
+) -> Option<NoteId> {
+    let from_col = find_card_col(source.view, card).map(|(col, _)| col);
+    place_card(ndb, target, from_col, author, secret, card, publisher)
+}
+
 /// Move `card` from the `source` board to the `target` board: link it onto
-/// `target`, then tombstone its placement on `source`. The issue id and all its
-/// overlays are preserved — it's the same card, just re-homed. Returns the new
-/// placement's note id.
+/// `target` (preserving its column, see [`link_card`]), then tombstone its
+/// placement on `source`. The issue id and all its overlays are preserved — it's
+/// the same card, just re-homed. Returns the new placement's note id.
 pub fn move_card_between_boards(
     ndb: &Ndb,
     source: BoardRef,
@@ -477,7 +498,7 @@ pub fn move_card_between_boards(
     card: NoteId,
     publisher: &mut dyn Publisher,
 ) -> Option<NoteId> {
-    let placed = link_card(ndb, target, author, secret, card, publisher)?;
+    let placed = link_card(ndb, source, target, author, secret, card, publisher)?;
     // Placement-driven membership: a tombstone on the source removes it from
     // `source` only, leaving the freshly-linked placement on `target`.
     let src_addr = board_address(author, source.id);
@@ -1116,9 +1137,14 @@ mod tests {
         let t = TestNdb::new();
         let card = two_boards_with_a_card(&t);
 
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
         let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
         link_card(
             &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+            },
             BoardRef {
                 id: "dst",
                 view: &dst,
@@ -1168,5 +1194,113 @@ mod tests {
         poll_board(&t, "src", |v| v.columns[0].cards.is_empty());
         assert_eq!(dst.columns[0].cards[0].id, card);
         assert_eq!(dst.columns[0].cards[0].title, "Roamer");
+    }
+
+    #[test]
+    fn move_card_preserves_column_when_target_has_it() {
+        let t = TestNdb::new();
+        let card = two_boards_with_a_card(&t);
+
+        // Push the card into In Progress on src (both default boards share this column).
+        let src = poll_board(&t, "src", |v| v.columns[0].cards.len() == 1);
+        super::apply(
+            &t.ndb,
+            "src",
+            &src,
+            &t.kp.pubkey,
+            &t.secret(),
+            BoardAction::MoveCard {
+                card,
+                to_col: 2, // in-progress
+                to_row: 0,
+            },
+            &mut NoPublish,
+        );
+
+        let src = poll_board(&t, "src", |v| v.columns[2].cards.len() == 1);
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 5);
+        move_card_between_boards(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+            },
+            &t.kp.pubkey,
+            &t.secret(),
+            card,
+            &mut NoPublish,
+        );
+
+        // Lands in the same-id column (In Progress), not the first column.
+        let dst = poll_board(&t, "dst", |v| v.columns[2].cards.len() == 1);
+        assert_eq!(dst.columns[2].cards[0].id, card);
+        assert!(dst.columns[0].cards.is_empty());
+    }
+
+    #[test]
+    fn move_card_falls_back_to_first_column_when_target_lacks_it() {
+        let t = TestNdb::new();
+        seed_default_board(&t.ndb, &t.kp.pubkey, &t.secret(), "src", &mut NoPublish);
+        // A target board whose columns don't include "in-progress".
+        ingest(
+            &t.ndb,
+            build_board(
+                "dst",
+                "Slim",
+                "",
+                &[
+                    ColumnDef::new("inbox", "Inbox"),
+                    ColumnDef::new("done", "Done"),
+                ],
+            ),
+            &t.secret(),
+            &mut NoPublish,
+        );
+        poll_board(&t, "src", |v| v.columns.len() == 5);
+        poll_board(&t, "dst", |v| v.columns.len() == 2);
+
+        // Add a card and move it into In Progress on src.
+        let src = poll_board(&t, "src", |v| v.columns.len() == 5);
+        super::apply(
+            &t.ndb,
+            "src",
+            &src,
+            &t.kp.pubkey,
+            &t.secret(),
+            BoardAction::AddCard {
+                col: 2, // in-progress
+                title: "Homeless".to_string(),
+                labels: vec![],
+            },
+            &mut NoPublish,
+        );
+
+        let src = poll_board(&t, "src", |v| v.columns[2].cards.len() == 1);
+        let card = src.columns[2].cards[0].id;
+        let dst = poll_board(&t, "dst", |v| v.columns.len() == 2);
+        move_card_between_boards(
+            &t.ndb,
+            BoardRef {
+                id: "src",
+                view: &src,
+            },
+            BoardRef {
+                id: "dst",
+                view: &dst,
+            },
+            &t.kp.pubkey,
+            &t.secret(),
+            card,
+            &mut NoPublish,
+        );
+
+        // No "in-progress" on dst, so it falls back to the first column (Inbox).
+        let dst = poll_board(&t, "dst", |v| v.columns[0].cards.len() == 1);
+        assert_eq!(dst.columns[0].id, "inbox");
+        assert_eq!(dst.columns[0].cards[0].id, card);
     }
 }

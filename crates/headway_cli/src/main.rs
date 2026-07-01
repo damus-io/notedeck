@@ -206,11 +206,21 @@ async fn run() -> Result<()> {
             let card_id = resolve_card(&source, &card)?;
 
             let mut sink = Collect::default();
-            let target = store::BoardRef {
-                id: &to_board,
-                view: &target,
-            };
-            store::link_card(&ndb, target, &author, &secret, card_id, &mut sink);
+            store::link_card(
+                &ndb,
+                store::BoardRef {
+                    id: &board,
+                    view: &source,
+                },
+                store::BoardRef {
+                    id: &to_board,
+                    view: &target,
+                },
+                &author,
+                &secret,
+                card_id,
+                &mut sink,
+            );
             let n = sink.0.len();
             relay_sync::publish(&mut relay, &sink.0).await?;
             println!(
