@@ -803,6 +803,7 @@ mod tests {
                     col: 1,
                     title: "Fresh card".to_string(),
                     labels: vec![],
+                    parent: None,
                 },
                 &mut store::NoPublish,
             );
@@ -905,6 +906,7 @@ mod tests {
                     col: 1,
                     title: "Delta card".to_string(),
                     labels: vec![],
+                    parent: None,
                 },
                 &mut store::NoPublish,
             );

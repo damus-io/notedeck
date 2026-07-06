@@ -46,6 +46,8 @@ enum Command {
         title: String,
         col: Option<String>,
         labels: Vec<String>,
+        /// A card to parent the new one under (created as a subissue).
+        parent: Option<String>,
     },
     Move {
         card: String,
@@ -63,6 +65,11 @@ enum Command {
     Label {
         card: String,
         labels: Vec<String>,
+    },
+    /// Make a card a subissue of another card, or detach it (no parent given).
+    Parent {
+        card: String,
+        parent: Option<String>,
     },
     Comment {
         card: String,
@@ -286,9 +293,23 @@ async fn run() -> Result<()> {
 /// column arguments against `view`.
 fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
     Ok(match command {
-        Command::Add { title, col, labels } => {
+        Command::Add {
+            title,
+            col,
+            labels,
+            parent,
+        } => {
             let col = col.as_deref().map_or(Ok(0), |c| resolve_col(view, c))?;
-            BoardAction::AddCard { col, title, labels }
+            let parent = parent
+                .as_deref()
+                .map(|sel| resolve_card(view, sel))
+                .transpose()?;
+            BoardAction::AddCard {
+                col,
+                title,
+                labels,
+                parent,
+            }
         }
         Command::Move { card, col, row } => {
             let card = resolve_card(view, &card)?;
@@ -311,6 +332,13 @@ fn build_action(view: &BoardView, command: Command) -> Result<BoardAction> {
         Command::Label { card, labels } => BoardAction::SetLabels {
             card: resolve_card(view, &card)?,
             labels,
+        },
+        Command::Parent { card, parent } => BoardAction::SetParent {
+            card: resolve_card(view, &card)?,
+            parent: parent
+                .as_deref()
+                .map(|sel| resolve_card(view, sel))
+                .transpose()?,
         },
         Command::Comment {
             card,
@@ -509,8 +537,9 @@ fn print_board(view: &BoardView, as_json: bool, show_archived: bool) {
         println!("\n{} ({})", col.name, col.cards.len());
         for c in &col.cards {
             println!(
-                "  {}{}  {}",
+                "  {}{}{}  {}",
                 c.title,
+                progress_suffix(c),
                 labels_suffix(&c.labels),
                 card_ref(view, &c.id),
             );
@@ -580,6 +609,9 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
     if !card.labels.is_empty() {
         println!("labels  {}", card.labels.join(", "));
     }
+    if let Some(parent) = &card.parent {
+        println!("parent  {}", card_ref(view, parent));
+    }
     println!("created {}", headway::fmt::rel_time(card.created_at));
     if card.updated_at > card.created_at {
         println!("updated {}", headway::fmt::rel_time(card.updated_at));
@@ -594,6 +626,24 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
             } else {
                 println!("    {line}");
             }
+        }
+    }
+
+    if !card.subissues.is_empty() {
+        let done = card.subissues.iter().filter(|s| s.done).count();
+        println!("\nsubissues ({done}/{} done)", card.subissues.len());
+        for s in &card.subissues {
+            let mark = if s.done { "x" } else { " " };
+            // Where the child sits, when we know: its column, or "archived".
+            let place = if s.archived {
+                Some("archived".to_string())
+            } else {
+                s.column.clone()
+            };
+            let place = place.map_or(String::new(), |p| {
+                format!("  {}", relay_sync::dim(&format!("({p})")))
+            });
+            println!("    [{mark}] {}{place}  {}", s.title, card_ref(view, &s.id));
         }
     }
 
@@ -653,6 +703,19 @@ fn labels_suffix(labels: &[String]) -> String {
     }
 }
 
+/// A dim `n/m` subissue rollup shown after a parent card's title on the board
+/// listing; empty for cards with no children.
+fn progress_suffix(card: &CardView) -> String {
+    if card.subissues.is_empty() {
+        return String::new();
+    }
+    let done = card.subissues.iter().filter(|s| s.done).count();
+    format!(
+        "  {}",
+        relay_sync::dim(&format!("{done}/{}", card.subissues.len()))
+    )
+}
+
 /// A card's human-friendly reference: the board slug, a `#`, then three words,
 /// e.g. `headway#maple-river-canyon` — GitHub's `repo#id` shape, so it reads as a
 /// reference inline (`Fixes: headway#maple-river-canyon`) and in chat. Just a
@@ -704,6 +767,7 @@ impl Cli {
         let mut row = None;
         let mut to = None;
         let mut reply_to = None;
+        let mut parent = None;
         let mut labels: Vec<String> = Vec::new();
         let mut positionals: Vec<String> = Vec::new();
 
@@ -724,6 +788,7 @@ impl Cli {
                 "--col" => col = Some(value("--col")?),
                 "--to" => to = Some(value("--to")?),
                 "--reply-to" => reply_to = Some(value("--reply-to")?),
+                "--parent" => parent = Some(value("--parent")?),
                 "-l" | "--label" | "--labels" => {
                     // Repeatable, and each value may be a comma-separated list,
                     // so `-l a,b --label c` and `-l a -l b -l c` are equivalent.
@@ -754,7 +819,7 @@ impl Cli {
         let Some((name, rest)) = positionals.split_first() else {
             return Ok(None);
         };
-        let command = parse_command(name, rest, col, row, to, reply_to, labels)?;
+        let command = parse_command(name, rest, col, row, to, reply_to, parent, labels)?;
 
         // `login`/`logout` manage the stored key themselves, so don't parse (and
         // potentially reject on) whatever key is currently configured — that would
@@ -778,6 +843,7 @@ impl Cli {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_command(
     name: &str,
     rest: &[String],
@@ -785,6 +851,7 @@ fn parse_command(
     row: Option<usize>,
     to: Option<String>,
     reply_to: Option<String>,
+    parent: Option<String>,
     labels: Vec<String>,
 ) -> Result<Command> {
     let card = || -> Result<String> { arg(rest, 0, name) };
@@ -797,6 +864,7 @@ fn parse_command(
             title: joined(rest, 0, name)?,
             col,
             labels,
+            parent,
         },
         "move" => Command::Move {
             card: card()?,
@@ -814,6 +882,12 @@ fn parse_command(
         "label" => Command::Label {
             card: card()?,
             labels: rest.get(1..).unwrap_or_default().to_vec(),
+        },
+        // `parent <card> <parent>` sets, `parent <card>` detaches — mirrors how
+        // `label` with no labels clears.
+        "parent" => Command::Parent {
+            card: card()?,
+            parent: rest.get(1).cloned(),
         },
         "comment" => Command::Comment {
             card: card()?,
@@ -871,11 +945,14 @@ COMMANDS:
                                detail (--archived to list archived, --json for
                                machine output)
     seed                       Seed the default board if none exists
-    add <title...>             Add a card (--col <c> column, -l <labels> to tag)
+    add <title...>             Add a card (--col <c> column, -l <labels> to tag,
+                               --parent <card> to create it as a subissue)
     move <card> --col <c>      Move a card to a column (--row to position)
     title <card> <title...>    Edit a card's title
     desc <card> <text...>      Edit a card's description
     label <card> [labels...]   Set a card's labels (empty clears)
+    parent <card> [parent]     Make a card a subissue of [parent] (omit to
+                               detach)
     comment <card> <text...>   Comment on a card (--reply-to <c> to thread under
                                another comment)
     delete <card>              Remove a card (reversible tombstone)
@@ -905,6 +982,7 @@ OPTIONS:
     --col <c>         Column for `add`/`move` (id or name)
     --to <board>      Target board for `link`/`move-board`
     --reply-to <c>    Parent comment for `comment` (id, prefix, or word-id)
+    --parent <card>   Parent card for `add` (created as its subissue)
     --json            Machine-readable output (show)
     --archived        List archived cards in full (show)
     -h, --help        Print this help",

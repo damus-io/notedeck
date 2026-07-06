@@ -13,6 +13,7 @@
 //! | labels            | `1985`  | NIP-32 label, `L`/`l` namespace `#t`       |
 //! | description edit  | `1624`  | gitworkshop cover note                     |
 //! | placement         | `30620` | addressable; `col` + fractional `rank`     |
+//! | relation          | `30621` | addressable; `d` = child, `parent` tag     |
 //!
 //! Effective state is resolved as **latest-authorised-wins** for every overlay
 //! (placement, subject, cover note, and labels — each label event carries the
@@ -45,6 +46,11 @@ pub const KIND_PLACEMENT: u32 = 30620;
 /// NIP-22 generic comment == a comment on a card. gitworkshop/ngit comment on
 /// NIP-34 issues the same way (kind 1111, *not* kind-1 replies).
 pub const KIND_COMMENT: u32 = 1111;
+/// Headway card relation: addressable, `d` = child issue id, `parent` names the
+/// parent issue. Child-side, so each child has exactly one parent slot —
+/// re-parenting republishes the slot and a relation with no `parent` tag
+/// detaches. See `crates/notedeck_headway/docs/subissues-design.md`.
+pub const KIND_RELATION: u32 = 30621;
 
 const NS_SUBJECT: &str = "#subject";
 const NS_TAG: &str = "#t";
@@ -222,6 +228,25 @@ pub fn build_labels<'a, S: AsRef<str>>(issue: &NoteId, labels: &[S]) -> NoteBuil
     b
 }
 
+/// Build a relation event (kind 30621) making `child` a subissue of `parent`,
+/// or detaching it when `parent` is `None`. Addressable on the child, so the
+/// newest authorised relation is the child's one parent slot.
+pub fn build_relation<'a>(child: &NoteId, parent: Option<&NoteId>) -> NoteBuilder<'a> {
+    let mut b = base(KIND_RELATION, "")
+        .start_tag()
+        .tag_str("d")
+        .tag_str(&child.hex())
+        .start_tag()
+        .tag_str("e")
+        .tag_id(child.bytes());
+
+    if let Some(parent) = parent {
+        b = b.start_tag().tag_str("parent").tag_id(parent.bytes());
+    }
+
+    b
+}
+
 /// Build a cover note (kind 1624) — the editable card description for `issue`.
 pub fn build_cover_note<'a>(issue: &NoteId, author: &Pubkey, body: &'a str) -> NoteBuilder<'a> {
     base(KIND_COVER_NOTE, body)
@@ -356,6 +381,17 @@ pub struct CoverNote {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelationEvent {
+    pub author: [u8; 32],
+    /// The subissue this relation is about (the addressable `d` slot).
+    pub child_id: [u8; 32],
+    /// The parent issue, or `None` for a detach (relation republished without a
+    /// `parent` tag).
+    pub parent_id: Option<[u8; 32]>,
+    pub created_at: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommentEvent {
     pub id: [u8; 32],
     pub author: [u8; 32],
@@ -378,6 +414,7 @@ pub enum HeadwayEvent {
     Labels(LabelSet),
     Cover(CoverNote),
     Comment(CommentEvent),
+    Relation(RelationEvent),
 }
 
 /// Parse a note into a [`HeadwayEvent`], or `None` if it isn't a recognised /
@@ -390,6 +427,7 @@ pub fn parse(note: &Note) -> Option<HeadwayEvent> {
         KIND_LABEL => parse_label(note),
         KIND_COVER_NOTE => parse_cover(note).map(HeadwayEvent::Cover),
         KIND_COMMENT => parse_comment(note).map(HeadwayEvent::Comment),
+        KIND_RELATION => parse_relation(note).map(HeadwayEvent::Relation),
         _ => None,
     }
 }
@@ -590,6 +628,28 @@ fn parse_comment(note: &Note) -> Option<CommentEvent> {
     })
 }
 
+/// Parse a relation (kind 30621). The child is the `e` tag; a missing `parent`
+/// tag is a detach, not a malformed event. See [`build_relation`].
+fn parse_relation(note: &Note) -> Option<RelationEvent> {
+    let mut child_id = None;
+    let mut parent_id = None;
+
+    for tag in note.tags() {
+        match tag.get_str(0) {
+            Some("e") => child_id = tag.get_id(1).copied(),
+            Some("parent") => parent_id = tag.get_id(1).copied(),
+            _ => {}
+        }
+    }
+
+    Some(RelationEvent {
+        author: *note.pubkey(),
+        child_id: child_id?,
+        parent_id,
+        created_at: note.created_at(),
+    })
+}
+
 /// Parse a `30619:<author-hex>:<board-id>` address into `(author, board_id)`.
 fn parse_board_address(addr: &str) -> Option<([u8; 32], String)> {
     let mut parts = addr.splitn(3, ':');
@@ -620,6 +680,25 @@ pub struct CommentView {
     pub created_at: u64,
 }
 
+/// A direct subissue of a card, resolved for display on its parent. Doneness is
+/// positional — derived from where the child sits on its board(s) — never a
+/// stored checkbox (see `crates/notedeck_headway/docs/subissues-design.md`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubissueView {
+    pub id: NoteId,
+    /// Resolved title (subject overlay applied).
+    pub title: String,
+    /// Column id of a live placement — the one on the board being rendered when
+    /// there is one, else the first by board id for determinism. `None` when the
+    /// child is unplaced or archived everywhere.
+    pub column: Option<String>,
+    /// Done = every live placement sits in the last column of its board, or the
+    /// child is archived everywhere it's placed.
+    pub done: bool,
+    /// The child has no live placement but at least one archived one.
+    pub archived: bool,
+}
+
 /// A card as rendered: a stable id plus its resolved fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CardView {
@@ -647,6 +726,10 @@ pub struct CardView {
     pub updated_at: u64,
     /// Comments on the card, oldest first (sorted by `created_at`, then id).
     pub comments: Vec<CommentView>,
+    /// The parent card when this one is a subissue (authorised relation slot).
+    pub parent: Option<NoteId>,
+    /// Direct subissues, ordered by child `(created_at, id)`.
+    pub subissues: Vec<SubissueView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -716,6 +799,16 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
         "rank": card.rank,
         "created_at": card.created_at,
         "updated_at": card.updated_at,
+        "parent": card.parent.map(|p| p.hex()),
+        "parent_words": card.parent.map(|p| crate::wordid::encode(p.bytes())),
+        "subissues": card.subissues.iter().map(|s| serde_json::json!({
+            "id": s.id.hex(),
+            "words": crate::wordid::encode(s.id.bytes()),
+            "title": s.title,
+            "column": s.column,
+            "done": s.done,
+            "archived": s.archived,
+        })).collect::<Vec<_>>(),
         "comments": card.comments.iter().map(comment_json).collect::<Vec<_>>(),
     })
 }
@@ -770,6 +863,10 @@ pub struct BoardReducer {
     /// latest-wins overlays above) and grouped onto its issue at finalize. Keying
     /// by comment id dedupes the duplicates a relay may hand us.
     comments: HashMap<[u8; 32], CommentEvent>,
+    /// Latest relation per *child* issue — the child's one parent slot.
+    /// Latest-authorised-wins like every other overlay; authority needs the
+    /// issue maps so it's checked at resolve time, not here.
+    relations: HashMap<[u8; 32], RelationEvent>,
 }
 
 impl BoardReducer {
@@ -835,18 +932,142 @@ impl BoardReducer {
                 // duplicates of the same id are no-ops.
                 self.comments.entry(c.id).or_insert(c);
             }
+            HeadwayEvent::Relation(r) => {
+                if self
+                    .relations
+                    .get(&r.child_id)
+                    .is_none_or(|cur| newer(r.created_at, &r.author, cur.created_at, &cur.author))
+                {
+                    self.relations.insert(r.child_id, r);
+                }
+            }
         }
+    }
+
+    /// A relation is honoured when its author is the child's author, the named
+    /// parent's author, or the board author — the authorised set of the other
+    /// overlays extended to both endpoints of the edge.
+    fn relation_authorised(&self, r: &RelationEvent, board_author: &[u8; 32]) -> bool {
+        if &r.author == board_author {
+            return true;
+        }
+        if self
+            .issues
+            .get(&r.child_id)
+            .is_some_and(|c| c.author == r.author)
+        {
+            return true;
+        }
+        r.parent_id
+            .and_then(|p| self.issues.get(&p))
+            .is_some_and(|p| p.author == r.author)
+    }
+
+    /// Resolve one child of a parent card into a [`SubissueView`], deriving its
+    /// doneness from its placements. Returns `None` when the child issue is
+    /// unknown or has been tombstoned off every board it was placed on (it
+    /// vanishes from the parent exactly like it vanishes from boards).
+    /// `board_id`/`board_author` are the board being rendered, used to prefer
+    /// its column when the child is placed on several boards.
+    fn subissue_view(
+        &self,
+        child_id: &[u8; 32],
+        board_author: &[u8; 32],
+        board_id: &str,
+    ) -> Option<SubissueView> {
+        let child = self.issues.get(child_id)?;
+        let authorised = |who: &[u8; 32]| who == &child.author || who == board_author;
+
+        let title = self
+            .subjects
+            .get(child_id)
+            .filter(|s| authorised(&s.author))
+            .map(|s| s.subject.clone())
+            .unwrap_or_else(|| child.subject.clone());
+
+        /// One live (non-deleted, non-archived) placement of the child, with its
+        /// per-board doneness already judged.
+        struct LivePlacement<'a> {
+            board_author: &'a [u8; 32],
+            board_id: &'a str,
+            col: &'a str,
+            /// Done on that board = sitting in its last column.
+            done: bool,
+        }
+
+        // The child's winning placements, one per board, authorised like the
+        // board fold: by the child's author or that placement's board author.
+        let mut placed = 0usize;
+        let mut archived_somewhere = false;
+        let mut live: Vec<LivePlacement> = Vec::new();
+
+        for (key, p) in &self.placements {
+            if &key.issue_id != child_id
+                || (p.author != child.author && p.author != key.board_author)
+            {
+                continue;
+            }
+            placed += 1;
+            match p.col.as_str() {
+                COL_DELETED => {}
+                COL_ARCHIVED => archived_somewhere = true,
+                col => {
+                    let done = self
+                        .boards
+                        .get(&(key.board_author.to_vec(), key.board_id.clone()))
+                        .and_then(|b| b.columns.last())
+                        .is_some_and(|last| last.id == col);
+                    live.push(LivePlacement {
+                        board_author: &key.board_author,
+                        board_id: &key.board_id,
+                        col,
+                        done,
+                    });
+                }
+            }
+        }
+
+        // Every placement is a tombstone: the child is deleted, drop it.
+        if placed > 0 && live.is_empty() && !archived_somewhere {
+            return None;
+        }
+
+        // Prefer the rendered board's column; else the first by board id so the
+        // result doesn't churn with hash order.
+        live.sort_by(|a, b| (a.board_author, a.board_id).cmp(&(b.board_author, b.board_id)));
+        let column = live
+            .iter()
+            .find(|p| p.board_author == board_author && p.board_id == board_id)
+            .or_else(|| live.first())
+            .map(|p| p.col.to_owned());
+
+        let archived = live.is_empty() && archived_somewhere;
+        let done = if live.is_empty() {
+            archived
+        } else {
+            live.iter().all(|p| p.done)
+        };
+
+        Some(SubissueView {
+            id: NoteId::new(*child_id),
+            title,
+            column,
+            done,
+            archived,
+        })
     }
 
     /// Resolve a card's effective content (title, description, labels, comments)
     /// from the issue and its overlay events, given the `rank`/`placed_at` of the
     /// placement it's being shown under. `board_author` is the authority alongside
     /// the card author for amend events. Board-agnostic: the same issue placed on
-    /// two boards yields the same content, only the rank/slot differ.
+    /// two boards yields the same content, only the rank/slot differ (`board_id`
+    /// is only a display preference for subissue columns, not authority).
     fn card_view(
         &self,
         issue: &IssueEvent,
         board_author: &[u8; 32],
+        board_id: &str,
         rank: String,
         placed_at: u64,
     ) -> CardView {
@@ -901,6 +1122,32 @@ impl BoardReducer {
             .max(label_set.map_or(0, |l| l.created_at))
             .max(comments.last().map_or(0, |c| c.created_at));
 
+        // This card as a child: its one relation slot names its parent.
+        let parent = self
+            .relations
+            .get(&issue.id)
+            .filter(|r| self.relation_authorised(r, board_author))
+            .and_then(|r| r.parent_id)
+            .map(NoteId::new);
+
+        // This card as a parent: every issue whose authorised relation names it.
+        // One level only — a cycle renders as two cards pointing at each other,
+        // never a loop (the write path refuses to create one; see store::apply).
+        let mut children: Vec<&RelationEvent> = self
+            .relations
+            .values()
+            .filter(|r| r.parent_id.as_ref() == Some(&issue.id))
+            .filter(|r| self.relation_authorised(r, board_author))
+            .collect();
+        children.sort_by_key(|r| {
+            let child = self.issues.get(&r.child_id);
+            (child.map_or(u64::MAX, |c| c.created_at), r.child_id)
+        });
+        let subissues = children
+            .into_iter()
+            .filter_map(|r| self.subissue_view(&r.child_id, board_author, board_id))
+            .collect();
+
         CardView {
             id: NoteId::new(issue.id),
             author: issue.author,
@@ -912,6 +1159,8 @@ impl BoardReducer {
             created_at: issue.created_at,
             updated_at,
             comments,
+            parent,
+            subissues,
         }
     }
 
@@ -953,6 +1202,7 @@ impl BoardReducer {
                 let card = self.card_view(
                     issue,
                     &board.author,
+                    board_id,
                     placement.rank.clone(),
                     placement.created_at,
                 );
@@ -983,7 +1233,7 @@ impl BoardReducer {
                 {
                     continue;
                 }
-                let card = self.card_view(issue, &board.author, String::new(), 0);
+                let card = self.card_view(issue, &board.author, board_id, String::new(), 0);
                 fallback.push((issue.created_at, card));
             }
 
@@ -1055,13 +1305,14 @@ fn newer(a_at: u64, a_who: &[u8; 32], b_at: u64, b_who: &[u8; 32]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Every kind headway cares about, for querying / subscribing.
-pub const HEADWAY_KINDS: [u32; 6] = [
+pub const HEADWAY_KINDS: [u32; 7] = [
     KIND_BOARD,
     KIND_ISSUE,
     KIND_PLACEMENT,
     KIND_LABEL,
     KIND_COVER_NOTE,
     KIND_COMMENT,
+    KIND_RELATION,
 ];
 
 /// A filter for every headway event authored by `author`.
@@ -1845,6 +2096,215 @@ mod tests {
         assert_eq!(view.columns[0].name, "Todo");
         assert_eq!(view.columns[0].cards[0].title, "Card A (renamed)");
         assert_eq!(view.columns[1].cards[0].title, "Card B");
+    }
+
+    #[test]
+    fn relation_roundtrips_set_and_detach() {
+        let kp = FullKeypair::generate();
+        let child = note_id(&kp, build_issue("30619:x:b1", "child", ""));
+        let parent = note_id(&kp, build_issue("30619:x:b1", "parent", ""));
+
+        let HeadwayEvent::Relation(r) = roundtrip(build_relation(&child, Some(&parent)), &kp)
+        else {
+            panic!("relation");
+        };
+        assert_eq!(r.child_id, *child.bytes());
+        assert_eq!(r.parent_id, Some(*parent.bytes()));
+
+        // No `parent` tag = a detach, still a well-formed relation.
+        let HeadwayEvent::Relation(r) = roundtrip(build_relation(&child, None), &kp) else {
+            panic!("relation");
+        };
+        assert_eq!(r.parent_id, None);
+    }
+
+    /// Parent/child resolve on both ends: the child gains a `parent` pointer and
+    /// the parent lists its children with doneness derived from their columns
+    /// (last column of the board = done).
+    #[test]
+    fn reduce_resolves_subissues_with_positional_doneness() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let epic = note_id(&owner, build_issue(&addr, "Epic", "").created_at(1_000));
+        let c1 = note_id(
+            &owner,
+            build_issue(&addr, "Child one", "").created_at(1_001),
+        );
+        let c2 = note_id(
+            &owner,
+            build_issue(&addr, "Child two", "").created_at(1_002),
+        );
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Epic", "").created_at(1_000), &owner),
+            parse_owned(
+                build_issue(&addr, "Child one", "").created_at(1_001),
+                &owner,
+            ),
+            parse_owned(
+                build_issue(&addr, "Child two", "").created_at(1_002),
+                &owner,
+            ),
+            parse_owned(build_placement("b1", &addr, &epic, "todo", "g"), &owner),
+            // c1 done (last column), c2 still in todo.
+            parse_owned(build_placement("b1", &addr, &c1, "done", "m"), &owner),
+            parse_owned(build_placement("b1", &addr, &c2, "todo", "t"), &owner),
+            parse_owned(build_relation(&c1, Some(&epic)), &owner),
+            parse_owned(build_relation(&c2, Some(&epic)), &owner),
+        ];
+
+        let views = reduce(&events);
+        let todo = &views[0].columns[0];
+
+        let epic_card = todo.cards.iter().find(|c| c.id == epic).unwrap();
+        assert_eq!(epic_card.parent, None);
+        assert_eq!(epic_card.subissues.len(), 2);
+        // Ordered by child created_at: c1 (done) then c2 (not).
+        assert_eq!(epic_card.subissues[0].title, "Child one");
+        assert!(epic_card.subissues[0].done);
+        assert_eq!(epic_card.subissues[0].column.as_deref(), Some("done"));
+        assert_eq!(epic_card.subissues[1].title, "Child two");
+        assert!(!epic_card.subissues[1].done);
+        assert_eq!(epic_card.subissues[1].column.as_deref(), Some("todo"));
+
+        let child = todo.cards.iter().find(|c| c.id == c2).unwrap();
+        assert_eq!(child.parent, Some(epic));
+        assert!(child.subissues.is_empty());
+    }
+
+    /// The relation slot is latest-authorised-wins: a newer relation re-parents,
+    /// a newer detach clears, and a stranger's relation is ignored outright.
+    #[test]
+    fn reduce_reparents_latest_wins_and_ignores_strangers() {
+        let owner = FullKeypair::generate();
+        let stranger = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let e1 = note_id(&owner, build_issue(&addr, "Epic 1", "").created_at(1_000));
+        let e2 = note_id(&owner, build_issue(&addr, "Epic 2", "").created_at(1_001));
+        let child = note_id(&owner, build_issue(&addr, "Child", "").created_at(1_002));
+
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Epic 1", "").created_at(1_000), &owner),
+            parse_owned(build_issue(&addr, "Epic 2", "").created_at(1_001), &owner),
+            parse_owned(build_issue(&addr, "Child", "").created_at(1_002), &owner),
+            parse_owned(build_placement("b1", &addr, &e1, "todo", "g"), &owner),
+            parse_owned(build_placement("b1", &addr, &e2, "todo", "m"), &owner),
+            parse_owned(build_placement("b1", &addr, &child, "todo", "t"), &owner),
+            parse_owned(build_relation(&child, Some(&e1)).created_at(2_000), &owner),
+        ];
+
+        let find = |views: &Vec<BoardView>, id: NoteId| -> CardView {
+            views[0].columns[0]
+                .cards
+                .iter()
+                .find(|c| c.id == id)
+                .unwrap()
+                .clone()
+        };
+
+        // A stranger's relation must not re-parent the card. (Like every
+        // overlay, ingest is authority-blind and authority is applied at
+        // resolve: the stranger's newer event shadows the owner's older slot
+        // rather than losing to it, so the card reads as unparented — but the
+        // hijack itself never takes effect.)
+        events.push(parse_owned(
+            build_relation(&child, Some(&e2)).created_at(3_000),
+            &stranger,
+        ));
+        let views = reduce(&events);
+        assert_eq!(find(&views, child).parent, None, "stranger ignored");
+        assert!(find(&views, e2).subissues.is_empty(), "hijack inert");
+
+        // The owner re-parents: newest authorised slot wins on both ends.
+        events.push(parse_owned(
+            build_relation(&child, Some(&e2)).created_at(4_000),
+            &owner,
+        ));
+        let views = reduce(&events);
+        assert_eq!(find(&views, child).parent, Some(e2));
+        assert!(find(&views, e1).subissues.is_empty());
+        assert_eq!(find(&views, e2).subissues.len(), 1);
+
+        // And a detach (no parent tag) clears it.
+        events.push(parse_owned(
+            build_relation(&child, None).created_at(5_000),
+            &owner,
+        ));
+        let views = reduce(&events);
+        assert_eq!(find(&views, child).parent, None);
+        assert!(find(&views, e2).subissues.is_empty());
+    }
+
+    /// An archived-everywhere child counts as done (filed away); a tombstoned
+    /// child drops off its parent's subissue list entirely.
+    #[test]
+    fn reduce_subissue_doneness_for_archived_and_deleted_children() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![
+            ColumnDef::new("todo", "Todo"),
+            ColumnDef::new("done", "Done"),
+        ];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        let epic = note_id(&owner, build_issue(&addr, "Epic", "").created_at(1_000));
+        let shelved = note_id(&owner, build_issue(&addr, "Shelved", "").created_at(1_001));
+        let gone = note_id(&owner, build_issue(&addr, "Gone", "").created_at(1_002));
+
+        let events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "Epic", "").created_at(1_000), &owner),
+            parse_owned(build_issue(&addr, "Shelved", "").created_at(1_001), &owner),
+            parse_owned(build_issue(&addr, "Gone", "").created_at(1_002), &owner),
+            parse_owned(build_placement("b1", &addr, &epic, "todo", "g"), &owner),
+            parse_owned(
+                build_archive_placement("b1", &addr, &shelved, "done", "m"),
+                &owner,
+            ),
+            parse_owned(
+                build_placement("b1", &addr, &gone, COL_DELETED, "t"),
+                &owner,
+            ),
+            parse_owned(build_relation(&shelved, Some(&epic)), &owner),
+            parse_owned(build_relation(&gone, Some(&epic)), &owner),
+        ];
+
+        let views = reduce(&events);
+        let epic_card = views[0].columns[0]
+            .cards
+            .iter()
+            .find(|c| c.id == epic)
+            .unwrap();
+
+        // The deleted child vanished; the archived one counts as done.
+        assert_eq!(epic_card.subissues.len(), 1);
+        assert_eq!(epic_card.subissues[0].title, "Shelved");
+        assert!(epic_card.subissues[0].done);
+        assert!(epic_card.subissues[0].archived);
+        assert_eq!(epic_card.subissues[0].column, None);
     }
 
     /// [`pick_card`] resolves a single card to its *current* state — the latest

@@ -1039,6 +1039,7 @@ fn add_card_ui(
                     col: col_idx,
                     title,
                     labels: vec![],
+                    parent: None,
                 });
                 // Keep the composer open and refocused so you can rattle off
                 // several cards in a row without re-clicking "+ Add card".
@@ -2235,6 +2236,8 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             comments: vec![],
+            parent: None,
+            subissues: vec![],
         }
     }
 

@@ -15,7 +15,7 @@ use nostrdb::{IngestMetadata, Ndb, NoteBuilder};
 use crate::event::{
     self, BoardView, COL_DELETED, CardView, ColumnDef, board_address, build_archive_placement,
     build_board, build_comment, build_cover_note, build_issue, build_labels, build_placement,
-    build_subject_edit, rank_between,
+    build_relation, build_subject_edit, rank_between,
 };
 
 /// The single board headway manages for now. Multi-board support will turn this
@@ -33,11 +33,13 @@ pub enum BoardAction {
         to_row: usize,
     },
     /// Create a new card titled `title` at the end of column `col`, optionally
-    /// tagging it with `labels`.
+    /// tagging it with `labels` and/or parenting it under `parent` (a subissue
+    /// created in one step).
     AddCard {
         col: usize,
         title: String,
         labels: Vec<String>,
+        parent: Option<NoteId>,
     },
     /// Replace a card's title (subject edit).
     EditTitle { card: NoteId, title: String },
@@ -45,6 +47,12 @@ pub enum BoardAction {
     EditDescription { card: NoteId, description: String },
     /// Set a card's labels (additive union with any existing labels).
     SetLabels { card: NoteId, labels: Vec<String> },
+    /// Make `card` a subissue of `parent`, or detach it when `parent` is `None`.
+    /// Refused (no events) when it would create a parent cycle.
+    SetParent {
+        card: NoteId,
+        parent: Option<NoteId>,
+    },
     /// Post a NIP-22 comment on `card`. `reply_to`, when set, is another comment
     /// on the same card that this one threads under.
     AddComment {
@@ -292,10 +300,18 @@ pub fn apply(
                 publisher,
             );
         }
-        BoardAction::AddCard { col, title, labels } => {
+        BoardAction::AddCard {
+            col,
+            title,
+            labels,
+            parent,
+        } => {
             let Some(c) = view.columns.get(col) else {
                 return;
             };
+            // A brand-new card can't be anyone's ancestor, so parenting it needs
+            // no cycle check — just that the parent actually exists.
+            let parent = parent.filter(|p| find_card_any(view, *p).is_some());
             let Some(id) = ingest(ndb, build_issue(&addr, &title, ""), secret, publisher) else {
                 return;
             };
@@ -308,6 +324,9 @@ pub fn apply(
             );
             if !labels.is_empty() {
                 ingest(ndb, build_labels(&id, &labels), secret, publisher);
+            }
+            if let Some(parent) = parent {
+                ingest(ndb, build_relation(&id, Some(&parent)), secret, publisher);
             }
         }
         BoardAction::EditTitle { card, title } => {
@@ -323,6 +342,16 @@ pub fn apply(
         }
         BoardAction::SetLabels { card, labels } => {
             ingest(ndb, build_labels(&card, &labels), secret, publisher);
+        }
+        BoardAction::SetParent { card, parent } => {
+            if let Some(parent) = parent {
+                if would_cycle(view, card, parent) {
+                    return;
+                }
+                ingest(ndb, build_relation(&card, Some(&parent)), secret, publisher);
+            } else {
+                ingest(ndb, build_relation(&card, None), secret, publisher);
+            }
         }
         BoardAction::AddComment {
             card,
@@ -600,6 +629,30 @@ fn find_card_any(view: &BoardView, card: NoteId) -> Option<&CardView> {
     find_card(view, card).or_else(|| view.archived.iter().map(|a| &a.card).find(|c| c.id == card))
 }
 
+/// Would parenting `card` under `parent` create a cycle? Walks the ancestor
+/// chain upward from `parent` looking for `card`. The walk sees this board's
+/// view only, so an ancestor placed solely on another board isn't followed —
+/// good enough for the write-path guard (the reducer renders a slipped-through
+/// cycle harmlessly, one level at a time). Also refuses an unknown parent, and
+/// caps the walk so a pre-existing cycle can't spin it forever.
+fn would_cycle(view: &BoardView, card: NoteId, parent: NoteId) -> bool {
+    let mut cur = Some(parent);
+    for _ in 0..64 {
+        let Some(id) = cur else {
+            return false;
+        };
+        if id == card {
+            return true;
+        }
+        let Some(c) = find_card_any(view, id) else {
+            // Unknown ancestor: can't prove it's safe, refuse.
+            return true;
+        };
+        cur = c.parent;
+    }
+    true
+}
+
 /// Find a card and the id of the column it currently sits in.
 fn find_card_col(view: &BoardView, card: NoteId) -> Option<(&str, &CardView)> {
     view.columns.iter().find_map(|col| {
@@ -813,6 +866,7 @@ mod tests {
                 col: 1,
                 title: "New idea".to_string(),
                 labels: vec![],
+                parent: None,
             },
         );
 
@@ -832,6 +886,7 @@ mod tests {
                 col: 1,
                 title: "Tagged idea".to_string(),
                 labels: vec!["bug".to_string(), "ux".to_string()],
+                parent: None,
             },
         );
 
@@ -876,6 +931,7 @@ mod tests {
                 col: 1,
                 title: "Tracked".to_string(),
                 labels: vec![],
+                parent: None,
             },
             &mut sink,
         );
@@ -1155,6 +1211,7 @@ mod tests {
                 col: 0,
                 title: "Roamer".to_string(),
                 labels: vec!["wandering".to_string()],
+                parent: None,
             },
             &mut NoPublish,
         );
@@ -1304,6 +1361,7 @@ mod tests {
                 col: 2, // in-progress
                 title: "Homeless".to_string(),
                 labels: vec![],
+                parent: None,
             },
             &mut NoPublish,
         );
