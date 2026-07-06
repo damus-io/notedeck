@@ -188,11 +188,18 @@ pub fn seed_board(
 /// ([`seed_default_board`]) is deliberately card-less; this is the populated
 /// board used by tests and demos. Cards land 3 / 2 / 1 / 0 / 1 across the
 /// columns, in seeded order (increasing ranks per column).
+///
+/// Every card event is stamped `at` rather than the wall clock, so a seeded
+/// board is identical from one run to the next: event ids (and the word-ids
+/// derived from them) and the created/updated times the UI renders only stay
+/// stable across runs if the seed's timestamps do. Snapshot tests pin `at`
+/// (together with [`crate::fmt::freeze_now`]) for reproducible frames.
 pub fn seed_demo_board(
     ndb: &Ndb,
     author: &Pubkey,
     secret: &[u8; 32],
     board_id: &str,
+    at: u64,
     publisher: &mut dyn Publisher,
 ) {
     seed_default_board(ndb, author, secret, board_id, publisher);
@@ -220,20 +227,33 @@ pub fn seed_demo_board(
     ];
 
     // Hand out increasing ranks per column so cards keep their seeded order.
+    // Stamp each card's events with the one shared timestamp: a label event
+    // that landed a second after its issue would count as an "update" and show
+    // a nondeterministic "updated" time in the detail view (and its snapshots).
     let mut last_rank: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     for (col_id, title, body, labels) in cards {
-        let Some(id) = ingest(ndb, build_issue(&addr, title, body), secret, publisher) else {
+        let Some(id) = ingest(
+            ndb,
+            build_issue(&addr, title, body).created_at(at),
+            secret,
+            publisher,
+        ) else {
             continue;
         };
         let rank = rank_between(last_rank.get(col_id).map(|s| s.as_str()), None);
         ingest(
             ndb,
-            build_placement(board_id, &addr, &id, col_id, &rank),
+            build_placement(board_id, &addr, &id, col_id, &rank).created_at(at),
             secret,
             publisher,
         );
         if !labels.is_empty() {
-            ingest(ndb, build_labels(&id, labels), secret, publisher);
+            ingest(
+                ndb,
+                build_labels(&id, labels).created_at(at),
+                secret,
+                publisher,
+            );
         }
         last_rank.insert(col_id, rank);
     }
@@ -737,8 +757,17 @@ mod tests {
 
     /// Seed the populated demo board for the card-operation tests to act on.
     /// Columns: Backlog, Todo, In Progress, In Review, Done; cards 3 / 2 / 1 / 0 / 1.
+    /// Seeded in the past so follow-up edits (stamped with the wall clock)
+    /// always sort after it.
     fn seed_demo(t: &TestNdb) {
-        seed_demo_board(&t.ndb, &t.kp.pubkey, &t.secret(), BOARD_ID, &mut NoPublish);
+        seed_demo_board(
+            &t.ndb,
+            &t.kp.pubkey,
+            &t.secret(),
+            BOARD_ID,
+            1_700_000_000,
+            &mut NoPublish,
+        );
     }
 
     #[test]

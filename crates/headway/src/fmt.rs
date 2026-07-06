@@ -11,12 +11,28 @@ pub fn short_author(author: &[u8; 32]) -> String {
     Pubkey::new(*author).hex().chars().take(12).collect()
 }
 
+thread_local! {
+    /// When set, [`rel_time`] measures against this instant instead of the
+    /// wall clock. See [`freeze_now`].
+    static FROZEN_NOW: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Freeze [`rel_time`]'s idea of "now" for the current thread. Snapshot tests
+/// pin it to the same instant they seed the board with, so relative times
+/// render identically on every run; the egui test harness drives the app on
+/// the test's own thread, so freezing there covers everything it draws.
+pub fn freeze_now(now: u64) {
+    FROZEN_NOW.set(Some(now));
+}
+
 /// A coarse "x ago" rendering of a unix timestamp for the comment thread.
 pub fn rel_time(created_at: u64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now = FROZEN_NOW.get().unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    });
     let secs = now.saturating_sub(created_at);
     match secs {
         0..=59 => "just now".to_string(),

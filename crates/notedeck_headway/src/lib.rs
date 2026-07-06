@@ -747,12 +747,15 @@ mod tests {
 
     /// Seed the populated demo board for the sync tests to fold and act on. The
     /// production seed is card-less; the fixture lives in [`store::seed_demo_board`].
+    /// Seeded in the past so follow-up edits (stamped with the wall clock)
+    /// always sort after it.
     fn seed_demo(ndb: &Ndb, kp: &FullKeypair) {
         store::seed_demo_board(
             ndb,
             &kp.pubkey,
             &kp.secret_key.secret_bytes(),
             store::BOARD_ID,
+            1_700_000_000,
             &mut store::NoPublish,
         );
     }

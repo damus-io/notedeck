@@ -52,6 +52,18 @@ fn render_headway(ctx: &egui::Context, state: &mut HeadwayTestState) {
     });
 }
 
+/// The instant the demo board is seeded at, and what the frozen clock reads.
+/// Pinning both (plus the signing key) makes every seeded event — and so the
+/// word-ids and relative times the UI renders — identical run to run.
+const SEED_AT: u64 = 1_700_000_000;
+
+/// A fixed signing key, so seeded event ids don't vary with a random keypair.
+fn test_keypair() -> FullKeypair {
+    let secret = enostr::SecretKey::from_slice(&[7u8; 32]).expect("valid test secret");
+    let kp = Keypair::from_secret(secret);
+    FullKeypair::new(kp.pubkey, kp.secret_key.expect("has secret"))
+}
+
 /// Build a harness at `size` with fonts installed, a signing account injected,
 /// and the default board seeded + materialised.
 fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
@@ -63,10 +75,14 @@ fn headway_harness(size: egui::Vec2) -> Harness<'static, HeadwayTestState> {
     // flush on `AppContext` drop — no Tokio runtime required.
     let notedeck = Notedeck::init(&ctx, tmpdir.path(), &args);
 
+    // The harness renders on this same thread, so the frozen clock covers
+    // every relative time the app draws (e.g. the card detail's "created").
+    headway::fmt::freeze_now(SEED_AT);
+
     let state = HeadwayTestState {
         notedeck,
         headway: Headway::new(),
-        account: FullKeypair::generate(),
+        account: test_keypair(),
         _tmpdir: tmpdir,
         fonts_installed: false,
     };
@@ -96,7 +112,14 @@ fn wait_for_board(harness: &mut Harness<'static, HeadwayTestState>) {
 /// Seed the populated demo board for the snapshot/flow tests to render against.
 /// The production seed is card-less; the fixture lives in [`store::seed_demo_board`].
 fn seed_demo(ndb: &Ndb, pubkey: &Pubkey, secret: &[u8; 32]) {
-    store::seed_demo_board(ndb, pubkey, secret, store::BOARD_ID, &mut store::NoPublish);
+    store::seed_demo_board(
+        ndb,
+        pubkey,
+        secret,
+        store::BOARD_ID,
+        SEED_AT,
+        &mut store::NoPublish,
+    );
 }
 
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
