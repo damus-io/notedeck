@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use egui_kittest::Harness;
-use egui_kittest::kittest::{Key, Queryable};
+use egui_kittest::kittest::{Key, Node, Queryable};
 use enostr::{FullKeypair, Keypair, Pubkey};
 use nostrdb::{Ndb, Transaction};
 use notedeck::{App, Notedeck};
@@ -120,6 +120,17 @@ fn seed_demo(ndb: &Ndb, pubkey: &Pubkey, secret: &[u8; 32]) {
         SEED_AT,
         &mut store::NoPublish,
     );
+}
+
+/// The focused text input — the field a just-opened composer or rename editor
+/// grabs. A bare `TextInput` role query is ambiguous now that the board header
+/// carries an always-visible filter field; the flows only ever type into the
+/// input that took focus, so focus picks the right one.
+fn focused_text_input<'h>(harness: &'h Harness<'static, HeadwayTestState>) -> Node<'h> {
+    harness
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.is_focused())
+        .expect("a focused text input")
 }
 
 /// Pump frames (with small sleeps, since ndb ingest is async) until a widget
@@ -276,10 +287,8 @@ fn add_column_flow() {
     harness.run();
 
     // Type into the (auto-focused) composer field, then commit via "Add". The
-    // field has no label, so target it by its text-input role.
-    harness
-        .get_by_role(egui::accesskit::Role::TextInput)
-        .type_text("Ideas");
+    // field has no label, so target it by focus.
+    focused_text_input(&harness).type_text("Ideas");
     harness.run();
     harness.get_by_label("Add").simulate_click();
 
@@ -308,17 +317,11 @@ fn rename_column_flow() {
 
     // The header is now an inline field seeded with "Backlog". Select all
     // (Command+A maps to egui's select-all), replace it, and commit with Enter.
-    harness
-        .get_by_role(egui::accesskit::Role::TextInput)
-        .key_combination(&[Key::Command, Key::A]);
+    focused_text_input(&harness).key_combination(&[Key::Command, Key::A]);
     harness.run();
-    harness
-        .get_by_role(egui::accesskit::Role::TextInput)
-        .type_text("Inbox");
+    focused_text_input(&harness).type_text("Inbox");
     harness.run();
-    harness
-        .get_by_role(egui::accesskit::Role::TextInput)
-        .key_press(Key::Enter);
+    focused_text_input(&harness).key_press(Key::Enter);
 
     wait_for_label(&mut harness, "Inbox");
     wait_for_absent(&mut harness, "Backlog");
