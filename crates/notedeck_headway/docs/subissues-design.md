@@ -1,6 +1,6 @@
 # Headway subissues: structured parent/child cards
 
-Status: spike (prototyped through the model, store and CLI layers; GUI pending)
+Status: implemented (model, store, CLI and GUI)
 
 ## Motivation
 
@@ -167,15 +167,19 @@ subissues (2/4 done)
 
 `--json` gains `parent`, `parent_words` and `subissues` on each card.
 
-## GUI plan (follow-up, not in the spike)
+## GUI
 
 - Card front: a compact `2/4` progress pill when a card has children, and a
-  small `↳` affordance on children.
-- Card detail: a subissues section (checklist rendering, click to open the
-  child), a parent breadcrumb above the title, and "add subissue" inline entry
-  that creates the card + relation in one action (the store already supports
-  it via `AddCard { parent }`).
-- Context menu: "Set parent…" picker mirroring the move/link-to-board picker.
+  small `↳` marker on children.
+- Card detail: a subissues section — the derived checklist (read-only
+  checkboxes, click a child to open it, muted column/archived hints) with an
+  inline "Add subissue…" composer that creates the card + relation in one
+  action (`AddCard { parent }`, landing in the first column) — and a
+  "↳ subissue of" breadcrumb above the title (click to open the parent, ✕ to
+  detach). A parent placed only on another board renders as its word-id.
+- Context menu: a "Set parent" submenu mirroring the move/link-to-board picker,
+  filtered with the same cycle guard the store applies on write, plus a
+  "Detach from parent" entry.
 
 ## Alternatives considered
 

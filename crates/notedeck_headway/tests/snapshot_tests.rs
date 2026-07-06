@@ -209,6 +209,53 @@ fn snapshot_headway_detail() {
     }
 }
 
+/// A subissue's detail carries a "↳ subissue of" breadcrumb above the title —
+/// the demo board parents the sync card under the event-model card.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn snapshot_headway_subissue_detail() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    harness
+        .get_by_label("Sync cards across relays")
+        .simulate_click();
+    harness.run_steps(3);
+    harness.snapshot("headway_subissue_detail");
+}
+
+/// The detail pane's subissue checklist and its inline composer: the demo
+/// board's event-model card starts at 1/2 done (the scaffold child is in Done),
+/// and adding a subissue creates a card in Backlog already parented to it.
+#[test]
+#[ignore] // requires lavapipe — run via scripts/snapshot-test
+fn add_subissue_flow() {
+    let mut harness = headway_harness(egui::Vec2::new(1200.0, 800.0));
+
+    harness
+        .get_by_label("Define nostr event model for boards")
+        .simulate_click();
+    harness.run();
+
+    // The fixture rollup: one of the two children sits in Done.
+    harness.get_by_label("1/2 done");
+
+    // The subissues section sits above Labels, so its composer is the first
+    // single-line text input in the pane. Click to focus it, then type.
+    harness
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .expect("the add-subissue field")
+        .simulate_click();
+    harness.run();
+    focused_text_input(&harness).type_text("Write a relay conformance suite");
+    harness.run();
+    focused_text_input(&harness).key_press(Key::Enter);
+
+    // The new child lands in the checklist (in Backlog, so not done).
+    wait_for_label(&mut harness, "1/3 done");
+    wait_for_label(&mut harness, "Write a relay conformance suite");
+}
+
 /// The inline card widget must render its content left-aligned even though the
 /// notebook lays node content out centered (egui's `Ui::put` →
 /// `centered_and_justified`). Reproduce that centered context and snapshot the

@@ -64,6 +64,8 @@ pub struct BoardUiState {
     detail_desc_mode: EditMode,
     /// Buffer backing the "add label" field in the detail sheet.
     new_label: String,
+    /// Buffer backing the "add subissue" field in the detail sheet.
+    new_subissue: String,
     /// Buffer backing the "write a comment" composer in the detail pane.
     comment_draft: String,
     /// Whether the archived-cards sheet is open.
@@ -557,7 +559,7 @@ fn column_ui(
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         cards_drop_zone(
-                            ui, theme, &view.id, boards, column, state, filter, col_idx, action,
+                            ui, theme, view, boards, column, state, filter, col_idx, action,
                             clicked,
                         );
                     });
@@ -570,7 +572,7 @@ fn column_ui(
 fn cards_drop_zone(
     ui: &mut egui::Ui,
     theme: &ColorTheme,
-    source_board: &str,
+    view: &BoardView,
     boards: &[BoardSummary],
     column: &ColumnView,
     state: &mut BoardUiState,
@@ -659,13 +661,13 @@ fn cards_drop_zone(
                     // Cross-board: relocate (move) or share (link) the card onto
                     // another of the account's boards. Membership is
                     // placement-driven, so a link keeps the current board too.
-                    if boards.iter().any(|b| b.id != source_board) {
+                    if boards.iter().any(|b| b.id != view.id) {
                         ui.separator();
                         card_board_submenu(
                             ui,
                             "Move to board",
                             card.id,
-                            source_board,
+                            &view.id,
                             boards,
                             state,
                             CardBoardOp::Move,
@@ -674,12 +676,15 @@ fn cards_drop_zone(
                             ui,
                             "Link to board",
                             card.id,
-                            source_board,
+                            &view.id,
                             boards,
                             state,
                             CardBoardOp::Link,
                         );
                     }
+                    // Subissues: parent this card under another card on the
+                    // board, or detach it from its current parent.
+                    card_parent_menu(ui, view, card, action);
                 });
 
                 // Hover affordance: cards are clickable, so highlight the border and
@@ -785,6 +790,70 @@ fn card_board_submenu(
     });
 }
 
+/// Context-menu parent controls: a "Set parent" submenu listing every card that
+/// could become this card's parent — filtered with the same cycle guard the
+/// store applies on write, so nothing the menu offers can be refused — plus a
+/// detach entry when the card already has a parent. Draws nothing on a board
+/// where neither applies (a single-card board with no parent set).
+///
+/// Immediate-mode: this runs while the menu is open, so candidates are walked
+/// as an iterator (twice — once to probe, once to draw) rather than collected.
+fn card_parent_menu(
+    ui: &mut egui::Ui,
+    view: &BoardView,
+    card: &CardView,
+    action: &mut Option<BoardAction>,
+) {
+    let candidates = || {
+        view.columns
+            .iter()
+            .flat_map(|c| &c.cards)
+            .filter(|p| p.id != card.id && !crate::store::would_cycle(view, card.id, p.id))
+    };
+    let has_candidates = candidates().next().is_some();
+    if !has_candidates && card.parent.is_none() {
+        return;
+    }
+    ui.separator();
+    if has_candidates {
+        ui.menu_button("Set parent", |ui| {
+            for parent in candidates() {
+                let current = card.parent == Some(parent.id);
+                if ui
+                    .selectable_label(current, menu_title(&parent.title).as_ref())
+                    .clicked()
+                {
+                    if !current {
+                        *action = Some(BoardAction::SetParent {
+                            card: card.id,
+                            parent: Some(parent.id),
+                        });
+                    }
+                    ui.close_menu();
+                }
+            }
+        });
+    }
+    if card.parent.is_some() && ui.button("Detach from parent").clicked() {
+        *action = Some(BoardAction::SetParent {
+            card: card.id,
+            parent: None,
+        });
+        ui.close_menu();
+    }
+}
+
+/// Clamp a card title to a menu-friendly length so one long title doesn't
+/// stretch the whole context menu. Borrows when the title already fits, so the
+/// common case doesn't allocate.
+fn menu_title(title: &str) -> std::borrow::Cow<'_, str> {
+    const MAX_CHARS: usize = 40;
+    match title.char_indices().nth(MAX_CHARS) {
+        None => std::borrow::Cow::Borrowed(title),
+        Some((clip, _)) => std::borrow::Cow::Owned(format!("{}…", &title[..clip])),
+    }
+}
+
 /// Render a single card as a styled, draggable surface.
 fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
     egui::Frame::new()
@@ -814,6 +883,11 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
             // full `board#word-id` for copy-paste (see [`headway::wordid`]).
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = SPACING_XS;
+                // A muted ↳ marks the card as someone's subissue; its parent is
+                // named in the detail view's breadcrumb.
+                if card.parent.is_some() {
+                    ui.label(egui::RichText::new("↳").small().color(theme.text_muted));
+                }
                 ui.label(egui::RichText::new(&card.title).color(theme.text_primary));
                 ui.label(
                     egui::RichText::new(format!("#{}", headway::wordid::encode(card.id.bytes())))
@@ -834,7 +908,36 @@ fn card_ui(ui: &mut egui::Ui, theme: &ColorTheme, card: &CardView) {
                     .truncate(),
                 );
             }
+
+            // Subissue rollup: how many of the card's children are done.
+            if !card.subissues.is_empty() {
+                ui.add_space(2.0);
+                subissue_progress_pill(ui, theme, &card.subissues);
+            }
         });
+}
+
+/// A compact `n/m` pill showing how many of a card's subissues are done —
+/// derived from where the children sit on their boards, never stored.
+fn subissue_progress_pill(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    subissues: &[event::SubissueView],
+) {
+    let done = subissues.iter().filter(|s| s.done).count();
+    egui::Frame::new()
+        .fill(theme.surface_secondary)
+        .corner_radius(egui::CornerRadius::same(RADIUS_PILL as u8))
+        .inner_margin(egui::Margin::symmetric(SPACING_SM as i8, 1))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(format!("{done}/{}", subissues.len()))
+                    .small()
+                    .color(theme.text_muted),
+            );
+        })
+        .response
+        .on_hover_text(format!("{done} of {} subissues done", subissues.len()));
 }
 
 /// A deterministic color for a label, derived from its text.
@@ -1251,6 +1354,7 @@ fn card_detail_pane_ui(
         state.detail_title_mode = seed_edit_mode(&card.title);
         state.detail_desc_mode = seed_edit_mode(&card.description);
         state.new_label.clear();
+        state.new_subissue.clear();
         state.comment_draft.clear();
     }
 
@@ -1266,6 +1370,30 @@ fn card_detail_pane_ui(
         created_at: card.created_at,
         updated_at: card.updated_at,
         comments: card.comments.clone(),
+        parent: card.parent.map(|pid| DetailParent {
+            id: pid,
+            title: find_card(view, pid).map(|(_, p)| p.title.clone()),
+        }),
+        subissues: card
+            .subissues
+            .iter()
+            .map(|s| DetailSubissue {
+                id: s.id,
+                title: s.title.clone(),
+                // Resolve the column id to its display name; a child placed only
+                // on another board keeps the raw id (better than nothing).
+                column: s.column.as_ref().map(|col_id| {
+                    view.columns
+                        .iter()
+                        .find(|c| &c.id == col_id)
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| col_id.clone())
+                }),
+                done: s.done,
+                archived: s.archived,
+                on_board: find_card(view, s.id).is_some(),
+            })
+            .collect(),
     };
 
     // Escape backs out to the board. Consume it so it doesn't also fall through
@@ -1394,6 +1522,33 @@ struct DetailCtx {
     /// The card's comment thread, oldest first. Rendered flat (replies aren't
     /// indented yet) but each carries its `parent` for forward-compatibility.
     comments: Vec<CommentView>,
+    /// The card's parent, when it's a subissue (rendered as a breadcrumb).
+    parent: Option<DetailParent>,
+    /// The card's subissues, precomputed for the checklist rows.
+    subissues: Vec<DetailSubissue>,
+}
+
+/// The open card's parent, resolved for the detail breadcrumb. `title` is
+/// `None` when the parent isn't placed on this board — it can't be opened from
+/// here, so the breadcrumb falls back to showing its word-id.
+struct DetailParent {
+    id: NoteId,
+    title: Option<String>,
+}
+
+/// One row of the detail sheet's subissue checklist, precomputed from the
+/// board view (column ids resolved to names) so the render closures don't
+/// re-borrow it.
+struct DetailSubissue {
+    id: NoteId,
+    title: String,
+    /// The live column's display *name*, or the raw column id for a child
+    /// placed only on another board. `None` when unplaced or archived.
+    column: Option<String>,
+    done: bool,
+    archived: bool,
+    /// Whether the child is on this board, i.e. clickable to open its detail.
+    on_board: bool,
 }
 
 /// The single user intent collected while rendering the detail sheet, resolved
@@ -1416,6 +1571,12 @@ enum DetailOutcome {
     RemoveLabel(String),
     /// Post the contents of the comment composer as a new top-level comment.
     AddComment,
+    /// Open another card's detail (a subissue row or the parent breadcrumb).
+    OpenCard(NoteId),
+    /// Commit the "add subissue" field: create a card parented to this one.
+    AddSubissue,
+    /// Clear this card's parent relation.
+    DetachParent,
 }
 
 /// The dimmed full-screen backdrop behind the sheet. Returns true if it was
@@ -1461,11 +1622,18 @@ fn detail_body_ui(
     action: &mut Option<BoardAction>,
     outcome: &mut DetailOutcome,
 ) {
+    if let Some(parent) = &ctx.parent {
+        detail_parent_breadcrumb_ui(ui, theme, parent, outcome);
+        ui.add_space(SPACING_XS);
+    }
     detail_title_section_ui(ui, ctx, state, action);
     detail_card_ref_ui(ui, theme, ctx);
 
     ui.add_space(SPACING_MD);
     detail_description_section_ui(ui, theme, ctx, state, action);
+
+    ui.add_space(SPACING_MD);
+    detail_subissues_section_ui(ui, theme, ctx, state, outcome);
 
     ui.add_space(SPACING_MD);
     detail_labels_section_ui(ui, theme, ctx, state, outcome);
@@ -1656,6 +1824,136 @@ fn detail_description_section_ui(
             }
         }
     }
+}
+
+/// A muted "↳ subissue of <parent>" breadcrumb above the title. The parent name
+/// is a click-to-open button when the parent is on this board; a trailing ✕
+/// detaches the card from it.
+fn detail_parent_breadcrumb_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    parent: &DetailParent,
+    outcome: &mut DetailOutcome,
+) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = SPACING_XS;
+        ui.label(
+            egui::RichText::new("↳ subissue of")
+                .small()
+                .color(theme.text_muted),
+        );
+        match &parent.title {
+            Some(title) => {
+                let btn = egui::Button::new(
+                    egui::RichText::new(title)
+                        .small()
+                        .color(theme.text_secondary),
+                )
+                .frame(false)
+                .fill(egui::Color32::TRANSPARENT);
+                if ui.add(btn).on_hover_text("Open parent").clicked() {
+                    *outcome = DetailOutcome::OpenCard(parent.id);
+                }
+            }
+            // The parent lives on another board (or is archived); name it by
+            // reference since it can't be opened from here.
+            None => {
+                ui.label(
+                    egui::RichText::new(format!("#{}", headway::wordid::encode(parent.id.bytes())))
+                        .small()
+                        .color(theme.text_muted),
+                );
+            }
+        }
+        let x = egui::Button::new(egui::RichText::new("✕").small().color(theme.text_muted))
+            .frame(false)
+            .fill(egui::Color32::TRANSPARENT);
+        if ui.add(x).on_hover_text("Detach from parent").clicked() {
+            *outcome = DetailOutcome::DetachParent;
+        }
+    });
+}
+
+/// Subissues section: the derived checklist — a read-only checkbox (done =
+/// where the child sits on its board, never a stored tick), the child's title
+/// (click to open when it's on this board) and a muted column/archived hint —
+/// plus an inline composer that creates a card already parented to this one.
+fn detail_subissues_section_ui(
+    ui: &mut egui::Ui,
+    theme: &ColorTheme,
+    ctx: &DetailCtx,
+    state: &mut BoardUiState,
+    outcome: &mut DetailOutcome,
+) {
+    ui.horizontal(|ui| {
+        section_label(ui, theme, "Subissues");
+        if !ctx.subissues.is_empty() {
+            let done = ctx.subissues.iter().filter(|s| s.done).count();
+            ui.label(
+                egui::RichText::new(format!("{done}/{} done", ctx.subissues.len()))
+                    .small()
+                    .color(theme.text_muted),
+            );
+        }
+    });
+    ui.add_space(SPACING_XS);
+
+    for sub in &ctx.subissues {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = SPACING_XS;
+            // Same read-only checkbox the markdown task lists render — but this
+            // one is derived from the board, so it can never go stale.
+            let mut done = sub.done;
+            ui.add_enabled(false, egui::Checkbox::without_text(&mut done));
+            if sub.on_board {
+                let btn =
+                    egui::Button::new(egui::RichText::new(&sub.title).color(theme.text_primary))
+                        .frame(false)
+                        .fill(egui::Color32::TRANSPARENT);
+                if ui.add(btn).on_hover_text("Open subissue").clicked() {
+                    *outcome = DetailOutcome::OpenCard(sub.id);
+                }
+            } else {
+                ui.label(egui::RichText::new(&sub.title).color(theme.text_primary));
+            }
+            // Where the child sits: archived trumps the column (an archived
+            // child has no live column to show).
+            let hint = if sub.archived {
+                Some("archived")
+            } else {
+                sub.column.as_deref()
+            };
+            if let Some(hint) = hint {
+                ui.label(
+                    egui::RichText::new(format!("({hint})"))
+                        .small()
+                        .color(theme.text_muted),
+                );
+            }
+            ui.label(
+                egui::RichText::new(format!("#{}", headway::wordid::encode(sub.id.bytes())))
+                    .small()
+                    .color(theme.text_muted.gamma_multiply(0.6)),
+            );
+        });
+    }
+    if !ctx.subissues.is_empty() {
+        ui.add_space(SPACING_XS);
+    }
+
+    // Mirrors the "add label" composer: commit on the button or Enter. The new
+    // card lands in the first column, parented to this one.
+    ui.horizontal(|ui| {
+        let field = ui.add(
+            egui::TextEdit::singleline(&mut state.new_subissue)
+                .desired_width(220.0)
+                .hint_text("Add subissue…"),
+        );
+        let submit = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if ui.button("Add").clicked() || submit {
+            *outcome = DetailOutcome::AddSubissue;
+        }
+    });
 }
 
 /// Labels section: removable chips plus an "add label" field.
@@ -1946,6 +2244,31 @@ fn resolve_detail_outcome(
                 });
             }
             state.comment_draft.clear();
+        }
+        DetailOutcome::OpenCard(id) => {
+            // Swap the detail to the other card; the edit buffers reseed next
+            // frame because `detail_for` no longer matches the selection.
+            state.selected = Some(id);
+        }
+        DetailOutcome::AddSubissue => {
+            let title = state.new_subissue.trim().to_string();
+            if !title.is_empty() {
+                *action = Some(BoardAction::AddCard {
+                    // New subissues land in the first column, like the CLI's
+                    // `add --parent` default.
+                    col: 0,
+                    title,
+                    labels: vec![],
+                    parent: Some(ctx.card_id),
+                });
+            }
+            state.new_subissue.clear();
+        }
+        DetailOutcome::DetachParent => {
+            *action = Some(BoardAction::SetParent {
+                card: ctx.card_id,
+                parent: None,
+            });
         }
     }
 }

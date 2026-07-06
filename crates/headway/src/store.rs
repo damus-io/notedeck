@@ -239,6 +239,7 @@ pub fn seed_demo_board(
     // that landed a second after its issue would count as an "update" and show
     // a nondeterministic "updated" time in the detail view (and its snapshots).
     let mut last_rank: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let mut ids: std::collections::HashMap<&str, NoteId> = std::collections::HashMap::new();
     for (col_id, title, body, labels) in cards {
         let Some(id) = ingest(
             ndb,
@@ -248,6 +249,7 @@ pub fn seed_demo_board(
         ) else {
             continue;
         };
+        ids.insert(title, id);
         let rank = rank_between(last_rank.get(col_id).map(|s| s.as_str()), None);
         ingest(
             ndb,
@@ -264,6 +266,23 @@ pub fn seed_demo_board(
             );
         }
         last_rank.insert(col_id, rank);
+    }
+
+    // Parent the sync and scaffold cards under the event-model card so the demo
+    // board exercises subissue rendering: a 1/2 rollup on the parent (the
+    // scaffold child sits in Done, the sync child in Backlog) and a parent
+    // breadcrumb on each child.
+    if let Some(parent) = ids.get("Define nostr event model for boards") {
+        for child in ["Sync cards across relays", "Scaffold the Headway app crate"] {
+            if let Some(child) = ids.get(child) {
+                ingest(
+                    ndb,
+                    build_relation(child, Some(parent)).created_at(at),
+                    secret,
+                    publisher,
+                );
+            }
+        }
     }
 }
 
@@ -634,8 +653,10 @@ fn find_card_any(view: &BoardView, card: NoteId) -> Option<&CardView> {
 /// view only, so an ancestor placed solely on another board isn't followed —
 /// good enough for the write-path guard (the reducer renders a slipped-through
 /// cycle harmlessly, one level at a time). Also refuses an unknown parent, and
-/// caps the walk so a pre-existing cycle can't spin it forever.
-fn would_cycle(view: &BoardView, card: NoteId, parent: NoteId) -> bool {
+/// caps the walk so a pre-existing cycle can't spin it forever. Public so the
+/// GUI's parent picker can filter its candidates with the same rule the write
+/// path enforces.
+pub fn would_cycle(view: &BoardView, card: NoteId, parent: NoteId) -> bool {
     let mut cur = Some(parent);
     for _ in 0..64 {
         let Some(id) = cur else {
