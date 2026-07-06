@@ -636,6 +636,15 @@ pub struct CardView {
     /// re-placement (move/delete/archive) must stamp a strictly-greater
     /// timestamp so it wins latest-wins even within the same wall-clock second.
     pub placed_at: u64,
+    /// `created_at` of the issue event — when the card was created. The issue
+    /// is immutable, so this never moves.
+    pub created_at: u64,
+    /// When the card's content last changed: the newest authorised amendment
+    /// (title, description or label edit) or comment, falling back to
+    /// `created_at` if the card was never touched. Placements are board-scoped
+    /// and tracked by `placed_at` instead, keeping this board-agnostic — the
+    /// same issue shows the same `updated_at` on every board it's placed on.
+    pub updated_at: u64,
     /// Comments on the card, oldest first (sorted by `created_at`, then id).
     pub comments: Vec<CommentView>,
 }
@@ -705,6 +714,8 @@ pub fn card_json(card: &CardView) -> serde_json::Value {
         "description": card.description,
         "labels": card.labels,
         "rank": card.rank,
+        "created_at": card.created_at,
+        "updated_at": card.updated_at,
         "comments": card.comments.iter().map(comment_json).collect::<Vec<_>>(),
     })
 }
@@ -842,27 +853,24 @@ impl BoardReducer {
         // Authority: the card author or the board author may amend the card.
         let authorised = |who: &[u8; 32]| who == &issue.author || who == board_author;
 
-        let title = self
+        let subject = self
             .subjects
             .get(&issue.id)
-            .filter(|s| authorised(&s.author))
+            .filter(|s| authorised(&s.author));
+        let title = subject
             .map(|s| s.subject.clone())
             .unwrap_or_else(|| issue.subject.clone());
 
-        let description = self
-            .covers
-            .get(&issue.id)
-            .filter(|c| authorised(&c.author))
+        let cover = self.covers.get(&issue.id).filter(|c| authorised(&c.author));
+        let description = cover
             .map(|c| c.body.clone())
             .unwrap_or_else(|| issue.body.clone());
 
         // Labels resolve latest-authorised-wins: the newest authorised label
         // event is the card's complete set, overriding the issue's inline labels.
         // (Removal = republish the set without the label.)
-        let mut labels = self
-            .labels
-            .get(&issue.id)
-            .filter(|s| authorised(&s.author))
+        let label_set = self.labels.get(&issue.id).filter(|s| authorised(&s.author));
+        let mut labels = label_set
             .map(|s| s.labels.clone())
             .unwrap_or_else(|| issue.inline_labels.clone());
         labels.sort();
@@ -884,6 +892,15 @@ impl BoardReducer {
             .collect();
         comments.sort_by(|a, b| (a.created_at, a.id.bytes()).cmp(&(b.created_at, b.id.bytes())));
 
+        // The newest touch wins: creation, the winning amendments, or the last
+        // comment. Placements deliberately don't count (see the field docs).
+        let updated_at = issue
+            .created_at
+            .max(subject.map_or(0, |s| s.created_at))
+            .max(cover.map_or(0, |c| c.created_at))
+            .max(label_set.map_or(0, |l| l.created_at))
+            .max(comments.last().map_or(0, |c| c.created_at));
+
         CardView {
             id: NoteId::new(issue.id),
             author: issue.author,
@@ -892,6 +909,8 @@ impl BoardReducer {
             labels,
             rank,
             placed_at,
+            created_at: issue.created_at,
+            updated_at,
             comments,
         }
     }
@@ -1338,6 +1357,54 @@ mod tests {
         assert_eq!(todo.cards[1].description, "details");
 
         assert!(view.columns[1].cards.is_empty());
+    }
+
+    /// `created_at` pins to the immutable issue event; `updated_at` follows the
+    /// newest amendment or comment and doesn't count placements (moves are
+    /// tracked by `placed_at`).
+    #[test]
+    fn reduce_resolves_card_timestamps() {
+        let owner = FullKeypair::generate();
+        let addr = board_address(&owner.pubkey, "b1");
+        let cols = vec![ColumnDef::new("todo", "Todo")];
+
+        let parse_owned = |b: NoteBuilder, kp: &FullKeypair| {
+            let note = b.sign(&kp.secret_key.secret_bytes()).build().unwrap();
+            parse(&note).unwrap()
+        };
+
+        // Explicit timestamps make the issue id (and the fold) deterministic.
+        let i1 = note_id(&owner, build_issue(&addr, "First", "").created_at(1_000));
+        let mut events = vec![
+            parse_owned(build_board("b1", "Board", "", &cols), &owner),
+            parse_owned(build_issue(&addr, "First", "").created_at(1_000), &owner),
+            parse_owned(
+                build_placement("b1", &addr, &i1, "todo", "m").created_at(5_000),
+                &owner,
+            ),
+        ];
+
+        // Untouched card: updated_at falls back to creation, and the (later)
+        // placement doesn't drag it forward.
+        let card = reduce(&events)[0].columns[0].cards[0].clone();
+        assert_eq!(card.created_at, 1_000);
+        assert_eq!(card.updated_at, 1_000);
+
+        // A rename bumps updated_at without moving created_at.
+        events.push(parse_owned(
+            build_subject_edit(&i1, "Renamed").created_at(2_000),
+            &owner,
+        ));
+        let card = reduce(&events)[0].columns[0].cards[0].clone();
+        assert_eq!(card.created_at, 1_000);
+        assert_eq!(card.updated_at, 2_000);
+
+        // A comment counts as an update too.
+        events.push(parse_owned(
+            build_comment(&i1, &owner.pubkey, None, "hi").created_at(3_000),
+            &owner,
+        ));
+        assert_eq!(reduce(&events)[0].columns[0].cards[0].updated_at, 3_000);
     }
 
     #[test]

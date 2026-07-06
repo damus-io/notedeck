@@ -580,6 +580,10 @@ fn print_card_detail(view: &BoardView, card: &CardView, col: &str) {
     if !card.labels.is_empty() {
         println!("labels  {}", card.labels.join(", "));
     }
+    println!("created {}", headway::fmt::rel_time(card.created_at));
+    if card.updated_at > card.created_at {
+        println!("updated {}", headway::fmt::rel_time(card.updated_at));
+    }
 
     println!("\n    {}", card.title);
     if !card.description.is_empty() {

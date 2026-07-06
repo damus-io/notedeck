@@ -197,6 +197,8 @@ fn snapshot_inline_card() {
         labels: vec!["headway".to_string()],
         rank: String::new(),
         placed_at: 0,
+        created_at: 0,
+        updated_at: 0,
         comments: vec![],
     };
 

@@ -1262,6 +1262,8 @@ fn card_detail_pane_ui(
         labels: card.labels.clone(),
         // Owned copy so the body can render the status pill and column chips.
         columns: view.columns.iter().map(|c| c.name.clone()).collect(),
+        created_at: card.created_at,
+        updated_at: card.updated_at,
         comments: card.comments.clone(),
     };
 
@@ -1384,6 +1386,10 @@ struct DetailCtx {
     desc: String,
     labels: Vec<String>,
     columns: Vec<String>,
+    /// When the card was created / last amended (see [`CardView`]), rendered
+    /// as relative times next to the card ref.
+    created_at: u64,
+    updated_at: u64,
     /// The card's comment thread, oldest first. Rendered flat (replies aren't
     /// indented yet) but each carries its `parent` for forward-compatibility.
     comments: Vec<CommentView>,
@@ -1545,21 +1551,36 @@ fn detail_title_section_ui(
 
 /// The card's word-id reference, rendered as a muted, click-to-copy caption
 /// directly under the title — the GUI mirror of what the CLI prints, and a
-/// stable handle to paste into commits/chat (see [`headway::wordid`]).
+/// stable handle to paste into commits/chat (see [`headway::wordid`]) —
+/// followed by the card's created/updated relative times.
 fn detail_card_ref_ui(ui: &mut egui::Ui, theme: &ColorTheme, ctx: &DetailCtx) {
-    // A frameless button, not a Label: in this egui version labels are selectable
-    // by default, so a click starts a text selection and "copy" is only reachable
-    // through the built-in right-click menu. A button gives a true one-click copy.
-    let btn = egui::Button::new(
-        egui::RichText::new(&ctx.card_ref)
-            .color(theme.text_muted)
-            .small(),
-    )
-    .frame(false)
-    .fill(egui::Color32::TRANSPARENT);
-    if ui.add(btn).on_hover_text("Click to copy").clicked() {
-        ui.ctx().copy_text(ctx.card_ref.clone());
-    }
+    // Wrapped so the times fold under the ref on a narrow (mobile) pane.
+    ui.horizontal_wrapped(|ui| {
+        // A frameless button, not a Label: in this egui version labels are selectable
+        // by default, so a click starts a text selection and "copy" is only reachable
+        // through the built-in right-click menu. A button gives a true one-click copy.
+        let btn = egui::Button::new(
+            egui::RichText::new(&ctx.card_ref)
+                .color(theme.text_muted)
+                .small(),
+        )
+        .frame(false)
+        .fill(egui::Color32::TRANSPARENT);
+        if ui.add(btn).on_hover_text("Click to copy").clicked() {
+            ui.ctx().copy_text(ctx.card_ref.clone());
+        }
+
+        // Same `rel_time` as the comment thread, so the two read alike. The
+        // updated time only appears once it has drifted past creation.
+        let mut times = format!("· created {}", headway::fmt::rel_time(ctx.created_at));
+        if ctx.updated_at > ctx.created_at {
+            times.push_str(&format!(
+                " · updated {}",
+                headway::fmt::rel_time(ctx.updated_at)
+            ));
+        }
+        ui.label(egui::RichText::new(times).color(theme.text_muted).small());
+    });
 }
 
 /// Description section: rendered markdown by default with an ✎ edit affordance,
@@ -2211,6 +2232,8 @@ mod tests {
             labels: labels.iter().map(|l| l.to_string()).collect(),
             rank: String::new(),
             placed_at: 0,
+            created_at: 0,
+            updated_at: 0,
             comments: vec![],
         }
     }
