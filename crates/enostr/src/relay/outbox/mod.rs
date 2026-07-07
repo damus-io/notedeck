@@ -45,7 +45,7 @@ mod service;
 mod full_history_tests;
 
 use eose::{ChangedRelayLeg, EoseTracker, FullyEosedEffectsPlan};
-use fd_pressure::{FdPressureGate, RelayAdmissionPolicy};
+use fd_pressure::FdPressureGate;
 use full_history::{FullHistoryFetchRequest, FullHistoryOutput, FullHistoryRuntime};
 pub use full_history::{
     FullHistoryLocalPresenceRequest, FullHistoryLocalPresenceResult, FullHistoryLocalSetRequest,
@@ -1520,7 +1520,7 @@ struct RelayAdmissionDeferral {
     retry_at: Instant,
     attempt: u32,
     demand: RelayTransportDemand,
-    policy: RelayAdmissionPolicy,
+    policy: admission::OutboxAdmissionPolicy,
     generation: u64,
 }
 

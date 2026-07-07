@@ -12,12 +12,13 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use admission_runtime::RelayOpenAdmissionCounts;
 use hashbrown::{HashMap, HashSet};
 use nostrdb::Filter;
 
 use super::{
-    admission::OutboxOpenAdmission,
-    fd_pressure::{RelayAdmissionPolicy, RelayOpenDecision, RelaySocketDemand},
+    admission::{OutboxAdmissionPolicy, OutboxOpenAdmission},
+    fd_pressure::{RelayOpenDecision, RelaySocketDemand},
 };
 use super::{
     FullHistoryOutput, FullHistoryRuntime, LowValueOpenBackoffReason, OutboxFullHistoryEffect,
@@ -54,6 +55,7 @@ use transport::{RelayReconnectState, ServiceWebsocketLeg};
 
 const ADMISSION_DEFER_BACKOFF_BASE: Duration = Duration::from_secs(1);
 const MAX_ADMISSION_DEFER_BACKOFF: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_CONNECTING_WEBSOCKETS: usize = 32;
 
 pub struct FullHistoryLocalSetResult {
     pub history_id: FullHistorySubId,
@@ -288,6 +290,7 @@ pub struct OutboxServiceConfig {
     pong_timeout: Duration,
     keepalive_reconnect_delay: Duration,
     keepalive_reconnect_backoff_base: Duration,
+    max_connecting_websockets: usize,
 }
 
 impl Default for OutboxServiceConfig {
@@ -297,6 +300,7 @@ impl Default for OutboxServiceConfig {
             pong_timeout: PONG_TIMEOUT,
             keepalive_reconnect_delay: DEFAULT_RECONNECT_DELAY,
             keepalive_reconnect_backoff_base: DEFAULT_RECONNECT_BACKOFF_BASE,
+            max_connecting_websockets: DEFAULT_MAX_CONNECTING_WEBSOCKETS,
         }
     }
 }
@@ -323,6 +327,13 @@ impl OutboxServiceConfig {
     /// Configure the reconnect backoff base for disconnected relay transports.
     pub fn with_keepalive_reconnect_backoff_base(mut self, base: Duration) -> Self {
         self.keepalive_reconnect_backoff_base = base;
+        self
+    }
+
+    /// Configure the maximum number of service-owned websocket legs that may
+    /// be in the Connecting state at once.
+    pub fn with_max_connecting_websockets(mut self, max: usize) -> Self {
+        self.max_connecting_websockets = max.max(1);
         self
     }
 }
@@ -442,9 +453,14 @@ where
     }
 
     fn start_service_open_admission_at(&mut self, now: Instant) -> OutboxOpenAdmission {
-        self.relay
-            .admission
-            .start_open_admission_at(self.relay.transport.websockets.len(), now)
+        self.relay.admission.start_open_admission_at(
+            RelayOpenAdmissionCounts::new(
+                self.relay.transport.websockets.len(),
+                self.relay.transport.connecting_websocket_count(),
+                self.relay.config.max_connecting_websockets,
+            ),
+            now,
+        )
     }
 
     fn authorize_service_relay_open(
@@ -469,63 +485,92 @@ where
             return false;
         }
 
+        let mut victims = Vec::new();
+        if !admission.connecting_limit_allows_open_after_evictions(0) {
+            let Some(victim) =
+                self.select_service_connecting_eviction_candidate(relay, demand, &victims)
+            else {
+                self.relay
+                    .admission
+                    .record_deferral(relay, demand, admission, now);
+                return false;
+            };
+            victims.push(victim);
+        }
+
         match admission.decide(RelaySocketDemand::Prioritized(demand.priority)) {
             RelayOpenDecision::Open => {
-                if !admission.websocket_limit_allows_open_after_evictions(0) {
+                if !admission.websocket_limit_allows_open_after_evictions(victims.len()) {
                     self.relay
                         .admission
                         .record_deferral(relay, demand, admission, now);
                     return false;
                 }
-                admission.record_socket_open();
-                self.relay.admission.clear_deferral(relay);
-                true
             }
             RelayOpenDecision::TryEvictThenOpen => {
-                let victim = self.select_service_eviction_candidate(relay, demand);
-                let evictions = usize::from(victim.is_some());
-                if !admission.websocket_limit_allows_open_after_evictions(evictions) {
+                if victims.is_empty() {
+                    if let Some(victim) =
+                        self.select_service_eviction_candidate_excluding(relay, demand, &victims)
+                    {
+                        victims.push(victim);
+                    }
+                }
+                if !admission.websocket_limit_allows_open_after_evictions(victims.len()) {
                     self.relay
                         .admission
                         .record_deferral(relay, demand, admission, now);
                     return false;
                 }
-                if let Some(victim) = victim {
-                    let _ = self.evict_service_websocket_for_admission(&victim, now);
-                    admission.record_socket_eviction();
-                    self.relay.admission.bump_generation();
-                }
-                admission.record_socket_open();
-                self.relay.admission.clear_deferral(relay);
-                true
             }
             RelayOpenDecision::RequireEviction => {
-                let Some(victim) = self.select_service_eviction_candidate(relay, demand) else {
-                    self.relay
-                        .admission
-                        .record_deferral(relay, demand, admission, now);
-                    return false;
-                };
-                if !admission.websocket_limit_allows_open_after_evictions(1) {
+                if !admission.websocket_limit_allows_open_after_evictions(victims.len()) {
+                    let Some(victim) =
+                        self.select_service_eviction_candidate_excluding(relay, demand, &victims)
+                    else {
+                        self.relay
+                            .admission
+                            .record_deferral(relay, demand, admission, now);
+                        return false;
+                    };
+                    victims.push(victim);
+                }
+                if !admission.websocket_limit_allows_open_after_evictions(victims.len()) {
                     self.relay
                         .admission
                         .record_deferral(relay, demand, admission, now);
                     return false;
                 }
-                let _ = self.evict_service_websocket_for_admission(&victim, now);
-                admission.record_socket_eviction();
-                self.relay.admission.bump_generation();
-                admission.record_socket_open();
-                self.relay.admission.clear_deferral(relay);
-                true
             }
             RelayOpenDecision::Defer => {
                 self.relay
                     .admission
                     .record_deferral(relay, demand, admission, now);
-                false
+                return false;
             }
         }
+
+        self.apply_service_admission_evictions(victims, admission, now);
+        admission.record_socket_open();
+        self.relay.admission.clear_deferral(relay);
+        true
+    }
+
+    fn apply_service_admission_evictions(
+        &mut self,
+        victims: Vec<NormRelayUrl>,
+        admission: &mut OutboxOpenAdmission,
+        now: Instant,
+    ) {
+        if victims.is_empty() {
+            return;
+        }
+
+        for victim in victims {
+            let was_connecting = self.relay.transport.websocket_is_connecting(&victim);
+            let _ = self.evict_service_websocket_for_admission(&victim, now);
+            admission.record_socket_eviction(was_connecting);
+        }
+        self.relay.admission.bump_generation();
     }
 
     fn enforce_service_websocket_connection_limit(&mut self, now: Instant) -> OutboxServiceOutput {
@@ -535,26 +580,50 @@ where
             let Some(victim) = self.select_lowest_service_websocket() else {
                 break;
             };
+            let was_connecting = self.relay.transport.websocket_is_connecting(&victim);
             output = merge_service_outputs(
                 output,
                 self.evict_service_websocket_for_admission(&victim, now),
             );
-            admission.record_socket_eviction();
+            admission.record_socket_eviction(was_connecting);
             self.relay.admission.bump_generation();
         }
         output
     }
 
-    fn select_service_eviction_candidate(
+    fn select_service_eviction_candidate_excluding(
         &self,
         incoming_relay: &NormRelayUrl,
         incoming: RelayTransportDemand,
+        excluded: &[NormRelayUrl],
     ) -> Option<NormRelayUrl> {
         self.relay
             .transport
             .websockets
             .keys()
             .filter(|relay| *relay != incoming_relay)
+            .filter(|relay| !excluded.iter().any(|excluded| excluded == *relay))
+            .filter_map(|relay| {
+                let candidate = self.service_relay_eviction_demand(relay)?;
+                (relay_transport_value_cmp(candidate, incoming) == Ordering::Less).then_some(relay)
+            })
+            .min_by(|left, right| self.cmp_service_eviction_candidate(left, right))
+            .cloned()
+    }
+
+    fn select_service_connecting_eviction_candidate(
+        &self,
+        incoming_relay: &NormRelayUrl,
+        incoming: RelayTransportDemand,
+        excluded: &[NormRelayUrl],
+    ) -> Option<NormRelayUrl> {
+        self.relay
+            .transport
+            .websockets
+            .keys()
+            .filter(|relay| *relay != incoming_relay)
+            .filter(|relay| !excluded.iter().any(|excluded| excluded == *relay))
+            .filter(|relay| self.relay.transport.websocket_is_connecting(relay))
             .filter_map(|relay| {
                 let candidate = self.service_relay_eviction_demand(relay)?;
                 (relay_transport_value_cmp(candidate, incoming) == Ordering::Less).then_some(relay)
@@ -1128,7 +1197,7 @@ where
         relay: &NormRelayUrl,
         demand: RelayTransportDemand,
         transport_deadline: Instant,
-        admission_policy: RelayAdmissionPolicy,
+        admission_policy: OutboxAdmissionPolicy,
         now: Instant,
     ) -> Instant {
         let transport_deadline =
@@ -1159,7 +1228,7 @@ where
         relay: &NormRelayUrl,
         demand: RelayTransportDemand,
         transport_deadline: Instant,
-        admission_policy: RelayAdmissionPolicy,
+        admission_policy: OutboxAdmissionPolicy,
         now: Instant,
     ) -> Instant {
         self.relay.admission.apply_deferral_deadline(
@@ -1897,6 +1966,24 @@ mod tests {
             .transport
             .set_status(relay.clone(), Some(RelayStatus::Connected));
         let _ = service.pool.apply_relay_transport_opened(relay, generation);
+    }
+
+    fn install_connecting_service_websocket<N, F, E>(
+        service: &mut OutboxService<N, F, E>,
+        relay: NormRelayUrl,
+        generation: u64,
+    ) {
+        let mut leg = websocket_leg(&relay, generation);
+        leg.conn.set_status(RelayStatus::Connecting);
+        service
+            .relay
+            .transport
+            .websockets
+            .insert(relay.clone(), leg);
+        let _ = service
+            .relay
+            .transport
+            .set_status(relay, Some(RelayStatus::Connecting));
     }
 
     async fn poll_service_progress<N, F, E>(service: &mut OutboxService<N, F, E>)
@@ -3274,6 +3361,100 @@ mod tests {
             .transport
             .websockets
             .contains_key(&relay_low_url_first));
+    }
+
+    #[tokio::test]
+    async fn service_connecting_cap_defers_low_value_demand_without_dropping_it() {
+        let blocker = relay("connecting-blocker");
+        let target = relay("connecting-deferred");
+        let mut service =
+            service_with_config(OutboxServiceConfig::default().with_max_connecting_websockets(1));
+
+        let blocker_id = service.id_registry().next_sub_id();
+        let _ = service.set_live(
+            blocker_id,
+            trivial_filter(),
+            remote_relay_pkgs(
+                blocker.clone(),
+                crate::relay::RelayDemandPriority::Opportunistic,
+                crate::relay::RelayRoutingPreference::NoPreference,
+            ),
+        );
+        install_connecting_service_websocket(&mut service, blocker.clone(), 1);
+
+        let target_id = service.id_registry().next_sub_id();
+        let _ = service.set_live(
+            target_id,
+            trivial_filter(),
+            remote_relay_pkgs(
+                target.clone(),
+                crate::relay::RelayDemandPriority::Opportunistic,
+                crate::relay::RelayRoutingPreference::NoPreference,
+            ),
+        );
+
+        poll_service_progress(&mut service).await;
+
+        assert!(service.relay.transport.websockets.contains_key(&blocker));
+        assert!(!service.relay.transport.websockets.contains_key(&target));
+        assert!(service.pool.relay_transport_demand(&target).is_some());
+        assert!(service
+            .relay
+            .admission
+            .state
+            .deferrals
+            .contains_key(&target));
+    }
+
+    #[tokio::test]
+    async fn service_connecting_cap_preempts_lower_value_connecting_for_stronger_demand() {
+        let low_value = relay("connecting-low-value");
+        let critical = relay("connecting-critical");
+        let mut service =
+            service_with_config(OutboxServiceConfig::default().with_max_connecting_websockets(1));
+
+        let low_value_id = service.id_registry().next_sub_id();
+        let _ = service.set_live(
+            low_value_id,
+            trivial_filter(),
+            remote_relay_pkgs(
+                low_value.clone(),
+                crate::relay::RelayDemandPriority::Opportunistic,
+                crate::relay::RelayRoutingPreference::NoPreference,
+            ),
+        );
+        install_connecting_service_websocket(&mut service, low_value.clone(), 1);
+
+        let critical_id = service.id_registry().next_sub_id();
+        let _ = service.set_live(
+            critical_id,
+            trivial_filter(),
+            explicit_relay_pkgs_with_priority(
+                critical.clone(),
+                crate::relay::RelayDemandPriority::Critical,
+            ),
+        );
+
+        poll_service_progress(&mut service).await;
+
+        assert!(!service.relay.transport.websockets.contains_key(&low_value));
+        assert!(service.relay.transport.websockets.contains_key(&critical));
+        assert_eq!(
+            service
+                .relay
+                .transport
+                .websockets
+                .get(&critical)
+                .map(|leg| leg.conn.status),
+            Some(RelayStatus::Connecting)
+        );
+        assert!(service.pool.relay_transport_demand(&low_value).is_some());
+        assert!(!service
+            .relay
+            .admission
+            .state
+            .deferrals
+            .contains_key(&critical));
     }
 
     #[tokio::test]

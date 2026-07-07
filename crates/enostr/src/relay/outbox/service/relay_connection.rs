@@ -3,6 +3,7 @@ use std::time::{Instant, SystemTime};
 use tokio::sync::mpsc;
 
 use super::admission_runtime::RelayAdmissionRuntime;
+use super::admission_runtime::RelayOpenAdmissionCounts;
 use super::nip11::{Nip11InterestRank, Nip11InterestRead, Nip11InterestState, Nip11ReadinessInput};
 use super::transport::RelayTransportRuntime;
 use super::{nip11_source_rank, OutboxServiceConfig, RelayTransportReady};
@@ -114,7 +115,11 @@ impl RelayConnectionRuntime {
         self.admission.low_value_nip11_interest_state(
             relay,
             demand,
-            self.transport.websockets.len(),
+            RelayOpenAdmissionCounts::new(
+                self.transport.websockets.len(),
+                self.transport.connecting_websocket_count(),
+                self.config.max_connecting_websockets,
+            ),
             service_now,
             fetch_now,
         )

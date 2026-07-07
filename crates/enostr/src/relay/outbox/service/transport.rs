@@ -239,6 +239,19 @@ impl RelayTransportRuntime {
         )
     }
 
+    pub(super) fn connecting_websocket_count(&self) -> usize {
+        self.websockets
+            .values()
+            .filter(|leg| leg.conn.status == RelayStatus::Connecting)
+            .count()
+    }
+
+    pub(super) fn websocket_is_connecting(&self, relay: &NormRelayUrl) -> bool {
+        self.websockets
+            .get(relay)
+            .is_some_and(|leg| leg.conn.status == RelayStatus::Connecting)
+    }
+
     pub(super) fn next_generation(&mut self, relay: &NormRelayUrl) -> u64 {
         let next = self.next_generations.entry(relay.clone()).or_default();
         let generation = *next;

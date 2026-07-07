@@ -6,8 +6,7 @@ use super::{
     relay_transport_value_cmp, ADMISSION_DEFER_BACKOFF_BASE, MAX_ADMISSION_DEFER_BACKOFF,
 };
 use crate::relay::outbox::{
-    admission::OutboxOpenAdmission,
-    fd_pressure::{RelayAdmissionPolicy, RelayOpenContext},
+    admission::{OutboxAdmissionPolicy, OutboxOpenAdmission},
     LowValueOpenBackoffReason, RelayAdmissionState, RelayTransportDemand,
 };
 use crate::relay::{backoff, NormRelayUrl};
@@ -17,6 +16,28 @@ pub(super) struct RelayAdmissionRuntime {
     pub(super) state: RelayAdmissionState,
 }
 
+/// Websocket counts used to project one relay-open admission turn.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct RelayOpenAdmissionCounts {
+    websocket_count: usize,
+    connecting_websocket_count: usize,
+    max_connecting_websockets: usize,
+}
+
+impl RelayOpenAdmissionCounts {
+    pub(super) fn new(
+        websocket_count: usize,
+        connecting_websocket_count: usize,
+        max_connecting_websockets: usize,
+    ) -> Self {
+        Self {
+            websocket_count,
+            connecting_websocket_count,
+            max_connecting_websockets,
+        }
+    }
+}
+
 impl RelayAdmissionRuntime {
     pub(super) fn set_max_websocket_connections(&mut self, max: Option<usize>) {
         self.state.set_max_websocket_connections(max);
@@ -24,22 +45,26 @@ impl RelayAdmissionRuntime {
 
     pub(super) fn start_open_admission_at(
         &mut self,
-        websocket_count: usize,
+        counts: RelayOpenAdmissionCounts,
         now: Instant,
     ) -> OutboxOpenAdmission {
         let admission = self.state.fd_pressure.start_batch_at(
-            websocket_count,
+            counts.websocket_count,
             self.state.max_websocket_connections,
             now,
         );
-        OutboxOpenAdmission::new(admission)
+        OutboxOpenAdmission::new(
+            admission,
+            counts.connecting_websocket_count,
+            counts.max_connecting_websockets,
+        )
     }
 
     pub(super) fn low_value_nip11_interest_state(
         &self,
         relay: &NormRelayUrl,
         demand: RelayTransportDemand,
-        websocket_count: usize,
+        counts: RelayOpenAdmissionCounts,
         service_now: Instant,
         fetch_now: SystemTime,
     ) -> Nip11InterestState {
@@ -55,7 +80,7 @@ impl RelayAdmissionRuntime {
             )));
         }
 
-        let admission = self.read_open_context_at(websocket_count, service_now);
+        let admission = self.read_open_admission_at(counts, service_now);
         if let Some(retry_at) =
             self.deferral_retry_at(relay, demand, admission.policy(), service_now)
         {
@@ -70,18 +95,29 @@ impl RelayAdmissionRuntime {
             return Nip11InterestState::Active;
         }
 
-        if self.websocket_cap_blocks_without_timer(websocket_count) {
+        if self.websocket_cap_blocks_without_timer(counts.websocket_count)
+            || admission.connecting_limit_blocks_without_timer()
+        {
             return Nip11InterestState::Suspended(Nip11InterestResume::OnRelayInput);
         }
 
         self.nip11_policy_suspension(service_now, fetch_now)
     }
 
-    fn read_open_context_at(&self, websocket_count: usize, now: Instant) -> RelayOpenContext {
-        self.state.fd_pressure.read_batch_at(
-            websocket_count,
+    fn read_open_admission_at(
+        &self,
+        counts: RelayOpenAdmissionCounts,
+        now: Instant,
+    ) -> OutboxOpenAdmission {
+        let admission = self.state.fd_pressure.read_batch_at(
+            counts.websocket_count,
             self.state.max_websocket_connections,
             now,
+        );
+        OutboxOpenAdmission::new(
+            admission,
+            counts.connecting_websocket_count,
+            counts.max_connecting_websockets,
         )
     }
 
@@ -174,7 +210,7 @@ impl RelayAdmissionRuntime {
         &self,
         relay: &NormRelayUrl,
         demand: RelayTransportDemand,
-        admission_policy: RelayAdmissionPolicy,
+        admission_policy: OutboxAdmissionPolicy,
         now: Instant,
     ) -> Option<Instant> {
         let deferral = self.state.deferrals.get(relay)?;
@@ -287,7 +323,7 @@ impl RelayAdmissionRuntime {
         relay: &NormRelayUrl,
         demand: RelayTransportDemand,
         transport_deadline: Instant,
-        admission_policy: RelayAdmissionPolicy,
+        admission_policy: OutboxAdmissionPolicy,
         now: Instant,
     ) -> Instant {
         if transport_deadline > now {
