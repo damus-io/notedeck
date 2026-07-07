@@ -34,7 +34,7 @@ pub struct DesktopSidePanel<'a> {
     img_cache: &'a mut notedeck::Images,
     jobs: &'a MediaJobSender,
     current_route: Option<&'a Route>,
-    relay_inspect: RelayInspectApi,
+    relay_inspect: RelayInspectApi<'a>,
 }
 
 impl View for DesktopSidePanel<'_> {
@@ -82,7 +82,7 @@ impl<'a> DesktopSidePanel<'a> {
         img_cache: &'a mut notedeck::Images,
         jobs: &'a MediaJobSender,
         current_route: Option<&'a Route>,
-        relay_inspect: RelayInspectApi,
+        relay_inspect: RelayInspectApi<'a>,
     ) -> Self {
         Self {
             selected_account,

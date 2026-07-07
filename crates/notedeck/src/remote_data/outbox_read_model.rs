@@ -58,22 +58,12 @@ impl RemoteOutboxReadModel {
         self.sub_relay_eose.get(id).copied()
     }
 
-    #[cfg(test)]
-    fn websocket_statuses(&self) -> BTreeMap<&NormRelayUrl, RelayStatus> {
+    pub(crate) fn websocket_statuses(
+        &self,
+    ) -> impl Iterator<Item = (&NormRelayUrl, RelayStatus)> + '_ {
         self.relay_statuses
             .iter()
             .map(|(relay, status)| (relay, *status))
-            .collect()
-    }
-
-    pub(crate) fn active_websocket_statuses(&self) -> Vec<(&NormRelayUrl, RelayStatus)> {
-        self.relay_statuses
-            .iter()
-            .filter_map(|(relay, status)| {
-                matches!(status, RelayStatus::Connected | RelayStatus::Connecting)
-                    .then_some((relay, *status))
-            })
-            .collect()
     }
 }
 
@@ -113,11 +103,11 @@ mod tests {
         });
 
         assert_eq!(
-            model.active_websocket_statuses(),
-            vec![(&relay_a, RelayStatus::Connected)]
-        );
-        assert_eq!(
-            model.websocket_statuses().get(&relay_b).copied(),
+            model
+                .websocket_statuses()
+                .collect::<BTreeMap<_, _>>()
+                .get(&relay_b)
+                .copied(),
             Some(RelayStatus::Disconnected)
         );
         assert_eq!(
@@ -145,6 +135,11 @@ mod tests {
 
         assert!(model.committed_relay_req_statuses(&id).is_empty());
         assert_eq!(model.outbox_sub_relay_eose(&id), None);
-        assert!(model.websocket_statuses().get(&relay_a).copied().is_none());
+        assert!(model
+            .websocket_statuses()
+            .collect::<BTreeMap<_, _>>()
+            .get(&relay_a)
+            .copied()
+            .is_none());
     }
 }

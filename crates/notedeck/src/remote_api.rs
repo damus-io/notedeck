@@ -17,29 +17,31 @@ pub struct RelayInspectEntry<'a> {
 ///
 /// This exposes only relay status inspection needed by UI code and intentionally
 /// does not provide subscription, publish, or one-shot methods.
-pub struct RelayInspectApi {
-    active_websocket_statuses: Vec<(NormRelayUrl, RelayStatus)>,
+pub struct RelayInspectApi<'a> {
+    read_model: &'a RemoteOutboxReadModel,
 }
 
-impl RelayInspectApi {
-    pub(crate) fn new(read_model: &RemoteOutboxReadModel) -> Self {
-        Self {
-            active_websocket_statuses: read_model
-                .active_websocket_statuses()
-                .into_iter()
-                .map(|(relay, status)| (relay.clone(), status))
-                .collect(),
-        }
+impl<'a> RelayInspectApi<'a> {
+    pub(crate) fn new(read_model: &'a RemoteOutboxReadModel) -> Self {
+        Self { read_model }
     }
 
     /// Snapshot active websocket relay statuses for display UI.
     pub fn relay_infos(&self) -> Vec<RelayInspectEntry<'_>> {
-        self.active_websocket_statuses
-            .iter()
-            .map(|(relay_url, status)| RelayInspectEntry {
-                relay_url,
-                status: *status,
+        self.read_model
+            .websocket_statuses()
+            .filter(|(_, status)| {
+                matches!(status, RelayStatus::Connected | RelayStatus::Connecting)
             })
+            .map(|(relay_url, status)| RelayInspectEntry { relay_url, status })
+            .collect()
+    }
+
+    /// Snapshot all known websocket relay statuses for stable inventory UI.
+    pub fn known_relay_infos(&self) -> Vec<RelayInspectEntry<'_>> {
+        self.read_model
+            .websocket_statuses()
+            .map(|(relay_url, status)| RelayInspectEntry { relay_url, status })
             .collect()
     }
 }
@@ -101,7 +103,7 @@ impl<'a> RemoteApi<'a> {
     }
 
     /// Access read-only relay inspection data for UI rendering.
-    pub fn relay_inspect(&self) -> RelayInspectApi {
+    pub fn relay_inspect(&self) -> RelayInspectApi<'_> {
         RelayInspectApi::new(self.read_model)
     }
 

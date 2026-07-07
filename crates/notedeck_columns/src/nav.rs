@@ -1071,6 +1071,7 @@ fn render_nav_body(
             ctx.remote.relay_inspect(),
             ctx.accounts.selected_account_advertised_relays(),
             ctx.accounts.selected_account_private_relay_set(),
+            &mut app.view_state.relay_view,
             &mut app.view_state.id_string_map,
             ctx.i18n,
         )

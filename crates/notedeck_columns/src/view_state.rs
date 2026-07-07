@@ -8,6 +8,7 @@ use notedeck_ui::nip51_set::Nip51SetUiCache;
 
 use crate::deck_state::DeckState;
 use crate::login_manager::AcquireKeyState;
+use crate::ui::relay::RelayViewState;
 use crate::ui::search::SearchQueryState;
 use crate::ui::settings::SettingsUiState;
 use enostr::ProfileState;
@@ -23,6 +24,8 @@ pub struct ViewState {
     pub id_to_deck_state: HashMap<egui::Id, DeckState>,
     pub id_state_map: HashMap<egui::Id, AcquireKeyState>,
     pub id_string_map: HashMap<egui::Id, String>,
+    /// Virtualized row state for the relay inventory view.
+    pub relay_view: RelayViewState,
     pub searches: HashMap<egui::Id, SearchQueryState>,
     pub pubkey_to_profile_state: HashMap<Pubkey, ProfileState>,
 
