@@ -12,8 +12,8 @@ use nostrdb::Ndb;
 
 pub(crate) use outbox_read_model::RemoteOutboxReadModel;
 pub(crate) use remote_bridge::{
-    BridgeAccountState, RemoteBridgeConfig, RemoteBridgeInput, RemoteFetchCommand, RemoteIntent,
-    RemoteIntentBatchBuilder, RemotePublishCommand,
+    BridgeAccountState, RemoteAdvertisedFetchCoverage, RemoteBridgeConfig, RemoteBridgeInput,
+    RemoteFetchCommand, RemoteIntent, RemoteIntentBatchBuilder, RemotePublishCommand,
 };
 
 /// Owned host backing state for remote transport plus durable remote intent.

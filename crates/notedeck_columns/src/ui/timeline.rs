@@ -18,7 +18,8 @@ use crate::timeline::{
 };
 use notedeck::DragResponse;
 use notedeck::{
-    note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, ScrollInfo,
+    note::root_note_id_from_selected_id, tr, Localization, NoteAction, NoteContext, NoteRef,
+    ScrollInfo,
 };
 use notedeck_ui::{
     anim::{AnimationHelper, ICON_EXPANSION_MULTIPLE},
@@ -777,11 +778,11 @@ fn render_reaction_cluster(
         profiling::scope!("vec profile entries");
         reaction
             .reactions
-            .values()
-            .filter(|r| !mute.is_pk_muted(r.sender.bytes()))
-            .map(|r| (&r.sender, r.sender_profilekey))
-            .map(|(p, key)| {
-                let record = profile_entry_record(note_context, txn, p, key);
+            .iter()
+            .filter(|(_, r)| !mute.is_pk_muted(r.sender.bytes()))
+            .map(|(note_ref, r)| (note_ref, &r.sender, r.sender_profilekey))
+            .map(|(note_ref, p, key)| {
+                let record = profile_entry_record(note_context, txn, p, key, Some(*note_ref));
                 ProfileEntry { record, pk: p }
             })
             .collect()
@@ -1059,10 +1060,10 @@ fn render_repost_cluster(
 ) -> RenderEntryResponse {
     let profiles_to_show: Vec<ProfileEntry> = repost
         .reposts
-        .values()
-        .filter(|r| !mute.is_pk_muted(r.bytes()))
-        .map(|p| ProfileEntry {
-            record: profile_entry_record(note_context, txn, p, None),
+        .iter()
+        .filter(|(_, r)| !mute.is_pk_muted(r.bytes()))
+        .map(|(note_ref, p)| ProfileEntry {
+            record: profile_entry_record(note_context, txn, p, None, Some(*note_ref)),
             pk: p,
         })
         .collect();
@@ -1091,10 +1092,16 @@ fn render_zap_cluster(
 ) -> RenderEntryResponse {
     let profiles_to_show: Vec<ProfileEntry> = zap
         .zaps
-        .values()
-        .filter(|z| !mute.is_pk_muted(z.sender.bytes()))
-        .map(|z| {
-            let record = profile_entry_record(note_context, txn, &z.sender, z.sender_profilekey);
+        .iter()
+        .filter(|(_, z)| !mute.is_pk_muted(z.sender.bytes()))
+        .map(|(note_ref, z)| {
+            let record = profile_entry_record(
+                note_context,
+                txn,
+                &z.sender,
+                z.sender_profilekey,
+                Some(*note_ref),
+            );
             ProfileEntry {
                 record,
                 pk: &z.sender,
@@ -1130,6 +1137,7 @@ fn profile_entry_record<'a>(
     txn: &'a Transaction,
     pk: &Pubkey,
     key: Option<nostrdb::ProfileKey>,
+    source_note_ref: Option<NoteRef>,
 ) -> Option<ProfileRecord<'a>> {
     let record = if let Some(key) = key {
         profiling::scope!("ndb by key");
@@ -1140,9 +1148,24 @@ fn profile_entry_record<'a>(
     };
 
     if record.is_none() {
-        note_context
-            .unknown_ids
-            .add_pubkey_if_missing(note_context.ndb, txn, pk.bytes());
+        if let Some(source_note_ref) = source_note_ref {
+            if let Ok(source_note) = note_context.ndb.get_note_by_key(txn, source_note_ref.key) {
+                note_context.unknown_ids.add_pubkey_if_missing_from_note(
+                    note_context.ndb,
+                    txn,
+                    pk.bytes(),
+                    &source_note,
+                );
+            } else {
+                note_context
+                    .unknown_ids
+                    .add_pubkey_if_missing(note_context.ndb, txn, pk.bytes());
+            }
+        } else {
+            note_context
+                .unknown_ids
+                .add_pubkey_if_missing(note_context.ndb, txn, pk.bytes());
+        }
     }
 
     record

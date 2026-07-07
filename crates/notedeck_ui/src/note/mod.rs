@@ -623,10 +623,10 @@ impl<'a, 'd> NoteView<'a, 'd> {
             .ndb
             .get_profile_by_pubkey(txn, self.note.pubkey());
         if profile.is_err() {
-            self.note_context.unknown_ids.add_pubkey_if_missing(
+            self.note_context.unknown_ids.add_note_author_if_missing(
                 self.note_context.ndb,
                 txn,
-                self.note.pubkey(),
+                self.note,
             );
         }
 

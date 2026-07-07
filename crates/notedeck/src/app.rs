@@ -240,8 +240,9 @@ impl Notedeck {
 
         {
             let app_ctx = &mut app_ref.app_ctx;
+            let use_outbox_relays = app_ctx.settings.columns_use_outbox_relays();
             let mut oneshot = app_ctx.remote.oneshot();
-            crate::unknown_id_send(app_ctx.unknown_ids, &mut oneshot);
+            crate::unknown_id_send(app_ctx.unknown_ids, &mut oneshot, use_outbox_relays);
         }
 
         {

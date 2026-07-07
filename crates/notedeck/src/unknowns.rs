@@ -1,10 +1,11 @@
 use crate::{
     note::NoteRef,
     notecache::{CachedNote, NoteCache},
+    oneshot_api::OneshotRemoteAdvertisedCoverage,
     OneshotApi, Result,
 };
 
-use enostr::{Filter, NoteId, Pubkey};
+use enostr::{Filter, NormRelayUrl, NoteId, Pubkey};
 use nostr::RelayUrl;
 use nostrdb::{BlockType, Mention, Ndb, Note, NoteKey, Transaction};
 use std::collections::{HashMap, HashSet};
@@ -100,9 +101,57 @@ pub struct UnknownIds {
     last_sent_prune: Option<Instant>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct SentUnknownId {
     sent_at: Instant,
+    remote_advertised_relays: HashMap<RelayUrl, Instant>,
+}
+
+impl SentUnknownId {
+    fn new(sent_at: Instant) -> Self {
+        Self {
+            sent_at,
+            remote_advertised_relays: HashMap::new(),
+        }
+    }
+
+    fn remote_advertised_relay_due(&self, relay: &RelayUrl, now: Instant) -> bool {
+        self.remote_advertised_relays
+            .get(relay)
+            .is_none_or(|sent_at| elapsed_since(now, *sent_at) >= UNKNOWN_ID_RETRY_AFTER)
+    }
+
+    fn mark_remote_advertised_relays_sent(
+        &mut self,
+        relays: impl IntoIterator<Item = RelayUrl>,
+        sent_at: Instant,
+    ) {
+        self.remote_advertised_relays
+            .extend(relays.into_iter().map(|relay| (relay, sent_at)));
+    }
+
+    fn prune_at(&mut self, now: Instant) {
+        self.remote_advertised_relays
+            .retain(|_, sent_at| elapsed_since(now, *sent_at) < UNKNOWN_ID_SENT_TTL);
+    }
+
+    fn should_retain(&self, now: Instant) -> bool {
+        elapsed_since(now, self.sent_at) < UNKNOWN_ID_SENT_TTL
+            || !self.remote_advertised_relays.is_empty()
+    }
+}
+
+#[derive(Debug)]
+struct UnknownIdFetchBatch {
+    sent_at: Instant,
+    filters: Vec<Filter>,
+    items: Vec<UnknownIdFetchItem>,
+}
+
+#[derive(Debug)]
+struct UnknownIdFetchItem {
+    id: UnknownId,
+    relays: HashSet<RelayUrl>,
 }
 
 #[derive(Default, Debug)]
@@ -145,11 +194,11 @@ impl UnknownIds {
         self.last_sent_prune = None;
     }
 
-    fn drain_ready_filter_batch(&mut self) -> Option<Vec<Filter>> {
-        self.drain_ready_filter_batch_at(Instant::now())
+    fn drain_ready_fetch_batch(&mut self) -> Option<UnknownIdFetchBatch> {
+        self.drain_ready_fetch_batch_at(Instant::now())
     }
 
-    fn drain_ready_filter_batch_at(&mut self, now: Instant) -> Option<Vec<Filter>> {
+    fn drain_ready_fetch_batch_at(&mut self, now: Instant) -> Option<UnknownIdFetchBatch> {
         self.reset_elapsed_idle_pacing(now);
 
         if self.ids.is_empty() {
@@ -163,27 +212,48 @@ impl UnknownIds {
             return None;
         }
 
-        let filters = self.drain_filter_batch_at(now)?;
+        let batch = self.drain_fetch_batch_at(now)?;
         self.send_pacing.schedule_after_send(now);
-        Some(filters)
+        Some(batch)
     }
 
-    fn drain_filter_batch_at(&mut self, now: Instant) -> Option<Vec<Filter>> {
-        let selected_ids = self
+    fn drain_fetch_batch_at(&mut self, now: Instant) -> Option<UnknownIdFetchBatch> {
+        let items = self
             .ids
-            .keys()
+            .iter()
             .take(UNKNOWN_ID_BATCH_SIZE)
-            .copied()
+            .map(|(id, relays)| UnknownIdFetchItem {
+                id: *id,
+                relays: relays.clone(),
+            })
             .collect::<Vec<_>>();
-        let filter_ids = selected_ids.iter().collect::<Vec<_>>();
+        let filter_ids = items.iter().map(|item| &item.id).collect::<Vec<_>>();
         let filters = get_unknown_ids_filter(&filter_ids)?;
 
-        for id in selected_ids {
-            self.ids.remove(&id);
-            self.sent.insert(id, SentUnknownId { sent_at: now });
+        for item in &items {
+            self.ids.remove(&item.id);
+            self.sent
+                .entry(item.id)
+                .and_modify(|sent| {
+                    sent.sent_at = now;
+                })
+                .or_insert_with(|| SentUnknownId::new(now));
         }
 
-        Some(filters)
+        Some(UnknownIdFetchBatch {
+            sent_at: now,
+            filters,
+            items,
+        })
+    }
+
+    fn mark_remote_advertised_fetch_coverage_sent(&mut self, batch: &UnknownIdFetchBatch) {
+        for item in &batch.items {
+            let Some(sent) = self.sent.get_mut(&item.id) else {
+                continue;
+            };
+            sent.mark_remote_advertised_relays_sent(item.relays.iter().cloned(), batch.sent_at);
+        }
     }
 
     fn add_missing_unknown_id(&mut self, id: UnknownId, relays: HashSet<RelayUrl>) -> bool {
@@ -207,6 +277,14 @@ impl UnknownIds {
         if let Some(sent) = self.sent.get(&id) {
             let elapsed = elapsed_since(now, sent.sent_at);
             if elapsed < UNKNOWN_ID_RETRY_AFTER {
+                let relays = relays
+                    .into_iter()
+                    .filter(|relay| sent.remote_advertised_relay_due(relay, now))
+                    .collect::<HashSet<_>>();
+                if !relays.is_empty() {
+                    self.ids.entry(id).or_default().extend(relays);
+                    return true;
+                }
                 return false;
             }
         }
@@ -228,8 +306,10 @@ impl UnknownIds {
             return;
         }
 
-        self.sent
-            .retain(|_, sent| elapsed_since(now, sent.sent_at) < UNKNOWN_ID_SENT_TTL);
+        self.sent.retain(|_, sent| {
+            sent.prune_at(now);
+            sent.should_retain(now)
+        });
         self.last_sent_prune = Some(now);
     }
 
@@ -295,6 +375,42 @@ impl UnknownIds {
     }
 
     pub fn add_pubkey_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, pubkey: &[u8; 32]) {
+        self.add_pubkey_if_missing_with_relays(ndb, txn, pubkey, HashSet::default());
+    }
+
+    /// Queue the note author profile with relay coverage from where the note was observed.
+    pub fn add_note_author_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, note: &Note<'_>) {
+        self.add_pubkey_if_missing_with_relays(
+            ndb,
+            txn,
+            note.pubkey(),
+            relay_urls_for_note(note, txn),
+        );
+    }
+
+    /// Queue a profile with relay coverage from an already-loaded source note.
+    pub fn add_pubkey_if_missing_from_note(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        pubkey: &[u8; 32],
+        source_note: &Note<'_>,
+    ) {
+        self.add_pubkey_if_missing_with_relays(
+            ndb,
+            txn,
+            pubkey,
+            relay_urls_for_note(source_note, txn),
+        );
+    }
+
+    fn add_pubkey_if_missing_with_relays(
+        &mut self,
+        ndb: &Ndb,
+        txn: &Transaction,
+        pubkey: &[u8; 32],
+        relays: HashSet<RelayUrl>,
+    ) {
         let unknown_id = UnknownId::Pubkey(Pubkey::new(*pubkey));
 
         // we already have this profile, skip
@@ -303,7 +419,7 @@ impl UnknownIds {
             return;
         }
 
-        self.add_missing_unknown_id(unknown_id, HashSet::default());
+        self.add_missing_unknown_id(unknown_id, relays);
     }
 
     pub fn add_note_id_if_missing(&mut self, ndb: &Ndb, txn: &Transaction, note_id: &[u8; 32]) {
@@ -321,6 +437,12 @@ impl UnknownIds {
 
 fn elapsed_since(now: Instant, earlier: Instant) -> Duration {
     now.checked_duration_since(earlier).unwrap_or_default()
+}
+
+fn relay_urls_for_note(note: &Note<'_>, txn: &Transaction) -> HashSet<RelayUrl> {
+    note.relays(txn)
+        .filter_map(|relay| RelayUrl::parse(relay).ok())
+        .collect()
 }
 
 #[derive(Hash, Clone, Copy, PartialEq, Eq, Debug)]
@@ -362,12 +484,13 @@ pub fn get_unknown_note_ids<'a>(
     unknown_ids: &mut UnknownIds,
 ) -> Result<()> {
     let now = Instant::now();
+    let observed_relays = relay_urls_for_note(note, txn);
 
     // the author pubkey
     if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
         unknown_ids.add_missing_unknown_id_at(
             UnknownId::Pubkey(Pubkey::new(*note.pubkey())),
-            HashSet::default(),
+            observed_relays.clone(),
             now,
         );
     }
@@ -446,6 +569,10 @@ pub fn get_unknown_note_ids<'a>(
                     }
                     Ok(note) => {
                         if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
+                            let relays = relays
+                                .into_iter()
+                                .chain(relay_urls_for_note(&note, txn))
+                                .collect::<HashSet<RelayUrl>>();
                             unknown_ids.add_missing_unknown_id_at(
                                 UnknownId::Pubkey(Pubkey::new(*note.pubkey())),
                                 relays,
@@ -467,7 +594,7 @@ pub fn get_unknown_note_ids<'a>(
                     if ndb.get_profile_by_pubkey(txn, note.pubkey()).is_err() {
                         unknown_ids.add_missing_unknown_id_at(
                             UnknownId::Pubkey(Pubkey::new(*note.pubkey())),
-                            HashSet::default(),
+                            relay_urls_for_note(&note, txn),
                             now,
                         );
                     }
@@ -508,9 +635,13 @@ fn get_unknown_ids_filter(ids: &[&UnknownId]) -> Option<Vec<Filter>> {
     Some(filters)
 }
 
-pub fn unknown_id_send(unknown_ids: &mut UnknownIds, oneshot: &mut OneshotApi<'_>) {
+pub fn unknown_id_send(
+    unknown_ids: &mut UnknownIds,
+    oneshot: &mut OneshotApi<'_>,
+    use_outbox_relays: bool,
+) {
     let pending_count = unknown_ids.ids_iter().len();
-    let Some(filter) = unknown_ids.drain_ready_filter_batch() else {
+    let Some(batch) = unknown_ids.drain_ready_fetch_batch() else {
         return;
     };
     let remaining_count = unknown_ids.ids_iter().len();
@@ -520,7 +651,35 @@ pub fn unknown_id_send(unknown_ids: &mut UnknownIds, oneshot: &mut OneshotApi<'_
         remaining_count,
     );
 
-    oneshot.oneshot(filter);
+    if use_outbox_relays {
+        let remote_advertised = remote_advertised_fetch_coverage(&batch.items);
+        unknown_ids.mark_remote_advertised_fetch_coverage_sent(&batch);
+        oneshot.oneshot_with_remote_advertised_coverage(batch.filters, remote_advertised);
+    } else {
+        oneshot.oneshot(batch.filters);
+    }
+}
+
+fn remote_advertised_fetch_coverage(
+    items: &[UnknownIdFetchItem],
+) -> Vec<OneshotRemoteAdvertisedCoverage> {
+    let mut ids_by_relay = HashMap::<NormRelayUrl, Vec<&UnknownId>>::new();
+    for item in items {
+        for relay in &item.relays {
+            ids_by_relay
+                .entry(NormRelayUrl::from(relay.clone()))
+                .or_default()
+                .push(&item.id);
+        }
+    }
+
+    ids_by_relay
+        .into_iter()
+        .filter_map(|(relay, ids)| {
+            get_unknown_ids_filter(&ids)
+                .map(|filters| OneshotRemoteAdvertisedCoverage::new([relay], filters))
+        })
+        .collect()
 }
 
 #[test]
@@ -537,17 +696,36 @@ fn drain_filter_batch_keeps_unsent_unknown_ids() {
         );
     }
 
-    let filters = unknown_ids
-        .drain_ready_filter_batch_at(now)
+    let batch = unknown_ids
+        .drain_ready_fetch_batch_at(now)
         .expect("unknown filter batch");
 
-    assert!(!filters.is_empty());
+    assert!(!batch.filters.is_empty());
     assert_eq!(unknown_ids.ids_iter().len(), 1);
     assert_eq!(unknown_ids.sent.len(), 500);
-    assert!(unknown_ids.drain_ready_filter_batch_at(now).is_none());
+    assert!(unknown_ids.drain_ready_fetch_batch_at(now).is_none());
     assert!(unknown_ids
-        .drain_ready_filter_batch_at(now + Duration::from_millis(50))
+        .drain_ready_fetch_batch_at(now + Duration::from_millis(50))
         .is_some());
+}
+
+#[test]
+fn drain_fetch_batch_preserves_relay_coverage() {
+    let mut unknown_ids = UnknownIds::default();
+    let now = Instant::now();
+    let relay = RelayUrl::parse("wss://observed-profile.example.com").expect("relay");
+    let unknown_id = UnknownId::Pubkey(Pubkey::new([1; 32]));
+
+    assert!(unknown_ids.add_missing_unknown_id_at(unknown_id, HashSet::from([relay.clone()]), now));
+
+    let batch = unknown_ids
+        .drain_ready_fetch_batch_at(now)
+        .expect("unknown filter batch");
+
+    assert_eq!(batch.items.len(), 1);
+    assert_eq!(batch.items[0].id, unknown_id);
+    assert_eq!(batch.items[0].relays, HashSet::from([relay]));
+    assert!(!batch.filters.is_empty());
 }
 
 #[test]
@@ -559,7 +737,7 @@ fn clear_resets_debounce_state_for_next_unknown_batch() {
 
     unknown_ids.add_missing_unknown_id(UnknownId::Pubkey(Pubkey::new([2; 32])), HashSet::default());
 
-    assert!(unknown_ids.drain_ready_filter_batch().is_some());
+    assert!(unknown_ids.drain_ready_fetch_batch().is_some());
 }
 
 #[test]
@@ -578,7 +756,7 @@ fn first_discovery_batch_sends_immediately() {
         now
     ));
 
-    assert!(unknown_ids.drain_ready_filter_batch_at(now).is_some());
+    assert!(unknown_ids.drain_ready_fetch_batch_at(now).is_some());
 }
 
 #[test]
@@ -591,7 +769,7 @@ fn followup_batches_are_paced_with_backoff_rounds() {
         HashSet::default(),
         now
     ));
-    assert!(unknown_ids.drain_ready_filter_batch_at(now).is_some());
+    assert!(unknown_ids.drain_ready_fetch_batch_at(now).is_some());
 
     assert!(unknown_ids.add_missing_unknown_id_at(
         UnknownId::Pubkey(Pubkey::new([2; 32])),
@@ -599,10 +777,10 @@ fn followup_batches_are_paced_with_backoff_rounds() {
         now + Duration::from_millis(10)
     ));
     assert!(unknown_ids
-        .drain_ready_filter_batch_at(now + Duration::from_millis(49))
+        .drain_ready_fetch_batch_at(now + Duration::from_millis(49))
         .is_none());
     assert!(unknown_ids
-        .drain_ready_filter_batch_at(now + Duration::from_millis(50))
+        .drain_ready_fetch_batch_at(now + Duration::from_millis(50))
         .is_some());
 
     assert!(unknown_ids.add_missing_unknown_id_at(
@@ -611,10 +789,10 @@ fn followup_batches_are_paced_with_backoff_rounds() {
         now + Duration::from_millis(60)
     ));
     assert!(unknown_ids
-        .drain_ready_filter_batch_at(now + Duration::from_millis(149))
+        .drain_ready_fetch_batch_at(now + Duration::from_millis(149))
         .is_none());
     assert!(unknown_ids
-        .drain_ready_filter_batch_at(now + Duration::from_millis(150))
+        .drain_ready_fetch_batch_at(now + Duration::from_millis(150))
         .is_some());
 }
 
@@ -642,12 +820,12 @@ fn pacing_delays_advance_to_two_second_ceiling() {
 
         if !delay.is_zero() {
             assert!(unknown_ids
-                .drain_ready_filter_batch_at(now + delay - Duration::from_millis(1))
+                .drain_ready_fetch_batch_at(now + delay - Duration::from_millis(1))
                 .is_none());
         }
 
         now += delay;
-        assert!(unknown_ids.drain_ready_filter_batch_at(now).is_some());
+        assert!(unknown_ids.drain_ready_fetch_batch_at(now).is_some());
     }
 }
 
@@ -661,7 +839,7 @@ fn batch_size_bypasses_active_pacing_deadline() {
         HashSet::default(),
         now
     ));
-    assert!(unknown_ids.drain_ready_filter_batch_at(now).is_some());
+    assert!(unknown_ids.drain_ready_fetch_batch_at(now).is_some());
 
     for i in 0..500u64 {
         let mut bytes = [0u8; 32];
@@ -674,7 +852,7 @@ fn batch_size_bypasses_active_pacing_deadline() {
     }
 
     assert!(unknown_ids
-        .drain_ready_filter_batch_at(now + Duration::from_millis(1))
+        .drain_ready_fetch_batch_at(now + Duration::from_millis(1))
         .is_some());
 }
 
@@ -688,10 +866,10 @@ fn empty_deadline_resets_pacing_for_next_unknown_batch() {
         HashSet::default(),
         now
     ));
-    assert!(unknown_ids.drain_ready_filter_batch_at(now).is_some());
+    assert!(unknown_ids.drain_ready_fetch_batch_at(now).is_some());
 
     assert!(unknown_ids
-        .drain_ready_filter_batch_at(now + Duration::from_millis(50))
+        .drain_ready_fetch_batch_at(now + Duration::from_millis(50))
         .is_none());
 
     assert!(unknown_ids.add_missing_unknown_id_at(
@@ -700,7 +878,7 @@ fn empty_deadline_resets_pacing_for_next_unknown_batch() {
         now + Duration::from_millis(60)
     ));
     assert!(unknown_ids
-        .drain_ready_filter_batch_at(now + Duration::from_millis(60))
+        .drain_ready_fetch_batch_at(now + Duration::from_millis(60))
         .is_some());
 }
 
@@ -712,7 +890,7 @@ fn recently_sent_unknown_id_is_not_requeued() {
 
     assert!(unknown_ids.add_missing_unknown_id_at(unknown_id, HashSet::default(), now));
     unknown_ids
-        .drain_filter_batch_at(now)
+        .drain_fetch_batch_at(now)
         .expect("unknown filter batch");
 
     assert!(!unknown_ids.add_missing_unknown_id_at(
@@ -724,6 +902,86 @@ fn recently_sent_unknown_id_is_not_requeued() {
 }
 
 #[test]
+fn recently_sent_unknown_id_requeues_new_relay_coverage() {
+    let mut unknown_ids = UnknownIds::default();
+    let now = Instant::now();
+    let unknown_id = UnknownId::Pubkey(Pubkey::new([1; 32]));
+    let relay_a = RelayUrl::parse("wss://observed-a.example.com").expect("relay");
+    let relay_b = RelayUrl::parse("wss://observed-b.example.com").expect("relay");
+
+    assert!(unknown_ids.add_missing_unknown_id_at(
+        unknown_id,
+        HashSet::from([relay_a.clone()]),
+        now
+    ));
+    let first_batch = unknown_ids
+        .drain_fetch_batch_at(now)
+        .expect("unknown filter batch");
+    unknown_ids.mark_remote_advertised_fetch_coverage_sent(&first_batch);
+
+    assert!(unknown_ids.add_missing_unknown_id_at(
+        unknown_id,
+        HashSet::from([relay_a.clone(), relay_b.clone()]),
+        now + Duration::from_secs(1)
+    ));
+
+    let second_batch = unknown_ids
+        .drain_fetch_batch_at(now + Duration::from_secs(1))
+        .expect("unknown filter batch");
+    unknown_ids.mark_remote_advertised_fetch_coverage_sent(&second_batch);
+
+    assert_eq!(second_batch.items.len(), 1);
+    assert_eq!(second_batch.items[0].id, unknown_id);
+    assert_eq!(
+        second_batch.items[0].relays,
+        HashSet::from([relay_b.clone()])
+    );
+    assert_eq!(
+        unknown_ids
+            .sent
+            .get(&unknown_id)
+            .expect("sent unknown")
+            .remote_advertised_relays
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>(),
+        HashSet::from([relay_a.clone(), relay_b])
+    );
+    assert!(!unknown_ids.add_missing_unknown_id_at(
+        unknown_id,
+        HashSet::from([relay_a]),
+        now + Duration::from_secs(2)
+    ));
+}
+
+#[test]
+fn recently_sent_unknown_id_requeues_unattempted_relay_coverage() {
+    let mut unknown_ids = UnknownIds::default();
+    let now = Instant::now();
+    let unknown_id = UnknownId::Pubkey(Pubkey::new([1; 32]));
+    let relay = RelayUrl::parse("wss://observed-unattempted.example.com").expect("relay");
+
+    assert!(unknown_ids.add_missing_unknown_id_at(unknown_id, HashSet::from([relay.clone()]), now));
+    unknown_ids
+        .drain_fetch_batch_at(now)
+        .expect("unknown filter batch");
+
+    assert!(unknown_ids.add_missing_unknown_id_at(
+        unknown_id,
+        HashSet::from([relay.clone()]),
+        now + Duration::from_secs(1)
+    ));
+
+    let batch = unknown_ids
+        .drain_fetch_batch_at(now + Duration::from_secs(1))
+        .expect("unknown filter batch");
+
+    assert_eq!(batch.items.len(), 1);
+    assert_eq!(batch.items[0].id, unknown_id);
+    assert_eq!(batch.items[0].relays, HashSet::from([relay]));
+}
+
+#[test]
 fn sent_unknown_id_requeues_after_retry_delay() {
     let mut unknown_ids = UnknownIds::default();
     let now = Instant::now();
@@ -731,7 +989,7 @@ fn sent_unknown_id_requeues_after_retry_delay() {
 
     assert!(unknown_ids.add_missing_unknown_id_at(unknown_id, HashSet::default(), now));
     unknown_ids
-        .drain_filter_batch_at(now)
+        .drain_fetch_batch_at(now)
         .expect("unknown filter batch");
 
     assert!(unknown_ids.add_missing_unknown_id_at(
@@ -750,7 +1008,7 @@ fn sent_unknown_id_history_is_pruned() {
 
     assert!(unknown_ids.add_missing_unknown_id_at(unknown_id, HashSet::default(), now));
     unknown_ids
-        .drain_filter_batch_at(now)
+        .drain_fetch_batch_at(now)
         .expect("unknown filter batch");
 
     let after_ttl = now + UNKNOWN_ID_SENT_TTL + UNKNOWN_ID_SENT_PRUNE_INTERVAL;

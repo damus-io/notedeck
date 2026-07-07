@@ -330,7 +330,22 @@ impl BridgeAccountState {
 
 /// Typed transient read command.
 pub(crate) enum RemoteFetchCommand {
-    SelectedAccountRead { filters: Vec<SendFilter> },
+    SelectedAccountRead {
+        filters: Vec<SendFilter>,
+        remote_advertised: Vec<RemoteAdvertisedFetchCoverage>,
+    },
+}
+
+/// Additive relay coverage learned from remote-authored data.
+pub(crate) struct RemoteAdvertisedFetchCoverage {
+    relays: HashSet<NormRelayUrl>,
+    filters: Vec<SendFilter>,
+}
+
+impl RemoteAdvertisedFetchCoverage {
+    pub(crate) fn new(relays: HashSet<NormRelayUrl>, filters: Vec<SendFilter>) -> Self {
+        Self { relays, filters }
+    }
 }
 
 /// Typed publish command.
@@ -392,6 +407,7 @@ impl AuthorOutboxEffectRunner {
 
 struct ResolvedFetch {
     relays: HashSet<NormRelayUrl>,
+    policy: RelayUrlPolicy,
     filters: Vec<Filter>,
 }
 
@@ -413,9 +429,15 @@ impl FetchPlanner {
 
     fn apply_fetch(&mut self, account: &BridgeAccountState, command: RemoteFetchCommand) {
         match command {
-            RemoteFetchCommand::SelectedAccountRead { filters } => {
+            RemoteFetchCommand::SelectedAccountRead {
+                filters,
+                remote_advertised,
+            } => {
                 let filters = filters.into_iter().map(SendFilter::into_filter).collect();
                 self.add_selected_account_read(account, filters);
+                for coverage in remote_advertised {
+                    self.add_remote_advertised_fetch(account, coverage);
+                }
             }
         }
     }
@@ -429,13 +451,55 @@ impl FetchPlanner {
         if relays.is_empty() {
             return;
         }
+
+        self.add_fetch(relays, selected_account_read_fetch_policy(), filters);
+    }
+
+    fn add_remote_advertised_fetch(
+        &mut self,
+        account: &BridgeAccountState,
+        coverage: RemoteAdvertisedFetchCoverage,
+    ) {
+        let filters = coverage
+            .filters
+            .into_iter()
+            .map(SendFilter::into_filter)
+            .collect::<Vec<_>>();
+        if filters.iter().all(|filter| filter.num_elements() == 0) {
+            return;
+        }
+
+        let relays = coverage
+            .relays
+            .into_iter()
+            .filter(|relay| !account.read_relays().contains(relay))
+            .collect::<HashSet<_>>();
+        if relays.is_empty() {
+            return;
+        }
+
+        self.add_fetch(relays, remote_advertised_fetch_policy(), filters);
+    }
+
+    fn add_fetch(
+        &mut self,
+        relays: HashSet<NormRelayUrl>,
+        policy: RelayUrlPolicy,
+        filters: Vec<Filter>,
+    ) {
         if self.accepted.iter().any(|accepted| {
-            accepted.relays == relays && same_canonical_filter_set(&accepted.filters, &filters)
+            accepted.relays == relays
+                && accepted.policy == policy
+                && same_canonical_filter_set(&accepted.filters, &filters)
         }) {
             return;
         }
 
-        self.accepted.push(ResolvedFetch { relays, filters });
+        self.accepted.push(ResolvedFetch {
+            relays,
+            policy,
+            filters,
+        });
     }
 
     fn into_fetches(self) -> Vec<ResolvedFetch> {
@@ -515,13 +579,7 @@ impl BridgeOutboxDriver {
 
     fn start_fetch(&mut self, fetch: ResolvedFetch) -> OutboxServiceOutput {
         let id = self.service.id_registry().next_sub_id();
-        let relay_pkgs = RelayUrlPkgs::new(
-            fetch.relays,
-            RelayUrlPolicy::explicit(
-                RelayDemandPriority::Important,
-                RelayRoutingPreference::PreferDedicated,
-            ),
-        );
+        let relay_pkgs = RelayUrlPkgs::new(fetch.relays, fetch.policy);
         self.service.start_fetch(id, fetch.filters, relay_pkgs)
     }
 
@@ -535,6 +593,20 @@ impl BridgeOutboxDriver {
     ) -> OutboxServiceOutput {
         self.service.set_max_websocket_connections(max_connections)
     }
+}
+
+fn selected_account_read_fetch_policy() -> RelayUrlPolicy {
+    RelayUrlPolicy::explicit(
+        RelayDemandPriority::Important,
+        RelayRoutingPreference::PreferDedicated,
+    )
+}
+
+fn remote_advertised_fetch_policy() -> RelayUrlPolicy {
+    RelayUrlPolicy::remote_advertised(
+        RelayDemandPriority::Important,
+        RelayRoutingPreference::NoPreference,
+    )
 }
 
 struct DirectOperationPlanner {
@@ -1251,6 +1323,10 @@ mod tests {
         NormRelayUrl::new("wss://relay-nip11-bridge.example.com").expect("relay")
     }
 
+    fn send_filter(filter: Filter) -> SendFilter {
+        SendFilter::try_from_filter(filter).expect("sendable test filter")
+    }
+
     fn test_ndb() -> (TempDir, Ndb) {
         let tmp = TempDir::new().expect("tmp dir");
         let ndb = Ndb::new(tmp.path().to_str().expect("path"), &Config::new()).expect("ndb");
@@ -1441,5 +1517,45 @@ mod tests {
         planner.add_selected_account_read(&account, filters);
 
         assert_eq!(planner.into_fetches().len(), 1);
+    }
+
+    #[test]
+    fn fetch_planner_adds_remote_advertised_coverage_after_selected_read() {
+        let selected_relay = relay();
+        let observed_relay =
+            NormRelayUrl::new("wss://observed-unknown-id.example.com").expect("relay");
+        let filter = Filter::new().kinds([0]).limit(1).build();
+        let account = BridgeAccountState::new(
+            Pubkey::new([0x01; 32]),
+            HashSet::from([selected_relay.clone()]),
+            Vec::new(),
+        );
+        let mut planner = FetchPlanner::new();
+
+        planner.apply_fetch(
+            &account,
+            RemoteFetchCommand::SelectedAccountRead {
+                filters: vec![send_filter(filter.clone())],
+                remote_advertised: vec![RemoteAdvertisedFetchCoverage::new(
+                    HashSet::from([selected_relay.clone(), observed_relay.clone()]),
+                    vec![send_filter(filter)],
+                )],
+            },
+        );
+
+        let fetches = planner.into_fetches();
+        assert_eq!(fetches.len(), 2);
+        assert!(fetches.iter().any(|fetch| {
+            fetch.relays == HashSet::from([selected_relay.clone()])
+                && fetch.policy == selected_account_read_fetch_policy()
+        }));
+        assert!(fetches.iter().any(|fetch| {
+            fetch.relays == HashSet::from([observed_relay.clone()])
+                && fetch.policy
+                    == RelayUrlPolicy::remote_advertised(
+                        RelayDemandPriority::Important,
+                        RelayRoutingPreference::NoPreference,
+                    )
+        }));
     }
 }
