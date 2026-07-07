@@ -90,6 +90,11 @@ impl CompactionData {
         self.queue.len()
     }
 
+    #[cfg(test)]
+    pub(crate) fn active_sid_for_test(&self, id: &OutboxSubId) -> Option<RelayReqId> {
+        self.request_to_sid.get(id).cloned()
+    }
+
     /// Returns compaction REQ costs ordered from cheapest to most expensive for
     /// limit-downgrade planning.
     pub(crate) fn downgrade_revocation_costs(&self, subs: &OutboxSubscriptions) -> Vec<usize> {
@@ -189,6 +194,36 @@ impl CompactionData {
             returned_passes,
             frame_indexes: HashMap::new(),
         }
+    }
+
+    /// Removes one owner from a compacted relay REQ after the relay has already
+    /// closed that REQ.
+    pub(crate) fn remove_after_relay_closed(&mut self, id: OutboxSubId) -> CompactionTransition {
+        let mut transition = CompactionTransition::default();
+        let Some(relay_id) = self.remove_request_sid_for_id(&id) else {
+            self.queue.cancel(id);
+            return transition;
+        };
+        transition.invalidated_sub_ids.insert(id);
+
+        let Some(data) = self.relay_subs.get_mut(&relay_id) else {
+            self.queue.cancel(id);
+            return transition;
+        };
+
+        if !data.requests.remove(&id) {
+            return transition;
+        }
+
+        if !data.requests.is_empty() {
+            return transition;
+        }
+
+        let Some(data) = self.relay_subs.remove(&relay_id) else {
+            return transition;
+        };
+        transition.returned_passes.push(data.sub_pass);
+        transition
     }
 
     #[profiling::function]

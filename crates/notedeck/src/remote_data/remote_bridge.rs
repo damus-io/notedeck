@@ -13,8 +13,8 @@ use enostr::{
     FullHistoryPendingIngestionPresenceRequest, FullHistoryPendingIngestionPresenceResult,
     Nip11Capability, Nip11FetchRequest, Nip11LimitationsRaw, NormRelayUrl, NoteId, OutboxEvent,
     OutboxIdRegistry, OutboxService, OutboxServiceConfig, OutboxServiceOutput, Pubkey,
-    RelayDemandPriority, RelayId, RelayImplType, RelayReqStatus, RelayRoutingPreference,
-    RelayUrlPkgs, RelayUrlPolicy,
+    RelayDemandPriority, RelayId, RelayImplType, RelayRoutingPreference, RelayUrlPkgs,
+    RelayUrlPolicy,
 };
 use hashbrown::HashSet;
 use nostrdb::{Filter, Ndb, SendFilter, Transaction};
@@ -395,60 +395,6 @@ struct ResolvedFetch {
     filters: Vec<Filter>,
 }
 
-#[derive(Clone)]
-struct ActiveFetch {
-    id: enostr::OutboxSubId,
-    relays: HashSet<NormRelayUrl>,
-    filters: Vec<Filter>,
-    pending_relays: HashSet<NormRelayUrl>,
-    saw_closed: bool,
-}
-
-impl ActiveFetch {
-    fn new(id: enostr::OutboxSubId, relays: HashSet<NormRelayUrl>, filters: Vec<Filter>) -> Self {
-        Self {
-            id,
-            pending_relays: relays.clone(),
-            relays,
-            filters,
-            saw_closed: false,
-        }
-    }
-
-    fn apply_relay_req_status(
-        &mut self,
-        relay: &NormRelayUrl,
-        status: Option<RelayReqStatus>,
-    ) -> bool {
-        if !self.relays.contains(relay) {
-            return false;
-        }
-
-        match status {
-            Some(RelayReqStatus::InitialQuery) => {
-                self.pending_relays.insert(relay.clone());
-            }
-            Some(RelayReqStatus::Eose) => {
-                self.pending_relays.remove(relay);
-            }
-            Some(RelayReqStatus::Closed) => {
-                self.saw_closed = true;
-                self.pending_relays.remove(relay);
-            }
-            None => {
-                self.pending_relays.remove(relay);
-            }
-        }
-
-        self.pending_relays.is_empty()
-    }
-}
-
-struct StartedFetch {
-    active: ActiveFetch,
-    output: OutboxServiceOutput,
-}
-
 struct ResolvedPublish {
     msg: EventClientMessage,
     relays: Vec<RelayId>,
@@ -492,18 +438,9 @@ impl FetchPlanner {
         self.accepted.push(ResolvedFetch { relays, filters });
     }
 
-    fn into_fetches(self, active_fetches: &[ActiveFetch]) -> Vec<ResolvedFetch> {
+    fn into_fetches(self) -> Vec<ResolvedFetch> {
         self.accepted
-            .into_iter()
-            .filter(|fetch| !active_fetch_matches(active_fetches, fetch))
-            .collect()
     }
-}
-
-fn active_fetch_matches(active_fetches: &[ActiveFetch], fetch: &ResolvedFetch) -> bool {
-    active_fetches.iter().any(|active| {
-        active.relays == fetch.relays && same_canonical_filter_set(&active.filters, &fetch.filters)
-    })
 }
 
 struct BridgeOutboxDriver {
@@ -576,9 +513,8 @@ impl BridgeOutboxDriver {
         }
     }
 
-    fn start_fetch(&mut self, fetch: ResolvedFetch) -> StartedFetch {
+    fn start_fetch(&mut self, fetch: ResolvedFetch) -> OutboxServiceOutput {
         let id = self.service.id_registry().next_sub_id();
-        let active = ActiveFetch::new(id, fetch.relays.clone(), fetch.filters.clone());
         let relay_pkgs = RelayUrlPkgs::new(
             fetch.relays,
             RelayUrlPolicy::explicit(
@@ -586,8 +522,7 @@ impl BridgeOutboxDriver {
                 RelayRoutingPreference::PreferDedicated,
             ),
         );
-        let output = self.service.start_fetch(id, fetch.filters, relay_pkgs);
-        StartedFetch { active, output }
+        self.service.start_fetch(id, fetch.filters, relay_pkgs)
     }
 
     fn publish(&mut self, publish: ResolvedPublish) -> OutboxServiceOutput {
@@ -599,10 +534,6 @@ impl BridgeOutboxDriver {
         max_connections: Option<usize>,
     ) -> OutboxServiceOutput {
         self.service.set_max_websocket_connections(max_connections)
-    }
-
-    fn clear_fetch(&mut self, id: enostr::OutboxSubId) -> OutboxServiceOutput {
-        self.service.clear_fetch(id)
     }
 }
 
@@ -653,7 +584,6 @@ enum BridgeSettlementAction {
     Emit(RemoteBridgeEvent),
     StartScopedEffect(ScopedSubEffect),
     ApplyScopedOutboxOps(ScopedSubOutboxOps),
-    ClearDirectFetch(enostr::OutboxSubId),
 }
 
 /// Thread handle for the remote bridge.
@@ -797,24 +727,15 @@ async fn run_remote_bridge(
 struct BridgeOutboxSettlement {
     outbox: BridgeOutboxDriver,
     scoped: ScopedSubRuntime,
-    active_fetches: Vec<ActiveFetch>,
 }
 
 impl BridgeOutboxSettlement {
     fn new(outbox: BridgeOutboxDriver, scoped: ScopedSubRuntime) -> Self {
-        Self {
-            outbox,
-            scoped,
-            active_fetches: Vec::new(),
-        }
+        Self { outbox, scoped }
     }
 
     fn next_timer(&mut self) -> Option<Instant> {
         self.scoped.next_author_outbox_retry_deadline()
-    }
-
-    fn active_fetches(&self) -> &[ActiveFetch] {
-        &self.active_fetches
     }
 
     fn next(&mut self) -> impl Future<Output = OutboxServiceOutput> + '_ {
@@ -914,17 +835,9 @@ impl BridgeOutboxSettlement {
     }
 
     fn apply_bridge_outbox_fact(&mut self, fact: OutboxEvent) -> Vec<BridgeSettlementAction> {
-        let clear_fetches = self.update_active_fetches_from_fact(&fact);
-        let mut actions = Vec::with_capacity(1 + clear_fetches.len());
-        actions.push(BridgeSettlementAction::Emit(RemoteBridgeEvent::Outbox(
+        vec![BridgeSettlementAction::Emit(RemoteBridgeEvent::Outbox(
             fact,
-        )));
-        actions.extend(
-            clear_fetches
-                .into_iter()
-                .map(BridgeSettlementAction::ClearDirectFetch),
-        );
-        actions
+        ))]
     }
 
     fn apply_scoped_outbox_fact(&mut self, fact: &OutboxEvent) -> ScopedSubDelta {
@@ -937,36 +850,6 @@ impl BridgeOutboxSettlement {
                 .apply_author_outbox_relay_req_status(*id, relay, *status),
             OutboxEvent::RelayStatusChanged { .. } => ScopedSubDelta::default(),
         }
-    }
-
-    fn update_active_fetches_from_fact(&mut self, fact: &OutboxEvent) -> Vec<enostr::OutboxSubId> {
-        let mut clear_fetches = Vec::new();
-        match fact {
-            OutboxEvent::OutboxSubRelayEoseChanged {
-                id,
-                relay_eose: None,
-            } => {
-                self.active_fetches.retain(|fetch| fetch.id != *id);
-            }
-            OutboxEvent::RelayReqStatusChanged { id, relay, status } => {
-                self.active_fetches.retain_mut(|fetch| {
-                    if fetch.id != *id {
-                        return true;
-                    }
-
-                    if !fetch.apply_relay_req_status(relay, *status) {
-                        return true;
-                    }
-
-                    if fetch.saw_closed {
-                        clear_fetches.push(fetch.id);
-                    }
-                    false
-                });
-            }
-            _ => {}
-        }
-        clear_fetches
     }
 
     fn settle_scoped_delta(&mut self, scoped_delta: ScopedSubDelta) -> Vec<BridgeSettlementAction> {
@@ -1020,14 +903,8 @@ impl BridgeOutboxSettlement {
         self.settle_outbox_output(output)
     }
 
-    fn clear_direct_fetch(&mut self, id: enostr::OutboxSubId) -> OutboxServiceOutput {
-        self.outbox.clear_fetch(id)
-    }
-
     fn start_fetch(&mut self, fetch: ResolvedFetch) -> OutboxServiceOutput {
-        let started = self.outbox.start_fetch(fetch);
-        self.active_fetches.push(started.active);
-        started.output
+        self.outbox.start_fetch(fetch)
     }
 
     fn append_scoped_output_actions(
@@ -1123,10 +1000,6 @@ impl<'a> RemoteBridge<'a> {
                     let outputs = self.settlement.apply_scoped_outbox_ops(scoped_outbox_ops);
                     self.settlement.settle_outbox_outputs(outputs)
                 }
-                BridgeSettlementAction::ClearDirectFetch(id) => {
-                    let output = self.settlement.clear_direct_fetch(id);
-                    self.settlement.settle_outbox_output(output)
-                }
             };
 
             for action in next_actions.into_iter().rev() {
@@ -1161,7 +1034,7 @@ impl<'a> RemoteBridge<'a> {
             }
         }
 
-        let fetches = fetch_planner.into_fetches(self.settlement.active_fetches());
+        let fetches = fetch_planner.into_fetches();
         let publishes = direct_planner.into_publishes();
         let mut actions = self.settlement.settle_scoped_delta(scoped_delta);
         actions.extend(self.settlement.apply_fetches(fetches));
@@ -1384,26 +1257,6 @@ mod tests {
         (tmp, ndb)
     }
 
-    fn test_settlement(
-        active_fetches: Vec<ActiveFetch>,
-    ) -> (TempDir, crate::jobs::JobPool, BridgeOutboxSettlement) {
-        crate::app::install_crypto();
-        let (tmp, ndb) = test_ndb();
-        let job_pool = crate::jobs::JobPool::new(1);
-        let job_spawner = job_pool.spawner();
-        let outbox = BridgeOutboxDriver::new(&ndb, &job_spawner, RemoteBridgeConfig::default());
-        let ids = outbox.id_registry();
-        (
-            tmp,
-            job_pool,
-            BridgeOutboxSettlement {
-                outbox,
-                scoped: ScopedSubRuntime::with_ids(ids),
-                active_fetches,
-            },
-        )
-    }
-
     fn author_outbox_config(author: Pubkey) -> SubConfig {
         let baseline = SubRelayPolicy::new(
             RelayDemandPriority::Important,
@@ -1551,94 +1404,18 @@ mod tests {
     }
 
     #[test]
-    fn fetch_planner_suppresses_duplicate_active_fetch() {
+    fn fetch_planner_returns_fetch_after_prior_batch() {
         let relay = relay();
         let relays = HashSet::from([relay]);
         let filters = vec![Filter::new().kinds([1]).build()];
-        let active_fetches = vec![ActiveFetch::new(
-            enostr::OutboxSubId(1),
-            relays.clone(),
-            filters.clone(),
-        )];
         let account = BridgeAccountState::new(Pubkey::new([0x01; 32]), relays, Vec::new());
-        let mut planner = FetchPlanner::new();
+        let mut first_frame = FetchPlanner::new();
+        first_frame.add_selected_account_read(&account, filters.clone());
+        assert_eq!(first_frame.into_fetches().len(), 1);
 
-        planner.add_selected_account_read(&account, filters);
-
-        assert!(planner.into_fetches(&active_fetches).is_empty());
-    }
-
-    #[test]
-    fn direct_fetch_closed_status_releases_active_dedupe() {
-        let relay = relay();
-        let id = enostr::OutboxSubId(1);
-        let (_tmp, _job_pool, mut settlement) = test_settlement(vec![ActiveFetch::new(
-            id,
-            HashSet::from([relay.clone()]),
-            vec![Filter::new().kinds([1]).build()],
-        )]);
-
-        let clear_fetches =
-            settlement.update_active_fetches_from_fact(&OutboxEvent::RelayReqStatusChanged {
-                id,
-                relay,
-                status: Some(RelayReqStatus::Closed),
-            });
-
-        assert_eq!(clear_fetches, vec![id]);
-        assert!(settlement.active_fetches.is_empty());
-    }
-
-    #[test]
-    fn direct_fetch_closed_status_waits_for_other_pending_relays() {
-        let relay_a = relay();
-        let relay_b = NormRelayUrl::new("wss://direct-fetch-b.example.com").expect("relay");
-        let id = enostr::OutboxSubId(1);
-        let (_tmp, _job_pool, mut settlement) = test_settlement(vec![ActiveFetch::new(
-            id,
-            HashSet::from([relay_a.clone(), relay_b.clone()]),
-            vec![Filter::new().kinds([1]).build()],
-        )]);
-
-        let clear_fetches =
-            settlement.update_active_fetches_from_fact(&OutboxEvent::RelayReqStatusChanged {
-                id,
-                relay: relay_a,
-                status: Some(RelayReqStatus::Closed),
-            });
-
-        assert!(clear_fetches.is_empty());
-        assert_eq!(settlement.active_fetches.len(), 1);
-
-        let clear_fetches =
-            settlement.update_active_fetches_from_fact(&OutboxEvent::RelayReqStatusChanged {
-                id,
-                relay: relay_b,
-                status: Some(RelayReqStatus::Eose),
-            });
-
-        assert_eq!(clear_fetches, vec![id]);
-        assert!(settlement.active_fetches.is_empty());
-    }
-
-    #[test]
-    fn direct_fetch_success_cleanup_releases_active_dedupe_without_clear() {
-        let relay = relay();
-        let id = enostr::OutboxSubId(1);
-        let (_tmp, _job_pool, mut settlement) = test_settlement(vec![ActiveFetch::new(
-            id,
-            HashSet::from([relay]),
-            vec![Filter::new().kinds([1]).build()],
-        )]);
-
-        let clear_fetches =
-            settlement.update_active_fetches_from_fact(&OutboxEvent::OutboxSubRelayEoseChanged {
-                id,
-                relay_eose: None,
-            });
-
-        assert!(clear_fetches.is_empty());
-        assert!(settlement.active_fetches.is_empty());
+        let mut second_frame = FetchPlanner::new();
+        second_frame.add_selected_account_read(&account, filters);
+        assert_eq!(second_frame.into_fetches().len(), 1);
     }
 
     #[test]
@@ -1649,7 +1426,7 @@ mod tests {
 
         planner.add_selected_account_read(&account, filters);
 
-        assert!(planner.into_fetches(&[]).is_empty());
+        assert!(planner.into_fetches().is_empty());
     }
 
     #[test]
@@ -1663,6 +1440,6 @@ mod tests {
         planner.add_selected_account_read(&account, filters.clone());
         planner.add_selected_account_read(&account, filters);
 
-        assert_eq!(planner.into_fetches(&[]).len(), 1);
+        assert_eq!(planner.into_fetches().len(), 1);
     }
 }

@@ -393,6 +393,30 @@ impl OutboxSubscriptions {
         self.subs.get(id).is_some_and(|s| s.is_oneshot)
     }
 
+    /// Remove one relay leg from a retained transient fetch.
+    ///
+    /// Returns whether the fetch subscription was removed because that was its
+    /// last retained relay leg.
+    pub(in crate::relay) fn remove_oneshot_relay(
+        &mut self,
+        id: OutboxSubId,
+        relay: &NormRelayUrl,
+    ) -> Option<bool> {
+        let removed_sub = {
+            let sub = self.subs.get_mut(&id)?;
+            if !sub.is_oneshot || !sub.relays.remove(relay) {
+                return None;
+            }
+            sub.relays.is_empty()
+        };
+
+        if removed_sub {
+            self.subs.remove(&id);
+        }
+        self.bump_version();
+        Some(removed_sub)
+    }
+
     /// Return retained internal full-history fetch ids owned by one history subscription.
     pub(in crate::relay) fn full_history_fetch_ids(
         &self,

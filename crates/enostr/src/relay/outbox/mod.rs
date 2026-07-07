@@ -817,13 +817,14 @@ impl OutboxPool {
     }
 
     /// Applies one relay's coordination facts and any follow-up oneshot unsubs
-    /// caused by newly completed EOSE state.
+    /// caused by terminal relay-local status.
     fn apply_coordination_facts(
         &mut self,
         relay_id: &NormRelayUrl,
         facts: crate::relay::coordinator::CoordinationFacts,
     ) -> OutboxPoolOutput {
         let status_changed_sub_ids = facts.status_changed_sub_ids;
+        let mut closed_oneshots = Vec::new();
         let mut eose_delta = facts.eose_delta;
         eose_delta
             .invalidated_sub_ids
@@ -835,7 +836,13 @@ impl OutboxPool {
         for id in status_changed_sub_ids {
             self.apply_relay_leg_readiness(relay_id, id);
             output.facts.extend(self.relay_leg_facts(relay_id, id));
+            if self.current_relay_req_status(id, relay_id) == Some(RelayReqStatus::Closed)
+                && self.subs.is_oneshot(&id)
+            {
+                closed_oneshots.push(id);
+            }
         }
+        output.extend(self.remove_closed_oneshot_relay_legs(relay_id, closed_oneshots));
         output
     }
 
@@ -911,22 +918,107 @@ impl OutboxPool {
         delta: RelayEoseDelta,
     ) -> OutboxPoolOutput {
         let mut fully_eosed = HashSet::new();
+        let mut completed_oneshots = Vec::new();
         let mut output = OutboxPoolOutput::default();
         output
             .facts
             .extend(self.apply_relay_tracker_invalidations(relay_id, delta.invalidated_sub_ids));
         for id in delta.sub_ids {
-            if self.subs.get(&id).is_none() {
+            let Some(sub) = self.subs.get(&id) else {
                 continue;
-            }
+            };
+            let is_oneshot = sub.is_oneshot;
             if self.eose_tracker.mark_relay_eose(relay_id, id, &self.subs) {
                 fully_eosed.insert(id);
             }
             output.facts.extend(self.relay_leg_facts(relay_id, id));
+            if is_oneshot {
+                completed_oneshots.push(id);
+            }
         }
 
+        output.extend(self.remove_eosed_oneshot_relay_legs(relay_id, completed_oneshots));
         output.extend(self.apply_fully_eosed_effects_for_ids(fully_eosed));
         output
+    }
+
+    fn remove_eosed_oneshot_relay_legs(
+        &mut self,
+        relay_id: &NormRelayUrl,
+        ids: Vec<OutboxSubId>,
+    ) -> OutboxPoolOutput {
+        let mut output = OutboxPoolOutput::default();
+        for id in ids {
+            output.extend(self.remove_eosed_oneshot_relay_leg(relay_id, id));
+        }
+        output
+    }
+
+    fn remove_closed_oneshot_relay_legs(
+        &mut self,
+        relay_id: &NormRelayUrl,
+        ids: Vec<OutboxSubId>,
+    ) -> OutboxPoolOutput {
+        let mut output = OutboxPoolOutput::default();
+        for id in ids {
+            output.extend(self.remove_closed_oneshot_relay_leg(relay_id, id));
+        }
+        output
+    }
+
+    fn remove_eosed_oneshot_relay_leg(
+        &mut self,
+        relay_id: &NormRelayUrl,
+        id: OutboxSubId,
+    ) -> OutboxPoolOutput {
+        self.remove_oneshot_relay_leg_with(relay_id, id, |pool, relay_id, id| {
+            pool.apply_exact_relay_unsubscribe(relay_id, id)
+        })
+    }
+
+    fn remove_closed_oneshot_relay_leg(
+        &mut self,
+        relay_id: &NormRelayUrl,
+        id: OutboxSubId,
+    ) -> OutboxPoolOutput {
+        self.remove_oneshot_relay_leg_with(relay_id, id, |pool, relay_id, id| {
+            pool.apply_exact_relay_closed_cleanup(relay_id, id)
+        })
+    }
+
+    fn remove_oneshot_relay_leg_with(
+        &mut self,
+        relay_id: &NormRelayUrl,
+        id: OutboxSubId,
+        cleanup: impl FnOnce(&mut Self, &NormRelayUrl, OutboxSubId) -> OutboxPoolOutput,
+    ) -> OutboxPoolOutput {
+        let Some(removed_sub) = self.subs.remove_oneshot_relay(id, relay_id) else {
+            return OutboxPoolOutput::default();
+        };
+
+        let output = cleanup(self, relay_id, id);
+        let changed_legs = vec![ChangedRelayLeg {
+            relay: relay_id.clone(),
+            sub_id: id,
+        }];
+        let removed_subs = if removed_sub {
+            HashSet::from([id])
+        } else {
+            HashSet::new()
+        };
+        self.finish_exact_relay_transition(changed_legs, removed_subs, output)
+    }
+
+    fn apply_exact_relay_closed_cleanup(
+        &mut self,
+        relay_id: &NormRelayUrl,
+        id: OutboxSubId,
+    ) -> OutboxPoolOutput {
+        let Some(relay) = self.relays.get_mut(relay_id) else {
+            return OutboxPoolOutput::default();
+        };
+        let output = relay.remove_subscription_after_relay_closed(&self.subs, id);
+        self.apply_coordination_output(relay_id, output)
     }
 
     /// Clears durable EOSE state for relay legs coordinator reset internally.
@@ -1100,6 +1192,15 @@ impl OutboxPool {
         }
 
         status
+    }
+
+    #[cfg(test)]
+    fn active_transparent_sid_for_test(
+        &self,
+        relay: &NormRelayUrl,
+        id: &OutboxSubId,
+    ) -> Option<crate::relay::RelayReqId> {
+        self.relays.get(relay)?.active_transparent_sid_for_test(id)
     }
 
     /// Return committed aggregate relay EOSE readiness for one subscription.
@@ -1762,6 +1863,24 @@ mod tests {
         })
     }
 
+    fn req_status_facts(
+        facts: &[OutboxPoolFact],
+        id: OutboxSubId,
+        relay: &NormRelayUrl,
+    ) -> Vec<Option<RelayReqStatus>> {
+        facts
+            .iter()
+            .filter_map(|fact| match fact {
+                OutboxPoolFact::RelayReqStatus {
+                    id: fact_id,
+                    relay: fact_relay,
+                    status,
+                } if *fact_id == id && fact_relay == relay => Some(*status),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn relay_eose_fact(
         facts: &[OutboxPoolFact],
         id: OutboxSubId,
@@ -2387,6 +2506,155 @@ mod tests {
             pool.subs.get(&id).is_none(),
             "oneshot should be removed as soon as receive-path EOSE processing completes"
         );
+    }
+
+    #[tokio::test]
+    async fn oneshot_eose_removes_completed_relay_leg() {
+        let relay_a = NormRelayUrl::new("wss://oneshot-eose-a.example.com").unwrap();
+        let relay_b = NormRelayUrl::new("wss://oneshot-eose-b.example.com").unwrap();
+        let id = OutboxSubId(25);
+        let mut relays = HashSet::new();
+        relays.insert(relay_a.clone());
+        relays.insert(relay_b.clone());
+
+        let mut pool = OutboxPool::default();
+        let mut output = OutboxPoolOutput::default();
+        oneshot(
+            &mut pool,
+            &mut output,
+            id,
+            trivial_filter(),
+            RelayUrlPkgs::new(
+                relays,
+                crate::relay::RelayUrlPolicy::explicit(
+                    crate::relay::RelayDemandPriority::Important,
+                    crate::relay::RelayRoutingPreference::PreferDedicated,
+                ),
+            ),
+        );
+
+        pool.apply_relay_eose_delta(
+            &relay_a,
+            RelayEoseDelta {
+                sub_ids: HashSet::from([id]),
+                invalidated_sub_ids: HashSet::new(),
+            },
+        );
+
+        let sub = pool.subs.get(&id).expect("pending relay leg retained");
+        assert!(!sub.relays.contains(&relay_a));
+        assert!(sub.relays.contains(&relay_b));
+
+        pool.apply_relay_eose_delta(
+            &relay_b,
+            RelayEoseDelta {
+                sub_ids: HashSet::from([id]),
+                invalidated_sub_ids: HashSet::new(),
+            },
+        );
+
+        assert!(pool.subs.get(&id).is_none());
+    }
+
+    #[tokio::test]
+    async fn oneshot_closed_removes_terminal_relay_leg_after_status_fact() {
+        let relay_a = NormRelayUrl::new("wss://oneshot-closed-a.example.com").unwrap();
+        let relay_b = NormRelayUrl::new("wss://oneshot-closed-b.example.com").unwrap();
+        let id = OutboxSubId(26);
+        let mut relays = HashSet::new();
+        relays.insert(relay_a.clone());
+        relays.insert(relay_b.clone());
+
+        let mut pool = OutboxPool::default();
+        insert_connected_test_coordinator(&mut pool, relay_a.clone());
+        insert_connected_test_coordinator(&mut pool, relay_b.clone());
+
+        let mut output = OutboxPoolOutput::default();
+        oneshot(
+            &mut pool,
+            &mut output,
+            id,
+            trivial_filter(),
+            RelayUrlPkgs::new(
+                relays,
+                crate::relay::RelayUrlPolicy::explicit(
+                    crate::relay::RelayDemandPriority::Important,
+                    crate::relay::RelayRoutingPreference::PreferDedicated,
+                ),
+            ),
+        );
+
+        let sid_a = pool
+            .active_transparent_sid_for_test(&relay_a, &id)
+            .expect("relay A placed transparent request")
+            .to_string();
+        let sid_b = pool
+            .active_transparent_sid_for_test(&relay_b, &id)
+            .expect("relay B placed transparent request")
+            .to_string();
+
+        let closed_a = pool.apply_relay_closed(&relay_a, 0, &sid_a);
+        let statuses = req_status_facts(&closed_a.facts, id, &relay_a);
+        let closed_pos = statuses
+            .iter()
+            .position(|status| *status == Some(RelayReqStatus::Closed))
+            .expect("closed fact emitted");
+        let cleanup_pos = statuses
+            .iter()
+            .position(Option::is_none)
+            .expect("cleanup fact emitted");
+        assert!(
+            closed_pos < cleanup_pos,
+            "CLOSED must be observable before the relay leg is cleared"
+        );
+        assert!(
+            closed_a.transport_effects.is_empty(),
+            "CLOSED cleanup should not send CLOSE for a relay-closed subscription"
+        );
+
+        let sub = pool.subs.get(&id).expect("pending relay leg retained");
+        assert!(!sub.relays.contains(&relay_a));
+        assert!(sub.relays.contains(&relay_b));
+
+        pool.apply_relay_closed(&relay_b, 0, &sid_b);
+
+        assert!(pool.subs.get(&id).is_none());
+    }
+
+    #[tokio::test]
+    async fn live_closed_keeps_relay_leg_without_eose_completion() {
+        let relay = NormRelayUrl::new("wss://live-closed-not-eose.example.com").unwrap();
+        let mut pool = OutboxPool::default();
+        let wakeup = MockWakeup::default();
+        insert_connected_test_coordinator(&mut pool, relay.clone());
+
+        let (id, _output) = {
+            let pkgs = relay_pkgs(
+                HashSet::from([relay.clone()]),
+                RelayDemandPriority::Important,
+                RelayRoutingPreference::PreferDedicated,
+            );
+            apply_send_session_and_collect_output(&mut pool, wakeup, |pool, session| {
+                subscribe(pool, session, trivial_filter(), pkgs)
+            })
+        };
+        let sid = pool
+            .active_transparent_sid_for_test(&relay, &id)
+            .expect("relay placed transparent request")
+            .to_string();
+
+        let closed = pool.apply_relay_closed(&relay, 0, &sid);
+
+        assert_eq!(
+            req_status_facts(&closed.facts, id, &relay),
+            vec![Some(RelayReqStatus::Closed)]
+        );
+        assert!(pool
+            .relays(&id)
+            .expect("live sub retained")
+            .contains(&relay));
+        assert!(!pool.has_observed_eose(&id));
+        assert!(!pool.all_have_eose(&id));
     }
 
     /// Local websocket eviction applies coordinator cleanup on the caller stack.

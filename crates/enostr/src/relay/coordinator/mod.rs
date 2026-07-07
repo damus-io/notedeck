@@ -967,6 +967,11 @@ impl CoordinationData {
         self.apply_compaction_plan(subs, plan)
     }
 
+    fn remove_compaction_after_relay_closed(&mut self, id: OutboxSubId) -> CoordinationOutput {
+        let transition = self.compaction_data.remove_after_relay_closed(id);
+        self.apply_compaction_transition(transition)
+    }
+
     fn compaction_request_free_subs(
         &mut self,
         subs: &OutboxSubscriptions,
@@ -1788,9 +1793,22 @@ impl CoordinationData {
     }
 
     fn transparent_unsubscribe(&mut self, id: OutboxSubId) -> CoordinationOutput {
-        let output = self
-            .transparent_data
-            .unsubscribe(self.current_generation, id);
+        self.transparent_unsubscribe_with_generation(id, self.current_generation)
+    }
+
+    fn transparent_unsubscribe_without_relay_frames(
+        &mut self,
+        id: OutboxSubId,
+    ) -> CoordinationOutput {
+        self.transparent_unsubscribe_with_generation(id, None)
+    }
+
+    fn transparent_unsubscribe_with_generation(
+        &mut self,
+        id: OutboxSubId,
+        current_generation: Option<u64>,
+    ) -> CoordinationOutput {
+        let output = self.transparent_data.unsubscribe(current_generation, id);
         return_subpasses(&mut self.limits.sub_guardian, output.returned_passes);
         CoordinationOutput::new(
             CoordinationFacts::new(RelayEoseDelta::default(), HashSet::new()),
@@ -1878,6 +1896,45 @@ impl CoordinationData {
                 output.extend(self.finish_route_cleanup(id));
             }
             RouteCleanup::RouteOnly(id) => {
+                output.extend(self.finish_route_cleanup(id));
+            }
+        }
+        output
+    }
+
+    /// Removes local route ownership after the relay has already closed the SID.
+    ///
+    /// This returns transparent/compaction capacity and emits normal read-model
+    /// cleanup facts, but does not send `CLOSE` for the already-closed relay SID.
+    pub(crate) fn remove_subscription_after_relay_closed(
+        &mut self,
+        subs: &OutboxSubscriptions,
+        id: OutboxSubId,
+    ) -> CoordinationOutput {
+        if let Some(result) = self.empty_output_when_subscription_ids_unsupported() {
+            return result;
+        }
+
+        let mut output = self.cleanup_existing_route_after_relay_closed(id);
+        output.extend(self.apply_capacity_available(subs));
+        self.assert_route_consistency();
+        self.log_sub_pass_usage();
+        output
+    }
+
+    fn cleanup_existing_route_after_relay_closed(&mut self, id: OutboxSubId) -> CoordinationOutput {
+        let Some(current_route) = self.routes.route_type(&id) else {
+            return CoordinationOutput::empty();
+        };
+
+        let mut output = CoordinationOutput::empty();
+        match current_route {
+            RelayType::Transparent => {
+                output.extend(self.transparent_unsubscribe_without_relay_frames(id));
+                output.extend(self.finish_route_cleanup(id));
+            }
+            RelayType::Compaction => {
+                output.extend(self.remove_compaction_after_relay_closed(id));
                 output.extend(self.finish_route_cleanup(id));
             }
         }
@@ -2167,6 +2224,18 @@ impl CoordinationData {
     #[cfg(test)]
     pub(crate) fn transparent_queue_len_for_test(&self) -> usize {
         self.transparent_data.queued_len_for_test()
+    }
+
+    /// Returns the active transparent relay subscription id for test assertions.
+    #[cfg(test)]
+    pub(crate) fn active_transparent_sid_for_test(&self, id: &OutboxSubId) -> Option<RelayReqId> {
+        self.transparent_data.active_sid(id)
+    }
+
+    /// Returns the active compaction relay subscription id for test assertions.
+    #[cfg(test)]
+    pub(crate) fn active_compaction_sid_for_test(&self, id: &OutboxSubId) -> Option<RelayReqId> {
+        self.compaction_data.active_sid_for_test(id)
     }
 
     fn url(&self) -> &str {
@@ -3518,6 +3587,60 @@ mod tests {
         });
         open_coordinator(&mut coordinator);
         coordinator
+    }
+
+    #[tokio::test]
+    async fn closed_compaction_cleanup_preserves_remaining_owner_closed_status() {
+        let mut subs = OutboxSubscriptions::default();
+        let live_id = OutboxSubId(31_200);
+        let fetch_id = OutboxSubId(31_201);
+        insert_sub_with_policy(&mut subs, live_id, RelayRoutingPreference::NoPreference);
+        insert_sub_with_policy(&mut subs, fetch_id, RelayRoutingPreference::NoPreference);
+
+        let mut coordinator = coordinator_with_limit(1);
+        let mut compaction_session = CompactionOperationPlan::default();
+        compaction_session.sub(live_id);
+        compaction_session.sub(fetch_id);
+        let _transition =
+            apply_compaction_plan_for_test(&mut coordinator, &subs, compaction_session);
+        let _ = coordinator.set_compaction_route(&subs, live_id);
+        let _ = coordinator.set_compaction_route(&subs, fetch_id);
+
+        let live_sid = coordinator
+            .active_compaction_sid_for_test(&live_id)
+            .expect("live id placed in compaction");
+        let fetch_sid = coordinator
+            .active_compaction_sid_for_test(&fetch_id)
+            .expect("fetch id placed in compaction");
+        assert_eq!(live_sid, fetch_sid);
+
+        let closed = coordinator.apply_relay_closed(0, &fetch_sid.to_string());
+        assert!(closed.output.frames.is_empty());
+        assert_eq!(
+            coordinator.req_status(&live_id),
+            Some(RelayReqStatus::Closed)
+        );
+        assert_eq!(
+            coordinator.req_status(&fetch_id),
+            Some(RelayReqStatus::Closed)
+        );
+
+        subs.remove(&fetch_id);
+        let cleanup = coordinator.remove_subscription_after_relay_closed(&subs, fetch_id);
+
+        assert!(cleanup.frames.is_empty());
+        assert_eq!(coordinator.route_type(&fetch_id), None);
+        assert_eq!(coordinator.req_status(&fetch_id), None);
+        assert_eq!(
+            coordinator.route_type(&live_id),
+            Some(RelayType::Compaction)
+        );
+        assert_eq!(
+            coordinator.req_status(&live_id),
+            Some(RelayReqStatus::Closed)
+        );
+        assert!(cleanup.facts.invalidated_sub_ids.contains(&fetch_id));
+        assert!(!cleanup.facts.status_changed_sub_ids.contains(&live_id));
     }
 
     #[tokio::test]
