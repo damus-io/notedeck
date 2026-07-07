@@ -754,12 +754,14 @@ fn connectivity_indicator(
     relay_inspect: &RelayInspectApi,
     _current_route: Option<&Route>,
 ) -> egui::Response {
-    let relay_infos = relay_inspect.relay_infos();
-    let connected_count = relay_infos
-        .iter()
-        .filter(|info| matches!(info.status, RelayStatus::Connected))
-        .count();
-    let total_count = relay_infos.len();
+    let mut connected_count = 0;
+    let mut total_count = 0;
+    for info in relay_inspect.relay_infos() {
+        total_count += 1;
+        if matches!(info.status, RelayStatus::Connected) {
+            connected_count += 1;
+        }
+    }
 
     // Calculate connectivity ratio (0.0 to 1.0)
     let ratio = if total_count > 0 {

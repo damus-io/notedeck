@@ -469,20 +469,20 @@ where
         demand: RelayTransportDemand,
         admission: &mut OutboxOpenAdmission,
         now: Instant,
-    ) -> bool {
+    ) -> Option<OutboxServiceOutput> {
         if self
             .relay
             .admission
             .transport_health_blocks_open(relay, demand, now)
         {
-            return false;
+            return None;
         }
         if self
             .relay
             .admission
             .deferral_blocks_demand(relay, demand, admission, now)
         {
-            return false;
+            return None;
         }
 
         let mut victims = Vec::new();
@@ -493,7 +493,7 @@ where
                 self.relay
                     .admission
                     .record_deferral(relay, demand, admission, now);
-                return false;
+                return None;
             };
             victims.push(victim);
         }
@@ -504,7 +504,7 @@ where
                     self.relay
                         .admission
                         .record_deferral(relay, demand, admission, now);
-                    return false;
+                    return None;
                 }
             }
             RelayOpenDecision::TryEvictThenOpen => {
@@ -519,7 +519,7 @@ where
                     self.relay
                         .admission
                         .record_deferral(relay, demand, admission, now);
-                    return false;
+                    return None;
                 }
             }
             RelayOpenDecision::RequireEviction => {
@@ -530,7 +530,7 @@ where
                         self.relay
                             .admission
                             .record_deferral(relay, demand, admission, now);
-                        return false;
+                        return None;
                     };
                     victims.push(victim);
                 }
@@ -538,21 +538,21 @@ where
                     self.relay
                         .admission
                         .record_deferral(relay, demand, admission, now);
-                    return false;
+                    return None;
                 }
             }
             RelayOpenDecision::Defer => {
                 self.relay
                     .admission
                     .record_deferral(relay, demand, admission, now);
-                return false;
+                return None;
             }
         }
 
-        self.apply_service_admission_evictions(victims, admission, now);
+        let output = self.apply_service_admission_evictions(victims, admission, now);
         admission.record_socket_open();
         self.relay.admission.clear_deferral(relay);
-        true
+        Some(output)
     }
 
     fn apply_service_admission_evictions(
@@ -560,17 +560,22 @@ where
         victims: Vec<NormRelayUrl>,
         admission: &mut OutboxOpenAdmission,
         now: Instant,
-    ) {
+    ) -> OutboxServiceOutput {
         if victims.is_empty() {
-            return;
+            return OutboxServiceOutput::NoEvents;
         }
 
+        let mut output = OutboxServiceOutput::NoEvents;
         for victim in victims {
             let was_connecting = self.relay.transport.websocket_is_connecting(&victim);
-            let _ = self.evict_service_websocket_for_admission(&victim, now);
+            output = merge_service_outputs(
+                output,
+                self.evict_service_websocket_for_admission(&victim, now),
+            );
             admission.record_socket_eviction(was_connecting);
         }
         self.relay.admission.bump_generation();
+        output
     }
 
     fn enforce_service_websocket_connection_limit(&mut self, now: Instant) -> OutboxServiceOutput {
@@ -901,10 +906,13 @@ where
             let Some(demand) = self.relay.transport.demand_for(&relay) else {
                 continue;
             };
-            if !self.authorize_service_relay_open(&relay, demand, &mut admission, now) {
+            let Some(admission_output) =
+                self.authorize_service_relay_open(&relay, demand, &mut admission, now)
+            else {
                 continue;
-            }
+            };
             let generation = self.relay.transport.next_generation(&relay);
+            output = merge_service_outputs(output, admission_output);
             output = merge_service_outputs(output, self.open_relay_transport(relay, generation));
         }
 
@@ -3435,10 +3443,29 @@ mod tests {
             ),
         );
 
-        poll_service_progress(&mut service).await;
+        let output = tokio::time::timeout(Duration::from_millis(20), service.next())
+            .await
+            .expect("stronger demand should produce admission replacement output");
+        let OutboxServiceOutput::Events(events) = output else {
+            panic!("stronger demand should emit relay status events");
+        };
 
         assert!(!service.relay.transport.websockets.contains_key(&low_value));
         assert!(service.relay.transport.websockets.contains_key(&critical));
+        assert!(
+            events.contains(&OutboxEvent::RelayStatusChanged {
+                relay: low_value.clone(),
+                status: Some(RelayStatus::Disconnected),
+            }),
+            "evicted relay status must be forwarded to the read model"
+        );
+        assert!(
+            events.contains(&OutboxEvent::RelayStatusChanged {
+                relay: critical.clone(),
+                status: Some(RelayStatus::Connecting),
+            }),
+            "incoming relay status must be forwarded to the read model"
+        );
         assert_eq!(
             service
                 .relay

@@ -40,8 +40,8 @@ impl RelayViewState {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-struct RelayRow {
-    relay_url: String,
+struct RelayRow<'a> {
+    relay_url: &'a NormRelayUrl,
     status: RelayStatus,
 }
 
@@ -50,7 +50,7 @@ struct RelayRow {
 enum RelaySection {
     /// Advertised NIP-65 relays (kind 10002); deletable via [`RelayAction::Remove`].
     Advertised,
-    /// Connected-but-not-advertised relays; not editable.
+    /// Active-but-not-advertised relays; not editable.
     Other,
     /// kind-10013 NIP-37 private-sync relays; deletable via [`RelayAction::RemovePrivate`].
     Private,
@@ -60,7 +60,7 @@ enum RelayListItem<'a> {
     SectionHeader(&'a str),
     EmptySection,
     Row {
-        row: &'a RelayRow,
+        row: &'a RelayRow<'a>,
         section: RelaySection,
     },
     AddPrivateRelay(&'a str),
@@ -141,9 +141,9 @@ impl<'a> RelayView<'a> {
         egui::CentralPanel::default().show(ui.ctx(), |ui| self.ui(ui));
     }
 
-    /// Show known relay websockets, grouped by whether the relay is advertised by the selected account.
+    /// Show active relay websockets, grouped by whether the relay is advertised by the selected account.
     fn show_relays(&mut self, ui: &mut Ui) -> Option<RelayAction> {
-        let relay_infos = self.relay_inspect.known_relay_infos();
+        let relay_infos = self.relay_inspect.relay_infos();
         let (advertised, private, outbox_other) =
             relay_rows(relay_infos, self.advertised_relays, self.private_relays);
 
@@ -275,6 +275,7 @@ fn show_relay_row(
     i18n: &mut Localization,
 ) -> Option<RelayAction> {
     let mut action = None;
+    let relay_url = relay_row.relay_url.as_str();
 
     ui.add_space(8.0);
     ui.scope(|ui| {
@@ -286,14 +287,14 @@ fn show_relay_row(
                 let response = ui.add_sized(
                     [ui.available_width(), text_height],
                     egui::Label::new(
-                        RichText::new(&relay_row.relay_url)
+                        RichText::new(relay_url)
                             .text_style(NotedeckTextStyle::Monospace.text_style())
                             .color(ui.style().visuals.noninteractive().fg_stroke.color),
                     )
                     .selectable(false)
                     .truncate(),
                 );
-                response.on_hover_text(&relay_row.relay_url);
+                response.on_hover_text(relay_url);
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -302,7 +303,7 @@ fn show_relay_row(
                     if section != RelaySection::Other {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ui.add(delete_button(ui.visuals().dark_mode)).clicked() {
-                                action = section.remove_action(relay_row.relay_url.clone());
+                                action = section.remove_action(relay_url.to_owned());
                             }
                         });
                     }
@@ -383,54 +384,50 @@ fn add_relay_entry(
     .inner
 }
 
-fn relay_rows(
-    relay_infos: Vec<RelayInspectEntry<'_>>,
-    advertised_relays: &std::collections::BTreeSet<RelaySpec>,
-    private_relays: &std::collections::BTreeSet<NormRelayUrl>,
-) -> (Vec<RelayRow>, Vec<RelayRow>, Vec<RelayRow>) {
-    let mut advertised = Vec::with_capacity(advertised_relays.len());
-    let mut advertised_index = HashMap::with_capacity(advertised_relays.len());
-
-    for (index, relay) in advertised_relays.iter().enumerate() {
-        advertised_index.insert(relay.url.clone(), index);
-        advertised.push(RelayRow {
-            relay_url: relay.url.to_string(),
-            status: RelayStatus::Disconnected,
-        });
-    }
-
-    let mut private = Vec::with_capacity(private_relays.len());
-    let mut private_index = HashMap::with_capacity(private_relays.len());
-
-    for (index, relay_url) in private_relays.iter().enumerate() {
-        private_index.insert(relay_url.clone(), index);
-        private.push(RelayRow {
-            relay_url: relay_url.to_string(),
-            status: RelayStatus::Disconnected,
-        });
-    }
-
+fn relay_rows<'a>(
+    relay_infos: impl IntoIterator<Item = RelayInspectEntry<'a>>,
+    advertised_relays: &'a std::collections::BTreeSet<RelaySpec>,
+    private_relays: &'a std::collections::BTreeSet<NormRelayUrl>,
+) -> (Vec<RelayRow<'a>>, Vec<RelayRow<'a>>, Vec<RelayRow<'a>>) {
+    let advertised_urls = advertised_relays
+        .iter()
+        .map(|relay| &relay.url)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut advertised = Vec::new();
+    let mut private = Vec::new();
     let mut outbox_other = Vec::new();
 
     for relay_info in relay_infos {
+        if relay_info.status == RelayStatus::Disconnected {
+            continue;
+        }
+
         let mut matched = false;
-        if let Some(index) = advertised_index.get(relay_info.relay_url) {
-            advertised[*index].status = relay_info.status;
+        if advertised_urls.contains(&relay_info.relay_url) {
+            advertised.push(RelayRow {
+                relay_url: relay_info.relay_url,
+                status: relay_info.status,
+            });
             matched = true;
         }
-        if let Some(index) = private_index.get(relay_info.relay_url) {
-            private[*index].status = relay_info.status;
+        if private_relays.contains(relay_info.relay_url) {
+            private.push(RelayRow {
+                relay_url: relay_info.relay_url,
+                status: relay_info.status,
+            });
             matched = true;
         }
         if !matched {
             outbox_other.push(RelayRow {
-                relay_url: relay_info.relay_url.to_string(),
+                relay_url: relay_info.relay_url,
                 status: relay_info.status,
             });
         }
     }
 
-    outbox_other.sort_by(|left, right| left.relay_url.cmp(&right.relay_url));
+    advertised.sort_by(|left, right| left.relay_url.cmp(right.relay_url));
+    private.sort_by(|left, right| left.relay_url.cmp(right.relay_url));
+    outbox_other.sort_by(|left, right| left.relay_url.cmp(right.relay_url));
 
     (advertised, private, outbox_other)
 }
@@ -520,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn relay_rows_show_disconnected_advertised_and_private_relays() {
+    fn relay_rows_only_shows_active_relay_infos() {
         let advertised_active = relay_url("wss://relay-advertised-active.example.com");
         let advertised_inactive = relay_url("wss://relay-advertised-inactive.example.com");
         let private_active = relay_url("wss://relay-private-active.example.com");
@@ -556,42 +553,24 @@ mod tests {
 
         assert_eq!(
             advertised,
-            vec![
-                RelayRow {
-                    relay_url: advertised_active.to_string(),
-                    status: RelayStatus::Connected,
-                },
-                RelayRow {
-                    relay_url: advertised_inactive.to_string(),
-                    status: RelayStatus::Disconnected,
-                }
-            ]
+            vec![RelayRow {
+                relay_url: &advertised_active,
+                status: RelayStatus::Connected,
+            }]
         );
         assert_eq!(
             private,
-            vec![
-                RelayRow {
-                    relay_url: private_active.to_string(),
-                    status: RelayStatus::Connected,
-                },
-                RelayRow {
-                    relay_url: private_inactive.to_string(),
-                    status: RelayStatus::Disconnected,
-                }
-            ]
+            vec![RelayRow {
+                relay_url: &private_active,
+                status: RelayStatus::Connected,
+            }]
         );
         assert_eq!(
             other,
-            vec![
-                RelayRow {
-                    relay_url: other_active.to_string(),
-                    status: RelayStatus::Connecting,
-                },
-                RelayRow {
-                    relay_url: other_inactive.to_string(),
-                    status: RelayStatus::Disconnected,
-                }
-            ]
+            vec![RelayRow {
+                relay_url: &other_active,
+                status: RelayStatus::Connecting,
+            }]
         );
     }
 
@@ -610,17 +589,19 @@ mod tests {
             },
         ];
 
-        let (_, _, other) = relay_rows(relay_infos, &BTreeSet::new(), &BTreeSet::new());
+        let advertised_relays = BTreeSet::new();
+        let private_relays = BTreeSet::new();
+        let (_, _, other) = relay_rows(relay_infos, &advertised_relays, &private_relays);
 
         assert_eq!(
             other,
             vec![
                 RelayRow {
-                    relay_url: other_a.to_string(),
+                    relay_url: &other_a,
                     status: RelayStatus::Connecting,
                 },
                 RelayRow {
-                    relay_url: other_b.to_string(),
+                    relay_url: &other_b,
                     status: RelayStatus::Connected,
                 }
             ]
@@ -643,14 +624,14 @@ mod tests {
         assert_eq!(
             advertised,
             vec![RelayRow {
-                relay_url: relay.to_string(),
+                relay_url: &relay,
                 status: RelayStatus::Connected,
             }]
         );
         assert_eq!(
             private,
             vec![RelayRow {
-                relay_url: relay.to_string(),
+                relay_url: &relay,
                 status: RelayStatus::Connected,
             }]
         );

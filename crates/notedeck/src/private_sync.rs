@@ -140,12 +140,11 @@ impl PrivateRelaySync {
         }
 
         let inspect = ctx.remote.relay_inspect();
-        let infos = inspect.relay_infos();
         let statuses: Vec<String> = urls
             .iter()
             .map(|url| {
-                let status = infos
-                    .iter()
+                let status = inspect
+                    .relay_infos()
                     .find(|info| info.relay_url == url)
                     .map(|info| format!("{:?}", info.status))
                     .unwrap_or_else(|| "NotConnected".to_string());

@@ -26,23 +26,21 @@ impl<'a> RelayInspectApi<'a> {
         Self { read_model }
     }
 
-    /// Snapshot active websocket relay statuses for display UI.
-    pub fn relay_infos(&self) -> Vec<RelayInspectEntry<'_>> {
+    /// Iterate active websocket relay statuses for display UI.
+    pub fn relay_infos(&self) -> impl Iterator<Item = RelayInspectEntry<'_>> + '_ {
         self.read_model
             .websocket_statuses()
             .filter(|(_, status)| {
                 matches!(status, RelayStatus::Connected | RelayStatus::Connecting)
             })
             .map(|(relay_url, status)| RelayInspectEntry { relay_url, status })
-            .collect()
     }
 
-    /// Snapshot all known websocket relay statuses for stable inventory UI.
-    pub fn known_relay_infos(&self) -> Vec<RelayInspectEntry<'_>> {
+    /// Iterate all known websocket relay statuses for stable inventory UI.
+    pub fn known_relay_infos(&self) -> impl Iterator<Item = RelayInspectEntry<'_>> + '_ {
         self.read_model
             .websocket_statuses()
             .map(|(relay_url, status)| RelayInspectEntry { relay_url, status })
-            .collect()
     }
 }
 

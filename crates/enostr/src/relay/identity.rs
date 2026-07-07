@@ -104,6 +104,11 @@ impl NormRelayUrl {
         })
     }
 
+    /// Return the canonical relay URL serialization.
+    pub fn as_str(&self) -> &str {
+        self.url.as_str()
+    }
+
     /// Return whether this relay URL may be used for the given relay URL source.
     pub fn allowed_for_source(&self, source: RelayUrlSource) -> bool {
         match source {
