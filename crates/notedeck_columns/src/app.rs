@@ -237,14 +237,12 @@ fn try_process_event(
                 timeline,
                 app_ctx.accounts.selected_account_pubkey(),
             );
-            let txn = Transaction::new(app_ctx.ndb).expect("txn");
             // only thread timelines are reversed
             let reversed = false;
 
             match timeline.poll_notes_into_view(
                 &selected_account_pk,
                 app_ctx.ndb,
-                &txn,
                 app_ctx.unknown_ids,
                 app_ctx.note_cache,
                 reversed,
@@ -254,6 +252,7 @@ fn try_process_event(
                         ctx.request_repaint();
                     }
                     if !new_note_keys.is_empty() && matches!(kind, TimelineKind::Notifications(_)) {
+                        let txn = Transaction::new(app_ctx.ndb).expect("txn");
                         let muted = app_ctx.accounts.mute();
                         let has_unmuted = new_note_keys.iter().any(|key| {
                             app_ctx

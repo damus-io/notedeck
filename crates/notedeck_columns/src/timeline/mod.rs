@@ -424,6 +424,7 @@ impl Timeline {
         for view in &mut self.views {
             view.reset();
         }
+        self.subscription.clear_pending_polled_note_keys();
     }
 
     /// Initial insert of notes into a timeline. Subsequent inserts should
@@ -497,11 +498,24 @@ impl Timeline {
         note_cache: &mut NoteCache,
         reversed: bool,
     ) -> Result<bool> {
-        let payloads = self.note_payloads(new_note_ids, ndb, txn);
-        for payload in &payloads {
+        let note_payloads = self.note_payloads(new_note_ids, ndb, txn);
+        for key in &note_payloads.missing_keys {
+            error!(
+                "hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline",
+                key
+            );
+        }
+        for payload in &note_payloads.payloads {
             UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &payload.note);
         }
-        self.insert_payloads(&payloads, ndb, txn, unknown_ids, note_cache, reversed)
+        self.insert_payloads(
+            &note_payloads.payloads,
+            ndb,
+            txn,
+            unknown_ids,
+            note_cache,
+            reversed,
+        )
     }
 
     fn note_payloads<'txn>(
@@ -509,18 +523,16 @@ impl Timeline {
         new_note_ids: &[NoteKey],
         ndb: &Ndb,
         txn: &'txn Transaction,
-    ) -> Vec<NotePayload<'txn>> {
+    ) -> NotePayloads<'txn> {
         let mut payloads: Vec<NotePayload> = Vec::with_capacity(new_note_ids.len());
+        let mut missing_keys = Vec::new();
         let now = unix_time_secs();
 
         for key in new_note_ids {
             let note = if let Ok(note) = ndb.get_note_by_key(txn, *key) {
                 note
             } else {
-                error!(
-                    "hit race condition in poll_notes_into_view: https://github.com/damus-io/nostrdb/issues/35 note {:?} was not added to timeline",
-                    key
-                );
+                missing_keys.push(*key);
                 continue;
             };
 
@@ -531,7 +543,45 @@ impl Timeline {
             payloads.push(NotePayload { note, key: *key });
         }
 
-        payloads
+        NotePayloads {
+            payloads,
+            missing_keys,
+        }
+    }
+
+    fn insert_polled_note_keys(
+        &mut self,
+        new_note_ids: &[NoteKey],
+        ndb: &Ndb,
+        txn: &Transaction,
+        unknown_ids: &mut UnknownIds,
+        note_cache: &mut NoteCache,
+        reversed: bool,
+    ) -> Result<PollInsertResult> {
+        let note_payloads = self.note_payloads(new_note_ids, ndb, txn);
+        for payload in &note_payloads.payloads {
+            UnknownIds::update_from_note(txn, ndb, unknown_ids, note_cache, &payload.note);
+        }
+
+        let inserted_keys = note_payloads
+            .payloads
+            .iter()
+            .map(|payload| payload.key)
+            .collect();
+        let any_front_insert = self.insert_payloads(
+            &note_payloads.payloads,
+            ndb,
+            txn,
+            unknown_ids,
+            note_cache,
+            reversed,
+        )?;
+
+        Ok(PollInsertResult {
+            inserted_keys,
+            missing_keys: note_payloads.missing_keys,
+            any_front_insert,
+        })
     }
 
     fn insert_payloads<'txn>(
@@ -576,12 +626,11 @@ impl Timeline {
 
     #[profiling::function]
     /// Poll for new notes and insert them into the timeline.
-    /// Returns the polled [`NoteKey`]s (empty if nothing new arrived).
+    /// Returns the inserted [`NoteKey`]s (empty if nothing new arrived).
     pub fn poll_notes_into_view(
         &mut self,
         account_pk: &Pubkey,
         ndb: &Ndb,
-        txn: &Transaction,
         unknown_ids: &mut UnknownIds,
         note_cache: &mut NoteCache,
         reversed: bool,
@@ -591,10 +640,9 @@ impl Timeline {
             return Ok(vec![]);
         }
 
-        let sub = self
-            .subscription
-            .get_local(account_pk)
-            .ok_or(Error::App(notedeck::Error::no_active_sub()))?;
+        if self.subscription.get_local(account_pk).is_none() {
+            return Err(Error::App(notedeck::Error::no_active_sub()));
+        }
 
         let start = Instant::now();
         let mut inserted = Vec::new();
@@ -605,14 +653,40 @@ impl Timeline {
                 break;
             }
 
-            let new_note_ids = ndb.poll_for_notes(sub, TIMELINE_LOCAL_POLL_BATCH);
+            let Some(new_note_ids) =
+                self.subscription
+                    .take_pending_or_poll(account_pk, ndb, TIMELINE_LOCAL_POLL_BATCH)
+            else {
+                return Err(Error::App(notedeck::Error::no_active_sub()));
+            };
             if new_note_ids.is_empty() {
                 break;
             }
 
-            any_front_insert |=
-                self.insert(&new_note_ids, ndb, txn, unknown_ids, note_cache, reversed)?;
-            inserted.extend(new_note_ids);
+            let txn = match Transaction::new(ndb) {
+                Ok(txn) => txn,
+                Err(err) => {
+                    self.subscription
+                        .push_pending_polled_note_keys(*account_pk, new_note_ids);
+                    return Err(err.into());
+                }
+            };
+            let result = self.insert_polled_note_keys(
+                &new_note_ids,
+                ndb,
+                &txn,
+                unknown_ids,
+                note_cache,
+                reversed,
+            )?;
+            any_front_insert |= result.any_front_insert;
+            inserted.extend(result.inserted_keys);
+
+            if !result.missing_keys.is_empty() {
+                self.subscription
+                    .push_pending_polled_note_keys(*account_pk, result.missing_keys);
+                break;
+            }
         }
 
         if any_front_insert {
@@ -633,9 +707,21 @@ impl Timeline {
     pub fn invalidate(&mut self) {
         self.filter = FilterState::NeedsRemote;
         self.remote_subscription_filters = None;
+        self.subscription.clear_pending_polled_note_keys();
         self.contact_list_timestamp = None;
         self.initial_load = InitialLoadState::Pending;
     }
+}
+
+struct NotePayloads<'txn> {
+    payloads: Vec<NotePayload<'txn>>,
+    missing_keys: Vec<NoteKey>,
+}
+
+struct PollInsertResult {
+    inserted_keys: Vec<NoteKey>,
+    missing_keys: Vec<NoteKey>,
+    any_front_insert: bool,
 }
 
 #[must_use = "process should be used on this result"]
@@ -1171,6 +1257,84 @@ mod tests {
             }),
             "insert_new should queue missing kind-0 author lookup; got {filter_jsons:?}"
         );
+    }
+
+    #[test]
+    fn poll_notes_into_view_retries_key_missed_by_old_transaction() {
+        let (_tmp, ndb) = new_test_ndb();
+        let account_pk = Pubkey::new([0x42; 32]);
+        let author = FullKeypair::generate();
+        let filter = Filter::new()
+            .authors([author.pubkey.bytes()])
+            .kinds([1])
+            .limit(20)
+            .build();
+        let mut timeline = Timeline::new(
+            TimelineKind::profile(author.pubkey),
+            FilterState::ready(vec![filter.clone()]),
+            TimelineTab::only_notes_and_replies(),
+        );
+        if let FilterState::Ready(filter) = &timeline.filter {
+            timeline
+                .subscription
+                .try_add_local(account_pk, &ndb, filter);
+        }
+
+        let stale_txn = Transaction::new(&ndb).expect("stale txn");
+        let note = NoteBuilder::new()
+            .kind(1)
+            .content("committed after frame txn")
+            .created_at(1)
+            .sign(&author.secret_key.secret_bytes())
+            .build()
+            .expect("note build");
+        ndb.process_client_event(&note.json().expect("note json"))
+            .expect("ingest note");
+        assert!(
+            ndb.get_note_by_id(&stale_txn, note.id()).is_err(),
+            "stale transaction should not see the newly committed note"
+        );
+
+        let mut note_cache = NoteCache::default();
+        let mut unknown_ids = UnknownIds::default();
+        let sub = timeline
+            .subscription
+            .get_local(&account_pk)
+            .expect("local subscription");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let polled_keys = loop {
+            let keys = ndb.poll_for_notes(sub, TIMELINE_LOCAL_POLL_BATCH);
+            if !keys.is_empty() {
+                break keys;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for poll key");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(polled_keys.len(), 1);
+
+        let first_insert = timeline
+            .insert_polled_note_keys(
+                &polled_keys,
+                &ndb,
+                &stale_txn,
+                &mut unknown_ids,
+                &mut note_cache,
+                false,
+            )
+            .expect("insert attempt");
+        assert!(first_insert.inserted_keys.is_empty());
+        assert_eq!(first_insert.missing_keys, polled_keys);
+        timeline
+            .subscription
+            .push_pending_polled_note_keys(account_pk, first_insert.missing_keys);
+        drop(stale_txn);
+
+        let inserted = timeline
+            .poll_notes_into_view(&account_pk, &ndb, &mut unknown_ids, &mut note_cache, false)
+            .expect("retry pending polled key");
+
+        assert_eq!(inserted, polled_keys);
+        assert_eq!(timeline.all_or_any_entries().len(), 1);
     }
 
     #[test]

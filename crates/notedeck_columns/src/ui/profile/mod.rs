@@ -81,17 +81,19 @@ impl<'a, 'd> ProfileView<'a, 'd> {
 
         let output = scroll_area.show(ui, |ui| {
             let mut action = None;
-            let txn = Transaction::new(self.note_context.ndb).expect("txn");
-            let profile = self
-                .note_context
-                .ndb
-                .get_profile_by_pubkey(&txn, self.pubkey.bytes())
-                .ok();
-
-            if let Some(profile_view_action) =
-                profile_body(ui, self.pubkey, self.note_context, profile.as_ref(), &txn)
             {
-                action = Some(profile_view_action);
+                let txn = Transaction::new(self.note_context.ndb).expect("txn");
+                let profile = self
+                    .note_context
+                    .ndb
+                    .get_profile_by_pubkey(&txn, self.pubkey.bytes())
+                    .ok();
+
+                if let Some(profile_view_action) =
+                    profile_body(ui, self.pubkey, self.note_context, profile.as_ref(), &txn)
+                {
+                    action = Some(profile_view_action);
+                }
             }
 
             let tabs_resp = tabs_ui(
@@ -107,7 +109,6 @@ impl<'a, 'd> ProfileView<'a, 'd> {
             match profile_timeline.poll_notes_into_view(
                 self.note_context.accounts.selected_account_pubkey(),
                 self.note_context.ndb,
-                &txn,
                 self.note_context.unknown_ids,
                 self.note_context.note_cache,
                 reversed,
@@ -120,6 +121,7 @@ impl<'a, 'd> ProfileView<'a, 'd> {
                 Err(e) => error!("Profile::poll_notes_into_view: {e}"),
             }
 
+            let txn = Transaction::new(self.note_context.ndb).expect("txn");
             if let Some(note_action) = TimelineTabView::new(
                 profile_timeline.current_view(),
                 self.note_options,
